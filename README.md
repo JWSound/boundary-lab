@@ -1,6 +1,6 @@
 # Boundary Lab
 
-Boundary Lab is a GUI-first Boundary Element Method tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves with `bempp-cl`, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop app.
+Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves with `bempp-cl`, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop app.
 
 ## Features
 
@@ -9,24 +9,45 @@ Boundary Lab is a GUI-first Boundary Element Method tool for loudspeaker design.
 - Multi-mesh and multi-radiator BEM solves
 - Source controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and impedance plots
-- Optional 3D balloon plot viewer with spherical sampling
+- 3D balloon plot viewer with spherical sampling
 - Project save/load with readable `.blab.json` files
 
 ## Requirements
 
 - Python 3.11 or newer
-- Gmsh installed locally and available at the path referenced in `ath/ath.cfg`
+- [Gmsh](https://gmsh.info/) installed locally and available at the path referenced in `ath/ath.cfg`
 - An OpenCL runtime for `bempp-cl`/`pyopencl`
-- The bundled Ath runtime files in `ath/`
 
-On Windows, the Intel CPU OpenCL runtime is a practical option even on many non-Intel systems.
+On Windows, the [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
 
 ## Install
 
 From the repository root:
 
 ```bash
-pip install -e ".[gui]"
+python -m pip install -e ".[gui]"
+```
+
+Using `python -m pip` helps ensure the GUI dependencies are installed into the
+same Python environment that will run Boundary Lab.
+
+If `blab gui` says a GUI dependency is missing after installation, check that
+Command Prompt is resolving `python`, `pip`, and `blab` from the same
+environment:
+
+```bat
+where python
+where pip
+where blab
+python -m pip show boundary-lab PySide6 pyvista pyvistaqt
+python -c "import sys; print(sys.executable); import PySide6; print(PySide6.__version__)"
+```
+
+If those point at different Python installs, rerun the install with the Python
+you want to use:
+
+```bat
+py -m pip install -e ".[gui]"
 ```
 
 ## Run The GUI
