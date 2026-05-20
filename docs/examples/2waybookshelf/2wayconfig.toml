@@ -1,0 +1,47 @@
+[[meshes]]
+name = "speaker"
+file = "2wayexample.msh"
+scale_factor = 0.001
+translation_m = [0.0, 0.0, 0.0] #xyz translation in meters. 
+#Note that BEM Solve always expects the device to be firing along the +z axis
+
+
+[[radiators]]
+name = "HFDome"
+mesh = "speaker"
+tag = 6 #open the .msh file in a text editor or gmsh to see which surface tags represent each physical group
+level_db = 0
+polarity = 1
+delay_ms = 0.0
+    [radiators.crossover]
+    type = "highpass"
+    filter = "linkwitz_riley"
+    order = 4
+    frequency_hz = 2000.0
+
+[[radiators]]
+name = "HFSurround"
+mesh = "speaker"
+tag = 5
+level_db = -6
+polarity = 1
+delay_ms = 0.0
+    [radiators.crossover]
+    type = "highpass"
+    filter = "linkwitz_riley"
+    order = 4
+    frequency_hz = 2000.0
+
+
+[[radiators]]
+name = "LF"
+mesh = "speaker"
+tag = 3
+level_db = 0.0
+polarity = 1
+delay_ms = 0.0
+    [radiators.crossover]
+    type = "lowpass"
+    filter = "linkwitz_riley"
+    order = 4
+    frequency_hz = 2000.0

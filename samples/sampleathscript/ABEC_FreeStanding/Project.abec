@@ -1,0 +1,12 @@
+[Project]
+Scriptname_InfoFile=
+[Solving]
+Scriptname_Solving=solving.txt
+[DirectSound]
+Scriptname_DirectSound=
+[LEScript]
+Scriptname_LEScript=
+[Observation]
+C0=observation.txt
+[MeshFiles]
+C0=sampleathscript.msh,M1

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "boundary-lab"
+version = "0.1.0"
+description = "Boundary element loudspeaker radiation solver"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "bempp-cl",
+  "matplotlib",
+  "meshio",
+  "numpy",
+  "pyopencl",
+  "scipy",
+]
+
+[project.optional-dependencies]
+gui = [
+  "PySide6",
+  "pyvista",
+  "pyvistaqt",
+]
+
+[project.scripts]
+blab = "blab.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/blab"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
