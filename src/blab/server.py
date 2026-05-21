@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import re
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,12 +24,13 @@ from blab.live import FrequencyResult, LiveSolveDataset, LiveSolver
 from blab.protocol import (
     frequency_result_to_dict,
     ndarray_to_wire,
-    solve_request_to_config_and_frequencies,
+    solve_request_to_job_inputs,
 )
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
 DEFAULT_ARTIFACT_ROOT = Path("runs") / "server_jobs"
+ASSET_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 @dataclass
@@ -96,23 +99,67 @@ class JobOrchestrator:
             self._condition.notify_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
-    def submit(self, config: SimulationConfig, frequencies_hz: np.ndarray) -> JobRecord:
+    def submit(
+        self,
+        config: SimulationConfig,
+        frequencies_hz: np.ndarray,
+        assets: list[dict[str, Any]] | None = None,
+    ) -> JobRecord:
         frequencies = np.asarray(frequencies_hz, dtype=np.float32)
         if frequencies.size == 0:
             raise ValueError("frequencies_hz must contain at least one frequency.")
 
         job_id = uuid.uuid4().hex
+        artifact_dir = self.artifact_root / job_id
+        if assets:
+            config = self._stage_assets(config, assets, artifact_dir / "assets")
         job = JobRecord(
             job_id=job_id,
             config=config,
             frequencies_hz=frequencies,
-            artifact_dir=self.artifact_root / job_id,
+            artifact_dir=artifact_dir,
         )
         with self._condition:
             self._jobs[job_id] = job
             self._add_event_locked(job, "queued", total_count=job.total_count)
         self._executor.submit(self._run_job, job_id)
         return job
+
+    def _stage_assets(
+        self,
+        config: SimulationConfig,
+        assets: list[dict[str, Any]],
+        asset_dir: Path,
+    ) -> SimulationConfig:
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        staged_by_original_path: dict[str, str] = {}
+        used_names: set[str] = set()
+
+        for index, asset in enumerate(assets):
+            if not isinstance(asset, dict):
+                raise ValueError("Each asset must be an object.")
+            original_path = str(asset.get("original_path", ""))
+            if not original_path:
+                raise ValueError("Each asset must include original_path.")
+            encoded = asset.get("content_base64")
+            if not isinstance(encoded, str):
+                raise ValueError(f"Asset {original_path} must include content_base64.")
+
+            filename = _safe_asset_filename(str(asset.get("filename") or Path(original_path).name), index)
+            while filename in used_names:
+                filename = f"{index}_{filename}"
+            used_names.add(filename)
+
+            try:
+                data = base64.b64decode(encoded.encode("ascii"), validate=True)
+            except Exception as exc:
+                raise ValueError(f"Asset {original_path} is not valid base64.") from exc
+
+            staged_path = asset_dir / filename
+            staged_path.write_bytes(data)
+            staged_by_original_path[original_path] = str(staged_path)
+
+        return _rewrite_config_mesh_paths(config, staged_by_original_path)
 
     def get(self, job_id: str) -> JobRecord | None:
         with self._lock:
@@ -330,8 +377,8 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
     def _handle_create_job(self) -> None:
         try:
             payload = self._read_json()
-            config, frequencies = solve_request_to_config_and_frequencies(payload)
-            job = self.server.orchestrator.submit(config, frequencies)
+            config, frequencies, assets = solve_request_to_job_inputs(payload)
+            job = self.server.orchestrator.submit(config, frequencies, assets)
         except Exception as exc:
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
@@ -416,6 +463,20 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Directory for completed job artifacts.",
     )
     return parser
+
+
+def _safe_asset_filename(filename: str, index: int) -> str:
+    cleaned = ASSET_FILENAME_PATTERN.sub("_", Path(filename).name).strip("._")
+    return cleaned or f"asset_{index}.msh"
+
+
+def _rewrite_config_mesh_paths(config: SimulationConfig, staged_by_original_path: dict[str, str]) -> SimulationConfig:
+    mesh_file = staged_by_original_path.get(config.mesh_file, config.mesh_file)
+    meshes = tuple(
+        replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file))
+        for mesh in config.meshes
+    )
+    return replace(config, mesh_file=mesh_file, meshes=meshes)
 
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:

@@ -6,6 +6,7 @@ import numpy as np
 from blab.config import SimulationConfig
 from blab.live import FrequencyResult
 from blab.server import JobOrchestrator
+from blab.protocol import build_mesh_assets
 
 
 class FakeSolver:
@@ -66,5 +67,40 @@ def test_orchestrator_streams_frequency_results_and_writes_artifact(tmp_path: Pa
             assert data["freq_hz"].tolist() == [200.0, 1000.0]
             assert data["horizontal_spl_norm_db"].shape == (2, 3)
             assert data["impedance_real"].shape == (1, 2)
+    finally:
+        orchestrator.shutdown()
+
+
+def test_orchestrator_stages_uploaded_mesh_assets_before_solving(tmp_path: Path) -> None:
+    source_mesh = tmp_path / "client_mesh.msh"
+    source_mesh.write_text("mesh bytes", encoding="utf-8")
+    seen_configs = []
+
+    class CapturingSolver(FakeSolver):
+        def __init__(self, config: SimulationConfig):
+            seen_configs.append(config)
+            super().__init__(config)
+
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        artifact_root=tmp_path / "jobs",
+        solver_factory=CapturingSolver,
+    )
+    try:
+        config = SimulationConfig(mesh_file=str(source_mesh))
+        job = orchestrator.submit(
+            config,
+            np.array([1000.0], dtype=np.float32),
+            assets=build_mesh_assets(config),
+        )
+        completed = _wait_for_terminal(orchestrator, job.job_id)
+
+        assert completed.status == "completed"
+        assert seen_configs
+        staged_path = Path(seen_configs[0].mesh_file)
+        assert staged_path != source_mesh
+        assert staged_path.exists()
+        assert staged_path.read_text(encoding="utf-8") == "mesh bytes"
+        assert staged_path.parent == completed.artifact_dir / "assets"
     finally:
         orchestrator.shutdown()

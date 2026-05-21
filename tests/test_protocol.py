@@ -3,11 +3,14 @@ import numpy as np
 from blab.config import CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import FrequencyResult
 from blab.protocol import (
+    build_mesh_assets,
     frequency_result_from_dict,
     frequency_result_to_dict,
+    mesh_asset_references,
     simulation_config_from_dict,
     simulation_config_to_dict,
     solve_request_from_config_and_frequencies,
+    solve_request_to_job_inputs,
     solve_request_to_config_and_frequencies,
 )
 
@@ -84,3 +87,31 @@ def test_solve_request_round_trips_config_and_frequencies() -> None:
 
     assert restored_config.mesh_file == "mesh.msh"
     assert np.allclose(restored_freqs, frequencies)
+
+
+def test_solve_request_can_embed_mesh_assets(tmp_path) -> None:
+    fallback = tmp_path / "fallback.msh"
+    mesh = tmp_path / "mesh.msh"
+    fallback.write_text("fallback mesh", encoding="utf-8")
+    mesh.write_text("real mesh", encoding="utf-8")
+    config = SimulationConfig(
+        mesh_file=str(fallback),
+        meshes=(MeshConfig(name="mesh", file=str(mesh), scale_factor=0.001),),
+    )
+
+    references = mesh_asset_references(config)
+    assets = build_mesh_assets(config)
+    restored_config, restored_freqs, restored_assets = solve_request_to_job_inputs(
+        solve_request_from_config_and_frequencies(
+            config,
+            np.array([1000.0], dtype=np.float32),
+            include_assets=True,
+        )
+    )
+
+    assert references == [str(fallback), str(mesh)]
+    assert restored_config.meshes[0].file == str(mesh)
+    assert restored_freqs.tolist() == [1000.0]
+    assert [asset["original_path"] for asset in assets] == references
+    assert [asset["original_path"] for asset in restored_assets] == references
+    assert all(asset["content_base64"] for asset in restored_assets)

@@ -54,7 +54,9 @@ blab server --host 127.0.0.1 --port 8765
 To use it from the GUI, open `Edit > Preferences`, set `Solve Backend` to
 `Server`, and set `Solve Server URL` to the server address. For another machine
 on the LAN, bind the server to that machine's LAN address or `0.0.0.0` and use
-`http://<server-ip>:8765` in the client.
+`http://<server-ip>:8765` in the client. The GUI uploads the solver mesh files
+with each server job, so the server does not need access to the client's local
+paths.
 
 Initial API surface:
 

@@ -37,7 +37,11 @@ class RemoteSolveWorker(QObject):
             self.status.emit(f"Submitting job to {self.server_url}...")
             job = self._post_json(
                 "/jobs",
-                solve_request_from_config_and_frequencies(self.config, self.frequencies),
+                solve_request_from_config_and_frequencies(
+                    self.config,
+                    self.frequencies,
+                    include_assets=True,
+                ),
             )
             self.job_id = str(job["job_id"])
             self.status.emit(f"Server job {self.job_id[:8]} queued")

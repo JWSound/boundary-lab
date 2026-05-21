@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import fields
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,6 +14,38 @@ from blab.live import FrequencyResult
 
 
 PROTOCOL_VERSION = 1
+
+
+def mesh_asset_references(config: SimulationConfig) -> list[str]:
+    paths: list[str] = []
+    if config.mesh_file:
+        paths.append(config.mesh_file)
+    paths.extend(mesh.file for mesh in config.meshes)
+    unique_paths = []
+    seen = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique_paths.append(path)
+    return unique_paths
+
+
+def build_mesh_assets(config: SimulationConfig) -> list[dict[str, Any]]:
+    assets = []
+    for index, mesh_path_text in enumerate(mesh_asset_references(config)):
+        mesh_path = Path(mesh_path_text)
+        data = mesh_path.read_bytes()
+        assets.append(
+            {
+                "id": f"mesh_{index}",
+                "kind": "mesh",
+                "original_path": mesh_path_text,
+                "filename": mesh_path.name or f"mesh_{index}.msh",
+                "content_base64": base64.b64encode(data).decode("ascii"),
+            }
+        )
+    return assets
 
 
 def crossover_to_dict(crossover: CrossoverConfig) -> dict[str, Any]:
@@ -153,12 +187,27 @@ def solve_request_to_config_and_frequencies(raw: dict[str, Any]) -> tuple[Simula
     )
 
 
+def solve_request_to_job_inputs(raw: dict[str, Any]) -> tuple[SimulationConfig, np.ndarray, list[dict[str, Any]]]:
+    config, frequencies = solve_request_to_config_and_frequencies(raw)
+    assets = raw.get("assets", [])
+    if assets is None:
+        assets = []
+    if not isinstance(assets, list):
+        raise ValueError("Solve request assets must be a list.")
+    return config, frequencies, assets
+
+
 def solve_request_from_config_and_frequencies(
     config: SimulationConfig,
     frequencies_hz: np.ndarray,
+    *,
+    include_assets: bool = False,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": PROTOCOL_VERSION,
         "config": simulation_config_to_dict(config),
         "frequencies_hz": ndarray_to_wire(np.asarray(frequencies_hz, dtype=np.float32)),
     }
+    if include_assets:
+        payload["assets"] = build_mesh_assets(config)
+    return payload
