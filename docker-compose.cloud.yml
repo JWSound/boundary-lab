@@ -1,0 +1,9 @@
+services:
+  cloud-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: boundary-lab-cloud:local
+    command: ["cloud-api", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"

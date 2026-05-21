@@ -22,6 +22,15 @@ dist/
 *.egg-info/
 .eggs/
 
+# Terraform local state/cache
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+
 # Editor and OS files
 .vscode/
 .idea/

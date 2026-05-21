@@ -7,6 +7,7 @@ from importlib import import_module
 
 COMMAND_MODULES = {
     "cloud-api": "blab.cloud.api",
+    "cloud-worker": "blab.cloud.worker",
     "clean": "blab.mesh_clean",
     "gui": "blab.gui",
     "solve": "blab.solver",

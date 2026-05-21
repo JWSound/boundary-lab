@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+aws = [
+  "boto3",
+]
 cloud = [
   "fastapi",
   "uvicorn[standard]",

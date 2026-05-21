@@ -1,0 +1,31 @@
+aws_region  = "us-east-1"
+project_name = "boundary-lab"
+environment = "dev"
+
+vpc_id             = "vpc-0ec9f6d7e54c52baa"
+public_subnet_ids  = ["subnet-0184358aa4e331a29", "subnet-0f0463f0ff517358f"]
+private_subnet_ids = ["subnet-private-a", "subnet-private-b"]
+
+# For a first prototype in a default VPC, you can use the same two public
+# subnets above for private_subnet_ids and set both public IP flags to true.
+# For production, use real private subnets with NAT or VPC endpoints and keep
+# these false.
+api_assign_public_ip    = false
+worker_assign_public_ip = false
+
+# Restrict this for real deployments.
+allowed_http_cidr_blocks = ["0.0.0.0/0"]
+
+# Build and push this image before apply, or apply once to create ECR,
+# push the image, then update this value and apply again.
+container_image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/boundary-lab-dev-cloud:latest"
+
+api_desired_count = 1
+
+# Typical first-pass worker size matching the local benchmark shape.
+worker_cpu    = 4096
+worker_memory = 8192
+
+tags = {
+  Owner = "boundary-lab"
+}

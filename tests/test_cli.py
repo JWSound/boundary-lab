@@ -29,6 +29,29 @@ def test_cli_dispatches_subcommand_with_prefixed_prog(monkeypatch) -> None:
     }
 
 
+def test_cli_dispatches_cloud_worker(monkeypatch) -> None:
+    calls = {}
+
+    def fake_import_module(name: str):
+        calls["module"] = name
+
+        def main(args, prog=None):
+            calls["args"] = args
+            calls["prog"] = prog
+
+        return SimpleNamespace(main=main)
+
+    monkeypatch.setattr(cli, "import_module", fake_import_module)
+
+    cli.main(["cloud-worker", "--job-id", "job_test"])
+
+    assert calls == {
+        "module": "blab.cloud.worker",
+        "args": ["--job-id", "job_test"],
+        "prog": "blab cloud-worker",
+    }
+
+
 def test_solver_accepts_short_public_option_names() -> None:
     args = solver._build_arg_parser().parse_args(
         [
