@@ -59,6 +59,7 @@ Generated runs, solver outputs, and local project files are ignored by git.
 - [GUI user guide](docs/user-guide.md)
 - [Ath setup](docs/ath-setup.md)
 - [Project files](docs/project-files.md)
+- [Cloud solving prototype](docs/cloud-solving.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [Advanced solver configuration](docs/advanced/solver-configuration.md)
 - [Advanced examples](docs/advanced/examples.md)

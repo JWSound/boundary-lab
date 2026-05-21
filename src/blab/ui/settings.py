@@ -26,6 +26,7 @@ class GuiPreferences:
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
     spherical_sampling_points: int = 6000
+    cloud_api_url: str = "http://127.0.0.1:8080"
 
 
 def settings_bool(settings: QSettings, key: str, default: bool) -> bool:

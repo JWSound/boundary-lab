@@ -18,14 +18,14 @@ def test_cli_dispatches_subcommand_with_prefixed_prog(monkeypatch) -> None:
         return SimpleNamespace(main=main)
 
     monkeypatch.setattr(cli, "import_module", fake_import_module)
-    monkeypatch.setattr(sys, "argv", ["bemps", "plot", "--help"])
+    monkeypatch.setattr(sys, "argv", ["blab", "plot", "--help"])
 
     cli.main()
 
     assert calls == {
         "module": "blab.plotting",
         "args": ["--help"],
-        "prog": "bemps plot",
+        "prog": "blab plot",
     }
 
 

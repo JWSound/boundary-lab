@@ -18,10 +18,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cloud = [
+  "fastapi",
+  "uvicorn[standard]",
+]
 gui = [
   "PySide6",
   "pyvista",
   "pyvistaqt",
+  "websockets",
 ]
 
 [project.scripts]

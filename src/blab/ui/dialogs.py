@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QMessageBox,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -161,6 +162,9 @@ class PreferencesDialog(QDialog):
         self.spherical_sampling_points_spin.setEnabled(preferences.spherical_sampling_enabled)
         self.spherical_sampling_check.toggled.connect(self.spherical_sampling_points_spin.setEnabled)
 
+        self.cloud_api_url_edit = QLineEdit()
+        self.cloud_api_url_edit.setText(preferences.cloud_api_url)
+
         form = QFormLayout()
         form.addRow("GMRES Tolerance", self.gmres_spin)
         form.addRow("Polar Angle Step", self.polar_step_spin)
@@ -175,6 +179,7 @@ class PreferencesDialog(QDialog):
         form.addRow("Stitch Tolerance", self.stitch_tolerance_spin)
         form.addRow("Spherical Sampling", self.spherical_sampling_check)
         form.addRow("Spherical Sample Points", self.spherical_sampling_points_spin)
+        form.addRow("Cloud API URL", self.cloud_api_url_edit)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -204,6 +209,7 @@ class PreferencesDialog(QDialog):
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             spherical_sampling_points=int(self.spherical_sampling_points_spin.value()),
+            cloud_api_url=self.cloud_api_url_edit.text().strip() or "http://127.0.0.1:8080",
         )
 
 

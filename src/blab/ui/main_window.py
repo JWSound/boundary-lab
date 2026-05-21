@@ -54,6 +54,7 @@ from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
 from blab.ui.balloon import BalloonPlotWindow
+from blab.ui.cloud_solve_worker import CloudSolveWorker
 from blab.ui.dialogs import MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
 from blab.ui.mesh_preview import MeshPreview
 from blab.ui.plots import (
@@ -122,7 +123,7 @@ class MainWindow(QMainWindow):
         self.balloon_window: BalloonPlotWindow | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
-        self.solve_worker: SolveWorker | None = None
+        self.solve_worker: SolveWorker | CloudSolveWorker | None = None
         self.solve_started_at: float | None = None
         self._last_imported_mesh_focus_check_at = 0.0
         self._ensure_ath_runtime_config()
@@ -137,6 +138,7 @@ class MainWindow(QMainWindow):
 
         self.generate_button = QPushButton("Generate")
         self.solve_button = QPushButton("Solve")
+        self.cloud_solve_button = QPushButton("Cloud Solve")
         self.cancel_button = QPushButton("Stop")
         self.cancel_button.setEnabled(False)
         self.mesh_config_button = QPushButton("Mesh Config")
@@ -306,6 +308,7 @@ class MainWindow(QMainWindow):
         controls_layout = QHBoxLayout(controls)
         controls_layout.addWidget(self.generate_button)
         controls_layout.addWidget(self.solve_button)
+        controls_layout.addWidget(self.cloud_solve_button)
         controls_layout.addWidget(self.cancel_button)
         controls_layout.addWidget(self.mesh_config_button)
         controls_layout.addWidget(self.source_config_button)
@@ -330,6 +333,7 @@ class MainWindow(QMainWindow):
     def _wire_controls(self) -> None:
         self.generate_button.clicked.connect(self.generate_geometry)
         self.solve_button.clicked.connect(self.start_solve)
+        self.cloud_solve_button.clicked.connect(self.start_cloud_solve)
         self.cancel_button.clicked.connect(self.cancel_solve)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
         self.source_config_button.clicked.connect(self.open_source_config)
@@ -424,6 +428,7 @@ class MainWindow(QMainWindow):
                 "preferences/spherical_sampling_points",
                 defaults.spherical_sampling_points,
             ),
+            cloud_api_url=str(self.settings.value("cloud/api_url", defaults.cloud_api_url)),
         )
 
     def _save_preferences(self) -> None:
@@ -446,6 +451,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("preferences/stitch_tolerance_mm", self.preferences.stitch_tolerance_mm)
         self.settings.setValue("preferences/spherical_sampling_enabled", self.preferences.spherical_sampling_enabled)
         self.settings.setValue("preferences/spherical_sampling_points", self.preferences.spherical_sampling_points)
+        self.settings.setValue("cloud/api_url", self.preferences.cloud_api_url)
+        self.settings.sync()
 
     @Slot()
     def _save_frequency_settings(self) -> None:
@@ -1267,20 +1274,42 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def start_solve(self) -> None:
+        solve_request = self._build_solve_request()
+        if solve_request is None:
+            return
+        config, ordered_freqs = solve_request
+
+        self._start_solve_worker(
+            SolveWorker(config, ordered_freqs, worker_count=self.preferences.worker_count),
+            "Initializing solver...",
+        )
+
+    @Slot()
+    def start_cloud_solve(self) -> None:
+        solve_request = self._build_solve_request()
+        if solve_request is None:
+            return
+        config, ordered_freqs = solve_request
+
+        self._start_solve_worker(
+            CloudSolveWorker(config, ordered_freqs, self.preferences.cloud_api_url),
+            "Submitting cloud solve...",
+        )
+
+    def _build_solve_request(self) -> tuple[SimulationConfig, np.ndarray] | None:
         if self.ath_result is None:
             QMessageBox.warning(self, "No mesh", "Generate or load an Ath output before solving.")
-            return
+            return None
         if not self.ath_result.radiators:
             QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
-            return
-
+            return None
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
             mesh_configs = self._solver_mesh_configs()
         except Exception as exc:
             QMessageBox.critical(self, "Imported mesh preparation failed", str(exc))
-            return
+            return None
 
         freq_min = float(min(self.freq_min_spin.value(), self.freq_max_spin.value()))
         freq_max = float(max(self.freq_min_spin.value(), self.freq_max_spin.value()))
@@ -1303,10 +1332,13 @@ class MainWindow(QMainWindow):
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=self.preferences.spherical_sampling_points,
         )
+        return config, ordered_freqs
 
+    def _start_solve_worker(self, worker: SolveWorker | CloudSolveWorker, initial_status: str) -> None:
         self.live_dataset = None
         self.balloon_plot_action.setEnabled(False)
         self.solve_button.setEnabled(False)
+        self.cloud_solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
         self.source_config_button.setEnabled(False)
@@ -1314,10 +1346,10 @@ class MainWindow(QMainWindow):
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
         self.solve_started_at = time.perf_counter()
-        self.status_label.setText("Initializing solver...")
+        self.status_label.setText(initial_status)
 
         self.solve_thread = QThread(self)
-        self.solve_worker = SolveWorker(config, ordered_freqs, worker_count=self.preferences.worker_count)
+        self.solve_worker = worker
         self.solve_worker.moveToThread(self.solve_thread)
         self.solve_thread.started.connect(self.solve_worker.run)
         self.solve_worker.initialized.connect(self._on_solver_initialized)
@@ -1372,6 +1404,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_solve_finished(self) -> None:
         self.solve_button.setEnabled(True)
+        self.cloud_solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
         self.source_config_button.setEnabled(self.ath_result is not None)
