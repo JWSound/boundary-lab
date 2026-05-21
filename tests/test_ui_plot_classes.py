@@ -39,3 +39,9 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     assert "PLOT_TITLE_PAD = 1" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "plot_layout.setSpacing(4)" in main_source
+
+
+def test_balloon_contours_exclude_configured_maximum() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "if min_db < level < max_db" in source

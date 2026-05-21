@@ -14,8 +14,8 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 
 ## Requirements
 
+- Windows 10/11 64-bit
 - Python 3.11 or newer
-- [Gmsh](https://gmsh.info/) installed locally and available at the path referenced in `ath/ath.cfg`
 - An OpenCL runtime for `bempp-cl`/`pyopencl`
 
 On Windows, the [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
@@ -28,35 +28,13 @@ From the repository root:
 python -m pip install -e ".[gui]"
 ```
 
-Using `python -m pip` helps ensure the GUI dependencies are installed into the
-same Python environment that will run Boundary Lab.
-
-If `blab gui` says a GUI dependency is missing after installation, check that
-Command Prompt is resolving `python`, `pip`, and `blab` from the same
-environment:
-
-```bat
-where python
-where pip
-where blab
-python -m pip show boundary-lab PySide6 pyvista pyvistaqt
-python -c "import sys; print(sys.executable); import PySide6; print(PySide6.__version__)"
-```
-
-If those point at different Python installs, rerun the install with the Python
-you want to use:
-
-```bat
-py -m pip install -e ".[gui]"
-```
-
 ## Run The GUI
 
 ```bash
 blab gui
 ```
 
-On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes generated files into:
+On startup, Boundary Lab updates `ath/ath.cfg` so Ath uses the bundled Gmsh executable and writes generated files into:
 
 ```text
 runs/ath_output

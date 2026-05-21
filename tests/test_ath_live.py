@@ -10,6 +10,7 @@ from blab.ath import (
     find_physical_tag_by_name,
     read_ath_output_root,
     read_surface_physical_names,
+    write_ath_gmsh_path,
     write_ath_output_root,
 )
 from blab.live import (
@@ -132,6 +133,38 @@ def test_write_ath_output_root_updates_companion_config(tmp_path: Path) -> None:
     assert written_root == output_root.resolve()
     assert read_ath_output_root(ath_cfg) == output_root.resolve()
     assert 'MeshCmd = "C:\\gmsh\\gmsh.exe %f -"' in ath_cfg.read_text(encoding="utf-8")
+
+
+def test_write_ath_gmsh_path_updates_mesh_command(tmp_path: Path) -> None:
+    ath_cfg = tmp_path / "ath.cfg"
+    ath_cfg.write_text(
+        'OutputRootDir = "E:\\old"\nMeshCmd = "C:\\gmsh\\gmsh.exe %f -"\nGnuplotPath = "C:\\gnuplot"\n',
+        encoding="utf-8",
+    )
+    gmsh_exe = tmp_path / "gmsh" / "gmsh.exe"
+    gmsh_exe.parent.mkdir()
+    gmsh_exe.write_text("", encoding="utf-8")
+
+    written_gmsh = write_ath_gmsh_path(ath_cfg, gmsh_exe)
+    cfg_text = ath_cfg.read_text(encoding="utf-8")
+
+    assert written_gmsh == gmsh_exe.resolve()
+    assert f'MeshCmd = "{gmsh_exe.resolve()} %f -"' in cfg_text
+    assert 'OutputRootDir = "E:\\old"' in cfg_text
+    assert 'GnuplotPath = "C:\\gnuplot"' in cfg_text
+
+
+def test_write_ath_gmsh_path_inserts_mesh_command_when_missing(tmp_path: Path) -> None:
+    ath_cfg = tmp_path / "ath.cfg"
+    ath_cfg.write_text('OutputRootDir = "E:\\old"', encoding="utf-8")
+    gmsh_exe = tmp_path / "gmsh.exe"
+
+    write_ath_gmsh_path(ath_cfg, gmsh_exe)
+
+    assert ath_cfg.read_text(encoding="utf-8").splitlines() == [
+        f'MeshCmd = "{gmsh_exe.resolve()} %f -"',
+        'OutputRootDir = "E:\\old"',
+    ]
 
 
 def test_clean_ath_mesh_output_writes_cleaned_solver_mesh(tmp_path: Path) -> None:

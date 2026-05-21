@@ -11,13 +11,19 @@ The GUI prefers this bundled `ath.exe` when generating geometry.
 
 ## Gmsh Requirement
 
-Ath requires the Gmsh application to be installed locally. The Gmsh executable path is configured in `ath/ath.cfg`:
+Ath requires the Gmsh application. Boundary Lab bundles Gmsh in:
 
 ```text
-MeshCmd = "C:\gmsh\gmsh.exe %f -"
+gmsh/gmsh-4.15.2-Windows64/gmsh.exe
 ```
 
-Update this path if Gmsh is installed somewhere else on your machine.
+The Gmsh executable path is configured in `ath/ath.cfg`:
+
+```text
+MeshCmd = "E:\AthGUI\boundary-lab\gmsh\gmsh-4.15.2-Windows64\gmsh.exe %f -"
+```
+
+Boundary Lab updates this value on GUI startup and immediately before running Ath.
 
 ## OutputRootDir
 

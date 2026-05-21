@@ -23,6 +23,8 @@ COMPLEX_RADIATOR_NAMES = {
     "SD1D1001": "surround_outer",
 }
 DEFAULT_CLEAN_SUFFIX = "_clean"
+ATH_CFG_OUTPUT_ROOT_KEY = "OutputRootDir"
+ATH_CFG_MESH_CMD_KEY = "MeshCmd"
 
 
 @dataclass(frozen=True)
@@ -90,7 +92,7 @@ def read_ath_output_root(ath_cfg_path: Path) -> Path | None:
             if not line or line.startswith(";") or "=" not in line:
                 continue
             key, value = line.split("=", maxsplit=1)
-            if key.strip() != "OutputRootDir":
+            if key.strip() != ATH_CFG_OUTPUT_ROOT_KEY:
                 continue
             output_root = value.strip().strip('"')
             if not output_root:
@@ -99,12 +101,9 @@ def read_ath_output_root(ath_cfg_path: Path) -> Path | None:
     return None
 
 
-def write_ath_output_root(ath_cfg_path: Path, output_root: Path) -> Path:
-    """Ensure ath.cfg contains an absolute OutputRootDir value."""
-    output_root = output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
+def _write_ath_cfg_value(ath_cfg_path: Path, key_name: str, value: str) -> None:
+    config_line = f'{key_name} = "{value}"\n'
     ath_cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    output_line = f'OutputRootDir = "{output_root}"\n'
 
     lines = []
     replaced = False
@@ -115,18 +114,32 @@ def write_ath_output_root(ath_cfg_path: Path, output_root: Path) -> Path:
             if not stripped or stripped.startswith(";") or "=" not in stripped:
                 continue
             key, _value = stripped.split("=", maxsplit=1)
-            if key.strip() == "OutputRootDir":
-                lines[index] = output_line
+            if key.strip() == key_name:
+                lines[index] = config_line
                 replaced = True
                 break
 
     if not replaced:
         if lines and not lines[-1].endswith(("\n", "\r")):
             lines[-1] = f"{lines[-1]}\n"
-        lines.insert(0, output_line)
+        lines.insert(0, config_line)
 
     ath_cfg_path.write_text("".join(lines), encoding="utf-8", newline="")
+
+
+def write_ath_output_root(ath_cfg_path: Path, output_root: Path) -> Path:
+    """Ensure ath.cfg contains an absolute OutputRootDir value."""
+    output_root = output_root.resolve()
+    output_root.mkdir(parents=True, exist_ok=True)
+    _write_ath_cfg_value(ath_cfg_path, ATH_CFG_OUTPUT_ROOT_KEY, str(output_root))
     return output_root
+
+
+def write_ath_gmsh_path(ath_cfg_path: Path, gmsh_exe_path: Path) -> Path:
+    """Ensure ath.cfg points Ath's MeshCmd at an absolute Gmsh executable."""
+    gmsh_exe_path = gmsh_exe_path.resolve()
+    _write_ath_cfg_value(ath_cfg_path, ATH_CFG_MESH_CMD_KEY, f"{gmsh_exe_path} %f -")
+    return gmsh_exe_path
 
 
 def discover_ath_output(*, run_root: Path, case_name: str, config_path: Path | None = None) -> AthRunResult:

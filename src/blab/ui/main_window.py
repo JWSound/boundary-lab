@@ -39,6 +39,7 @@ from blab.ath import (
     discover_ath_output,
     read_surface_physical_names,
     run_ath,
+    write_ath_gmsh_path,
     write_ath_output_root,
 )
 from blab.config import CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
@@ -95,6 +96,7 @@ ATH_MESH_SETTINGS_KEY = "mesh/ath_mesh"
 APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
+GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
 
 
 @dataclass(frozen=True)
@@ -960,6 +962,7 @@ class MainWindow(QMainWindow):
         if not ath_cfg.exists():
             return
         write_ath_output_root(ath_cfg, ATH_OUTPUT_ROOT)
+        write_ath_gmsh_path(ath_cfg, GMSH_BUNDLE_EXE)
 
     @Slot()
     def import_config(self) -> None:

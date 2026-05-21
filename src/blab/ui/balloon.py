@@ -21,6 +21,8 @@ from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
+HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
+VERTICAL_ANGLE_SCALAR_NAME = "Vertical Angle (deg)"
 CONTOUR_STEP_DB = 6.0
 GUIDE_LINE_WIDTH = 3
 CONTOUR_COLOR = "#f4f0e6"
@@ -42,19 +44,25 @@ class BalloonPlotWindow(QDialog):
 
         try:
             import pyvista as pv
+            import vtk
             from pyvistaqt import QtInteractor
         except ImportError as exc:
             raise RuntimeError("Install the GUI extras with pyvista and pyvistaqt to use the balloon plot viewer.") from exc
 
         self._pv = pv
+        self._vtk = vtk
         self._raw_balloon_data = raw_balloon_data
         self._prepared = None
         self._min_db = float(min_db)
         self._max_db = float(max_db)
         self._mesh_actor = None
+        self._balloon_mesh = None
+        self._hover_picker = None
+        self._hover_observer = None
 
         self.plotter = QtInteractor(self)
         self.plotter.set_background("#111316")
+        self._install_hover_picker()
 
         self.frequency_combo = QComboBox()
         self.frequency_combo.setEnabled(False)
@@ -78,6 +86,25 @@ class BalloonPlotWindow(QDialog):
         viewport = QWidget()
         viewport.setLayout(viewport_stack)
 
+        self.hover_label = QLabel("")
+        self.hover_label.setMinimumHeight(24)
+        self.hover_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.hover_label.setStyleSheet(
+            "QLabel {"
+            "background: #111316;"
+            "color: #e8e8e8;"
+            "padding-left: 8px;"
+            "padding-right: 8px;"
+            "}"
+        )
+
+        viewport_container = QWidget()
+        viewport_layout = QVBoxLayout(viewport_container)
+        viewport_layout.setContentsMargins(0, 0, 0, 0)
+        viewport_layout.setSpacing(0)
+        viewport_layout.addWidget(viewport, stretch=1)
+        viewport_layout.addWidget(self.hover_label)
+
         side_panel = QWidget()
         side_panel.setStyleSheet("QWidget { background: #1f1f1f; color: white; }")
         side_layout = QVBoxLayout(side_panel)
@@ -92,7 +119,7 @@ class BalloonPlotWindow(QDialog):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(viewport, stretch=1)
+        layout.addWidget(viewport_container, stretch=1)
         layout.addWidget(side_panel)
 
         QTimer.singleShot(0, self._prepare_and_render_initial)
@@ -131,9 +158,15 @@ class BalloonPlotWindow(QDialog):
         spl = self._prepared["balloon_surface_spl"][index]
         mesh = self._pv.StructuredGrid(x, y, z)
         mesh[SPL_SCALAR_NAME] = spl.ravel(order="F")
+        mesh[HORIZONTAL_ANGLE_SCALAR_NAME], mesh[VERTICAL_ANGLE_SCALAR_NAME] = _balloon_angle_arrays(
+            self._prepared["theta_grid_rad"],
+            self._prepared["phi_grid_rad"],
+        )
 
+        self.hover_label.setText("")
         self.plotter.clear()
-        self.plotter.add_mesh(
+        self._balloon_mesh = mesh
+        self._mesh_actor = self.plotter.add_mesh(
             mesh,
             scalars=SPL_SCALAR_NAME,
             cmap="turbo",
@@ -149,6 +182,45 @@ class BalloonPlotWindow(QDialog):
             self.plotter.reset_camera()
             self.plotter.camera_position = "iso"
         self.plotter.render()
+
+    def _install_hover_picker(self) -> None:
+        self._hover_picker = self._vtk.vtkCellPicker()
+        self._hover_picker.SetTolerance(0.0005)
+        interactor = _plotter_interactor(self.plotter)
+        if interactor is None:
+            return
+
+        if hasattr(interactor, "add_observer"):
+            self._hover_observer = interactor.add_observer("MouseMoveEvent", self._on_mouse_move)
+        elif hasattr(interactor, "AddObserver"):
+            self._hover_observer = interactor.AddObserver("MouseMoveEvent", self._on_mouse_move)
+
+    def _on_mouse_move(self, *args) -> None:
+        if self._hover_picker is None or self._balloon_mesh is None or self._mesh_actor is None:
+            self.hover_label.setText("")
+            return
+
+        interactor = args[0] if args and hasattr(args[0], "GetEventPosition") else _plotter_interactor(self.plotter)
+        renderer = getattr(self.plotter, "renderer", None)
+        if interactor is None or renderer is None:
+            self.hover_label.setText("")
+            return
+
+        x_pos, y_pos = interactor.GetEventPosition()
+        if not self._hover_picker.Pick(x_pos, y_pos, 0, renderer):
+            self.hover_label.setText("")
+            return
+
+        if _vtk_actor_address(self._hover_picker.GetActor()) != _vtk_actor_address(self._mesh_actor):
+            self.hover_label.setText("")
+            return
+
+        point_id = _picked_point_id(self._hover_picker, self._balloon_mesh)
+        if point_id is None:
+            self.hover_label.setText("")
+            return
+
+        self.hover_label.setText(_balloon_hover_text(self._balloon_mesh, point_id))
 
     def _add_spl_contours(self, mesh) -> None:
         levels = _contour_levels(self._min_db, self._max_db, CONTOUR_STEP_DB)
@@ -226,6 +298,80 @@ def _format_decimal(value: float) -> str:
     return f"{float(value):.3f}".rstrip("0").rstrip(".")
 
 
+def _balloon_angle_arrays(theta_rad: np.ndarray, phi_rad: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    theta = np.asarray(theta_rad, dtype=float)
+    phi = np.asarray(phi_rad, dtype=float)
+    direction_x = np.sin(theta) * np.cos(phi)
+    direction_y = np.sin(theta) * np.sin(phi)
+    direction_z = np.cos(theta)
+    horizontal = _normalize_signed_angle(np.rad2deg(np.arctan2(direction_x, direction_z)))
+    vertical = _normalize_signed_angle(np.rad2deg(np.arctan2(direction_y, direction_z)))
+    return horizontal.ravel(order="F").astype(np.float32), vertical.ravel(order="F").astype(np.float32)
+
+
+def _normalize_signed_angle(angle_deg: np.ndarray) -> np.ndarray:
+    angle = (np.asarray(angle_deg, dtype=float) + 180.0) % 360.0 - 180.0
+    angle[np.isclose(angle, -180.0)] = 180.0
+    angle[np.isclose(angle, 0.0)] = 0.0
+    return angle
+
+
+def _balloon_hover_text(mesh, point_id: int) -> str:
+    horizontal = float(mesh[HORIZONTAL_ANGLE_SCALAR_NAME][point_id])
+    vertical = float(mesh[VERTICAL_ANGLE_SCALAR_NAME][point_id])
+    spl = float(mesh[SPL_SCALAR_NAME][point_id])
+    return " | ".join(
+        (
+            f"Horizontal Angle: {horizontal:+.1f} deg",
+            f"Vertical Angle: {vertical:+.1f} deg",
+            f"Normalized SPL: {spl:.1f} dB",
+        )
+    )
+
+
+def _picked_point_id(picker, mesh) -> int | None:
+    if hasattr(picker, "GetPointId"):
+        point_id = int(picker.GetPointId())
+        if 0 <= point_id < mesh.n_points:
+            return point_id
+
+    if not hasattr(picker, "GetPickPosition"):
+        return None
+
+    pick_position = np.asarray(picker.GetPickPosition(), dtype=float)
+    points = np.asarray(mesh.points, dtype=float)
+    if points.size == 0:
+        return None
+
+    distances = np.linalg.norm(points - pick_position[np.newaxis, :], axis=1)
+    point_id = int(np.argmin(distances))
+    return point_id if np.isfinite(distances[point_id]) else None
+
+
+def _plotter_interactor(plotter):
+    interactor = getattr(plotter, "interactor", None)
+    if interactor is not None and hasattr(interactor, "GetEventPosition"):
+        return interactor
+
+    plotter_interactor = getattr(plotter, "iren", None)
+    if plotter_interactor is not None:
+        raw_interactor = getattr(plotter_interactor, "interactor", None)
+        if raw_interactor is not None and hasattr(raw_interactor, "GetEventPosition"):
+            return raw_interactor
+        if hasattr(plotter_interactor, "GetEventPosition"):
+            return plotter_interactor
+
+    return None
+
+
+def _vtk_actor_address(actor) -> str:
+    if actor is None:
+        return ""
+    if hasattr(actor, "GetAddressAsString"):
+        return actor.GetAddressAsString("")
+    return str(id(actor))
+
+
 class ColorLegend(QWidget):
     def __init__(self, min_db: float, max_db: float, parent: QWidget | None = None):
         super().__init__(parent)
@@ -277,7 +423,7 @@ class ColorLegend(QWidget):
 def _contour_levels(min_db: float, max_db: float, step_db: float) -> list[float]:
     first = np.ceil(float(min_db) / step_db) * step_db
     levels = np.arange(first, float(max_db) + 0.5 * step_db, step_db, dtype=float)
-    return [float(level) for level in levels if min_db < level <= max_db]
+    return [float(level) for level in levels if min_db < level < max_db]
 
 
 def _legend_fraction(value_db: float, min_db: float, max_db: float) -> float:

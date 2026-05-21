@@ -34,6 +34,8 @@ Thumbs.db
 testprojectignore/
 *.blab.json
 
+#gmsh examples
+gmsh/gmsh-4.15.2-Windows64/examples/
 
 # Generated BEM solver outputs and run directories
 runs/
