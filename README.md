@@ -42,6 +42,28 @@ runs/ath_output
 
 Generated runs, solver outputs, and local project files are ignored by git.
 
+## Run A Solve Server
+
+Boundary Lab can also run a local or LAN-accessible job server that accepts solve
+jobs and streams per-frequency results back as NDJSON events:
+
+```bash
+blab server --host 127.0.0.1 --port 8765
+```
+
+To use it from the GUI, open `Edit > Preferences`, set `Solve Backend` to
+`Server`, and set `Solve Server URL` to the server address. For another machine
+on the LAN, bind the server to that machine's LAN address or `0.0.0.0` and use
+`http://<server-ip>:8765` in the client.
+
+Initial API surface:
+
+- `POST /jobs` submits a solve request with `SimulationConfig` and `frequencies_hz`.
+- `GET /jobs/{job_id}` returns job status and artifact links.
+- `GET /jobs/{job_id}/events?since=0` streams job events as newline-delimited JSON.
+- `POST /jobs/{job_id}/cancel` requests cancellation.
+- `GET /jobs/{job_id}/artifacts/result.npz` downloads the completed result bundle.
+
 ## First Workflow
 
 1. Launch the GUI with `blab gui`.

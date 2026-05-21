@@ -13,6 +13,8 @@ SETTINGS_APP = "Ath4LiveBEM"
 
 @dataclass
 class GuiPreferences:
+    solve_backend: str = "local"
+    solve_server_url: str = "http://127.0.0.1:8765"
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     use_burton_miller: bool = True
@@ -47,6 +49,14 @@ def settings_float(settings: QSettings, key: str, default: float) -> float:
         return float(settings.value(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def settings_str(settings: QSettings, key: str, default: str) -> str:
+    value = settings.value(key, default)
+    if value is None:
+        return default
+    text = str(value).strip()
+    return text or default
 
 
 def settings_optional_int(settings: QSettings, key: str, default: int | None) -> int | None:

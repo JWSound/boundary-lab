@@ -54,6 +54,15 @@ class StitchResult:
     after: MeshStats
 
 
+@dataclass(frozen=True)
+class _StitchLoopCandidate:
+    score: float
+    mesh_a: int
+    loop_a: int
+    mesh_b: int
+    loop_b: int
+
+
 def _find_triangle_block(mesh: meshio.Mesh) -> Tuple[str, np.ndarray]:
     cells_dict = mesh.cells_dict
     if "triangle" in cells_dict:
@@ -361,6 +370,52 @@ def _choose_stitch_loop_pair(
     return best_pair
 
 
+def _choose_stitch_loop_pairs(
+    points: np.ndarray,
+    loops_by_mesh: Sequence[Sequence[Sequence[int]]],
+    stitch_tol: float,
+) -> List[Tuple[List[int], List[int]]]:
+    candidates: List[_StitchLoopCandidate] = []
+    for mesh_a, loops_a in enumerate(loops_by_mesh[:-1]):
+        for mesh_b in range(mesh_a + 1, len(loops_by_mesh)):
+            loops_b = loops_by_mesh[mesh_b]
+            for loop_a_index, loop_a in enumerate(loops_a):
+                for loop_b_index, loop_b in enumerate(loops_b):
+                    distance_ab = _loop_distance(points, loop_a, loop_b)
+                    distance_ba = _loop_distance(points, loop_b, loop_a)
+                    score = max(distance_ab, distance_ba)
+                    if score <= stitch_tol:
+                        candidates.append(
+                            _StitchLoopCandidate(
+                                score=score,
+                                mesh_a=mesh_a,
+                                loop_a=loop_a_index,
+                                mesh_b=mesh_b,
+                                loop_b=loop_b_index,
+                            )
+                        )
+
+    stitched_pairs: List[Tuple[List[int], List[int]]] = []
+    used_loops: set[Tuple[int, int]] = set()
+    for candidate in sorted(candidates, key=lambda item: item.score):
+        loop_key_a = (candidate.mesh_a, candidate.loop_a)
+        loop_key_b = (candidate.mesh_b, candidate.loop_b)
+        if loop_key_a in used_loops or loop_key_b in used_loops:
+            continue
+        used_loops.add(loop_key_a)
+        used_loops.add(loop_key_b)
+        stitched_pairs.append(
+            (
+                list(loops_by_mesh[candidate.mesh_a][candidate.loop_a]),
+                list(loops_by_mesh[candidate.mesh_b][candidate.loop_b]),
+            )
+        )
+
+    if not stitched_pairs:
+        raise ValueError(f"No compatible boundary loop pair found within stitch tolerance {stitch_tol:g}.")
+    return stitched_pairs
+
+
 def _seam_points_from_loops(
     points: np.ndarray,
     reference_loop: Sequence[int],
@@ -647,8 +702,8 @@ def stitch_meshes(
     stitch_tol: float,
     area_tol: float = AREA_TOL,
 ) -> Tuple[meshio.Mesh, StitchResult]:
-    if len(meshes) != 2:
-        raise ValueError("Boundary stitching currently supports exactly two input meshes.")
+    if len(meshes) < 2:
+        raise ValueError("Boundary stitching requires at least two input meshes.")
     if stitch_tol <= 0:
         raise ValueError("stitch_tol must be greater than zero.")
 
@@ -709,29 +764,44 @@ def stitch_meshes(
                 values.append(np.zeros(len(mesh_triangles), dtype=np.int32))
         cell_data[name] = np.concatenate(values, axis=0)
 
-    loop_a, loop_b = _choose_stitch_loop_pair(points, loops_by_mesh[0], loops_by_mesh[1], stitch_tol)
-    seam_points = _seam_points_from_loops(points, loop_a, loop_b, stitch_tol)
-    seam_vertex_ids = np.arange(len(points), len(points) + len(seam_points), dtype=np.int64)
-    points_with_seam = np.vstack((points, seam_points))
+    stitch_loop_pairs = _choose_stitch_loop_pairs(points, loops_by_mesh, stitch_tol)
+    points_with_seam = points
+    triangles_split = triangles
+    cell_data_split = cell_data
+    seam_vertex_count = 0
+    split_boundary_edges = 0
+    split_triangles = 0
 
-    triangles_split, cell_data_split, split_edges_a, split_triangles_a = _split_stitched_loop_edges(
-        points_with_seam,
-        triangles,
-        cell_data,
-        loop_a,
-        seam_points,
-        seam_vertex_ids,
-        stitch_tol,
-    )
-    triangles_split, cell_data_split, split_edges_b, split_triangles_b = _split_stitched_loop_edges(
-        points_with_seam,
-        triangles_split,
-        cell_data_split,
-        loop_b,
-        seam_points,
-        seam_vertex_ids,
-        stitch_tol,
-    )
+    for loop_a, loop_b in stitch_loop_pairs:
+        seam_points = _seam_points_from_loops(points_with_seam, loop_a, loop_b, stitch_tol)
+        seam_vertex_ids = np.arange(
+            len(points_with_seam),
+            len(points_with_seam) + len(seam_points),
+            dtype=np.int64,
+        )
+        points_with_seam = np.vstack((points_with_seam, seam_points))
+
+        triangles_split, cell_data_split, split_edges_a, split_triangles_a = _split_stitched_loop_edges(
+            points_with_seam,
+            triangles_split,
+            cell_data_split,
+            loop_a,
+            seam_points,
+            seam_vertex_ids,
+            stitch_tol,
+        )
+        triangles_split, cell_data_split, split_edges_b, split_triangles_b = _split_stitched_loop_edges(
+            points_with_seam,
+            triangles_split,
+            cell_data_split,
+            loop_b,
+            seam_points,
+            seam_vertex_ids,
+            stitch_tol,
+        )
+        seam_vertex_count += int(len(seam_points))
+        split_boundary_edges += int(split_edges_a + split_edges_b)
+        split_triangles += int(split_triangles_a + split_triangles_b)
 
     deg_mask = _degenerate_mask(points_with_seam, triangles_split, area_tol)
     triangles_clean = triangles_split[~deg_mask]
@@ -748,10 +818,10 @@ def stitch_meshes(
     )
     after = _mesh_stats(points_clean, triangles_clean, area_tol)
     result = StitchResult(
-        stitched_loop_pairs=1,
-        seam_vertices=int(len(seam_points)),
-        split_boundary_edges=int(split_edges_a + split_edges_b),
-        split_triangles=int(split_triangles_a + split_triangles_b),
+        stitched_loop_pairs=len(stitch_loop_pairs),
+        seam_vertices=seam_vertex_count,
+        split_boundary_edges=split_boundary_edges,
+        split_triangles=split_triangles,
         before=before,
         after=after,
     )

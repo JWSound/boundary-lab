@@ -85,7 +85,9 @@ from blab.ui.settings import (
     settings_float,
     settings_int,
     settings_optional_int,
+    settings_str,
 )
+from blab.ui.remote_solve_worker import RemoteSolveWorker
 from blab.ui.solve_worker import SolveWorker
 
 
@@ -375,6 +377,8 @@ class MainWindow(QMainWindow):
     def _load_preferences(self) -> GuiPreferences:
         defaults = GuiPreferences()
         return GuiPreferences(
+            solve_backend=settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend),
+            solve_server_url=settings_str(self.settings, "preferences/solve_server_url", defaults.solve_server_url),
             gmres_tolerance=settings_float(self.settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
             polar_angle_step_deg=settings_float(
                 self.settings,
@@ -427,6 +431,8 @@ class MainWindow(QMainWindow):
         )
 
     def _save_preferences(self) -> None:
+        self.settings.setValue("preferences/solve_backend", self.preferences.solve_backend)
+        self.settings.setValue("preferences/solve_server_url", self.preferences.solve_server_url)
         self.settings.setValue("preferences/gmres_tolerance", self.preferences.gmres_tolerance)
         self.settings.setValue("preferences/polar_angle_step_deg", self.preferences.polar_angle_step_deg)
         self.settings.setValue("preferences/use_burton_miller", self.preferences.use_burton_miller)
@@ -736,9 +742,6 @@ class MainWindow(QMainWindow):
             return None
 
         mesh_configs = self._stitch_candidate_mesh_configs()
-        if len(mesh_configs) != 2:
-            raise ValueError("Mesh stitching currently supports exactly two active meshes.")
-
         stitched_path = self._stitched_mesh_path(mesh_configs)
         if not stitched_path.exists():
             stitched_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1317,7 +1320,10 @@ class MainWindow(QMainWindow):
         self.status_label.setText("Initializing solver...")
 
         self.solve_thread = QThread(self)
-        self.solve_worker = SolveWorker(config, ordered_freqs, worker_count=self.preferences.worker_count)
+        if self.preferences.solve_backend == "server":
+            self.solve_worker = RemoteSolveWorker(config, ordered_freqs, self.preferences.solve_server_url)
+        else:
+            self.solve_worker = SolveWorker(config, ordered_freqs, worker_count=self.preferences.worker_count)
         self.solve_worker.moveToThread(self.solve_thread)
         self.solve_thread.started.connect(self.solve_worker.run)
         self.solve_worker.initialized.connect(self._on_solver_initialized)

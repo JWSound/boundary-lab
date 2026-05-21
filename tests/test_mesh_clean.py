@@ -165,6 +165,103 @@ def test_stitch_meshes_splits_mismatched_boundary_loops_into_shared_seam() -> No
     assert stitched.field_data["Waveguide"].tolist() == [2, 2]
 
 
+def test_stitch_meshes_handles_multiple_mesh_pairs() -> None:
+    def enclosure_and_cap(offset_x: float, enclosure_tag: int, cap_tag: int) -> tuple[meshio.Mesh, meshio.Mesh]:
+        offset = np.array([offset_x, 0.0, 0.0], dtype=float)
+        enclosure = meshio.Mesh(
+            points=np.array(
+                [
+                    [-1.0, -1.0, -1.0],
+                    [1.0, -1.0, -1.0],
+                    [1.0, 1.0, -1.0],
+                    [-1.0, 1.0, -1.0],
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                ],
+                dtype=float,
+            )
+            + offset,
+            cells=[
+                (
+                    "triangle",
+                    np.array(
+                        [
+                            [0, 1, 2],
+                            [0, 2, 3],
+                            [0, 4, 5],
+                            [0, 5, 1],
+                            [1, 5, 6],
+                            [1, 6, 2],
+                            [2, 6, 7],
+                            [2, 7, 3],
+                            [3, 7, 4],
+                            [3, 4, 0],
+                        ],
+                        dtype=np.int64,
+                    ),
+                )
+            ],
+            cell_data={"gmsh:physical": [np.full(10, enclosure_tag, dtype=np.int32)]},
+            field_data={f"Enclosure_{enclosure_tag}": np.array([enclosure_tag, 2], dtype=np.int32)},
+        )
+        cap = meshio.Mesh(
+            points=np.array(
+                [
+                    [-1.0, -1.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 0.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                    [-1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0],
+                ],
+                dtype=float,
+            )
+            + offset,
+            cells=[
+                (
+                    "triangle",
+                    np.array(
+                        [
+                            [8, 0, 1],
+                            [8, 1, 2],
+                            [8, 2, 3],
+                            [8, 3, 4],
+                            [8, 4, 5],
+                            [8, 5, 6],
+                            [8, 6, 7],
+                            [8, 7, 0],
+                        ],
+                        dtype=np.int64,
+                    ),
+                )
+            ],
+            cell_data={"gmsh:physical": [np.full(8, cap_tag, dtype=np.int32)]},
+            field_data={f"Cap_{cap_tag}": np.array([cap_tag, 2], dtype=np.int32)},
+        )
+        return enclosure, cap
+
+    enclosure_a, cap_a = enclosure_and_cap(0.0, 1, 2)
+    enclosure_b, cap_b = enclosure_and_cap(5.0, 3, 4)
+
+    stitched, result = stitch_meshes((enclosure_a, cap_a, enclosure_b, cap_b), stitch_tol=1e-9, area_tol=0.0)
+
+    assert result.stitched_loop_pairs == 2
+    assert result.after.boundary_edges == 0
+    assert result.seam_vertices == 16
+    assert result.split_boundary_edges == 24
+    physical_tags = stitched.cell_data_dict["gmsh:physical"]["triangle"].tolist()
+    assert sorted(set(physical_tags)) == [1, 2, 3, 4]
+    assert physical_tags.count(1) == 14
+    assert physical_tags.count(2) == 8
+    assert physical_tags.count(3) == 14
+    assert physical_tags.count(4) == 8
+
+
 def test_stitch_meshes_remaps_colliding_physical_surface_tags() -> None:
     mesh_a = meshio.Mesh(
         points=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),

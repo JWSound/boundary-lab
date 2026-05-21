@@ -304,6 +304,9 @@ def _balloon_angle_arrays(theta_rad: np.ndarray, phi_rad: np.ndarray) -> tuple[n
     direction_x = np.sin(theta) * np.cos(phi)
     direction_y = np.sin(theta) * np.sin(phi)
     direction_z = np.cos(theta)
+    direction_x[np.isclose(direction_x, 0.0)] = 0.0
+    direction_y[np.isclose(direction_y, 0.0)] = 0.0
+    direction_z[np.isclose(direction_z, 0.0)] = 0.0
     horizontal = _normalize_signed_angle(np.rad2deg(np.arctan2(direction_x, direction_z)))
     vertical = _normalize_signed_angle(np.rad2deg(np.arctan2(direction_y, direction_z)))
     return horizontal.ravel(order="F").astype(np.float32), vertical.ravel(order="F").astype(np.float32)

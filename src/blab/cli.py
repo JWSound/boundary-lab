@@ -8,6 +8,7 @@ from importlib import import_module
 COMMAND_MODULES = {
     "clean": "blab.mesh_clean",
     "gui": "blab.gui",
+    "server": "blab.server",
     "solve": "blab.solver",
     "prepare": "blab.postprocess",
     "plot": "blab.plotting",

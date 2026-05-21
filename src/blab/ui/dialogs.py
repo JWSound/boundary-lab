@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -78,6 +79,31 @@ class PreferencesDialog(QDialog):
     def __init__(self, preferences: GuiPreferences, parent: QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
+
+        self.solve_backend_combo = QComboBox()
+        self.solve_backend_options = {
+            "Local process": "local",
+            "Server": "server",
+        }
+        self.solve_backend_combo.addItems(self.solve_backend_options.keys())
+        backend_label = next(
+            (
+                label
+                for label, value in self.solve_backend_options.items()
+                if value == preferences.solve_backend
+            ),
+            "Local process",
+        )
+        self.solve_backend_combo.setCurrentText(backend_label)
+
+        self.solve_server_url_edit = QLineEdit()
+        self.solve_server_url_edit.setText(preferences.solve_server_url)
+        self.solve_server_url_edit.setEnabled(preferences.solve_backend == "server")
+        self.solve_backend_combo.currentTextChanged.connect(
+            lambda label: self.solve_server_url_edit.setEnabled(
+                self.solve_backend_options.get(label, "local") == "server"
+            )
+        )
 
         self.gmres_spin = QDoubleSpinBox()
         self.gmres_spin.setRange(1e-8, 1e-2)
@@ -162,6 +188,8 @@ class PreferencesDialog(QDialog):
         self.spherical_sampling_check.toggled.connect(self.spherical_sampling_points_spin.setEnabled)
 
         form = QFormLayout()
+        form.addRow("Solve Backend", self.solve_backend_combo)
+        form.addRow("Solve Server URL", self.solve_server_url_edit)
         form.addRow("GMRES Tolerance", self.gmres_spin)
         form.addRow("Polar Angle Step", self.polar_step_spin)
         form.addRow("Burton Miller Formulation", self.burton_miller_check)
@@ -191,6 +219,8 @@ class PreferencesDialog(QDialog):
             spl_max = spl_min + 1.0
 
         return GuiPreferences(
+            solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
+            solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
