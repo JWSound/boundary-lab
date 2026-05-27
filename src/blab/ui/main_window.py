@@ -12,8 +12,8 @@ from typing import Callable
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, Slot
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, Slot
+from PySide6.QtGui import QAction, QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab import __version__
 from blab.ath import (
     AthRunResult,
     clean_ath_mesh_output,
@@ -139,10 +140,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
-        self.setWindowTitle("Ath4 Live BEM Solver")
+        self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.imported_meshes: tuple[MeshDialogEntry, ...] = self._load_imported_meshes()
         self.preferences = self._load_preferences()
+        self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
         self.ath_results_by_script_id: dict[str, AthRunResult] = self._load_existing_ath_results()
@@ -546,6 +548,7 @@ class MainWindow(QMainWindow):
     def _load_preferences(self) -> GuiPreferences:
         defaults = GuiPreferences()
         return GuiPreferences(
+            theme=self._normalized_theme(settings_str(self.settings, "preferences/theme", defaults.theme)),
             solve_backend=settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend),
             solve_server_url=settings_str(self.settings, "preferences/solve_server_url", defaults.solve_server_url),
             gmres_tolerance=settings_float(self.settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
@@ -600,6 +603,7 @@ class MainWindow(QMainWindow):
         )
 
     def _save_preferences(self) -> None:
+        self.settings.setValue("preferences/theme", self.preferences.theme)
         self.settings.setValue("preferences/solve_backend", self.preferences.solve_backend)
         self.settings.setValue("preferences/solve_server_url", self.preferences.solve_server_url)
         self.settings.setValue("preferences/gmres_tolerance", self.preferences.gmres_tolerance)
@@ -621,6 +625,138 @@ class MainWindow(QMainWindow):
         self.settings.setValue("preferences/stitch_tolerance_mm", self.preferences.stitch_tolerance_mm)
         self.settings.setValue("preferences/spherical_sampling_enabled", self.preferences.spherical_sampling_enabled)
         self.settings.setValue("preferences/spherical_sampling_points", self.preferences.spherical_sampling_points)
+
+    @staticmethod
+    def _normalized_theme(theme: str) -> str:
+        normalized = str(theme).strip().lower()
+        return normalized if normalized in {"system", "light", "dark"} else "system"
+
+    def _apply_theme(self) -> None:
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        theme = self._normalized_theme(self.preferences.theme)
+        app.setStyleSheet("")
+        dark_text = QColor(30, 30, 30)
+        light_text = QColor(245, 245, 245)
+        if theme == "system":
+            palette = app.style().standardPalette()
+            window_color = palette.color(QPalette.Window)
+            base_color = palette.color(QPalette.Base)
+            text_color = dark_text if window_color.lightness() >= 128 else light_text
+            self._set_palette_text_colors(palette, text_color)
+            app.setPalette(palette)
+            app.setStyleSheet(self._theme_stylesheet(text_color, window_color, base_color))
+        elif theme == "dark":
+            palette = app.style().standardPalette()
+            window_color = QColor(45, 45, 48)
+            base_color = QColor(30, 30, 30)
+            palette.setColor(QPalette.Window, QColor(45, 45, 48))
+            palette.setColor(QPalette.Base, base_color)
+            palette.setColor(QPalette.AlternateBase, QColor(45, 45, 48))
+            palette.setColor(QPalette.ToolTipBase, QColor(30, 30, 30))
+            palette.setColor(QPalette.Button, QColor(45, 45, 48))
+            palette.setColor(QPalette.BrightText, QColor(255, 80, 80))
+            palette.setColor(QPalette.Highlight, QColor(61, 126, 154))
+            palette.setColor(QPalette.HighlightedText, light_text)
+            self._set_palette_text_colors(palette, light_text)
+            app.setPalette(palette)
+            app.setStyleSheet(self._theme_stylesheet(light_text, window_color, base_color))
+        else:
+            palette = app.style().standardPalette()
+            window_color = QColor(245, 245, 245)
+            base_color = QColor(255, 255, 255)
+            palette.setColor(QPalette.Window, window_color)
+            palette.setColor(QPalette.Base, Qt.white)
+            palette.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
+            palette.setColor(QPalette.ToolTipBase, Qt.white)
+            palette.setColor(QPalette.Button, QColor(245, 245, 245))
+            palette.setColor(QPalette.BrightText, Qt.red)
+            palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
+            palette.setColor(QPalette.HighlightedText, Qt.white)
+            self._set_palette_text_colors(palette, dark_text)
+            app.setPalette(palette)
+            app.setStyleSheet(self._theme_stylesheet(dark_text, window_color, base_color))
+
+        self._refresh_theme_widgets(app)
+
+    @staticmethod
+    def _set_palette_text_colors(palette: QPalette, color: QColor) -> None:
+        roles = (
+            QPalette.WindowText,
+            QPalette.Text,
+            QPalette.ButtonText,
+            QPalette.ToolTipText,
+        )
+        if hasattr(QPalette, "PlaceholderText"):
+            roles = (*roles, QPalette.PlaceholderText)
+
+        disabled_color = QColor(color)
+        disabled_color.setAlpha(140)
+        for group, group_color in (
+            (QPalette.Active, color),
+            (QPalette.Inactive, color),
+            (QPalette.Disabled, disabled_color),
+        ):
+            for role in roles:
+                palette.setColor(group, role, group_color)
+
+    def _refresh_theme_widgets(self, app: QApplication) -> None:
+        style = app.style()
+        for widget in app.allWidgets():
+            style.unpolish(widget)
+            style.polish(widget)
+            widget.update()
+        app.processEvents()
+
+    @staticmethod
+    def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QColor) -> str:
+        text = text_color.name()
+        window = window_color.name()
+        base = base_color.name()
+        border = QColor(85, 85, 85).name() if text_color.lightness() > 128 else QColor(190, 190, 190).name()
+        selected = QColor(61, 126, 154).name() if text_color.lightness() > 128 else QColor(0, 120, 215).name()
+        selected_text = QColor(255, 255, 255).name()
+        hover = QColor(65, 65, 68).name() if text_color.lightness() > 128 else QColor(225, 225, 225).name()
+        disabled = QColor(text_color)
+        disabled.setAlpha(150)
+        disabled_css = f"rgba({disabled.red()}, {disabled.green()}, {disabled.blue()}, {disabled.alpha()})"
+
+        return f"""
+            QWidget {{
+                color: {text};
+            }}
+            QMenuBar, QMenuBar::item, QMenu {{
+                background-color: {window};
+                color: {text};
+            }}
+            QMenuBar::item:selected, QMenu::item:selected {{
+                background-color: {hover};
+                color: {text};
+            }}
+            QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox,
+            QTableWidget, QTableView, QListView, QTreeView {{
+                background-color: {base};
+                color: {text};
+                border: 1px solid {border};
+                selection-background-color: {selected};
+                selection-color: {selected_text};
+            }}
+            QHeaderView::section {{
+                background-color: {window};
+                color: {text};
+                border: 1px solid {border};
+            }}
+            QWidget:disabled {{
+                color: {disabled_css};
+            }}
+            QToolTip {{
+                background-color: {base};
+                color: {text};
+                border: 1px solid {border};
+            }}
+        """
 
     @Slot()
     def _save_frequency_settings(self) -> None:
@@ -1544,7 +1680,9 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         self.preferences = dialog.preferences()
+        dialog.deleteLater()
         self._save_preferences()
+        QTimer.singleShot(0, self._apply_theme)
         self._refresh_mesh_preview()
         self._refresh_plots()
         self.status_label.setText("Preferences updated")

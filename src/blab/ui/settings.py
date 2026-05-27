@@ -13,6 +13,7 @@ SETTINGS_APP = "Ath4LiveBEM"
 
 @dataclass
 class GuiPreferences:
+    theme: str = "system"
     solve_backend: str = "local"
     solve_server_url: str = "http://127.0.0.1:8765"
     gmres_tolerance: float = 1e-3

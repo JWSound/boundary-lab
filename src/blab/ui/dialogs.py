@@ -102,6 +102,23 @@ class PreferencesDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Preferences")
 
+        self.theme_combo = QComboBox()
+        self.theme_options = {
+            "System": "system",
+            "Light": "light",
+            "Dark": "dark",
+        }
+        self.theme_combo.addItems(self.theme_options.keys())
+        theme_label = next(
+            (
+                label
+                for label, value in self.theme_options.items()
+                if value == preferences.theme
+            ),
+            "System",
+        )
+        self.theme_combo.setCurrentText(theme_label)
+
         self.solve_backend_combo = QComboBox()
         self.solve_backend_options = {
             "Local process": "local",
@@ -252,6 +269,7 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Application",
                 (
+                    ("Theme", self.theme_combo),
                     ("Solve Backend", self.solve_backend_combo),
                     ("Solve Server URL", self.solve_server_url_edit),
                 ),
@@ -274,6 +292,7 @@ class PreferencesDialog(QDialog):
             spl_max = spl_min + 1.0
 
         return GuiPreferences(
+            theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
             gmres_tolerance=float(self.gmres_spin.value()),

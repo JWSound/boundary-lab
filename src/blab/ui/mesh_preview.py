@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover
     QtInteractor = None
 
 
-AXIS_LINE_WIDTH = 3
+AXIS_LINE_WIDTH = 1.5
 AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
 
 
@@ -79,6 +79,7 @@ class MeshPreview(QWidget):
     def load_stl(self, stl_path: Path) -> None:
         if self.viewer is None:
             return
+        camera_position = self._camera_position()
         mesh = pv.read(stl_path)
         self.viewer.clear()
         self._actor_surface_labels = {}
@@ -86,7 +87,7 @@ class MeshPreview(QWidget):
         self._set_total_element_count(int(getattr(mesh, "n_cells", 0)))
         self.viewer.add_mesh(mesh, color="#cfcfcf", show_edges=True, edge_color="#555555")
         self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
-        self.viewer.reset_camera()
+        self._restore_camera_or_reset(camera_position)
 
     def load_msh(
         self,
@@ -96,6 +97,7 @@ class MeshPreview(QWidget):
     ) -> None:
         if self.viewer is None:
             return
+        camera_position = self._camera_position()
         mesh = meshio.read(msh_path)
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
@@ -119,7 +121,7 @@ class MeshPreview(QWidget):
                 int(triangles.shape[0]),
             )
             self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
-            self.viewer.reset_camera()
+            self._restore_camera_or_reset(camera_position)
             return
 
         names_by_tag = {tag: name for name, tag in (surface_tags or {}).items()}
@@ -146,7 +148,7 @@ class MeshPreview(QWidget):
             )
 
         self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
-        self.viewer.reset_camera()
+        self._restore_camera_or_reset(camera_position)
 
     def load_mesh_configs(
         self,
@@ -157,6 +159,7 @@ class MeshPreview(QWidget):
     ) -> None:
         if self.viewer is None:
             return
+        camera_position = self._camera_position()
         self.viewer.clear()
         self._actor_surface_labels = {}
         self.hover_label.setText("")
@@ -175,7 +178,7 @@ class MeshPreview(QWidget):
         self._set_total_element_count(total_elements)
         if preview_points:
             self._add_orientation_guides(np.vstack(preview_points))
-        self.viewer.reset_camera()
+        self._restore_camera_or_reset(camera_position)
 
     def _add_msh_mesh(
         self,
@@ -233,6 +236,25 @@ class MeshPreview(QWidget):
 
     def _set_total_element_count(self, count: int) -> None:
         self.total_elements_label.setText(f"Total elements: {count:,}" if count else "")
+
+    def _camera_position(self):
+        if self.viewer is None:
+            return None
+        try:
+            return self.viewer.camera_position
+        except Exception:
+            return None
+
+    def _restore_camera_or_reset(self, camera_position) -> None:
+        if self.viewer is None:
+            return
+        if camera_position is None:
+            self.viewer.reset_camera()
+            return
+        try:
+            self.viewer.camera_position = camera_position
+        except Exception:
+            self.viewer.reset_camera()
 
     def _add_orientation_guides(self, points: np.ndarray) -> None:
         if self.viewer is None or pv is None:
