@@ -47,6 +47,4 @@ acoustic_impedance.png
 *_clean.msh
 
 # Keep curated documentation example artifacts trackable.
-!docs/examples/**/*.npz
-!docs/examples/**/*.png
-!docs/examples/**/*_clean.msh
+!examples/
