@@ -1,7 +1,13 @@
 import numpy as np
+from types import SimpleNamespace
 
-from blab.config import CrossoverConfig, RadiatorConfig
-from blab.solver import HornBEMSolver, _split_frequencies_evenly, build_fibonacci_sphere_observation_points
+from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.solver import (
+    HornBEMSolver,
+    _flat_target_correction,
+    _split_frequencies_evenly,
+    build_fibonacci_sphere_observation_points,
+)
 
 
 def test_split_frequencies_evenly_preserves_all_points() -> None:
@@ -49,6 +55,22 @@ def test_linkwitz_riley_response_is_complex_and_bounded() -> None:
     assert 0.0 < abs(response) <= 1.0
 
 
+def test_sixth_order_crossover_responses_are_supported() -> None:
+    for filter_name in ("butterworth", "linkwitz_riley"):
+        crossover = CrossoverConfig(
+            type="lowpass",
+            filter=filter_name,
+            order=6,
+            frequency_hz=1200.0,
+        )
+
+        HornBEMSolver._validate_crossover_config("HF", crossover)
+        response = HornBEMSolver._crossover_response(None, crossover, 1200.0)
+
+        assert isinstance(response, complex)
+        assert 0.0 < abs(response) <= 1.0
+
+
 def test_radiator_drive_multiplies_highpass_and_lowpass() -> None:
     radiator = RadiatorConfig(
         name="bandpass",
@@ -62,3 +84,32 @@ def test_radiator_drive_multiplies_highpass_and_lowpass() -> None:
     lpf = HornBEMSolver._crossover_response(None, radiator.lpf, 1000.0)
 
     assert np.isclose(drive, hpf * lpf)
+
+
+def test_radiator_drive_uses_channel_with_velocity_offset() -> None:
+    channel = ChannelConfig(name="HF", level_db=-6.0)
+    radiator = RadiatorConfig(name="dome", tag=2, channel="HF", velocity_offset_db=-3.0)
+    solver = SimpleNamespace(channel_configs={"HF": channel})
+
+    drive = HornBEMSolver._radiator_drive(solver, radiator, 1000.0)
+
+    assert np.isclose(abs(drive), 10.0 ** (-9.0 / 20.0))
+
+
+def test_radiator_validation_resolves_channels_before_attribute_is_set() -> None:
+    solver = HornBEMSolver.__new__(HornBEMSolver)
+    solver.cfg = SimpleNamespace(
+        channels=(ChannelConfig(name="HF"),),
+    )
+    solver.mesh_names = ("mesh",)
+
+    HornBEMSolver._validate_radiator_configs(
+        solver,
+        (RadiatorConfig(name="dome", mesh="mesh", tag=2, channel="HF"),),
+    )
+
+
+def test_flat_target_correction_is_inverse_on_axis_pressure_magnitude() -> None:
+    assert np.isclose(_flat_target_correction(2.0 + 0.0j), 0.5)
+    assert _flat_target_correction(0.0 + 0.0j) == 1.0
+    assert _flat_target_correction(np.nan + 0.0j) == 1.0

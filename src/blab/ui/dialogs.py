@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.config import CrossoverConfig, RadiatorConfig
+from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.ui.settings import GuiPreferences
 
 
@@ -35,8 +36,10 @@ CROSSOVER_TYPE_OPTIONS = [
     ("Butterworth 1st", ("butterworth", 1)),
     ("Butterworth 2nd", ("butterworth", 2)),
     ("Butterworth 4th", ("butterworth", 4)),
+    ("Butterworth 6th", ("butterworth", 6)),
     ("Linkwitz-Riley 2nd", ("linkwitz_riley", 2)),
     ("Linkwitz-Riley 4th", ("linkwitz_riley", 4)),
+    ("Linkwitz-Riley 6th", ("linkwitz_riley", 6)),
 ]
 
 
@@ -45,6 +48,7 @@ class MeshDialogEntry:
     name: str
     source_file: str
     cleaned_file: str | None = None
+    scale_factor: float = 0.001
     translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     enabled: bool = True
     locked: bool = False
@@ -73,6 +77,24 @@ def _split_legacy_crossover(radiator: RadiatorConfig | None) -> tuple[CrossoverC
             lpf = legacy
 
     return hpf, lpf
+
+
+def _build_crossover_type_combo(current_label: str) -> QComboBox:
+    combo = QComboBox()
+    for label, payload in CROSSOVER_TYPE_OPTIONS:
+        combo.addItem(label, payload)
+    combo.setCurrentText(current_label if current_label in {label for label, _ in CROSSOVER_TYPE_OPTIONS} else "Off")
+    return combo
+
+
+def _build_crossover_frequency_spin(frequency_hz: float | None) -> QDoubleSpinBox:
+    spin = QDoubleSpinBox()
+    spin.setRange(1.0, 200000.0)
+    spin.setDecimals(1)
+    spin.setSingleStep(10.0)
+    spin.setSuffix(" Hz")
+    spin.setValue(1000.0 if frequency_hz is None else float(frequency_hz))
+    return spin
 
 
 class PreferencesDialog(QDialog):
@@ -187,30 +209,63 @@ class PreferencesDialog(QDialog):
         self.spherical_sampling_points_spin.setEnabled(preferences.spherical_sampling_enabled)
         self.spherical_sampling_check.toggled.connect(self.spherical_sampling_points_spin.setEnabled)
 
-        form = QFormLayout()
-        form.addRow("Solve Backend", self.solve_backend_combo)
-        form.addRow("Solve Server URL", self.solve_server_url_edit)
-        form.addRow("GMRES Tolerance", self.gmres_spin)
-        form.addRow("Polar Angle Step", self.polar_step_spin)
-        form.addRow("Burton Miller Formulation", self.burton_miller_check)
-        form.addRow("Worker Count", self.worker_count_spin)
-        form.addRow("Polar Smoothing", self.smoothing_combo)
-        form.addRow("Horizontal Normalization Angle", self.horizontal_norm_angle_spin)
-        form.addRow("Vertical Normalization Angle", self.vertical_norm_angle_spin)
-        form.addRow("SPL Max", self.spl_max_spin)
-        form.addRow("SPL Min", self.spl_min_spin)
-        form.addRow("Stitch Imported Meshes", self.stitch_imported_meshes_check)
-        form.addRow("Stitch Tolerance", self.stitch_tolerance_spin)
-        form.addRow("Spherical Sampling", self.spherical_sampling_check)
-        form.addRow("Spherical Sample Points", self.spherical_sampling_points_spin)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        layout.addWidget(
+            self._section(
+                "Solver Config",
+                (
+                    ("GMRES Tolerance", self.gmres_spin),
+                    ("Burton Miller Formulation", self.burton_miller_check),
+                    ("Worker Count", self.worker_count_spin),
+                    ("Spherical Sampling", self.spherical_sampling_check),
+                    ("Spherical Sample Points", self.spherical_sampling_points_spin),
+                ),
+            )
+        )
+        layout.addWidget(
+            self._section(
+                "Observation Config",
+                (
+                    ("Polar Angle Step", self.polar_step_spin),
+                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
+                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
+                    ("Polar Smoothing", self.smoothing_combo),
+                    ("SPL Min", self.spl_min_spin),
+                    ("SPL Max", self.spl_max_spin),
+                ),
+            )
+        )
+        layout.addWidget(
+            self._section(
+                "Mesh Config",
+                (
+                    ("Stitch Imported Meshes", self.stitch_imported_meshes_check),
+                    ("Stitch Tolerance", self.stitch_tolerance_spin),
+                ),
+            )
+        )
+        layout.addWidget(
+            self._section(
+                "Application",
+                (
+                    ("Solve Backend", self.solve_backend_combo),
+                    ("Solve Server URL", self.solve_server_url_edit),
+                ),
+            )
+        )
         layout.addWidget(buttons)
+
+    @staticmethod
+    def _section(title: str, rows: tuple[tuple[str, QWidget], ...]) -> QGroupBox:
+        group = QGroupBox(title)
+        form = QFormLayout(group)
+        for label, widget in rows:
+            form.addRow(label, widget)
+        return group
 
     def preferences(self) -> GuiPreferences:
         spl_min = float(self.spl_min_spin.value())
@@ -243,19 +298,20 @@ class MeshConfigDialog(QDialog):
         self.setWindowTitle("Mesh Config")
         self._meshes = list(meshes)
 
-        self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Enabled", "Name", "Mesh File", "X mm", "Y mm", "Z mm"])
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(["Enabled", "Name", "Mesh File", "Scale", "X mm", "Y mm", "Z mm"])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        for column in range(3, 6):
+        for column in range(3, 7):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
 
         self.enabled_widgets: list[QCheckBox] = []
         self.name_items: list[QTableWidgetItem] = []
         self.file_items: list[QTableWidgetItem] = []
+        self.scale_widgets: list[QDoubleSpinBox] = []
         self.x_widgets: list[QSpinBox] = []
         self.y_widgets: list[QSpinBox] = []
         self.z_widgets: list[QSpinBox] = []
@@ -311,11 +367,19 @@ class MeshConfigDialog(QDialog):
         self.table.setItem(row, 2, file_item)
         self.file_items.append(file_item)
 
+        scale_spin = QDoubleSpinBox()
+        scale_spin.setRange(0.000001, 1000.0)
+        scale_spin.setDecimals(6)
+        scale_spin.setSingleStep(0.001)
+        scale_spin.setValue(float(mesh.scale_factor))
+        self.table.setCellWidget(row, 3, scale_spin)
+        self.scale_widgets.append(scale_spin)
+
         x_mm, y_mm, z_mm = mesh.translation_mm
         for column, value, widgets in (
-            (3, x_mm, self.x_widgets),
-            (4, y_mm, self.y_widgets),
-            (5, z_mm, self.z_widgets),
+            (4, x_mm, self.x_widgets),
+            (5, y_mm, self.y_widgets),
+            (6, z_mm, self.z_widgets),
         ):
             spin = QSpinBox()
             spin.setRange(-1000000, 1000000)
@@ -357,6 +421,7 @@ class MeshConfigDialog(QDialog):
             del self.enabled_widgets[row]
             del self.name_items[row]
             del self.file_items[row]
+            del self.scale_widgets[row]
             del self.x_widgets[row]
             del self.y_widgets[row]
             del self.z_widgets[row]
@@ -398,6 +463,7 @@ class MeshConfigDialog(QDialog):
                     name=name,
                     source_file=self.file_items[row].text(),
                     cleaned_file=self._cleaned_file_for_row(row),
+                    scale_factor=float(self.scale_widgets[row].value()),
                     translation_mm=(
                         float(int(self.x_widgets[row].value())),
                         float(int(self.y_widgets[row].value())),
@@ -416,40 +482,23 @@ class MeshConfigDialog(QDialog):
         return None
 
 
-class SourceConfigDialog(QDialog):
-    def __init__(
-        self,
-        surface_tags: dict[str, tuple[str, int]],
-        radiators: tuple[RadiatorConfig, ...],
-        parent: QWidget | None = None,
-    ):
+class ChannelConfigDialog(QDialog):
+    def __init__(self, channels: tuple[ChannelConfig, ...], parent: QWidget | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Source Config")
-        self.surface_items = sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0]))
-        self.radiators_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
+        self.setWindowTitle("Channel Config")
+        self._channels = list(channels) or [ChannelConfig(name="main")]
 
-        self.table = QTableWidget(len(self.surface_items), 10)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            [
-                "Surface",
-                "Tag",
-                "Mode",
-                "Level dB",
-                "Polarity",
-                "Delay ms",
-                "HPF Type",
-                "HPF Frequency",
-                "LPF Type",
-                "LPF Frequency",
-            ]
+            ["Name", "Level dB", "Polarity", "Delay ms", "HPF Type", "HPF Frequency", "LPF Type", "LPF Frequency"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 10):
+        for column in range(1, 8):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
 
-        self.mode_widgets: list[QComboBox] = []
+        self.name_items: list[QTableWidgetItem] = []
         self.level_widgets: list[QDoubleSpinBox] = []
         self.polarity_widgets: list[QComboBox] = []
         self.delay_widgets: list[QDoubleSpinBox] = []
@@ -458,79 +507,18 @@ class SourceConfigDialog(QDialog):
         self.lpf_type_widgets: list[QComboBox] = []
         self.lpf_freq_widgets: list[QDoubleSpinBox] = []
 
-        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
-            radiator = self.radiators_by_key.get((mesh_name, tag))
-            hpf, lpf = _split_legacy_crossover(radiator)
+        for channel in self._channels:
+            self._append_row(channel)
 
-            name_item = QTableWidgetItem(surface_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, name_item)
+        add_button = QPushButton("Add Channel")
+        remove_button = QPushButton("Remove")
+        add_button.clicked.connect(self._add_channel)
+        remove_button.clicked.connect(self._remove_selected_channels)
 
-            tag_item = QTableWidgetItem(str(tag))
-            tag_item.setFlags(tag_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, tag_item)
-
-            mode_combo = QComboBox()
-            mode_combo.addItems(["Rigid", "Driven"])
-            mode_combo.setCurrentText("Driven" if radiator is not None else "Rigid")
-            self.table.setCellWidget(row, 2, mode_combo)
-            self.mode_widgets.append(mode_combo)
-
-            level_spin = QDoubleSpinBox()
-            level_spin.setRange(-120.0, 60.0)
-            level_spin.setDecimals(2)
-            level_spin.setSingleStep(0.5)
-            level_spin.setValue(0.0 if radiator is None else float(radiator.level_db))
-            self.table.setCellWidget(row, 3, level_spin)
-            self.level_widgets.append(level_spin)
-
-            polarity_combo = QComboBox()
-            polarity_combo.addItem("+", 1)
-            polarity_combo.addItem("-", -1)
-            polarity_combo.setCurrentIndex(0 if radiator is None or radiator.polarity >= 0 else 1)
-            self.table.setCellWidget(row, 4, polarity_combo)
-            self.polarity_widgets.append(polarity_combo)
-
-            delay_spin = QDoubleSpinBox()
-            delay_spin.setRange(-1000.0, 1000.0)
-            delay_spin.setDecimals(3)
-            delay_spin.setSingleStep(0.01)
-            delay_spin.setValue(0.0 if radiator is None else float(radiator.delay_ms))
-            self.table.setCellWidget(row, 5, delay_spin)
-            self.delay_widgets.append(delay_spin)
-
-            hpf_type_combo = self._build_crossover_type_combo(_crossover_label(hpf))
-            self.table.setCellWidget(row, 6, hpf_type_combo)
-            self.hpf_type_widgets.append(hpf_type_combo)
-
-            hpf_freq_spin = self._build_crossover_frequency_spin(hpf.frequency_hz)
-            self.table.setCellWidget(row, 7, hpf_freq_spin)
-            self.hpf_freq_widgets.append(hpf_freq_spin)
-
-            lpf_type_combo = self._build_crossover_type_combo(_crossover_label(lpf))
-            self.table.setCellWidget(row, 8, lpf_type_combo)
-            self.lpf_type_widgets.append(lpf_type_combo)
-
-            lpf_freq_spin = self._build_crossover_frequency_spin(lpf.frequency_hz)
-            self.table.setCellWidget(row, 9, lpf_freq_spin)
-            self.lpf_freq_widgets.append(lpf_freq_spin)
-
-            mode_combo.currentTextChanged.connect(
-                lambda mode, row=row: self._set_drive_controls_enabled(row, mode == "Driven")
-            )
-            hpf_type_combo.currentTextChanged.connect(
-                lambda _text, row=row: self._set_drive_controls_enabled(
-                    row,
-                    self.mode_widgets[row].currentText() == "Driven",
-                )
-            )
-            lpf_type_combo.currentTextChanged.connect(
-                lambda _text, row=row: self._set_drive_controls_enabled(
-                    row,
-                    self.mode_widgets[row].currentText() == "Driven",
-                )
-            )
-            self._set_drive_controls_enabled(row, radiator is not None)
+        button_row = QHBoxLayout()
+        button_row.addWidget(add_button)
+        button_row.addWidget(remove_button)
+        button_row.addStretch(1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -538,33 +526,94 @@ class SourceConfigDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
+        layout.addLayout(button_row)
         layout.addWidget(buttons)
-        self.resize(1120, min(520, 160 + 34 * max(1, len(self.surface_items))))
+        self.resize(1080, min(520, 160 + 34 * max(1, len(self._channels))))
 
-    def _build_crossover_type_combo(self, current_label: str) -> QComboBox:
-        combo = QComboBox()
-        for label, payload in CROSSOVER_TYPE_OPTIONS:
-            combo.addItem(label, payload)
-        combo.setCurrentText(current_label if current_label in {label for label, _ in CROSSOVER_TYPE_OPTIONS} else "Off")
-        return combo
+    def accept(self) -> None:
+        try:
+            self.channels()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Channel config", str(exc))
+            return
+        super().accept()
 
-    def _build_crossover_frequency_spin(self, frequency_hz: float | None) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
-        spin.setRange(1.0, 200000.0)
-        spin.setDecimals(1)
-        spin.setSingleStep(10.0)
-        spin.setSuffix(" Hz")
-        spin.setValue(1000.0 if frequency_hz is None else float(frequency_hz))
-        return spin
+    def _append_row(self, channel: ChannelConfig) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
 
-    def _set_drive_controls_enabled(self, row: int, enabled: bool) -> None:
-        self.level_widgets[row].setEnabled(enabled)
-        self.polarity_widgets[row].setEnabled(enabled)
-        self.delay_widgets[row].setEnabled(enabled)
-        self.hpf_type_widgets[row].setEnabled(enabled)
-        self.hpf_freq_widgets[row].setEnabled(enabled and self.hpf_type_widgets[row].currentData() is not None)
-        self.lpf_type_widgets[row].setEnabled(enabled)
-        self.lpf_freq_widgets[row].setEnabled(enabled and self.lpf_type_widgets[row].currentData() is not None)
+        name_item = QTableWidgetItem(channel.name)
+        self.table.setItem(row, 0, name_item)
+        self.name_items.append(name_item)
+
+        level_spin = QDoubleSpinBox()
+        level_spin.setRange(-120.0, 60.0)
+        level_spin.setDecimals(2)
+        level_spin.setSingleStep(0.5)
+        level_spin.setValue(float(channel.level_db))
+        self.table.setCellWidget(row, 1, level_spin)
+        self.level_widgets.append(level_spin)
+
+        polarity_combo = QComboBox()
+        polarity_combo.addItem("+", 1)
+        polarity_combo.addItem("-", -1)
+        polarity_combo.setCurrentIndex(0 if channel.polarity >= 0 else 1)
+        self.table.setCellWidget(row, 2, polarity_combo)
+        self.polarity_widgets.append(polarity_combo)
+
+        delay_spin = QDoubleSpinBox()
+        delay_spin.setRange(-1000.0, 1000.0)
+        delay_spin.setDecimals(3)
+        delay_spin.setSingleStep(0.01)
+        delay_spin.setValue(float(channel.delay_ms))
+        self.table.setCellWidget(row, 3, delay_spin)
+        self.delay_widgets.append(delay_spin)
+
+        hpf_type_combo = _build_crossover_type_combo(_crossover_label(channel.hpf))
+        self.table.setCellWidget(row, 4, hpf_type_combo)
+        self.hpf_type_widgets.append(hpf_type_combo)
+
+        hpf_freq_spin = _build_crossover_frequency_spin(channel.hpf.frequency_hz)
+        self.table.setCellWidget(row, 5, hpf_freq_spin)
+        self.hpf_freq_widgets.append(hpf_freq_spin)
+
+        lpf_type_combo = _build_crossover_type_combo(_crossover_label(channel.lpf))
+        self.table.setCellWidget(row, 6, lpf_type_combo)
+        self.lpf_type_widgets.append(lpf_type_combo)
+
+        lpf_freq_spin = _build_crossover_frequency_spin(channel.lpf.frequency_hz)
+        self.table.setCellWidget(row, 7, lpf_freq_spin)
+        self.lpf_freq_widgets.append(lpf_freq_spin)
+
+        hpf_type_combo.currentTextChanged.connect(lambda _text, row=row: self._set_frequency_controls_enabled(row))
+        lpf_type_combo.currentTextChanged.connect(lambda _text, row=row: self._set_frequency_controls_enabled(row))
+        self._set_frequency_controls_enabled(row)
+
+    def _add_channel(self) -> None:
+        used = {item.text().strip() for item in self.name_items}
+        index = 1
+        while f"channel_{index}" in used:
+            index += 1
+        self._append_row(ChannelConfig(name=f"channel_{index}"))
+
+    def _remove_selected_channels(self) -> None:
+        rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            if self.table.rowCount() <= 1:
+                return
+            self.table.removeRow(row)
+            del self.name_items[row]
+            del self.level_widgets[row]
+            del self.polarity_widgets[row]
+            del self.delay_widgets[row]
+            del self.hpf_type_widgets[row]
+            del self.hpf_freq_widgets[row]
+            del self.lpf_type_widgets[row]
+            del self.lpf_freq_widgets[row]
+
+    def _set_frequency_controls_enabled(self, row: int) -> None:
+        self.hpf_freq_widgets[row].setEnabled(self.hpf_type_widgets[row].currentData() is not None)
+        self.lpf_freq_widgets[row].setEnabled(self.lpf_type_widgets[row].currentData() is not None)
 
     def _crossover_config(self, row: int, *, highpass: bool) -> CrossoverConfig:
         type_widget = self.hpf_type_widgets[row] if highpass else self.lpf_type_widgets[row]
@@ -580,6 +629,116 @@ class SourceConfigDialog(QDialog):
             frequency_hz=float(freq_widget.value()),
         )
 
+    def channels(self) -> tuple[ChannelConfig, ...]:
+        channels = []
+        seen = set()
+        for row in range(self.table.rowCount()):
+            name = self.name_items[row].text().strip()
+            if not name:
+                raise ValueError("Each channel must have a name.")
+            if ":" in name:
+                raise ValueError("Channel names cannot contain ':'.")
+            if name in seen:
+                raise ValueError(f"Duplicate channel name: {name}")
+            seen.add(name)
+            channels.append(
+                ChannelConfig(
+                    name=name,
+                    level_db=float(self.level_widgets[row].value()),
+                    polarity=int(self.polarity_widgets[row].currentData()),
+                    delay_ms=float(self.delay_widgets[row].value()),
+                    hpf=self._crossover_config(row, highpass=True),
+                    lpf=self._crossover_config(row, highpass=False),
+                )
+            )
+        return tuple(channels)
+
+
+class SourceConfigDialog(QDialog):
+    def __init__(
+        self,
+        surface_tags: dict[str, tuple[str, int]],
+        radiators: tuple[RadiatorConfig, ...],
+        channels: tuple[ChannelConfig, ...],
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Source Config")
+        self.surface_items = sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0]))
+        self.radiators_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
+        self.channel_names = tuple(channel.name for channel in channels) or ("main",)
+
+        self.table = QTableWidget(len(self.surface_items), 5)
+        self.table.setHorizontalHeaderLabels(
+            [
+                "Surface",
+                "Tag",
+                "Mode",
+                "Channel",
+                "Velocity Offset dB",
+            ]
+        )
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 5):
+            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+
+        self.mode_widgets: list[QComboBox] = []
+        self.channel_widgets: list[QComboBox] = []
+        self.velocity_widgets: list[QDoubleSpinBox] = []
+
+        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
+            radiator = self.radiators_by_key.get((mesh_name, tag))
+
+            name_item = QTableWidgetItem(surface_name)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 0, name_item)
+
+            tag_item = QTableWidgetItem(str(tag))
+            tag_item.setFlags(tag_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, 1, tag_item)
+
+            mode_combo = QComboBox()
+            mode_combo.addItems(["Rigid", "Driven"])
+            mode_combo.setCurrentText("Driven" if radiator is not None else "Rigid")
+            self.table.setCellWidget(row, 2, mode_combo)
+            self.mode_widgets.append(mode_combo)
+
+            channel_combo = QComboBox()
+            channel_combo.addItems(self.channel_names)
+            channel_combo.setCurrentText(
+                radiator.channel if radiator is not None and radiator.channel in self.channel_names else self.channel_names[0]
+            )
+            self.table.setCellWidget(row, 3, channel_combo)
+            self.channel_widgets.append(channel_combo)
+
+            velocity_spin = QDoubleSpinBox()
+            velocity_spin.setRange(-120.0, 60.0)
+            velocity_spin.setDecimals(2)
+            velocity_spin.setSingleStep(0.5)
+            velocity_spin.setValue(0.0 if radiator is None else float(radiator.velocity_offset_db))
+            self.table.setCellWidget(row, 4, velocity_spin)
+            self.velocity_widgets.append(velocity_spin)
+
+            mode_combo.currentTextChanged.connect(
+                lambda mode, row=row: self._set_drive_controls_enabled(row, mode == "Driven")
+            )
+            self._set_drive_controls_enabled(row, radiator is not None)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.table)
+        layout.addWidget(buttons)
+        self.resize(860, min(520, 160 + 34 * max(1, len(self.surface_items))))
+
+    def _set_drive_controls_enabled(self, row: int, enabled: bool) -> None:
+        self.channel_widgets[row].setEnabled(enabled)
+        self.velocity_widgets[row].setEnabled(enabled)
+
     def radiators(self) -> tuple[RadiatorConfig, ...]:
         radiators = []
         for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
@@ -590,11 +749,8 @@ class SourceConfigDialog(QDialog):
                     name=surface_name,
                     mesh=mesh_name,
                     tag=tag,
-                    level_db=float(self.level_widgets[row].value()),
-                    polarity=int(self.polarity_widgets[row].currentData()),
-                    delay_ms=float(self.delay_widgets[row].value()),
-                    hpf=self._crossover_config(row, highpass=True),
-                    lpf=self._crossover_config(row, highpass=False),
+                    channel=str(self.channel_widgets[row].currentText()),
+                    velocity_offset_db=float(self.velocity_widgets[row].value()),
                 )
             )
         return tuple(radiators)

@@ -1,6 +1,6 @@
 import numpy as np
 
-from blab.config import CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import FrequencyResult
 from blab.protocol import (
     build_mesh_assets,
@@ -34,15 +34,23 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
                 name="HF",
                 mesh="waveguide",
                 tag=4,
-                level_db=-3.0,
-                polarity=-1,
-                delay_ms=0.25,
+                channel="tweeter",
+                velocity_offset_db=-1.5,
                 hpf=CrossoverConfig(
                     type="highpass",
                     filter="linkwitz_riley",
                     order=4,
                     frequency_hz=900.0,
                 ),
+            ),
+        ),
+        channels=(
+            ChannelConfig(
+                name="tweeter",
+                level_db=-3.0,
+                polarity=-1,
+                delay_ms=0.25,
+                lpf=CrossoverConfig(type="lowpass", filter="butterworth", order=2, frequency_hz=20000.0),
             ),
         ),
         spherical_sampling_enabled=True,
@@ -54,7 +62,10 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     assert restored.mesh_file == "fallback.msh"
     assert restored.meshes[0].translation_m == (0.1, 0.0, -0.2)
     assert restored.radiators[0].hpf.filter == "linkwitz_riley"
-    assert restored.radiators[0].polarity == -1
+    assert restored.radiators[0].channel == "tweeter"
+    assert restored.radiators[0].velocity_offset_db == -1.5
+    assert restored.channels[0].polarity == -1
+    assert restored.channels[0].lpf.frequency_hz == 20000.0
     assert restored.spherical_sampling_enabled is True
 
 

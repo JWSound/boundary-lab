@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from blab.config import CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import FrequencyResult
 
 
@@ -93,6 +93,8 @@ def radiator_to_dict(radiator: RadiatorConfig) -> dict[str, Any]:
         "name": radiator.name,
         "tag": int(radiator.tag),
         "mesh": radiator.mesh,
+        "channel": radiator.channel,
+        "velocity_offset_db": float(radiator.velocity_offset_db),
         "level_db": float(radiator.level_db),
         "polarity": int(radiator.polarity),
         "delay_ms": float(radiator.delay_ms),
@@ -107,6 +109,8 @@ def radiator_from_dict(raw: dict[str, Any]) -> RadiatorConfig:
         name=str(raw["name"]),
         tag=int(raw["tag"]),
         mesh=None if raw.get("mesh") is None else str(raw["mesh"]),
+        channel=str(raw.get("channel", "main")),
+        velocity_offset_db=float(raw.get("velocity_offset_db", 0.0)),
         level_db=float(raw.get("level_db", 0.0)),
         polarity=int(raw.get("polarity", 1)),
         delay_ms=float(raw.get("delay_ms", 0.0)),
@@ -116,14 +120,37 @@ def radiator_from_dict(raw: dict[str, Any]) -> RadiatorConfig:
     )
 
 
+def channel_to_dict(channel: ChannelConfig) -> dict[str, Any]:
+    return {
+        "name": channel.name,
+        "level_db": float(channel.level_db),
+        "polarity": int(channel.polarity),
+        "delay_ms": float(channel.delay_ms),
+        "hpf": crossover_to_dict(channel.hpf),
+        "lpf": crossover_to_dict(channel.lpf),
+    }
+
+
+def channel_from_dict(raw: dict[str, Any]) -> ChannelConfig:
+    return ChannelConfig(
+        name=str(raw["name"]),
+        level_db=float(raw.get("level_db", 0.0)),
+        polarity=int(raw.get("polarity", 1)),
+        delay_ms=float(raw.get("delay_ms", 0.0)),
+        hpf=crossover_from_dict(raw.get("hpf")),
+        lpf=crossover_from_dict(raw.get("lpf")),
+    )
+
+
 def simulation_config_to_dict(config: SimulationConfig) -> dict[str, Any]:
     payload = {
         field.name: getattr(config, field.name)
         for field in fields(SimulationConfig)
-        if field.name not in {"meshes", "radiators"}
+        if field.name not in {"meshes", "radiators", "channels"}
     }
     payload["meshes"] = [mesh_to_dict(mesh) for mesh in config.meshes]
     payload["radiators"] = [radiator_to_dict(radiator) for radiator in config.radiators]
+    payload["channels"] = [channel_to_dict(channel) for channel in config.channels]
     return payload
 
 
@@ -131,10 +158,11 @@ def simulation_config_from_dict(raw: dict[str, Any]) -> SimulationConfig:
     values = {
         field.name: raw[field.name]
         for field in fields(SimulationConfig)
-        if field.name in raw and field.name not in {"meshes", "radiators"}
+        if field.name in raw and field.name not in {"meshes", "radiators", "channels"}
     }
     values["meshes"] = tuple(mesh_from_dict(mesh) for mesh in raw.get("meshes", ()))
     values["radiators"] = tuple(radiator_from_dict(radiator) for radiator in raw.get("radiators", ()))
+    values["channels"] = tuple(channel_from_dict(channel) for channel in raw.get("channels", ()))
     return SimulationConfig(**values)
 
 

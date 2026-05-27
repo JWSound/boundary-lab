@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from blab.config import RadiatorConfig
-from blab.mesh_clean import AREA_TOL, MERGE_TOL, MIRROR_X, clean_mesh_file
+from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
 
 
 DRIVEN_DIAPHRAGM_PHYSICAL_NAME = "SD1D1001"
@@ -25,6 +26,7 @@ COMPLEX_RADIATOR_NAMES = {
 DEFAULT_CLEAN_SUFFIX = "_clean"
 ATH_CFG_OUTPUT_ROOT_KEY = "OutputRootDir"
 ATH_CFG_MESH_CMD_KEY = "MeshCmd"
+SOLVING_SYM_RE = re.compile(r"\bSym\s*=\s*([A-Za-z]+)\b")
 
 
 @dataclass(frozen=True)
@@ -260,14 +262,48 @@ def detect_ath_radiators(msh_path: Path) -> tuple[RadiatorConfig, ...]:
     return ()
 
 
+def ath_mirror_axes_from_solving_file(solving_path: Path) -> tuple[str, ...]:
+    if not solving_path.exists():
+        return ()
+
+    text = solving_path.read_text(encoding="utf-8", errors="replace")
+    match = SOLVING_SYM_RE.search(text)
+    if match is None:
+        return ()
+
+    axes = []
+    for axis in match.group(1).lower():
+        if axis not in {"x", "y", "z"}:
+            continue
+        if axis not in axes:
+            axes.append(axis)
+    return tuple(axes)
+
+
+def ath_mirror_axes_for_result(result: AthRunResult) -> tuple[str, ...]:
+    candidates = (
+        result.msh_path.parent / "solving.txt",
+        result.output_dir / "solving.txt",
+    )
+    for solving_path in candidates:
+        axes = ath_mirror_axes_from_solving_file(solving_path)
+        if axes:
+            return axes
+    return ()
+
+
 def clean_ath_mesh_output(
     result: AthRunResult,
     *,
     output_path: Path | None = None,
     merge_tol: float = MERGE_TOL,
     area_tol: float = AREA_TOL,
-    mirror_x: bool = MIRROR_X,
+    mirror_x: bool | None = None,
+    mirror_axes: tuple[str, ...] | None = None,
 ) -> AthRunResult:
+    if mirror_axes is None:
+        mirror_axes = ath_mirror_axes_for_result(result) if mirror_x is None else (("x",) if mirror_x else ())
+
     cleaned_path = output_path or result.msh_path.with_name(
         f"{result.msh_path.stem}{DEFAULT_CLEAN_SUFFIX}{result.msh_path.suffix}"
     )
@@ -276,7 +312,8 @@ def clean_ath_mesh_output(
         str(cleaned_path),
         merge_tol=merge_tol,
         area_tol=area_tol,
-        mirror_x=mirror_x,
+        mirror_x=False,
+        mirror_axes=mirror_axes,
         binary=False,
     )
     physical_names = read_physical_names(cleaned_path)

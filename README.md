@@ -40,7 +40,6 @@ On startup, Boundary Lab updates `ath/ath.cfg` so Ath uses the bundled Gmsh exec
 runs/ath_output
 ```
 
-Generated runs, solver outputs, and local project files are ignored by git.
 
 ## Run A Solve Server
 

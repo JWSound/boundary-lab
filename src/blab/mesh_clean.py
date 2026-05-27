@@ -589,13 +589,30 @@ def _compact_vertices(points: np.ndarray, triangles: np.ndarray) -> Tuple[np.nda
     return points_compact, triangles_compact
 
 
-def _mirror_across_x(
+def _normalize_mirror_axes(axes: tuple[str, ...] | list[str] | str) -> tuple[str, ...]:
+    if isinstance(axes, str):
+        candidates = tuple(axes.lower())
+    else:
+        candidates = tuple(str(axis).strip().lower() for axis in axes)
+
+    normalized = []
+    for axis in candidates:
+        if axis not in {"x", "y", "z"}:
+            raise ValueError(f"Unsupported mirror axis: {axis!r}")
+        if axis not in normalized:
+            normalized.append(axis)
+    return tuple(normalized)
+
+
+def _mirror_across_axis(
     points: np.ndarray,
     triangles: np.ndarray,
     cell_data: Dict[str, np.ndarray],
+    axis: str,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    axis_index = {"x": 0, "y": 1, "z": 2}[axis]
     mirrored_points = points.copy()
-    mirrored_points[:, 0] *= -1.0
+    mirrored_points[:, axis_index] *= -1.0
 
     point_offset = len(points)
     # Reflection reverses handedness, so swap two vertices to keep normals oriented consistently.
@@ -612,6 +629,7 @@ def clean_mesh(
     merge_tol: float,
     area_tol: float,
     mirror_x: bool = MIRROR_X,
+    mirror_axes: tuple[str, ...] | None = None,
 ) -> Tuple[meshio.Mesh, Dict[str, int], MeshStats, MeshStats]:
     tri_key, triangles = _find_triangle_block(mesh)
     points = np.asarray(mesh.points, dtype=float)
@@ -619,14 +637,18 @@ def clean_mesh(
 
     stats_before = _mesh_stats(points, triangles, area_tol)
 
+    if mirror_axes is None:
+        mirror_axes = ("x",) if mirror_x else ()
+    mirror_axes = _normalize_mirror_axes(mirror_axes)
+
     mirrored_vertices = 0
     mirrored_faces = 0
-    if mirror_x:
+    for axis in mirror_axes:
         original_vertices = len(points)
         original_faces = len(triangles)
-        points, triangles, cell_data = _mirror_across_x(points, triangles, cell_data)
-        mirrored_vertices = original_vertices
-        mirrored_faces = original_faces
+        points, triangles, cell_data = _mirror_across_axis(points, triangles, cell_data, axis)
+        mirrored_vertices += original_vertices
+        mirrored_faces += original_faces
 
     # 1) Merge near-coincident points
     rep = _spatial_hash_merge(points, merge_tol)
@@ -853,10 +875,17 @@ def clean_mesh_file(
     merge_tol: float = MERGE_TOL,
     area_tol: float = AREA_TOL,
     mirror_x: bool = MIRROR_X,
+    mirror_axes: tuple[str, ...] | None = None,
     binary: bool = WRITE_BINARY,
 ) -> Tuple[Dict[str, int], MeshStats, MeshStats]:
     mesh = meshio.read(input_msh)
-    cleaned, changes, before, after = clean_mesh(mesh, merge_tol=merge_tol, area_tol=area_tol, mirror_x=mirror_x)
+    cleaned, changes, before, after = clean_mesh(
+        mesh,
+        merge_tol=merge_tol,
+        area_tol=area_tol,
+        mirror_x=mirror_x,
+        mirror_axes=mirror_axes,
+    )
     meshio.write(output_msh, cleaned, file_format="gmsh22", binary=binary)
     return changes, before, after
 
@@ -902,6 +931,11 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         help="Skip mirroring the input half mesh across X=0",
     )
     parser.add_argument(
+        "--mirror-axes",
+        default=None,
+        help="Axes to mirror across, such as x or xy. Overrides --no-mirror-x when supplied.",
+    )
+    parser.add_argument(
         "--stitch-with",
         help="Second .msh file to boundary-stitch with input_msh instead of running single-mesh cleaning",
     )
@@ -945,6 +979,7 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         merge_tol=args.merge_tol,
         area_tol=args.area_tol,
         mirror_x=args.mirror_x,
+        mirror_axes=None if args.mirror_axes is None else _normalize_mirror_axes(args.mirror_axes),
         binary=args.binary,
     )
 

@@ -45,3 +45,10 @@ def test_balloon_contours_exclude_configured_maximum() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
     assert "if min_db < level < max_db" in source
+
+
+def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert "QTabBar.ButtonPosition.RightSide" in source
+    assert "tabBar().RightSide" not in source

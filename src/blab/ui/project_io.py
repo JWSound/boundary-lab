@@ -1,4 +1,9 @@
-"""Readable project-file helpers for the Boundary Lab GUI."""
+"""Readable project-file helpers for the Boundary Lab GUI.
+
+Project files capture application workflow state: editor text, mesh choices,
+and GUI source assignments. Solver-domain settings stay in ``blab.config`` and
+wire/API serialization stays in ``blab.protocol``.
+"""
 
 from __future__ import annotations
 
@@ -8,8 +13,19 @@ from typing import Any
 
 
 PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_MIN_VERSION = 0
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
+PROJECT_PAYLOAD_KEYS = (
+    "schema_version",
+    "ath_config_text",
+    "ath_scripts",
+    "active_ath_script_id",
+    "ath_mesh",
+    "imported_meshes",
+    "source_config_by_name",
+    "channel_config_by_name",
+)
 
 
 def normalize_project_path(path: str | Path) -> Path:
@@ -36,13 +52,75 @@ def read_project_file(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Project file must contain a JSON object.")
 
-    schema_version = int(payload.get("schema_version", 0))
-    if schema_version != PROJECT_SCHEMA_VERSION:
+    return migrate_project_payload(payload)
+
+
+def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a current-schema project payload.
+
+    Version 0 is the implicit pre-versioned format. It used the same top-level
+    fields as version 1, but omitted ``schema_version``.
+    """
+    schema_version = _schema_version(payload)
+    if schema_version > PROJECT_SCHEMA_VERSION or schema_version < PROJECT_SCHEMA_MIN_VERSION:
         raise ValueError(
             f"Unsupported project schema version {schema_version}. "
-            f"Expected {PROJECT_SCHEMA_VERSION}."
+            f"Expected {PROJECT_SCHEMA_MIN_VERSION}-{PROJECT_SCHEMA_VERSION}."
         )
+
+    migrated = dict(payload)
+    if schema_version == 0:
+        migrated = _migrate_v0_to_v1(migrated)
+
+    return _normalize_project_payload(migrated)
+
+
+def _schema_version(payload: dict[str, Any]) -> int:
+    raw_version = payload.get("schema_version", 0)
+    try:
+        return int(raw_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Project schema_version must be an integer, got {raw_version!r}.") from exc
+
+
+def _migrate_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
+    payload["schema_version"] = 1
+    payload.setdefault("ath_config_text", "")
+    payload.setdefault("ath_scripts", [])
+    payload.setdefault("active_ath_script_id", None)
+    payload.setdefault("ath_mesh", {})
+    payload.setdefault("imported_meshes", [])
+    payload.setdefault("source_config_by_name", {})
+    payload.setdefault("channel_config_by_name", {})
     return payload
+
+
+def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": PROJECT_SCHEMA_VERSION,
+        "ath_config_text": str(payload.get("ath_config_text", "")),
+        "ath_scripts": _list_or_empty(payload.get("ath_scripts")),
+        "active_ath_script_id": _optional_str(payload.get("active_ath_script_id")),
+        "ath_mesh": _dict_or_empty(payload.get("ath_mesh")),
+        "imported_meshes": _list_or_empty(payload.get("imported_meshes")),
+        "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
+        "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
+    }
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _list_or_empty(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def build_project_payload(
@@ -51,11 +129,17 @@ def build_project_payload(
     ath_mesh: dict[str, Any],
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
+    ath_scripts: list[dict[str, Any]] | None = None,
+    active_ath_script_id: str | None = None,
+    channel_config_by_name: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": PROJECT_SCHEMA_VERSION,
         "ath_config_text": ath_config_text,
+        "ath_scripts": ath_scripts or [],
+        "active_ath_script_id": active_ath_script_id,
         "ath_mesh": ath_mesh,
         "imported_meshes": imported_meshes,
         "source_config_by_name": source_config_by_name,
+        "channel_config_by_name": channel_config_by_name or {},
     }

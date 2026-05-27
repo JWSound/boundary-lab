@@ -22,6 +22,10 @@ except ImportError:  # pragma: no cover
     QtInteractor = None
 
 
+AXIS_LINE_WIDTH = 3
+AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
+
+
 class MeshPreview(QWidget):
     def __init__(self):
         super().__init__()
@@ -81,6 +85,7 @@ class MeshPreview(QWidget):
         self.hover_label.setText("")
         self._set_total_element_count(int(getattr(mesh, "n_cells", 0)))
         self.viewer.add_mesh(mesh, color="#cfcfcf", show_edges=True, edge_color="#555555")
+        self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
         self.viewer.reset_camera()
 
     def load_msh(
@@ -113,6 +118,7 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
+            self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
             self.viewer.reset_camera()
             return
 
@@ -139,6 +145,7 @@ class MeshPreview(QWidget):
                 int(tag_triangles.shape[0]),
             )
 
+        self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
         self.viewer.reset_camera()
 
     def load_mesh_configs(
@@ -154,15 +161,20 @@ class MeshPreview(QWidget):
         self._actor_surface_labels = {}
         self.hover_label.setText("")
         total_elements = 0
+        preview_points = []
 
         for mesh_cfg in meshes:
-            total_elements += self._add_msh_mesh(
+            mesh_elements, mesh_points = self._add_msh_mesh(
                 mesh_cfg,
                 driven_surfaces=driven_surfaces or set(),
                 surface_tags=(surface_tags_by_mesh or {}).get(mesh_cfg.name, {}),
             )
+            total_elements += mesh_elements
+            preview_points.append(mesh_points)
 
         self._set_total_element_count(total_elements)
+        if preview_points:
+            self._add_orientation_guides(np.vstack(preview_points))
         self.viewer.reset_camera()
 
     def _add_msh_mesh(
@@ -171,7 +183,7 @@ class MeshPreview(QWidget):
         *,
         driven_surfaces: set[tuple[str, int]],
         surface_tags: dict[str, int],
-    ) -> int:
+    ) -> tuple[int, np.ndarray]:
         mesh = meshio.read(mesh_cfg.file)
         points = np.asarray(mesh.points, dtype=float)
         scale_factor = 0.001 if mesh_cfg.scale_factor is None else float(mesh_cfg.scale_factor)
@@ -193,7 +205,7 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
-            return int(triangles.shape[0])
+            return int(triangles.shape[0]), points
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
         for tag in sorted(np.unique(physical_tags)):
@@ -217,10 +229,29 @@ class MeshPreview(QWidget):
                 int(tag),
                 int(tag_triangles.shape[0]),
             )
-        return int(triangles.shape[0])
+        return int(triangles.shape[0]), points
 
     def _set_total_element_count(self, count: int) -> None:
         self.total_elements_label.setText(f"Total elements: {count:,}" if count else "")
+
+    def _add_orientation_guides(self, points: np.ndarray) -> None:
+        if self.viewer is None or pv is None:
+            return
+
+        length = _preview_axis_length(points)
+        axis_specs = (
+            ((-length, 0.0, 0.0), (length, 0.0, 0.0), AXIS_COLORS[0]),
+            ((0.0, -length, 0.0), (0.0, length, 0.0), AXIS_COLORS[1]),
+            ((0.0, 0.0, -length), (0.0, 0.0, length), AXIS_COLORS[2]),
+        )
+        for start, end, color in axis_specs:
+            self.viewer.add_mesh(
+                pv.Line(start, end),
+                color=color,
+                line_width=AXIS_LINE_WIDTH,
+                render_lines_as_tubes=True,
+                pickable=False,
+            )
 
     def _install_hover_picker(self) -> None:
         if self.viewer is None or vtk is None:
@@ -288,6 +319,20 @@ def _surface_hover_label(mesh_name: str | None, surface_name: str, tag: int | No
     parts.append("Tag: untagged" if tag is None else f"Tag: {tag}")
     parts.append(f"Elements: {element_count:,}")
     return " | ".join(parts)
+
+
+def _preview_axis_length(points: np.ndarray) -> float:
+    if points.size == 0:
+        return 1.0
+    finite_points = np.asarray(points, dtype=float)
+    finite_points = finite_points[np.all(np.isfinite(finite_points), axis=1)]
+    if finite_points.size == 0:
+        return 1.0
+    min_bounds = np.nanmin(finite_points, axis=0)
+    max_bounds = np.nanmax(finite_points, axis=0)
+    extent = float(np.linalg.norm(max_bounds - min_bounds))
+    radius = float(np.nanmax(np.linalg.norm(finite_points, axis=1)))
+    return max(extent * 0.56, radius * 1.12, 1.0)
 
 
 def _triangles_to_polydata(points: np.ndarray, triangles: np.ndarray):

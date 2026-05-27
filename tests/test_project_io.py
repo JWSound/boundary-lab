@@ -5,6 +5,7 @@ import pytest
 from blab.ui.project_io import (
     PROJECT_SCHEMA_VERSION,
     build_project_payload,
+    migrate_project_payload,
     normalize_project_path,
     read_project_file,
     write_project_file,
@@ -38,7 +39,13 @@ def test_project_file_round_trip(tmp_path) -> None:
         source_config_by_name={
             "ath:SD1D1001": {
                 "driven": True,
-                "level_db": -3.0,
+                "channel": "tweeter",
+                "velocity_offset_db": -3.0,
+            }
+        },
+        channel_config_by_name={
+            "tweeter": {
+                "level_db": -1.0,
                 "polarity": 1,
                 "delay_ms": 0.25,
                 "hpf": {},
@@ -61,3 +68,26 @@ def test_project_file_rejects_unknown_schema(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="Unsupported project schema"):
         read_project_file(project_path)
+
+
+def test_project_file_migrates_legacy_unversioned_payload(tmp_path) -> None:
+    project_path = tmp_path / "legacy_project.json"
+    project_path.write_text('{"ath_config_text": "legacy"}', encoding="utf-8")
+
+    loaded = read_project_file(project_path)
+
+    assert loaded == {
+        "schema_version": PROJECT_SCHEMA_VERSION,
+        "ath_config_text": "legacy",
+        "ath_scripts": [],
+        "active_ath_script_id": None,
+        "ath_mesh": {},
+        "imported_meshes": [],
+        "source_config_by_name": {},
+        "channel_config_by_name": {},
+    }
+
+
+def test_project_migration_rejects_non_integer_schema() -> None:
+    with pytest.raises(ValueError, match="schema_version must be an integer"):
+        migrate_project_payload({"schema_version": "future"})

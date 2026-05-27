@@ -78,6 +78,33 @@ def test_clean_mesh_can_skip_x_mirroring() -> None:
     assert cleaned.cell_data_dict["gmsh:physical"]["triangle"].tolist() == [5]
 
 
+def test_clean_mesh_can_mirror_across_x_and_y() -> None:
+    mesh = meshio.Mesh(
+        points=np.array(
+            [
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [1.0, 2.0, 0.0],
+            ]
+        ),
+        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([5], dtype=np.int32)]},
+    )
+
+    cleaned, changes, _before, after = clean_mesh(
+        mesh,
+        merge_tol=0.0,
+        area_tol=0.0,
+        mirror_axes=("x", "y"),
+    )
+
+    assert after.vertices == 12
+    assert after.triangles == 4
+    assert changes["mirrored_vertices"] == 9
+    assert changes["mirrored_faces"] == 3
+    assert cleaned.cell_data_dict["gmsh:physical"]["triangle"].tolist() == [5, 5, 5, 5]
+
+
 def test_stitch_meshes_splits_mismatched_boundary_loops_into_shared_seam() -> None:
     enclosure = meshio.Mesh(
         points=np.array(

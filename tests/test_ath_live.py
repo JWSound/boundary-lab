@@ -4,6 +4,8 @@ import meshio
 import numpy as np
 
 from blab.ath import (
+    ath_mirror_axes_for_result,
+    ath_mirror_axes_from_solving_file,
     clean_ath_mesh_output,
     detect_ath_radiators,
     discover_ath_output,
@@ -167,6 +169,23 @@ def test_write_ath_gmsh_path_inserts_mesh_command_when_missing(tmp_path: Path) -
     ]
 
 
+def test_ath_mirror_axes_from_solving_symmetry_line(tmp_path: Path) -> None:
+    solving_path = tmp_path / "solving.txt"
+    solving_path.write_text(
+        "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
+        encoding="utf-8",
+    )
+
+    assert ath_mirror_axes_from_solving_file(solving_path) == ("x", "y")
+
+
+def test_ath_mirror_axes_are_empty_without_symmetry_line(tmp_path: Path) -> None:
+    solving_path = tmp_path / "solving.txt"
+    solving_path.write_text("Control_Solver\n  Abscissa=log; Dim=3D\n", encoding="utf-8")
+
+    assert ath_mirror_axes_from_solving_file(solving_path) == ()
+
+
 def test_clean_ath_mesh_output_writes_cleaned_solver_mesh(tmp_path: Path) -> None:
     output_dir = tmp_path / "case"
     mesh_dir = output_dir / "ABEC_FreeStanding"
@@ -197,6 +216,39 @@ def test_clean_ath_mesh_output_writes_cleaned_solver_mesh(tmp_path: Path) -> Non
     assert cleaned.solver_msh_path.exists()
     assert find_physical_tag_by_name(cleaned.solver_msh_path, "SD1D1001") == 2
     assert [(r.name, r.tag, r.level_db) for r in cleaned.radiators] == [("throat", 2, 0.0)]
+
+
+def test_clean_ath_mesh_output_uses_solving_symmetry_axes(tmp_path: Path) -> None:
+    output_dir = tmp_path / "case"
+    mesh_dir = output_dir / "ABEC_InfiniteBaffle"
+    mesh_dir.mkdir(parents=True)
+    (output_dir / "case.stl").write_text("solid case\nendsolid case\n", encoding="utf-8")
+    (mesh_dir / "solving.txt").write_text(
+        "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
+        encoding="utf-8",
+    )
+
+    raw_msh = mesh_dir / "case.msh"
+    mesh = meshio.Mesh(
+        points=np.array(
+            [
+                [1.0, 1.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [1.0, 2.0, 0.0],
+            ]
+        ),
+        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
+        field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
+    )
+    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
+
+    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
+    cleaned = clean_ath_mesh_output(result)
+    cleaned_mesh = meshio.read(cleaned.solver_msh_path)
+
+    assert ath_mirror_axes_for_result(result) == ("x", "y")
+    assert cleaned_mesh.cells_dict["triangle"].shape[0] == 4
 
 
 def test_live_frequency_order_starts_with_limits_and_preserves_all_points() -> None:

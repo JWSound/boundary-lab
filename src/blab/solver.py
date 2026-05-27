@@ -22,6 +22,7 @@ import numpy as np
 from scipy import signal
 import warnings
 from blab.config import (
+    ChannelConfig,
     CrossoverConfig,
     MeshConfig,
     RadiatorConfig,
@@ -208,6 +209,14 @@ def _solve_frequency_chunk(config: SimulationConfig, frequencies: Sequence[float
     solver = HornBEMSolver(config)
     return solver.solve_frequencies(np.asarray(frequencies, dtype=float), show_progress=False)
 
+
+def _flat_target_correction(on_axis_pressure: complex, *, floor_pa: float = 1e-12) -> float:
+    magnitude = abs(on_axis_pressure)
+    if not np.isfinite(magnitude) or magnitude <= floor_pa:
+        return 1.0
+    return float(1.0 / magnitude)
+
+
 # ==========================================
 # Solver Class
 # ==========================================
@@ -310,6 +319,7 @@ class HornBEMSolver:
         radiator_configs = self.cfg.radiators or (
             RadiatorConfig(name="throat", tag=self.cfg.tag_throat, mesh=self.mesh_names[0]),
         )
+        self.channel_configs = self._resolved_channel_configs(radiator_configs)
         self._validate_radiator_configs(radiator_configs)
 
         self.radiator_geometries = []
@@ -373,9 +383,39 @@ class HornBEMSolver:
                 )
             if radiator.polarity not in (-1, 1):
                 raise ValueError(f"Radiator '{radiator.name}' polarity must be +1 or -1.")
+            if not radiator.channel:
+                raise ValueError(f"Radiator '{radiator.name}' channel must not be empty.")
+            channel_configs = getattr(self, "channel_configs", self._resolved_channel_configs(radiators))
+            if radiator.channel not in channel_configs and self.cfg.channels:
+                raise ValueError(
+                    f"Radiator '{radiator.name}' references unknown channel '{radiator.channel}'."
+                )
 
             for crossover in self._radiator_crossovers(radiator):
                 self._validate_crossover_config(radiator.name, crossover)
+
+        for channel in getattr(self, "channel_configs", self._resolved_channel_configs(radiators)).values():
+            if channel.polarity not in (-1, 1):
+                raise ValueError(f"Channel '{channel.name}' polarity must be +1 or -1.")
+            for crossover in (channel.hpf, channel.lpf):
+                self._validate_crossover_config(f"channel {channel.name}", crossover)
+
+    def _resolved_channel_configs(self, radiators: Sequence[RadiatorConfig]) -> dict[str, ChannelConfig]:
+        channels = {channel.name: channel for channel in self.cfg.channels}
+        if channels:
+            return channels
+
+        resolved = {}
+        for radiator in radiators:
+            resolved[radiator.channel] = ChannelConfig(
+                name=radiator.channel,
+                level_db=radiator.level_db,
+                polarity=radiator.polarity,
+                delay_ms=radiator.delay_ms,
+                hpf=radiator.hpf,
+                lpf=radiator.lpf,
+            )
+        return resolved
 
     @staticmethod
     def _radiator_crossovers(radiator: RadiatorConfig) -> tuple[CrossoverConfig, ...]:
@@ -403,10 +443,10 @@ class HornBEMSolver:
             raise ValueError(
                 f"Radiator '{radiator_name}' crossover filter must be butterworth or linkwitz_riley."
             )
-        if crossover.order not in (1, 2, 4):
-            raise ValueError(f"Radiator '{radiator_name}' crossover order must be 1, 2, or 4.")
-        if crossover.filter == "linkwitz_riley" and crossover.order not in (2, 4):
-            raise ValueError(f"Radiator '{radiator_name}' Linkwitz-Riley order must be 2 or 4.")
+        if crossover.order not in (1, 2, 4, 6):
+            raise ValueError(f"Radiator '{radiator_name}' crossover order must be 1, 2, 4, or 6.")
+        if crossover.filter == "linkwitz_riley" and crossover.order not in (2, 4, 6):
+            raise ValueError(f"Radiator '{radiator_name}' Linkwitz-Riley order must be 2, 4, or 6.")
 
     def _resolve_radiator_mesh_id(self, radiator: RadiatorConfig) -> int:
         mesh_name = self._radiator_mesh_name(radiator)
@@ -426,7 +466,36 @@ class HornBEMSolver:
 
         return bempp_cl.api.GridFunction(self.dp0_space, coefficients=coeffs), drives
 
+    def _create_velocity_with_channel_corrections(
+        self,
+        freq: float,
+        channel_corrections: dict[str, float],
+    ) -> tuple[bempp_cl.api.GridFunction, np.ndarray]:
+        coeffs = np.zeros(self.dp0_space.global_dof_count, dtype=np.complex128)
+        drives = np.empty(len(self.radiator_geometries), dtype=np.complex128)
+
+        for i, radiator in enumerate(self.radiator_geometries):
+            drive = self._radiator_drive(radiator.config, freq)
+            drive *= channel_corrections.get(radiator.config.channel, 1.0)
+            drives[i] = drive
+            coeffs[radiator.driver_dofs] = drive
+
+        return bempp_cl.api.GridFunction(self.dp0_space, coefficients=coeffs), drives
+
+    def _create_channel_unit_velocity(self, channel_name: str):
+        coeffs = np.zeros(self.dp0_space.global_dof_count, dtype=np.complex128)
+        for radiator in self.radiator_geometries:
+            if radiator.config.channel != channel_name:
+                continue
+            velocity_offset = 10.0 ** (radiator.config.velocity_offset_db / 20.0)
+            coeffs[radiator.driver_dofs] = velocity_offset
+        return bempp_cl.api.GridFunction(self.dp0_space, coefficients=coeffs)
+
     def _radiator_drive(self, radiator: RadiatorConfig, freq: float) -> complex:
+        channel = getattr(self, "channel_configs", {}).get(radiator.channel) if self is not None else None
+        if channel is not None:
+            return HornBEMSolver._channel_drive(self, channel, freq) * (10.0 ** (radiator.velocity_offset_db / 20.0))
+
         omega = 2.0 * np.pi * freq
         level = 10.0 ** (radiator.level_db / 20.0)
         delay = np.exp(-1j * omega * (radiator.delay_ms / 1000.0))
@@ -434,6 +503,16 @@ class HornBEMSolver:
         for crossover_config in HornBEMSolver._radiator_crossovers(radiator):
             crossover *= HornBEMSolver._crossover_response(self, crossover_config, freq)
         return complex(level * radiator.polarity * delay * crossover)
+
+    def _channel_drive(self, channel: ChannelConfig, freq: float) -> complex:
+        omega = 2.0 * np.pi * freq
+        level = 10.0 ** (channel.level_db / 20.0)
+        delay = np.exp(-1j * omega * (channel.delay_ms / 1000.0))
+        crossover = 1.0 + 0.0j
+        for crossover_config in (channel.hpf, channel.lpf):
+            if crossover_config.type.lower() != "none":
+                crossover *= HornBEMSolver._crossover_response(self, crossover_config, freq)
+        return complex(level * channel.polarity * delay * crossover)
 
     def _crossover_response(self, crossover: CrossoverConfig, freq: float) -> complex:
         crossover_type = crossover.type.lower()
@@ -642,12 +721,27 @@ class HornBEMSolver:
     def _solve_single_frequency(self, freq):
         omega = 2 * np.pi * freq
         k = omega / self.cfg.sound_speed
-        
-        # 1. Update Boundary Conditions
-        velocity_fun, radiator_drives = self._create_velocity(freq)
+
+        operators = self._assemble_frequency_operators(k)
+        channel_corrections = self._channel_flat_target_corrections(freq, k, omega, operators)
+        velocity_fun, radiator_drives = self._create_velocity_with_channel_corrections(freq, channel_corrections)
         neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
 
-        # 2. Assemble Operators
+        dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
+
+        # 5. Post-Processing
+        z_data = self._calculate_impedance(dirichlet_fun, radiator_drives)
+        horizontal_spl = self._evaluate_field(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun, omega)
+        vertical_spl = self._evaluate_field(self.vertical_eval_points, k, dirichlet_fun, neumann_fun, omega)
+        horizontal_spl_norm, vertical_spl_norm = self._normalize_polar_to_on_axis(horizontal_spl, vertical_spl)
+        sphere_spl_norm = None
+        if self.spherical_sampling_enabled:
+            sphere_spl = self._evaluate_field(self.sphere_eval_points, k, dirichlet_fun, neumann_fun, omega)
+            sphere_spl_norm = sphere_spl - horizontal_spl[self.on_axis_idx]
+        
+        return horizontal_spl_norm, vertical_spl_norm, z_data, horizontal_spl, vertical_spl, sphere_spl_norm
+
+    def _assemble_frequency_operators(self, k: float) -> tuple:
         dlp = bempp_cl.api.operators.boundary.helmholtz.double_layer(
             self.p1_space, self.p1_space, self.p1_space, k
         )
@@ -667,28 +761,41 @@ class HornBEMSolver:
             # Note that BEMPP negates the hypersingular operator
             coupling = 1j / k
             lhs = 0.5 * self.lhs_identity - dlp - coupling * -hyp
-            rhs = (-slp - coupling * (adlp + 0.5 * self.rhs_identity)) * neumann_fun
+            rhs_operator = -slp - coupling * (adlp + 0.5 * self.rhs_identity)
         else:
             # Exterior Neumann (classical)
             lhs = dlp - 0.5 * self.lhs_identity
-            rhs = slp * neumann_fun
+            rhs_operator = slp
 
-        # 4. Solve System
+        return lhs, rhs_operator
+
+    def _solve_boundary_pressure(self, operators: tuple, neumann_fun, freq: float):
+        lhs, rhs_operator = operators
+        rhs = rhs_operator * neumann_fun
+
         dirichlet_fun, info = bempp_cl.api.linalg.gmres(lhs, rhs, tol=self.cfg.gmres_tolerance)
         if info != 0:
             print(f"  Warning: Solver did not converge at {freq:.1f}Hz")
+        return dirichlet_fun
 
-        # 5. Post-Processing
-        z_data = self._calculate_impedance(dirichlet_fun, radiator_drives)
-        horizontal_spl = self._evaluate_field(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun, omega)
-        vertical_spl = self._evaluate_field(self.vertical_eval_points, k, dirichlet_fun, neumann_fun, omega)
-        horizontal_spl_norm, vertical_spl_norm = self._normalize_polar_to_on_axis(horizontal_spl, vertical_spl)
-        sphere_spl_norm = None
-        if self.spherical_sampling_enabled:
-            sphere_spl = self._evaluate_field(self.sphere_eval_points, k, dirichlet_fun, neumann_fun, omega)
-            sphere_spl_norm = sphere_spl - horizontal_spl[self.on_axis_idx]
-        
-        return horizontal_spl_norm, vertical_spl_norm, z_data, horizontal_spl, vertical_spl, sphere_spl_norm
+    def _channel_flat_target_corrections(self, freq: float, k: float, omega: float, operators: tuple) -> dict[str, float]:
+        if not self.cfg.flat_target_normalization_enabled:
+            return {}
+
+        corrections = {}
+        active_channels = sorted({radiator.config.channel for radiator in self.radiator_geometries})
+        for channel_name in active_channels:
+            velocity_fun = self._create_channel_unit_velocity(channel_name)
+            neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
+            dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
+            on_axis_pressure = self._evaluate_pressure(
+                self.horizontal_eval_points[:, self.on_axis_idx : self.on_axis_idx + 1],
+                k,
+                dirichlet_fun,
+                neumann_fun,
+            )[0]
+            corrections[channel_name] = _flat_target_correction(on_axis_pressure)
+        return corrections
 
     def _calculate_impedance(self, dirichlet_fun, radiator_drives):
         z_data = np.empty((len(self.radiator_geometries), 2), dtype=np.float32)
@@ -712,7 +819,7 @@ class HornBEMSolver:
 
         return z_data
 
-    def _evaluate_field(self, points, k, dirichlet_fun, neumann_fun, omega):
+    def _evaluate_pressure(self, points, k, dirichlet_fun, neumann_fun):
         slp_pot = bempp_cl.api.operators.potential.helmholtz.single_layer(
             self.dp0_space, points, k, device_interface="opencl"
         )
@@ -720,8 +827,11 @@ class HornBEMSolver:
             self.p1_space, points, k, device_interface="opencl"
         )
 
-        p_field = (dlp_pot * dirichlet_fun - slp_pot * neumann_fun).ravel()
-        
+        return (dlp_pot * dirichlet_fun - slp_pot * neumann_fun).ravel()
+
+    def _evaluate_field(self, points, k, dirichlet_fun, neumann_fun, omega):
+        p_field = self._evaluate_pressure(points, k, dirichlet_fun, neumann_fun)
+
         # Convert to SPL
         # Ref pressure = 20e-6 Pa
         return 20 * np.log10(np.abs(p_field) / 20e-6)

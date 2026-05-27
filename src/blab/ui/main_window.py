@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -29,6 +30,9 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QTabBar,
+    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -36,13 +40,15 @@ from PySide6.QtWidgets import (
 from blab.ath import (
     AthRunResult,
     clean_ath_mesh_output,
+    detect_ath_radiators,
     discover_ath_output,
+    find_physical_tag_by_name,
     read_surface_physical_names,
     run_ath,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
-from blab.config import CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -54,7 +60,9 @@ from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
 from blab.ui.balloon import BalloonPlotWindow
-from blab.ui.dialogs import MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
+from blab.ui.diagnostics import DiagnosticsDialog
+from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
+from blab.ui.help import HelpBrowserDialog
 from blab.ui.mesh_preview import MeshPreview
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
@@ -77,6 +85,16 @@ from blab.ui.project_io import (
     read_project_file,
     write_project_file,
 )
+from blab.ui.project_state import (
+    AthScriptState,
+    default_scripts,
+    new_script,
+    replace_script,
+    script_from_payload,
+    script_to_payload,
+    scripts_from_payload,
+    unique_script_name,
+)
 from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
@@ -93,12 +111,19 @@ from blab.ui.solve_worker import SolveWorker
 
 ATH_MESH_NAME = "ath"
 STITCHED_MESH_NAME = "stitched"
+DEFAULT_MESH_SCALE_FACTOR = 0.001
+STITCH_FAILURE_MESSAGE = (
+    "Error - unable to stitch separate mesh entities. "
+    "Refer to help documentation for more info on multi-mesh workflows."
+)
 IMPORTED_MESH_SETTINGS_KEY = "mesh/imported_meshes"
 ATH_MESH_SETTINGS_KEY = "mesh/ath_mesh"
 APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
 GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
+EDITOR_RAIL_WIDTH = 24
+ADD_SCRIPT_TAB_LABEL = "+"
 
 
 @dataclass(frozen=True)
@@ -117,24 +142,36 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Ath4 Live BEM Solver")
         self.resize(1500, 900)
         self.imported_meshes: tuple[MeshDialogEntry, ...] = self._load_imported_meshes()
-        self.ath_mesh_enabled, self.ath_mesh_translation_mm = self._load_ath_mesh_settings()
         self.preferences = self._load_preferences()
-        self.ath_result: AthRunResult | None = self._apply_saved_source_config(self._load_existing_sample_output())
+        self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
+        self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
+        self.ath_results_by_script_id: dict[str, AthRunResult] = self._load_existing_ath_results()
+        self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
         self.balloon_window: BalloonPlotWindow | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
         self.solve_started_at: float | None = None
+        self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
+        self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
         self._ensure_ath_runtime_config()
 
-        self.editor = QPlainTextEdit()
-        self.editor.setFont(QFont("Consolas", 10))
-        self.editor.setPlainText(self._load_initial_config_text())
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setTabsClosable(True)
+        self.editor_tabs.currentChanged.connect(self._on_active_ath_tab_changed)
+        self.editor_tabs.tabCloseRequested.connect(self._remove_ath_script_at)
+        self.editor_tabs.tabBar().installEventFilter(self)
+        self.collapse_editor_button = QToolButton()
+        self.collapse_editor_button.setToolTip("Collapse Ath script editor")
+        self.collapse_editor_button.setAutoRaise(True)
+        self.collapse_editor_button.setFixedWidth(EDITOR_RAIL_WIDTH)
+        self.collapse_editor_button.clicked.connect(self.toggle_editor_panel)
+        self._rebuild_ath_script_tabs()
 
         self.preview = MeshPreview()
-        if self.ath_result is not None:
+        if self._has_solver_meshes():
             self._refresh_mesh_preview()
 
         self.generate_button = QPushButton("Generate")
@@ -142,8 +179,9 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton("Stop")
         self.cancel_button.setEnabled(False)
         self.mesh_config_button = QPushButton("Mesh Config")
+        self.channel_config_button = QPushButton("Channel Config")
         self.source_config_button = QPushButton("Source Config")
-        self.source_config_button.setEnabled(self.ath_result is not None)
+        self.source_config_button.setEnabled(self._has_solver_meshes())
 
         freq_min = min(max(settings_int(self.settings, "solve/freq_min_hz", 200), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
         freq_max = min(max(settings_int(self.settings, "solve/freq_max_hz", 20000), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
@@ -214,6 +252,15 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self._reload_updated_imported_meshes_on_focus()
 
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
+            index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
+            if 0 <= index < len(self.ath_scripts):
+                self.editor_tabs.setCurrentIndex(index)
+                self.rename_active_ath_script()
+                return True
+        return super().eventFilter(watched, event)
+
     def _build_menu_bar(self) -> None:
         file_menu = self.menuBar().addMenu("File")
 
@@ -278,11 +325,27 @@ class MainWindow(QMainWindow):
         preferences_action.triggered.connect(self.open_preferences)
         edit_menu.addAction(preferences_action)
 
+        about_menu = self.menuBar().addMenu("About")
+        diagnostics_action = QAction("Diagnostic Info", self)
+        diagnostics_action.triggered.connect(self.open_diagnostics)
+        about_menu.addAction(diagnostics_action)
+
+        help_action = QAction("Help", self)
+        help_action.triggered.connect(self.open_help)
+        about_menu.addAction(help_action)
+
     def _build_layout(self) -> None:
-        editor_panel = QWidget()
-        editor_layout = QVBoxLayout(editor_panel)
+        self.editor_panel = QWidget()
+        editor_layout = QVBoxLayout(self.editor_panel)
         editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.addWidget(self.editor)
+        editor_layout.addWidget(self.editor_tabs)
+
+        self.editor_container = QWidget()
+        editor_container_layout = QHBoxLayout(self.editor_container)
+        editor_container_layout.setContentsMargins(0, 0, 0, 0)
+        editor_container_layout.setSpacing(0)
+        editor_container_layout.addWidget(self.editor_panel, 1)
+        editor_container_layout.addWidget(self.collapse_editor_button)
 
         plot_content = QWidget()
         plot_layout = QVBoxLayout(plot_content)
@@ -297,7 +360,7 @@ class MainWindow(QMainWindow):
         plot_panel.setWidget(plot_content)
 
         self.main_splitter = QSplitter(Qt.Horizontal)
-        self.main_splitter.addWidget(editor_panel)
+        self.main_splitter.addWidget(self.editor_container)
         self.main_splitter.addWidget(self.preview)
         self.main_splitter.addWidget(plot_panel)
         self.main_splitter.setStretchFactor(0, 1)
@@ -310,6 +373,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.solve_button)
         controls_layout.addWidget(self.cancel_button)
         controls_layout.addWidget(self.mesh_config_button)
+        controls_layout.addWidget(self.channel_config_button)
         controls_layout.addWidget(self.source_config_button)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(QLabel("Min Hz"))
@@ -334,6 +398,7 @@ class MainWindow(QMainWindow):
         self.solve_button.clicked.connect(self.start_solve)
         self.cancel_button.clicked.connect(self.cancel_solve)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
+        self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
 
         self.freq_min_slider.valueChanged.connect(
@@ -353,6 +418,110 @@ class MainWindow(QMainWindow):
         self.freq_min_spin.valueChanged.connect(self._save_frequency_settings)
         self.freq_max_spin.valueChanged.connect(self._save_frequency_settings)
         self.freq_count_spin.valueChanged.connect(self._save_frequency_settings)
+
+    def _rebuild_ath_script_tabs(self) -> None:
+        self.editor_tabs.blockSignals(True)
+        self.editor_tabs.clear()
+        for script in self.ath_scripts:
+            editor = QPlainTextEdit()
+            editor.setFont(QFont("Consolas", 10))
+            editor.setPlainText(script.config_text)
+            editor.textChanged.connect(lambda script_id=script.id, editor=editor: self._update_script_text(script_id, editor))
+            self.editor_tabs.addTab(editor, script.name)
+        add_tab = QWidget()
+        add_index = self.editor_tabs.addTab(add_tab, ADD_SCRIPT_TAB_LABEL)
+        self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
+        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add Ath script")
+        active_index = self._active_script_index()
+        if active_index >= 0:
+            self.editor_tabs.setCurrentIndex(active_index)
+        self.editor_tabs.blockSignals(False)
+
+    def _active_script_index(self) -> int:
+        for index, script in enumerate(self.ath_scripts):
+            if script.id == self.active_ath_script_id:
+                return index
+        return 0 if self.ath_scripts else -1
+
+    def _active_script(self) -> AthScriptState | None:
+        if not self.ath_scripts:
+            return None
+        index = self._active_script_index()
+        return self.ath_scripts[index] if index >= 0 else None
+
+    def _update_script_text(self, script_id: str, editor: QPlainTextEdit) -> None:
+        self.ath_scripts = replace_script(self.ath_scripts, script_id, config_text=editor.toPlainText())
+
+    def _on_active_ath_tab_changed(self, index: int) -> None:
+        if index == len(self.ath_scripts):
+            self.add_ath_script()
+            return
+        if 0 <= index < len(self.ath_scripts):
+            self.active_ath_script_id = self.ath_scripts[index].id
+
+    @Slot()
+    def add_ath_script(self) -> None:
+        name = unique_script_name("ath", self.ath_scripts)
+        script = new_script(name, self._load_initial_config_text())
+        self.ath_scripts = (*self.ath_scripts, script)
+        self.active_ath_script_id = script.id
+        self._rebuild_ath_script_tabs()
+
+    @Slot()
+    def rename_active_ath_script(self) -> None:
+        script = self._active_script()
+        if script is None:
+            return
+        name, accepted = QInputDialog.getText(self, "Rename Ath Script", "Script name:", text=script.name)
+        if not accepted:
+            return
+        name = name.strip()
+        if not name:
+            return
+        self.ath_scripts = replace_script(
+            self.ath_scripts,
+            script.id,
+            name=unique_script_name(name, tuple(s for s in self.ath_scripts if s.id != script.id)),
+        )
+        self._rebuild_ath_script_tabs()
+        self._refresh_mesh_preview()
+
+    def _remove_ath_script_at(self, index: int) -> None:
+        if not (0 <= index < len(self.ath_scripts)):
+            return
+        script = self.ath_scripts[index]
+        self.ath_scripts = tuple(item for item in self.ath_scripts if item.id != script.id)
+        self.ath_results_by_script_id.pop(script.id, None)
+        self.active_ath_script_id = self.ath_scripts[min(index, len(self.ath_scripts) - 1)].id if self.ath_scripts else None
+        self._rebuild_ath_script_tabs()
+        self._refresh_mesh_preview()
+        self.source_config_button.setEnabled(self._has_solver_meshes())
+
+    @Slot()
+    def toggle_editor_panel(self) -> None:
+        self._set_editor_collapsed(not self._editor_collapsed)
+
+    def _set_editor_collapsed(self, collapsed: bool) -> None:
+        if hasattr(self, "main_splitter") and not collapsed and self._editor_collapsed:
+            self.editor_container.setMinimumWidth(0)
+            self.editor_container.setMaximumWidth(16777215)
+            self.main_splitter.setSizes([self._last_editor_width, max(self.preview.width(), 400), 400])
+        elif hasattr(self, "main_splitter") and collapsed:
+            sizes = self.main_splitter.sizes()
+            if sizes and sizes[0] > EDITOR_RAIL_WIDTH:
+                self._last_editor_width = sizes[0]
+            self.editor_container.setMinimumWidth(EDITOR_RAIL_WIDTH)
+            self.editor_container.setMaximumWidth(EDITOR_RAIL_WIDTH)
+            self.main_splitter.setSizes([EDITOR_RAIL_WIDTH, max(self.preview.width(), 400), 400])
+
+        self._editor_collapsed = collapsed
+        self.editor_panel.setVisible(not collapsed)
+        self.collapse_editor_button.setText(">" if collapsed else "<")
+        self.collapse_editor_button.setToolTip(
+            "Expand Ath script editor" if collapsed else "Collapse Ath script editor"
+        )
+        self.settings.setValue("window/ath_editor_collapsed", collapsed)
+        self.settings.setValue("window/ath_editor_width", self._last_editor_width)
 
     def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
         with QSignalBlocker(spin):
@@ -467,10 +636,16 @@ class MainWindow(QMainWindow):
         splitter_state = self.settings.value("window/main_splitter")
         if splitter_state is not None:
             self.main_splitter.restoreState(splitter_state)
+        self._set_editor_collapsed(self._editor_collapsed)
 
     def _save_window_state(self) -> None:
+        sizes = self.main_splitter.sizes()
+        if sizes and not self._editor_collapsed:
+            self._last_editor_width = sizes[0]
         self.settings.setValue("window/geometry", self.saveGeometry())
         self.settings.setValue("window/main_splitter", self.main_splitter.saveState())
+        self.settings.setValue("window/ath_editor_collapsed", self._editor_collapsed)
+        self.settings.setValue("window/ath_editor_width", self._last_editor_width)
         self.settings.sync()
 
     def _load_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
@@ -498,6 +673,7 @@ class MainWindow(QMainWindow):
                     name=name,
                     source_file=source_file,
                     cleaned_file=None if item.get("cleaned_file") is None else str(item.get("cleaned_file")),
+                    scale_factor=self._mesh_scale_from_payload(item),
                     translation_mm=tuple(float(int(round(float(value)))) for value in translation),
                     enabled=bool(item.get("enabled", True)),
                 )
@@ -512,7 +688,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue(IMPORTED_MESH_SETTINGS_KEY, json.dumps(payload, sort_keys=True))
         self.settings.sync()
 
-    def _load_ath_mesh_settings(self) -> tuple[bool, tuple[float, float, float]]:
+    def _load_ath_mesh_settings(self) -> tuple[bool, tuple[float, float, float], float]:
         raw_config = self.settings.value(ATH_MESH_SETTINGS_KEY, "{}")
         try:
             loaded = json.loads(str(raw_config))
@@ -527,6 +703,7 @@ class MainWindow(QMainWindow):
         return (
             bool(loaded.get("enabled", True)),
             tuple(float(int(round(float(value)))) for value in translation),
+            self._mesh_scale_from_payload(loaded),
         )
 
     def _save_ath_mesh_settings(self) -> None:
@@ -537,28 +714,21 @@ class MainWindow(QMainWindow):
         self.settings.sync()
 
     def _ath_mesh_payload(self, *, absolute_paths: bool) -> dict:
-        source_file = ""
-        if self.ath_result is not None:
-            source_file = str(self.ath_result.solver_msh_path)
-            if absolute_paths:
-                source_file = str(Path(source_file).resolve())
-        return {
-            "name": ATH_MESH_NAME,
-            "source_file": source_file,
-            "cleaned_file": None,
-            "translation_mm": [int(round(value)) for value in self.ath_mesh_translation_mm],
-            "enabled": bool(self.ath_mesh_enabled),
-        }
+        return {}
 
     def _mesh_config_dialog_entries(self) -> tuple[MeshDialogEntry, ...]:
         entries = []
-        if self.ath_result is not None:
+        for script in self.ath_scripts:
+            result = self.ath_results_by_script_id.get(script.id)
+            if result is None:
+                continue
             entries.append(
                 MeshDialogEntry(
-                    name=ATH_MESH_NAME,
-                    source_file=str(self.ath_result.solver_msh_path),
-                    translation_mm=self.ath_mesh_translation_mm,
-                    enabled=self.ath_mesh_enabled,
+                    name=script.mesh_name,
+                    source_file=str(result.solver_msh_path),
+                    scale_factor=float(script.mesh_scale_factor),
+                    translation_mm=script.mesh_translation_mm,
+                    enabled=script.mesh_enabled,
                     locked=True,
                 )
             )
@@ -567,14 +737,21 @@ class MainWindow(QMainWindow):
 
     def _apply_mesh_config_dialog_entries(self, meshes: tuple[MeshDialogEntry, ...]) -> None:
         imported_meshes = []
+        scripts = self.ath_scripts
         for mesh in meshes:
-            if mesh.name == ATH_MESH_NAME:
-                self.ath_mesh_enabled = bool(mesh.enabled)
-                self.ath_mesh_translation_mm = mesh.translation_mm
+            script = self._script_for_mesh_name(mesh.name)
+            if script is not None:
+                scripts = replace_script(
+                    scripts,
+                    script.id,
+                    mesh_enabled=bool(mesh.enabled),
+                    mesh_translation_mm=mesh.translation_mm,
+                    mesh_scale_factor=float(mesh.scale_factor),
+                )
             else:
                 imported_meshes.append(replace(mesh, locked=False))
+        self.ath_scripts = scripts
         self.imported_meshes = tuple(imported_meshes)
-        self._save_ath_mesh_settings()
 
     def _project_imported_meshes_payload(self) -> list[dict]:
         return [self._mesh_entry_to_payload(mesh, absolute_paths=True) for mesh in self.imported_meshes]
@@ -590,9 +767,57 @@ class MainWindow(QMainWindow):
             "name": mesh.name,
             "source_file": source_file,
             "cleaned_file": cleaned_file,
+            "scale_factor": float(mesh.scale_factor),
             "translation_mm": [int(round(value)) for value in mesh.translation_mm],
             "enabled": bool(mesh.enabled),
         }
+
+    @staticmethod
+    def _mesh_scale_from_payload(payload: object) -> float:
+        if not isinstance(payload, dict):
+            return DEFAULT_MESH_SCALE_FACTOR
+        try:
+            scale_factor = float(payload.get("scale_factor", DEFAULT_MESH_SCALE_FACTOR))
+        except (TypeError, ValueError):
+            return DEFAULT_MESH_SCALE_FACTOR
+        return scale_factor if scale_factor > 0.0 else DEFAULT_MESH_SCALE_FACTOR
+
+    def _script_for_mesh_name(self, mesh_name: str) -> AthScriptState | None:
+        return next((script for script in self.ath_scripts if script.mesh_name == mesh_name), None)
+
+    def _has_solver_meshes(self) -> bool:
+        return bool(self._enabled_ath_results()) or bool(self._active_imported_meshes())
+
+    def _enabled_ath_results(self) -> tuple[tuple[AthScriptState, AthRunResult], ...]:
+        pairs = []
+        for script in self.ath_scripts:
+            if not script.mesh_enabled:
+                continue
+            result = self.ath_results_by_script_id.get(script.id)
+            if result is not None:
+                pairs.append((script, result))
+        return tuple(pairs)
+
+    def _all_radiators(self) -> tuple[RadiatorConfig, ...]:
+        radiators = []
+        for script, result in self._enabled_ath_results():
+            radiators.extend(replace(radiator, mesh=script.mesh_name) for radiator in result.radiators)
+        radiators.extend(self.imported_radiators)
+        return tuple(radiators)
+
+    def _apply_radiators_to_results(self, radiators: tuple[RadiatorConfig, ...]) -> None:
+        radiators_by_mesh_tag = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
+        generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
+        for script, result in tuple(self._enabled_ath_results()):
+            updated = []
+            for original in result.radiators:
+                replacement = radiators_by_mesh_tag.get((script.mesh_name, original.tag))
+                if replacement is not None:
+                    updated.append(replace(replacement, mesh=script.mesh_name))
+            self.ath_results_by_script_id[script.id] = replace(result, radiators=tuple(updated))
+        self.imported_radiators = tuple(
+            radiator for radiator in radiators if radiator.mesh not in generated_mesh_names
+        )
 
     def _mesh_entries_from_payload(self, payload: object) -> tuple[MeshDialogEntry, ...]:
         if not isinstance(payload, list):
@@ -614,6 +839,7 @@ class MainWindow(QMainWindow):
                     name=name,
                     source_file=source_file,
                     cleaned_file=None if item.get("cleaned_file") is None else str(item.get("cleaned_file")),
+                    scale_factor=self._mesh_scale_from_payload(item),
                     translation_mm=tuple(float(int(round(float(value)))) for value in translation),
                     enabled=bool(item.get("enabled", True)),
                 )
@@ -682,9 +908,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
-            if self.ath_result is not None:
-                self.ath_result = self._apply_saved_source_config(self.ath_result)
-                self._refresh_mesh_preview()
+            self._refresh_mesh_preview()
             self._clear_plots()
             names = ", ".join(updated_names)
             self.status_label.setText(f"Reloaded updated mesh file{'s' if len(updated_names) != 1 else ''}: {names}")
@@ -701,8 +925,6 @@ class MainWindow(QMainWindow):
         return Path.cwd() / "runs" / "imported_meshes" / f"{safe_name}_{source_hash}_clean.msh"
 
     def _stitch_candidate_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        if self.ath_result is None:
-            return self._imported_solver_mesh_configs()
         return (*self._ath_solver_mesh_configs(), *self._imported_solver_mesh_configs())
 
     def _should_use_stitched_mesh(self) -> bool:
@@ -745,28 +967,30 @@ class MainWindow(QMainWindow):
         stitched_path = self._stitched_mesh_path(mesh_configs)
         if not stitched_path.exists():
             stitched_path.parent.mkdir(parents=True, exist_ok=True)
-            stitched_mesh, _result = stitch_meshes(
-                tuple(self._mesh_for_stitching(mesh_cfg) for mesh_cfg in mesh_configs),
-                stitch_tol=float(self.preferences.stitch_tolerance_mm),
-                area_tol=AREA_TOL,
-            )
-            meshio.write(stitched_path, stitched_mesh, file_format="gmsh22", binary=False)
+            try:
+                stitched_mesh, _result = stitch_meshes(
+                    tuple(self._mesh_for_stitching(mesh_cfg) for mesh_cfg in mesh_configs),
+                    stitch_tol=float(self.preferences.stitch_tolerance_mm),
+                    area_tol=AREA_TOL,
+                )
+                meshio.write(stitched_path, stitched_mesh, file_format="gmsh22", binary=False)
+            except Exception as exc:
+                raise RuntimeError(STITCH_FAILURE_MESSAGE) from exc
 
-        return MeshConfig(name=STITCHED_MESH_NAME, file=str(stitched_path), scale_factor=0.001)
+        return MeshConfig(name=STITCHED_MESH_NAME, file=str(stitched_path), scale_factor=DEFAULT_MESH_SCALE_FACTOR)
 
     def _active_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         return tuple(mesh for mesh in self.imported_meshes if mesh.enabled)
 
     def _ath_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        if self.ath_result is None or not self.ath_mesh_enabled:
-            return ()
-        return (
+        return tuple(
             MeshConfig(
-                name=ATH_MESH_NAME,
-                file=str(self.ath_result.solver_msh_path),
-                scale_factor=0.001,
-                translation_m=tuple(value / 1000.0 for value in self.ath_mesh_translation_mm),
-            ),
+                name=script.mesh_name,
+                file=str(result.solver_msh_path),
+                scale_factor=float(script.mesh_scale_factor),
+                translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
+            )
+            for script, result in self._enabled_ath_results()
         )
 
     def _imported_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
@@ -777,7 +1001,7 @@ class MainWindow(QMainWindow):
                 MeshConfig(
                     name=mesh.name,
                     file=mesh_file,
-                    scale_factor=0.001,
+                    scale_factor=float(mesh.scale_factor),
                     translation_m=tuple(value / 1000.0 for value in mesh.translation_mm),
                 )
             )
@@ -792,9 +1016,17 @@ class MainWindow(QMainWindow):
         stitched_mesh = self._stitched_solver_mesh_config()
         if stitched_mesh is not None:
             return (stitched_mesh,)
-        if self.ath_result is None:
-            return self._imported_solver_mesh_configs()
         return (*self._ath_solver_mesh_configs(), *self._imported_solver_mesh_configs())
+
+    def _show_stitch_or_generic_error(self, title: str, exc: Exception) -> None:
+        if str(exc) != STITCH_FAILURE_MESSAGE:
+            QMessageBox.critical(self, title, str(exc))
+            return
+
+        message = QMessageBox(QMessageBox.Critical, title, STITCH_FAILURE_MESSAGE, QMessageBox.Ok, self)
+        if exc.__cause__ is not None:
+            message.setDetailedText(str(exc.__cause__))
+        message.exec()
 
     def _surface_tags_for_meshes(self) -> dict[str, tuple[str, int]]:
         surface_tags: dict[str, tuple[str, int]] = {}
@@ -804,7 +1036,7 @@ class MainWindow(QMainWindow):
         return surface_tags
 
     def _refresh_mesh_preview(self) -> None:
-        if self.ath_result is None:
+        if not self._has_solver_meshes():
             self.preview.clear()
             return
         try:
@@ -818,14 +1050,11 @@ class MainWindow(QMainWindow):
             }
             self.preview.load_mesh_configs(
                 mesh_configs,
-                driven_surfaces={(radiator.mesh or ATH_MESH_NAME, radiator.tag) for radiator in self.ath_result.radiators},
+                driven_surfaces={(radiator.mesh, radiator.tag) for radiator in self._all_radiators()},
                 surface_tags_by_mesh=surface_tags_by_mesh,
             )
         except Exception:
-            if self.ath_mesh_enabled:
-                self.preview.load_ath_result(self.ath_result)
-            else:
-                self.preview.clear()
+            self.preview.clear()
 
     def _load_source_config_by_name(self) -> dict[str, dict]:
         raw_config = self.settings.value("source/config_by_name", "{}")
@@ -842,14 +1071,52 @@ class MainWindow(QMainWindow):
             radiator = radiators_by_name.get(surface_name)
             config_by_name[surface_name] = {
                 "driven": radiator is not None,
-                "level_db": 0.0 if radiator is None else float(radiator.level_db),
-                "polarity": 1 if radiator is None else int(radiator.polarity),
-                "delay_ms": 0.0 if radiator is None else float(radiator.delay_ms),
-                "hpf": self._crossover_settings(None if radiator is None else radiator.hpf),
-                "lpf": self._crossover_settings(None if radiator is None else radiator.lpf),
+                "channel": "main" if radiator is None else radiator.channel,
+                "velocity_offset_db": 0.0 if radiator is None else float(radiator.velocity_offset_db),
             }
         self.settings.setValue("source/config_by_name", json.dumps(config_by_name, sort_keys=True))
         self.settings.sync()
+
+    def _load_channel_config_by_name(self) -> dict[str, dict]:
+        raw_config = self.settings.value("channel/config_by_name", "{}")
+        try:
+            loaded = json.loads(str(raw_config))
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _save_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
+        payload = {
+            channel.name: {
+                "level_db": float(channel.level_db),
+                "polarity": int(channel.polarity),
+                "delay_ms": float(channel.delay_ms),
+                "hpf": self._crossover_settings(channel.hpf),
+                "lpf": self._crossover_settings(channel.lpf),
+            }
+            for channel in channels
+        }
+        self.settings.setValue("channel/config_by_name", json.dumps(payload, sort_keys=True))
+        self.settings.sync()
+
+    def _channel_configs(self) -> tuple[ChannelConfig, ...]:
+        raw = self._load_channel_config_by_name()
+        if not raw:
+            return (ChannelConfig(name="main"),)
+        channels = []
+        for name, payload in sorted(raw.items()):
+            payload = payload if isinstance(payload, dict) else {}
+            channels.append(
+                ChannelConfig(
+                    name=str(name),
+                    level_db=float(payload.get("level_db", 0.0)),
+                    polarity=int(payload.get("polarity", 1)),
+                    delay_ms=float(payload.get("delay_ms", 0.0)),
+                    hpf=self._saved_crossover(payload.get("hpf"), crossover_type="highpass"),
+                    lpf=self._saved_crossover(payload.get("lpf"), crossover_type="lowpass"),
+                )
+            )
+        return tuple(channels) or (ChannelConfig(name="main"),)
 
     def _crossover_settings(self, crossover: CrossoverConfig | None) -> dict:
         if crossover is None or crossover.type.lower() == "none":
@@ -871,17 +1138,16 @@ class MainWindow(QMainWindow):
             frequency_hz=float(raw["frequency_hz"]),
         )
 
-    def _apply_saved_source_config(self, result: AthRunResult | None) -> AthRunResult | None:
+    def _apply_saved_source_config_to_result(self, result: AthRunResult | None, mesh_name: str) -> AthRunResult | None:
         if result is None:
             return None
-        original_result = self.ath_result if hasattr(self, "ath_result") else None
         try:
-            self.ath_result = result
-            surface_tags = self._surface_tags_for_meshes()
+            surface_tags = {
+                f"{mesh_name}:{surface_name}": (mesh_name, tag)
+                for surface_name, tag in read_surface_physical_names(result.solver_msh_path).items()
+            }
         except Exception:
             return result
-        finally:
-            self.ath_result = original_result
 
         config_by_name = self._load_source_config_by_name()
         existing_by_tag = {radiator.tag: radiator for radiator in result.radiators}
@@ -906,20 +1172,55 @@ class MainWindow(QMainWindow):
                         name=surface_name,
                         mesh=mesh_name,
                         tag=tag,
-                        level_db=float(saved.get("level_db", 0.0)),
-                        polarity=int(saved.get("polarity", 1)),
-                        delay_ms=float(saved.get("delay_ms", 0.0)),
-                        hpf=self._saved_crossover(saved.get("hpf"), crossover_type="highpass"),
-                        lpf=self._saved_crossover(saved.get("lpf"), crossover_type="lowpass"),
+                        channel=str(saved.get("channel", "main")),
+                        velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
                     )
                 )
                 continue
 
             existing = existing_by_tag.get(tag)
-            if existing is not None and mesh_name == ATH_MESH_NAME:
-                radiators.append(replace(existing, name=surface_name, mesh=mesh_name, tag=tag))
+            if existing is not None:
+                radiators.append(
+                    replace(
+                        existing,
+                        name=surface_name,
+                        mesh=mesh_name,
+                        tag=tag,
+                        channel=existing.channel or "main",
+                        velocity_offset_db=float(existing.velocity_offset_db),
+                    )
+                )
 
         return replace(result, radiators=tuple(radiators))
+
+    def _apply_saved_source_config(self, result: AthRunResult | None) -> AthRunResult | None:
+        return self._apply_saved_source_config_to_result(result, ATH_MESH_NAME)
+
+    def _apply_saved_imported_source_config(self, surface_tags: dict[str, tuple[str, int]]) -> None:
+        generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
+        config_by_name = self._load_source_config_by_name()
+        existing_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in self.imported_radiators}
+        radiators = []
+        for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
+            if mesh_name in generated_mesh_names:
+                continue
+            saved = config_by_name.get(surface_name)
+            existing = existing_by_key.get((mesh_name, tag))
+            if isinstance(saved, dict):
+                if not bool(saved.get("driven", False)):
+                    continue
+                radiators.append(
+                    RadiatorConfig(
+                        name=surface_name,
+                        mesh=mesh_name,
+                        tag=tag,
+                        channel=str(saved.get("channel", "main")),
+                        velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
+                    )
+                )
+            elif existing is not None:
+                radiators.append(existing)
+        self.imported_radiators = tuple(radiators)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._save_frequency_settings()
@@ -932,6 +1233,40 @@ class MainWindow(QMainWindow):
             if path.exists():
                 return path.read_text(encoding="utf-8")
         return ""
+
+    def _load_initial_ath_scripts(self) -> tuple[AthScriptState, ...]:
+        return default_scripts(self._load_initial_config_text())
+
+    def _load_existing_ath_results(self) -> dict[str, AthRunResult]:
+        results = {}
+        sample = self._load_existing_sample_output()
+        if sample is not None and self.ath_scripts:
+            script = self.ath_scripts[0]
+            results[script.id] = self._apply_saved_source_config_to_result(sample, script.mesh_name)
+        return results
+
+    def _result_from_script_state(self, script: AthScriptState) -> AthRunResult | None:
+        if not script.output_dir or not script.msh_path or not script.stl_path:
+            return None
+        msh_path = Path(script.msh_path)
+        stl_path = Path(script.stl_path)
+        if not msh_path.exists() or not stl_path.exists():
+            return None
+        cleaned_path = Path(script.cleaned_msh_path) if script.cleaned_msh_path else None
+        solver_path = cleaned_path if cleaned_path is not None and cleaned_path.exists() else msh_path
+        try:
+            driven_tag = find_physical_tag_by_name(solver_path, "SD1D1001")
+            return AthRunResult(
+                output_dir=Path(script.output_dir),
+                stl_path=stl_path,
+                msh_path=msh_path,
+                config_path=Path(script.config_path) if script.config_path else Path(script.output_dir) / "config.txt",
+                driven_tag=driven_tag,
+                radiators=detect_ath_radiators(solver_path),
+                cleaned_msh_path=cleaned_path if cleaned_path is not None and cleaned_path.exists() else None,
+            )
+        except Exception:
+            return None
 
     def _load_existing_sample_output(self) -> AthRunResult | None:
         for root in (Path.cwd(), Path.cwd().parent):
@@ -980,7 +1315,14 @@ class MainWindow(QMainWindow):
 
         path = Path(path_text)
         try:
-            self.editor.setPlainText(path.read_text(encoding="utf-8"))
+            script = self._active_script()
+            if script is None:
+                script = new_script(unique_script_name(path.stem, self.ath_scripts), path.read_text(encoding="utf-8"))
+                self.ath_scripts = (*self.ath_scripts, script)
+                self.active_ath_script_id = script.id
+            else:
+                self.ath_scripts = replace_script(self.ath_scripts, script.id, config_text=path.read_text(encoding="utf-8"))
+            self._rebuild_ath_script_tabs()
             self.status_label.setText(f"Imported {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
@@ -988,15 +1330,15 @@ class MainWindow(QMainWindow):
     @Slot()
     def new_project(self) -> None:
         self.project_path = None
-        self.editor.clear()
+        self.ath_scripts = default_scripts("")
+        self.active_ath_script_id = self.ath_scripts[0].id if self.ath_scripts else None
+        self.ath_results_by_script_id = {}
+        self._rebuild_ath_script_tabs()
         self.imported_meshes = ()
-        self.ath_mesh_enabled = True
-        self.ath_mesh_translation_mm = (0.0, 0.0, 0.0)
-        self.ath_result = None
         self.settings.setValue("source/config_by_name", "{}")
+        self.settings.setValue("channel/config_by_name", "{}")
         self.settings.sync()
         self._save_imported_meshes()
-        self._save_ath_mesh_settings()
         self.source_config_button.setEnabled(False)
         self.preview.clear()
         self._clear_plots()
@@ -1051,36 +1393,48 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load project failed", str(exc))
 
     def _project_payload(self) -> dict:
+        active_script = self._active_script()
         return build_project_payload(
-            ath_config_text=self.editor.toPlainText(),
+            ath_config_text="" if active_script is None else active_script.config_text,
             ath_mesh=self._ath_mesh_payload(absolute_paths=True),
             imported_meshes=self._project_imported_meshes_payload(),
             source_config_by_name=self._load_source_config_by_name(),
+            ath_scripts=[script_to_payload(script, absolute_paths=True) for script in self.ath_scripts],
+            active_ath_script_id=self.active_ath_script_id,
+            channel_config_by_name=self._load_channel_config_by_name(),
         )
 
     def _apply_project_payload(self, payload: dict) -> None:
-        self.editor.setPlainText(str(payload.get("ath_config_text", "")))
-        ath_mesh = payload.get("ath_mesh", {})
-        if isinstance(ath_mesh, dict):
-            self.ath_mesh_enabled = bool(ath_mesh.get("enabled", True))
-            translation = ath_mesh.get("translation_mm", [0.0, 0.0, 0.0])
-            if not isinstance(translation, list) or len(translation) != 3:
-                translation = [0.0, 0.0, 0.0]
-            self.ath_mesh_translation_mm = tuple(float(int(round(float(value)))) for value in translation)
-            self._save_ath_mesh_settings()
+        self.ath_scripts = scripts_from_payload(
+            payload.get("ath_scripts"),
+            fallback_config_text=str(payload.get("ath_config_text", "")),
+        )
+        active_id = payload.get("active_ath_script_id")
+        self.active_ath_script_id = active_id if any(script.id == active_id for script in self.ath_scripts) else (
+            self.ath_scripts[0].id if self.ath_scripts else None
+        )
+        self.ath_results_by_script_id = {}
+        for script in self.ath_scripts:
+            result = self._result_from_script_state(script)
+            if result is not None:
+                self.ath_results_by_script_id[script.id] = self._apply_saved_source_config_to_result(result, script.mesh_name)
+        self._rebuild_ath_script_tabs()
         self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
+        self.imported_radiators = ()
         self._save_imported_meshes()
 
         source_config = payload.get("source_config_by_name", {})
         if not isinstance(source_config, dict):
             source_config = {}
         self.settings.setValue("source/config_by_name", json.dumps(source_config, sort_keys=True))
+        channel_config = payload.get("channel_config_by_name", {})
+        if not isinstance(channel_config, dict):
+            channel_config = {}
+        self.settings.setValue("channel/config_by_name", json.dumps(channel_config, sort_keys=True))
         self.settings.sync()
 
-        if self.ath_result is not None:
-            self.ath_result = self._apply_saved_source_config(self.ath_result)
-            self._refresh_mesh_preview()
-        self.source_config_button.setEnabled(self.ath_result is not None)
+        self._refresh_mesh_preview()
+        self.source_config_button.setEnabled(self._has_solver_meshes())
         self._clear_plots()
 
     @Slot()
@@ -1099,7 +1453,8 @@ class MainWindow(QMainWindow):
             path = path.with_suffix(".cfg")
 
         try:
-            path.write_text(self.editor.toPlainText(), encoding="utf-8")
+            script = self._active_script()
+            path.write_text("" if script is None else script.config_text, encoding="utf-8")
             self.status_label.setText(f"Exported {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -1190,11 +1545,19 @@ class MainWindow(QMainWindow):
             return
         self.preferences = dialog.preferences()
         self._save_preferences()
-        if self.ath_result is not None:
-            self.ath_result = self._apply_saved_source_config(self.ath_result)
-            self._refresh_mesh_preview()
+        self._refresh_mesh_preview()
         self._refresh_plots()
         self.status_label.setText("Preferences updated")
+
+    @Slot()
+    def open_diagnostics(self) -> None:
+        dialog = DiagnosticsDialog(self.preferences, self)
+        dialog.exec()
+
+    @Slot()
+    def open_help(self) -> None:
+        dialog = HelpBrowserDialog(APP_ROOT / "docs", self)
+        dialog.exec()
 
     @Slot()
     def open_mesh_config(self) -> None:
@@ -1208,9 +1571,7 @@ class MainWindow(QMainWindow):
             self._apply_mesh_config_dialog_entries(dialog.meshes())
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
-            if self.ath_result is not None:
-                self.ath_result = self._apply_saved_source_config(self.ath_result)
-                self._refresh_mesh_preview()
+            self._refresh_mesh_preview()
             self.status_label.setText(
                 f"Mesh config updated: {len(self._active_imported_meshes())}/{len(self.imported_meshes)} meshes enabled"
             )
@@ -1221,47 +1582,86 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     @Slot()
+    def open_channel_config(self) -> None:
+        dialog = ChannelConfigDialog(self._channel_configs(), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        channels = dialog.channels()
+        self._save_channel_config(channels)
+        valid_names = {channel.name for channel in channels}
+        fallback = channels[0].name
+        for script_id, result in tuple(self.ath_results_by_script_id.items()):
+            self.ath_results_by_script_id[script_id] = replace(
+                result,
+                radiators=tuple(
+                    radiator if radiator.channel in valid_names else replace(radiator, channel=fallback)
+                    for radiator in result.radiators
+                ),
+            )
+        try:
+            self._save_source_config(self._surface_tags_for_meshes(), self._all_radiators())
+        except Exception:
+            pass
+        self.status_label.setText(f"Channel config updated: {len(channels)} channels")
+
+    @Slot()
     def open_source_config(self) -> None:
-        if self.ath_result is None:
+        if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Generate or load a mesh before configuring sources.")
             return
 
         try:
             surface_tags = self._surface_tags_for_meshes()
+            self._apply_saved_imported_source_config(surface_tags)
         except Exception as exc:
-            QMessageBox.critical(self, "Source config failed", str(exc))
+            self._show_stitch_or_generic_error("Source config failed", exc)
             return
 
-        dialog = SourceConfigDialog(surface_tags, self.ath_result.radiators, self)
+        dialog = SourceConfigDialog(surface_tags, self._all_radiators(), self._channel_configs(), self)
         if dialog.exec() != QDialog.Accepted:
             return
 
         radiators = dialog.radiators()
-        self.ath_result = replace(self.ath_result, radiators=radiators)
+        self._apply_radiators_to_results(radiators)
         self._save_source_config(surface_tags, radiators)
         self._refresh_mesh_preview()
         self.status_label.setText(f"Source config updated: {len(radiators)} driven surfaces")
 
     @Slot()
     def generate_geometry(self) -> None:
-        case_name = f"waveguide_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        script = self._active_script()
+        if script is None:
+            QMessageBox.warning(self, "No Ath script", "Add an Ath script before generating.")
+            return
+        case_name = f"{script.mesh_name}_{script.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_root = ATH_OUTPUT_ROOT
         self._clear_plots()
-        self.status_label.setText("Generating waveguide...")
+        self.status_label.setText(f"Generating {script.name}...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self._ensure_ath_runtime_config()
             raw_result = run_ath(
                 ath_exe=self._find_ath_exe(),
-                config_text=self.editor.toPlainText(),
+                config_text=script.config_text,
                 run_root=run_root,
                 case_name=case_name,
             )
             self.status_label.setText("Cleaning generated mesh...")
-            self.ath_result = self._apply_saved_source_config(clean_ath_mesh_output(raw_result))
+            result = self._apply_saved_source_config_to_result(clean_ath_mesh_output(raw_result), script.mesh_name)
+            self.ath_results_by_script_id[script.id] = result
+            self.ath_scripts = replace_script(
+                self.ath_scripts,
+                script.id,
+                output_dir=str(result.output_dir),
+                stl_path=str(result.stl_path),
+                msh_path=str(result.msh_path),
+                cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
+                config_path=str(result.config_path),
+            )
             self._refresh_mesh_preview()
             self.source_config_button.setEnabled(True)
-            self.status_label.setText(f"Generated and cleaned {self.ath_result.output_dir}")
+            self.status_label.setText(f"Generated and cleaned {result.output_dir}")
         except Exception as exc:
             self.status_label.setText("Generate failed")
             QMessageBox.critical(self, "Ath generation failed", str(exc))
@@ -1270,10 +1670,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def start_solve(self) -> None:
-        if self.ath_result is None:
-            QMessageBox.warning(self, "No mesh", "Generate or load an Ath output before solving.")
+        if not self._has_solver_meshes():
+            QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
-        if not self.ath_result.radiators:
+        radiators = self._all_radiators()
+        if not radiators:
             QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
             return
 
@@ -1282,7 +1683,7 @@ class MainWindow(QMainWindow):
             self._save_imported_meshes()
             mesh_configs = self._solver_mesh_configs()
         except Exception as exc:
-            QMessageBox.critical(self, "Imported mesh preparation failed", str(exc))
+            self._show_stitch_or_generic_error("Imported mesh preparation failed", exc)
             return
 
         freq_min = float(min(self.freq_min_spin.value(), self.freq_max_spin.value()))
@@ -1292,13 +1693,14 @@ class MainWindow(QMainWindow):
         ordered_freqs = order_frequencies_for_live_plotting(freqs)
 
         config = SimulationConfig(
-            mesh_file=str(self.ath_result.solver_msh_path),
+            mesh_file=mesh_configs[0].file if mesh_configs else "",
             freq_min=freq_min,
             freq_max=freq_max,
             freq_count=freq_count,
-            tag_throat=self.ath_result.driven_tag,
+            tag_throat=radiators[0].tag,
             meshes=mesh_configs,
-            radiators=self.ath_result.radiators,
+            radiators=radiators,
+            channels=self._channel_configs(),
             step_size=self.preferences.polar_angle_step_deg,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,
@@ -1312,6 +1714,7 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
         self.source_config_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
@@ -1380,7 +1783,8 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
-        self.source_config_button.setEnabled(self.ath_result is not None)
+        self.channel_config_button.setEnabled(True)
+        self.source_config_button.setEnabled(self._has_solver_meshes())
         self.cancel_button.setEnabled(False)
         elapsed_s = None if self.solve_started_at is None else time.perf_counter() - self.solve_started_at
         self.solve_started_at = None

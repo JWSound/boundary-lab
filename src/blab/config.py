@@ -1,3 +1,9 @@
+"""Domain configuration used by the solver and protocol layers.
+
+GUI-only workflow state, such as saved project editor text and imported mesh
+choices, belongs in ``blab.ui.project_io`` until it becomes solver input.
+"""
+
 from __future__ import annotations
 
 import json
@@ -21,10 +27,22 @@ class RadiatorConfig:
     name: str
     tag: int
     mesh: str | None = None
+    channel: str = "main"
+    velocity_offset_db: float = 0.0
     level_db: float = 0.0
     polarity: int = 1
     delay_ms: float = 0.0
     crossover: CrossoverConfig = field(default_factory=CrossoverConfig)
+    hpf: CrossoverConfig = field(default_factory=CrossoverConfig)
+    lpf: CrossoverConfig = field(default_factory=CrossoverConfig)
+
+
+@dataclass
+class ChannelConfig:
+    name: str
+    level_db: float = 0.0
+    polarity: int = 1
+    delay_ms: float = 0.0
     hpf: CrossoverConfig = field(default_factory=CrossoverConfig)
     lpf: CrossoverConfig = field(default_factory=CrossoverConfig)
 
@@ -53,8 +71,10 @@ class SimulationConfig:
     tag_throat: int = 2
     meshes: tuple[MeshConfig, ...] = ()
     radiators: tuple[RadiatorConfig, ...] = ()
+    channels: tuple[ChannelConfig, ...] = ()
     scale_factor: float = 0.001
     use_burton_miller: bool = True
+    flat_target_normalization_enabled: bool = True
     gmres_tolerance: float = 1e-3
     workers: int = 3
     spherical_sampling_enabled: bool = False
@@ -128,6 +148,8 @@ def load_external_config(
                 name=name,
                 tag=int(item["tag"]),
                 mesh=None if item.get("mesh") is None else str(item.get("mesh")),
+                channel=str(item.get("channel", "main")),
+                velocity_offset_db=float(item.get("velocity_offset_db", 0.0)),
                 level_db=float(item.get("level_db", 0.0)),
                 polarity=int(item.get("polarity", 1)),
                 delay_ms=float(item.get("delay_ms", 0.0)),
