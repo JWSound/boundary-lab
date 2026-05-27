@@ -41,3 +41,4 @@ Project files do not store:
 Loading a project updates the editor, mesh config, and source config. It does not automatically run Ath or start a solve.
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
+Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.

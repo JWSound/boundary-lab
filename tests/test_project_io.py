@@ -90,6 +90,54 @@ def test_project_file_migrates_legacy_unversioned_payload(tmp_path) -> None:
     }
 
 
+def test_project_file_resolves_relative_paths(tmp_path) -> None:
+    project_dir = tmp_path / "sample"
+    project_dir.mkdir()
+    project_path = project_dir / "sample.blab.json"
+    project_path.write_text(
+        json.dumps(
+            {
+                "schema_version": PROJECT_SCHEMA_VERSION,
+                "ath_mesh": {
+                    "source_file": "ath/source.msh",
+                    "cleaned_file": "ath/cleaned.msh",
+                },
+                "imported_meshes": [
+                    {
+                        "name": "cabinet",
+                        "source_file": "meshes/cabinet.msh",
+                        "cleaned_file": None,
+                    }
+                ],
+                "ath_scripts": [
+                    {
+                        "id": "abc",
+                        "name": "ath",
+                        "output_dir": "runs/case",
+                        "stl_path": "runs/case/case.stl",
+                        "msh_path": "runs/case/case.msh",
+                        "cleaned_msh_path": "",
+                        "config_path": "runs/case/config.txt",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = read_project_file(project_path)
+
+    assert loaded["ath_mesh"]["source_file"] == str((project_dir / "ath/source.msh").resolve())
+    assert loaded["ath_mesh"]["cleaned_file"] == str((project_dir / "ath/cleaned.msh").resolve())
+    assert loaded["imported_meshes"][0]["source_file"] == str((project_dir / "meshes/cabinet.msh").resolve())
+    assert loaded["imported_meshes"][0]["cleaned_file"] is None
+    assert loaded["ath_scripts"][0]["output_dir"] == str((project_dir / "runs/case").resolve())
+    assert loaded["ath_scripts"][0]["stl_path"] == str((project_dir / "runs/case/case.stl").resolve())
+    assert loaded["ath_scripts"][0]["msh_path"] == str((project_dir / "runs/case/case.msh").resolve())
+    assert loaded["ath_scripts"][0]["cleaned_msh_path"] == ""
+    assert loaded["ath_scripts"][0]["config_path"] == str((project_dir / "runs/case/config.txt").resolve())
+
+
 def test_project_migration_rejects_non_integer_schema() -> None:
     with pytest.raises(ValueError, match="schema_version must be an integer"):
         migrate_project_payload({"schema_version": "future"})

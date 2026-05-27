@@ -53,7 +53,43 @@ def read_project_file(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("Project file must contain a JSON object.")
 
-    return migrate_project_payload(payload)
+    return resolve_project_paths(migrate_project_payload(payload), project_path.parent)
+
+
+def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict[str, Any]:
+    """Resolve project-relative file paths against ``base_dir``."""
+    resolved = dict(payload)
+    base_path = Path(base_dir)
+
+    ath_mesh = _dict_or_empty(resolved.get("ath_mesh")).copy()
+    _resolve_path_fields(ath_mesh, base_path, ("source_file", "cleaned_file"))
+    resolved["ath_mesh"] = ath_mesh
+
+    imported_meshes = []
+    for item in _list_or_empty(resolved.get("imported_meshes")):
+        if not isinstance(item, dict):
+            imported_meshes.append(item)
+            continue
+        mesh = item.copy()
+        _resolve_path_fields(mesh, base_path, ("source_file", "cleaned_file"))
+        imported_meshes.append(mesh)
+    resolved["imported_meshes"] = imported_meshes
+
+    ath_scripts = []
+    for item in _list_or_empty(resolved.get("ath_scripts")):
+        if not isinstance(item, dict):
+            ath_scripts.append(item)
+            continue
+        script = item.copy()
+        _resolve_path_fields(
+            script,
+            base_path,
+            ("output_dir", "stl_path", "msh_path", "cleaned_msh_path", "config_path"),
+        )
+        ath_scripts.append(script)
+    resolved["ath_scripts"] = ath_scripts
+
+    return resolved
 
 
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -124,6 +160,20 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _resolve_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[str, ...]) -> None:
+    for field in fields:
+        value = payload.get(field)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        path = Path(text)
+        if path.is_absolute():
+            continue
+        payload[field] = str((base_dir / path).resolve())
 
 
 def build_project_payload(

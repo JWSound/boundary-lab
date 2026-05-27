@@ -1653,6 +1653,16 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_project_payload(self, payload: dict) -> None:
+        source_config = payload.get("source_config_by_name", {})
+        if not isinstance(source_config, dict):
+            source_config = {}
+        self.settings.setValue("source/config_by_name", json.dumps(source_config, sort_keys=True))
+        channel_config = payload.get("channel_config_by_name", {})
+        if not isinstance(channel_config, dict):
+            channel_config = {}
+        self.settings.setValue("channel/config_by_name", json.dumps(channel_config, sort_keys=True))
+        self.settings.sync()
+
         self.ath_scripts = scripts_from_payload(
             payload.get("ath_scripts"),
             fallback_config_text=str(payload.get("ath_config_text", "")),
@@ -1672,15 +1682,10 @@ class MainWindow(QMainWindow):
         self.imported_radiators = ()
         self._save_imported_meshes()
 
-        source_config = payload.get("source_config_by_name", {})
-        if not isinstance(source_config, dict):
-            source_config = {}
-        self.settings.setValue("source/config_by_name", json.dumps(source_config, sort_keys=True))
-        channel_config = payload.get("channel_config_by_name", {})
-        if not isinstance(channel_config, dict):
-            channel_config = {}
-        self.settings.setValue("channel/config_by_name", json.dumps(channel_config, sort_keys=True))
-        self.settings.sync()
+        try:
+            self._apply_saved_imported_source_config(self._surface_tags_for_meshes())
+        except Exception:
+            self.imported_radiators = ()
 
         self._refresh_mesh_preview()
         self.source_config_button.setEnabled(self._has_solver_meshes())
