@@ -46,6 +46,12 @@ def apply_compact_plot_text(axes) -> None:
             text.set_fontsize(PLOT_LEGEND_SIZE)
 
 
+def clear_plot_axes(axes) -> None:
+    if axes.get_xscale() != "linear":
+        axes.set_xscale("linear")
+    axes.clear()
+
+
 def frequency_to_slider_value(freq_hz: int | float) -> int:
     clamped = min(max(float(freq_hz), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
     fraction = (
@@ -76,7 +82,7 @@ class IsobarCanvas(FigureCanvas):
         self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
 
     def _draw_empty(self) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self._apply_layout()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -96,7 +102,7 @@ class IsobarCanvas(FigureCanvas):
         clip_min_db: float,
         clip_max_db: float,
     ) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self._apply_layout()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -138,7 +144,7 @@ class ImpedanceCanvas(FigureCanvas):
         self._draw_empty()
 
     def _draw_empty(self) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
@@ -154,7 +160,7 @@ class ImpedanceCanvas(FigureCanvas):
         impedance_real: np.ndarray,
         impedance_imag: np.ndarray,
     ) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
@@ -183,7 +189,7 @@ class OnAxisResponseCanvas(FigureCanvas):
         self._draw_empty()
 
     def _draw_empty(self) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
@@ -198,7 +204,7 @@ class OnAxisResponseCanvas(FigureCanvas):
         angles_deg: np.ndarray,
         horizontal_spl_db: np.ndarray,
     ) -> None:
-        self.axes.clear()
+        clear_plot_axes(self.axes)
         self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
@@ -242,8 +248,8 @@ class SpinoramaCanvas(FigureCanvas):
         self.di_axes.yaxis.tick_right()
 
     def _draw_empty(self) -> None:
-        self.axes.clear()
-        self.di_axes.clear()
+        clear_plot_axes(self.axes)
+        clear_plot_axes(self.di_axes)
         self._apply_layout()
         # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -271,8 +277,8 @@ class SpinoramaCanvas(FigureCanvas):
         self.update_curves(curves)
 
     def update_curves(self, curves: SpinoramaCurves) -> None:
-        self.axes.clear()
-        self.di_axes.clear()
+        clear_plot_axes(self.axes)
+        clear_plot_axes(self.di_axes)
         self._apply_layout()
         # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")

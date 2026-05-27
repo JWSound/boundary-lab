@@ -505,16 +505,36 @@ class MainWindow(QMainWindow):
 
     def _set_editor_collapsed(self, collapsed: bool) -> None:
         if hasattr(self, "main_splitter") and not collapsed and self._editor_collapsed:
+            sizes = self.main_splitter.sizes()
+            plot_width = sizes[2] if len(sizes) >= 3 else 400
+            current_editor_width = sizes[0] if sizes else EDITOR_RAIL_WIDTH
+            preview_width = sizes[1] if len(sizes) >= 2 else max(self.preview.width(), 400)
+            editor_delta = max(self._last_editor_width - current_editor_width, 0)
             self.editor_container.setMinimumWidth(0)
             self.editor_container.setMaximumWidth(16777215)
-            self.main_splitter.setSizes([self._last_editor_width, max(self.preview.width(), 400), 400])
+            self.main_splitter.setSizes(
+                [
+                    self._last_editor_width,
+                    max(preview_width - editor_delta, 1),
+                    plot_width,
+                ]
+            )
         elif hasattr(self, "main_splitter") and collapsed:
             sizes = self.main_splitter.sizes()
+            plot_width = sizes[2] if len(sizes) >= 3 else 400
+            preview_width = sizes[1] if len(sizes) >= 2 else max(self.preview.width(), 400)
             if sizes and sizes[0] > EDITOR_RAIL_WIDTH:
                 self._last_editor_width = sizes[0]
+            editor_delta = max(self._last_editor_width - EDITOR_RAIL_WIDTH, 0)
             self.editor_container.setMinimumWidth(EDITOR_RAIL_WIDTH)
             self.editor_container.setMaximumWidth(EDITOR_RAIL_WIDTH)
-            self.main_splitter.setSizes([EDITOR_RAIL_WIDTH, max(self.preview.width(), 400), 400])
+            self.main_splitter.setSizes(
+                [
+                    EDITOR_RAIL_WIDTH,
+                    preview_width + editor_delta,
+                    plot_width,
+                ]
+            )
 
         self._editor_collapsed = collapsed
         self.editor_panel.setVisible(not collapsed)
@@ -942,14 +962,13 @@ class MainWindow(QMainWindow):
         return tuple(radiators)
 
     def _apply_radiators_to_results(self, radiators: tuple[RadiatorConfig, ...]) -> None:
-        radiators_by_mesh_tag = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
         generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
         for script, result in tuple(self._enabled_ath_results()):
-            updated = []
-            for original in result.radiators:
-                replacement = radiators_by_mesh_tag.get((script.mesh_name, original.tag))
-                if replacement is not None:
-                    updated.append(replace(replacement, mesh=script.mesh_name))
+            updated = [
+                replace(radiator, mesh=script.mesh_name)
+                for radiator in radiators
+                if radiator.mesh == script.mesh_name
+            ]
             self.ath_results_by_script_id[script.id] = replace(result, radiators=tuple(updated))
         self.imported_radiators = tuple(
             radiator for radiator in radiators if radiator.mesh not in generated_mesh_names
