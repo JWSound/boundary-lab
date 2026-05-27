@@ -119,6 +119,8 @@ STITCH_FAILURE_MESSAGE = (
 )
 IMPORTED_MESH_SETTINGS_KEY = "mesh/imported_meshes"
 ATH_MESH_SETTINGS_KEY = "mesh/ath_mesh"
+RECENT_PROJECTS_SETTINGS_KEY = "projects/recent"
+MAX_RECENT_PROJECTS = 10
 APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
@@ -143,6 +145,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.imported_meshes: tuple[MeshDialogEntry, ...] = self._load_imported_meshes()
+        self.stitch_imported_meshes = False
         self.preferences = self._load_preferences()
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
@@ -280,9 +283,12 @@ class MainWindow(QMainWindow):
         save_project_as_action.triggered.connect(self.save_project_as)
         file_menu.addAction(save_project_as_action)
 
-        load_project_action = QAction("Load Project", self)
+        load_project_action = QAction("Open Project", self)
         load_project_action.triggered.connect(self.load_project)
         file_menu.addAction(load_project_action)
+
+        self.open_recent_menu = file_menu.addMenu("Open Recent")
+        self._rebuild_open_recent_menu()
 
         file_menu.addSeparator()
 
@@ -600,11 +606,6 @@ class MainWindow(QMainWindow):
             ),
             spl_max_db=settings_float(self.settings, "preferences/spl_max_db", defaults.spl_max_db),
             spl_min_db=settings_float(self.settings, "preferences/spl_min_db", defaults.spl_min_db),
-            stitch_imported_meshes=settings_bool(
-                self.settings,
-                "preferences/stitch_imported_meshes",
-                defaults.stitch_imported_meshes,
-            ),
             stitch_tolerance_mm=settings_float(
                 self.settings,
                 "preferences/stitch_tolerance_mm",
@@ -641,7 +642,6 @@ class MainWindow(QMainWindow):
         )
         self.settings.setValue("preferences/spl_max_db", self.preferences.spl_max_db)
         self.settings.setValue("preferences/spl_min_db", self.preferences.spl_min_db)
-        self.settings.setValue("preferences/stitch_imported_meshes", self.preferences.stitch_imported_meshes)
         self.settings.setValue("preferences/stitch_tolerance_mm", self.preferences.stitch_tolerance_mm)
         self.settings.setValue("preferences/spherical_sampling_enabled", self.preferences.spherical_sampling_enabled)
         self.settings.setValue("preferences/spherical_sampling_points", self.preferences.spherical_sampling_points)
@@ -803,6 +803,85 @@ class MainWindow(QMainWindow):
         self.settings.setValue("window/ath_editor_collapsed", self._editor_collapsed)
         self.settings.setValue("window/ath_editor_width", self._last_editor_width)
         self.settings.sync()
+
+    def _load_recent_project_paths(self) -> list[Path]:
+        raw_paths = self.settings.value(RECENT_PROJECTS_SETTINGS_KEY, "[]")
+        try:
+            values = json.loads(str(raw_paths))
+        except json.JSONDecodeError:
+            values = []
+        if not isinstance(values, list):
+            return []
+
+        paths: list[Path] = []
+        seen = set()
+        for value in values:
+            path_text = str(value).strip()
+            if not path_text:
+                continue
+            path = Path(path_text)
+            key = str(path).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path)
+            if len(paths) >= MAX_RECENT_PROJECTS:
+                break
+        return paths
+
+    def _save_recent_project_paths(self, paths: list[Path]) -> None:
+        self.settings.setValue(
+            RECENT_PROJECTS_SETTINGS_KEY,
+            json.dumps([str(path) for path in paths[:MAX_RECENT_PROJECTS]]),
+        )
+        self.settings.sync()
+        if hasattr(self, "open_recent_menu"):
+            self._rebuild_open_recent_menu()
+
+    def _remember_recent_project(self, path: Path) -> None:
+        try:
+            normalized = path.resolve()
+        except OSError:
+            normalized = path
+
+        recent = [
+            existing
+            for existing in self._load_recent_project_paths()
+            if str(existing).casefold() != str(normalized).casefold()
+        ]
+        self._save_recent_project_paths([normalized, *recent])
+
+    def _remove_recent_project(self, path: Path) -> None:
+        self._save_recent_project_paths(
+            [
+                existing
+                for existing in self._load_recent_project_paths()
+                if str(existing).casefold() != str(path).casefold()
+            ]
+        )
+
+    def _clear_recent_projects(self) -> None:
+        self._save_recent_project_paths([])
+
+    def _rebuild_open_recent_menu(self) -> None:
+        self.open_recent_menu.clear()
+        recent_paths = self._load_recent_project_paths()
+        if not recent_paths:
+            empty_action = QAction("No Recent Projects", self)
+            empty_action.setEnabled(False)
+            self.open_recent_menu.addAction(empty_action)
+            return
+
+        for path in recent_paths:
+            action = QAction(path.name or str(path), self)
+            action.setToolTip(str(path))
+            action.triggered.connect(lambda _checked=False, project_path=path: self.open_recent_project(project_path))
+            self.open_recent_menu.addAction(action)
+
+        self.open_recent_menu.addSeparator()
+        clear_action = QAction("Clear Recent Projects", self)
+        clear_action.triggered.connect(lambda _checked=False: self._clear_recent_projects())
+        self.open_recent_menu.addAction(clear_action)
 
     def _load_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         raw_config = self.settings.value(IMPORTED_MESH_SETTINGS_KEY, "[]")
@@ -1083,7 +1162,7 @@ class MainWindow(QMainWindow):
         return (*self._ath_solver_mesh_configs(), *self._imported_solver_mesh_configs())
 
     def _should_use_stitched_mesh(self) -> bool:
-        return self.preferences.stitch_imported_meshes and len(self._stitch_candidate_mesh_configs()) > 1
+        return self.stitch_imported_meshes and len(self._stitch_candidate_mesh_configs()) > 1
 
     def _stitched_mesh_path(self, mesh_configs: tuple[MeshConfig, ...]) -> Path:
         payload = {
@@ -1490,6 +1569,7 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id = {}
         self._rebuild_ath_script_tabs()
         self.imported_meshes = ()
+        self.stitch_imported_meshes = False
         self.settings.setValue("source/config_by_name", "{}")
         self.settings.setValue("channel/config_by_name", "{}")
         self.settings.sync()
@@ -1523,6 +1603,7 @@ class MainWindow(QMainWindow):
         try:
             project_path = write_project_file(path, self._project_payload())
             self.project_path = project_path
+            self._remember_recent_project(project_path)
             self.status_label.setText(f"Saved project {project_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Save project failed", str(exc))
@@ -1531,21 +1612,32 @@ class MainWindow(QMainWindow):
     def load_project(self) -> None:
         path_text, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Project",
+            "Open Project",
             str(Path.cwd()),
             PROJECT_FILE_FILTER,
         )
         if not path_text:
             return
 
-        path = Path(path_text)
+        self._load_project_from_path(Path(path_text))
+
+    @Slot()
+    def open_recent_project(self, path: Path) -> None:
+        if not path.exists():
+            self._remove_recent_project(path)
+            QMessageBox.warning(self, "Open project failed", f"Recent project not found:\n{path}")
+            return
+        self._load_project_from_path(path)
+
+    def _load_project_from_path(self, path: Path) -> None:
         try:
             payload = read_project_file(path)
             self._apply_project_payload(payload)
             self.project_path = path
-            self.status_label.setText(f"Loaded project {path}")
+            self._remember_recent_project(path)
+            self.status_label.setText(f"Opened project {path}")
         except Exception as exc:
-            QMessageBox.critical(self, "Load project failed", str(exc))
+            QMessageBox.critical(self, "Open project failed", str(exc))
 
     def _project_payload(self) -> dict:
         active_script = self._active_script()
@@ -1553,6 +1645,7 @@ class MainWindow(QMainWindow):
             ath_config_text="" if active_script is None else active_script.config_text,
             ath_mesh=self._ath_mesh_payload(absolute_paths=True),
             imported_meshes=self._project_imported_meshes_payload(),
+            stitch_imported_meshes=self.stitch_imported_meshes,
             source_config_by_name=self._load_source_config_by_name(),
             ath_scripts=[script_to_payload(script, absolute_paths=True) for script in self.ath_scripts],
             active_ath_script_id=self.active_ath_script_id,
@@ -1575,6 +1668,7 @@ class MainWindow(QMainWindow):
                 self.ath_results_by_script_id[script.id] = self._apply_saved_source_config_to_result(result, script.mesh_name)
         self._rebuild_ath_script_tabs()
         self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
+        self.stitch_imported_meshes = bool(payload.get("stitch_imported_meshes", False))
         self.imported_radiators = ()
         self._save_imported_meshes()
 
@@ -1718,7 +1812,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_mesh_config(self) -> None:
-        dialog = MeshConfigDialog(self._mesh_config_dialog_entries(), self)
+        dialog = MeshConfigDialog(
+            self._mesh_config_dialog_entries(),
+            stitch_imported_meshes=self.stitch_imported_meshes,
+            parent=self,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -1726,6 +1824,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Cleaning imported meshes...")
             QApplication.setOverrideCursor(Qt.WaitCursor)
             self._apply_mesh_config_dialog_entries(dialog.meshes())
+            self.stitch_imported_meshes = dialog.stitch_imported_meshes()
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
             self._refresh_mesh_preview()

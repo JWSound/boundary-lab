@@ -7,6 +7,7 @@ Project files store:
 - Ath `.cfg` editor text
 - generated Ath mesh enabled state and XYZ offset
 - imported mesh rows, including absolute `.msh` paths
+- whether imported meshes should be stitched into a single solve mesh
 - source configuration by surface name
 
 Project files do not store:
@@ -30,6 +31,7 @@ Project files do not store:
     "enabled": true
   },
   "imported_meshes": [],
+  "stitch_imported_meshes": false,
   "source_config_by_name": {}
 }
 ```

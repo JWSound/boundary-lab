@@ -36,6 +36,7 @@ def test_project_file_round_trip(tmp_path) -> None:
                 "enabled": True,
             }
         ],
+        stitch_imported_meshes=True,
         source_config_by_name={
             "ath:SD1D1001": {
                 "driven": True,
@@ -83,6 +84,7 @@ def test_project_file_migrates_legacy_unversioned_payload(tmp_path) -> None:
         "active_ath_script_id": None,
         "ath_mesh": {},
         "imported_meshes": [],
+        "stitch_imported_meshes": False,
         "source_config_by_name": {},
         "channel_config_by_name": {},
     }

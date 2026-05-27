@@ -50,7 +50,7 @@ The `ath` row is the default generated mesh. It cannot be renamed or removed, bu
 
 Imported `.msh` rows can be enabled/disabled, renamed, removed, and translated.
 
-When imported meshes are enabled, they are included in the preview and solve. If mesh stitching is enabled in Preferences, Boundary Lab can stitch the active generated/imported meshes before solving.
+When imported meshes are enabled, they are included in the preview and solve. If mesh stitching is enabled in Mesh Config, Boundary Lab can stitch the active generated/imported meshes before solving. The stitching toggle is saved with the project.
 
 ## Source Config
 
@@ -74,7 +74,7 @@ Useful controls include:
 - worker count
 - polar angle step
 - smoothing and SPL display range
-- mesh stitching settings
+- mesh stitch tolerance
 - spherical sampling for the balloon plot
 
 Enable spherical sampling before solving if you want `View > Balloon Plot` to be available afterward.

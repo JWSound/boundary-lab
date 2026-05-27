@@ -204,17 +204,12 @@ class PreferencesDialog(QDialog):
         self.spl_min_spin.setSuffix(" dB")
         self.spl_min_spin.setValue(preferences.spl_min_db)
 
-        self.stitch_imported_meshes_check = QCheckBox("Enabled")
-        self.stitch_imported_meshes_check.setChecked(preferences.stitch_imported_meshes)
-
         self.stitch_tolerance_spin = QDoubleSpinBox()
         self.stitch_tolerance_spin.setRange(0.001, 1000.0)
         self.stitch_tolerance_spin.setDecimals(3)
         self.stitch_tolerance_spin.setSingleStep(0.5)
         self.stitch_tolerance_spin.setSuffix(" mm")
         self.stitch_tolerance_spin.setValue(preferences.stitch_tolerance_mm)
-        self.stitch_tolerance_spin.setEnabled(preferences.stitch_imported_meshes)
-        self.stitch_imported_meshes_check.toggled.connect(self.stitch_tolerance_spin.setEnabled)
 
         self.spherical_sampling_check = QCheckBox("Enabled")
         self.spherical_sampling_check.setChecked(preferences.spherical_sampling_enabled)
@@ -231,7 +226,14 @@ class PreferencesDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(
+        columns = QHBoxLayout()
+        columns.setSpacing(12)
+        left_column = QVBoxLayout()
+        right_column = QVBoxLayout()
+        left_column.setSpacing(8)
+        right_column.setSpacing(8)
+
+        left_column.addWidget(
             self._section(
                 "Solver Config",
                 (
@@ -243,7 +245,7 @@ class PreferencesDialog(QDialog):
                 ),
             )
         )
-        layout.addWidget(
+        left_column.addWidget(
             self._section(
                 "Observation Config",
                 (
@@ -256,16 +258,17 @@ class PreferencesDialog(QDialog):
                 ),
             )
         )
-        layout.addWidget(
+        left_column.addStretch(1)
+
+        right_column.addWidget(
             self._section(
                 "Mesh Config",
                 (
-                    ("Stitch Imported Meshes", self.stitch_imported_meshes_check),
                     ("Stitch Tolerance", self.stitch_tolerance_spin),
                 ),
             )
         )
-        layout.addWidget(
+        right_column.addWidget(
             self._section(
                 "Application",
                 (
@@ -275,7 +278,13 @@ class PreferencesDialog(QDialog):
                 ),
             )
         )
+        right_column.addStretch(1)
+
+        columns.addLayout(left_column, 1)
+        columns.addLayout(right_column, 1)
+        layout.addLayout(columns)
         layout.addWidget(buttons)
+        self.resize(820, 420)
 
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget], ...]) -> QGroupBox:
@@ -304,7 +313,6 @@ class PreferencesDialog(QDialog):
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
             spl_max_db=spl_max,
             spl_min_db=spl_min,
-            stitch_imported_meshes=bool(self.stitch_imported_meshes_check.isChecked()),
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             spherical_sampling_points=int(self.spherical_sampling_points_spin.value()),
@@ -312,7 +320,13 @@ class PreferencesDialog(QDialog):
 
 
 class MeshConfigDialog(QDialog):
-    def __init__(self, meshes: tuple[MeshDialogEntry, ...], parent: QWidget | None = None):
+    def __init__(
+        self,
+        meshes: tuple[MeshDialogEntry, ...],
+        *,
+        stitch_imported_meshes: bool = False,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Mesh Config")
         self._meshes = list(meshes)
@@ -337,12 +351,16 @@ class MeshConfigDialog(QDialog):
 
         self.add_button = QPushButton("Import .msh")
         self.remove_button = QPushButton("Remove")
+        self.stitch_imported_meshes_check = QCheckBox("Stitch Imported Meshes")
+        self.stitch_imported_meshes_check.setChecked(stitch_imported_meshes)
         self.add_button.clicked.connect(self._add_mesh)
         self.remove_button.clicked.connect(self._remove_selected_meshes)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.add_button)
         button_row.addWidget(self.remove_button)
+        button_row.addSpacing(16)
+        button_row.addWidget(self.stitch_imported_meshes_check)
         button_row.addStretch(1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -357,6 +375,9 @@ class MeshConfigDialog(QDialog):
         for mesh in self._meshes:
             self._append_row(mesh)
         self.resize(820, 360)
+
+    def stitch_imported_meshes(self) -> bool:
+        return bool(self.stitch_imported_meshes_check.isChecked())
 
     def accept(self) -> None:
         try:

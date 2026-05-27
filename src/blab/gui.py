@@ -22,7 +22,7 @@ def _missing_gui_dependency_message(exc: ImportError) -> str:
 
 try:
     from PySide6.QtCore import Qt
-    from PySide6.QtGui import QPixmap
+    from PySide6.QtGui import QIcon, QPixmap
     from PySide6.QtWidgets import QApplication, QSplashScreen
 except ImportError as exc:  # pragma: no cover - exercised only by manual GUI launch
     raise SystemExit(
@@ -33,6 +33,26 @@ except ImportError as exc:  # pragma: no cover - exercised only by manual GUI la
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 SPLASH_PATH = APP_ROOT / "assets" / "splash.png"
+ICON_PATHS = tuple(APP_ROOT / "assets" / f"{size}.ico" for size in (32, 64, 128, 256))
+
+
+def _set_windows_app_user_model_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BoundaryLab.Beta")
+    except Exception:
+        pass
+
+
+def _create_app_icon() -> QIcon:
+    icon = QIcon()
+    for path in ICON_PATHS:
+        if path.exists():
+            icon.addFile(str(path))
+    return icon
 
 
 def _create_splash_screen() -> QSplashScreen | None:
@@ -47,7 +67,11 @@ def _create_splash_screen() -> QSplashScreen | None:
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     del argv, prog
     mp.freeze_support()
+    _set_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    app_icon = _create_app_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
 
     splash = _create_splash_screen()
     if splash is not None:
@@ -62,6 +86,8 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         raise SystemExit(_missing_gui_dependency_message(exc)) from exc
 
     window = MainWindow()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
     window.show()
     if splash is not None:
         splash.finish(window)

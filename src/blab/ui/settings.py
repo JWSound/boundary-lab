@@ -25,7 +25,6 @@ class GuiPreferences:
     vertical_normalization_angle: float = 10.0
     spl_max_db: float = 0.0
     spl_min_db: float = -30.0
-    stitch_imported_meshes: bool = False
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
     spherical_sampling_points: int = 6000

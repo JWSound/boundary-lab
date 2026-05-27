@@ -23,6 +23,7 @@ PROJECT_PAYLOAD_KEYS = (
     "active_ath_script_id",
     "ath_mesh",
     "imported_meshes",
+    "stitch_imported_meshes",
     "source_config_by_name",
     "channel_config_by_name",
 )
@@ -90,6 +91,7 @@ def _migrate_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
     payload.setdefault("active_ath_script_id", None)
     payload.setdefault("ath_mesh", {})
     payload.setdefault("imported_meshes", [])
+    payload.setdefault("stitch_imported_meshes", False)
     payload.setdefault("source_config_by_name", {})
     payload.setdefault("channel_config_by_name", {})
     return payload
@@ -103,6 +105,7 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "active_ath_script_id": _optional_str(payload.get("active_ath_script_id")),
         "ath_mesh": _dict_or_empty(payload.get("ath_mesh")),
         "imported_meshes": _list_or_empty(payload.get("imported_meshes")),
+        "stitch_imported_meshes": bool(payload.get("stitch_imported_meshes", False)),
         "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
         "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
     }
@@ -129,6 +132,7 @@ def build_project_payload(
     ath_mesh: dict[str, Any],
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
+    stitch_imported_meshes: bool = False,
     ath_scripts: list[dict[str, Any]] | None = None,
     active_ath_script_id: str | None = None,
     channel_config_by_name: dict[str, Any] | None = None,
@@ -140,6 +144,7 @@ def build_project_payload(
         "active_ath_script_id": active_ath_script_id,
         "ath_mesh": ath_mesh,
         "imported_meshes": imported_meshes,
+        "stitch_imported_meshes": bool(stitch_imported_meshes),
         "source_config_by_name": source_config_by_name,
         "channel_config_by_name": channel_config_by_name or {},
     }
