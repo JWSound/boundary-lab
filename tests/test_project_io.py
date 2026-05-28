@@ -71,23 +71,12 @@ def test_project_file_rejects_unknown_schema(tmp_path) -> None:
         read_project_file(project_path)
 
 
-def test_project_file_migrates_legacy_unversioned_payload(tmp_path) -> None:
-    project_path = tmp_path / "legacy_project.json"
+def test_project_file_rejects_unversioned_payload(tmp_path) -> None:
+    project_path = tmp_path / "unversioned_project.json"
     project_path.write_text('{"ath_config_text": "legacy"}', encoding="utf-8")
 
-    loaded = read_project_file(project_path)
-
-    assert loaded == {
-        "schema_version": PROJECT_SCHEMA_VERSION,
-        "ath_config_text": "legacy",
-        "ath_scripts": [],
-        "active_ath_script_id": None,
-        "ath_mesh": {},
-        "imported_meshes": [],
-        "stitch_imported_meshes": False,
-        "source_config_by_name": {},
-        "channel_config_by_name": {},
-    }
+    with pytest.raises(ValueError, match="missing schema_version"):
+        read_project_file(project_path)
 
 
 def test_project_file_resolves_relative_paths(tmp_path) -> None:

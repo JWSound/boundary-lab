@@ -13,7 +13,6 @@ from typing import Any
 
 
 PROJECT_SCHEMA_VERSION = 1
-PROJECT_SCHEMA_MIN_VERSION = 0
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -93,44 +92,25 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
 
 
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a current-schema project payload.
-
-    Version 0 is the implicit pre-versioned format. It used the same top-level
-    fields as version 1, but omitted ``schema_version``.
-    """
+    """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
-    if schema_version > PROJECT_SCHEMA_VERSION or schema_version < PROJECT_SCHEMA_MIN_VERSION:
+    if schema_version != PROJECT_SCHEMA_VERSION:
         raise ValueError(
             f"Unsupported project schema version {schema_version}. "
-            f"Expected {PROJECT_SCHEMA_MIN_VERSION}-{PROJECT_SCHEMA_VERSION}."
+            f"Expected {PROJECT_SCHEMA_VERSION}."
         )
 
-    migrated = dict(payload)
-    if schema_version == 0:
-        migrated = _migrate_v0_to_v1(migrated)
-
-    return _normalize_project_payload(migrated)
+    return _normalize_project_payload(dict(payload))
 
 
 def _schema_version(payload: dict[str, Any]) -> int:
-    raw_version = payload.get("schema_version", 0)
+    if "schema_version" not in payload:
+        raise ValueError("Project file is missing schema_version.")
+    raw_version = payload["schema_version"]
     try:
         return int(raw_version)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Project schema_version must be an integer, got {raw_version!r}.") from exc
-
-
-def _migrate_v0_to_v1(payload: dict[str, Any]) -> dict[str, Any]:
-    payload["schema_version"] = 1
-    payload.setdefault("ath_config_text", "")
-    payload.setdefault("ath_scripts", [])
-    payload.setdefault("active_ath_script_id", None)
-    payload.setdefault("ath_mesh", {})
-    payload.setdefault("imported_meshes", [])
-    payload.setdefault("stitch_imported_meshes", False)
-    payload.setdefault("source_config_by_name", {})
-    payload.setdefault("channel_config_by_name", {})
-    return payload
 
 
 def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:

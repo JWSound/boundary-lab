@@ -18,14 +18,14 @@ def test_cli_dispatches_subcommand_with_prefixed_prog(monkeypatch) -> None:
         return SimpleNamespace(main=main)
 
     monkeypatch.setattr(cli, "import_module", fake_import_module)
-    monkeypatch.setattr(sys, "argv", ["bemps", "plot", "--help"])
+    monkeypatch.setattr(sys, "argv", ["blab", "plot", "--help"])
 
     cli.main()
 
     assert calls == {
         "module": "blab.plotting",
         "args": ["--help"],
-        "prog": "bemps plot",
+        "prog": "blab plot",
     }
 
 
@@ -54,6 +54,23 @@ def test_solver_accepts_short_public_option_names() -> None:
     assert args.max_angle == 90
     assert args.axial_offset == 0.2
     assert args.gmres_tol == 1e-4
+
+
+def test_solver_rejects_removed_legacy_option_names() -> None:
+    parser = solver._build_arg_parser()
+
+    for option in (
+        "--output-npz-base-path",
+        "--polar-angle-step-deg",
+        "--polar-angle-min-deg",
+        "--polar-angle-max-deg",
+        "--observation-axial-offset-m",
+    ):
+        try:
+            parser.parse_args(["mesh.msh", option, "1"])
+        except SystemExit:
+            continue
+        raise AssertionError(f"{option} should not be accepted")
 
 
 def test_solver_help_uses_short_public_option_names() -> None:

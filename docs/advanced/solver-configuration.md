@@ -29,7 +29,8 @@ Config files may define:
 
 - `[[meshes]]`
 - `[[radiators]]`
-- `[radiators.crossover]`
+- `[radiators.hpf]`
+- `[radiators.lpf]`
 
 TOML paths are resolved relative to the config file location.
 
@@ -86,8 +87,7 @@ When only one mesh is active, `mesh` may be omitted. With multiple configured me
 Each radiator may optionally define a crossover response:
 
 ```toml
-[radiators.crossover]
-type = "highpass"
+[radiators.hpf]
 filter = "linkwitz_riley"
 order = 4
 frequency_hz = 1400.0
@@ -95,12 +95,11 @@ frequency_hz = 1400.0
 
 Supported values:
 
-- `type`: `none`, `lowpass`, `highpass`
 - `filter`: `butterworth`, `linkwitz_riley`
-- `order`: `1`, `2`, `4`
+- `order`: `1`, `2`, `4`, `6`
 - `frequency_hz`: positive cutoff frequency
 
-These responses shape the complex radiator drive used during the acoustic solve.
+Use `[radiators.hpf]` for high-pass shaping and `[radiators.lpf]` for low-pass shaping. If both are present, Boundary Lab multiplies the two complex responses and applies the result to the radiator drive.
 
 ## Example Two-Way Multi-Mesh Setup
 
@@ -125,8 +124,7 @@ level_db = -2.0
 polarity = 1
 delay_ms = 0.0
 
-[radiators.crossover]
-type = "highpass"
+[radiators.hpf]
 filter = "linkwitz_riley"
 order = 4
 frequency_hz = 1400.0
@@ -139,8 +137,7 @@ level_db = 0.0
 polarity = 1
 delay_ms = 0.0
 
-[radiators.crossover]
-type = "lowpass"
+[radiators.lpf]
 filter = "linkwitz_riley"
 order = 4
 frequency_hz = 1400.0

@@ -98,7 +98,6 @@ def radiator_to_dict(radiator: RadiatorConfig) -> dict[str, Any]:
         "level_db": float(radiator.level_db),
         "polarity": int(radiator.polarity),
         "delay_ms": float(radiator.delay_ms),
-        "crossover": crossover_to_dict(radiator.crossover),
         "hpf": crossover_to_dict(radiator.hpf),
         "lpf": crossover_to_dict(radiator.lpf),
     }
@@ -114,7 +113,6 @@ def radiator_from_dict(raw: dict[str, Any]) -> RadiatorConfig:
         level_db=float(raw.get("level_db", 0.0)),
         polarity=int(raw.get("polarity", 1)),
         delay_ms=float(raw.get("delay_ms", 0.0)),
-        crossover=crossover_from_dict(raw.get("crossover")),
         hpf=crossover_from_dict(raw.get("hpf")),
         lpf=crossover_from_dict(raw.get("lpf")),
     )

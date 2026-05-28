@@ -42,7 +42,6 @@ from blab.ath import (
     AthRunResult,
     clean_ath_mesh_output,
     detect_ath_radiators,
-    discover_ath_output,
     find_physical_tag_by_name,
     read_surface_physical_names,
     run_ath,
@@ -144,13 +143,13 @@ class MainWindow(QMainWindow):
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
-        self.imported_meshes: tuple[MeshDialogEntry, ...] = self._load_imported_meshes()
+        self.imported_meshes: tuple[MeshDialogEntry, ...] = ()
         self.stitch_imported_meshes = False
         self.preferences = self._load_preferences()
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
-        self.ath_results_by_script_id: dict[str, AthRunResult] = self._load_existing_ath_results()
+        self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
         self.balloon_window: BalloonPlotWindow | None = None
@@ -1387,17 +1386,7 @@ class MainWindow(QMainWindow):
         existing_by_tag = {radiator.tag: radiator for radiator in result.radiators}
         radiators = []
         for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
-            legacy_surface_name = surface_name.split(":", maxsplit=1)[1]
             saved = config_by_name.get(surface_name)
-            if saved is None:
-                saved = config_by_name.get(legacy_surface_name)
-            if saved is None:
-                matching_saved = [
-                    value
-                    for key, value in config_by_name.items()
-                    if key.endswith(f":{legacy_surface_name}")
-                ]
-                saved = matching_saved[0] if matching_saved else None
             if isinstance(saved, dict):
                 if not bool(saved.get("driven", False)):
                     continue
@@ -1463,21 +1452,10 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _load_initial_config_text(self) -> str:
-        for path in (Path.cwd() / "sampleathscript.cfg", Path.cwd().parent / "sampleathscript.cfg"):
-            if path.exists():
-                return path.read_text(encoding="utf-8")
         return ""
 
     def _load_initial_ath_scripts(self) -> tuple[AthScriptState, ...]:
         return default_scripts(self._load_initial_config_text())
-
-    def _load_existing_ath_results(self) -> dict[str, AthRunResult]:
-        results = {}
-        sample = self._load_existing_sample_output()
-        if sample is not None and self.ath_scripts:
-            script = self.ath_scripts[0]
-            results[script.id] = self._apply_saved_source_config_to_result(sample, script.mesh_name)
-        return results
 
     def _result_from_script_state(self, script: AthScriptState) -> AthRunResult | None:
         if not script.output_dir or not script.msh_path or not script.stl_path:
@@ -1501,22 +1479,6 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             return None
-
-    def _load_existing_sample_output(self) -> AthRunResult | None:
-        for root in (Path.cwd(), Path.cwd().parent):
-            sample_dir = root / "sampleathscript"
-            if sample_dir.exists():
-                try:
-                    return clean_ath_mesh_output(
-                        discover_ath_output(
-                            run_root=root,
-                            case_name="sampleathscript",
-                            config_path=root / "sampleathscript.cfg",
-                        )
-                    )
-                except Exception:
-                    return None
-        return None
 
     def _find_ath_exe(self) -> Path:
         bundled = ATH_BUNDLE_DIR / "ath.exe"

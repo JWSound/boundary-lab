@@ -63,22 +63,6 @@ def _crossover_label(crossover: CrossoverConfig) -> str:
     return "Off"
 
 
-def _split_legacy_crossover(radiator: RadiatorConfig | None) -> tuple[CrossoverConfig, CrossoverConfig]:
-    if radiator is None:
-        return CrossoverConfig(), CrossoverConfig()
-
-    hpf = radiator.hpf
-    lpf = radiator.lpf
-    if hpf.type.lower() == "none" and lpf.type.lower() == "none":
-        legacy = radiator.crossover
-        if legacy.type.lower() == "highpass":
-            hpf = legacy
-        elif legacy.type.lower() == "lowpass":
-            lpf = legacy
-
-    return hpf, lpf
-
-
 def _build_crossover_type_combo(current_label: str) -> QComboBox:
     combo = QComboBox()
     for label, payload in CROSSOVER_TYPE_OPTIONS:

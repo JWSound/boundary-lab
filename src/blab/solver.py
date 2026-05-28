@@ -69,7 +69,6 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=CONFIG.output_npz,
         help="Path for the solver output NPZ file",
     )
-    parser.add_argument("--output-npz-base-path", dest="output_npz", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
         "--freq-min",
         type=float,
@@ -94,28 +93,24 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=CONFIG.step_size,
         help="Angular step for polar evaluation in degrees",
     )
-    parser.add_argument("--polar-angle-step-deg", dest="step_size", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
         "--min-angle",
         type=float,
         default=CONFIG.min_angle,
         help="Minimum polar angle in degrees",
     )
-    parser.add_argument("--polar-angle-min-deg", dest="min_angle", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
         "--max-angle",
         type=float,
         default=CONFIG.max_angle,
         help="Maximum polar angle in degrees",
     )
-    parser.add_argument("--polar-angle-max-deg", dest="max_angle", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
         "--axial-offset",
         type=float,
         default=CONFIG.axial_offset,
         help="Shift the polar evaluation origin along +Z in meters",
     )
-    parser.add_argument("--observation-axial-offset-m", dest="axial_offset", type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument(
         "--workers",
         type=int,
@@ -391,7 +386,7 @@ class HornBEMSolver:
                     f"Radiator '{radiator.name}' references unknown channel '{radiator.channel}'."
                 )
 
-            for crossover in self._radiator_crossovers(radiator):
+            for crossover in (radiator.hpf, radiator.lpf):
                 self._validate_crossover_config(radiator.name, crossover)
 
         for channel in getattr(self, "channel_configs", self._resolved_channel_configs(radiators)).values():
@@ -416,17 +411,6 @@ class HornBEMSolver:
                 lpf=radiator.lpf,
             )
         return resolved
-
-    @staticmethod
-    def _radiator_crossovers(radiator: RadiatorConfig) -> tuple[CrossoverConfig, ...]:
-        crossovers = tuple(
-            crossover
-            for crossover in (radiator.hpf, radiator.lpf)
-            if crossover.type.lower() != "none"
-        )
-        if crossovers:
-            return crossovers
-        return (radiator.crossover,)
 
     @staticmethod
     def _validate_crossover_config(radiator_name: str, crossover: CrossoverConfig) -> None:
@@ -500,8 +484,9 @@ class HornBEMSolver:
         level = 10.0 ** (radiator.level_db / 20.0)
         delay = np.exp(-1j * omega * (radiator.delay_ms / 1000.0))
         crossover = 1.0 + 0.0j
-        for crossover_config in HornBEMSolver._radiator_crossovers(radiator):
-            crossover *= HornBEMSolver._crossover_response(self, crossover_config, freq)
+        for crossover_config in (radiator.hpf, radiator.lpf):
+            if crossover_config.type.lower() != "none":
+                crossover *= HornBEMSolver._crossover_response(self, crossover_config, freq)
         return complex(level * radiator.polarity * delay * crossover)
 
     def _channel_drive(self, channel: ChannelConfig, freq: float) -> complex:

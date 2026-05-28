@@ -6,7 +6,6 @@ choices, belongs in ``blab.ui.project_io`` until it becomes solver input.
 
 from __future__ import annotations
 
-import json
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,7 +31,6 @@ class RadiatorConfig:
     level_db: float = 0.0
     polarity: int = 1
     delay_ms: float = 0.0
-    crossover: CrossoverConfig = field(default_factory=CrossoverConfig)
     hpf: CrossoverConfig = field(default_factory=CrossoverConfig)
     lpf: CrossoverConfig = field(default_factory=CrossoverConfig)
 
@@ -136,11 +134,6 @@ def load_external_config(
             raise ValueError(f"Duplicate radiator name in config: {name}")
         seen_names.add(name)
 
-        crossover_raw = item.get("crossover", {}) or {}
-        if not isinstance(crossover_raw, dict):
-            raise ValueError(f"Radiator {name} crossover must be an object.")
-
-        crossover = _parse_crossover_config(crossover_raw)
         hpf = _parse_crossover_config(item.get("hpf", {}) or {}, crossover_type="highpass")
         lpf = _parse_crossover_config(item.get("lpf", {}) or {}, crossover_type="lowpass")
         radiators.append(
@@ -153,7 +146,6 @@ def load_external_config(
                 level_db=float(item.get("level_db", 0.0)),
                 polarity=int(item.get("polarity", 1)),
                 delay_ms=float(item.get("delay_ms", 0.0)),
-                crossover=crossover,
                 hpf=hpf,
                 lpf=lpf,
             )
@@ -195,10 +187,4 @@ def read_external_config(config_path: Path) -> dict:
     if suffix == ".toml":
         with config_path.open("rb") as f:
             return tomllib.load(f)
-    if suffix == ".json":
-        with config_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    raise ValueError(
-        f"Unsupported config extension for {config_path}. "
-        "Use .toml; .json remains supported for legacy configs."
-    )
+    raise ValueError(f"Unsupported config extension for {config_path}. Use .toml.")

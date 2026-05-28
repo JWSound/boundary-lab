@@ -28,7 +28,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> None:
     args = _build_arg_parser().parse_args(argv)
     module = import_module(COMMAND_MODULES[args.command])
-    module.main(args.args, prog=f"bemps {args.command}")
+    module.main(args.args, prog=f"blab {args.command}")
 
 
 if __name__ == "__main__":

@@ -23,12 +23,6 @@ level_db = -2.5
 polarity = -1
 delay_ms = 0.125
 
-[radiators.crossover]
-type = "highpass"
-filter = "linkwitz_riley"
-order = 4
-frequency_hz = 1200.0
-
 [radiators.hpf]
 filter = "butterworth"
 order = 2
@@ -54,7 +48,6 @@ frequency_hz = 5000.0
     assert radiator.mesh == "waveguide"
     assert radiator.tag == 4
     assert radiator.polarity == -1
-    assert radiator.crossover.filter == "linkwitz_riley"
     assert radiator.hpf.type == "highpass"
     assert radiator.hpf.frequency_hz == 800.0
     assert radiator.lpf.type == "lowpass"
@@ -82,4 +75,12 @@ tag = 2
     )
 
     with pytest.raises(ValueError, match="Duplicate radiator name"):
+        load_external_config(config_path)
+
+
+def test_external_config_rejects_json_files(tmp_path: Path) -> None:
+    config_path = tmp_path / "case.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Use .toml"):
         load_external_config(config_path)
