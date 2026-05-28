@@ -99,6 +99,8 @@ runs/ath_output
 ### Solve
 Initiates the boundary element method (BEM) solver against the current project as it is represented in the 3d viewport and configurations.
 
+Note - the first time solve after opening Boundary Lab will typically take longer as the tool loads backend libraries and initializes OpenCL caches. Subsequent solves utilize the OpenCL warmed caches for faster runtimes.
+
 ### Solve/Stop
 Click `Solve` to start the BEM sweep. Enabled plots update in realtime as each frequency completes. Click `Stop` to stop after the current in-flight frequency finishes; completed frequencies remain available for plotting/export.
 

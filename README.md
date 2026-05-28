@@ -69,9 +69,7 @@ API surface:
 
 ## Documentation
 
-- [GUI user guide](docs/user-guide.md)
-- [Ath setup](docs/ath-setup.md)
-- [Project files](docs/project-files.md)
+- [User Guide](docs/User%20Guide.md)
+- [Model Assumptions](docs/Model%20Assumptions.md)
+- [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
-- [Advanced solver configuration](docs/advanced/solver-configuration.md)
-- [Advanced examples](docs/advanced/examples.md)
