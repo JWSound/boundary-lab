@@ -1,0 +1,88 @@
+{
+  "active_ath_script_id": "af6c0be35ac0",
+  "ath_config_text": "Throat.Profile = 1\nThroat.Diameter = 33.4\n;Throat.Angle = 20\nLength = 80\nTerm.s = 0.4\nTerm.q = 0.996\nTerm.n = 6\nOS.k = 0\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 75\nGCurve.Dist = 0.4\nGCurve.SF = 1, 0.7, 4, 5, 8, 5\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 240\nMorph.TargetHeight = 240\nMorph.TargetShape = 2\nMorph.FixedPart = 0\nMorph.Rate = 7\nMorph.CornerRadius = 12 ; [mm]\nMorph.AllowShrinkage = 1\n\n\nMesh.RearShape = 0\n;Mesh.AngularSegments = 64\nMesh.LengthSegments = 18\n;Mesh.CornerSegments = 4\nMesh.ThroatResolution = 4\nMesh.MouthResolution = 18\nMesh.Quadrants = 14\nMesh.SubdomainSlices =\n\nMesh.Roundover = {\n  Radius = 25  ; [mm]\n  Segments = 5\n}\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\n\nABEC.SimType = 2\n",
+  "ath_mesh": {},
+  "ath_scripts": [
+    {
+      "cleaned_msh_path": "",
+      "config_path": "",
+      "config_text": "Throat.Profile = 1\nThroat.Diameter = 33.4\n;Throat.Angle = 20\nLength = 80\nTerm.s = 0.4\nTerm.q = 0.996\nTerm.n = 6\nOS.k = 0\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 75\nGCurve.Dist = 0.4\nGCurve.SF = 1, 0.7, 4, 5, 8, 5\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 240\nMorph.TargetHeight = 240\nMorph.TargetShape = 2\nMorph.FixedPart = 0\nMorph.Rate = 7\nMorph.CornerRadius = 12 ; [mm]\nMorph.AllowShrinkage = 1\n\n\nMesh.RearShape = 0\n;Mesh.AngularSegments = 64\nMesh.LengthSegments = 18\n;Mesh.CornerSegments = 4\nMesh.ThroatResolution = 4\nMesh.MouthResolution = 18\nMesh.Quadrants = 14\nMesh.SubdomainSlices =\n\nMesh.Roundover = {\n  Radius = 25  ; [mm]\n  Segments = 5\n}\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\n\nABEC.SimType = 2\n",
+      "id": "af6c0be35ac0",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        0
+      ],
+      "msh_path": "",
+      "name": "ath",
+      "output_dir": "",
+      "stl_path": ""
+    }
+  ],
+  "channel_config_by_name": {
+    "High": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1000.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    },
+    "Low": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1000.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": 1
+    }
+  },
+  "imported_meshes": [
+    {
+      "cleaned_file": "",
+      "enabled": true,
+      "name": "wooferenclosure",
+      "scale_factor": 0.001,
+      "source_file": "wooferenclosure.msh",
+      "translation_mm": [
+        0,
+        -250,
+        50
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "source_config_by_name": {
+    "ath:SD1D1001": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "ath:SD1G0": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "wooferenclosure:Enclosure": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "wooferenclosure:Woofer": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    }
+  },
+  "stitch_imported_meshes": false
+}

@@ -1,0 +1,177 @@
+{
+  "active_ath_script_id": "896ffb9c46cc",
+  "ath_config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 51 ; [mm]\nThroat.Angle = 0 ;\nLength = 200 ;\nTerm.s = .8 ;\nTerm.q = 0.996 ;\nTerm.n = 4 ;\nOS.k = 1 ;\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 85 ; [mm]\nGCurve.Dist = 0.5 ; mm distance from throat\nGCurve.SF = 1,1.2,4,3.5,20,2.5 ;{a, b, m, n1, n2, n3}\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 355 ; [mm]\nMorph.TargetHeight = 335 ; [mm\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0 ; start at 40% distance from throat\nMorph.Rate = 3 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 10 ; [mm]\nMorph.AllowShrinkage = 1\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 8 ; [mm]\nMesh.MouthResolution = 24 ;\nMesh.InterfaceResolution = 10 ; [mm]\nMesh.InterfaceOffset = 5.0 ; [mm]\nMesh.Quadrants = 14\nMesh.SubdomainSlices =\n\nMesh.Enclosure = {\n Spacing = 17,17,17,17 ; edge distances (left,top,right,bottom) [mm]\n Depth = 300 ; enclosure depth [mm]\n EdgeRadius = 6 ; radius of the edge treatment [mm]\n EdgeType = 1 ; 1=rounded, 2=chamfered\n FrontResolution = 36,36,36,36 ; front side mesh element size (q1,q2,q3,q4) [mm]\n BackResolution = 48,48,48,48 ; back side mesh element size (q1,q2,q3,q4) [mm]\n}\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\nABEC.SimType = 1 ; 1 = infinite baffle\n\n",
+  "ath_mesh": {},
+  "ath_scripts": [
+    {
+      "cleaned_msh_path": "",
+      "config_path": "",
+      "config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 51 ; [mm]\nThroat.Angle = 0 ;\nLength = 200 ;\nTerm.s = .8 ;\nTerm.q = 0.996 ;\nTerm.n = 4 ;\nOS.k = 1 ;\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 85 ; [mm]\nGCurve.Dist = 0.5 ; mm distance from throat\nGCurve.SF = 1,1.2,4,3.5,20,2.5 ;{a, b, m, n1, n2, n3}\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 355 ; [mm]\nMorph.TargetHeight = 335 ; [mm\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0 ; start at 40% distance from throat\nMorph.Rate = 3 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 10 ; [mm]\nMorph.AllowShrinkage = 1\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 8 ; [mm]\nMesh.MouthResolution = 24 ;\nMesh.InterfaceResolution = 10 ; [mm]\nMesh.InterfaceOffset = 5.0 ; [mm]\nMesh.Quadrants = 14\nMesh.SubdomainSlices =\n\nMesh.Enclosure = {\n Spacing = 17,17,17,17 ; edge distances (left,top,right,bottom) [mm]\n Depth = 300 ; enclosure depth [mm]\n EdgeRadius = 6 ; radius of the edge treatment [mm]\n EdgeType = 1 ; 1=rounded, 2=chamfered\n FrontResolution = 36,36,36,36 ; front side mesh element size (q1,q2,q3,q4) [mm]\n BackResolution = 48,48,48,48 ; back side mesh element size (q1,q2,q3,q4) [mm]\n}\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\nABEC.SimType = 1 ; 1 = infinite baffle\n\n",
+      "id": "896ffb9c46cc",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        -200
+      ],
+      "msh_path": "",
+      "name": "MidWG",
+      "output_dir": "",
+      "stl_path": ""
+    },
+    {
+      "cleaned_msh_path": "",
+      "config_path": "",
+      "config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 36 ; [mm]\nThroat.Angle = 0 ;\nLength = 150 ;\nTerm.s = .8 ;\nTerm.q = 0.996 ;\nTerm.n = 4 ;\nOS.k = 1 ;\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 85 ; [mm]\nGCurve.Dist = 0.5 ; mm distance from throat\nGCurve.SF = 1,1.2,4,3.5,20,2.5 ;{a, b, m, n1, n2, n3}\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 250 ; [mm]\nMorph.TargetHeight = 250 ; [mm\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0 ; start at 40% distance from throat\nMorph.Rate = 3 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 10 ; [mm]\nMorph.AllowShrinkage = 1\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 8 ; [mm]\nMesh.MouthResolution = 24 ;\nMesh.InterfaceResolution = 10 ; [mm]\nMesh.InterfaceOffset = 5.0 ; [mm]\nMesh.Quadrants = 14\nMesh.SubdomainSlices =\n\nMesh.Enclosure = {\n Spacing = 17,17,17,17 ; edge distances (left,top,right,bottom) [mm]\n Depth = 300 ; enclosure depth [mm]\n EdgeRadius = 6 ; radius of the edge treatment [mm]\n EdgeType = 1 ; 1=rounded, 2=chamfered\n FrontResolution = 36,36,36,36 ; front side mesh element size (q1,q2,q3,q4) [mm]\n BackResolution = 48,48,48,48 ; back side mesh element size (q1,q2,q3,q4) [mm]\n}\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\nGridExport:throat = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = .1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n\nABEC.SimType = 1 ; 1 = infinite baffle\n\n",
+      "id": "967397fa01d4",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        308,
+        -150
+      ],
+      "msh_path": "",
+      "name": "HFWaveguide",
+      "output_dir": "",
+      "stl_path": ""
+    }
+  ],
+  "channel_config_by_name": {
+    "High": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 3000.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    },
+    "Low": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 400.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": 1
+    },
+    "Mid": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 400.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 3000.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": 1
+    }
+  },
+  "imported_meshes": [
+    {
+      "cleaned_file": "",
+      "enabled": true,
+      "name": "3WayIntegratedEnclosure",
+      "scale_factor": 0.001,
+      "source_file": "3WayIntegratedEnclosure.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "source_config_by_name": {
+    "ath:SD1D1001": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": -12.0
+    },
+    "ath:SD1D1002": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": -2.5
+    },
+    "ath:SD1D1003": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "ath:SD1D1004": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "ath:SD1G0": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:10": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:10b": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:10c": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:10d": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1D1001": {
+      "channel": "Mid",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1D1001_mesh2": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1G0": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1G0_mesh2": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:front": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:rear": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    }
+  },
+  "stitch_imported_meshes": true
+}

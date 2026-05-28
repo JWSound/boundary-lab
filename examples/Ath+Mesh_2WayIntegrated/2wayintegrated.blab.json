@@ -1,0 +1,108 @@
+{
+  "active_ath_script_id": "96522e9293a3",
+  "ath_config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 25.4 ; [mm]\nThroat.Angle = 4 ;\nLength = 90 ;\nTerm.s = 0.75 ;\nTerm.q = 0.882 ;\nTerm.n = 5 ;\nOS.k = 1 ;\nSlot.Length = 0\nCoverage.Angle = 40\n\n\n\nMorph.TargetWidth = 200 ; [mm]\nMorph.TargetHeight = 150  ; [mm]\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0.5; start at 40% distance from throat\nMorph.Rate = 2.8 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 12 ; [mm]\nMorph.AllowShrinkage = 1\n\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 4 ; [mm]\nMesh.MouthResolution = 18 ;\nMesh.SubdomainSlices =\n\n\n\nABEC.SimType = 1 ; 1 = generate without enclosure, 2 = generate with enclosure\nOutput.ABECProject = 1\nOutput.STL = 1\n\nABEC.SimType = 1 ; 1 = infinite baffle",
+  "ath_mesh": {},
+  "ath_scripts": [
+    {
+      "cleaned_msh_path": "",
+      "config_path": "",
+      "config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 25.4 ; [mm]\nThroat.Angle = 4 ;\nLength = 90 ;\nTerm.s = 0.75 ;\nTerm.q = 0.882 ;\nTerm.n = 5 ;\nOS.k = 1 ;\nSlot.Length = 0\nCoverage.Angle = 40\n\n\n\nMorph.TargetWidth = 200 ; [mm]\nMorph.TargetHeight = 150  ; [mm]\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0.5; start at 40% distance from throat\nMorph.Rate = 2.8 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 12 ; [mm]\nMorph.AllowShrinkage = 1\n\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 4 ; [mm]\nMesh.MouthResolution = 18 ;\nMesh.SubdomainSlices =\n\n\n\nABEC.SimType = 1 ; 1 = generate without enclosure, 2 = generate with enclosure\nOutput.ABECProject = 1\nOutput.STL = 1\n\nABEC.SimType = 1 ; 1 = infinite baffle",
+      "id": "96522e9293a3",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        -90
+      ],
+      "msh_path": "",
+      "name": "Waveguide",
+      "output_dir": "",
+      "stl_path": ""
+    }
+  ],
+  "channel_config_by_name": {
+    "High": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 2500.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    },
+    "Low": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 2500.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": 1
+    }
+  },
+  "imported_meshes": [
+    {
+      "cleaned_file": "",
+      "enabled": true,
+      "name": "2wayintegratedenclosure",
+      "scale_factor": 0.001,
+      "source_file": "2wayintegratedenclosure.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "source_config_by_name": {
+    "2wayintegratedenclosure:baffle": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "2wayintegratedenclosure:rear": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "2wayintegratedenclosure:woofer": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1D1001": {
+      "channel": "High",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:SD1G0": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:baffle": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:rear": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "stitched:woofer": {
+      "channel": "Low",
+      "driven": true,
+      "velocity_offset_db": 0.0
+    }
+  },
+  "stitch_imported_meshes": true
+}
