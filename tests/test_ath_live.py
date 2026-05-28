@@ -70,16 +70,14 @@ $EndPhysicalNames
     assert read_surface_physical_names(msh_path) == {"SD1D1001": 2}
 
 
-def test_discover_ath_output_finds_stl_msh_and_driven_tag(tmp_path: Path) -> None:
+def test_discover_ath_output_finds_msh_and_driven_tag(tmp_path: Path) -> None:
     output_dir = tmp_path / "case"
     mesh_dir = output_dir / "ABEC_FreeStanding"
     mesh_dir.mkdir(parents=True)
-    (output_dir / "case.stl").write_text("solid case\nendsolid case\n", encoding="utf-8")
     _write_minimal_msh(mesh_dir / "case.msh")
 
     result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
 
-    assert result.stl_path == output_dir / "case.stl"
     assert result.msh_path == mesh_dir / "case.msh"
     assert result.driven_tag == 2
     assert [(r.name, r.tag, r.level_db) for r in result.radiators] == [("throat", 2, 0.0)]
@@ -190,7 +188,6 @@ def test_clean_ath_mesh_output_writes_cleaned_solver_mesh(tmp_path: Path) -> Non
     output_dir = tmp_path / "case"
     mesh_dir = output_dir / "ABEC_FreeStanding"
     mesh_dir.mkdir(parents=True)
-    (output_dir / "case.stl").write_text("solid case\nendsolid case\n", encoding="utf-8")
 
     raw_msh = mesh_dir / "case.msh"
     mesh = meshio.Mesh(
@@ -222,7 +219,6 @@ def test_clean_ath_mesh_output_uses_solving_symmetry_axes(tmp_path: Path) -> Non
     output_dir = tmp_path / "case"
     mesh_dir = output_dir / "ABEC_InfiniteBaffle"
     mesh_dir.mkdir(parents=True)
-    (output_dir / "case.stl").write_text("solid case\nendsolid case\n", encoding="utf-8")
     (mesh_dir / "solving.txt").write_text(
         "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
         encoding="utf-8",

@@ -103,7 +103,6 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
                         "id": "abc",
                         "name": "ath",
                         "output_dir": "runs/case",
-                        "stl_path": "runs/case/case.stl",
                         "msh_path": "runs/case/case.msh",
                         "cleaned_msh_path": "",
                         "config_path": "runs/case/config.txt",
@@ -121,7 +120,6 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
     assert loaded["imported_meshes"][0]["source_file"] == str((project_dir / "meshes/cabinet.msh").resolve())
     assert loaded["imported_meshes"][0]["cleaned_file"] is None
     assert loaded["ath_scripts"][0]["output_dir"] == str((project_dir / "runs/case").resolve())
-    assert loaded["ath_scripts"][0]["stl_path"] == str((project_dir / "runs/case/case.stl").resolve())
     assert loaded["ath_scripts"][0]["msh_path"] == str((project_dir / "runs/case/case.msh").resolve())
     assert loaded["ath_scripts"][0]["cleaned_msh_path"] == ""
     assert loaded["ath_scripts"][0]["config_path"] == str((project_dir / "runs/case/config.txt").resolve())

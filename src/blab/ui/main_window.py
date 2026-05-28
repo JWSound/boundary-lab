@@ -1458,11 +1458,10 @@ class MainWindow(QMainWindow):
         return default_scripts(self._load_initial_config_text())
 
     def _result_from_script_state(self, script: AthScriptState) -> AthRunResult | None:
-        if not script.output_dir or not script.msh_path or not script.stl_path:
+        if not script.output_dir or not script.msh_path:
             return None
         msh_path = Path(script.msh_path)
-        stl_path = Path(script.stl_path)
-        if not msh_path.exists() or not stl_path.exists():
+        if not msh_path.exists():
             return None
         cleaned_path = Path(script.cleaned_msh_path) if script.cleaned_msh_path else None
         solver_path = cleaned_path if cleaned_path is not None and cleaned_path.exists() else msh_path
@@ -1470,7 +1469,6 @@ class MainWindow(QMainWindow):
             driven_tag = find_physical_tag_by_name(solver_path, "SD1D1001")
             return AthRunResult(
                 output_dir=Path(script.output_dir),
-                stl_path=stl_path,
                 msh_path=msh_path,
                 config_path=Path(script.config_path) if script.config_path else Path(script.output_dir) / "config.txt",
                 driven_tag=driven_tag,
@@ -1877,7 +1875,6 @@ class MainWindow(QMainWindow):
                 self.ath_scripts,
                 script.id,
                 output_dir=str(result.output_dir),
-                stl_path=str(result.stl_path),
                 msh_path=str(result.msh_path),
                 cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
                 config_path=str(result.config_path),

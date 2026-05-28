@@ -21,7 +21,6 @@ class AthScriptState:
     mesh_scale_factor: float = DEFAULT_MESH_SCALE_FACTOR
     mesh_translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     output_dir: str | None = None
-    stl_path: str | None = None
     msh_path: str | None = None
     cleaned_msh_path: str | None = None
     config_path: str | None = None
@@ -64,7 +63,6 @@ def script_to_payload(script: AthScriptState, *, absolute_paths: bool = False) -
         "mesh_scale_factor": float(script.mesh_scale_factor),
         "mesh_translation_mm": [int(round(value)) for value in script.mesh_translation_mm],
         "output_dir": _path_payload(script.output_dir, absolute_paths),
-        "stl_path": _path_payload(script.stl_path, absolute_paths),
         "msh_path": _path_payload(script.msh_path, absolute_paths),
         "cleaned_msh_path": _path_payload(script.cleaned_msh_path, absolute_paths),
         "config_path": _path_payload(script.config_path, absolute_paths),
@@ -87,7 +85,6 @@ def script_from_payload(payload: object) -> AthScriptState | None:
         mesh_scale_factor=_positive_float(payload.get("mesh_scale_factor"), DEFAULT_MESH_SCALE_FACTOR),
         mesh_translation_mm=tuple(float(int(round(float(value)))) for value in translation),
         output_dir=_optional_path_text(payload.get("output_dir")),
-        stl_path=_optional_path_text(payload.get("stl_path")),
         msh_path=_optional_path_text(payload.get("msh_path")),
         cleaned_msh_path=_optional_path_text(payload.get("cleaned_msh_path")),
         config_path=_optional_path_text(payload.get("config_path")),

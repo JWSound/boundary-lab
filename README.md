@@ -1,10 +1,10 @@
 # Boundary Lab
 
-Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves with `bempp-cl`, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop app.
+Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves with `bempp-cl`, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application.
 
 ## Features
 
-- Ath `.cfg` editor with one-click geometry generation
+- [Ath4](https://at-horns.eu/) `.cfg` editor with one-click geometry generation
 - Mesh preview for generated Ath meshes and imported `.msh` files
 - Multi-mesh and multi-radiator BEM solves
 - Source controls for level, polarity, delay, and HPF/LPF crossover shaping
@@ -18,7 +18,9 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 - Python 3.11 or newer
 - An OpenCL runtime for `bempp-cl`/`pyopencl`
 
-On Windows, the [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
+The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
+
+While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
 ## Install
 
@@ -50,32 +52,20 @@ jobs and streams per-frequency results back as NDJSON events:
 blab server --host 127.0.0.1 --port 8765
 ```
 
-To use it from the GUI, open `Edit > Preferences`, set `Solve Backend` to
+To use it from the GUI application, open `Edit > Preferences`, set `Solve Backend` to
 `Server`, and set `Solve Server URL` to the server address. For another machine
 on the LAN, bind the server to that machine's LAN address or `0.0.0.0` and use
 `http://<server-ip>:8765` in the client. The GUI uploads the solver mesh files
 with each server job, so the server does not need access to the client's local
 paths.
 
-Initial API surface:
+API surface:
 
 - `POST /jobs` submits a solve request with `SimulationConfig` and `frequencies_hz`.
 - `GET /jobs/{job_id}` returns job status and artifact links.
 - `GET /jobs/{job_id}/events?since=0` streams job events as newline-delimited JSON.
 - `POST /jobs/{job_id}/cancel` requests cancellation.
 - `GET /jobs/{job_id}/artifacts/result.npz` downloads the completed result bundle.
-
-## First Workflow
-
-1. Launch the GUI with `blab gui`.
-2. Write or import an Ath `.cfg` in the editor.
-3. Click `Generate` to run Ath and load the generated mesh.
-4. Open `Mesh Config` to enable/disable meshes or apply XYZ offsets.
-5. Open `Source Config` to choose driven surfaces and source settings.
-6. Set the frequency range and count.
-7. Click `Solve`.
-8. Use `View > Balloon Plot` after a solve if spherical sampling was enabled in Preferences.
-9. Use `File > Save Project` to save editor, mesh, and source setup.
 
 ## Documentation
 
@@ -85,7 +75,3 @@ Initial API surface:
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [Advanced solver configuration](docs/advanced/solver-configuration.md)
 - [Advanced examples](docs/advanced/examples.md)
-
-## Notes
-
-Boundary Lab uses prescribed radiator velocity drives. It does not currently model electro-mechanical driver behavior from T/S parameters, motor force factor, suspension compliance, or passive crossover networks.

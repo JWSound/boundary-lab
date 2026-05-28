@@ -83,7 +83,7 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
         _resolve_path_fields(
             script,
             base_path,
-            ("output_dir", "stl_path", "msh_path", "cleaned_msh_path", "config_path"),
+            ("output_dir", "msh_path", "cleaned_msh_path", "config_path"),
         )
         ath_scripts.append(script)
     resolved["ath_scripts"] = ath_scripts

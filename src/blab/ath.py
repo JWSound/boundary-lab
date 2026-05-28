@@ -32,7 +32,6 @@ SOLVING_SYM_RE = re.compile(r"\bSym\s*=\s*([A-Za-z]+)\b")
 @dataclass(frozen=True)
 class AthRunResult:
     output_dir: Path
-    stl_path: Path
     msh_path: Path
     config_path: Path
     driven_tag: int
@@ -153,13 +152,6 @@ def discover_ath_output(*, run_root: Path, case_name: str, config_path: Path | N
             raise FileNotFoundError(f"Ath output directory not found under {run_root}")
         output_dir = dirs[0]
 
-    stl_path = output_dir / f"{case_name}.stl"
-    if not stl_path.exists():
-        stl_matches = sorted(output_dir.glob("*.stl"))
-        if not stl_matches:
-            raise FileNotFoundError(f"No STL output found in {output_dir}")
-        stl_path = stl_matches[0]
-
     msh_root = output_dir / "ABEC_FreeStanding"
     msh_path = msh_root / f"{case_name}.msh"
     if not msh_path.exists():
@@ -172,7 +164,6 @@ def discover_ath_output(*, run_root: Path, case_name: str, config_path: Path | N
     driven_tag = physical_names[DRIVEN_DIAPHRAGM_PHYSICAL_NAME]
     return AthRunResult(
         output_dir=output_dir,
-        stl_path=stl_path,
         msh_path=msh_path,
         config_path=config_path or output_dir / "config.txt",
         driven_tag=driven_tag,

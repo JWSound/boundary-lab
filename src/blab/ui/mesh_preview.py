@@ -36,7 +36,7 @@ class MeshPreview(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         if QtInteractor is None:
             self.viewer = None
-            label = QLabel("Install pyvista and pyvistaqt to enable STL preview.")
+            label = QLabel("Install pyvista and pyvistaqt to enable mesh preview.")
             label.setAlignment(Qt.AlignCenter)
             layout.addWidget(label)
             return
@@ -65,29 +65,13 @@ class MeshPreview(QWidget):
         self._set_total_element_count(0)
 
     def load_ath_result(self, result: AthRunResult) -> None:
-        try:
-            self.load_mesh_configs(
-                (
-                    MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),
-                ),
-                driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
-                surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
-            )
-        except Exception:
-            self.load_stl(result.stl_path)
-
-    def load_stl(self, stl_path: Path) -> None:
-        if self.viewer is None:
-            return
-        camera_position = self._camera_position()
-        mesh = pv.read(stl_path)
-        self.viewer.clear()
-        self._actor_surface_labels = {}
-        self.hover_label.setText("")
-        self._set_total_element_count(int(getattr(mesh, "n_cells", 0)))
-        self.viewer.add_mesh(mesh, color="#cfcfcf", show_edges=True, edge_color="#555555")
-        self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
-        self._restore_camera_or_reset(camera_position)
+        self.load_mesh_configs(
+            (
+                MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),
+            ),
+            driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
+            surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
+        )
 
     def load_msh(
         self,

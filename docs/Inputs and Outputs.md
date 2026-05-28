@@ -42,3 +42,11 @@ Loading a project updates the editor, mesh config, and source config. It does no
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.
+
+## Exporting Plot Images
+
+Users can export any of the rendered plots as .png images.
+
+## Exporting Polar Data
+
+Users can export simulated polar data as individual .txt files per angle sampled for horizontal and vertical axes. The .txt files can be directly imported into tools such as REW and VituixCAD for external analysis.

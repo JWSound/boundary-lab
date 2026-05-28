@@ -1,0 +1,88 @@
+Main Window
+The main window is divided into 3 panes:
+Ath script editor on the left
+3D viewport in the middle
+Output plots on the right
+￼
+Each pane can be resized as needed for various workflows and screen sizes.
+The command strip along the bottom of the window contains geometry generation, solve controls, mesh/source/channel configuration, and frequency range settings.
+Ath Script Editor
+The Ath script editor on the left pane contains a text editor for defining Ath shapes. Existing Ath .cfg files can be imported/exported into this editor using File > Import/Export .cfg.
+
+Mesh Config
+
+
+
+
+view
+
+
+New Project
+Save Project.blab.json
+Save Project As.blab.json
+Load Project
+Import .cfg
+Export .cfg
+Export Plot
+Export Polar Data
+
+
+
+
+
+
+GMRES Tolerance
+Burton Miller Formulation
+Worker Count
+Spherical Sampling
+Spherical Sample Points
+
+Polar Angle Step
+Normalization Angles
+Polar Smoothing
+SPL Min
+SPL Max
+
+Stitch Tolerance
+
+Theme
+Solve Backend
+Solve Server URL
+
+
+
+Generateath/ath.exe.cfg
+
+runs/ath_output
+
+
+
+SolveStop
+
+Mesh Config.msh
+
+.msh
+
+
+Channel Config
+Name
+Level dB
+Polarity
+Delay ms
+HPF/LPF Type
+HPF/LPF Frequency
+
+Source Config
+
+
+
+
+
+
+
+
+
+
+
+
+
