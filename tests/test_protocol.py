@@ -13,6 +13,7 @@ from blab.protocol import (
     solve_request_to_job_inputs,
     solve_request_to_config_and_frequencies,
 )
+from blab.solver import FrequencySolveTimings
 
 
 def test_simulation_config_round_trips_through_wire_dict() -> None:
@@ -78,6 +79,7 @@ def test_frequency_result_round_trips_through_wire_dict() -> None:
         horizontal_spl_db=np.array([82.0, 88.0, 85.0], dtype=np.float32),
         vertical_spl_db=np.array([80.0, 88.0, 84.0], dtype=np.float32),
         sphere_spl_norm_db=np.array([-12.0, -3.0], dtype=np.float32),
+        timings=FrequencySolveTimings(assembly_s=1.25, solve_s=2.5, field_s=0.75),
     )
 
     restored = frequency_result_from_dict(frequency_result_to_dict(result))
@@ -86,6 +88,7 @@ def test_frequency_result_round_trips_through_wire_dict() -> None:
     assert np.allclose(restored.horizontal_spl_norm_db, result.horizontal_spl_norm_db)
     assert np.allclose(restored.impedance, result.impedance)
     assert np.allclose(restored.sphere_spl_norm_db, result.sphere_spl_norm_db)
+    assert restored.timings == result.timings
 
 
 def test_solve_request_round_trips_config_and_frequencies() -> None:

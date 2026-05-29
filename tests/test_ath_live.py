@@ -23,7 +23,7 @@ from blab.live import (
     order_frequencies_for_live_plotting,
     split_frequency_order_for_workers,
 )
-from blab.balloon import BalloonPrepConfig, prepare_balloon_data
+from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
 from blab.postprocess import PrepConfig
 
 
@@ -352,6 +352,37 @@ def test_prepare_balloon_data_builds_surface_arrays() -> None:
     assert prepared["balloon_x"].shape == (1, 10, 12)
     assert prepared["balloon_surface_spl"].shape == (1, 10, 12)
     assert float(prepared["balloon_surface_spl"].max()) <= 0.0
+
+
+def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
+    theta, phi = np.meshgrid(
+        np.linspace(0.0, np.pi, 6, dtype=np.float32),
+        np.linspace(0.0, 2.0 * np.pi, 8, dtype=np.float32),
+        indexing="ij",
+    )
+    spl = (
+        -12.0
+        + 3.0 * np.cos(theta.ravel())
+        + 2.0 * np.sin(phi.ravel())
+    ).astype(np.float32)
+    raw = {
+        "freq_hz": np.array([1000.0], dtype=np.float32),
+        "theta_polar_rad": theta.ravel().astype(np.float32),
+        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "spl_norm": spl[np.newaxis, :],
+    }
+
+    prepared = prepare_balloon_data(raw, BalloonPrepConfig(theta_samples=9, phi_samples=11, min_db=-30.0))
+    expected = _grid_spl_surface(
+        raw["theta_polar_rad"],
+        raw["phi_azimuth_rad"],
+        spl,
+        prepared["theta_grid_rad"],
+        prepared["phi_grid_rad"],
+        -30.0,
+    )
+
+    np.testing.assert_allclose(prepared["balloon_surface_spl"][0], expected, atol=1e-5)
 
 
 def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path) -> None:

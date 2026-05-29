@@ -46,6 +46,13 @@ class RadiatorGeometry:
     p1_dofs: np.ndarray
 
 
+@dataclass(frozen=True)
+class FrequencySolveTimings:
+    assembly_s: float = 0.0
+    solve_s: float = 0.0
+    field_s: float = 0.0
+
+
 # Global instance for easy configuration editing
 CONFIG = SimulationConfig(mesh_file=str(EXAMPLE_CLEAN_MESH_PATH))
 
@@ -631,9 +638,19 @@ class HornBEMSolver:
         imp_matrix = np.stack(results_imp, axis=1).astype(np.float32, copy=False)
         return results_polar, imp_matrix
 
-    def solve_frequency(self, frequency_hz: float) -> tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
+    def solve_frequency(
+        self,
+        frequency_hz: float,
+    ) -> tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         """Solve one frequency using this already-initialized solver instance."""
-        horizontal_spl, vertical_spl, impedance, raw_horizontal_spl, raw_vertical_spl, sphere_spl = self._solve_single_frequency(
+        (
+            horizontal_spl,
+            vertical_spl,
+            impedance,
+            raw_horizontal_spl,
+            raw_vertical_spl,
+            sphere_spl,
+        ), _timings = self._solve_single_frequency_with_timings(
             float(frequency_hz)
         )
         return (
@@ -663,10 +680,32 @@ class HornBEMSolver:
         for i, freq in enumerate(frequencies):
             if stop_requested is not None and stop_requested():
                 break
-            result = self.solve_frequency(float(freq))
+            result, timings = self.solve_frequency_timed(float(freq))
             if show_progress:
                 print(f"[{i+1}/{len(frequencies)}] {freq:.1f} Hz")
-            yield result
+            yield (*result, timings)
+
+    def solve_frequency_timed(
+        self,
+        frequency_hz: float,
+    ) -> tuple[
+        tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None],
+        FrequencySolveTimings,
+    ]:
+        """Solve one frequency and return per-stage timings for live status updates."""
+        result, timings = self._solve_single_frequency_with_timings(float(frequency_hz))
+        return (
+            (
+                float(frequency_hz),
+                result[0],
+                result[1],
+                result[2],
+                result[3],
+                result[4],
+                result[5],
+            ),
+            timings,
+        )
 
     def _resolve_worker_count(self, frequency_count: int) -> int:
         if self.cfg.workers < 1:
@@ -704,17 +743,32 @@ class HornBEMSolver:
         return polar_results, imp_matrix
 
     def _solve_single_frequency(self, freq):
+        result, _timings = self._solve_single_frequency_with_timings(freq)
+        return result
+
+    def _solve_single_frequency_with_timings(self, freq):
         omega = 2 * np.pi * freq
         k = omega / self.cfg.sound_speed
 
+        assembly_start = time.perf_counter()
         operators = self._assemble_frequency_operators(k)
-        channel_corrections = self._channel_flat_target_corrections(freq, k, omega, operators)
+        self._ensure_frequency_operator_assembly(operators)
+        assembly_s = time.perf_counter() - assembly_start
+
+        channel_corrections, solve_s, field_s = self._channel_flat_target_corrections(
+            freq,
+            k,
+            omega,
+            operators,
+        )
         velocity_fun, radiator_drives = self._create_velocity_with_channel_corrections(freq, channel_corrections)
         neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
 
+        solve_start = time.perf_counter()
         dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
+        solve_s += time.perf_counter() - solve_start
 
-        # 5. Post-Processing
+        field_start = time.perf_counter()
         z_data = self._calculate_impedance(dirichlet_fun, radiator_drives)
         horizontal_spl = self._evaluate_field(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun, omega)
         vertical_spl = self._evaluate_field(self.vertical_eval_points, k, dirichlet_fun, neumann_fun, omega)
@@ -723,8 +777,20 @@ class HornBEMSolver:
         if self.spherical_sampling_enabled:
             sphere_spl = self._evaluate_field(self.sphere_eval_points, k, dirichlet_fun, neumann_fun, omega)
             sphere_spl_norm = sphere_spl - horizontal_spl[self.on_axis_idx]
-        
-        return horizontal_spl_norm, vertical_spl_norm, z_data, horizontal_spl, vertical_spl, sphere_spl_norm
+        field_s += time.perf_counter() - field_start
+
+        return (
+            horizontal_spl_norm,
+            vertical_spl_norm,
+            z_data,
+            horizontal_spl,
+            vertical_spl,
+            sphere_spl_norm,
+        ), FrequencySolveTimings(
+            assembly_s=assembly_s,
+            solve_s=solve_s,
+            field_s=field_s,
+        )
 
     def _assemble_frequency_operators(self, k: float) -> tuple:
         dlp = bempp_cl.api.operators.boundary.helmholtz.double_layer(
@@ -754,6 +820,12 @@ class HornBEMSolver:
 
         return lhs, rhs_operator
 
+    def _ensure_frequency_operator_assembly(self, operators: tuple) -> None:
+        for operator in operators:
+            weak_form = getattr(operator, "weak_form", None)
+            if weak_form is not None:
+                weak_form()
+
     def _solve_boundary_pressure(self, operators: tuple, neumann_fun, freq: float):
         lhs, rhs_operator = operators
         rhs = rhs_operator * neumann_fun
@@ -763,24 +835,36 @@ class HornBEMSolver:
             print(f"  Warning: Solver did not converge at {freq:.1f}Hz")
         return dirichlet_fun
 
-    def _channel_flat_target_corrections(self, freq: float, k: float, omega: float, operators: tuple) -> dict[str, float]:
+    def _channel_flat_target_corrections(
+        self,
+        freq: float,
+        k: float,
+        omega: float,
+        operators: tuple,
+    ) -> tuple[dict[str, float], float, float]:
         if not self.cfg.flat_target_normalization_enabled:
-            return {}
+            return {}, 0.0, 0.0
 
         corrections = {}
+        solve_s = 0.0
+        field_s = 0.0
         active_channels = sorted({radiator.config.channel for radiator in self.radiator_geometries})
         for channel_name in active_channels:
             velocity_fun = self._create_channel_unit_velocity(channel_name)
             neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
+            solve_start = time.perf_counter()
             dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
+            solve_s += time.perf_counter() - solve_start
+            field_start = time.perf_counter()
             on_axis_pressure = self._evaluate_pressure(
                 self.horizontal_eval_points[:, self.on_axis_idx : self.on_axis_idx + 1],
                 k,
                 dirichlet_fun,
                 neumann_fun,
             )[0]
+            field_s += time.perf_counter() - field_start
             corrections[channel_name] = _flat_target_correction(on_axis_pressure)
-        return corrections
+        return corrections, solve_s, field_s
 
     def _calculate_impedance(self, dirichlet_fun, radiator_drives):
         z_data = np.empty((len(self.radiator_geometries), 2), dtype=np.float32)

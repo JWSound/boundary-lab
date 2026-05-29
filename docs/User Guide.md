@@ -155,5 +155,8 @@ The viewer comprises:
 - SPL color legend
 - 6 dB contour lines drawn on the surface of the balloon
 - horizontal, vertical, and on-axis guide lines
+- rotatable polar protractor with 30 degree angle spokes and 6 dB rings
+- radar directivity plot for the current frequency and protractor angle
+- isobar slice rendering for the current polar protractor angle
 
 The balloon viewer uses the frequencies that completed before the solve ended.

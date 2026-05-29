@@ -11,7 +11,7 @@ import numpy as np
 
 from blab.config import SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
-from blab.solver import HornBEMSolver
+from blab.solver import FrequencySolveTimings, HornBEMSolver
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class FrequencyResult:
     horizontal_spl_db: np.ndarray | None = None
     vertical_spl_db: np.ndarray | None = None
     sphere_spl_norm_db: np.ndarray | None = None
+    timings: FrequencySolveTimings = field(default_factory=FrequencySolveTimings)
 
 
 @dataclass
@@ -255,8 +256,26 @@ class LiveSolver:
         *,
         stop_requested: Callable[[], bool] | None = None,
     ):
-        for freq, horizontal, vertical, impedance, raw_horizontal, raw_vertical, sphere_spl in self.solver.solve_frequencies_stream(
+        for (
+            freq,
+            horizontal,
+            vertical,
+            impedance,
+            raw_horizontal,
+            raw_vertical,
+            sphere_spl,
+            timings,
+        ) in self.solver.solve_frequencies_stream(
             frequencies,
             stop_requested=stop_requested,
         ):
-            yield FrequencyResult(freq, horizontal, vertical, impedance, raw_horizontal, raw_vertical, sphere_spl)
+            yield FrequencyResult(
+                freq,
+                horizontal,
+                vertical,
+                impedance,
+                raw_horizontal,
+                raw_vertical,
+                sphere_spl,
+                timings,
+            )

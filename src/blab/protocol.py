@@ -11,6 +11,7 @@ import numpy as np
 
 from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import FrequencyResult
+from blab.solver import FrequencySolveTimings
 
 
 PROTOCOL_VERSION = 1
@@ -185,7 +186,26 @@ def frequency_result_to_dict(result: FrequencyResult) -> dict[str, Any]:
         "horizontal_spl_db": ndarray_to_wire(result.horizontal_spl_db),
         "vertical_spl_db": ndarray_to_wire(result.vertical_spl_db),
         "sphere_spl_norm_db": ndarray_to_wire(result.sphere_spl_norm_db),
+        "timings": frequency_solve_timings_to_dict(result.timings),
     }
+
+
+def frequency_solve_timings_to_dict(timings: FrequencySolveTimings | None) -> dict[str, float]:
+    timings = timings or FrequencySolveTimings()
+    return {
+        "assembly_s": float(timings.assembly_s),
+        "solve_s": float(timings.solve_s),
+        "field_s": float(timings.field_s),
+    }
+
+
+def frequency_solve_timings_from_dict(raw: dict[str, Any] | None) -> FrequencySolveTimings:
+    raw = raw or {}
+    return FrequencySolveTimings(
+        assembly_s=float(raw.get("assembly_s", 0.0)),
+        solve_s=float(raw.get("solve_s", 0.0)),
+        field_s=float(raw.get("field_s", 0.0)),
+    )
 
 
 def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
@@ -197,6 +217,7 @@ def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
         horizontal_spl_db=ndarray_from_wire(raw.get("horizontal_spl_db")),
         vertical_spl_db=ndarray_from_wire(raw.get("vertical_spl_db")),
         sphere_spl_norm_db=ndarray_from_wire(raw.get("sphere_spl_norm_db")),
+        timings=frequency_solve_timings_from_dict(raw.get("timings")),
     )
 
 

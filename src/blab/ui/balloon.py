@@ -3,21 +3,29 @@
 from __future__ import annotations
 
 import numpy as np
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 from PySide6.QtCore import QSize, QTimer, Qt, Slot
 from PySide6.QtGui import QColor, QFontMetrics, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
+    QSlider,
+    QSplitter,
+    QSpinBox,
     QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
+from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
+from blab.ui.plots import LIVE_ISOBAR_ANGLE_SAMPLES, LIVE_ISOBAR_FREQ_SAMPLES, IsobarCanvas
 
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
@@ -27,6 +35,9 @@ CONTOUR_STEP_DB = 6.0
 GUIDE_LINE_WIDTH = 3
 CONTOUR_COLOR = "#f4f0e6"
 LEGEND_TICKS_DB = (0.0, -6.0, -12.0, -18.0, -24.0, -30.0)
+PROTRACTOR_ANGLES_DEG = (30.0, 60.0, 90.0, 120.0, 150.0)
+PROTRACTOR_COLOR = "#d8dee9"
+PROTRACTOR_AXIS_COLOR = "#ffffff"
 
 
 class BalloonPlotWindow(QDialog):
@@ -36,10 +47,12 @@ class BalloonPlotWindow(QDialog):
         *,
         min_db: float,
         max_db: float,
+        polar_smoothing: int | float | None = 24,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Balloon Plot")
+        self.setWindowFlags(self.windowFlags() | Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint)
         self.resize(1100, 760)
 
         try:
@@ -55,8 +68,11 @@ class BalloonPlotWindow(QDialog):
         self._prepared = None
         self._min_db = float(min_db)
         self._max_db = float(max_db)
+        self._polar_smoothing = polar_smoothing
         self._mesh_actor = None
         self._balloon_mesh = None
+        self._protractor_actors = []
+        self._protractor_radius = 1.0
         self._hover_picker = None
         self._hover_observer = None
 
@@ -67,6 +83,32 @@ class BalloonPlotWindow(QDialog):
         self.frequency_combo = QComboBox()
         self.frequency_combo.setEnabled(False)
         self.frequency_combo.currentIndexChanged.connect(self._on_frequency_changed)
+
+        self.protractor_angle_slider = QSlider(Qt.Horizontal)
+        self.protractor_angle_slider.setRange(-180, 180)
+        self.protractor_angle_slider.setSingleStep(1)
+        self.protractor_angle_slider.setPageStep(15)
+        self.protractor_angle_slider.setValue(0)
+        self.protractor_angle_slider.valueChanged.connect(self._on_protractor_angle_changed)
+        self.protractor_angle_slider.sliderReleased.connect(self._render_isobar_slice_if_enabled)
+
+        self.protractor_angle_spin = QSpinBox()
+        self.protractor_angle_spin.setRange(-180, 180)
+        self.protractor_angle_spin.setSuffix(" deg")
+        self.protractor_angle_spin.setValue(0)
+        self.protractor_angle_spin.valueChanged.connect(self._on_protractor_angle_changed)
+
+        self.protractor_toggle = QCheckBox("Radar Slicer")
+        self.protractor_toggle.setChecked(True)
+        self.protractor_toggle.toggled.connect(self._on_protractor_toggled)
+
+        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.92)
+        self.slice_plot.setMinimumSize(330, 286)
+        self.slice_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        self.radar_plot = SliceRadarCanvas(self._min_db, self._max_db)
+        self.radar_plot.setMinimumSize(220, 286)
+        self.radar_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.loading_label = QLabel("Rendering Balloon...")
         self.loading_label.setAlignment(Qt.AlignCenter)
@@ -111,16 +153,32 @@ class BalloonPlotWindow(QDialog):
         side_layout.setContentsMargins(12, 12, 12, 12)
         form = QFormLayout()
         form.addRow("Frequency", self.frequency_combo)
+        form.addRow("", self.protractor_toggle)
+        form.addRow("Slice Angle", self.protractor_angle_slider)
+        form.addRow("", self.protractor_angle_spin)
         side_layout.addLayout(form)
         side_layout.addSpacing(14)
-        side_layout.addWidget(ColorLegend(self._min_db, self._max_db, side_panel))
+        legend_radar_layout = QHBoxLayout()
+        legend_radar_layout.setContentsMargins(0, 0, 0, 0)
+        legend_radar_layout.setSpacing(4)
+        legend_radar_layout.addWidget(ColorLegend(self._min_db, self._max_db, side_panel))
+        legend_radar_layout.addWidget(self.radar_plot, stretch=1)
+        side_layout.addLayout(legend_radar_layout)
+        side_layout.addWidget(self.slice_plot, stretch=1)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(220)
+        side_panel.setMinimumWidth(430)
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(viewport_container)
+        splitter.addWidget(side_panel)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([700, 460])
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(viewport_container, stretch=1)
-        layout.addWidget(side_panel)
+        layout.addWidget(splitter)
 
         QTimer.singleShot(0, self._prepare_and_render_initial)
 
@@ -140,13 +198,16 @@ class BalloonPlotWindow(QDialog):
             self.frequency_combo.addItem(_format_frequency(float(freq)), float(freq))
         self.frequency_combo.blockSignals(False)
         self.frequency_combo.setEnabled(True)
+        self._set_protractor_controls_enabled(self.protractor_toggle.isChecked())
 
         self._render_frequency(0, reset_camera=True)
+        self._render_isobar_slice_if_enabled()
         self.loading_label.hide()
 
     @Slot(int)
     def _on_frequency_changed(self, index: int) -> None:
         self._render_frequency(index, reset_camera=False)
+        self._render_isobar_slice_if_enabled()
 
     def _render_frequency(self, index: int, *, reset_camera: bool) -> None:
         if index < 0 or self._prepared is None:
@@ -176,12 +237,91 @@ class BalloonPlotWindow(QDialog):
         )
         self._add_spl_contours(mesh)
         self._add_orientation_guides(mesh)
+        if self.protractor_toggle.isChecked():
+            self._add_protractor(mesh)
         self.plotter.add_axes()
         self.plotter.enable_anti_aliasing()
         if reset_camera:
             self.plotter.reset_camera()
             self.plotter.camera_position = "iso"
         self.plotter.render()
+
+    @Slot(int)
+    def _on_protractor_angle_changed(self, angle_deg: int) -> None:
+        sender = self.sender()
+        angle = int(angle_deg)
+        if sender is not self.protractor_angle_slider:
+            self.protractor_angle_slider.blockSignals(True)
+            self.protractor_angle_slider.setValue(angle)
+            self.protractor_angle_slider.blockSignals(False)
+        if sender is not self.protractor_angle_spin:
+            self.protractor_angle_spin.blockSignals(True)
+            self.protractor_angle_spin.setValue(angle)
+            self.protractor_angle_spin.blockSignals(False)
+
+        if self._balloon_mesh is None:
+            return
+        self._set_protractor_angle(angle)
+        self.plotter.render()
+        if sender is self.protractor_angle_spin or (
+            sender is self.protractor_angle_slider and not self.protractor_angle_slider.isSliderDown()
+        ):
+            self._render_isobar_slice_if_enabled()
+
+    @Slot(bool)
+    def _on_protractor_toggled(self, enabled: bool) -> None:
+        self._set_protractor_controls_enabled(enabled)
+        self.radar_plot.setVisible(enabled)
+        self.slice_plot.setVisible(enabled)
+        if enabled and self._balloon_mesh is not None:
+            self._add_protractor(self._balloon_mesh)
+            self._render_isobar_slice()
+        elif not enabled:
+            self._remove_protractor()
+        self.plotter.render()
+
+    @Slot()
+    def _render_isobar_slice(self) -> None:
+        if self._prepared is None:
+            return
+        freqs_hz, angles_deg, values_db = _balloon_isobar_slice(
+            self._prepared,
+            float(self.protractor_angle_slider.value()),
+            clip_min_db=self._min_db,
+            angle_samples=LIVE_ISOBAR_ANGLE_SAMPLES,
+            freq_samples=LIVE_ISOBAR_FREQ_SAMPLES,
+            octave_smoothing=self._polar_smoothing,
+        )
+        self.slice_plot.update_plot(
+            freqs_hz,
+            angles_deg,
+            values_db,
+            self._min_db,
+            self._max_db,
+        )
+        self._render_radar_slice()
+
+    @Slot()
+    def _render_isobar_slice_if_enabled(self) -> None:
+        if self.protractor_toggle.isChecked():
+            self._render_isobar_slice()
+
+    def _render_radar_slice(self) -> None:
+        if self._prepared is None:
+            return
+        frequency_index = self.frequency_combo.currentIndex()
+        if frequency_index < 0:
+            return
+        angles_deg, values_db = _balloon_radar_slice(
+            self._prepared,
+            frequency_index,
+            float(self.protractor_angle_slider.value()),
+        )
+        self.radar_plot.update_plot(angles_deg, values_db)
+
+    def _set_protractor_controls_enabled(self, enabled: bool) -> None:
+        self.protractor_angle_slider.setEnabled(enabled)
+        self.protractor_angle_spin.setEnabled(enabled)
 
     def _install_hover_picker(self) -> None:
         self._hover_picker = self._vtk.vtkCellPicker()
@@ -283,6 +423,39 @@ class BalloonPlotWindow(QDialog):
             always_visible=True,
         )
 
+    def _add_protractor(self, mesh) -> None:
+        self._remove_protractor()
+        db_radius = max(_mesh_extent(mesh), 1.0)
+        radius = db_radius * 1.04
+        self._protractor_radius = radius
+        tube_radius = max(radius * 0.002, 0.018)
+        angle_deg = float(self.protractor_angle_slider.value())
+
+        for points, color, width_scale in _protractor_line_specs(radius, db_radius, 0.0):
+            line = self._pv.Spline(points, len(points)) if len(points) > 2 else self._pv.Line(points[0], points[-1])
+            actor = self.plotter.add_mesh(
+                line.tube(radius=tube_radius * width_scale),
+                color=color,
+                smooth_shading=True,
+                opacity=0.78,
+                show_scalar_bar=False,
+            )
+            self._protractor_actors.append(actor)
+        self._set_protractor_angle(angle_deg)
+
+    def _set_protractor_angle(self, angle_deg: float) -> None:
+        for actor in self._protractor_actors:
+            if hasattr(actor, "SetOrientation"):
+                actor.SetOrientation(0.0, 0.0, float(angle_deg))
+
+    def _remove_protractor(self) -> None:
+        for actor in self._protractor_actors:
+            try:
+                self.plotter.remove_actor(actor, render=False)
+            except Exception:
+                pass
+        self._protractor_actors = []
+
     def closeEvent(self, event) -> None:
         self.plotter.close()
         super().closeEvent(event)
@@ -332,6 +505,134 @@ def _balloon_hover_text(mesh, point_id: int) -> str:
     )
 
 
+def _balloon_isobar_slice(
+    prepared: dict[str, np.ndarray],
+    azimuth_deg: float,
+    *,
+    clip_min_db: float | None = None,
+    angle_samples: int | None = None,
+    freq_samples: int | None = None,
+    octave_smoothing: int | float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg)
+    values_db = _fractional_octave_smooth(values_db.astype(float, copy=False), freqs_hz.astype(float), octave_smoothing)
+    if clip_min_db is not None:
+        values_db = np.maximum(values_db, float(clip_min_db))
+    angles_deg, freqs_hz, values_db = _interpolate_isobar_heatmap(
+        angles_deg.astype(float, copy=False),
+        freqs_hz.astype(float, copy=False),
+        values_db,
+        angle_samples,
+        freq_samples,
+        float(clip_min_db) if clip_min_db is not None else float(np.nanmin(values_db)),
+    )
+    return (
+        freqs_hz.astype(np.float32, copy=False),
+        angles_deg.astype(np.float32, copy=False),
+        values_db.astype(np.float32, copy=False),
+    )
+
+
+def _balloon_radar_slice(
+    prepared: dict[str, np.ndarray],
+    frequency_index: int,
+    azimuth_deg: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg)
+    del freqs_hz
+    index = int(np.clip(frequency_index, 0, values_db.shape[1] - 1))
+    return angles_deg, values_db[:, index].astype(np.float32, copy=False)
+
+
+def _balloon_raw_slice(
+    prepared: dict[str, np.ndarray],
+    azimuth_deg: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    freqs_hz = np.asarray(prepared["freq_hz"], dtype=np.float32)
+    spl = np.asarray(prepared["balloon_surface_spl"], dtype=np.float32)
+    theta_grid = np.asarray(prepared["theta_grid_rad"], dtype=float)
+    phi_grid = np.asarray(prepared["phi_grid_rad"], dtype=float)
+
+    if spl.ndim != 3 or theta_grid.ndim != 2 or phi_grid.ndim != 2:
+        raise ValueError("Prepared balloon data must contain 3D SPL and 2D angle grids.")
+    if spl.shape[1:] != theta_grid.shape or theta_grid.shape != phi_grid.shape:
+        raise ValueError("Prepared balloon SPL and angle grids must have matching surface shapes.")
+
+    theta_values = theta_grid[:, 0]
+    phi_values = phi_grid[0, :]
+    theta_deg = np.rad2deg(theta_values).astype(np.float32)
+    azimuth_rad = np.deg2rad(float(azimuth_deg) % 360.0)
+    opposite_azimuth_rad = (azimuth_rad + np.pi) % (2.0 * np.pi)
+    positive_phi_index = _nearest_periodic_angle_index(phi_values, azimuth_rad)
+    negative_phi_index = _nearest_periodic_angle_index(phi_values, opposite_azimuth_rad)
+
+    positive_values = spl[:, :, positive_phi_index]
+    negative_values = spl[:, 1:, negative_phi_index][:, ::-1]
+    angles_deg = np.concatenate((-theta_deg[1:][::-1], theta_deg)).astype(np.float32, copy=False)
+    values_db = np.concatenate((negative_values, positive_values), axis=1).T.astype(np.float32, copy=False)
+    return freqs_hz, angles_deg, values_db
+
+
+def _nearest_periodic_angle_index(angles_rad: np.ndarray, target_rad: float) -> int:
+    wrapped_angles = np.mod(np.asarray(angles_rad, dtype=float), 2.0 * np.pi)
+    target = float(target_rad) % (2.0 * np.pi)
+    delta = np.abs((wrapped_angles - target + np.pi) % (2.0 * np.pi) - np.pi)
+    return int(np.argmin(delta))
+
+
+def _protractor_line_specs(
+    outer_radius: float,
+    db_radius: float,
+    azimuth_deg: float,
+) -> list[tuple[np.ndarray, str, float]]:
+    outer_radius = max(float(outer_radius), 1e-6)
+    db_radius = max(float(db_radius), 1e-6)
+    u_axis, z_axis = _protractor_basis(azimuth_deg)
+    specs: list[tuple[np.ndarray, str, float]] = []
+
+    for ring_radius in _protractor_ring_radii(db_radius):
+        specs.append((_circle_points_in_plane(ring_radius, u_axis, z_axis), PROTRACTOR_COLOR, 0.75))
+
+    specs.append((_circle_points_in_plane(outer_radius, u_axis, z_axis), PROTRACTOR_AXIS_COLOR, 1.1))
+    specs.append((np.vstack((-outer_radius * z_axis, outer_radius * z_axis)), PROTRACTOR_AXIS_COLOR, 1.15))
+    specs.append((np.vstack((-outer_radius * u_axis, outer_radius * u_axis)), PROTRACTOR_COLOR, 0.9))
+
+    for angle_deg in PROTRACTOR_ANGLES_DEG:
+        for sign in (1.0, -1.0):
+            angle_rad = np.deg2rad(angle_deg)
+            direction = np.cos(angle_rad) * z_axis + sign * np.sin(angle_rad) * u_axis
+            specs.append((np.vstack((np.zeros(3), outer_radius * direction)), PROTRACTOR_COLOR, 0.9))
+
+    return specs
+
+
+def _protractor_basis(azimuth_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    azimuth = np.deg2rad(float(azimuth_deg))
+    u_axis = np.array([np.cos(azimuth), np.sin(azimuth), 0.0], dtype=float)
+    z_axis = np.array([0.0, 0.0, 1.0], dtype=float)
+    return u_axis, z_axis
+
+
+def _protractor_ring_radii(radius: float, step_db: float = CONTOUR_STEP_DB) -> list[float]:
+    if radius <= 0.0 or step_db <= 0.0:
+        return []
+    rings = np.arange(step_db, radius + step_db * 0.25, step_db, dtype=float)
+    return [float(ring) for ring in rings if ring < radius]
+
+
+def _circle_points_in_plane(
+    radius: float,
+    u_axis: np.ndarray,
+    z_axis: np.ndarray,
+    samples: int = 145,
+) -> np.ndarray:
+    angles = np.linspace(0.0, 2.0 * np.pi, int(samples), dtype=float)
+    return radius * (
+        np.cos(angles)[:, np.newaxis] * u_axis[np.newaxis, :]
+        + np.sin(angles)[:, np.newaxis] * z_axis[np.newaxis, :]
+    )
+
+
 def _picked_point_id(picker, mesh) -> int | None:
     if hasattr(picker, "GetPointId"):
         point_id = int(picker.GetPointId())
@@ -373,6 +674,59 @@ def _vtk_actor_address(actor) -> str:
     if hasattr(actor, "GetAddressAsString"):
         return actor.GetAddressAsString("")
     return str(id(actor))
+
+
+class SliceRadarCanvas(FigureCanvas):
+    def __init__(self, min_db: float, max_db: float):
+        self.figure = Figure(figsize=(2.75, 2.75), dpi=100)
+        self.axes = self.figure.add_subplot(111, projection="polar")
+        super().__init__(self.figure)
+        self._min_db = float(min_db)
+        self._max_db = float(max_db)
+        self._draw_empty()
+
+    def sizeHint(self) -> QSize:
+        return QSize(235, 286)
+
+    def _draw_empty(self) -> None:
+        self.axes.clear()
+        self._apply_axes()
+        self.draw_idle()
+
+    def update_plot(self, angles_deg: np.ndarray, values_db: np.ndarray) -> None:
+        self.axes.clear()
+        self._apply_axes()
+
+        angles = np.asarray(angles_deg, dtype=float)
+        values = np.asarray(values_db, dtype=float)
+        if angles.size >= 2 and values.size == angles.size:
+            theta = np.deg2rad(np.concatenate([angles, angles[:1]]))
+            radius = np.maximum(np.concatenate([values, values[:1]]) - self._min_db, 0.0)
+            self.axes.plot(theta, radius, color="#ff4f7a", linewidth=1.8)
+
+        self.draw_idle()
+
+    def _apply_axes(self) -> None:
+        radius_max = max(self._max_db - self._min_db, 1.0)
+        self.figure.patch.set_facecolor("#1f1f1f")
+        self.axes.set_facecolor("#1f1f1f")
+        self.figure.subplots_adjust(left=0.04, right=0.88, top=0.94, bottom=0.06)
+        self.axes.set_theta_zero_location("N")
+        self.axes.set_theta_direction(-1)
+        self.axes.set_ylim(0.0, radius_max)
+        theta_ticks = np.arange(0, 360, 30)
+        theta_labels = [str(angle) if angle in (30, 60, 90) else "" for angle in theta_ticks]
+        self.axes.set_thetagrids(theta_ticks, labels=theta_labels)
+        ring_radii = _protractor_ring_radii(radius_max)
+        self.axes.set_yticks(ring_radii)
+        ring_labels = [f"{int(round(self._min_db + radius))}" for radius in ring_radii]
+        self.axes.set_yticklabels(ring_labels)
+        self.axes.set_rlabel_position(102)
+        self.axes.grid(color="#6f757c", linewidth=0.8, alpha=0.75)
+        self.axes.spines["polar"].set_color("#9aa3ad")
+        self.axes.spines["polar"].set_linewidth(0.8)
+        self.axes.tick_params(axis="x", length=0, pad=1, colors="#d8dee9", labelsize=8)
+        self.axes.tick_params(axis="y", length=0, pad=1, colors="#d8dee9", labelsize=8)
 
 
 class ColorLegend(QWidget):

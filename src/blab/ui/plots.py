@@ -69,17 +69,19 @@ def slider_value_to_frequency(value: int) -> int:
 
 
 class IsobarCanvas(FigureCanvas):
-    def __init__(self, title: str):
+    def __init__(self, title: str, *, left_margin: float = 0.14, right_margin: float = 0.98):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure)
         self.title = title
+        self.left_margin = float(left_margin)
+        self.right_margin = float(right_margin)
         self.colors = VisualizerConfig.custom_colors
         self._apply_layout()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
+        self.figure.subplots_adjust(left=self.left_margin, right=self.right_margin, top=0.91, bottom=0.2)
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)

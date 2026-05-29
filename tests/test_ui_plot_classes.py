@@ -41,6 +41,15 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     assert "plot_layout.setSpacing(4)" in main_source
 
 
+def test_isobar_canvas_allows_custom_right_margin() -> None:
+    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+
+    assert "left_margin: float = 0.14" in source
+    assert "right_margin: float = 0.98" in source
+    assert "left=self.left_margin" in source
+    assert "right=self.right_margin" in source
+
+
 def test_balloon_contours_exclude_configured_maximum() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 

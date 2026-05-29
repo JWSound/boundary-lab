@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.interpolate import griddata
+from scipy.interpolate import LinearNDInterpolator, griddata
+from scipy.spatial import Delaunay, cKDTree
 
 
 DEFAULT_BALLOON_GRID_THETA = 40
@@ -50,16 +51,10 @@ def prepare_balloon_data(
     balloon_x = np.empty(surface_shape, dtype=np.float32)
     balloon_y = np.empty(surface_shape, dtype=np.float32)
     balloon_z = np.empty(surface_shape, dtype=np.float32)
+    interpolator = _BalloonSurfaceInterpolator(theta_polar_rad, phi_azimuth_rad, theta_mesh, phi_mesh, prep_cfg.min_db)
 
     for index in range(freq_hz.size):
-        grid_spl = _grid_spl_surface(
-            theta_polar_rad,
-            phi_azimuth_rad,
-            spl_norm[index],
-            theta_mesh,
-            phi_mesh,
-            prep_cfg.min_db,
-        ).astype(np.float32, copy=False)
+        grid_spl = interpolator.interpolate(spl_norm[index]).astype(np.float32, copy=False)
         x, y, z = _balloon_xyz(grid_spl, theta_mesh, phi_mesh, prep_cfg.min_db)
         balloon_surface_spl[index] = grid_spl
         balloon_x[index] = x
@@ -77,6 +72,51 @@ def prepare_balloon_data(
         "min_db": np.asarray(prep_cfg.min_db, dtype=np.float32),
         "max_db": np.asarray(prep_cfg.max_db, dtype=np.float32),
     }
+
+
+class _BalloonSurfaceInterpolator:
+    def __init__(
+        self,
+        points_theta: np.ndarray,
+        points_phi: np.ndarray,
+        theta_mesh: np.ndarray,
+        phi_mesh: np.ndarray,
+        fallback_db: float,
+    ):
+        wrapped_theta, wrapped_phi, wrapped_indices = _wrap_periodic_phi_geometry(points_theta, points_phi)
+        self._wrapped_indices = wrapped_indices
+        self._target_shape = theta_mesh.shape
+        self._target_points = np.column_stack((theta_mesh.ravel(), phi_mesh.ravel()))
+        source_points = np.column_stack((wrapped_theta, wrapped_phi))
+        self._triangulation = Delaunay(source_points)
+        _, self._nearest_indices = cKDTree(source_points).query(self._target_points, k=1)
+        self._fallback_db = float(fallback_db)
+
+    def interpolate(self, points_spl: np.ndarray) -> np.ndarray:
+        wrapped_spl = np.asarray(points_spl, dtype=np.float32)[self._wrapped_indices]
+        interpolator = LinearNDInterpolator(self._triangulation, wrapped_spl, fill_value=np.nan)
+        grid_spl = interpolator(self._target_points).reshape(self._target_shape)
+
+        if np.isnan(grid_spl).any():
+            nearest = wrapped_spl[self._nearest_indices].reshape(self._target_shape)
+            grid_spl = np.where(np.isnan(grid_spl), nearest, grid_spl)
+
+        return np.nan_to_num(grid_spl, nan=self._fallback_db)
+
+
+def _wrap_periodic_phi_geometry(
+    points_theta: np.ndarray,
+    points_phi: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    indices = np.arange(points_theta.size)
+    mask_start = points_phi < np.pi
+    mask_end = points_phi > np.pi
+
+    return (
+        np.concatenate([points_theta, points_theta[mask_start], points_theta[mask_end]]),
+        np.concatenate([points_phi, points_phi[mask_start] + 2.0 * np.pi, points_phi[mask_end] - 2.0 * np.pi]),
+        np.concatenate([indices, indices[mask_start], indices[mask_end]]),
+    )
 
 
 def _wrap_periodic_phi_data(

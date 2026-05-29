@@ -118,6 +118,17 @@ STITCH_FAILURE_MESSAGE = (
 )
 IMPORTED_MESH_SETTINGS_KEY = "mesh/imported_meshes"
 ATH_MESH_SETTINGS_KEY = "mesh/ath_mesh"
+
+
+def _format_frequency_solve_timings(result: FrequencyResult) -> str:
+    timings = result.timings
+    return (
+        f"Assembly {timings.assembly_s:.2f}s | "
+        f"Solve {timings.solve_s:.2f}s | "
+        f"Field {timings.field_s:.2f}s"
+    )
+
+
 RECENT_PROJECTS_SETTINGS_KEY = "projects/recent"
 MAX_RECENT_PROJECTS = 10
 APP_ROOT = Path(__file__).resolve().parents[3]
@@ -1745,6 +1756,7 @@ class MainWindow(QMainWindow):
                 raw_balloon,
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
+                polar_smoothing=self.preferences.polar_smoothing,
                 parent=self,
             )
             self.balloon_window.show()
@@ -1989,7 +2001,7 @@ class MainWindow(QMainWindow):
         self.live_dataset.add(result)
         self.status_label.setText(
             f"Solved {self.live_dataset.solved_count}/{self.freq_count_spin.value()} "
-            f"({result.freq_hz:.1f} Hz)"
+            f"({result.freq_hz:.1f} Hz) | {_format_frequency_solve_timings(result)}"
         )
         self._refresh_plots()
 
