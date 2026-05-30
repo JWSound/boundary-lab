@@ -149,8 +149,13 @@ class PlotEntry:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, startup_status: Callable[[str], None] | None = None):
         super().__init__()
+        def startup(stage: str) -> None:
+            if startup_status is not None:
+                startup_status(stage)
+
+        startup("Loading saved settings...")
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
@@ -172,8 +177,10 @@ class MainWindow(QMainWindow):
         self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
         self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
+        startup("Preparing Ath runtime config...")
         self._ensure_ath_runtime_config()
 
+        startup("Building script editor...")
         self.editor_tabs = QTabWidget()
         self.editor_tabs.setTabsClosable(True)
         self.editor_tabs.currentChanged.connect(self._on_active_ath_tab_changed)
@@ -186,8 +193,10 @@ class MainWindow(QMainWindow):
         self.collapse_editor_button.clicked.connect(self.toggle_editor_panel)
         self._rebuild_ath_script_tabs()
 
+        startup("Creating mesh preview...")
         self.preview = MeshPreview()
         if self._has_solver_meshes():
+            startup("Loading mesh preview...")
             self._refresh_mesh_preview()
 
         self.generate_button = QPushButton("Generate")
@@ -213,6 +222,7 @@ class MainWindow(QMainWindow):
         self.freq_count_spin = self._make_spin(3, 161, freq_count)
 
         self.status_label = QLabel("Ready")
+        startup("Creating plot panels...")
         self.horizontal_plot = IsobarCanvas("Horizontal Isobar")
         self.vertical_plot = IsobarCanvas("Vertical Isobar")
         self.impedance_plot = ImpedanceCanvas()
@@ -258,9 +268,13 @@ class MainWindow(QMainWindow):
         self.plot_view_actions: dict[str, QAction] = {}
         self.export_plot_actions: dict[str, QAction] = {}
 
+        startup("Wiring controls...")
         self._wire_controls()
+        startup("Building menus...")
         self._build_menu_bar()
+        startup("Building main layout...")
         self._build_layout()
+        startup("Restoring window layout...")
         self._restore_window_state()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
