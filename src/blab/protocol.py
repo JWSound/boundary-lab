@@ -10,8 +10,7 @@ from typing import Any
 import numpy as np
 
 from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
-from blab.live import FrequencyResult
-from blab.solver import FrequencySolveTimings
+from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 
 
 PROTOCOL_VERSION = 1
@@ -187,6 +186,7 @@ def frequency_result_to_dict(result: FrequencyResult) -> dict[str, Any]:
         "vertical_spl_db": ndarray_to_wire(result.vertical_spl_db),
         "sphere_spl_norm_db": ndarray_to_wire(result.sphere_spl_norm_db),
         "timings": frequency_solve_timings_to_dict(result.timings),
+        "diagnostics": solver_diagnostics_to_dict(result.diagnostics),
     }
 
 
@@ -208,6 +208,25 @@ def frequency_solve_timings_from_dict(raw: dict[str, Any] | None) -> FrequencySo
     )
 
 
+def solver_diagnostics_to_dict(diagnostics: SolverDiagnostics | None) -> dict[str, Any] | None:
+    if diagnostics is None:
+        return None
+    return {
+        "convergence_info": diagnostics.convergence_info,
+        "message": diagnostics.message,
+    }
+
+
+def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostics | None:
+    if raw is None:
+        return None
+    convergence_info = raw.get("convergence_info")
+    return SolverDiagnostics(
+        convergence_info=None if convergence_info is None else int(convergence_info),
+        message=None if raw.get("message") is None else str(raw["message"]),
+    )
+
+
 def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
     return FrequencyResult(
         freq_hz=float(raw["freq_hz"]),
@@ -218,6 +237,7 @@ def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
         vertical_spl_db=ndarray_from_wire(raw.get("vertical_spl_db")),
         sphere_spl_norm_db=ndarray_from_wire(raw.get("sphere_spl_norm_db")),
         timings=frequency_solve_timings_from_dict(raw.get("timings")),
+        diagnostics=solver_diagnostics_from_dict(raw.get("diagnostics")),
     )
 
 

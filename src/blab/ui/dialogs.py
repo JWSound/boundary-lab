@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.settings import GuiPreferences
 
 
@@ -104,28 +105,29 @@ class PreferencesDialog(QDialog):
         self.theme_combo.setCurrentText(theme_label)
 
         self.solve_backend_combo = QComboBox()
-        self.solve_backend_options = {
-            "Local process": "local",
-            "Server": "server",
-        }
+        self.solve_backend_options = backend_label_to_id()
         self.solve_backend_combo.addItems(self.solve_backend_options.keys())
+        current_backend = normalize_backend_id(preferences.solve_backend)
         backend_label = next(
             (
                 label
                 for label, value in self.solve_backend_options.items()
-                if value == preferences.solve_backend
+                if value == current_backend
             ),
-            "Local process",
+            "Bempp OpenCL CPU",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
 
         self.solve_server_url_edit = QLineEdit()
         self.solve_server_url_edit.setText(preferences.solve_server_url)
-        self.solve_server_url_edit.setEnabled(preferences.solve_backend == "server")
+        self.solve_server_url_edit.setEnabled(backend_info(current_backend).capabilities.is_remote)
+
+        def update_backend_fields(label: str) -> None:
+            backend_id = self.solve_backend_options.get(label, "local")
+            self.solve_server_url_edit.setEnabled(backend_info(backend_id).capabilities.is_remote)
+
         self.solve_backend_combo.currentTextChanged.connect(
-            lambda label: self.solve_server_url_edit.setEnabled(
-                self.solve_backend_options.get(label, "local") == "server"
-            )
+            update_backend_fields
         )
 
         self.gmres_spin = QDoubleSpinBox()

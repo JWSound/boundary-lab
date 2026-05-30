@@ -334,6 +334,33 @@ def test_live_dataset_builds_balloon_bundle_from_sphere_results() -> None:
     assert bundle["spl_norm"].shape == (1, 8)
 
 
+def test_live_dataset_balloon_bundle_does_not_reindex_float32_frequencies() -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    theta = np.linspace(0.1, np.pi - 0.1, 4, dtype=np.float32)
+    phi = np.linspace(0.0, 2.0 * np.pi, 4, endpoint=False, dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["throat"]),
+        sphere_r_distance_m=np.full(4, 2.0, dtype=np.float32),
+        sphere_theta_polar_rad=theta,
+        sphere_phi_azimuth_rad=phi,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=241.35852050781247,
+            horizontal_spl_norm_db=np.array([-6.0, 0.0, -6.0]),
+            vertical_spl_norm_db=np.array([-8.0, 0.0, -8.0]),
+            impedance=np.array([[1.0, 0.2]], dtype=np.float32),
+            sphere_spl_norm_db=np.linspace(-12.0, 0.0, 4, dtype=np.float32),
+        )
+    )
+
+    bundle = dataset.as_balloon_raw_bundle()
+
+    assert bundle is not None
+    assert bundle["spl_norm"].shape == (1, 4)
+
+
 def test_prepare_balloon_data_builds_surface_arrays() -> None:
     theta_values = np.linspace(0.05, np.pi - 0.05, 8, dtype=np.float32)
     phi_values = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False, dtype=np.float32)

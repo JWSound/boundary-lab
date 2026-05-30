@@ -59,6 +59,7 @@ from blab.live import (
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
+from blab.solvers.registry import normalize_backend_id
 from blab.ui.balloon import BalloonPlotWindow
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
@@ -105,7 +106,6 @@ from blab.ui.settings import (
     settings_optional_int,
     settings_str,
 )
-from blab.ui.remote_solve_worker import RemoteSolveWorker
 from blab.ui.solve_worker import SolveWorker
 
 
@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
         self.solve_started_at: float | None = None
+        self.solve_cancel_requested = False
         self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
         self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
@@ -585,7 +586,9 @@ class MainWindow(QMainWindow):
         defaults = GuiPreferences()
         return GuiPreferences(
             theme=self._normalized_theme(settings_str(self.settings, "preferences/theme", defaults.theme)),
-            solve_backend=settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend),
+            solve_backend=normalize_backend_id(
+                settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend)
+            ),
             solve_server_url=settings_str(self.settings, "preferences/solve_server_url", defaults.solve_server_url),
             gmres_tolerance=settings_float(self.settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
             polar_angle_step_deg=settings_float(
@@ -1952,13 +1955,17 @@ class MainWindow(QMainWindow):
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
         self.solve_started_at = time.perf_counter()
-        self.status_label.setText("Initializing solver...")
+        self.solve_cancel_requested = False
+        self.status_label.setText("Initializing Solver...")
 
         self.solve_thread = QThread(self)
-        if self.preferences.solve_backend == "server":
-            self.solve_worker = RemoteSolveWorker(config, ordered_freqs, self.preferences.solve_server_url)
-        else:
-            self.solve_worker = SolveWorker(config, ordered_freqs, worker_count=self.preferences.worker_count)
+        self.solve_worker = SolveWorker(
+            config,
+            ordered_freqs,
+            worker_count=self.preferences.worker_count,
+            backend_id=self.preferences.solve_backend,
+            server_url=self.preferences.solve_server_url,
+        )
         self.solve_worker.moveToThread(self.solve_thread)
         self.solve_thread.started.connect(self.solve_worker.run)
         self.solve_worker.initialized.connect(self._on_solver_initialized)
@@ -1973,6 +1980,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def cancel_solve(self) -> None:
+        self.solve_cancel_requested = True
         if self.solve_worker is not None:
             self.solve_worker.stop()
             self.status_label.setText("Stop requested; waiting for current frequency...")
@@ -2025,9 +2033,20 @@ class MainWindow(QMainWindow):
             self.export_polar_data_action.setEnabled(True)
             self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
             elapsed_text = "" if elapsed_s is None else f" in {elapsed_s:.1f} s"
+            if self.solve_cancel_requested:
+                self.status_label.setText(
+                    f"Solve stopped: {self.live_dataset.solved_count} frequencies{elapsed_text}"
+                )
+                self.solve_cancel_requested = False
+                self.solve_worker = None
+                self.solve_thread = None
+                return
             self.status_label.setText(
                 f"Solve complete: {self.live_dataset.solved_count} frequencies{elapsed_text}"
             )
+        elif self.solve_cancel_requested:
+            self.status_label.setText("Solve stopped")
+        self.solve_cancel_requested = False
         self.solve_worker = None
         self.solve_thread = None
 

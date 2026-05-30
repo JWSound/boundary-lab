@@ -22,6 +22,24 @@ The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
+### Optional Julia CUDA GPU Solver
+
+Boundary Lab can also run the local Julia CUDA GPU backend from the Preferences window by selecting `Julia CUDA GPU` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
+
+Additional requirements:
+
+- NVIDIA GPU with a working CUDA-capable driver
+- Julia installed and available on `PATH`, or configured as the Julia executable in Preferences
+- Boundary Lab's Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
+
+To prepare the Julia environment from the repository root:
+
+```bash
+julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
+```
+
+The first Julia CUDA solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent Julia worker and warmed CUDA kernels.
+
 ## Install
 
 From the repository root:

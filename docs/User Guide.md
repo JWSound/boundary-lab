@@ -78,7 +78,11 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.
-- `Solve Backend`: Set the solver backend to either use the built-in application solver, or a server-based backend.
+- `Solve Backend`: Set the solver backend to either use a built-in application solver, or a server-based backend.
+    1. **Server** - Use whatever solver is configured on the remote server via the HTTP streaming API.
+    2. **Julia CUDA GPU** - Use the Julia-based GPU solver. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
+    3. **Bempp OpenCL CPU** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
+
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. 
 
 ## Command Strip

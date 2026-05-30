@@ -1,0 +1,638 @@
+using JSON
+using LinearAlgebra
+using Printf
+using StaticArrays
+
+include(joinpath(@__DIR__, "src", "JBEMCore.jl"))
+using .JBEMCore
+
+LinearAlgebra.BLAS.set_num_threads(Threads.nthreads())
+
+function emit_event(event_type::String; kwargs...)
+    payload = Dict{String,Any}("type" => event_type)
+    for (key, value) in kwargs
+        payload[String(key)] = value
+    end
+    println(JSON.json(payload))
+    flush(stdout)
+end
+
+function fail!(message::AbstractString)
+    emit_event("failed"; error=String(message))
+    exit(1)
+end
+
+function parse_args(args)
+    request_path = nothing
+    worker_mode = false
+    i = 1
+    while i <= length(args)
+        if args[i] == "--request" && i < length(args)
+            request_path = args[i + 1]
+            i += 2
+        elseif args[i] == "--worker"
+            worker_mode = true
+            i += 1
+        else
+            fail!("Unknown argument: $(args[i])")
+        end
+    end
+    return request_path, worker_mode
+end
+
+get_value(raw, key::String, default=nothing) = haskey(raw, key) ? raw[key] : default
+
+function as_float_vector(raw)
+    return [Float64(value) for value in raw]
+end
+
+function validate_crossover_config(owner_name::String, crossover)
+    crossover === nothing && return
+    crossover_type = lowercase(String(get_value(crossover, "type", "none")))
+    crossover_type in ("none", "lowpass", "highpass") || error("$(owner_name) crossover type must be none, lowpass, or highpass.")
+    crossover_type == "none" && return
+
+    frequency = get_value(crossover, "frequency_hz", nothing)
+    frequency === nothing && error("$(owner_name) crossover frequency_hz must be > 0.")
+    Float64(frequency) > 0.0 || error("$(owner_name) crossover frequency_hz must be > 0.")
+
+    filter_name = lowercase(String(get_value(crossover, "filter", "butterworth")))
+    filter_name in ("butterworth", "linkwitz_riley") || error("$(owner_name) crossover filter must be butterworth or linkwitz_riley.")
+
+    order = Int(get_value(crossover, "order", 1))
+    order in (1, 2, 4, 6) || error("$(owner_name) crossover order must be 1, 2, 4, or 6.")
+    if filter_name == "linkwitz_riley" && !(order in (2, 4, 6))
+        error("$(owner_name) Linkwitz-Riley order must be 2, 4, or 6.")
+    end
+end
+
+function mesh_inputs_from_config(config)
+    meshes = get_value(config, "meshes", Any[])
+    if !isempty(meshes)
+        inputs = NamedTuple[]
+        seen_names = Set{String}()
+        for (index, mesh) in enumerate(meshes)
+            name = String(get_value(mesh, "name", "mesh_$(index)"))
+            name in seen_names && error("Duplicate mesh name: $(name)")
+            push!(seen_names, name)
+            translation = get_value(mesh, "translation_m", [0.0, 0.0, 0.0])
+            length(translation) == 3 || error("Mesh '$(name)' translation_m must contain three values.")
+            push!(inputs, (
+                path=String(mesh["file"]),
+                scale=Float64(get_value(mesh, "scale_factor", get_value(config, "scale_factor", 0.001))),
+                name=name,
+                translation=(Float64(translation[1]), Float64(translation[2]), Float64(translation[3])),
+            ))
+        end
+        return inputs
+    end
+
+    return [(
+        path=String(config["mesh_file"]),
+        scale=Float64(get_value(config, "scale_factor", 0.001)),
+        name="mesh",
+        translation=(0.0, 0.0, 0.0),
+    )]
+end
+
+function mesh_name_to_id(mesh_inputs)
+    return Dict(input.name => index for (index, input) in enumerate(mesh_inputs))
+end
+
+function radiator_inputs_from_config(config, mesh_inputs)
+    raw_radiators = get_value(config, "radiators", Any[])
+    mesh_lookup = mesh_name_to_id(mesh_inputs)
+    if isempty(raw_radiators)
+        first_mesh = mesh_inputs[1]
+        return [Dict{String,Any}(
+            "name" => "Radiator",
+            "tag" => Int(get_value(config, "tag_throat", 2)),
+            "mesh" => first_mesh.name,
+            "mesh_id" => 1,
+            "channel" => "main",
+            "velocity_offset_db" => 0.0,
+            "level_db" => 0.0,
+            "polarity" => 1,
+            "delay_ms" => 0.0,
+            "hpf" => Dict("type" => "none"),
+            "lpf" => Dict("type" => "none"),
+        )]
+    end
+
+    radiators = Dict{String,Any}[]
+    for radiator in raw_radiators
+        radiator_name = String(get_value(radiator, "name", "Radiator"))
+        raw_mesh = get_value(radiator, "mesh", nothing)
+        if raw_mesh === nothing
+            length(mesh_inputs) == 1 || error("Radiator '$(radiator_name)' must specify 'mesh' when multiple meshes are configured.")
+            mesh_name = mesh_inputs[1].name
+        else
+            mesh_name = String(raw_mesh)
+        end
+        haskey(mesh_lookup, mesh_name) || error("Radiator '$(radiator_name)' references unknown mesh '$(mesh_name)'.")
+        validate_crossover_config(radiator_name, get_value(radiator, "hpf", nothing))
+        validate_crossover_config(radiator_name, get_value(radiator, "lpf", nothing))
+        push!(radiators, Dict{String,Any}(
+            "name" => radiator_name,
+            "tag" => Int(radiator["tag"]),
+            "mesh" => mesh_name,
+            "mesh_id" => mesh_lookup[mesh_name],
+            "channel" => String(get_value(radiator, "channel", "main")),
+            "velocity_offset_db" => Float64(get_value(radiator, "velocity_offset_db", 0.0)),
+            "level_db" => Float64(get_value(radiator, "level_db", 0.0)),
+            "polarity" => Int(get_value(radiator, "polarity", 1)),
+            "delay_ms" => Float64(get_value(radiator, "delay_ms", 0.0)),
+            "hpf" => get_value(radiator, "hpf", Dict("type" => "none")),
+            "lpf" => get_value(radiator, "lpf", Dict("type" => "none")),
+        ))
+    end
+    return radiators
+end
+
+function channel_inputs_from_config(config)
+    channels = Dict{String,Any}()
+    for channel in get_value(config, "channels", Any[])
+        name = String(channel["name"])
+        validate_crossover_config("channel $(name)", get_value(channel, "hpf", nothing))
+        validate_crossover_config("channel $(name)", get_value(channel, "lpf", nothing))
+        channels[name] = Dict{String,Any}(
+            "level_db" => Float64(get_value(channel, "level_db", 0.0)),
+            "polarity" => Int(get_value(channel, "polarity", 1)),
+            "delay_ms" => Float64(get_value(channel, "delay_ms", 0.0)),
+            "hpf" => get_value(channel, "hpf", Dict("type" => "none")),
+            "lpf" => get_value(channel, "lpf", Dict("type" => "none")),
+        )
+    end
+    return channels
+end
+
+function load_combined_mesh(mesh_inputs, ::Type{T}) where {T<:AbstractFloat}
+    vertices = SVector{3,T}[]
+    faces = NTuple{3,Int}[]
+    physical_tags = Int[]
+    element_mesh_ids = Int[]
+
+    for (mesh_id, input) in enumerate(mesh_inputs)
+        mesh = load_gmsh22_with_tags(input.path, T(input.scale))
+        translation = SVector{3,T}(T(input.translation[1]), T(input.translation[2]), T(input.translation[3]))
+        vertex_offset = length(vertices)
+        append!(vertices, [vertex + translation for vertex in mesh.vertices])
+        append!(faces, [(face[1] + vertex_offset, face[2] + vertex_offset, face[3] + vertex_offset) for face in mesh.faces])
+        append!(physical_tags, mesh.physical_tags)
+        append!(element_mesh_ids, fill(mesh_id, length(mesh.faces)))
+    end
+
+    return BoundaryMesh(vertices, faces, physical_tags), element_mesh_ids
+end
+
+function butterworth_poles(order::Int, ::Type{T}) where {T<:AbstractFloat}
+    return Complex{T}[
+        exp(Complex{T}(0, T(pi) / T(2) + T(2 * k - 1) * T(pi) / T(2 * order)))
+        for k in 1:order
+    ]
+end
+
+function butterworth_response(crossover_type::String, order::Int, cutoff_hz, freq::T) where {T<:AbstractFloat}
+    cutoff = T(cutoff_hz)
+    omega = T(2pi) * freq
+    omega_c = T(2pi) * cutoff
+    s = Complex{T}(0, omega)
+    response = one(Complex{T})
+
+    for pole in butterworth_poles(order, T)
+        scaled_pole = crossover_type == "lowpass" ? omega_c * pole : omega_c / pole
+        response *= crossover_type == "lowpass" ? (-scaled_pole) / (s - scaled_pole) : s / (s - scaled_pole)
+    end
+
+    return response
+end
+
+function crossover_response(crossover, freq::T) where {T<:AbstractFloat}
+    crossover === nothing && return one(Complex{T})
+    crossover_type = lowercase(String(get_value(crossover, "type", "none")))
+    crossover_type == "none" && return one(Complex{T})
+
+    filter_name = lowercase(String(get_value(crossover, "filter", "butterworth")))
+    order = Int(get_value(crossover, "order", 1))
+    cutoff_hz = get_value(crossover, "frequency_hz", nothing)
+    cutoff_hz === nothing && error("Crossover frequency_hz must be set for $(crossover_type).")
+
+    if filter_name == "linkwitz_riley"
+        section = butterworth_response(crossover_type, div(order, 2), cutoff_hz, freq)
+        return section * section
+    end
+
+    return butterworth_response(crossover_type, order, cutoff_hz, freq)
+end
+
+function channel_drive(channel, freq::T) where {T<:AbstractFloat}
+    omega = T(2pi) * freq
+    level = T(10.0) ^ (T(channel["level_db"]) / T(20.0))
+    delay = exp(Complex{T}(0, -omega * T(channel["delay_ms"]) / T(1000.0)))
+    crossover = crossover_response(get_value(channel, "hpf", nothing), freq) *
+        crossover_response(get_value(channel, "lpf", nothing), freq)
+    return Complex{T}(T(channel["polarity"]) * level) * delay * crossover
+end
+
+function polar_observation_points(config, ::Type{T}) where {T<:AbstractFloat}
+    step = T(get_value(config, "step_size", 5.0))
+    angle_min = T(get_value(config, "min_angle", -180.0))
+    angle_max = T(get_value(config, "max_angle", 180.0))
+    step <= 0 && error("step_size must be positive.")
+    angle_min < -180 && error("polar angle range must stay within [-180, 180] degrees.")
+    angle_max > 180 && error("polar angle range must stay within [-180, 180] degrees.")
+    angle_max < angle_min && error("max_angle must be >= min_angle.")
+    !(angle_min <= 0 <= angle_max) && error("polar angle range must include 0 degrees.")
+
+    angles = collect(Float32.(range(Float64(angle_min), stop=Float64(angle_max), step=Float64(step))))
+    if isempty(angles) || angles[end] < Float32(angle_max)
+        push!(angles, Float32(angle_max))
+    end
+    angles = Float32.(clamp.(angles, Float32(angle_min), Float32(angle_max)))
+
+    distance = T(get_value(config, "distance", 2.0))
+    axial_offset = T(get_value(config, "axial_offset", 0.0))
+    horizontal = SVector{3,T}[]
+    vertical = SVector{3,T}[]
+    for angle_deg in angles
+        angle = T(pi) * T(angle_deg) / T(180.0)
+        push!(horizontal, SVector{3,T}(distance * sin(angle), T(0.0), distance * cos(angle) + axial_offset))
+        push!(vertical, SVector{3,T}(T(0.0), distance * sin(angle), distance * cos(angle) + axial_offset))
+    end
+    on_axis_idx = argmin(abs.(Float64.(angles)))
+    return angles, horizontal, vertical, on_axis_idx
+end
+
+function spherical_observation(config, ::Type{T}) where {T<:AbstractFloat}
+    enabled = Bool(get_value(config, "spherical_sampling_enabled", false))
+    if !enabled
+        return nothing
+    end
+
+    point_count = Int(get_value(config, "spherical_sampling_points", 6000))
+    point_count <= 0 && error("spherical_sampling_points must be positive.")
+    distance = T(get_value(config, "distance", 2.0))
+    axial_offset = T(get_value(config, "axial_offset", 0.0))
+    golden_angle = T(pi * (3.0 - sqrt(5.0)))
+    points = Vector{SVector{3,T}}(undef, point_count)
+    theta = Vector{Float32}(undef, point_count)
+    phi = Vector{Float32}(undef, point_count)
+    r_distance = fill(Float32(distance), point_count)
+
+    for i in 0:(point_count - 1)
+        z_unit = T(1.0 - (2.0 * i + 1.0) / point_count)
+        xy_radius = sqrt(max(T(1.0) - z_unit * z_unit, T(0.0)))
+        azimuth = T(i) * golden_angle
+        x = distance * xy_radius * cos(azimuth)
+        y = distance * xy_radius * sin(azimuth)
+        z = distance * z_unit + axial_offset
+        storage_index = i + 1
+        points[storage_index] = SVector{3,T}(x, y, z)
+        theta[storage_index] = Float32(acos(clamp(z_unit, T(-1.0), T(1.0))))
+        phi[storage_index] = Float32(mod(atan(y, x), T(2pi)))
+    end
+
+    return (
+        points=points,
+        metadata=Dict(
+            "r_distance_m" => r_distance,
+            "theta_polar_rad" => theta,
+            "phi_azimuth_rad" => phi,
+        ),
+    )
+end
+
+function drive_for_radiator(radiator, channels, freq::T) where {T<:AbstractFloat}
+    omega = T(2pi) * freq
+    channel_name = String(get_value(radiator, "channel", "main"))
+    channel = get(channels, channel_name, nothing)
+    if channel !== nothing
+        return channel_drive(channel, freq) * T(10.0) ^ (T(radiator["velocity_offset_db"]) / T(20.0))
+    end
+
+    level_db = T(radiator["level_db"] + radiator["velocity_offset_db"])
+    polarity = T(radiator["polarity"])
+    delay_ms = T(radiator["delay_ms"])
+    level = T(10.0) ^ (level_db / T(20.0))
+    delay = exp(Complex{T}(0, -omega * delay_ms / T(1000.0)))
+    crossover = crossover_response(get_value(radiator, "hpf", nothing), freq) *
+        crossover_response(get_value(radiator, "lpf", nothing), freq)
+    return Complex{T}(polarity * level) * delay * crossover
+end
+
+function radiator_owns_element(radiator, element_mesh_ids, element_index::Int)
+    return element_mesh_ids[element_index] == Int(radiator["mesh_id"])
+end
+
+function validate_radiator_channels(radiators, channels)
+    isempty(channels) && return
+    for radiator in radiators
+        channel_name = String(get_value(radiator, "channel", "main"))
+        haskey(channels, channel_name) || error("Radiator '$(radiator["name"])' references unknown channel '$(channel_name)'.")
+    end
+end
+
+function validate_radiator_elements(mesh, element_mesh_ids, radiators)
+    for radiator in radiators
+        tag = Int(radiator["tag"])
+        found = false
+        for element_index in eachindex(mesh.physical_tags)
+            if mesh.physical_tags[element_index] == tag && radiator_owns_element(radiator, element_mesh_ids, element_index)
+                found = true
+                break
+            end
+        end
+        found || error("No elements found for radiator '$(radiator["name"])' tag=$(tag) on mesh '$(radiator["mesh"])'.")
+    end
+end
+
+function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k, use_cuda::Bool)
+    ComplexType = eltype(drives)
+    q_neumann = zeros(ComplexType, length(mesh.faces))
+    for (radiator_index, radiator) in enumerate(radiators)
+        tag = Int(radiator["tag"])
+        drive = drives[radiator_index]
+        for element_index in eachindex(mesh.physical_tags)
+            if mesh.physical_tags[element_index] == tag && radiator_owns_element(radiator, element_mesh_ids, element_index)
+                q_neumann[element_index] = ComplexType(0, rho * omega) * drive
+            end
+        end
+    end
+    pressure = solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k, use_cuda)
+    return pressure, q_neumann
+end
+
+function field_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda::Bool)
+    if use_cuda
+        return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
+    end
+    return evaluate_galerkin_field(points, mesh, pressure, q_neumann, k, field_cache)
+end
+
+function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda::Bool, ::Type{T}) where {T<:AbstractFloat}
+    pot = field_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda)
+    return Float32.(T(20.0) .* log10.(abs.(pot) ./ T(20e-6)))
+end
+
+function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, ::Type{T}) where {T<:AbstractFloat}
+    impedance = Vector{Vector{Float32}}()
+    for (radiator_index, radiator) in enumerate(radiators)
+        drive = drives[radiator_index]
+        if abs(drive) <= T(0.0)
+            push!(impedance, [Float32(NaN), Float32(NaN)])
+            continue
+        end
+
+        total_force = zero(eltype(pressure))
+        tag = Int(radiator["tag"])
+        for element_index in eachindex(mesh.physical_tags)
+            mesh.physical_tags[element_index] == tag || continue
+            radiator_owns_element(radiator, element_mesh_ids, element_index) || continue
+            face = mesh.faces[element_index]
+            p_avg = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / eltype(pressure)(3.0)
+            total_force += p_avg * eltype(pressure)(mesh.areas[element_index])
+        end
+        total_force *= eltype(pressure)(10.0)
+        z_complex = total_force / drive
+        push!(impedance, [Float32(real(z_complex) / 2), Float32(-imag(z_complex) / 2)])
+    end
+    return impedance
+end
+
+function solve_request(request)
+    schema_version = Int(get_value(request, "schema_version", 1))
+    schema_version == 1 || error("Unsupported solve request schema_version $(schema_version).")
+
+    config = request["config"]
+    frequencies = Float32.(request["frequencies_hz"])
+    isempty(frequencies) && error("frequencies_hz must contain at least one frequency.")
+    cancel_path = get_value(request, "cancel_path", nothing)
+
+    FloatType = Float32
+    mesh_inputs = mesh_inputs_from_config(config)
+    radiators = radiator_inputs_from_config(config, mesh_inputs)
+    channels = channel_inputs_from_config(config)
+    validate_radiator_channels(radiators, channels)
+    polar_angles_deg, horizontal_points, vertical_points, on_axis_idx = polar_observation_points(config, FloatType)
+    sphere = spherical_observation(config, FloatType)
+    sphere_metadata = sphere === nothing ? nothing : sphere.metadata
+
+    emit_event(
+        "initialized";
+        polar_angle_deg=polar_angles_deg,
+        radiator_names=[radiator["name"] for radiator in radiators],
+        sphere_metadata=sphere_metadata,
+    )
+
+    emit_event("status"; message=@sprintf(
+        "Julia solver loading %d mesh%s with %d thread(s)",
+        length(mesh_inputs),
+        length(mesh_inputs) == 1 ? "" : "es",
+        Threads.nthreads(),
+    ))
+
+    mesh, element_mesh_ids = load_combined_mesh(mesh_inputs, FloatType)
+    validate_radiator_elements(mesh, element_mesh_ids, radiators)
+    p1_space = build_p1_space(mesh)
+    dp0_space = build_dp0_space(mesh)
+    rule = triangle_rule(FloatType, Int(get_value(config, "quadrature_order", 4)))
+    cpu_field_cache = build_field_evaluation_cache(mesh, rule)
+    singular_order = Int(get_value(config, "singular_order", 4))
+    identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
+    identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
+    rho = FloatType(get_value(config, "rho", 1.21))
+    sound_speed = FloatType(get_value(config, "sound_speed", 343.0))
+    flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
+    use_cuda = Bool(get_value(config, "julia_use_cuda", true))
+    cuda_cache = nothing
+    field_cache = cpu_field_cache
+    singular_cache = build_singular_correction_cache(mesh, singular_order)
+    cuda_singular_cache = nothing
+    if use_cuda
+        emit_event("status"; message="Julia solver using CUDA assembly, GPU dense solve, and GPU field evaluation")
+        cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
+        field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
+        cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    else
+        emit_event("status"; message="Julia solver using CPU assembly and CPU dense solve")
+    end
+
+    for (index, freq_raw) in enumerate(frequencies)
+        if cancel_path !== nothing && isfile(String(cancel_path))
+            emit_event("cancelled"; solved_count=index - 1)
+            return
+        end
+
+        freq = FloatType(freq_raw)
+        omega = FloatType(2pi) * freq
+        k = omega / sound_speed
+
+        t_assembly = @elapsed begin
+            operators = assemble_regular_galerkin_operators(
+                mesh,
+                p1_space,
+                dp0_space,
+                k,
+                rule;
+                skip_singular=false,
+                singular_order=singular_order,
+                use_cuda_regular=use_cuda,
+                cuda_cache=cuda_cache,
+                return_gpu=use_cuda,
+                parallel_quadrature=true,
+                singular_cache=singular_cache,
+                cuda_singular_cache=cuda_singular_cache,
+            )
+        end
+
+        channel_corrections = Dict{String,FloatType}()
+        t_solve = 0.0
+        t_field = 0.0
+        if flat_target
+            for channel_name in unique([String(get_value(radiator, "channel", "main")) for radiator in radiators])
+                unit_drives = Complex{FloatType}[
+                    String(get_value(radiator, "channel", "main")) == channel_name ?
+                    Complex{FloatType}(FloatType(10.0) ^ (FloatType(radiator["velocity_offset_db"]) / FloatType(20.0)), 0) :
+                    Complex{FloatType}(0, 0)
+                    for radiator in radiators
+                ]
+                pressure = nothing
+                q_neumann = nothing
+                t_solve += @elapsed begin
+                    pressure, q_neumann = pressure_for_drives(
+                        mesh,
+                        element_mesh_ids,
+                        operators,
+                        identity_p1_p1,
+                        identity_p1_dp0,
+                        radiators,
+                        unit_drives,
+                        rho,
+                        omega,
+                        k,
+                        use_cuda,
+                    )
+                end
+                t_field += @elapsed begin
+                    on_axis_pressure = field_for_points(
+                        [horizontal_points[on_axis_idx]],
+                        mesh,
+                        pressure,
+                        q_neumann,
+                        k,
+                        field_cache,
+                        use_cuda,
+                    )[1]
+                    magnitude = abs(on_axis_pressure)
+                    channel_corrections[channel_name] = magnitude <= FloatType(1e-12) ? FloatType(1.0) : FloatType(1.0) / magnitude
+                end
+            end
+        end
+
+        drives = Complex{FloatType}[
+            drive_for_radiator(radiator, channels, freq) *
+            get(channel_corrections, String(get_value(radiator, "channel", "main")), FloatType(1.0))
+            for radiator in radiators
+        ]
+
+        pressure = nothing
+        q_neumann = nothing
+        t_solve += @elapsed begin
+            pressure, q_neumann = pressure_for_drives(
+                mesh,
+                element_mesh_ids,
+                operators,
+                identity_p1_p1,
+                identity_p1_dp0,
+                radiators,
+                drives,
+                rho,
+                omega,
+                k,
+                use_cuda,
+            )
+        end
+
+        horizontal_spl = Float32[]
+        vertical_spl = Float32[]
+        horizontal_norm = Float32[]
+        vertical_norm = Float32[]
+        impedance = Vector{Vector{Float32}}()
+        sphere_norm = nothing
+        t_field += @elapsed begin
+            combined_points = sphere === nothing ? vcat(horizontal_points, vertical_points) : vcat(horizontal_points, vertical_points, sphere.points)
+            combined_spl = spl_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, use_cuda, FloatType)
+            horizontal_count = length(horizontal_points)
+            vertical_count = length(vertical_points)
+            horizontal_spl = combined_spl[1:horizontal_count]
+            vertical_spl = combined_spl[(horizontal_count + 1):(horizontal_count + vertical_count)]
+            reference = horizontal_spl[on_axis_idx]
+            horizontal_norm = Float32.(horizontal_spl .- reference)
+            vertical_norm = Float32.(vertical_spl .- reference)
+            impedance = impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, FloatType)
+            if sphere !== nothing
+                sphere_start = horizontal_count + vertical_count + 1
+                sphere_spl = combined_spl[sphere_start:end]
+                sphere_norm = Float32.(sphere_spl .- reference)
+            end
+        end
+
+        release_operator_storage!(operators)
+        emit_event(
+            "result";
+            solved_count=index,
+            total_count=length(frequencies),
+            result=Dict(
+                "freq_hz" => Float32(freq),
+                "horizontal_spl_norm_db" => horizontal_norm,
+                "vertical_spl_norm_db" => vertical_norm,
+                "impedance" => impedance,
+                "horizontal_spl_db" => horizontal_spl,
+                "vertical_spl_db" => vertical_spl,
+                "sphere_spl_norm_db" => sphere_norm,
+                "timings" => Dict(
+                    "assembly_s" => Float32(t_assembly),
+                    "solve_s" => Float32(t_solve),
+                    "field_s" => Float32(t_field),
+                ),
+                "diagnostics" => Dict(
+                    "convergence_info" => 0,
+                    "message" => "Julia direct dense solve",
+                ),
+            ),
+        )
+    end
+
+    emit_event("completed"; solved_count=length(frequencies))
+end
+
+function worker_loop()
+    emit_event("ready"; protocol="boundary_lab_julia_worker", pid=getpid())
+    for line in eachline(stdin)
+        text = strip(line)
+        isempty(text) && continue
+        try
+            message = JSON.parse(text)
+            request_path = String(message["request"])
+            request = JSON.parsefile(request_path)
+            solve_request(request)
+        catch exc
+            emit_event("failed"; error=sprint(showerror, exc))
+        end
+    end
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    try
+        request_path, worker_mode = parse_args(ARGS)
+        if worker_mode
+            worker_loop()
+        else
+            isnothing(request_path) && fail!("Missing --request path.")
+            request = JSON.parsefile(request_path)
+            solve_request(request)
+        end
+    catch exc
+        fail!(sprint(showerror, exc))
+    end
+end

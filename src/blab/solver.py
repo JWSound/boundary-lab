@@ -30,6 +30,7 @@ from blab.config import (
     load_external_config,
 )
 from blab.defaults import EXAMPLE_CLEAN_MESH_PATH
+from blab.solvers.base import FrequencySolveTimings
 from pyopencl import CompilerWarning
 warnings.filterwarnings("ignore", category=CompilerWarning)
 
@@ -44,13 +45,6 @@ class RadiatorGeometry:
     driver_dofs: np.ndarray
     element_areas: np.ndarray
     p1_dofs: np.ndarray
-
-
-@dataclass(frozen=True)
-class FrequencySolveTimings:
-    assembly_s: float = 0.0
-    solve_s: float = 0.0
-    field_s: float = 0.0
 
 
 # Global instance for easy configuration editing

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-import time
 from queue import Empty
 
 import numpy as np
@@ -11,10 +10,11 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.config import SimulationConfig
 from blab.live import (
-    LiveSolver,
     solve_frequency_worker_process,
     split_frequency_order_for_workers,
 )
+from blab.solvers.base import SolveRequest
+from blab.solvers.registry import create_backend
 
 
 class SolveWorker(QObject):
@@ -24,38 +24,61 @@ class SolveWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, config: SimulationConfig, frequencies: np.ndarray, worker_count: int = 1):
+    def __init__(
+        self,
+        config: SimulationConfig,
+        frequencies: np.ndarray,
+        worker_count: int = 1,
+        backend_id: str = "local",
+        server_url: str = "http://127.0.0.1:8765",
+    ):
         super().__init__()
         self.config = config
         self.frequencies = frequencies
         self.worker_count = worker_count
+        self.backend_id = backend_id
+        self.server_url = server_url
         self._stop = False
         self._stop_event = None
+        self._session = None
 
     @Slot()
     def run(self) -> None:
         try:
-            if self.worker_count > 1:
+            if self.backend_id == "local" and self.worker_count > 1:
                 self._run_process_workers()
                 return
 
-            t_start = time.perf_counter()
-            live_solver = LiveSolver(self.config)
-            self.status.emit(f"Worker 1 initialized in {time.perf_counter() - t_start:.1f}s")
-            self.initialized.emit(live_solver.polar_angle_deg, live_solver.radiator_names, live_solver.sphere_metadata)
-            for result in live_solver.solve_stream(
-                self.frequencies,
-                stop_requested=lambda: self._stop,
-            ):
+            self.status.emit("Initializing Solver...")
+            backend = create_backend(
+                self.backend_id,
+                server_url=self.server_url,
+            )
+            session = backend.create_session(
+                SolveRequest(
+                    self.config,
+                    self.frequencies,
+                    status_callback=self.status.emit,
+                )
+            )
+            self._session = session
+            metadata = session.metadata
+            self.initialized.emit(metadata.polar_angle_deg, metadata.radiator_names, metadata.sphere_metadata)
+            self.status.emit("Solving...")
+            for result in session.solve_stream(stop_requested=lambda: self._stop):
                 self.result_ready.emit(result)
         except Exception as exc:
-            self.failed.emit(str(exc))
+            if not self._stop:
+                self.failed.emit(str(exc))
         finally:
             self.finished.emit()
 
     @Slot()
     def stop(self) -> None:
         self._stop = True
+        self.status.emit("Stopping solve...")
+        if self._session is not None:
+            self._session.stop()
         if self._stop_event is not None:
             self._stop_event.set()
 

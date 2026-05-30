@@ -20,12 +20,13 @@ from urllib.parse import parse_qs, urlparse
 import numpy as np
 
 from blab.config import SimulationConfig
-from blab.live import FrequencyResult, LiveSolveDataset, LiveSolver
+from blab.live import LiveSolveDataset, LiveSolver
 from blab.protocol import (
     frequency_result_to_dict,
     ndarray_to_wire,
     solve_request_to_job_inputs,
 )
+from blab.solvers.base import FrequencyResult
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
@@ -281,7 +282,7 @@ class JobOrchestrator:
         output_path = job.artifact_dir / "result.npz"
         freqs, angles, horizontal, vertical = dataset.as_polar_export_arrays()
         _, _, raw_horizontal, raw_vertical = dataset.as_raw_polar_arrays()
-        ordered = [dataset.results[float(freq)] for freq in freqs]
+        ordered = dataset.ordered_results()
         impedance = np.stack([item.impedance for item in ordered], axis=1)
 
         bundle: dict[str, Any] = {

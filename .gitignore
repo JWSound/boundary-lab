@@ -44,3 +44,6 @@ horizontal_isobar.png
 vertical_isobar.png
 acoustic_impedance.png
 *_clean.msh
+
+# Julia solver benchmark/profiling outputs
+src/blab/solvers/julia_local/results/

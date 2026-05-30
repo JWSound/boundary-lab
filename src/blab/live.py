@@ -11,19 +11,8 @@ import numpy as np
 
 from blab.config import SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
-from blab.solver import FrequencySolveTimings, HornBEMSolver
-
-
-@dataclass(frozen=True)
-class FrequencyResult:
-    freq_hz: float
-    horizontal_spl_norm_db: np.ndarray
-    vertical_spl_norm_db: np.ndarray
-    impedance: np.ndarray
-    horizontal_spl_db: np.ndarray | None = None
-    vertical_spl_db: np.ndarray | None = None
-    sphere_spl_norm_db: np.ndarray | None = None
-    timings: FrequencySolveTimings = field(default_factory=FrequencySolveTimings)
+from blab.solvers.base import FrequencyResult, SolveRequest
+from blab.solvers.bempp_local import BemppLocalBackend
 
 
 @dataclass
@@ -38,20 +27,23 @@ class LiveSolveDataset:
     def add(self, result: FrequencyResult) -> None:
         self.results[float(result.freq_hz)] = result
 
+    def ordered_results(self) -> list[FrequencyResult]:
+        return [self.results[key] for key in sorted(self.results)]
+
     @property
     def solved_count(self) -> int:
         return len(self.results)
 
     @property
     def solved_frequencies(self) -> np.ndarray:
-        return np.asarray(sorted(self.results), dtype=np.float32)
+        return np.asarray([result.freq_hz for result in self.ordered_results()], dtype=np.float32)
 
     def as_polar_export_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not self.results:
             raise ValueError("No solved polar data available.")
 
-        freqs = self.solved_frequencies
-        ordered = [self.results[float(freq)] for freq in freqs]
+        ordered = self.ordered_results()
+        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
         horizontal = np.vstack([item.horizontal_spl_norm_db for item in ordered]).astype(np.float32, copy=False)
         vertical = np.vstack([item.vertical_spl_norm_db for item in ordered]).astype(np.float32, copy=False)
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
@@ -60,8 +52,8 @@ class LiveSolveDataset:
         if not self.results:
             raise ValueError("No solved polar data available.")
 
-        freqs = self.solved_frequencies
-        ordered = [self.results[float(freq)] for freq in freqs]
+        ordered = self.ordered_results()
+        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
         horizontal = np.vstack(
             [
                 item.horizontal_spl_db
@@ -87,7 +79,7 @@ class LiveSolveDataset:
         prep_cfg = cfg or PrepConfig()
         freqs, angles, horizontal, vertical = self.as_polar_export_arrays()
         _, _, raw_horizontal, raw_vertical = self.as_raw_polar_arrays()
-        ordered = [self.results[float(freq)] for freq in freqs]
+        ordered = self.ordered_results()
         impedance = np.stack([item.impedance for item in ordered], axis=1)
 
         return prepare_visualization_data_from_arrays(
@@ -113,8 +105,8 @@ class LiveSolveDataset:
         ):
             return None
 
-        freqs = self.solved_frequencies
-        ordered = [self.results[float(freq)] for freq in freqs]
+        ordered = self.ordered_results()
+        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
         if any(item.sphere_spl_norm_db is None for item in ordered):
             return None
 
@@ -236,19 +228,20 @@ class LiveSolver:
     """Thin warm-solver facade for GUI code."""
 
     def __init__(self, config: SimulationConfig):
-        self.solver = HornBEMSolver(config)
+        self._frequencies = np.asarray([], dtype=np.float32)
+        self.session = BemppLocalBackend().create_session(SolveRequest(config, self._frequencies))
 
     @property
     def polar_angle_deg(self) -> np.ndarray:
-        return self.solver.polar_angles_deg
+        return self.session.metadata.polar_angle_deg
 
     @property
     def radiator_names(self) -> np.ndarray:
-        return np.asarray(self.solver.radiator_names)
+        return self.session.metadata.radiator_names
 
     @property
     def sphere_metadata(self) -> dict[str, np.ndarray] | None:
-        return self.solver.sphere_metadata
+        return self.session.metadata.sphere_metadata
 
     def solve_stream(
         self,
@@ -256,26 +249,5 @@ class LiveSolver:
         *,
         stop_requested: Callable[[], bool] | None = None,
     ):
-        for (
-            freq,
-            horizontal,
-            vertical,
-            impedance,
-            raw_horizontal,
-            raw_vertical,
-            sphere_spl,
-            timings,
-        ) in self.solver.solve_frequencies_stream(
-            frequencies,
-            stop_requested=stop_requested,
-        ):
-            yield FrequencyResult(
-                freq,
-                horizontal,
-                vertical,
-                impedance,
-                raw_horizontal,
-                raw_vertical,
-                sphere_spl,
-                timings,
-            )
+        self.session.request = SolveRequest(self.session.request.config, np.asarray(frequencies, dtype=np.float32))
+        yield from self.session.solve_stream(stop_requested=stop_requested)

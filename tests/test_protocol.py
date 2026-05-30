@@ -1,7 +1,6 @@
 import numpy as np
 
 from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
-from blab.live import FrequencyResult
 from blab.protocol import (
     build_mesh_assets,
     frequency_result_from_dict,
@@ -13,7 +12,7 @@ from blab.protocol import (
     solve_request_to_job_inputs,
     solve_request_to_config_and_frequencies,
 )
-from blab.solver import FrequencySolveTimings
+from blab.solvers.base import FrequencyResult, FrequencySolveTimings
 
 
 def test_simulation_config_round_trips_through_wire_dict() -> None:
