@@ -29,7 +29,7 @@ Boundary Lab can also run the local Julia CUDA GPU backend from the Preferences 
 Additional requirements:
 
 - NVIDIA GPU with a working CUDA-capable driver
-- Julia installed and available on `PATH`, or configured as the Julia executable in Preferences
+- [Julia](https://julialang.org/downloads/) installed and available on `PATH`, or configured as the Julia executable in Preferences
 - Boundary Lab's Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
 
 To prepare the Julia environment from the repository root:
@@ -39,6 +39,19 @@ julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
 The first Julia CUDA solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent Julia worker and warmed CUDA kernels.
+
+CUDA GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
+
+| Elements | Est. P1 Dofs / Vertices | Persistent Operators | Practical VRAM Budget |
+|---:|---:|---:|---:|
+| 1,000 | 500 | ~12 MB | ~50-100 MB |
+| 2,000 | 1,000 | ~48 MB | ~200-300 MB |
+| 3,000 | 1,500 | ~108 MB | ~400-600 MB |
+| 5,000 | 2,500 | ~300 MB | ~1.0-1.5 GB |
+| 7,000 | 3,500 | ~588 MB | ~2.0-3.0 GB |
+| 10,000 | 5,000 | ~1.2 GB | ~4-6 GB |
+| 15,000 | 7,500 | ~2.7 GB | ~8-12 GB |
+| 20,000 | 10,000 | ~4.8 GB | ~14-20 GB |
 
 ## Install
 
