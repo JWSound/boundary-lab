@@ -60,11 +60,9 @@ from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
 from blab.solvers.registry import normalize_backend_id
-from blab.ui.balloon import BalloonPlotWindow
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
 from blab.ui.help import HelpBrowserDialog
-from blab.ui.mesh_preview import MeshPreview
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
     AUDIO_FREQ_MIN_HZ,
@@ -168,7 +166,7 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
-        self.balloon_window: BalloonPlotWindow | None = None
+        self.balloon_window: QDialog | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
@@ -194,6 +192,8 @@ class MainWindow(QMainWindow):
         self._rebuild_ath_script_tabs()
 
         startup("Creating mesh preview...")
+        from blab.ui.mesh_preview import MeshPreview
+
         self.preview = MeshPreview()
         if self._has_solver_meshes():
             startup("Loading mesh preview...")
@@ -1769,6 +1769,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            from blab.ui.balloon import BalloonPlotWindow
+
             self.balloon_window = BalloonPlotWindow(
                 raw_balloon,
                 min_db=self.preferences.spl_min_db,

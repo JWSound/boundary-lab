@@ -12,7 +12,6 @@ import numpy as np
 from blab.config import SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solvers.base import FrequencyResult, SolveRequest
-from blab.solvers.bempp_local import BemppLocalBackend
 
 
 @dataclass
@@ -228,6 +227,8 @@ class LiveSolver:
     """Thin warm-solver facade for GUI code."""
 
     def __init__(self, config: SimulationConfig):
+        from blab.solvers.bempp_local import BemppLocalBackend
+
         self._frequencies = np.asarray([], dtype=np.float32)
         self.session = BemppLocalBackend().create_session(SolveRequest(config, self._frequencies))
 
