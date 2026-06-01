@@ -163,5 +163,6 @@ class BemppServerBackend:
         self.server_url = server_url
 
     def create_session(self, request_payload: SolveRequest) -> BemppServerSession:
+        if request_payload.config.symmetry != "off":
+            raise RuntimeError("The configured solve server does not advertise symmetry support.")
         return BemppServerSession(request_payload, self.server_url)
-

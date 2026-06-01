@@ -36,6 +36,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
+            supports_symmetry=True,
             is_remote=False,
         ),
         factory=lambda **kwargs: _create_julia_local_backend(**kwargs),

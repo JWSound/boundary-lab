@@ -37,6 +37,7 @@ def test_project_file_round_trip(tmp_path) -> None:
             }
         ],
         stitch_imported_meshes=True,
+        symmetry="xy",
         source_config_by_name={
             "ath:SD1D1001": {
                 "driven": True,
@@ -60,6 +61,7 @@ def test_project_file_round_trip(tmp_path) -> None:
 
     assert project_path.name == "test_project.blab.json"
     assert loaded == payload
+    assert loaded["symmetry"] == "xy"
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
 
 

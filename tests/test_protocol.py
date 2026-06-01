@@ -55,6 +55,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
         ),
         spherical_sampling_enabled=True,
         spherical_sampling_points=32,
+        symmetry="xy",
     )
 
     restored = simulation_config_from_dict(simulation_config_to_dict(config))
@@ -67,6 +68,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     assert restored.channels[0].polarity == -1
     assert restored.channels[0].lpf.frequency_hz == 20000.0
     assert restored.spherical_sampling_enabled is True
+    assert restored.symmetry == "xy"
 
 
 def test_frequency_result_round_trips_through_wire_dict() -> None:
@@ -91,7 +93,7 @@ def test_frequency_result_round_trips_through_wire_dict() -> None:
 
 
 def test_solve_request_round_trips_config_and_frequencies() -> None:
-    config = SimulationConfig(mesh_file="mesh.msh")
+    config = SimulationConfig(mesh_file="mesh.msh", symmetry="x")
     frequencies = np.array([200.0, 1000.0, 5000.0], dtype=np.float32)
 
     restored_config, restored_freqs = solve_request_to_config_and_frequencies(
@@ -99,6 +101,7 @@ def test_solve_request_round_trips_config_and_frequencies() -> None:
     )
 
     assert restored_config.mesh_file == "mesh.msh"
+    assert restored_config.symmetry == "x"
     assert np.allclose(restored_freqs, frequencies)
 
 

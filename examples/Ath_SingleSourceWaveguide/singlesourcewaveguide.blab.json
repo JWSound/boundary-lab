@@ -4,8 +4,8 @@
   "ath_mesh": {},
   "ath_scripts": [
     {
-      "cleaned_msh_path": "",
-      "config_path": "",
+      "cleaned_msh_path": "E:\\AthGUI\\boundary-lab\\runs\\ath_output\\ath_af6c0be35ac0_20260601_105631\\ABEC_FreeStanding\\ath_af6c0be35ac0_20260601_105631_clean.msh",
+      "config_path": "E:\\AthGUI\\boundary-lab\\runs\\ath_output\\ath_af6c0be35ac0_20260601_105631.cfg",
       "config_text": "Throat.Profile = 1 ; 1 = OS-SE waveguide\nThroat.Diameter = 25.4 ; [mm]\nThroat.Angle = 0 ;\nLength = 115.5 ;\nTerm.s = .8 ;\nTerm.q = 0.996 ;\nTerm.n = 4 ;\nOS.k = 1 ;\nSlot.Length = 0\n\n\nGCurve.Type = 2 ; 2 = superformula\nGCurve.Width = 55 ; [mm]\nGCurve.Dist = 0.5 ; mm distance from throat\nGCurve.SF = 1,1.2,4,1.5,14,2.5 ;{a, b, m, n1, n2, n3}\nGCurve.Rot = 0\nGCurve.AspectRatio = 1\n\n\nMorph.TargetWidth = 362 ; [mm]\nMorph.TargetHeight = 218 ; [mm\nMorph.TargetShape = 1 ; morph to a rounded rectangle\nMorph.FixedPart = 0 ; start at 40% distance from throat\nMorph.Rate = 4 ; how fast is the transition (1=fastest/abrupt)\nMorph.CornerRadius = 10 ; [mm]\nMorph.AllowShrinkage = 1\n\nMesh.AngularSegments = 64 ;\nMesh.LengthSegments = 12 ;\nMesh.CornerSegments = 4 ;\nMesh.ThroatResolution = 4 ; [mm]\nMesh.MouthResolution = 20 ;\nMesh.InterfaceResolution = 10 ; [mm]\nMesh.InterfaceOffset = 5.0 ; [mm]\nMesh.Quadrants = 1\nMesh.SubdomainSlices =\n\nMesh.Enclosure = {\n Spacing = 17,17,17,17 ; edge distances (left,top,right,bottom) [mm]\n Depth = 300 ; enclosure depth [mm]\n EdgeRadius = 6 ; radius of the edge treatment [mm]\n EdgeType = 1 ; 1=rounded, 2=chamfered\n FrontResolution = 36,36,36,36 ; front side mesh element size (q1,q2,q3,q4) [mm]\n BackResolution = 48,48,48,48 ; back side mesh element size (q1,q2,q3,q4) [mm]\n}\n\n\nOutput.STL = 1\nOutput.ABECProject = 1\n\nGridExport:throat = {\n ExportProfiles = 1\n ExportSlices = 1\n Scale = .1\n Delimiter = \";\"\n FileExtension = \"csv\"\n SeparateFiles = 0\n}\n\n\nABEC.SimType = 2 ; 1 = infinite baffle",
       "id": "af6c0be35ac0",
       "mesh_enabled": true,
@@ -15,10 +15,9 @@
         0,
         0
       ],
-      "msh_path": "",
+      "msh_path": "E:\\AthGUI\\boundary-lab\\runs\\ath_output\\ath_af6c0be35ac0_20260601_105631\\ABEC_FreeStanding\\ath_af6c0be35ac0_20260601_105631.msh",
       "name": "ath",
-      "output_dir": "",
-      "stl_path": ""
+      "output_dir": "E:\\AthGUI\\boundary-lab\\runs\\ath_output\\ath_af6c0be35ac0_20260601_105631"
     }
   ],
   "channel_config_by_name": {
@@ -44,5 +43,6 @@
       "velocity_offset_db": 0.0
     }
   },
-  "stitch_imported_meshes": false
+  "stitch_imported_meshes": false,
+  "symmetry": "xy"
 }

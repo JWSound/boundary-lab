@@ -24,6 +24,9 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("bempp_server") == "server"
     assert normalize_backend_id("local_julia") == "julia_local"
     assert backend_info("server").capabilities.is_remote is True
+    assert backend_info("server").capabilities.supports_symmetry is False
+    assert backend_info("local").capabilities.supports_symmetry is False
+    assert backend_info("julia_local").capabilities.supports_symmetry is True
     assert "julia_local" in {info.backend_id for info in available_backend_infos()}
 
 
@@ -54,6 +57,22 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert julia_backend.backend_id == "julia_local"
     assert julia_backend.capabilities.is_remote is False
     assert julia_backend.capabilities.supports_parallel_workers is False
+    assert julia_backend.capabilities.supports_symmetry is True
+
+
+def test_bempp_backend_rejects_symmetry() -> None:
+    backend = create_backend("local")
+    request = SolveRequest(
+        config=SimulationConfig(mesh_file="mesh.msh", symmetry="x"),
+        frequencies_hz=np.array([1000.0], dtype=np.float32),
+    )
+
+    try:
+        backend.create_session(request)
+    except RuntimeError as exc:
+        assert "does not support symmetry" in str(exc)
+    else:
+        raise AssertionError("Bempp backend accepted a symmetry solve request.")
 
 
 def test_julia_backend_consumes_ndjson_solver_contract(tmp_path) -> None:

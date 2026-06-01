@@ -23,6 +23,7 @@ PROJECT_PAYLOAD_KEYS = (
     "ath_mesh",
     "imported_meshes",
     "stitch_imported_meshes",
+    "symmetry",
     "source_config_by_name",
     "channel_config_by_name",
 )
@@ -122,6 +123,7 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "ath_mesh": _dict_or_empty(payload.get("ath_mesh")),
         "imported_meshes": _list_or_empty(payload.get("imported_meshes")),
         "stitch_imported_meshes": bool(payload.get("stitch_imported_meshes", False)),
+        "symmetry": _normalize_symmetry(payload.get("symmetry", "off")),
         "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
         "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
     }
@@ -140,6 +142,11 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_symmetry(value: Any) -> str:
+    symmetry = str(value or "off").strip().lower()
+    return symmetry if symmetry in {"off", "x", "xy"} else "off"
 
 
 def _resolve_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[str, ...]) -> None:
@@ -163,6 +170,7 @@ def build_project_payload(
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
     stitch_imported_meshes: bool = False,
+    symmetry: str = "off",
     ath_scripts: list[dict[str, Any]] | None = None,
     active_ath_script_id: str | None = None,
     channel_config_by_name: dict[str, Any] | None = None,
@@ -175,6 +183,7 @@ def build_project_payload(
         "ath_mesh": ath_mesh,
         "imported_meshes": imported_meshes,
         "stitch_imported_meshes": bool(stitch_imported_meshes),
+        "symmetry": _normalize_symmetry(symmetry),
         "source_config_by_name": source_config_by_name,
         "channel_config_by_name": channel_config_by_name or {},
     }

@@ -24,6 +24,14 @@ except ImportError:  # pragma: no cover
 
 AXIS_LINE_WIDTH = 1.5
 AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
+RIGID_COLOR = "#cfcfcf"
+RIGID_MIRROR_COLOR = "#a9a9a9"
+RIGID_EDGE_COLOR = "#555555"
+RIGID_MIRROR_EDGE_COLOR = "#4a4a4a"
+DRIVEN_COLOR = "#395865"
+DRIVEN_MIRROR_COLOR = "#2f4751"
+DRIVEN_EDGE_COLOR = "#20343c"
+DRIVEN_MIRROR_EDGE_COLOR = "#1b2c33"
 
 
 class MeshPreview(QWidget):
@@ -140,6 +148,7 @@ class MeshPreview(QWidget):
         *,
         driven_surfaces: set[tuple[str, int]] | None = None,
         surface_tags_by_mesh: dict[str, dict[str, int]] | None = None,
+        symmetry: str = "off",
     ) -> None:
         if self.viewer is None:
             return
@@ -155,6 +164,7 @@ class MeshPreview(QWidget):
                 mesh_cfg,
                 driven_surfaces=driven_surfaces or set(),
                 surface_tags=(surface_tags_by_mesh or {}).get(mesh_cfg.name, {}),
+                symmetry=symmetry,
             )
             total_elements += mesh_elements
             preview_points.append(mesh_points)
@@ -170,6 +180,7 @@ class MeshPreview(QWidget):
         *,
         driven_surfaces: set[tuple[str, int]],
         surface_tags: dict[str, int],
+        symmetry: str,
     ) -> tuple[int, np.ndarray]:
         mesh = meshio.read(mesh_cfg.file)
         points = np.asarray(mesh.points, dtype=float)
@@ -177,13 +188,15 @@ class MeshPreview(QWidget):
         points = points * scale_factor + np.asarray(mesh_cfg.translation_m, dtype=float)
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
+        mirrored_images = _mirrored_triangle_images_for_preview(points, triangles, symmetry)
+        display_count = int(triangles.shape[0]) + sum(int(image_triangles.shape[0]) for _, _, image_triangles, _ in mirrored_images)
 
         if physical_tags is None:
             actor = self.viewer.add_mesh(
                 _triangles_to_polydata(points, triangles),
-                color="#cfcfcf",
+                color=RIGID_COLOR,
                 show_edges=True,
-                edge_color="#555555",
+                edge_color=RIGID_EDGE_COLOR,
                 smooth_shading=False,
             )
             self._actor_surface_labels[_vtk_actor_address(actor)] = _surface_hover_label(
@@ -192,7 +205,23 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
-            return int(triangles.shape[0]), points
+            for mirror_label, mirror_points, mirror_triangles, _source_indices in mirrored_images:
+                if not mirror_triangles.size:
+                    continue
+                actor = self.viewer.add_mesh(
+                    _triangles_to_polydata(mirror_points, mirror_triangles),
+                    color=RIGID_MIRROR_COLOR,
+                    show_edges=True,
+                    edge_color=RIGID_MIRROR_EDGE_COLOR,
+                    smooth_shading=False,
+                )
+                self._actor_surface_labels[_vtk_actor_address(actor)] = _surface_hover_label(
+                    mesh_cfg.name,
+                    f"untagged ({mirror_label} image)",
+                    None,
+                    int(mirror_triangles.shape[0]),
+                )
+            return display_count, _preview_points_with_images(points, mirrored_images)
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
         for tag in sorted(np.unique(physical_tags)):
@@ -204,9 +233,9 @@ class MeshPreview(QWidget):
             is_driven = (mesh_cfg.name, int(tag)) in driven_surfaces
             actor = self.viewer.add_mesh(
                 _triangles_to_polydata(points, tag_triangles),
-                color="#395865" if is_driven else "#cfcfcf",
+                color=DRIVEN_COLOR if is_driven else RIGID_COLOR,
                 show_edges=True,
-                edge_color="#20343c" if is_driven else "#555555",
+                edge_color=DRIVEN_EDGE_COLOR if is_driven else RIGID_EDGE_COLOR,
                 smooth_shading=False,
             )
             surface_name = names_by_tag.get(int(tag), f"Tag {int(tag)}")
@@ -216,7 +245,24 @@ class MeshPreview(QWidget):
                 int(tag),
                 int(tag_triangles.shape[0]),
             )
-        return int(triangles.shape[0]), points
+            for mirror_label, mirror_points, mirror_triangles, source_indices in mirrored_images:
+                mirror_tag_triangles = mirror_triangles[physical_tags[source_indices] == tag]
+                if not mirror_tag_triangles.size:
+                    continue
+                actor = self.viewer.add_mesh(
+                    _triangles_to_polydata(mirror_points, mirror_tag_triangles),
+                    color=DRIVEN_MIRROR_COLOR if is_driven else RIGID_MIRROR_COLOR,
+                    show_edges=True,
+                    edge_color=DRIVEN_MIRROR_EDGE_COLOR if is_driven else RIGID_MIRROR_EDGE_COLOR,
+                    smooth_shading=False,
+                )
+                self._actor_surface_labels[_vtk_actor_address(actor)] = _surface_hover_label(
+                    mesh_cfg.name,
+                    f"{surface_name} ({mirror_label} image)",
+                    int(tag),
+                    int(mirror_tag_triangles.shape[0]),
+                )
+        return display_count, _preview_points_with_images(points, mirrored_images)
 
     def _set_total_element_count(self, count: int) -> None:
         self.total_elements_label.setText(f"Total elements: {count:,}" if count else "")
@@ -339,6 +385,73 @@ def _preview_axis_length(points: np.ndarray) -> float:
     extent = float(np.linalg.norm(max_bounds - min_bounds))
     radius = float(np.nanmax(np.linalg.norm(finite_points, axis=1)))
     return max(extent * 0.56, radius * 1.12, 1.0)
+
+
+def _preview_points_with_images(points: np.ndarray, mirrored_images: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]) -> np.ndarray:
+    image_points = [image_points for _label, image_points, image_triangles, _indices in mirrored_images if image_triangles.size]
+    if not image_points:
+        return points
+    return np.vstack((points, *image_points))
+
+
+def _mirrored_triangle_images_for_preview(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    symmetry: str,
+    *,
+    tolerance: float = 1e-9,
+) -> list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]:
+    transforms = _symmetry_preview_transforms(symmetry)
+    if not transforms or triangles.size == 0:
+        return []
+
+    seen = {
+        _triangle_geometry_key(points, triangle, tolerance)
+        for triangle in np.asarray(triangles, dtype=np.int64)
+    }
+    images: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    for label, signs in transforms:
+        mirror_points = np.asarray(points, dtype=float) * np.asarray(signs, dtype=float)
+        odd_reflections = sum(1 for sign in signs if sign < 0) % 2 == 1
+        oriented_triangles = triangles[:, [0, 2, 1]] if odd_reflections else triangles.copy()
+        kept_triangles = []
+        source_indices = []
+        for source_index, triangle in enumerate(oriented_triangles):
+            key = _triangle_geometry_key(mirror_points, triangle, tolerance)
+            if key in seen:
+                continue
+            seen.add(key)
+            kept_triangles.append(triangle)
+            source_indices.append(source_index)
+        if kept_triangles:
+            images.append(
+                (
+                    label,
+                    mirror_points,
+                    np.asarray(kept_triangles, dtype=np.int64),
+                    np.asarray(source_indices, dtype=np.int64),
+                )
+            )
+    return images
+
+
+def _symmetry_preview_transforms(symmetry: str) -> tuple[tuple[str, tuple[float, float, float]], ...]:
+    mode = str(symmetry or "off").strip().lower()
+    if mode == "x":
+        return (("X", (-1.0, 1.0, 1.0)),)
+    if mode == "xy":
+        return (
+            ("X", (-1.0, 1.0, 1.0)),
+            ("Y", (1.0, -1.0, 1.0)),
+            ("XY", (-1.0, -1.0, 1.0)),
+        )
+    return ()
+
+
+def _triangle_geometry_key(points: np.ndarray, triangle: np.ndarray, tolerance: float) -> tuple[tuple[int, int, int], ...]:
+    scale = 1.0 / max(float(tolerance), 1e-12)
+    coords = np.rint(np.asarray(points, dtype=float)[triangle] * scale).astype(np.int64)
+    return tuple(sorted(tuple(int(value) for value in coord) for coord in coords))
 
 
 def _triangles_to_polydata(points: np.ndarray, triangles: np.ndarray):

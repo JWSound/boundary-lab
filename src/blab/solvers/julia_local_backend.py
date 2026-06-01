@@ -372,6 +372,7 @@ class JuliaLocalBackend:
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
         supports_parallel_workers=False,
+        supports_symmetry=True,
         is_remote=False,
     )
 

@@ -45,11 +45,17 @@ class AthRunResult:
     driven_tag: int
     radiators: tuple[RadiatorConfig, ...]
     cleaned_msh_path: Path | None = None
+    reduced_cleaned_msh_path: Path | None = None
     quality_warning: MeshQualityWarning | None = None
 
     @property
     def solver_msh_path(self) -> Path:
         return self.cleaned_msh_path or self.msh_path
+
+    def solver_msh_path_for_symmetry(self, symmetry: str) -> Path:
+        if str(symmetry or "off").strip().lower() == "off":
+            return self.solver_msh_path
+        return self.reduced_cleaned_msh_path or self.msh_path
 
 
 def run_ath(
@@ -326,6 +332,28 @@ def clean_ath_mesh_output(
         radiators=detect_ath_radiators(cleaned_path),
         quality_warning=quality_warning if quality_warning.has_warnings else None,
     )
+
+
+def clean_ath_reduced_mesh_output(
+    result: AthRunResult,
+    *,
+    output_path: Path | None = None,
+    merge_tol: float = MERGE_TOL,
+    area_tol: float = AREA_TOL,
+) -> AthRunResult:
+    reduced_path = output_path or result.msh_path.with_name(
+        f"{result.msh_path.stem}{DEFAULT_CLEAN_SUFFIX}_reduced{result.msh_path.suffix}"
+    )
+    clean_mesh_file(
+        str(result.msh_path),
+        str(reduced_path),
+        merge_tol=merge_tol,
+        area_tol=area_tol,
+        mirror_x=False,
+        mirror_axes=(),
+        binary=False,
+    )
+    return replace(result, reduced_cleaned_msh_path=reduced_path)
 
 
 def copy_existing_ath_output(*, source_dir: Path, run_root: Path, case_name: str) -> AthRunResult:

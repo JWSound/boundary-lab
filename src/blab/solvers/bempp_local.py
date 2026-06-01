@@ -75,5 +75,6 @@ class BemppLocalBackend:
     )
 
     def create_session(self, request: SolveRequest) -> BemppLocalSession:
+        if request.config.symmetry != "off":
+            raise RuntimeError("The Bempp OpenCL CPU backend does not support symmetry acceleration.")
         return BemppLocalSession(request)
-

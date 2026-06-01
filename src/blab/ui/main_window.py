@@ -41,6 +41,7 @@ from blab import __version__
 from blab.ath import (
     AthRunResult,
     clean_ath_mesh_output,
+    clean_ath_reduced_mesh_output,
     detect_ath_radiators,
     find_physical_tag_by_name,
     read_surface_physical_names,
@@ -59,7 +60,8 @@ from blab.live import (
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import backend_info, normalize_backend_id
+from blab.symmetry import SymmetryValidationError, validate_reduced_mesh_configs
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
 from blab.ui.help import HelpBrowserDialog
@@ -159,6 +161,7 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
         self.imported_meshes: tuple[MeshDialogEntry, ...] = ()
         self.stitch_imported_meshes = False
+        self.symmetry = "off"
         self.preferences = self._load_preferences()
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
@@ -1137,6 +1140,9 @@ class MainWindow(QMainWindow):
             cleaned_meshes.append(replace(mesh, cleaned_file=str(cleaned_path)))
         return tuple(cleaned_meshes)
 
+    def _selected_backend_supports_symmetry(self) -> bool:
+        return backend_info(self.preferences.solve_backend).capabilities.supports_symmetry
+
     def _imported_mesh_needs_reload(self, mesh: MeshDialogEntry) -> bool:
         if not mesh.enabled:
             return False
@@ -1193,6 +1199,7 @@ class MainWindow(QMainWindow):
 
     def _stitched_mesh_path(self, mesh_configs: tuple[MeshConfig, ...]) -> Path:
         payload = {
+            "symmetry": self.symmetry,
             "tol_mm": round(float(self.preferences.stitch_tolerance_mm), 6),
             "meshes": [
                 {
@@ -1243,16 +1250,28 @@ class MainWindow(QMainWindow):
     def _active_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         return tuple(mesh for mesh in self.imported_meshes if mesh.enabled)
 
+    def _ath_result_for_solver_symmetry(self, script: AthScriptState, result: AthRunResult) -> AthRunResult:
+        if self.symmetry == "off":
+            return result
+        if result.reduced_cleaned_msh_path is not None and result.reduced_cleaned_msh_path.exists():
+            return result
+        updated = clean_ath_reduced_mesh_output(result)
+        self.ath_results_by_script_id[script.id] = updated
+        return updated
+
     def _ath_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        return tuple(
-            MeshConfig(
-                name=script.mesh_name,
-                file=str(result.solver_msh_path),
-                scale_factor=float(script.mesh_scale_factor),
-                translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
+        configs = []
+        for script, result in self._enabled_ath_results():
+            solver_result = self._ath_result_for_solver_symmetry(script, result)
+            configs.append(
+                MeshConfig(
+                    name=script.mesh_name,
+                    file=str(solver_result.solver_msh_path_for_symmetry(self.symmetry)),
+                    scale_factor=float(script.mesh_scale_factor),
+                    translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
+                )
             )
-            for script, result in self._enabled_ath_results()
-        )
+        return tuple(configs)
 
     def _imported_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
         configs = []
@@ -1333,6 +1352,7 @@ class MainWindow(QMainWindow):
                 mesh_configs,
                 driven_surfaces={(radiator.mesh, radiator.tag) for radiator in self._all_radiators()},
                 surface_tags_by_mesh=surface_tags_by_mesh,
+                symmetry=self.symmetry,
             )
         except Exception:
             self.preview.clear()
@@ -1578,6 +1598,7 @@ class MainWindow(QMainWindow):
         self._rebuild_ath_script_tabs()
         self.imported_meshes = ()
         self.stitch_imported_meshes = False
+        self.symmetry = "off"
         self.settings.setValue("source/config_by_name", "{}")
         self.settings.setValue("channel/config_by_name", "{}")
         self.settings.sync()
@@ -1654,6 +1675,7 @@ class MainWindow(QMainWindow):
             ath_mesh=self._ath_mesh_payload(absolute_paths=True),
             imported_meshes=self._project_imported_meshes_payload(),
             stitch_imported_meshes=self.stitch_imported_meshes,
+            symmetry=self.symmetry,
             source_config_by_name=self._load_source_config_by_name(),
             ath_scripts=[script_to_payload(script, absolute_paths=True) for script in self.ath_scripts],
             active_ath_script_id=self.active_ath_script_id,
@@ -1687,6 +1709,9 @@ class MainWindow(QMainWindow):
         self._rebuild_ath_script_tabs()
         self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
         self.stitch_imported_meshes = bool(payload.get("stitch_imported_meshes", False))
+        self.symmetry = str(payload.get("symmetry", "off")).strip().lower()
+        if self.symmetry not in {"off", "x", "xy"}:
+            self.symmetry = "off"
         self.imported_radiators = ()
         self._save_imported_meshes()
 
@@ -1828,9 +1853,12 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_mesh_config(self) -> None:
+        symmetry_enabled = self._selected_backend_supports_symmetry()
         dialog = MeshConfigDialog(
             self._mesh_config_dialog_entries(),
             stitch_imported_meshes=self.stitch_imported_meshes,
+            symmetry=self.symmetry,
+            symmetry_enabled=symmetry_enabled,
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -1841,6 +1869,8 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             self._apply_mesh_config_dialog_entries(dialog.meshes())
             self.stitch_imported_meshes = dialog.stitch_imported_meshes()
+            if symmetry_enabled:
+                self.symmetry = dialog.symmetry()
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
             self._refresh_mesh_preview()
@@ -1949,6 +1979,13 @@ class MainWindow(QMainWindow):
         if not radiators:
             QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
             return
+        if self.symmetry != "off" and not self._selected_backend_supports_symmetry():
+            QMessageBox.warning(
+                self,
+                "Symmetry unsupported",
+                "The selected solver backend does not support symmetry. Select Julia CUDA GPU or set Symmetry to Off.",
+            )
+            return
 
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
@@ -1956,6 +1993,11 @@ class MainWindow(QMainWindow):
             mesh_configs = self._solver_mesh_configs()
         except Exception as exc:
             self._show_stitch_or_generic_error("Imported mesh preparation failed", exc)
+            return
+        try:
+            validate_reduced_mesh_configs(mesh_configs, self.symmetry)
+        except SymmetryValidationError as exc:
+            QMessageBox.warning(self, "Symmetry validation failed", str(exc))
             return
 
         freq_min = float(min(self.freq_min_spin.value(), self.freq_max_spin.value()))
@@ -1979,6 +2021,7 @@ class MainWindow(QMainWindow):
             workers=self.preferences.worker_count,
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=self.preferences.spherical_sampling_points,
+            symmetry=self.symmetry,
         )
 
         self.live_dataset = None

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -311,6 +312,8 @@ class MeshConfigDialog(QDialog):
         meshes: tuple[MeshDialogEntry, ...],
         *,
         stitch_imported_meshes: bool = False,
+        symmetry: str = "off",
+        symmetry_enabled: bool = True,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -339,6 +342,20 @@ class MeshConfigDialog(QDialog):
         self.remove_button = QPushButton("Remove")
         self.stitch_imported_meshes_check = QCheckBox("Stitch Imported Meshes")
         self.stitch_imported_meshes_check.setChecked(stitch_imported_meshes)
+        self.symmetry_combo = QComboBox()
+        self.symmetry_options = {
+            "Off": "off",
+            "X": "x",
+            "XY": "xy",
+        }
+        self.symmetry_combo.addItems(self.symmetry_options.keys())
+        current_symmetry = str(symmetry or "off").strip().lower()
+        current_label = next(
+            (label for label, value in self.symmetry_options.items() if value == current_symmetry),
+            "Off",
+        )
+        self.symmetry_combo.setCurrentText(current_label)
+        self.symmetry_combo.setEnabled(symmetry_enabled)
         self.add_button.clicked.connect(self._add_mesh)
         self.remove_button.clicked.connect(self._remove_selected_meshes)
 
@@ -347,6 +364,9 @@ class MeshConfigDialog(QDialog):
         button_row.addWidget(self.remove_button)
         button_row.addSpacing(16)
         button_row.addWidget(self.stitch_imported_meshes_check)
+        button_row.addSpacing(16)
+        button_row.addWidget(QLabel("Symmetry"))
+        button_row.addWidget(self.symmetry_combo)
         button_row.addStretch(1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -364,6 +384,9 @@ class MeshConfigDialog(QDialog):
 
     def stitch_imported_meshes(self) -> bool:
         return bool(self.stitch_imported_meshes_check.isChecked())
+
+    def symmetry(self) -> str:
+        return self.symmetry_options.get(self.symmetry_combo.currentText(), "off")
 
     def accept(self) -> None:
         try:

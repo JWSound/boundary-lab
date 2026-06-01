@@ -131,6 +131,32 @@ The CUDA singular correction cache stores:
 - pair Jacobian scales and normal products
 - flattened remapped Duffy points and weights
 
+## Symmetry Mode
+
+The Julia backend supports `off`, `x`, and `xy` symmetry modes. Symmetry is implemented only in the Julia CUDA backend; the application disables the symmetry control for backends that do not advertise symmetry support.
+
+The application passes a reduced-domain mesh plus symmetry metadata. The Julia solver does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
+
+- `x`: all mesh vertices must be on or positive of the global X=0 plane.
+- `xy`: all mesh vertices must be on or positive of both the global X=0 and Y=0 planes.
+
+For each enabled mirror plane, the backend builds image transforms. Points and normals are reflected as ordinary vectors. Surface curls in the hypersingular weak form are reflected as pseudovectors, using `det(R) * R * curl` for each mirror transform. For `x` symmetry, the reduced operator includes the identity domain plus the X-reflected image. For `xy` symmetry, it includes the identity domain plus X, Y, and XY images.
+
+The reduced Galerkin system remains defined on the reduced mesh's P1 pressure space and DP0 Neumann space. Regular operator assembly handles symmetry by adding reflected trial/source image contributions into the reduced matrices. This keeps the solved pressure vector on the reduced P1 dofs while accounting for the missing physical images.
+
+P1 test rows receive symmetry orbit weights for vertices on symmetry planes. These weights are applied consistently to the Helmholtz operators and to the Burton-Miller identity/mass matrices. This is required for seam vertices on X=0 and Y=0 to match the corresponding full expanded system.
+
+Singular handling has two parts:
+
+- Identity-domain adjacent, edge-sharing, vertex-sharing, and coincident pairs use the normal Duffy correction cache.
+- Reflected image pairs that become coincident, edge-adjacent, or vertex-adjacent across a symmetry plane use an image-singular correction cache.
+
+The image-singular path computes compact `singular - regular` correction blocks on the GPU, then atomically scatters them into dense GPU correction buffers before adding them to the resident operators. This mirrors the ordinary singular correction path and avoids building dense CPU correction matrices during application solves.
+
+Field evaluation is symmetry-aware by materializing mirrored quadrature sources in the field-evaluation cache. The existing CPU/GPU field kernels are then reused unchanged: source points and normals are reflected for each symmetry transform, while source faces, source elements, quadrature weights, and P1 basis values continue to reference the reduced mesh. Field evaluation is not currently a runtime bottleneck, so this simple expanded-source approach is preferred over a specialized field-only symmetry kernel.
+
+Radiator impedance is computed from reduced-domain pressure and then scaled by the symmetry reduction factor: 2 for `x`, 4 for `xy`. This reports force over the full physical radiator image set while keeping the solve unknowns reduced.
+
 ## CUDA Kernel Modes
 
 The CUDA backend has multiple regular assembly kernels, one singular correction block kernel, and two field-evaluation kernels.
@@ -267,6 +293,14 @@ The expensive stages are:
 - field evaluation, roughly \(O(N_{\mathrm{obs}} N_e q)\).
 
 CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The default split atomic regular assembly mode reduces regular-kernel pressure by assembling SLP/adjoint and DLP/hypersingular in separate launches while keeping dense operators resident on the GPU.
+
+Symmetry can improve runtime by more than the simple physical-area reduction would suggest. A 7k-element in-application test over 50 frequencies measured:
+
+- symmetry disabled: 71.3 s
+- X symmetry: 21.3 s, about 70% faster
+- XY symmetry: 11.6 s, about 84% faster
+
+The reason is that symmetry reduces the actual dense system dimension. Assembly has to include image contributions, so its scaling is closer to the expected half-domain or quarter-domain work plus image passes. The direct Burton-Miller solve, however, scales roughly as \(O(N_p^3)\). Halving the P1 unknown count can make the dense solve approach one eighth of the full cost, and quartering it can make that portion much smaller still. Smaller dense matrices also reduce GPU memory pressure and transfer/allocation overhead. As a result, the full solve can beat the naive "50% faster for X, 75% faster for XY" estimate when dense solve time is a meaningful share of the workload.
 
 ## Important Files
 

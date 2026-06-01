@@ -13,6 +13,16 @@ from pathlib import Path
 from blab.defaults import SOLVER_OUTPUT_NPZ
 
 
+SYMMETRY_OPTIONS = {"off", "x", "xy"}
+
+
+def normalize_symmetry(value: object) -> str:
+    symmetry = str(value or "off").strip().lower()
+    if symmetry not in SYMMETRY_OPTIONS:
+        raise ValueError(f"Unsupported symmetry mode: {value!r}. Expected one of off, x, xy.")
+    return symmetry
+
+
 @dataclass
 class CrossoverConfig:
     type: str = "none"
@@ -77,7 +87,11 @@ class SimulationConfig:
     workers: int = 3
     spherical_sampling_enabled: bool = False
     spherical_sampling_points: int = 6000
+    symmetry: str = "off"
     output_npz: str = str(SOLVER_OUTPUT_NPZ)
+
+    def __post_init__(self) -> None:
+        self.symmetry = normalize_symmetry(self.symmetry)
 
 
 def load_external_config(

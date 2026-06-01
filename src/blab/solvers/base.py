@@ -69,6 +69,7 @@ class SolverCapabilities:
     supports_streaming: bool = True
     supports_remote_assets: bool = False
     supports_parallel_workers: bool = False
+    supports_symmetry: bool = False
     is_remote: bool = False
 
 

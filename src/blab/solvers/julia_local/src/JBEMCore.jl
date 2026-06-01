@@ -21,6 +21,7 @@ end
 export BoundaryMesh,
     DP0Space,
     P1Space,
+    SymmetryTransform,
     TriangleRule,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
@@ -49,7 +50,17 @@ export BoundaryMesh,
     surface_curls,
     scatter_element_block!,
     solve_burton_miller_neumann,
-    triangle_rule
+    reflect_curl,
+    reflect_normal,
+    reflect_point,
+    reflect_vertices,
+    p1_symmetry_orbit_weights,
+    assemble_symmetry_image_singular_correction_deltas!,
+    symmetry_image_transforms,
+    symmetry_reduction_factor,
+    symmetry_transforms,
+    triangle_rule,
+    validate_symmetry_fundamental_domain!
 
 function cuda_module()
     CUDA_MODULE === nothing && error("CUDA solve requested, but CUDA.jl could not be loaded.")
@@ -64,6 +75,12 @@ struct BoundaryMesh{T<:AbstractFloat}
     normals::Vector{SVector{3,T}}
     areas::Vector{T}
     face_vertices::Vector{NTuple{3,SVector{3,T}}}
+end
+
+struct SymmetryTransform
+    label::Symbol
+    signs::SVector{3,Int}
+    determinant::Int
 end
 
 struct P1Space
@@ -180,6 +197,77 @@ end
 build_p1_space(mesh::BoundaryMesh) = P1Space(mesh.faces, length(mesh.vertices))
 build_dp0_space(mesh::BoundaryMesh) = DP0Space(collect(eachindex(mesh.faces)), length(mesh.faces))
 
+function normalized_symmetry_mode(mode)
+    mode_symbol = mode isa Symbol ? mode : Symbol(lowercase(strip(String(mode))))
+    mode_symbol in (:off, :x, :xy) || error("Unsupported symmetry mode: $(mode). Expected off, x, or xy.")
+    return mode_symbol
+end
+
+function symmetry_transforms(mode; include_identity::Bool=true)
+    mode_symbol = normalized_symmetry_mode(mode)
+    transforms = SymmetryTransform[]
+    include_identity && push!(transforms, SymmetryTransform(:identity, SVector{3,Int}(1, 1, 1), 1))
+    if mode_symbol == :x
+        push!(transforms, SymmetryTransform(:x, SVector{3,Int}(-1, 1, 1), -1))
+    elseif mode_symbol == :xy
+        push!(transforms, SymmetryTransform(:x, SVector{3,Int}(-1, 1, 1), -1))
+        push!(transforms, SymmetryTransform(:y, SVector{3,Int}(1, -1, 1), -1))
+        push!(transforms, SymmetryTransform(:xy, SVector{3,Int}(-1, -1, 1), 1))
+    end
+    return tuple(transforms...)
+end
+
+symmetry_image_transforms(mode) = symmetry_transforms(mode; include_identity=false)
+symmetry_reduction_factor(mode) = length(symmetry_transforms(mode; include_identity=true))
+
+reflect_point(transform::SymmetryTransform, point::SVector{3,T}) where {T} = SVector{3,T}(
+    T(transform.signs[1]) * point[1],
+    T(transform.signs[2]) * point[2],
+    T(transform.signs[3]) * point[3],
+)
+reflect_normal(transform::SymmetryTransform, normal::SVector{3,T}) where {T} = reflect_point(transform, normal)
+reflect_curl(transform::SymmetryTransform, curl::SVector{3,T}) where {T} = SVector{3,T}(
+    T(transform.determinant * transform.signs[1]) * curl[1],
+    T(transform.determinant * transform.signs[2]) * curl[2],
+    T(transform.determinant * transform.signs[3]) * curl[3],
+)
+reflect_vertices(transform::SymmetryTransform, vertices::NTuple{3,SVector{3,T}}) where {T} = (
+    reflect_point(transform, vertices[1]),
+    reflect_point(transform, vertices[2]),
+    reflect_point(transform, vertices[3]),
+)
+
+function validate_symmetry_fundamental_domain!(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+    mode_symbol = normalized_symmetry_mode(mode)
+    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    for axis in active_axes
+        for (vertex_index, vertex) in enumerate(mesh.vertices)
+            if vertex[axis] < -tolerance
+                axis_name = axis == 1 ? "X" : axis == 2 ? "Y" : "Z"
+                error(
+                    "Mesh is not in the positive $(axis_name) fundamental domain for $(uppercase(String(mode_symbol))) symmetry. " *
+                    "Vertex $(vertex_index) has $(lowercase(axis_name))=$(vertex[axis]) m."
+                )
+            end
+        end
+    end
+    return nothing
+end
+
+function p1_symmetry_orbit_weights(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+    mode_symbol = normalized_symmetry_mode(mode)
+    weights = ones(T, length(mesh.vertices))
+    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    for (vertex_index, vertex) in enumerate(mesh.vertices)
+        weight = T(1)
+        for axis in active_axes
+            abs(vertex[axis]) <= tolerance && (weight *= T(2))
+        end
+        weights[vertex_index] = weight
+    end
+    return weights
+end
+
 function elements_are_adjacent(face_a::NTuple{3,Int}, face_b::NTuple{3,Int})
     return face_a[1] == face_b[1] ||
         face_a[1] == face_b[2] ||
@@ -218,6 +306,42 @@ function adjacency_info(face_a::NTuple{3,Int}, face_b::NTuple{3,Int})
     end
 
     return (kind=:regular, test_vertices=(), trial_vertices=())
+end
+
+function geometric_adjacency_info(test_vertices, trial_vertices; tolerance)
+    shared_a = Int[]
+    shared_b = Int[]
+
+    for i in 1:3
+        for j in 1:3
+            if norm(test_vertices[i] - trial_vertices[j]) <= tolerance
+                push!(shared_a, i)
+                push!(shared_b, j)
+            end
+        end
+    end
+
+    if length(shared_a) == 3
+        return (kind=:coincident, test_vertices=(shared_a[1], shared_a[2], shared_a[3]), trial_vertices=(shared_b[1], shared_b[2], shared_b[3]))
+    elseif length(shared_a) == 2
+        if shared_b[2] < shared_b[1]
+            shared_a[1], shared_a[2] = shared_a[2], shared_a[1]
+            shared_b[1], shared_b[2] = shared_b[2], shared_b[1]
+        end
+        return (kind=:edge_adjacent, test_vertices=(shared_a[1], shared_a[2]), trial_vertices=(shared_b[1], shared_b[2]))
+    elseif length(shared_a) == 1
+        return (kind=:vertex_adjacent, test_vertices=(shared_a[1],), trial_vertices=(shared_b[1],))
+    end
+
+    return (kind=:regular, test_vertices=(), trial_vertices=())
+end
+
+function geometry_key(point::SVector{3,T}, tolerance::T) where {T<:AbstractFloat}
+    return (
+        Int(round(point[1] / tolerance)),
+        Int(round(point[2] / tolerance)),
+        Int(round(point[3] / tolerance)),
+    )
 end
 
 function triangle_rule(::Type{T}, order::Int=2) where {T<:AbstractFloat}
@@ -515,6 +639,45 @@ function regular_hypersingular_element_matrix(
     jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
     test_curls = surface_curls(test_vertices, test_normal)
     trial_curls = surface_curls(trial_vertices, trial_normal)
+    normal_product = dot(test_normal, trial_normal)
+
+    for (test_point, test_weight) in zip(rule.points, rule.weights)
+        x = local_to_global(test_vertices, test_point)
+        test_vals = p1_values(test_point)
+
+        for (trial_point, trial_weight) in zip(rule.points, rule.weights)
+            y = local_to_global(trial_vertices, trial_point)
+            trial_vals = p1_values(trial_point)
+            kernel_value = helmholtz_single_layer_kernel(x, y, k)
+            weight = test_weight * trial_weight * jac_scale
+
+            for i in 1:3
+                for j in 1:3
+                    block[i, j] += kernel_value * (
+                        dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * normal_product
+                    ) * weight
+                end
+            end
+        end
+    end
+
+    return block
+end
+
+function regular_hypersingular_element_matrix_with_curls(
+    test_vertices,
+    trial_vertices,
+    test_area,
+    trial_area,
+    test_normal,
+    trial_normal,
+    test_curls,
+    trial_curls,
+    k::T,
+    rule::TriangleRule{T},
+) where {T}
+    block = zeros(Complex{T}, 3, 3)
+    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
     normal_product = dot(test_normal, trial_normal)
 
     for (test_point, test_weight) in zip(rule.points, rule.weights)
@@ -979,6 +1142,190 @@ function assemble_singular_galerkin_corrections!(
     return sum(singular_counts)
 end
 
+function image_singular_candidates(mesh::BoundaryMesh{T}, element_indices, transform::SymmetryTransform; tolerance::T=T(1e-8)) where {T<:AbstractFloat}
+    indices = collect(element_indices)
+    index_set = Set(indices)
+    test_elements_by_vertex_key = Dict{NTuple{3,Int},Vector{Int}}()
+    for test_index in indices
+        for vertex in mesh.face_vertices[test_index]
+            key = geometry_key(vertex, tolerance)
+            push!(get!(test_elements_by_vertex_key, key, Int[]), test_index)
+        end
+    end
+
+    candidates = Tuple{Int,Int}[]
+    seen = Set{Tuple{Int,Int}}()
+    for trial_index in indices
+        reflected_vertices = reflect_vertices(transform, mesh.face_vertices[trial_index])
+        for vertex in reflected_vertices
+            key = geometry_key(vertex, tolerance)
+            for test_index in get(test_elements_by_vertex_key, key, Int[])
+                test_index in index_set || continue
+                candidate = (test_index, trial_index)
+                if !(candidate in seen)
+                    push!(candidates, candidate)
+                    push!(seen, candidate)
+                end
+            end
+        end
+    end
+    return candidates
+end
+
+function image_regular_operator_blocks(
+    test_vertices,
+    trial_vertices,
+    test_area,
+    trial_area,
+    test_normal,
+    trial_normal,
+    test_curls,
+    trial_curls,
+    k::T,
+    rule::TriangleRule{T},
+) where {T<:AbstractFloat}
+    slp_block = regular_galerkin_element_matrix(
+        test_vertices,
+        trial_vertices,
+        test_area,
+        trial_area,
+        test_normal,
+        trial_normal,
+        k,
+        helmholtz_single_layer_kernel,
+        :p1,
+        :dp0,
+        rule,
+    )
+    dlp_block = regular_galerkin_element_matrix(
+        test_vertices,
+        trial_vertices,
+        test_area,
+        trial_area,
+        test_normal,
+        trial_normal,
+        k,
+        helmholtz_double_layer_kernel,
+        :p1,
+        :p1,
+        rule,
+    )
+    adj_dlp_block = regular_galerkin_element_matrix(
+        test_vertices,
+        trial_vertices,
+        test_area,
+        trial_area,
+        test_normal,
+        trial_normal,
+        k,
+        helmholtz_adjoint_double_layer_kernel,
+        :p1,
+        :dp0,
+        rule,
+    )
+    hyp_block = regular_hypersingular_element_matrix_with_curls(
+        test_vertices,
+        trial_vertices,
+        test_area,
+        trial_area,
+        test_normal,
+        trial_normal,
+        test_curls,
+        trial_curls,
+        k,
+        rule,
+    )
+    return slp_block, dlp_block, adj_dlp_block, hyp_block
+end
+
+function assemble_symmetry_image_singular_correction_deltas!(
+    single_layer,
+    double_layer,
+    adjoint_double_layer,
+    hypersingular,
+    mesh::BoundaryMesh{T},
+    p1_space::P1Space,
+    dp0_space::DP0Space,
+    k::T,
+    regular_rule::TriangleRule{T},
+    singular_order::Int,
+    element_indices,
+    symmetry_mode::Symbol;
+    tolerance::T=T(1e-8),
+) where {T<:AbstractFloat}
+    transforms = symmetry_image_transforms(symmetry_mode)
+    isempty(transforms) && return 0
+
+    base_rules = Dict(
+        :coincident => duffy_rule(T, singular_order, :coincident),
+        :edge_adjacent => duffy_rule(T, singular_order, :edge_adjacent),
+        :vertex_adjacent => duffy_rule(T, singular_order, :vertex_adjacent),
+    )
+    rules = DuffyRule{T}[]
+    rule_indices = Dict{NTuple{5,Int},Int}()
+    source_curls = [surface_curls(mesh.face_vertices[element_index], mesh.normals[element_index]) for element_index in eachindex(mesh.faces)]
+    correction_count = 0
+
+    for transform in transforms
+        for (test_index, trial_index) in image_singular_candidates(mesh, element_indices, transform; tolerance=tolerance)
+            test_vertices = mesh.face_vertices[test_index]
+            trial_vertices = reflect_vertices(transform, mesh.face_vertices[trial_index])
+            info = geometric_adjacency_info(test_vertices, trial_vertices; tolerance=tolerance)
+            info.kind == :regular && continue
+
+            test_normal = mesh.normals[test_index]
+            trial_normal = reflect_normal(transform, mesh.normals[trial_index])
+            test_curls = source_curls[test_index]
+            trial_curls = ntuple(i -> reflect_curl(transform, source_curls[trial_index][i]), 3)
+            test_area = mesh.areas[test_index]
+            trial_area = mesh.areas[trial_index]
+            rule_index = rule_for_singular_orientation!(rules, rule_indices, base_rules, info)
+            pair = SingularCorrectionPair(
+                test_index,
+                trial_index,
+                rule_index,
+                (T(2.0) * test_area) * (T(2.0) * trial_area),
+                dot(test_normal, trial_normal),
+            )
+
+            singular_slp, singular_dlp, singular_adj, singular_hyp = singular_galerkin_operator_blocks(
+                test_vertices,
+                trial_vertices,
+                test_normal,
+                trial_normal,
+                k,
+                rules[rule_index],
+                pair,
+                test_curls,
+                trial_curls,
+            )
+            regular_slp, regular_dlp, regular_adj, regular_hyp = image_regular_operator_blocks(
+                test_vertices,
+                trial_vertices,
+                test_area,
+                trial_area,
+                test_normal,
+                trial_normal,
+                test_curls,
+                trial_curls,
+                k,
+                regular_rule,
+            )
+
+            test_p1_dofs = p1_space.local_to_global[test_index]
+            trial_p1_dofs = p1_space.local_to_global[trial_index]
+            trial_dp0_dof = (dp0_space.local_to_global[trial_index],)
+            scatter_element_block!(single_layer, singular_slp .- regular_slp, test_p1_dofs, trial_dp0_dof)
+            scatter_element_block!(double_layer, singular_dlp .- regular_dlp, test_p1_dofs, trial_p1_dofs)
+            scatter_element_block!(adjoint_double_layer, singular_adj .- regular_adj, test_p1_dofs, trial_dp0_dof)
+            scatter_element_block!(hypersingular, singular_hyp .- regular_hyp, test_p1_dofs, trial_p1_dofs)
+            correction_count += 1
+        end
+    end
+
+    return correction_count
+end
+
 function assemble_singular_galerkin_correction_blocks(
     mesh::BoundaryMesh{T},
     p1_space::P1Space,
@@ -1037,6 +1384,12 @@ function assemble_singular_galerkin_correction_blocks(
         end
     end
 
+    row_weights = ComplexType.(p1_symmetry_orbit_weights(mesh, symmetry_mode))
+    single_layer .*= reshape(row_weights, :, 1)
+    double_layer .*= reshape(row_weights, :, 1)
+    adjoint_double_layer .*= reshape(row_weights, :, 1)
+    hypersingular .*= reshape(row_weights, :, 1)
+
     return (
         pair_count=pair_count,
         p1_rows=p1_rows,
@@ -1083,6 +1436,8 @@ function assemble_l2_identity_matrix(
     rule::TriangleRule{T},
     test_basis::Symbol,
     trial_basis::Symbol,
+    ;
+    symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     test_dof_count = test_basis == :p1 ? p1_space.global_dof_count : dp0_space.global_dof_count
     trial_dof_count = trial_basis == :p1 ? p1_space.global_dof_count : dp0_space.global_dof_count
@@ -1093,6 +1448,11 @@ function assemble_l2_identity_matrix(
         trial_dofs = trial_basis == :p1 ? p1_space.local_to_global[element_index] : (dp0_space.local_to_global[element_index],)
         block = l2_identity_element_matrix(mesh.areas[element_index], test_basis, trial_basis, rule)
         scatter_element_block!(matrix, block, test_dofs, trial_dofs)
+    end
+
+    if test_basis == :p1
+        weights = p1_symmetry_orbit_weights(mesh, symmetry_mode)
+        matrix .*= reshape(weights, :, 1)
     end
 
     return matrix
@@ -1118,6 +1478,7 @@ function assemble_regular_galerkin_operators(
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
     regular_assembly_mode::Symbol=:fused,
+    symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if use_cuda_regular
         return assemble_regular_galerkin_operators_cuda_regular(
@@ -1138,8 +1499,11 @@ function assemble_regular_galerkin_operators(
             profile_regular_kernel=profile_regular_kernel,
             regular_probe_pair_limit=regular_probe_pair_limit,
             regular_assembly_mode=regular_assembly_mode,
+            symmetry_mode=symmetry_mode,
         )
     end
+
+    normalized_symmetry_mode(symmetry_mode) == :off || error("CPU regular assembly does not implement symmetry image contributions.")
 
     ComplexType = Complex{T}
     single_layer = zeros(ComplexType, p1_space.global_dof_count, dp0_space.global_dof_count)
@@ -1362,8 +1726,9 @@ function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0,
     return pressure
 end
 
-function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{T}) where {T<:AbstractFloat}
-    source_count = length(mesh.faces) * length(rule.points)
+function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
+    transforms = symmetry_transforms(symmetry_mode; include_identity=true)
+    source_count = length(mesh.faces) * length(rule.points) * length(transforms)
     source_points = Vector{SVector{3,T}}(undef, source_count)
     source_normals = Vector{SVector{3,T}}(undef, source_count)
     source_weights = Vector{T}(undef, source_count)
@@ -1374,19 +1739,22 @@ function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{
     source_index = 1
     for element_index in eachindex(mesh.faces)
         vertices = mesh.face_vertices[element_index]
-        normal = mesh.normals[element_index]
         face = mesh.faces[element_index]
         jac_scale = T(2.0) * mesh.areas[element_index]
 
-        for q_index in eachindex(rule.points)
-            point = rule.points[q_index]
-            source_points[source_index] = local_to_global(vertices, point)
-            source_normals[source_index] = normal
-            source_weights[source_index] = rule.weights[q_index] * jac_scale
-            source_faces[source_index] = face
-            source_elements[source_index] = element_index
-            basis_values[source_index] = p1_values(point)
-            source_index += 1
+        for transform in transforms
+            transformed_vertices = reflect_vertices(transform, vertices)
+            transformed_normal = reflect_normal(transform, mesh.normals[element_index])
+            for q_index in eachindex(rule.points)
+                point = rule.points[q_index]
+                source_points[source_index] = local_to_global(transformed_vertices, point)
+                source_normals[source_index] = transformed_normal
+                source_weights[source_index] = rule.weights[q_index] * jac_scale
+                source_faces[source_index] = face
+                source_elements[source_index] = element_index
+                basis_values[source_index] = p1_values(point)
+                source_index += 1
+            end
         end
     end
 
@@ -1443,8 +1811,8 @@ function evaluate_galerkin_field(eval_points, mesh::BoundaryMesh{T}, pressure, q
     return pot
 end
 
-function evaluate_galerkin_field(eval_points, mesh::BoundaryMesh{T}, pressure, q_neumann, k::T, rule::TriangleRule{T}) where {T<:AbstractFloat}
-    cache = build_field_evaluation_cache(mesh, rule)
+function evaluate_galerkin_field(eval_points, mesh::BoundaryMesh{T}, pressure, q_neumann, k::T, rule::TriangleRule{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
+    cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode)
     return evaluate_galerkin_field(eval_points, mesh, pressure, q_neumann, k, cache)
 end
 

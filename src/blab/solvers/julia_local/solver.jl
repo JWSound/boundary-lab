@@ -66,6 +66,12 @@ function validate_crossover_config(owner_name::String, crossover)
     end
 end
 
+function symmetry_mode_from_config(config)
+    mode = lowercase(strip(String(get_value(config, "symmetry", "off"))))
+    mode in ("off", "x", "xy") || error("Unsupported symmetry mode: $(mode). Expected off, x, or xy.")
+    return mode
+end
+
 function mesh_inputs_from_config(config)
     meshes = get_value(config, "meshes", Any[])
     if !isempty(meshes)
@@ -371,7 +377,8 @@ function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, ::Typ
     return Float32.(T(20.0) .* log10.(abs.(pot) ./ T(20e-6)))
 end
 
-function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, ::Type{T}) where {T<:AbstractFloat}
+function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, ::Type{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
+    force_scale = eltype(pressure)(symmetry_reduction_factor(symmetry_mode))
     impedance = Vector{Vector{Float32}}()
     for (radiator_index, radiator) in enumerate(radiators)
         drive = drives[radiator_index]
@@ -387,7 +394,7 @@ function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, dr
             radiator_owns_element(radiator, element_mesh_ids, element_index) || continue
             face = mesh.faces[element_index]
             p_avg = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / eltype(pressure)(3.0)
-            total_force += p_avg * eltype(pressure)(mesh.areas[element_index])
+            total_force += p_avg * eltype(pressure)(mesh.areas[element_index]) * force_scale
         end
         total_force *= eltype(pressure)(10.0)
         z_complex = total_force / drive
@@ -401,6 +408,7 @@ function solve_request(request)
     schema_version == 1 || error("Unsupported solve request schema_version $(schema_version).")
 
     config = request["config"]
+    symmetry_mode = symmetry_mode_from_config(config)
     frequencies = Float32.(request["frequencies_hz"])
     isempty(frequencies) && error("frequencies_hz must contain at least one frequency.")
     cancel_path = get_value(request, "cancel_path", nothing)
@@ -429,14 +437,15 @@ function solve_request(request)
     ))
 
     mesh, element_mesh_ids = load_combined_mesh(mesh_inputs, FloatType)
+    validate_symmetry_fundamental_domain!(mesh, Symbol(symmetry_mode))
     validate_radiator_elements(mesh, element_mesh_ids, radiators)
     p1_space = build_p1_space(mesh)
     dp0_space = build_dp0_space(mesh)
     rule = triangle_rule(FloatType, Int(get_value(config, "quadrature_order", 4)))
-    cpu_field_cache = build_field_evaluation_cache(mesh, rule)
+    cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=Symbol(symmetry_mode))
     singular_order = Int(get_value(config, "singular_order", 4))
-    identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
-    identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
+    identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=Symbol(symmetry_mode))
+    identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0; symmetry_mode=Symbol(symmetry_mode))
     rho = FloatType(get_value(config, "rho", 1.21))
     sound_speed = FloatType(get_value(config, "sound_speed", 343.0))
     flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
@@ -473,6 +482,7 @@ function solve_request(request)
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
                 regular_assembly_mode=cuda_regular_assembly_mode,
+                symmetry_mode=Symbol(symmetry_mode),
             )
         end
 
@@ -557,7 +567,7 @@ function solve_request(request)
             reference = horizontal_spl[on_axis_idx]
             horizontal_norm = Float32.(horizontal_spl .- reference)
             vertical_norm = Float32.(vertical_spl .- reference)
-            impedance = impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, FloatType)
+            impedance = impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, FloatType; symmetry_mode=Symbol(symmetry_mode))
             if sphere !== nothing
                 sphere_start = horizontal_count + vertical_count + 1
                 sphere_spl = combined_spl[sphere_start:end]
@@ -586,6 +596,7 @@ function solve_request(request)
                 "diagnostics" => Dict(
                     "convergence_info" => 0,
                     "message" => "Julia direct dense solve",
+                    "symmetry" => symmetry_mode,
                 ),
             ),
         )
