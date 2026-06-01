@@ -3,7 +3,14 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from blab.ui.mesh_preview import _mirrored_triangle_images_for_preview, _preview_axis_length, _surface_hover_label
+from blab.ui.mesh_preview import (
+    _dimensions_lwh_mm,
+    _mesh_stats_label,
+    _mirrored_triangle_images_for_preview,
+    _preview_axis_length,
+    _preview_points_with_images,
+    _surface_hover_label,
+)
 
 
 def test_surface_hover_label_includes_mesh_tag_and_element_count() -> None:
@@ -29,6 +36,25 @@ def test_preview_axis_length_scales_with_mesh_bounds() -> None:
 
     assert _preview_axis_length(points) > 3.0
     assert _preview_axis_length(np.empty((0, 3))) == 1.0
+
+
+def test_mesh_stats_label_includes_mirrored_state_and_dimensions() -> None:
+    assert _mesh_stats_label(1234, mirrored=True, dimensions_mm=(300, 200, 100)) == (
+        "Total elements: 1,234 (Mirrored) | 300mm x 200mm x 100mm (LWH)"
+    )
+    assert _mesh_stats_label(0, mirrored=True, dimensions_mm=(0, 0, 0)) == ""
+
+
+def test_dimensions_lwh_mm_maps_z_x_y_extents() -> None:
+    points = np.array(
+        [
+            [-0.050, -0.010, -0.300],
+            [0.150, 0.090, 0.100],
+        ]
+    )
+
+    assert _dimensions_lwh_mm(points) == (400, 200, 100)
+    assert _dimensions_lwh_mm(np.empty((0, 3))) == (0, 0, 0)
 
 
 def test_mirrored_preview_skips_triangles_on_symmetry_plane() -> None:
@@ -58,6 +84,23 @@ def test_mirrored_preview_skips_triangles_on_symmetry_plane() -> None:
     assert mirror_triangles.tolist() == [[3, 5, 4]]
     assert source_indices.tolist() == [1]
     assert np.allclose(mirror_points[[3, 4, 5], 0], [-1.0, -1.0, -1.0])
+
+
+def test_mirrored_preview_dimensions_use_displayed_images_without_inflating_count() -> None:
+    points = np.array(
+        [
+            [0.050, 0.0, 0.0],
+            [0.100, 0.0, 0.0],
+            [0.050, 0.020, 0.030],
+        ]
+    )
+    triangles = np.array([[0, 1, 2]], dtype=np.int64)
+
+    images = _mirrored_triangle_images_for_preview(points, triangles, "x")
+    display_points = _preview_points_with_images(points, images)
+
+    assert int(triangles.shape[0]) == 1
+    assert _dimensions_lwh_mm(display_points) == (30, 200, 20)
 
 
 def test_xy_mirrored_preview_adds_three_images_for_quadrant_triangle() -> None:

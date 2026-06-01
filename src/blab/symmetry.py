@@ -8,6 +8,7 @@ import meshio
 import numpy as np
 
 from blab.config import MeshConfig, normalize_symmetry
+from blab.solvers.registry import backend_info
 
 
 _SYMMETRY_AXES = {
@@ -35,6 +36,17 @@ class SymmetryValidationError(ValueError):
             f"for {symmetry.upper()} symmetry. Vertex {issue.vertex_index} has "
             f"{issue.axis.lower()}={issue.coordinate_m:.6g} m after scale and translation."
         )
+
+
+def backend_supports_symmetry(backend_id: str) -> bool:
+    return backend_info(backend_id).capabilities.supports_symmetry
+
+
+def effective_symmetry_for_backend(symmetry: object, backend_id: str) -> str:
+    mode = normalize_symmetry(symmetry)
+    if mode == "off" or backend_supports_symmetry(backend_id):
+        return mode
+    return "off"
 
 
 def validate_reduced_mesh_config(

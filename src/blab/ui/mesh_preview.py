@@ -96,7 +96,11 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self.hover_label.setText("")
-        self._set_total_element_count(int(triangles.shape[0]))
+        display_points = np.asarray(mesh.points, dtype=float)
+        self._set_total_element_count(
+            int(triangles.shape[0]),
+            dimensions_mm=_dimensions_lwh_mm(display_points),
+        )
 
         if physical_tags is None:
             actor = self.viewer.add_mesh(
@@ -112,7 +116,7 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
-            self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
+            self._add_orientation_guides(display_points)
             self._restore_camera_or_reset(camera_position)
             return
 
@@ -139,7 +143,7 @@ class MeshPreview(QWidget):
                 int(tag_triangles.shape[0]),
             )
 
-        self._add_orientation_guides(np.asarray(mesh.points, dtype=float))
+        self._add_orientation_guides(display_points)
         self._restore_camera_or_reset(camera_position)
 
     def load_mesh_configs(
@@ -158,6 +162,7 @@ class MeshPreview(QWidget):
         self.hover_label.setText("")
         total_elements = 0
         preview_points = []
+        mirrored = str(symmetry or "off").strip().lower() != "off"
 
         for mesh_cfg in meshes:
             mesh_elements, mesh_points = self._add_msh_mesh(
@@ -169,9 +174,14 @@ class MeshPreview(QWidget):
             total_elements += mesh_elements
             preview_points.append(mesh_points)
 
-        self._set_total_element_count(total_elements)
+        display_points = np.vstack(preview_points) if preview_points else np.empty((0, 3))
+        self._set_total_element_count(
+            total_elements,
+            mirrored=mirrored,
+            dimensions_mm=_dimensions_lwh_mm(display_points),
+        )
         if preview_points:
-            self._add_orientation_guides(np.vstack(preview_points))
+            self._add_orientation_guides(display_points)
         self._restore_camera_or_reset(camera_position)
 
     def _add_msh_mesh(
@@ -189,7 +199,7 @@ class MeshPreview(QWidget):
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
         mirrored_images = _mirrored_triangle_images_for_preview(points, triangles, symmetry)
-        display_count = int(triangles.shape[0]) + sum(int(image_triangles.shape[0]) for _, _, image_triangles, _ in mirrored_images)
+        base_count = int(triangles.shape[0])
 
         if physical_tags is None:
             actor = self.viewer.add_mesh(
@@ -221,7 +231,7 @@ class MeshPreview(QWidget):
                     None,
                     int(mirror_triangles.shape[0]),
                 )
-            return display_count, _preview_points_with_images(points, mirrored_images)
+            return base_count, _preview_points_with_images(points, mirrored_images)
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
         for tag in sorted(np.unique(physical_tags)):
@@ -262,10 +272,16 @@ class MeshPreview(QWidget):
                     int(tag),
                     int(mirror_tag_triangles.shape[0]),
                 )
-        return display_count, _preview_points_with_images(points, mirrored_images)
+        return base_count, _preview_points_with_images(points, mirrored_images)
 
-    def _set_total_element_count(self, count: int) -> None:
-        self.total_elements_label.setText(f"Total elements: {count:,}" if count else "")
+    def _set_total_element_count(
+        self,
+        count: int,
+        *,
+        mirrored: bool = False,
+        dimensions_mm: tuple[int, int, int] | None = None,
+    ) -> None:
+        self.total_elements_label.setText(_mesh_stats_label(count, mirrored=mirrored, dimensions_mm=dimensions_mm))
 
     def _camera_position(self):
         if self.viewer is None:
@@ -371,6 +387,43 @@ def _surface_hover_label(mesh_name: str | None, surface_name: str, tag: int | No
     parts.append("Tag: untagged" if tag is None else f"Tag: {tag}")
     parts.append(f"Elements: {element_count:,}")
     return " | ".join(parts)
+
+
+def _mesh_stats_label(
+    count: int,
+    *,
+    mirrored: bool = False,
+    dimensions_mm: tuple[int, int, int] | None = None,
+) -> str:
+    if not count:
+        return ""
+
+    element_text = f"Total elements: {count:,}"
+    if mirrored:
+        element_text = f"{element_text} (Mirrored)"
+    if dimensions_mm is None:
+        return element_text
+
+    length_mm, width_mm, height_mm = dimensions_mm
+    return f"{element_text} | {length_mm}mm x {width_mm}mm x {height_mm}mm (LWH)"
+
+
+def _dimensions_lwh_mm(points: np.ndarray) -> tuple[int, int, int]:
+    if points.size == 0:
+        return (0, 0, 0)
+
+    finite_points = np.asarray(points, dtype=float)
+    finite_points = finite_points[np.all(np.isfinite(finite_points), axis=1)]
+    if finite_points.size == 0:
+        return (0, 0, 0)
+
+    min_bounds = np.nanmin(finite_points, axis=0)
+    max_bounds = np.nanmax(finite_points, axis=0)
+    extents_mm = np.maximum(max_bounds - min_bounds, 0.0) * 1000.0
+    width_mm = int(round(float(extents_mm[0])))
+    height_mm = int(round(float(extents_mm[1])))
+    length_mm = int(round(float(extents_mm[2])))
+    return (length_mm, width_mm, height_mm)
 
 
 def _preview_axis_length(points: np.ndarray) -> float:

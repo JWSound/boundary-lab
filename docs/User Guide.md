@@ -75,6 +75,7 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Mesh Config
 - `Stitch Tolerance`: Set the search distance for nearby open edges when combining multiple mesh files in the same project.
+- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Currently only supported with the Julia CUDA solver backend. Mirrored mesh elements are shaded darker in the 3d viewport.
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.

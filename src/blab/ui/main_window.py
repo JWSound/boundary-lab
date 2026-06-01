@@ -13,7 +13,7 @@ from typing import Callable
 import meshio
 import numpy as np
 from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QAction, QColor, QFont, QPalette
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -61,7 +61,7 @@ from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
 from blab.solvers.registry import backend_info, normalize_backend_id
-from blab.symmetry import SymmetryValidationError, validate_reduced_mesh_configs
+from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
 from blab.ui.help import HelpBrowserDialog
@@ -202,9 +202,12 @@ class MainWindow(QMainWindow):
             startup("Loading mesh preview...")
             self._refresh_mesh_preview()
 
-        self.generate_button = QPushButton("Generate")
-        self.solve_button = QPushButton("Solve")
-        self.cancel_button = QPushButton("Stop")
+        self.generate_button = QPushButton("Generate (F7)")
+        self.generate_button.setShortcut(QKeySequence("F7"))
+        self.solve_button = QPushButton("Solve (F5)")
+        self.solve_button.setShortcut(QKeySequence("F5"))
+        self.cancel_button = QPushButton("Stop (Shift+F5)")
+        self.cancel_button.setShortcut(QKeySequence("Shift+F5"))
         self.cancel_button.setEnabled(False)
         self.mesh_config_button = QPushButton("Mesh Config")
         self.channel_config_button = QPushButton("Channel Config")
@@ -1143,6 +1146,13 @@ class MainWindow(QMainWindow):
     def _selected_backend_supports_symmetry(self) -> bool:
         return backend_info(self.preferences.solve_backend).capabilities.supports_symmetry
 
+    def _disable_symmetry_if_backend_unsupported(self) -> bool:
+        effective_symmetry = effective_symmetry_for_backend(self.symmetry, self.preferences.solve_backend)
+        if effective_symmetry == self.symmetry:
+            return False
+        self.symmetry = effective_symmetry
+        return True
+
     def _imported_mesh_needs_reload(self, mesh: MeshDialogEntry) -> bool:
         if not mesh.enabled:
             return False
@@ -1712,6 +1722,7 @@ class MainWindow(QMainWindow):
         self.symmetry = str(payload.get("symmetry", "off")).strip().lower()
         if self.symmetry not in {"off", "x", "xy"}:
             self.symmetry = "off"
+        self._disable_symmetry_if_backend_unsupported()
         self.imported_radiators = ()
         self._save_imported_meshes()
 
@@ -1830,15 +1841,21 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_preferences(self) -> None:
+        previous_backend = normalize_backend_id(self.preferences.solve_backend)
         dialog = PreferencesDialog(self.preferences, self)
         if dialog.exec() != QDialog.Accepted:
             return
         self.preferences = dialog.preferences()
         dialog.deleteLater()
         self._save_preferences()
+        backend_changed = normalize_backend_id(self.preferences.solve_backend) != previous_backend
+        symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)
         self._refresh_mesh_preview()
-        self._refresh_plots()
+        if symmetry_disabled or backend_changed:
+            self._clear_plots()
+        else:
+            self._refresh_plots()
         self.status_label.setText("Preferences updated")
 
     @Slot()
@@ -1853,6 +1870,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_mesh_config(self) -> None:
+        self._disable_symmetry_if_backend_unsupported()
         symmetry_enabled = self._selected_backend_supports_symmetry()
         dialog = MeshConfigDialog(
             self._mesh_config_dialog_entries(),
@@ -1979,13 +1997,8 @@ class MainWindow(QMainWindow):
         if not radiators:
             QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
             return
-        if self.symmetry != "off" and not self._selected_backend_supports_symmetry():
-            QMessageBox.warning(
-                self,
-                "Symmetry unsupported",
-                "The selected solver backend does not support symmetry. Select Julia CUDA GPU or set Symmetry to Off.",
-            )
-            return
+        if self._disable_symmetry_if_backend_unsupported():
+            self._refresh_mesh_preview()
 
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)

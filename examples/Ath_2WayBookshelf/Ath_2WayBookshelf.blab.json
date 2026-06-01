@@ -100,5 +100,6 @@
       "velocity_offset_db": 0.0
     }
   },
-  "stitch_imported_meshes": false
+  "stitch_imported_meshes": false,
+  "symmetry": "x"
 }
