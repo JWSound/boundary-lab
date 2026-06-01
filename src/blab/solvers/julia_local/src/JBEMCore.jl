@@ -1115,6 +1115,9 @@ function assemble_regular_galerkin_operators(
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
+    profile_regular_kernel::Bool=false,
+    regular_probe_pair_limit::Int=1_000_000,
+    regular_assembly_mode::Symbol=:fused,
 ) where {T<:AbstractFloat}
     if use_cuda_regular
         return assemble_regular_galerkin_operators_cuda_regular(
@@ -1132,6 +1135,9 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             cuda_singular_cache=cuda_singular_cache,
+            profile_regular_kernel=profile_regular_kernel,
+            regular_probe_pair_limit=regular_probe_pair_limit,
+            regular_assembly_mode=regular_assembly_mode,
         )
     end
 

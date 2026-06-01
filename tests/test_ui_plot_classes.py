@@ -41,6 +41,16 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     assert "plot_layout.setSpacing(4)" in main_source
 
 
+def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert "_request_plot_refresh" not in source
+    assert "_plot_refresh_timer" not in source
+    assert "visible_entries = [entry for entry in self.plot_entries if entry.widget.isVisible()]" in source
+    assert "for entry in visible_entries:" in source
+    assert "self._refresh_plots()" in source
+
+
 def test_isobar_canvas_allows_custom_right_margin() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
 
@@ -48,6 +58,17 @@ def test_isobar_canvas_allows_custom_right_margin() -> None:
     assert "right_margin: float = 0.98" in source
     assert "left=self.left_margin" in source
     assert "right=self.right_margin" in source
+
+
+def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
+    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    isobar_block = source[source.index("class IsobarCanvas"):source.index("class ImpedanceCanvas")]
+
+    assert "self._mesh_artist" in isobar_block
+    assert "def _mesh_matches(" in isobar_block
+    assert "self._mesh_artist.set_array" in isobar_block
+    assert "self.axes.pcolormesh(" in isobar_block
+    assert isobar_block.count("clear_plot_axes(self.axes)") == 1
 
 
 def test_balloon_contours_exclude_configured_maximum() -> None:

@@ -77,14 +77,18 @@ class IsobarCanvas(FigureCanvas):
         self.left_margin = float(left_margin)
         self.right_margin = float(right_margin)
         self.colors = VisualizerConfig.custom_colors
+        self._mesh_artist = None
+        self._line_artist = None
+        self._mesh_freqs_hz: np.ndarray | None = None
+        self._mesh_angles_deg: np.ndarray | None = None
+        self._mesh_clip: tuple[float, float] | None = None
         self._apply_layout()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
         self.figure.subplots_adjust(left=self.left_margin, right=self.right_margin, top=0.91, bottom=0.2)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _configure_axes(self) -> None:
         self._apply_layout()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -94,7 +98,38 @@ class IsobarCanvas(FigureCanvas):
         self.axes.set_yticks(np.arange(-180, 181, 30))
         self.axes.grid(which="major", color="#808080", linewidth=0.8)
         apply_compact_plot_text(self.axes)
+
+    def _draw_empty(self) -> None:
+        clear_plot_axes(self.axes)
+        self._mesh_artist = None
+        self._line_artist = None
+        self._mesh_freqs_hz = None
+        self._mesh_angles_deg = None
+        self._mesh_clip = None
+        self._configure_axes()
         self.draw_idle()
+
+    def _remove_artist(self, name: str) -> None:
+        artist = getattr(self, name)
+        if artist is None:
+            return
+        try:
+            artist.remove()
+        except ValueError:
+            pass
+        setattr(self, name, None)
+
+    def _mesh_matches(self, freqs_hz: np.ndarray, angles_deg: np.ndarray, clip: tuple[float, float]) -> bool:
+        return (
+            self._mesh_artist is not None
+            and self._mesh_freqs_hz is not None
+            and self._mesh_angles_deg is not None
+            and self._mesh_clip == clip
+            and self._mesh_freqs_hz.shape == freqs_hz.shape
+            and self._mesh_angles_deg.shape == angles_deg.shape
+            and np.array_equal(self._mesh_freqs_hz, freqs_hz)
+            and np.array_equal(self._mesh_angles_deg, angles_deg)
+        )
 
     def update_plot(
         self,
@@ -104,37 +139,54 @@ class IsobarCanvas(FigureCanvas):
         clip_min_db: float,
         clip_max_db: float,
     ) -> None:
-        clear_plot_axes(self.axes)
-        self._apply_layout()
-        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Angle (deg)")
-        self.axes.set_ylim(-180, 180)
-        self.axes.set_yticks(np.arange(-180, 181, 30))
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8)
+        freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
+        angles_deg = np.asarray(angles_deg, dtype=np.float32)
+        clipped = np.clip(np.asarray(values_db, dtype=np.float32), clip_min_db, clip_max_db)
+        clip = (float(clip_min_db), float(clip_max_db))
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
-            boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
-            cmap = ListedColormap(list(self.colors))
-            norm = BoundaryNorm(boundaries, cmap.N)
-            self.axes.pcolormesh(
-                freqs_hz,
-                angles_deg,
-                np.clip(values_db, clip_min_db, clip_max_db),
-                cmap=cmap,
-                norm=norm,
-                shading="gouraud",
-            )
+            self._remove_artist("_line_artist")
+            if self._mesh_matches(freqs_hz, angles_deg, clip):
+                self._mesh_artist.set_array(clipped.ravel())
+            else:
+                self._remove_artist("_mesh_artist")
+                boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
+                cmap = ListedColormap(list(self.colors))
+                norm = BoundaryNorm(boundaries, cmap.N)
+                self._mesh_artist = self.axes.pcolormesh(
+                    freqs_hz,
+                    angles_deg,
+                    clipped,
+                    cmap=cmap,
+                    norm=norm,
+                    shading="gouraud",
+                )
+                self._mesh_freqs_hz = freqs_hz.copy()
+                self._mesh_angles_deg = angles_deg.copy()
+                self._mesh_clip = clip
         elif freqs_hz.size == 1:
-            self.axes.plot(
-                np.full_like(angles_deg, float(freqs_hz[0])),
-                angles_deg,
-                color="#1f77b4",
-                linewidth=1.5,
-            )
+            self._remove_artist("_mesh_artist")
+            self._mesh_freqs_hz = None
+            self._mesh_angles_deg = None
+            self._mesh_clip = None
+            x_values = np.full_like(angles_deg, float(freqs_hz[0]))
+            if self._line_artist is None:
+                (self._line_artist,) = self.axes.plot(
+                    x_values,
+                    angles_deg,
+                    color="#1f77b4",
+                    linewidth=1.5,
+                )
+            else:
+                self._line_artist.set_data(x_values, angles_deg)
+        else:
+            self._remove_artist("_mesh_artist")
+            self._remove_artist("_line_artist")
+            self._mesh_freqs_hz = None
+            self._mesh_angles_deg = None
+            self._mesh_clip = None
 
-        apply_compact_plot_text(self.axes)
+        self._configure_axes()
         self.draw_idle()
 
 

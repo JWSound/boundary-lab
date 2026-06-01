@@ -444,12 +444,13 @@ function solve_request(request)
     sound_speed = FloatType(get_value(config, "sound_speed", 343.0))
     flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
     use_cuda = Bool(get_value(config, "julia_use_cuda", true))
+    cuda_regular_assembly_mode = Symbol(String(get_value(config, "julia_cuda_regular_assembly_mode", "split_atomic")))
     cuda_cache = nothing
     field_cache = cpu_field_cache
     singular_cache = build_singular_correction_cache(mesh, singular_order)
     cuda_singular_cache = nothing
     if use_cuda
-        emit_event("status"; message="Julia solver using CUDA assembly, GPU dense solve, and GPU field evaluation")
+        emit_event("status"; message="Julia solver using CUDA assembly ($(cuda_regular_assembly_mode)), GPU dense solve, and GPU field evaluation")
         cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
         field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
         cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
@@ -482,6 +483,7 @@ function solve_request(request)
                 parallel_quadrature=true,
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
+                regular_assembly_mode=use_cuda ? cuda_regular_assembly_mode : :fused,
             )
         end
 

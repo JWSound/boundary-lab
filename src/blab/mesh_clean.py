@@ -55,6 +55,20 @@ class StitchResult:
 
 
 @dataclass(frozen=True)
+class MeshQualityWarning:
+    sliver_triangles: int
+    float32_singular_triangles: int
+    worst_triangle_index: int
+    worst_altitude_edge_ratio: float
+    worst_area: float
+    worst_longest_edge: float
+
+    @property
+    def has_warnings(self) -> bool:
+        return self.sliver_triangles > 0 or self.float32_singular_triangles > 0
+
+
+@dataclass(frozen=True)
 class _StitchLoopCandidate:
     score: float
     mesh_a: int
@@ -187,6 +201,70 @@ def _degenerate_mask(points: np.ndarray, triangles: np.ndarray, area_tol: float)
     area2 = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)  # 2 * area
     tiny_area = area2 <= (2.0 * area_tol)
     return repeated_vertex | tiny_area
+
+
+def triangle_quality_warning(
+    mesh: meshio.Mesh,
+    *,
+    altitude_edge_ratio_tol: float = 1e-3,
+) -> MeshQualityWarning:
+    """Return a lightweight warning summary for triangles that are numerically too thin."""
+    _tri_key, triangles = _find_triangle_block(mesh)
+    if len(triangles) == 0:
+        return MeshQualityWarning(0, 0, 0, float("inf"), 0.0, 0.0)
+
+    points64 = np.asarray(mesh.points, dtype=np.float64)
+    v0 = points64[triangles[:, 0]]
+    v1 = points64[triangles[:, 1]]
+    v2 = points64[triangles[:, 2]]
+
+    e01 = v1 - v0
+    e02 = v2 - v0
+    e12 = v2 - v1
+    area2 = np.linalg.norm(np.cross(e01, e02), axis=1)
+    longest_edge = np.maximum.reduce(
+        (
+            np.linalg.norm(e01, axis=1),
+            np.linalg.norm(e02, axis=1),
+            np.linalg.norm(e12, axis=1),
+        )
+    )
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        altitude_edge_ratio = area2 / np.square(longest_edge)
+
+    finite_ratio = np.where(np.isfinite(altitude_edge_ratio), altitude_edge_ratio, 0.0)
+    positive_area = area2 > 0.0
+
+    points32 = np.asarray(mesh.points, dtype=np.float32)
+    f0 = points32[triangles[:, 0]]
+    f1 = points32[triangles[:, 1]]
+    f2 = points32[triangles[:, 2]]
+    fe1 = f1 - f0
+    fe2 = f2 - f0
+    g11 = np.einsum("ij,ij->i", fe1, fe1)
+    g12 = np.einsum("ij,ij->i", fe1, fe2)
+    g22 = np.einsum("ij,ij->i", fe2, fe2)
+    gram_det32 = g11 * g22 - g12 * g12
+    gram_scale32 = np.maximum(g11 * g22, np.finfo(np.float32).tiny)
+    near_singular32 = gram_det32 <= (np.float32(10.0) * np.finfo(np.float32).eps * gram_scale32)
+
+    sliver_mask = positive_area & (finite_ratio < altitude_edge_ratio_tol)
+    singular32_mask = positive_area & near_singular32
+    warning_mask = sliver_mask | singular32_mask
+    if not np.any(warning_mask):
+        return MeshQualityWarning(0, 0, 0, float(np.min(finite_ratio)), 0.0, 0.0)
+
+    warning_indices = np.flatnonzero(warning_mask)
+    worst_index = int(warning_indices[np.argmin(finite_ratio[warning_indices])])
+    return MeshQualityWarning(
+        sliver_triangles=int(np.sum(sliver_mask)),
+        float32_singular_triangles=int(np.sum(singular32_mask)),
+        worst_triangle_index=worst_index + 1,
+        worst_altitude_edge_ratio=float(finite_ratio[worst_index]),
+        worst_area=float(0.5 * area2[worst_index]),
+        worst_longest_edge=float(longest_edge[worst_index]),
+    )
 
 
 def _mesh_stats(points: np.ndarray, triangles: np.ndarray, area_tol: float) -> MeshStats:

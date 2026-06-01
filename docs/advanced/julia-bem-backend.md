@@ -133,17 +133,41 @@ The CUDA singular correction cache stores:
 
 ## CUDA Kernel Modes
 
-The CUDA backend has two regular assembly kernels, one singular correction block kernel, and two field-evaluation kernels.
+The CUDA backend has multiple regular assembly kernels, one singular correction block kernel, and two field-evaluation kernels.
 
 `_cuda_regular_kernel!` maps GPU threads over element pairs. Each thread computes all quadrature pairs for one or more test/trial element pairs.
 
-`_cuda_regular_quadrature_kernel!` maps one CUDA block to one test/trial element pair and distributes the quadrature-pair work across threads in the block. Per-thread partial sums are reduced in dynamic shared memory:
+`_cuda_regular_quadrature_kernel!` is the fused parallel-quadrature regular assembly kernel. It maps one CUDA block to one test/trial element pair and distributes the quadrature-pair work across threads in the block. Per-thread partial sums are reduced in dynamic shared memory:
 
 ```julia
 scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
 ```
 
-This mode is selected by `parallel_quadrature=true`, which is the path used by `solver.jl`.
+The fused kernel computes all regular operators in one pass:
+
+- single layer;
+- adjoint double layer;
+- double layer;
+- hypersingular.
+
+It then atomically scatters all real and imaginary element-block entries into dense operator buffers. This path remains available as `regular_assembly_mode=:fused` and is useful as a reference/fallback implementation.
+
+The default CUDA application path uses faster `regular_assembly_mode=:split_atomic`. This keeps the same one-block-per-element-pair parallel quadrature strategy and the same dense atomic accumulation model, but splits regular assembly into two kernels:
+
+- `_cuda_regular_quadrature_slp_adjoint_kernel!` computes single layer and adjoint double layer contributions;
+- `_cuda_regular_quadrature_dlp_hyp_kernel!` computes double layer and hypersingular contributions.
+
+The split atomic method intentionally recomputes the Green-function geometry in each split kernel, but it reduces the number of live accumulators and the dynamic shared-memory reduction width per launch. On moderate real-world meshes this has benchmarked faster than the fused all-operator kernel, because the fused kernel's 48 accumulator slots create enough register/shared-memory pressure to outweigh the extra launch and repeated math.
+
+The application default can be overridden in request config with:
+
+```json
+{
+  "julia_cuda_regular_assembly_mode": "fused"
+}
+```
+
+The benchmarking script exposes the same choice with `--regular-assembly-mode fused|split_atomic`.
 
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 
@@ -166,7 +190,7 @@ $$
 A = A_{\mathrm{re}} + i A_{\mathrm{im}},
 $$
 
-This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
+This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The default split atomic regular assembly mode preserves this property: it still atomically accumulates into the same dense buffers, but does so through smaller operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
 
 ## GPU Dense Solve
 
@@ -242,7 +266,7 @@ The expensive stages are:
 - dense direct solve, roughly \(O(N_p^3)\), where \(N_p\) is P1 dof count;
 - field evaluation, roughly \(O(N_{\mathrm{obs}} N_e q)\).
 
-CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems.
+CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The default split atomic regular assembly mode reduces regular-kernel pressure by assembling SLP/adjoint and DLP/hypersingular in separate launches while keeping dense operators resident on the GPU.
 
 ## Important Files
 

@@ -1289,6 +1289,26 @@ class MainWindow(QMainWindow):
             message.setDetailedText(str(exc.__cause__))
         message.exec()
 
+    def _show_mesh_quality_warning(self, result: AthRunResult) -> None:
+        warning = result.quality_warning
+        if warning is None or not warning.has_warnings:
+            return
+
+        QMessageBox.warning(
+            self,
+            "Mesh quality warning",
+            (
+                "The cleaned mesh contains extremely thin triangles that may make the "
+                "Julia solver produce non-finite results.\n\n"
+                f"Thin triangles: {warning.sliver_triangles}\n"
+                f"Float32-singular triangles: {warning.float32_singular_triangles}\n"
+                f"Worst triangle: {warning.worst_triangle_index}\n"
+                f"Worst altitude/edge ratio: {warning.worst_altitude_edge_ratio:.3g}\n\n"
+                "Try increasing mesh resolution around sharp transitions or adjusting the Ath geometry "
+                "to avoid long, needle-like triangles."
+            ),
+        )
+
     def _surface_tags_for_meshes(self) -> dict[str, tuple[str, int]]:
         surface_tags: dict[str, tuple[str, int]] = {}
         for mesh_cfg in self._solver_mesh_configs():
@@ -1913,6 +1933,7 @@ class MainWindow(QMainWindow):
             self._refresh_mesh_preview()
             self.source_config_button.setEnabled(True)
             self.status_label.setText(f"Generated and cleaned {result.output_dir}")
+            self._show_mesh_quality_warning(result)
         except Exception as exc:
             self.status_label.setText("Generate failed")
             QMessageBox.critical(self, "Ath generation failed", str(exc))
@@ -2036,6 +2057,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_solve_finished(self) -> None:
+        self._refresh_plots()
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
@@ -2081,6 +2103,8 @@ class MainWindow(QMainWindow):
             entry.widget.setVisible(visible)
             self.settings.setValue(f"plots/{plot_id}/visible", visible)
             self.settings.sync()
+            if visible:
+                self._refresh_plots()
             break
 
     def _set_export_plot_actions_enabled(self, enabled: bool) -> None:
@@ -2105,11 +2129,15 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_plots(self) -> None:
+        visible_entries = [entry for entry in self.plot_entries if entry.widget.isVisible()]
+        if not visible_entries:
+            return
+
         dataset = self._prepared_live_plot_dataset()
         if dataset is None:
             return
 
-        for entry in self.plot_entries:
+        for entry in visible_entries:
             entry.update(dataset)
 
     def _update_horizontal_plot(self, dataset: dict[str, np.ndarray]) -> None:

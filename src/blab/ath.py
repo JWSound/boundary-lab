@@ -8,8 +8,16 @@ import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import meshio
+
 from blab.config import RadiatorConfig
-from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
+from blab.mesh_clean import (
+    AREA_TOL,
+    MERGE_TOL,
+    MeshQualityWarning,
+    clean_mesh_file,
+    triangle_quality_warning,
+)
 
 
 DRIVEN_DIAPHRAGM_PHYSICAL_NAME = "SD1D1001"
@@ -37,6 +45,7 @@ class AthRunResult:
     driven_tag: int
     radiators: tuple[RadiatorConfig, ...]
     cleaned_msh_path: Path | None = None
+    quality_warning: MeshQualityWarning | None = None
 
     @property
     def solver_msh_path(self) -> Path:
@@ -307,6 +316,7 @@ def clean_ath_mesh_output(
         mirror_axes=mirror_axes,
         binary=False,
     )
+    quality_warning = triangle_quality_warning(meshio.read(cleaned_path))
     physical_names = read_physical_names(cleaned_path)
     driven_tag = physical_names[DRIVEN_DIAPHRAGM_PHYSICAL_NAME]
     return replace(
@@ -314,6 +324,7 @@ def clean_ath_mesh_output(
         cleaned_msh_path=cleaned_path,
         driven_tag=driven_tag,
         radiators=detect_ath_radiators(cleaned_path),
+        quality_warning=quality_warning if quality_warning.has_warnings else None,
     )
 
 

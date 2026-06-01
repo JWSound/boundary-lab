@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import meshio
 import numpy as np
@@ -24,6 +25,8 @@ from blab.live import (
     split_frequency_order_for_workers,
 )
 from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
+from blab.balloon_export import export_touchdesigner_balloon_data
+from blab.mesh_clean import triangle_quality_warning
 from blab.postprocess import PrepConfig
 
 
@@ -247,6 +250,63 @@ def test_clean_ath_mesh_output_uses_solving_symmetry_axes(tmp_path: Path) -> Non
     assert cleaned_mesh.cells_dict["triangle"].shape[0] == 4
 
 
+def test_triangle_quality_warning_detects_float32_singular_sliver() -> None:
+    mesh = meshio.Mesh(
+        points=np.array(
+            [
+                [0.13800001, 0.095886745, 0.0368],
+                [0.13800001, 0.12680551, 0.0368],
+                [0.137996, 0.11434301, 0.0368],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        cells=[("triangle", np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int64))],
+    )
+
+    warning = triangle_quality_warning(mesh)
+
+    assert warning.has_warnings
+    assert warning.sliver_triangles == 1
+    assert warning.float32_singular_triangles == 1
+    assert warning.worst_triangle_index == 1
+    assert warning.worst_altitude_edge_ratio < 1e-3
+
+
+def test_clean_ath_mesh_output_reports_sliver_warning(tmp_path: Path) -> None:
+    output_dir = tmp_path / "case"
+    mesh_dir = output_dir / "ABEC_FreeStanding"
+    mesh_dir.mkdir(parents=True)
+
+    raw_msh = mesh_dir / "case.msh"
+    mesh = meshio.Mesh(
+        points=np.array(
+            [
+                [0.13800001, 0.095886745, 0.0368],
+                [0.13800001, 0.12680551, 0.0368],
+                [0.137996, 0.11434301, 0.0368],
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        cells=[("triangle", np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([1, 2], dtype=np.int32)]},
+        field_data={"Rigid": np.array([1, 2], dtype=np.int32), "SD1D1001": np.array([2, 2], dtype=np.int32)},
+    )
+    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
+
+    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
+    cleaned = clean_ath_mesh_output(result)
+
+    assert cleaned.quality_warning is not None
+    assert cleaned.quality_warning.has_warnings
+    assert cleaned.quality_warning.float32_singular_triangles == 1
+
+
 def test_live_frequency_order_starts_with_limits_and_preserves_all_points() -> None:
     freqs = build_log_frequencies(200.0, 20000.0, 24)
     ordered = order_frequencies_for_live_plotting(freqs)
@@ -410,6 +470,63 @@ def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
     )
 
     np.testing.assert_allclose(prepared["balloon_surface_spl"][0], expected, atol=1e-5)
+
+
+def test_export_touchdesigner_balloon_data_writes_fixed_topology_artifact(tmp_path: Path) -> None:
+    theta, phi = np.meshgrid(
+        np.linspace(0.0, np.pi, 5, dtype=np.float32),
+        np.linspace(0.0, 2.0 * np.pi, 7, dtype=np.float32),
+        indexing="ij",
+    )
+    spl = np.stack(
+        [
+            -30.0 + 30.0 * np.cos(theta.ravel()) ** 2,
+            -24.0 + 24.0 * np.sin(theta.ravel()) ** 2,
+        ],
+        axis=0,
+    ).astype(np.float32)
+    raw = {
+        "freq_hz": np.array([500.0, 1000.0], dtype=np.float32),
+        "theta_polar_rad": theta.ravel().astype(np.float32),
+        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "spl_norm": spl,
+    }
+    prepared = prepare_balloon_data(
+        raw,
+        BalloonPrepConfig(theta_samples=5, phi_samples=7, min_db=-30.0, max_db=0.0),
+    )
+
+    result = export_touchdesigner_balloon_data(prepared, tmp_path)
+
+    assert result.frequency_count == 2
+    assert result.point_count == 35
+    assert result.quad_count == 24
+    assert {path.name for path in result.files} == {
+        "metadata.json",
+        "topology.npz",
+        "spl_db.npy",
+        "radius_norm.npy",
+        "positions_xyz.npy",
+    }
+
+    metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == 1
+    assert metadata["point_order"].startswith("row-major")
+    assert metadata["array_shapes"]["positions_xyz"] == ["frequency", "theta", "phi", "xyz"]
+
+    with np.load(tmp_path / "topology.npz") as topology:
+        assert topology["directions_xyz"].shape == (35, 3)
+        assert topology["quad_indices"].shape == (24, 4)
+        np.testing.assert_array_equal(topology["quad_indices"][0], [0, 1, 8, 7])
+        np.testing.assert_allclose(topology["freq_hz"], [500.0, 1000.0])
+
+    spl_db = np.load(tmp_path / "spl_db.npy")
+    radius_norm = np.load(tmp_path / "radius_norm.npy")
+    positions = np.load(tmp_path / "positions_xyz.npy")
+    assert spl_db.shape == (2, 5, 7)
+    assert radius_norm.shape == (2, 5, 7)
+    assert positions.shape == (2, 5, 7, 3)
+    np.testing.assert_allclose(radius_norm, np.clip((spl_db + 30.0) / 30.0, 0.0, 1.0), atol=1e-6)
 
 
 def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path) -> None:

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PySide6.QtCore import QSize, QTimer, Qt, Slot
-from PySide6.QtGui import QColor, QFontMetrics, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QAction, QColor, QFontMetrics, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QMenuBar,
+    QMessageBox,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
+from blab.balloon_export import export_touchdesigner_balloon_data
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.plots import LIVE_ISOBAR_ANGLE_SAMPLES, LIVE_ISOBAR_FREQ_SAMPLES, IsobarCanvas
 
@@ -33,7 +38,7 @@ HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
 VERTICAL_ANGLE_SCALAR_NAME = "Vertical Angle (deg)"
 CONTOUR_STEP_DB = 6.0
 GUIDE_LINE_WIDTH = 3
-CONTOUR_COLOR = "#f4f0e6"
+CONTOUR_COLOR = "#ffffff"
 LEGEND_TICKS_DB = (0.0, -6.0, -12.0, -18.0, -24.0, -30.0)
 PROTRACTOR_ANGLES_DEG = (30.0, 60.0, 90.0, 120.0, 150.0)
 PROTRACTOR_COLOR = "#d8dee9"
@@ -71,18 +76,34 @@ class BalloonPlotWindow(QDialog):
         self._polar_smoothing = polar_smoothing
         self._mesh_actor = None
         self._balloon_mesh = None
+        self._contour_actors = []
+        self._guide_actors_added = False
+        self._axes_added = False
         self._protractor_actors = []
         self._protractor_radius = 1.0
         self._hover_picker = None
         self._hover_observer = None
 
+        menu_bar = QMenuBar(self)
+        file_menu = menu_bar.addMenu("File")
+        export_action = QAction("Export Balloon Data", self)
+        export_action.triggered.connect(self._export_balloon_data)
+        file_menu.addAction(export_action)
+
         self.plotter = QtInteractor(self)
         self.plotter.set_background("#111316")
         self._install_hover_picker()
 
-        self.frequency_combo = QComboBox()
-        self.frequency_combo.setEnabled(False)
-        self.frequency_combo.currentIndexChanged.connect(self._on_frequency_changed)
+        self.frequency_slider = QSlider(Qt.Horizontal)
+        self.frequency_slider.setEnabled(False)
+        self.frequency_slider.setRange(0, 0)
+        self.frequency_slider.setSingleStep(1)
+        self.frequency_slider.setPageStep(1)
+        self.frequency_slider.valueChanged.connect(self._on_frequency_changed)
+
+        self.frequency_label = QLabel("")
+        self.frequency_label.setMinimumWidth(86)
+        self.frequency_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
         self.protractor_angle_slider = QSlider(Qt.Horizontal)
         self.protractor_angle_slider.setRange(-180, 180)
@@ -151,8 +172,12 @@ class BalloonPlotWindow(QDialog):
         side_panel.setStyleSheet("QWidget { background: #1f1f1f; color: white; }")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
+        frequency_layout = QHBoxLayout()
+        frequency_layout.setContentsMargins(0, 0, 0, 0)
+        frequency_layout.addWidget(self.frequency_slider, stretch=1)
+        frequency_layout.addWidget(self.frequency_label)
         form = QFormLayout()
-        form.addRow("Frequency", self.frequency_combo)
+        form.addRow("Frequency", frequency_layout)
         form.addRow("", self.protractor_toggle)
         form.addRow("Slice Angle", self.protractor_angle_slider)
         form.addRow("", self.protractor_angle_spin)
@@ -176,8 +201,9 @@ class BalloonPlotWindow(QDialog):
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([700, 460])
 
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setMenuBar(menu_bar)
         layout.addWidget(splitter)
 
         QTimer.singleShot(0, self._prepare_and_render_initial)
@@ -192,22 +218,69 @@ class BalloonPlotWindow(QDialog):
         self._min_db = float(self._prepared["min_db"])
         self._max_db = float(self._prepared["max_db"])
 
-        self.frequency_combo.blockSignals(True)
-        self.frequency_combo.clear()
-        for freq in self._prepared["freq_hz"]:
-            self.frequency_combo.addItem(_format_frequency(float(freq)), float(freq))
-        self.frequency_combo.blockSignals(False)
-        self.frequency_combo.setEnabled(True)
+        frequency_count = int(self._prepared["freq_hz"].size)
+        self.frequency_slider.blockSignals(True)
+        self.frequency_slider.setRange(0, max(frequency_count - 1, 0))
+        self.frequency_slider.setPageStep(max(frequency_count // 12, 1))
+        self.frequency_slider.setValue(0)
+        self.frequency_slider.blockSignals(False)
+        self.frequency_slider.setEnabled(frequency_count > 1)
+        self._update_frequency_label(0)
         self._set_protractor_controls_enabled(self.protractor_toggle.isChecked())
 
         self._render_frequency(0, reset_camera=True)
         self._render_isobar_slice_if_enabled()
         self.loading_label.hide()
 
+    @Slot()
+    def _export_balloon_data(self) -> None:
+        output_text = QFileDialog.getExistingDirectory(
+            self,
+            "Export balloon data",
+            str(Path.cwd()),
+        )
+        if not output_text:
+            return
+
+        try:
+            prepared = self._prepared_balloon_data()
+            result = export_touchdesigner_balloon_data(prepared, output_text)
+            QMessageBox.information(
+                self,
+                "Balloon data exported",
+                (
+                    f"Exported {result.frequency_count} frequencies, "
+                    f"{result.point_count} points, and {result.quad_count} quads to:\n"
+                    f"{result.output_dir}"
+                ),
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Export balloon data failed", str(exc))
+
+    def _prepared_balloon_data(self) -> dict[str, np.ndarray]:
+        if self._prepared is None:
+            self._prepared = prepare_balloon_data(
+                self._raw_balloon_data,
+                BalloonPrepConfig(min_db=self._min_db, max_db=self._max_db),
+            )
+        return self._prepared
+
     @Slot(int)
     def _on_frequency_changed(self, index: int) -> None:
         self._render_frequency(index, reset_camera=False)
-        self._render_isobar_slice_if_enabled()
+        if self.protractor_toggle.isChecked():
+            self._render_radar_slice()
+        self._update_frequency_label(index)
+
+    def _current_frequency_index(self) -> int:
+        return int(self.frequency_slider.value())
+
+    def _update_frequency_label(self, index: int) -> None:
+        if self._prepared is None or self._prepared["freq_hz"].size == 0:
+            self.frequency_label.setText("")
+            return
+        safe_index = int(np.clip(index, 0, self._prepared["freq_hz"].size - 1))
+        self.frequency_label.setText(_format_frequency(float(self._prepared["freq_hz"][safe_index])))
 
     def _render_frequency(self, index: int, *, reset_camera: bool) -> None:
         if index < 0 or self._prepared is None:
@@ -225,7 +298,12 @@ class BalloonPlotWindow(QDialog):
         )
 
         self.hover_label.setText("")
-        self.plotter.clear()
+
+        if self._mesh_actor is not None:
+            try:
+                self.plotter.remove_actor(self._mesh_actor, render=False)
+            except Exception:
+                pass
         self._balloon_mesh = mesh
         self._mesh_actor = self.plotter.add_mesh(
             mesh,
@@ -234,12 +312,21 @@ class BalloonPlotWindow(QDialog):
             clim=(self._min_db, self._max_db),
             smooth_shading=True,
             show_scalar_bar=False,
+            ambient=0.45,
+            diffuse=0.9,
+            specular=0.18,
+            specular_power=24,
         )
-        self._add_spl_contours(mesh)
-        self._add_orientation_guides(mesh)
-        if self.protractor_toggle.isChecked():
-            self._add_protractor(mesh)
-        self.plotter.add_axes()
+
+        self._refresh_spl_contours()
+        if not self._guide_actors_added:
+            self._add_orientation_guides(self._balloon_mesh)
+            self._guide_actors_added = True
+        if self.protractor_toggle.isChecked() and not self._protractor_actors:
+            self._add_protractor(self._balloon_mesh)
+        if not self._axes_added:
+            self.plotter.add_axes()
+            self._axes_added = True
         self.plotter.enable_anti_aliasing()
         if reset_camera:
             self.plotter.reset_camera()
@@ -274,7 +361,8 @@ class BalloonPlotWindow(QDialog):
         self.radar_plot.setVisible(enabled)
         self.slice_plot.setVisible(enabled)
         if enabled and self._balloon_mesh is not None:
-            self._add_protractor(self._balloon_mesh)
+            if not self._protractor_actors:
+                self._add_protractor(self._balloon_mesh)
             self._render_isobar_slice()
         elif not enabled:
             self._remove_protractor()
@@ -309,7 +397,7 @@ class BalloonPlotWindow(QDialog):
     def _render_radar_slice(self) -> None:
         if self._prepared is None:
             return
-        frequency_index = self.frequency_combo.currentIndex()
+        frequency_index = self._current_frequency_index()
         if frequency_index < 0:
             return
         angles_deg, values_db = _balloon_radar_slice(
@@ -373,12 +461,14 @@ class BalloonPlotWindow(QDialog):
             return
 
         tube_radius = max(_mesh_extent(mesh) * 0.0015, 0.02)
-        self.plotter.add_mesh(
+        actor = self.plotter.add_mesh(
             contours.tube(radius=tube_radius),
             color=CONTOUR_COLOR,
             smooth_shading=True,
+            lighting=False,
             show_scalar_bar=False,
         )
+        self._contour_actors.append(actor)
 
     def _add_orientation_guides(self, mesh) -> None:
         length = max(_mesh_extent(mesh) * 1.12, 1.0)
@@ -455,6 +545,19 @@ class BalloonPlotWindow(QDialog):
             except Exception:
                 pass
         self._protractor_actors = []
+
+    def _refresh_spl_contours(self) -> None:
+        self._remove_spl_contours()
+        if self._balloon_mesh is not None:
+            self._add_spl_contours(self._balloon_mesh)
+
+    def _remove_spl_contours(self) -> None:
+        for actor in self._contour_actors:
+            try:
+                self.plotter.remove_actor(actor, render=False)
+            except Exception:
+                pass
+        self._contour_actors = []
 
     def closeEvent(self, event) -> None:
         self.plotter.close()
