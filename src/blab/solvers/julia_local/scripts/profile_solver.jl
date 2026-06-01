@@ -2,7 +2,6 @@ include(joinpath(@__DIR__, "benchmark_solver.jl"))
 
 function main(args=ARGS)
     profile_args = isempty(args) ? [
-        "--backend", "cpu",
         "--subset-faces", "16",
         "--quadrature-order", "2",
         "--singular-order", "2",

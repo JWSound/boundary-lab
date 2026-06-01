@@ -15,7 +15,7 @@ if CUDA_MODULE === nothing || !CUDA_MODULE.functional()
     exit()
 end
 
-mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "sample.msh"), Float32(0.001))
+mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
 p1 = build_p1_space(mesh)
 dp0 = build_dp0_space(mesh)
 rule = triangle_rule(Float32, 2)

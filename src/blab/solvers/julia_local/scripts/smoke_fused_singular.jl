@@ -3,7 +3,7 @@ include(joinpath(@__DIR__, "..", "src", "JBEMCore.jl"))
 using LinearAlgebra
 using .JBEMCore
 
-mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "sample.msh"), Float32(0.001))
+mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
 rule = duffy_rule(Float32, 4, :edge_adjacent)
 k = Float32(2pi * 1000.0 / 343.0)
 

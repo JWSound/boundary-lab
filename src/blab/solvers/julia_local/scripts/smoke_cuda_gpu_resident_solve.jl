@@ -15,7 +15,7 @@ if CUDA_MODULE === nothing || !CUDA_MODULE.functional()
     exit()
 end
 
-mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "sample.msh"), Float32(0.001))
+mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
 p1 = build_p1_space(mesh)
 dp0 = build_dp0_space(mesh)
 rule = triangle_rule(Float32, 2)
@@ -53,8 +53,8 @@ gpu_ops = assemble_regular_galerkin_operators(
     return_gpu=true,
 )
 
-cpu_pressure = solve_burton_miller_neumann(cpu_ops, identity_p1_p1, identity_p1_dp0, q_neumann, k, false)
-gpu_pressure = solve_burton_miller_neumann(gpu_ops, identity_p1_p1, identity_p1_dp0, q_neumann, k, true)
+cpu_pressure = solve_burton_miller_neumann(cpu_ops, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+gpu_pressure = solve_burton_miller_neumann(gpu_ops, identity_p1_p1, identity_p1_dp0, q_neumann, k)
 
 println((
     subset_faces=length(subset),

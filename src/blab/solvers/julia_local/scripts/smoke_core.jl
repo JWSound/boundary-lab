@@ -2,7 +2,7 @@ include(joinpath(@__DIR__, "..", "src", "JBEMCore.jl"))
 
 using .JBEMCore
 
-mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "sample.msh"), Float64(0.001))
+mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float64(0.001))
 p1 = build_p1_space(mesh)
 dp0 = build_dp0_space(mesh)
 rule = triangle_rule(Float64, 2)

@@ -346,7 +346,7 @@ function validate_radiator_elements(mesh, element_mesh_ids, radiators)
     end
 end
 
-function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k, use_cuda::Bool)
+function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k)
     ComplexType = eltype(drives)
     q_neumann = zeros(ComplexType, length(mesh.faces))
     for (radiator_index, radiator) in enumerate(radiators)
@@ -358,19 +358,16 @@ function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, 
             end
         end
     end
-    pressure = solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k, use_cuda)
+    pressure = solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
     return pressure, q_neumann
 end
 
-function field_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda::Bool)
-    if use_cuda
-        return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
-    end
-    return evaluate_galerkin_field(points, mesh, pressure, q_neumann, k, field_cache)
+function field_for_points(points, mesh, pressure, q_neumann, k, field_cache)
+    return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
 end
 
-function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda::Bool, ::Type{T}) where {T<:AbstractFloat}
-    pot = field_for_points(points, mesh, pressure, q_neumann, k, field_cache, use_cuda)
+function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, ::Type{T}) where {T<:AbstractFloat}
+    pot = field_for_points(points, mesh, pressure, q_neumann, k, field_cache)
     return Float32.(T(20.0) .* log10.(abs.(pot) ./ T(20e-6)))
 end
 
@@ -443,20 +440,12 @@ function solve_request(request)
     rho = FloatType(get_value(config, "rho", 1.21))
     sound_speed = FloatType(get_value(config, "sound_speed", 343.0))
     flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
-    use_cuda = Bool(get_value(config, "julia_use_cuda", true))
     cuda_regular_assembly_mode = Symbol(String(get_value(config, "julia_cuda_regular_assembly_mode", "split_atomic")))
-    cuda_cache = nothing
-    field_cache = cpu_field_cache
     singular_cache = build_singular_correction_cache(mesh, singular_order)
-    cuda_singular_cache = nothing
-    if use_cuda
-        emit_event("status"; message="Julia solver using CUDA assembly ($(cuda_regular_assembly_mode)), GPU dense solve, and GPU field evaluation")
-        cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
-        field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
-        cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
-    else
-        emit_event("status"; message="Julia solver using CPU assembly and CPU dense solve")
-    end
+    emit_event("status"; message="Julia solver using CUDA assembly ($(cuda_regular_assembly_mode)), GPU dense solve, and GPU field evaluation")
+    cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
+    field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
+    cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
 
     for (index, freq_raw) in enumerate(frequencies)
         if cancel_path !== nothing && isfile(String(cancel_path))
@@ -477,13 +466,13 @@ function solve_request(request)
                 rule;
                 skip_singular=false,
                 singular_order=singular_order,
-                use_cuda_regular=use_cuda,
+                use_cuda_regular=true,
                 cuda_cache=cuda_cache,
-                return_gpu=use_cuda,
+                return_gpu=true,
                 parallel_quadrature=true,
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
-                regular_assembly_mode=use_cuda ? cuda_regular_assembly_mode : :fused,
+                regular_assembly_mode=cuda_regular_assembly_mode,
             )
         end
 
@@ -512,7 +501,6 @@ function solve_request(request)
                         rho,
                         omega,
                         k,
-                        use_cuda,
                     )
                 end
                 t_field += @elapsed begin
@@ -523,7 +511,6 @@ function solve_request(request)
                         q_neumann,
                         k,
                         field_cache,
-                        use_cuda,
                     )[1]
                     magnitude = abs(on_axis_pressure)
                     channel_corrections[channel_name] = magnitude <= FloatType(1e-12) ? FloatType(1.0) : FloatType(1.0) / magnitude
@@ -551,7 +538,6 @@ function solve_request(request)
                 rho,
                 omega,
                 k,
-                use_cuda,
             )
         end
 
@@ -563,7 +549,7 @@ function solve_request(request)
         sphere_norm = nothing
         t_field += @elapsed begin
             combined_points = sphere === nothing ? vcat(horizontal_points, vertical_points) : vcat(horizontal_points, vertical_points, sphere.points)
-            combined_spl = spl_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, use_cuda, FloatType)
+            combined_spl = spl_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, FloatType)
             horizontal_count = length(horizontal_points)
             vertical_count = length(vertical_points)
             horizontal_spl = combined_spl[1:horizontal_count]

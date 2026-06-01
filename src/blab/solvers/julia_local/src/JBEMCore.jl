@@ -1333,40 +1333,33 @@ end
 
 release_operator_storage!(operators) = nothing
 
-function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T, use_gpu::Bool=false) where {T<:AbstractFloat}
+function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
     coupling = Complex{T}(0, 1) / k
     operators_on_gpu = get(operators, :on_gpu, false)
-
-    if use_gpu
-        cuda = cuda_module()
-        cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
-        if operators_on_gpu
-            d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
-            d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
-            d_q_neumann = cuda.CuArray(q_neumann)
-            d_lhs = Complex{T}(0.5) .* d_identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
-            d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* d_identity_p1_dp0)) * d_q_neumann
-            cuda.unsafe_free!(d_identity_p1_p1)
-            cuda.unsafe_free!(d_identity_p1_dp0)
-            cuda.unsafe_free!(d_q_neumann)
-        else
-            lhs = Complex{T}(0.5) .* Complex{T}.(identity_p1_p1) .- operators.double_layer .+ coupling .* operators.hypersingular
-            rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* Complex{T}.(identity_p1_dp0))) * q_neumann
-            d_lhs = cuda.CuArray(lhs)
-            d_rhs = cuda.CuArray(rhs)
-        end
-
-        d_pressure = d_lhs \ d_rhs
-        pressure = Complex{T}.(Array(d_pressure))
-        cuda.unsafe_free!(d_lhs)
-        cuda.unsafe_free!(d_rhs)
-        cuda.unsafe_free!(d_pressure)
-        return pressure
+    cuda = cuda_module()
+    cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
+    if operators_on_gpu
+        d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
+        d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
+        d_q_neumann = cuda.CuArray(q_neumann)
+        d_lhs = Complex{T}(0.5) .* d_identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
+        d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* d_identity_p1_dp0)) * d_q_neumann
+        cuda.unsafe_free!(d_identity_p1_p1)
+        cuda.unsafe_free!(d_identity_p1_dp0)
+        cuda.unsafe_free!(d_q_neumann)
+    else
+        lhs = Complex{T}(0.5) .* Complex{T}.(identity_p1_p1) .- operators.double_layer .+ coupling .* operators.hypersingular
+        rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* Complex{T}.(identity_p1_dp0))) * q_neumann
+        d_lhs = cuda.CuArray(lhs)
+        d_rhs = cuda.CuArray(rhs)
     end
 
-    lhs = Complex{T}(0.5) .* Complex{T}.(identity_p1_p1) .- operators.double_layer .+ coupling .* operators.hypersingular
-    rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* Complex{T}.(identity_p1_dp0))) * q_neumann
-    return lhs \ rhs
+    d_pressure = d_lhs \ d_rhs
+    pressure = Complex{T}.(Array(d_pressure))
+    cuda.unsafe_free!(d_lhs)
+    cuda.unsafe_free!(d_rhs)
+    cuda.unsafe_free!(d_pressure)
+    return pressure
 end
 
 function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{T}) where {T<:AbstractFloat}

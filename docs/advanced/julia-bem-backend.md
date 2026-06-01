@@ -98,7 +98,7 @@ $$
 
 The Julia implementation stores all four dense matrices explicitly. This makes GPU dense solves straightforward, but memory usage scales quadratically with the P1/DP0 unknown counts.
 
-When `julia_use_cuda` is enabled and CUDA.jl is available, the regular-pair assembly path moves geometry and quadrature arrays to the GPU:
+The application backend requires CUDA and moves geometry and quadrature arrays to the GPU:
 
 - face vertices
 - normals
@@ -271,6 +271,7 @@ CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense so
 ## Important Files
 
 - `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, drive calculation.
-- `src/blab/solvers/julia_local/src/JBEMCore.jl`: mesh representation, shared quadrature/formulation code, CPU fallback routines, Burton-Miller solve, field evaluation interfaces.
+- `src/blab/solvers/julia_local/src/JBEMCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
 - `src/blab/solvers/julia_local/src/JBEMCuda.jl`: CUDA geometry cache, regular-pair kernels, GPU Duffy corrections, GPU atomics, GPU matrix materialization, GPU field evaluation.
+- `src/blab/solvers/julia_local/src/JBEMCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
 - `src/blab/solvers/julia_local_backend.py`: Python adapter that stages assets and streams JSON events.

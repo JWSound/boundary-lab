@@ -20,13 +20,12 @@ end
 const GIT_COMMIT_CACHE = Ref{Any}(:unset)
 
 Base.@kwdef mutable struct BenchmarkConfig
-    mesh::String = joinpath(@__DIR__, "..", "sample.msh")
+    mesh::String = joinpath(@__DIR__, "..", "test_meshes", "sample.msh")
     frequency::Float64 = 1000.0
     precision_name::String = "Float32"
     quadrature_order::Int = 4
     singular_order::Int = 4
     eval_points::Int = 0
-    backend::String = "cuda"
     subset_faces::Int = 0
     repetitions::Int = 1
     warmups::Int = 1
@@ -53,13 +52,12 @@ function print_usage()
       julia scripts/benchmark_solver.jl [options]
 
     Options:
-      --mesh PATH                    Mesh path. Default: sample.msh
+      --mesh PATH                    Mesh path. Default: test_meshes/sample.msh
       --freq HZ                      Frequency in Hz. Default: 1000
       --precision Float32|Float64    Numeric precision. Default: Float32
       --quadrature-order N           Regular quadrature order. Default: 4
       --singular-order N             Singular quadrature order. Default: 4
       --eval-points N                Field evaluation point count. Default: 0
-      --backend cpu|cuda             Backend. Default: cuda
       --subset-faces N               Use first N faces for assembly experiments. 0 means full mesh.
       --repetitions N                Measured repetitions. Default: 1
       --warmups N                    Warmup repetitions. Default: 1
@@ -68,7 +66,7 @@ function print_usage()
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
       --json PATH                    Write JSON results. Default: results/benchmark_sample.json
       --serial-cuda-quadrature       Use the serial-pair CUDA regular assembly kernel.
-      --cpu-transfer-cuda-operators  Return CUDA assembled operators to CPU before solving.
+      --cpu-transfer-cuda-operators  Return CUDA assembled operators to CPU memory before GPU solving.
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
       --regular-assembly-mode MODE   CUDA regular assembly mode: fused or split_atomic. Default: fused.
@@ -97,8 +95,6 @@ function parse_args(args)
             i += 1; config.singular_order = parse(Int, args[i])
         elseif arg == "--eval-points"
             i += 1; config.eval_points = parse(Int, args[i])
-        elseif arg == "--backend"
-            i += 1; config.backend = lowercase(args[i])
         elseif arg == "--subset-faces"
             i += 1; config.subset_faces = parse(Int, args[i])
         elseif arg == "--repetitions"
@@ -191,23 +187,6 @@ function throat_rhs(mesh, config::BenchmarkConfig, ::Type{T}) where {T<:Abstract
     return q_neumann, throat_indices
 end
 
-function solve_cpu_timed!(timings, operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
-    lhs = nothing
-    rhs = nothing
-    pressure = nothing
-    coupling = Complex{T}(0, 1) / k
-    timed_stage!(timings, "lhs_rhs_build") do
-        lhs = Complex{T}(0.5) .* Complex{T}.(identity_p1_p1) .- operators.double_layer .+ coupling .* operators.hypersingular
-        rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* Complex{T}.(identity_p1_dp0))) * q_neumann
-        nothing
-    end
-    timed_stage!(timings, "linear_solve") do
-        pressure = lhs \ rhs
-        nothing
-    end
-    return pressure
-end
-
 function add_singular_corrections_cpu!(timings, operators, mesh, p1_space, dp0_space, k::T, singular_order::Int, element_indices, singular_cache) where {T<:AbstractFloat}
     timings["singular_correction_alloc"] = 0.0
     singular_pairs = timed_stage!(timings, "singular_correction_compute_scatter") do
@@ -251,7 +230,7 @@ function add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_s
     return singular_pairs
 end
 
-function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config::BenchmarkConfig, element_indices, cache, singular_cache, cuda_singular_cache, use_cuda)
+function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config::BenchmarkConfig, element_indices, cache, singular_cache, cuda_singular_cache)
     operators = nothing
     operators = timed_stage!(timings, "regular_operator_assembly") do
         assemble_regular_galerkin_operators(
@@ -263,9 +242,9 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             skip_singular=true,
             singular_order=config.singular_order,
             element_indices=element_indices,
-            use_cuda_regular=use_cuda,
+            use_cuda_regular=true,
             cuda_cache=cache,
-            return_gpu=use_cuda && config.return_gpu,
+            return_gpu=config.return_gpu,
             parallel_quadrature=config.cuda_parallel_quadrature,
             timing=timings,
             singular_cache=singular_cache,
@@ -310,11 +289,9 @@ end
 function run_workload(config::BenchmarkConfig; measured::Bool=true)
     T = precision_type(config.precision_name)
     timings = Dict{String,Float64}()
-    use_cuda = config.backend == "cuda"
-    if use_cuda && !cuda_available()
+    if !cuda_available()
         error("CUDA backend requested, but CUDA is not functional.")
     end
-    config.backend in ("cpu", "cuda") || error("Unsupported backend: $(config.backend)")
 
     mesh = timed_stage!(timings, "mesh_load") do
         load_gmsh22_with_tags(config.mesh, T(config.scale_factor))
@@ -331,13 +308,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     cpu_field_cache = timed_stage!(timings, "field_cache_build_cpu") do
         build_field_evaluation_cache(mesh, rule)
     end
-    field_cache = cpu_field_cache
-    if use_cuda
-        field_cache = timed_stage!(timings, "field_cache_build_gpu") do
-            build_cuda_field_evaluation_cache(cpu_field_cache)
-        end
-    else
-        timings["field_cache_build_gpu"] = 0.0
+    field_cache = timed_stage!(timings, "field_cache_build_gpu") do
+        build_cuda_field_evaluation_cache(cpu_field_cache)
     end
     element_count = config.subset_faces > 0 ? min(config.subset_faces, length(mesh.faces)) : length(mesh.faces)
     element_indices = 1:element_count
@@ -348,13 +320,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     singular_cache = timed_stage!(timings, "singular_correction_cache_build") do
         build_singular_correction_cache(mesh, config.singular_order, element_indices)
     end
-    cuda_singular_cache = nothing
-    if use_cuda
-        cuda_singular_cache = timed_stage!(timings, "singular_correction_cuda_cache_build_request") do
-            JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
-        end
-    else
-        timings["singular_correction_cuda_cache_build_request"] = 0.0
+    cuda_singular_cache = timed_stage!(timings, "singular_correction_cuda_cache_build_request") do
+        JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
     end
 
     identity_p1_p1 = timed_stage!(timings, "identity_assembly_p1_p1") do
@@ -364,17 +331,12 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
     end
 
-    cache = nothing
-    if use_cuda
-        cache = timed_stage!(timings, "cuda_cache_build") do
-            build_cuda_regular_assembly_cache(mesh, rule; element_indices=element_indices)
-        end
-    else
-        timings["cuda_cache_build"] = 0.0
+    cache = timed_stage!(timings, "cuda_cache_build") do
+        build_cuda_regular_assembly_cache(mesh, rule; element_indices=element_indices)
     end
 
     k = T(2pi * config.frequency / config.sound_speed)
-    operators = assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config, element_indices, cache, singular_cache, cuda_singular_cache, use_cuda)
+    operators = assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config, element_indices, cache, singular_cache, cuda_singular_cache)
 
     q_neumann, throat_indices = throat_rhs(mesh, config, T)
     pressure = nothing
@@ -382,17 +344,12 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         timings["lhs_rhs_build"] = 0.0
         timings["linear_solve"] = 0.0
         timings["solve_total"] = 0.0
-    elseif use_cuda
+    else
         pressure = timed_stage!(timings, "solve_total") do
-            solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k, true)
+            solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
         end
         timings["lhs_rhs_build"] = 0.0
         timings["linear_solve"] = timings["solve_total"]
-    else
-        solve_elapsed = @elapsed begin
-            pressure = solve_cpu_timed!(timings, operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
-        end
-        timings["solve_total"] = solve_elapsed
     end
 
     field_norm = nothing
@@ -401,8 +358,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     else
         field_norm = timed_stage!(timings, "field_evaluation") do
             eval_points = fibonacci_sphere(config.eval_points, T(config.distance))
-            pot = use_cuda ? evaluate_galerkin_field_cuda(eval_points, mesh, pressure, q_neumann, k, field_cache) :
-                evaluate_galerkin_field(eval_points, mesh, pressure, q_neumann, k, field_cache)
+            pot = evaluate_galerkin_field_cuda(eval_points, mesh, pressure, q_neumann, k, field_cache)
             Float64(norm(pot))
         end
     end
@@ -431,7 +387,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "threads" => Threads.nthreads(),
         "blas_threads" => BLAS.get_num_threads(),
         "cuda_available" => cuda_available(),
-        "cuda_device" => use_cuda ? maybe_cuda_device() : nothing,
+        "cuda_device" => maybe_cuda_device(),
         "mesh" => abspath(config.mesh),
         "mesh_faces" => length(mesh.faces),
         "mesh_vertices" => length(mesh.vertices),
@@ -441,7 +397,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "subset_run" => subset_run,
         "frequency_hz" => config.frequency,
         "precision" => config.precision_name,
-        "backend" => config.backend,
+        "backend" => "cuda",
         "quadrature_order" => config.quadrature_order,
         "singular_order" => config.singular_order,
         "eval_points" => config.eval_points,
@@ -450,7 +406,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "singular_cache_pairs" => singular_cache.pair_count,
         "skipped_pairs" => get(operators, :skipped_pairs, nothing),
         "throat_elements" => length(throat_indices),
-        "return_gpu" => use_cuda && config.return_gpu,
+        "return_gpu" => config.return_gpu,
         "cuda_parallel_quadrature" => config.cuda_parallel_quadrature,
         "regular_kernel_threads" => get(operators, :regular_kernel_threads, nothing),
         "regular_kernel_blocks" => get(operators, :regular_kernel_blocks, nothing),
@@ -596,7 +552,7 @@ function benchmark_payload(config::BenchmarkConfig)
         "mesh" => abspath(config.mesh),
         "frequency_hz" => config.frequency,
         "precision" => string(T),
-        "backend" => config.backend,
+        "backend" => "cuda",
         "quadrature_order" => config.quadrature_order,
         "singular_order" => config.singular_order,
         "eval_points" => config.eval_points,
