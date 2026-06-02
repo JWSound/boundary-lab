@@ -340,12 +340,17 @@ class SpinoramaCanvas(FigureCanvas):
         angles_deg: np.ndarray,
         horizontal_spl_db: np.ndarray,
         vertical_spl_db: np.ndarray,
+        *,
+        horizontal_reference_angle_deg: float = 0.0,
+        vertical_reference_angle_deg: float = 0.0,
     ) -> None:
         curves = compute_spinorama_from_planes(
             freq_hz=freqs_hz,
             polar_angle_deg=angles_deg,
             horizontal_spl_db=horizontal_spl_db,
             vertical_spl_db=vertical_spl_db,
+            horizontal_reference_angle_deg=horizontal_reference_angle_deg,
+            vertical_reference_angle_deg=vertical_reference_angle_deg,
         )
         self.update_curves(curves)
 

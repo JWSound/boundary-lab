@@ -32,6 +32,8 @@ class PrepConfig:
     octave_smoothing: int | float | None = 24  #fractional octave smoothing for plots
     hor_ref_angle: float = 10                  #normalization angle for horizontal plane
     vert_ref_angle: float = 10                 #normalization angle for vertical plane
+    spin_hor_ref_angle: float = 0.0
+    spin_vert_ref_angle: float = 0.0
     normalize_polar: bool = True
     auto_db_span: bool = False
 
@@ -315,8 +317,10 @@ def prepare_visualization_data_from_arrays(
         "impedance_imag": z_imag,
         "clip_min_db": np.float32(clip_min_db),
         "clip_max_db": np.float32(clip_max_db),
-        "horizontal_reference_angle_deg": np.float32(cfg.hor_ref_angle),
-        "vertical_reference_angle_deg": np.float32(cfg.vert_ref_angle),
+        "horizontal_normalization_angle_deg": np.float32(cfg.hor_ref_angle),
+        "vertical_normalization_angle_deg": np.float32(cfg.vert_ref_angle),
+        "spin_horizontal_reference_angle_deg": np.float32(cfg.spin_hor_ref_angle),
+        "spin_vertical_reference_angle_deg": np.float32(cfg.spin_vert_ref_angle),
         "polar_normalization_enabled": np.asarray(cfg.normalize_polar),
     }
 
@@ -383,6 +387,18 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=PrepConfig.vert_ref_angle,
         help="Vertical reference angle for normalization",
     )
+    parser.add_argument(
+        "--spin-hor-ref-angle",
+        type=float,
+        default=PrepConfig.spin_hor_ref_angle,
+        help="Horizontal reference axis angle for spinorama curves",
+    )
+    parser.add_argument(
+        "--spin-vert-ref-angle",
+        type=float,
+        default=PrepConfig.spin_vert_ref_angle,
+        help="Vertical reference axis angle for spinorama curves",
+    )
     return parser
 
 
@@ -399,6 +415,8 @@ def _config_from_args(args: argparse.Namespace) -> PrepConfig:
         octave_smoothing=octave_fraction,
         hor_ref_angle=args.hor_ref_angle,
         vert_ref_angle=args.vert_ref_angle,
+        spin_hor_ref_angle=args.spin_hor_ref_angle,
+        spin_vert_ref_angle=args.spin_vert_ref_angle,
     )
 
 

@@ -68,7 +68,8 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Observation Config
 - `Polar Angle Step`: The number of degrees between each observation point that generates the horizontal/vertical polar plots. A step angle of 5 degrees evaluates 72 points across a 360 degree arc on each axis. If you intend to view the Spinorama-style plot, ensure this value is set to max 10 degrees. Changing this value has extremely little impact on solve times (<1%).
-- `Normalization Angles`: Set the polar normalization angles (reference axis) for generating polar directivity plots, spinorama-style plots, and balloon plots.
+- `Normalization Angles`: Set the polar normalization angles used to offset SPL values in polar directivity plots and balloon plots.
+- `Spin Horizontal/Vertical Ref Angle`: Set the reference axis angles used by the spinorama-style reference-axis and listening-window curves. These angles do not renormalize the polar data used for early reflections or sound power.
 - `Polar Smoothing`: Set the smoothing scale for polar directivity plots, spinorama-style plots, and balloon plots.
 - `SPL Min`: Set the minimum clipped SPL value for generating polar directivity & balloon plots. Simulated SPL values below this are clipped to this value as the floor.
 - `SPL Max`: Set the maximum clipped SPL values for generating polar directivity & balloon plots. Simulated SPL values above this are clipped to this value as a ceiling.

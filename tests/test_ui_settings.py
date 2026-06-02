@@ -36,6 +36,9 @@ def test_balloon_angle_precision_point_conversion() -> None:
 def test_preference_change_classification() -> None:
     baseline = GuiPreferences()
 
+    assert baseline.spin_horizontal_reference_angle == 0.0
+    assert baseline.spin_vertical_reference_angle == 0.0
+
     assert preferences_require_solve_invalidation(
         baseline,
         GuiPreferences(gmres_tolerance=5e-4),
@@ -57,9 +60,21 @@ def test_preference_change_classification() -> None:
         baseline,
         GuiPreferences(spl_min_db=-40.0),
     )
+    assert preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(spin_horizontal_reference_angle=15.0),
+    )
+    assert preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(spin_vertical_reference_angle=-10.0),
+    )
     assert not preferences_require_solve_invalidation(
         baseline,
         GuiPreferences(polar_smoothing=24),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(spin_horizontal_reference_angle=15.0),
     )
 
     assert not preferences_require_solve_invalidation(

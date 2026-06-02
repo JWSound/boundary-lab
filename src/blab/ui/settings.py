@@ -32,6 +32,8 @@ class GuiPreferences:
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
+    spin_horizontal_reference_angle: float = 0.0
+    spin_vertical_reference_angle: float = 0.0
     spl_max_db: float = 0.0
     spl_min_db: float = -30.0
     stitch_tolerance_mm: float = 2.0
@@ -53,6 +55,8 @@ VISUALIZATION_PREFERENCE_FIELDS = (
     "polar_smoothing",
     "horizontal_normalization_angle",
     "vertical_normalization_angle",
+    "spin_horizontal_reference_angle",
+    "spin_vertical_reference_angle",
     "spl_max_db",
     "spl_min_db",
 )

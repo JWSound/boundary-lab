@@ -57,6 +57,9 @@ def compute_spinorama_from_planes(
     polar_angle_deg: np.ndarray,
     horizontal_spl_db: np.ndarray,
     vertical_spl_db: np.ndarray,
+    *,
+    horizontal_reference_angle_deg: float = 0.0,
+    vertical_reference_angle_deg: float = 0.0,
 ) -> SpinoramaCurves:
     """Compute CEA-2034 style curves from H/V polar SPL matrices.
 
@@ -71,20 +74,22 @@ def compute_spinorama_from_planes(
 
     h = _PlaneSampler(angles, horizontal)
     v = _PlaneSampler(angles, vertical)
+    h_ref = float(horizontal_reference_angle_deg)
+    v_ref = float(vertical_reference_angle_deg)
 
-    on_axis = _energy_average_db(np.column_stack((h.at(0), v.at(0))), axis=1)
+    on_axis = _energy_average_db(np.column_stack((h.at(h_ref), v.at(v_ref))), axis=1)
     listening = _energy_average_db(
         np.column_stack(
             (
-                h.at(-30),
-                h.at(-20),
-                h.at(-10),
-                h.at(10),
-                h.at(20),
-                h.at(30),
-                v.at(-10),
-                v.at(0),
-                v.at(10),
+                h.at(h_ref - 30),
+                h.at(h_ref - 20),
+                h.at(h_ref - 10),
+                h.at(h_ref + 10),
+                h.at(h_ref + 20),
+                h.at(h_ref + 30),
+                v.at(v_ref - 10),
+                v.at(v_ref),
+                v.at(v_ref + 10),
             )
         ),
         axis=1,
@@ -140,14 +145,15 @@ def compute_spinorama_from_planes(
         (listening, early, sound_power),
         np.asarray([0.12, 0.44, 0.44], dtype=float),
     )
+    spl_reference = h.at(0)
 
     return SpinoramaCurves(
         freq_hz=freqs,
-        on_axis_db=on_axis.astype(np.float32, copy=False),
-        listening_window_db=listening.astype(np.float32, copy=False),
-        early_reflections_db=early.astype(np.float32, copy=False),
-        sound_power_db=sound_power.astype(np.float32, copy=False),
-        estimated_in_room_db=estimated_in_room.astype(np.float32, copy=False),
+        on_axis_db=(on_axis - spl_reference).astype(np.float32, copy=False),
+        listening_window_db=(listening - spl_reference).astype(np.float32, copy=False),
+        early_reflections_db=(early - spl_reference).astype(np.float32, copy=False),
+        sound_power_db=(sound_power - spl_reference).astype(np.float32, copy=False),
+        estimated_in_room_db=(estimated_in_room - spl_reference).astype(np.float32, copy=False),
         early_reflections_di_db=(listening - early).astype(np.float32, copy=False),
         sound_power_di_db=(listening - sound_power).astype(np.float32, copy=False),
     )
@@ -156,12 +162,32 @@ def compute_spinorama_from_planes(
 class _PlaneSampler:
     def __init__(self, angles_deg: np.ndarray, spl_db: np.ndarray):
         order = np.argsort(angles_deg)
-        self.angles_deg = angles_deg[order]
-        self.spl_db = spl_db[:, order]
+        sorted_angles = angles_deg[order]
+        sorted_spl = spl_db[:, order]
+        if (
+            sorted_angles.size >= 2
+            and np.isclose(sorted_angles[0], -180.0)
+            and np.isclose(sorted_angles[-1], 180.0)
+        ):
+            sorted_angles = sorted_angles[:-1]
+            sorted_spl = sorted_spl[:, :-1]
+            self._periodic = True
+        else:
+            self._periodic = False
+        self.angles_deg = sorted_angles
+        self.spl_db = sorted_spl
 
     def at(self, angle_deg: float) -> np.ndarray:
+        angle = float(angle_deg)
+        if self._periodic:
+            angle = ((angle + 180.0) % 360.0) - 180.0
+            angles = np.concatenate((self.angles_deg - 360.0, self.angles_deg, self.angles_deg + 360.0))
+            values = np.concatenate((self.spl_db, self.spl_db, self.spl_db), axis=1)
+        else:
+            angles = self.angles_deg
+            values = self.spl_db
         return np.asarray(
-            [np.interp(float(angle_deg), self.angles_deg, row) for row in self.spl_db],
+            [np.interp(angle, angles, row) for row in values],
             dtype=float,
         )
 

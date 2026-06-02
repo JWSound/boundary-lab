@@ -422,8 +422,14 @@ def generate_plots(dataset: dict[str, np.ndarray], cfg: VisualizerConfig) -> dic
     spinorama = compute_spinorama_from_planes(
         freq_hz=dataset["freq_hz"].astype(float),
         polar_angle_deg=response_angle_deg,
-        horizontal_spl_db=dataset["horizontal_spl_norm_db"].astype(float),
-        vertical_spl_db=dataset["vertical_spl_norm_db"].astype(float),
+        horizontal_spl_db=dataset["horizontal_spl_db"].astype(float),
+        vertical_spl_db=dataset["vertical_spl_db"].astype(float),
+        horizontal_reference_angle_deg=float(
+            dataset.get("spin_horizontal_reference_angle_deg", dataset.get("horizontal_reference_angle_deg", 0.0))
+        ),
+        vertical_reference_angle_deg=float(
+            dataset.get("spin_vertical_reference_angle_deg", dataset.get("vertical_reference_angle_deg", 0.0))
+        ),
     )
     _save_spinorama_plot(
         output_path=output_spinorama_png,

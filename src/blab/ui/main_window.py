@@ -691,6 +691,16 @@ class MainWindow(QMainWindow):
                 "preferences/vertical_normalization_angle",
                 defaults.vertical_normalization_angle,
             ),
+            spin_horizontal_reference_angle=settings_float(
+                self.settings,
+                "preferences/spin_horizontal_reference_angle",
+                defaults.spin_horizontal_reference_angle,
+            ),
+            spin_vertical_reference_angle=settings_float(
+                self.settings,
+                "preferences/spin_vertical_reference_angle",
+                defaults.spin_vertical_reference_angle,
+            ),
             spl_max_db=settings_float(self.settings, "preferences/spl_max_db", defaults.spl_max_db),
             spl_min_db=settings_float(self.settings, "preferences/spl_min_db", defaults.spl_min_db),
             stitch_tolerance_mm=settings_float(
@@ -723,6 +733,14 @@ class MainWindow(QMainWindow):
         self.settings.setValue(
             "preferences/vertical_normalization_angle",
             self.preferences.vertical_normalization_angle,
+        )
+        self.settings.setValue(
+            "preferences/spin_horizontal_reference_angle",
+            self.preferences.spin_horizontal_reference_angle,
+        )
+        self.settings.setValue(
+            "preferences/spin_vertical_reference_angle",
+            self.preferences.spin_vertical_reference_angle,
         )
         self.settings.setValue("preferences/spl_max_db", self.preferences.spl_max_db)
         self.settings.setValue("preferences/spl_min_db", self.preferences.spl_min_db)
@@ -2286,6 +2304,8 @@ class MainWindow(QMainWindow):
                 octave_smoothing=self.preferences.polar_smoothing,
                 hor_ref_angle=self.preferences.horizontal_normalization_angle,
                 vert_ref_angle=self.preferences.vertical_normalization_angle,
+                spin_hor_ref_angle=self.preferences.spin_horizontal_reference_angle,
+                spin_vert_ref_angle=self.preferences.spin_vertical_reference_angle,
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
                 normalize_polar=True,
@@ -2351,6 +2371,8 @@ class MainWindow(QMainWindow):
         self.spinorama_plot.update_plot(
             dataset["freq_hz"],
             dataset["polar_angle_deg"],
-            dataset["horizontal_spl_norm_db"],
-            dataset["vertical_spl_norm_db"],
+            dataset["horizontal_spl_db"],
+            dataset["vertical_spl_db"],
+            horizontal_reference_angle_deg=float(dataset["spin_horizontal_reference_angle_deg"]),
+            vertical_reference_angle_deg=float(dataset["spin_vertical_reference_angle_deg"]),
         )

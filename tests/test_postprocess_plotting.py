@@ -149,3 +149,35 @@ def test_prepare_visualization_data_preserves_raw_spl_for_on_axis_response() -> 
 
     assert np.allclose(dataset["horizontal_spl_db"], raw)
     assert np.allclose(dataset["horizontal_spl_norm_db"][:, 1], 0.0)
+
+
+def test_prepare_visualization_data_keeps_normalization_and_spin_reference_angles_separate() -> None:
+    freqs = np.array([200.0, 1000.0], dtype=np.float32)
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    horizontal = np.array([[-6.0, 0.0, -4.0], [-5.0, 0.0, -3.0]], dtype=np.float32)
+    vertical = horizontal - 1.0
+
+    dataset = prepare_visualization_data_from_arrays(
+        freq_hz=freqs,
+        polar_angle_deg=angles,
+        horizontal_spl_norm_db=horizontal,
+        vertical_spl_norm_db=vertical,
+        impedance_freq_hz=freqs,
+        impedance_radiator_names=np.array(["throat"]),
+        impedance_real=np.ones((1, 2), dtype=np.float32),
+        impedance_imag=np.zeros((1, 2), dtype=np.float32),
+        cfg=PrepConfig(
+            angle_samples=None,
+            freq_samples=None,
+            octave_smoothing=None,
+            hor_ref_angle=30.0,
+            vert_ref_angle=-20.0,
+            spin_hor_ref_angle=5.0,
+            spin_vert_ref_angle=-10.0,
+        ),
+    )
+
+    assert dataset["horizontal_normalization_angle_deg"] == np.float32(30.0)
+    assert dataset["vertical_normalization_angle_deg"] == np.float32(-20.0)
+    assert dataset["spin_horizontal_reference_angle_deg"] == np.float32(5.0)
+    assert dataset["spin_vertical_reference_angle_deg"] == np.float32(-10.0)

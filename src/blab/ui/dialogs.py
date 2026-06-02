@@ -195,6 +195,20 @@ class PreferencesDialog(QDialog):
         self.vertical_norm_angle_spin.setSuffix(" deg")
         self.vertical_norm_angle_spin.setValue(preferences.vertical_normalization_angle)
 
+        self.spin_horizontal_ref_angle_spin = QDoubleSpinBox()
+        self.spin_horizontal_ref_angle_spin.setRange(-180.0, 180.0)
+        self.spin_horizontal_ref_angle_spin.setDecimals(1)
+        self.spin_horizontal_ref_angle_spin.setSingleStep(1.0)
+        self.spin_horizontal_ref_angle_spin.setSuffix(" deg")
+        self.spin_horizontal_ref_angle_spin.setValue(preferences.spin_horizontal_reference_angle)
+
+        self.spin_vertical_ref_angle_spin = QDoubleSpinBox()
+        self.spin_vertical_ref_angle_spin.setRange(-180.0, 180.0)
+        self.spin_vertical_ref_angle_spin.setDecimals(1)
+        self.spin_vertical_ref_angle_spin.setSingleStep(1.0)
+        self.spin_vertical_ref_angle_spin.setSuffix(" deg")
+        self.spin_vertical_ref_angle_spin.setValue(preferences.spin_vertical_reference_angle)
+
         self.spl_max_spin = QDoubleSpinBox()
         self.spl_max_spin.setRange(-200.0, 200.0)
         self.spl_max_spin.setDecimals(1)
@@ -259,6 +273,8 @@ class PreferencesDialog(QDialog):
                     ("Polar Angle Step", self.polar_step_spin),
                     ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
                     ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
+                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin),
+                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin),
                     ("Polar Smoothing", self.smoothing_combo),
                     ("SPL Min", self.spl_min_spin),
                     ("SPL Max", self.spl_max_spin),
@@ -320,6 +336,8 @@ class PreferencesDialog(QDialog):
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
+            spin_horizontal_reference_angle=float(self.spin_horizontal_ref_angle_spin.value()),
+            spin_vertical_reference_angle=float(self.spin_vertical_ref_angle_spin.value()),
             spl_max_db=spl_max,
             spl_min_db=spl_min,
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
