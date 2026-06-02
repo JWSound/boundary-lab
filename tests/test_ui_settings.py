@@ -47,6 +47,10 @@ def test_preference_change_classification() -> None:
         baseline,
         GuiPreferences(spherical_sampling_enabled=True),
     )
+    assert preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(polar_observation_distance_m=3.5),
+    )
     assert not preferences_require_visualization_refresh(
         baseline,
         GuiPreferences(gmres_tolerance=5e-4),

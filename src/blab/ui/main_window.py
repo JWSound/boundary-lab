@@ -670,6 +670,11 @@ class MainWindow(QMainWindow):
                 "preferences/polar_angle_step_deg",
                 defaults.polar_angle_step_deg,
             ),
+            polar_observation_distance_m=settings_float(
+                self.settings,
+                "preferences/polar_observation_distance_m",
+                defaults.polar_observation_distance_m,
+            ),
             use_burton_miller=settings_bool(
                 self.settings,
                 "preferences/use_burton_miller",
@@ -723,6 +728,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("preferences/live_plot_quality", self.preferences.live_plot_quality)
         self.settings.setValue("preferences/gmres_tolerance", self.preferences.gmres_tolerance)
         self.settings.setValue("preferences/polar_angle_step_deg", self.preferences.polar_angle_step_deg)
+        self.settings.setValue(
+            "preferences/polar_observation_distance_m",
+            self.preferences.polar_observation_distance_m,
+        )
         self.settings.setValue("preferences/use_burton_miller", self.preferences.use_burton_miller)
         self.settings.setValue("preferences/worker_count", self.preferences.worker_count)
         self.settings.setValue("preferences/polar_smoothing", self.preferences.polar_smoothing)
@@ -2119,6 +2128,7 @@ class MainWindow(QMainWindow):
             meshes=mesh_configs,
             radiators=radiators,
             channels=self._channel_configs(),
+            distance=self.preferences.polar_observation_distance_m,
             step_size=self.preferences.polar_angle_step_deg,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,

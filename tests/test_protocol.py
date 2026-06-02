@@ -21,6 +21,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
         freq_min=100.0,
         freq_max=10000.0,
         freq_count=5,
+        distance=3.5,
         meshes=(
             MeshConfig(
                 name="waveguide",
@@ -61,6 +62,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     restored = simulation_config_from_dict(simulation_config_to_dict(config))
 
     assert restored.mesh_file == "fallback.msh"
+    assert restored.distance == 3.5
     assert restored.meshes[0].translation_m == (0.1, 0.0, -0.2)
     assert restored.radiators[0].hpf.filter == "linkwitz_riley"
     assert restored.radiators[0].channel == "tweeter"

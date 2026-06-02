@@ -27,6 +27,7 @@ class GuiPreferences:
     live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
+    polar_observation_distance_m: float = 2.0
     use_burton_miller: bool = True
     worker_count: int = 1
     polar_smoothing: int | None = 48
@@ -45,6 +46,7 @@ SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "solve_backend",
     "gmres_tolerance",
     "polar_angle_step_deg",
+    "polar_observation_distance_m",
     "use_burton_miller",
     "stitch_tolerance_mm",
     "spherical_sampling_enabled",

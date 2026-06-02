@@ -559,6 +559,8 @@ class HornBEMSolver:
         z_v = np.cos(angles_rad)
 
         r_dist = float(self.cfg.distance)
+        if r_dist <= 0:
+            raise ValueError("distance must be positive.")
         axial_offset_m = float(self.cfg.axial_offset)
         axial_shift = np.array([[0.0], [0.0], [axial_offset_m]], dtype=float)
 

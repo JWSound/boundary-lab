@@ -257,6 +257,7 @@ function polar_observation_points(config, ::Type{T}) where {T<:AbstractFloat}
     angles = Float32.(clamp.(angles, Float32(angle_min), Float32(angle_max)))
 
     distance = T(get_value(config, "distance", 2.0))
+    distance <= 0 && error("distance must be positive.")
     axial_offset = T(get_value(config, "axial_offset", 0.0))
     horizontal = SVector{3,T}[]
     vertical = SVector{3,T}[]
@@ -278,6 +279,7 @@ function spherical_observation(config, ::Type{T}) where {T<:AbstractFloat}
     point_count = Int(get_value(config, "spherical_sampling_points", 6000))
     point_count <= 0 && error("spherical_sampling_points must be positive.")
     distance = T(get_value(config, "distance", 2.0))
+    distance <= 0 && error("distance must be positive.")
     axial_offset = T(get_value(config, "axial_offset", 0.0))
     golden_angle = T(pi * (3.0 - sqrt(5.0)))
     points = Vector{SVector{3,T}}(undef, point_count)

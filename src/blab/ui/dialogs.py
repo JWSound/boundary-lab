@@ -162,6 +162,13 @@ class PreferencesDialog(QDialog):
         self.polar_step_spin.setSuffix(" deg")
         self.polar_step_spin.setValue(preferences.polar_angle_step_deg)
 
+        self.polar_distance_spin = QDoubleSpinBox()
+        self.polar_distance_spin.setRange(0.01, 1000.0)
+        self.polar_distance_spin.setDecimals(3)
+        self.polar_distance_spin.setSingleStep(0.25)
+        self.polar_distance_spin.setSuffix(" m")
+        self.polar_distance_spin.setValue(preferences.polar_observation_distance_m)
+
         self.burton_miller_check = QCheckBox("Enabled")
         self.burton_miller_check.setChecked(preferences.use_burton_miller)
 
@@ -271,6 +278,7 @@ class PreferencesDialog(QDialog):
                 "Observation Config",
                 (
                     ("Polar Angle Step", self.polar_step_spin),
+                    ("Polar Observation Distance", self.polar_distance_spin),
                     ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
                     ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
                     ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin),
@@ -331,6 +339,7 @@ class PreferencesDialog(QDialog):
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
+            polar_observation_distance_m=float(self.polar_distance_spin.value()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
             worker_count=int(self.worker_count_spin.value()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
