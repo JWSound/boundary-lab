@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
-from blab.ui.settings import GuiPreferences
+from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
 
 
 CROSSOVER_TYPE_OPTIONS = [
@@ -104,6 +104,24 @@ class PreferencesDialog(QDialog):
             "System",
         )
         self.theme_combo.setCurrentText(theme_label)
+
+        self.live_plot_quality_combo = QComboBox()
+        self.live_plot_quality_options = {
+            "Low": "low",
+            "Medium": "medium",
+            "High": "high",
+        }
+        self.live_plot_quality_combo.addItems(self.live_plot_quality_options.keys())
+        live_plot_quality = normalize_live_plot_quality(preferences.live_plot_quality)
+        live_plot_quality_label = next(
+            (
+                label
+                for label, value in self.live_plot_quality_options.items()
+                if value == live_plot_quality
+            ),
+            "Medium",
+        )
+        self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
 
         self.solve_backend_combo = QComboBox()
         self.solve_backend_options = backend_label_to_id()
@@ -201,12 +219,14 @@ class PreferencesDialog(QDialog):
         self.spherical_sampling_check = QCheckBox("Enabled")
         self.spherical_sampling_check.setChecked(preferences.spherical_sampling_enabled)
 
-        self.spherical_sampling_points_spin = QSpinBox()
-        self.spherical_sampling_points_spin.setRange(100, 200000)
-        self.spherical_sampling_points_spin.setSingleStep(500)
-        self.spherical_sampling_points_spin.setValue(preferences.spherical_sampling_points)
-        self.spherical_sampling_points_spin.setEnabled(preferences.spherical_sampling_enabled)
-        self.spherical_sampling_check.toggled.connect(self.spherical_sampling_points_spin.setEnabled)
+        self.balloon_angle_precision_spin = QDoubleSpinBox()
+        self.balloon_angle_precision_spin.setRange(0.5, 15.0)
+        self.balloon_angle_precision_spin.setDecimals(1)
+        self.balloon_angle_precision_spin.setSingleStep(0.5)
+        self.balloon_angle_precision_spin.setSuffix(" deg")
+        self.balloon_angle_precision_spin.setValue(preferences.balloon_angle_precision_deg)
+        self.balloon_angle_precision_spin.setEnabled(preferences.spherical_sampling_enabled)
+        self.spherical_sampling_check.toggled.connect(self.balloon_angle_precision_spin.setEnabled)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -227,8 +247,8 @@ class PreferencesDialog(QDialog):
                     ("GMRES Tolerance", self.gmres_spin),
                     ("Burton Miller Formulation", self.burton_miller_check),
                     ("Worker Count", self.worker_count_spin),
-                    ("Spherical Sampling", self.spherical_sampling_check),
-                    ("Spherical Sample Points", self.spherical_sampling_points_spin),
+                    ("Balloon Sampling", self.spherical_sampling_check),
+                    ("Balloon Angle Precision", self.balloon_angle_precision_spin),
                 ),
             )
         )
@@ -260,6 +280,7 @@ class PreferencesDialog(QDialog):
                 "Application",
                 (
                     ("Theme", self.theme_combo),
+                    ("Live Plot Quality", self.live_plot_quality_combo),
                     ("Solve Backend", self.solve_backend_combo),
                     ("Solve Server URL", self.solve_server_url_edit),
                 ),
@@ -291,6 +312,7 @@ class PreferencesDialog(QDialog):
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
+            live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
@@ -302,7 +324,7 @@ class PreferencesDialog(QDialog):
             spl_min_db=spl_min,
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
-            spherical_sampling_points=int(self.spherical_sampling_points_spin.value()),
+            balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),
         )
 
 

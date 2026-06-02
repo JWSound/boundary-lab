@@ -16,8 +16,12 @@ AUDIO_FREQ_MAX_HZ = 20000
 AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
 AUDIO_AXIS_LABELS = ["20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"]
 FREQ_SLIDER_STEPS = 1000
-LIVE_ISOBAR_ANGLE_SAMPLES = 250
-LIVE_ISOBAR_FREQ_SAMPLES = 500
+LIVE_ISOBAR_ANGLE_SAMPLES = 180
+LIVE_ISOBAR_FREQ_SAMPLES = 90
+FINAL_ISOBAR_ANGLE_SAMPLES = 1000
+FINAL_ISOBAR_FREQ_SAMPLES = 500
+LIVE_ISOBAR_SHADING = "nearest"
+FINAL_ISOBAR_SHADING = "gouraud"
 PLOT_TITLE_SIZE = 11
 PLOT_LABEL_SIZE = 9
 PLOT_TICK_SIZE = 9
@@ -82,6 +86,7 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_freqs_hz: np.ndarray | None = None
         self._mesh_angles_deg: np.ndarray | None = None
         self._mesh_clip: tuple[float, float] | None = None
+        self._mesh_shading: str | None = None
         self._apply_layout()
         self._draw_empty()
 
@@ -106,6 +111,7 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
         self._mesh_clip = None
+        self._mesh_shading = None
         self._configure_axes()
         self.draw_idle()
 
@@ -119,12 +125,19 @@ class IsobarCanvas(FigureCanvas):
             pass
         setattr(self, name, None)
 
-    def _mesh_matches(self, freqs_hz: np.ndarray, angles_deg: np.ndarray, clip: tuple[float, float]) -> bool:
+    def _mesh_matches(
+        self,
+        freqs_hz: np.ndarray,
+        angles_deg: np.ndarray,
+        clip: tuple[float, float],
+        shading: str,
+    ) -> bool:
         return (
             self._mesh_artist is not None
             and self._mesh_freqs_hz is not None
             and self._mesh_angles_deg is not None
             and self._mesh_clip == clip
+            and self._mesh_shading == shading
             and self._mesh_freqs_hz.shape == freqs_hz.shape
             and self._mesh_angles_deg.shape == angles_deg.shape
             and np.array_equal(self._mesh_freqs_hz, freqs_hz)
@@ -138,15 +151,18 @@ class IsobarCanvas(FigureCanvas):
         values_db: np.ndarray,
         clip_min_db: float,
         clip_max_db: float,
+        *,
+        shading: str = LIVE_ISOBAR_SHADING,
     ) -> None:
         freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
         angles_deg = np.asarray(angles_deg, dtype=np.float32)
         clipped = np.clip(np.asarray(values_db, dtype=np.float32), clip_min_db, clip_max_db)
         clip = (float(clip_min_db), float(clip_max_db))
+        shading = str(shading or LIVE_ISOBAR_SHADING)
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")
-            if self._mesh_matches(freqs_hz, angles_deg, clip):
+            if self._mesh_matches(freqs_hz, angles_deg, clip, shading):
                 self._mesh_artist.set_array(clipped.ravel())
             else:
                 self._remove_artist("_mesh_artist")
@@ -159,16 +175,18 @@ class IsobarCanvas(FigureCanvas):
                     clipped,
                     cmap=cmap,
                     norm=norm,
-                    shading="gouraud",
+                    shading=shading,
                 )
                 self._mesh_freqs_hz = freqs_hz.copy()
                 self._mesh_angles_deg = angles_deg.copy()
                 self._mesh_clip = clip
+                self._mesh_shading = shading
         elif freqs_hz.size == 1:
             self._remove_artist("_mesh_artist")
             self._mesh_freqs_hz = None
             self._mesh_angles_deg = None
             self._mesh_clip = None
+            self._mesh_shading = None
             x_values = np.full_like(angles_deg, float(freqs_hz[0]))
             if self._line_artist is None:
                 (self._line_artist,) = self.axes.plot(
@@ -185,6 +203,7 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_freqs_hz = None
             self._mesh_angles_deg = None
             self._mesh_clip = None
+            self._mesh_shading = None
 
         self._configure_axes()
         self.draw_idle()

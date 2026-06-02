@@ -68,9 +68,11 @@ from blab.ui.help import HelpBrowserDialog
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
     AUDIO_FREQ_MIN_HZ,
+    FINAL_ISOBAR_ANGLE_SAMPLES,
+    FINAL_ISOBAR_FREQ_SAMPLES,
+    FINAL_ISOBAR_SHADING,
     FREQ_SLIDER_STEPS,
-    LIVE_ISOBAR_ANGLE_SAMPLES,
-    LIVE_ISOBAR_FREQ_SAMPLES,
+    LIVE_ISOBAR_SHADING,
     ImpedanceCanvas,
     IsobarCanvas,
     OnAxisResponseCanvas,
@@ -100,6 +102,12 @@ from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
     GuiPreferences,
+    balloon_angle_precision_from_points,
+    balloon_sampling_points,
+    live_plot_angle_samples,
+    live_plot_freq_samples,
+    normalize_balloon_angle_precision_deg,
+    normalize_live_plot_quality,
     settings_bool,
     settings_float,
     settings_int,
@@ -173,8 +181,11 @@ class MainWindow(QMainWindow):
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
+        self.solve_expected_count = 0
+        self.solve_failed = False
         self.solve_started_at: float | None = None
         self.solve_cancel_requested = False
+        self._use_final_isobar_resolution = False
         self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
         self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
@@ -399,6 +410,7 @@ class MainWindow(QMainWindow):
         plot_panel.setWidget(plot_content)
 
         self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setOpaqueResize(False)
         self.main_splitter.addWidget(self.editor_container)
         self.main_splitter.addWidget(self.preview)
         self.main_splitter.addWidget(plot_panel)
@@ -610,6 +622,9 @@ class MainWindow(QMainWindow):
                 settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend)
             ),
             solve_server_url=settings_str(self.settings, "preferences/solve_server_url", defaults.solve_server_url),
+            live_plot_quality=normalize_live_plot_quality(
+                settings_str(self.settings, "preferences/live_plot_quality", defaults.live_plot_quality)
+            ),
             gmres_tolerance=settings_float(self.settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
             polar_angle_step_deg=settings_float(
                 self.settings,
@@ -649,17 +664,14 @@ class MainWindow(QMainWindow):
                 "preferences/spherical_sampling_enabled",
                 defaults.spherical_sampling_enabled,
             ),
-            spherical_sampling_points=settings_int(
-                self.settings,
-                "preferences/spherical_sampling_points",
-                defaults.spherical_sampling_points,
-            ),
+            balloon_angle_precision_deg=self._load_balloon_angle_precision_deg(defaults),
         )
 
     def _save_preferences(self) -> None:
         self.settings.setValue("preferences/theme", self.preferences.theme)
         self.settings.setValue("preferences/solve_backend", self.preferences.solve_backend)
         self.settings.setValue("preferences/solve_server_url", self.preferences.solve_server_url)
+        self.settings.setValue("preferences/live_plot_quality", self.preferences.live_plot_quality)
         self.settings.setValue("preferences/gmres_tolerance", self.preferences.gmres_tolerance)
         self.settings.setValue("preferences/polar_angle_step_deg", self.preferences.polar_angle_step_deg)
         self.settings.setValue("preferences/use_burton_miller", self.preferences.use_burton_miller)
@@ -677,7 +689,29 @@ class MainWindow(QMainWindow):
         self.settings.setValue("preferences/spl_min_db", self.preferences.spl_min_db)
         self.settings.setValue("preferences/stitch_tolerance_mm", self.preferences.stitch_tolerance_mm)
         self.settings.setValue("preferences/spherical_sampling_enabled", self.preferences.spherical_sampling_enabled)
-        self.settings.setValue("preferences/spherical_sampling_points", self.preferences.spherical_sampling_points)
+        self.settings.setValue(
+            "preferences/balloon_angle_precision_deg",
+            self.preferences.balloon_angle_precision_deg,
+        )
+
+    def _load_balloon_angle_precision_deg(self, defaults: GuiPreferences) -> float:
+        if self.settings.contains("preferences/balloon_angle_precision_deg"):
+            return normalize_balloon_angle_precision_deg(
+                settings_float(
+                    self.settings,
+                    "preferences/balloon_angle_precision_deg",
+                    defaults.balloon_angle_precision_deg,
+                )
+            )
+        if self.settings.contains("preferences/spherical_sampling_points"):
+            return balloon_angle_precision_from_points(
+                settings_int(
+                    self.settings,
+                    "preferences/spherical_sampling_points",
+                    balloon_sampling_points(defaults.balloon_angle_precision_deg),
+                )
+            )
+        return defaults.balloon_angle_precision_deg
 
     @staticmethod
     def _normalized_theme(theme: str) -> str:
@@ -2033,12 +2067,15 @@ class MainWindow(QMainWindow):
             gmres_tolerance=self.preferences.gmres_tolerance,
             workers=self.preferences.worker_count,
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
-            spherical_sampling_points=self.preferences.spherical_sampling_points,
+            spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
             symmetry=self.symmetry,
         )
 
         self.live_dataset = None
         self.balloon_plot_action.setEnabled(False)
+        self.solve_expected_count = int(ordered_freqs.size)
+        self.solve_failed = False
+        self._use_final_isobar_resolution = False
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
@@ -2108,12 +2145,12 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:
+        self.solve_failed = True
         QMessageBox.critical(self, "Solve failed", message)
         self.status_label.setText("Solve failed")
 
     @Slot()
     def _on_solve_finished(self) -> None:
-        self._refresh_plots()
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
@@ -2123,6 +2160,18 @@ class MainWindow(QMainWindow):
         elapsed_s = None if self.solve_started_at is None else time.perf_counter() - self.solve_started_at
         self.solve_started_at = None
         if self.live_dataset is not None and self.live_dataset.solved_count > 0:
+            solved_count = self.live_dataset.solved_count
+            solve_completed = (
+                not self.solve_cancel_requested
+                and not self.solve_failed
+                and self.solve_expected_count > 0
+                and solved_count >= self.solve_expected_count
+            )
+            self._use_final_isobar_resolution = solve_completed
+            if solve_completed:
+                self.status_label.setText("Rendering final high-resolution plots...")
+                QApplication.processEvents()
+            self._refresh_plots()
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
             self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
@@ -2134,18 +2183,30 @@ class MainWindow(QMainWindow):
                 self.solve_cancel_requested = False
                 self.solve_worker = None
                 self.solve_thread = None
+                self.solve_failed = False
+                self.solve_expected_count = 0
+                return
+            if self.solve_failed:
+                self.status_label.setText(f"Solve failed after {solved_count} frequencies{elapsed_text}")
+                self.solve_failed = False
+                self.solve_expected_count = 0
+                self.solve_worker = None
+                self.solve_thread = None
                 return
             self.status_label.setText(
-                f"Solve complete: {self.live_dataset.solved_count} frequencies{elapsed_text}"
+                f"Solve complete: {solved_count} frequencies{elapsed_text}"
             )
         elif self.solve_cancel_requested:
             self.status_label.setText("Solve stopped")
         self.solve_cancel_requested = False
+        self.solve_failed = False
+        self.solve_expected_count = 0
         self.solve_worker = None
         self.solve_thread = None
 
     def _clear_plots(self) -> None:
         self.live_dataset = None
+        self._use_final_isobar_resolution = False
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self._set_export_plot_actions_enabled(False)
@@ -2167,13 +2228,22 @@ class MainWindow(QMainWindow):
         for action in self.export_plot_actions.values():
             action.setEnabled(enabled)
 
-    def _prepared_live_plot_dataset(self) -> dict[str, np.ndarray] | None:
+    def _prepared_live_plot_dataset(
+        self,
+        *,
+        angle_samples: int | None = None,
+        freq_samples: int | None = None,
+    ) -> dict[str, np.ndarray] | None:
         if self.live_dataset is None:
             return None
+        if angle_samples is None:
+            angle_samples = live_plot_angle_samples(self.preferences.live_plot_quality)
+        if freq_samples is None:
+            freq_samples = live_plot_freq_samples(self.preferences.live_plot_quality)
         return self.live_dataset.as_visualization_dataset(
             PrepConfig(
-                angle_samples=LIVE_ISOBAR_ANGLE_SAMPLES,
-                freq_samples=LIVE_ISOBAR_FREQ_SAMPLES,
+                angle_samples=angle_samples,
+                freq_samples=freq_samples,
                 octave_smoothing=self.preferences.polar_smoothing,
                 hor_ref_angle=self.preferences.horizontal_normalization_angle,
                 vert_ref_angle=self.preferences.vertical_normalization_angle,
@@ -2189,7 +2259,14 @@ class MainWindow(QMainWindow):
         if not visible_entries:
             return
 
-        dataset = self._prepared_live_plot_dataset()
+        dataset = self._prepared_live_plot_dataset(
+            angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES
+            if self._use_final_isobar_resolution
+            else live_plot_angle_samples(self.preferences.live_plot_quality),
+            freq_samples=FINAL_ISOBAR_FREQ_SAMPLES
+            if self._use_final_isobar_resolution
+            else live_plot_freq_samples(self.preferences.live_plot_quality),
+        )
         if dataset is None:
             return
 
@@ -2203,6 +2280,7 @@ class MainWindow(QMainWindow):
             dataset["horizontal_isobar_db"],
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
+            shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
         )
 
     def _update_vertical_plot(self, dataset: dict[str, np.ndarray]) -> None:
@@ -2212,6 +2290,7 @@ class MainWindow(QMainWindow):
             dataset["vertical_isobar_db"],
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
+            shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
         )
 
     def _update_impedance_plot(self, dataset: dict[str, np.ndarray]) -> None:

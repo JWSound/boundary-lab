@@ -75,6 +75,9 @@ class StartupReporter:
             )
             self.app.processEvents()
 
+    def log(self, message: str) -> None:
+        self._log(message)
+
     def exception(self, title: str, exc: BaseException) -> None:
         details = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         self._log(f"{title}: {exc}\n{details}")
@@ -184,6 +187,12 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     reporter = StartupReporter(app, splash)
     reporter.start_watchdog()
     try:
+        reporter.update("Checking Python dependencies...")
+        from blab.startup_checks import check_python_dependency_versions, format_startup_check_results
+
+        for line in format_startup_check_results(check_python_dependency_versions()):
+            reporter.log(f"Dependency {line}")
+
         reporter.update("Loading main window modules...")
         from blab.ui.main_window import MainWindow
     except ImportError as exc:  # pragma: no cover - exercised only by manual GUI launch

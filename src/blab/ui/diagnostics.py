@@ -11,20 +11,8 @@ from typing import Any
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 from blab import __version__
+from blab.startup_checks import DEPENDENCY_NAMES
 from blab.ui.settings import GuiPreferences
-
-
-DEPENDENCY_NAMES = (
-    "bempp-cl",
-    "matplotlib",
-    "meshio",
-    "numpy",
-    "pyopencl",
-    "scipy",
-    "PySide6",
-    "pyvista",
-    "pyvistaqt",
-)
 
 
 def collect_diagnostics(preferences: GuiPreferences) -> dict[str, Any]:

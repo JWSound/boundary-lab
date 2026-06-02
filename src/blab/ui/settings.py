@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from PySide6.QtCore import QSettings
@@ -9,6 +10,13 @@ from PySide6.QtCore import QSettings
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
+LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
+    "low": 180,
+    "medium": 250,
+    "high": 500,
+}
+BALLOON_ANGLE_PRECISION_MIN_DEG = 0.5
+BALLOON_ANGLE_PRECISION_MAX_DEG = 15.0
 
 
 @dataclass
@@ -16,6 +24,7 @@ class GuiPreferences:
     theme: str = "system"
     solve_backend: str = "local"
     solve_server_url: str = "http://127.0.0.1:8765"
+    live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     use_burton_miller: bool = True
@@ -27,7 +36,7 @@ class GuiPreferences:
     spl_min_db: float = -30.0
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
-    spherical_sampling_points: int = 6000
+    balloon_angle_precision_deg: float = 2.5
 
 
 def settings_bool(settings: QSettings, key: str, default: bool) -> bool:
@@ -57,6 +66,45 @@ def settings_str(settings: QSettings, key: str, default: str) -> str:
         return default
     text = str(value).strip()
     return text or default
+
+
+def normalize_live_plot_quality(value: object) -> str:
+    quality = str(value or "medium").strip().lower()
+    return quality if quality in LIVE_PLOT_QUALITY_ANGLE_SAMPLES else "medium"
+
+
+def live_plot_angle_samples(quality: object) -> int:
+    return LIVE_PLOT_QUALITY_ANGLE_SAMPLES[normalize_live_plot_quality(quality)]
+
+
+def live_plot_freq_samples(quality: object) -> int:
+    return max(1, live_plot_angle_samples(quality) // 2)
+
+
+def normalize_balloon_angle_precision_deg(value: object) -> float:
+    try:
+        angle_deg = float(value)
+    except (TypeError, ValueError):
+        angle_deg = 2.5
+    if not math.isfinite(angle_deg):
+        angle_deg = 2.5
+    return min(max(angle_deg, BALLOON_ANGLE_PRECISION_MIN_DEG), BALLOON_ANGLE_PRECISION_MAX_DEG)
+
+
+def balloon_sampling_points(angle_precision_deg: object) -> int:
+    angle_deg = normalize_balloon_angle_precision_deg(angle_precision_deg)
+    angle_rad = math.radians(angle_deg)
+    return max(1, int(round((4.0 * math.pi) / (angle_rad * angle_rad))))
+
+
+def balloon_angle_precision_from_points(point_count: object) -> float:
+    try:
+        points = int(point_count)
+    except (TypeError, ValueError):
+        points = balloon_sampling_points(2.5)
+    points = max(1, points)
+    angle_rad = math.sqrt((4.0 * math.pi) / float(points))
+    return normalize_balloon_angle_precision_deg(math.degrees(angle_rad))
 
 
 def settings_optional_int(settings: QSettings, key: str, default: int | None) -> int | None:

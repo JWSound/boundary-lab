@@ -41,6 +41,12 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     assert "plot_layout.setSpacing(4)" in main_source
 
 
+def test_main_splitter_defers_expensive_resizes_until_drag_release() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert "self.main_splitter.setOpaqueResize(False)" in source
+
+
 def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
@@ -49,6 +55,32 @@ def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
     assert "visible_entries = [entry for entry in self.plot_entries if entry.widget.isVisible()]" in source
     assert "for entry in visible_entries:" in source
     assert "self._refresh_plots()" in source
+
+
+def test_completed_solves_use_final_isobar_resolution() -> None:
+    plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
+    settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
+
+    assert '"low": 180' in settings_source
+    assert '"medium": 250' in settings_source
+    assert '"high": 500' in settings_source
+    assert "def live_plot_freq_samples(" in settings_source
+    assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
+    assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
+    assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
+    assert '"preferences/live_plot_quality"' in main_source
+    assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
+    assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
+    assert "FINAL_ISOBAR_ANGLE_SAMPLES = 1000" in plot_source
+    assert "FINAL_ISOBAR_FREQ_SAMPLES = 500" in plot_source
+    assert 'LIVE_ISOBAR_SHADING = "nearest"' in plot_source
+    assert 'FINAL_ISOBAR_SHADING = "gouraud"' in plot_source
+    assert "self._use_final_isobar_resolution = solve_completed" in main_source
+    assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
+    assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
+    assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
 
 
 def test_isobar_canvas_allows_custom_right_margin() -> None:
@@ -68,6 +100,8 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "def _mesh_matches(" in isobar_block
     assert "self._mesh_artist.set_array" in isobar_block
     assert "self.axes.pcolormesh(" in isobar_block
+    assert "shading=shading" in isobar_block
+    assert "self._mesh_shading == shading" in isobar_block
     assert isobar_block.count("clear_plot_axes(self.axes)") == 1
 
 
