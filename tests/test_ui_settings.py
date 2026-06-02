@@ -5,6 +5,9 @@ from blab.ui.settings import (
     live_plot_freq_samples,
     normalize_balloon_angle_precision_deg,
     normalize_live_plot_quality,
+    preferences_require_solve_invalidation,
+    preferences_require_visualization_refresh,
+    GuiPreferences,
 )
 
 
@@ -28,3 +31,42 @@ def test_balloon_angle_precision_point_conversion() -> None:
     assert balloon_sampling_points(2.5) == 6600
     assert balloon_sampling_points(1.0) == 41253
     assert round(balloon_angle_precision_from_points(6000), 1) == 2.6
+
+
+def test_preference_change_classification() -> None:
+    baseline = GuiPreferences()
+
+    assert preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(gmres_tolerance=5e-4),
+    )
+    assert preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(spherical_sampling_enabled=True),
+    )
+    assert not preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(gmres_tolerance=5e-4),
+    )
+
+    assert preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(polar_smoothing=24),
+    )
+    assert preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(spl_min_db=-40.0),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(polar_smoothing=24),
+    )
+
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+    )
+    assert not preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+    )

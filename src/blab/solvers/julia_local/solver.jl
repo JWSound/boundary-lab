@@ -404,6 +404,38 @@ function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, dr
 end
 
 function solve_request(request)
+    try
+        solve_request_impl(request)
+    finally
+        cleanup_cuda_after_solve!()
+    end
+end
+
+function cleanup_cuda_after_solve!()
+    cuda = JBEMCore.CUDA_MODULE
+    if cuda !== nothing
+        try
+            cuda.functional() && cuda.synchronize()
+        catch
+        end
+    end
+
+    GC.gc(true)
+
+    if cuda !== nothing
+        try
+            if isdefined(cuda, :reclaim)
+                cuda.reclaim()
+            end
+        catch
+        end
+    end
+
+    GC.gc(true)
+    return nothing
+end
+
+function solve_request_impl(request)
     schema_version = Int(get_value(request, "schema_version", 1))
     schema_version == 1 || error("Unsupported solve request schema_version $(schema_version).")
 

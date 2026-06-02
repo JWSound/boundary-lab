@@ -12,7 +12,7 @@ from typing import Callable
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, Slot
+from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -113,6 +113,8 @@ from blab.ui.settings import (
     settings_int,
     settings_optional_int,
     settings_str,
+    preferences_require_solve_invalidation,
+    preferences_require_visualization_refresh,
 )
 from blab.ui.solve_worker import SolveWorker
 
@@ -157,6 +159,12 @@ class PlotEntry:
 
 
 class MainWindow(QMainWindow):
+    mesh_state_changed = Signal(str)
+    source_config_changed = Signal(str)
+    project_state_changed = Signal(str)
+    solve_results_invalidated = Signal(str)
+    visualization_settings_changed = Signal(str)
+
     def __init__(self, startup_status: Callable[[str], None] | None = None):
         super().__init__()
         def startup(stage: str) -> None:
@@ -291,6 +299,7 @@ class MainWindow(QMainWindow):
         self._build_menu_bar()
         startup("Building main layout...")
         self._build_layout()
+        self._connect_state_events()
         startup("Restoring window layout...")
         self._restore_window_state()
 
@@ -470,6 +479,35 @@ class MainWindow(QMainWindow):
         self.freq_max_spin.valueChanged.connect(self._save_frequency_settings)
         self.freq_count_spin.valueChanged.connect(self._save_frequency_settings)
 
+    def _connect_state_events(self) -> None:
+        self.mesh_state_changed.connect(self._on_mesh_state_changed)
+        self.source_config_changed.connect(self._on_source_config_changed)
+        self.project_state_changed.connect(self._on_project_state_changed)
+        self.solve_results_invalidated.connect(self._on_solve_results_invalidated)
+        self.visualization_settings_changed.connect(self._on_visualization_settings_changed)
+
+    @Slot(str)
+    def _on_mesh_state_changed(self, _reason: str) -> None:
+        self._refresh_mesh_preview()
+        self.source_config_button.setEnabled(self._has_solver_meshes())
+
+    @Slot(str)
+    def _on_source_config_changed(self, _reason: str) -> None:
+        self._refresh_mesh_preview()
+
+    @Slot(str)
+    def _on_project_state_changed(self, _reason: str) -> None:
+        self._refresh_mesh_preview()
+        self.source_config_button.setEnabled(self._has_solver_meshes())
+
+    @Slot(str)
+    def _on_solve_results_invalidated(self, _reason: str) -> None:
+        self._clear_plots()
+
+    @Slot(str)
+    def _on_visualization_settings_changed(self, _reason: str) -> None:
+        self._refresh_plots()
+
     def _rebuild_ath_script_tabs(self) -> None:
         self.editor_tabs.blockSignals(True)
         self.editor_tabs.clear()
@@ -535,7 +573,8 @@ class MainWindow(QMainWindow):
             name=unique_script_name(name, tuple(s for s in self.ath_scripts if s.id != script.id)),
         )
         self._rebuild_ath_script_tabs()
-        self._refresh_mesh_preview()
+        self.mesh_state_changed.emit("ath_script_renamed")
+        self.solve_results_invalidated.emit("ath_script_renamed")
 
     def _remove_ath_script_at(self, index: int) -> None:
         if not (0 <= index < len(self.ath_scripts)):
@@ -545,8 +584,8 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id.pop(script.id, None)
         self.active_ath_script_id = self.ath_scripts[min(index, len(self.ath_scripts) - 1)].id if self.ath_scripts else None
         self._rebuild_ath_script_tabs()
-        self._refresh_mesh_preview()
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.mesh_state_changed.emit("ath_script_removed")
+        self.solve_results_invalidated.emit("ath_script_removed")
 
     @Slot()
     def toggle_editor_panel(self) -> None:
@@ -1219,8 +1258,8 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
-            self._refresh_mesh_preview()
-            self._clear_plots()
+            self.mesh_state_changed.emit("imported_mesh_files_reloaded")
+            self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             names = ", ".join(updated_names)
             self.status_label.setText(f"Reloaded updated mesh file{'s' if len(updated_names) != 1 else ''}: {names}")
         except Exception as exc:
@@ -1647,9 +1686,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("channel/config_by_name", "{}")
         self.settings.sync()
         self._save_imported_meshes()
-        self.source_config_button.setEnabled(False)
-        self.preview.clear()
-        self._clear_plots()
+        self.project_state_changed.emit("new_project")
+        self.solve_results_invalidated.emit("new_project")
         self.status_label.setText("New project")
 
     @Slot()
@@ -1765,9 +1803,8 @@ class MainWindow(QMainWindow):
         except Exception:
             self.imported_radiators = ()
 
-        self._refresh_mesh_preview()
-        self.source_config_button.setEnabled(self._has_solver_meshes())
-        self._clear_plots()
+        self.project_state_changed.emit("project_loaded")
+        self.solve_results_invalidated.emit("project_loaded")
 
     @Slot()
     def export_config(self) -> None:
@@ -1875,21 +1912,20 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_preferences(self) -> None:
-        previous_backend = normalize_backend_id(self.preferences.solve_backend)
+        previous_preferences = self.preferences
         dialog = PreferencesDialog(self.preferences, self)
         if dialog.exec() != QDialog.Accepted:
             return
         self.preferences = dialog.preferences()
         dialog.deleteLater()
         self._save_preferences()
-        backend_changed = normalize_backend_id(self.preferences.solve_backend) != previous_backend
         symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)
-        self._refresh_mesh_preview()
-        if symmetry_disabled or backend_changed:
-            self._clear_plots()
-        else:
-            self._refresh_plots()
+        self.mesh_state_changed.emit("preferences_changed")
+        if symmetry_disabled or preferences_require_solve_invalidation(previous_preferences, self.preferences):
+            self.solve_results_invalidated.emit("preferences_changed")
+        elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
+            self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
 
     @Slot()
@@ -1925,7 +1961,8 @@ class MainWindow(QMainWindow):
                 self.symmetry = dialog.symmetry()
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self._save_imported_meshes()
-            self._refresh_mesh_preview()
+            self.mesh_state_changed.emit("mesh_config_changed")
+            self.solve_results_invalidated.emit("mesh_config_changed")
             self.status_label.setText(
                 f"Mesh config updated: {len(self._active_imported_meshes())}/{len(self.imported_meshes)} meshes enabled"
             )
@@ -1957,6 +1994,8 @@ class MainWindow(QMainWindow):
             self._save_source_config(self._surface_tags_for_meshes(), self._all_radiators())
         except Exception:
             pass
+        self.source_config_changed.emit("channel_config_changed")
+        self.solve_results_invalidated.emit("channel_config_changed")
         self.status_label.setText(f"Channel config updated: {len(channels)} channels")
 
     @Slot()
@@ -1979,7 +2018,8 @@ class MainWindow(QMainWindow):
         radiators = dialog.radiators()
         self._apply_radiators_to_results(radiators)
         self._save_source_config(surface_tags, radiators)
-        self._refresh_mesh_preview()
+        self.source_config_changed.emit("source_config_changed")
+        self.solve_results_invalidated.emit("source_config_changed")
         self.status_label.setText(f"Source config updated: {len(radiators)} driven surfaces")
 
     @Slot()
@@ -1990,7 +2030,7 @@ class MainWindow(QMainWindow):
             return
         case_name = f"{script.mesh_name}_{script.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_root = ATH_OUTPUT_ROOT
-        self._clear_plots()
+        self.solve_results_invalidated.emit("geometry_generation_started")
         self.status_label.setText(f"Generating {script.name}...")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -2012,8 +2052,7 @@ class MainWindow(QMainWindow):
                 cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
                 config_path=str(result.config_path),
             )
-            self._refresh_mesh_preview()
-            self.source_config_button.setEnabled(True)
+            self.mesh_state_changed.emit("ath_mesh_generated")
             self.status_label.setText(f"Generated and cleaned {result.output_dir}")
             self._show_mesh_quality_warning(result)
         except Exception as exc:
@@ -2032,7 +2071,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
             return
         if self._disable_symmetry_if_backend_unsupported():
-            self._refresh_mesh_preview()
+            self.mesh_state_changed.emit("symmetry_disabled_for_backend")
 
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)

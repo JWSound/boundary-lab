@@ -39,6 +39,33 @@ class GuiPreferences:
     balloon_angle_precision_deg: float = 2.5
 
 
+SOLVE_AFFECTING_PREFERENCE_FIELDS = (
+    "solve_backend",
+    "gmres_tolerance",
+    "polar_angle_step_deg",
+    "use_burton_miller",
+    "stitch_tolerance_mm",
+    "spherical_sampling_enabled",
+    "balloon_angle_precision_deg",
+)
+VISUALIZATION_PREFERENCE_FIELDS = (
+    "live_plot_quality",
+    "polar_smoothing",
+    "horizontal_normalization_angle",
+    "vertical_normalization_angle",
+    "spl_max_db",
+    "spl_min_db",
+)
+
+
+def preferences_require_solve_invalidation(previous: GuiPreferences, current: GuiPreferences) -> bool:
+    return _preferences_changed(previous, current, SOLVE_AFFECTING_PREFERENCE_FIELDS)
+
+
+def preferences_require_visualization_refresh(previous: GuiPreferences, current: GuiPreferences) -> bool:
+    return _preferences_changed(previous, current, VISUALIZATION_PREFERENCE_FIELDS)
+
+
 def settings_bool(settings: QSettings, key: str, default: bool) -> bool:
     value = settings.value(key, default)
     if isinstance(value, bool):
@@ -115,3 +142,7 @@ def settings_optional_int(settings: QSettings, key: str, default: int | None) ->
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _preferences_changed(previous: GuiPreferences, current: GuiPreferences, fields: tuple[str, ...]) -> bool:
+    return any(getattr(previous, field) != getattr(current, field) for field in fields)
