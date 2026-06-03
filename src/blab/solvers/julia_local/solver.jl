@@ -379,6 +379,125 @@ function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, ::Typ
     return Float32.(T(20.0) .* log10.(abs.(pot) ./ T(20e-6)))
 end
 
+function pressure_to_spl(pressure, ::Type{T}) where {T<:AbstractFloat}
+    return Float32.(T(20.0) .* log10.(abs.(pressure) ./ T(20e-6)))
+end
+
+function complex_rows_to_wire(rows)
+    return Dict(
+        "real" => [Float32.(real.(row)) for row in rows],
+        "imag" => [Float32.(imag.(row)) for row in rows],
+    )
+end
+
+function interpolate_complex_reference(values, angles_deg, reference_angle_deg, ::Type{T}) where {T<:AbstractFloat}
+    isempty(values) && return Complex{T}(0, 0)
+    length(values) == 1 && return Complex{T}(values[1])
+
+    reference_wrapped = mod(T(reference_angle_deg) + T(180.0), T(360.0)) - T(180.0)
+    angle_values = T.(angles_deg)
+    value_values = Complex{T}.(values)
+    if isapprox(angle_values[1], T(-180.0)) && isapprox(angle_values[end], T(180.0))
+        angle_values = angle_values[1:(end - 1)]
+        value_values = value_values[1:(end - 1)]
+    end
+
+    extended_angles = vcat(angle_values .- T(360.0), angle_values, angle_values .+ T(360.0))
+    extended_values = vcat(value_values, value_values, value_values)
+    for idx in 1:(length(extended_angles) - 1)
+        left = extended_angles[idx]
+        right = extended_angles[idx + 1]
+        if reference_wrapped >= left && reference_wrapped <= right
+            if isapprox(left, right)
+                return extended_values[idx]
+            end
+            fraction = (reference_wrapped - left) / (right - left)
+            return extended_values[idx] * (one(T) - fraction) + extended_values[idx + 1] * fraction
+        end
+    end
+    return extended_values[argmin(abs.(extended_angles .- reference_wrapped))]
+end
+
+function flat_target_corrections(channel_names, horizontal_pressure_rows, angles_deg, reference_angle_deg, flat_target::Bool, ::Type{T}) where {T<:AbstractFloat}
+    corrections = Dict{String,T}()
+    for (channel_index, channel_name) in enumerate(channel_names)
+        if !flat_target
+            corrections[channel_name] = one(T)
+            continue
+        end
+        reference_pressure = interpolate_complex_reference(
+            horizontal_pressure_rows[channel_index],
+            angles_deg,
+            reference_angle_deg,
+            T,
+        )
+        magnitude = abs(reference_pressure)
+        corrections[channel_name] = magnitude <= T(1e-12) ? one(T) : one(T) / magnitude
+    end
+    return corrections
+end
+
+function synthesize_channel_basis(channel_names, horizontal_pressure_rows, vertical_pressure_rows, sphere_pressure_rows, channels, freq, angles_deg, reference_angle_deg, flat_target::Bool, ::Type{T}) where {T<:AbstractFloat}
+    corrections = flat_target_corrections(channel_names, horizontal_pressure_rows, angles_deg, reference_angle_deg, flat_target, T)
+    weights = Complex{T}[
+        channel_drive(get(channels, channel_name, Dict(
+            "level_db" => 0.0,
+            "polarity" => 1,
+            "delay_ms" => 0.0,
+            "hpf" => Dict("type" => "none"),
+            "lpf" => Dict("type" => "none"),
+        )), freq) * corrections[channel_name]
+        for channel_name in channel_names
+    ]
+
+    horizontal_pressure = zero.(horizontal_pressure_rows[1])
+    vertical_pressure = zero.(vertical_pressure_rows[1])
+    for channel_index in eachindex(channel_names)
+        horizontal_pressure .+= horizontal_pressure_rows[channel_index] .* weights[channel_index]
+        vertical_pressure .+= vertical_pressure_rows[channel_index] .* weights[channel_index]
+    end
+
+    horizontal_spl = pressure_to_spl(horizontal_pressure, T)
+    vertical_spl = pressure_to_spl(vertical_pressure, T)
+    on_axis_idx = argmin(abs.(Float64.(angles_deg)))
+    reference = horizontal_spl[on_axis_idx]
+    sphere_norm = nothing
+    if sphere_pressure_rows !== nothing
+        sphere_pressure = zero.(sphere_pressure_rows[1])
+        for channel_index in eachindex(channel_names)
+            sphere_pressure .+= sphere_pressure_rows[channel_index] .* weights[channel_index]
+        end
+        sphere_norm = Float32.(pressure_to_spl(sphere_pressure, T) .- reference)
+    end
+
+    return (
+        horizontal_spl=horizontal_spl,
+        vertical_spl=vertical_spl,
+        horizontal_norm=Float32.(horizontal_spl .- reference),
+        vertical_norm=Float32.(vertical_spl .- reference),
+        sphere_norm=sphere_norm,
+        corrections=corrections,
+        weights=weights,
+    )
+end
+
+function channel_unit_drives(radiators, channel_name::String, ::Type{T}) where {T<:AbstractFloat}
+    return Complex{T}[
+        String(get_value(radiator, "channel", "main")) == channel_name ?
+        Complex{T}(T(10.0) ^ (T(radiator["velocity_offset_db"]) / T(20.0)), 0) :
+        Complex{T}(0, 0)
+        for radiator in radiators
+    ]
+end
+
+function radiator_drives_from_channel_basis(radiators, channels, freq, corrections, ::Type{T}) where {T<:AbstractFloat}
+    return Complex{T}[
+        drive_for_radiator(radiator, channels, freq) *
+        get(corrections, String(get_value(radiator, "channel", "main")), one(T))
+        for radiator in radiators
+    ]
+end
+
 function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, ::Type{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
     force_scale = eltype(pressure)(symmetry_reduction_factor(symmetry_mode))
     impedance = Vector{Vector{Float32}}()
@@ -439,7 +558,7 @@ end
 
 function solve_request_impl(request)
     schema_version = Int(get_value(request, "schema_version", 1))
-    schema_version == 1 || error("Unsupported solve request schema_version $(schema_version).")
+    schema_version in (1, 2) || error("Unsupported solve request schema_version $(schema_version).")
 
     config = request["config"]
     symmetry_mode = symmetry_mode_from_config(config)
@@ -483,6 +602,8 @@ function solve_request_impl(request)
     rho = FloatType(get_value(config, "rho", 1.21))
     sound_speed = FloatType(get_value(config, "sound_speed", 343.0))
     flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
+    flat_target_reference_angle_deg = FloatType(get_value(config, "flat_target_reference_angle_deg", 0.0))
+    channel_names = sort(unique([String(get_value(radiator, "channel", "main")) for radiator in radiators]))
     cuda_regular_assembly_mode = Symbol(String(get_value(config, "julia_cuda_regular_assembly_mode", "split_atomic")))
     singular_cache = build_singular_correction_cache(mesh, singular_order)
     emit_event("status"; message="Julia solver using CUDA assembly ($(cuda_regular_assembly_mode)), GPU dense solve, and GPU field evaluation")
@@ -520,69 +641,45 @@ function solve_request_impl(request)
             )
         end
 
-        channel_corrections = Dict{String,FloatType}()
         t_solve = 0.0
         t_field = 0.0
-        if flat_target
-            for channel_name in unique([String(get_value(radiator, "channel", "main")) for radiator in radiators])
-                unit_drives = Complex{FloatType}[
-                    String(get_value(radiator, "channel", "main")) == channel_name ?
-                    Complex{FloatType}(FloatType(10.0) ^ (FloatType(radiator["velocity_offset_db"]) / FloatType(20.0)), 0) :
-                    Complex{FloatType}(0, 0)
-                    for radiator in radiators
-                ]
-                pressure = nothing
-                q_neumann = nothing
-                t_solve += @elapsed begin
-                    pressure, q_neumann = pressure_for_drives(
-                        mesh,
-                        element_mesh_ids,
-                        operators,
-                        identity_p1_p1,
-                        identity_p1_dp0,
-                        radiators,
-                        unit_drives,
-                        rho,
-                        omega,
-                        k,
-                    )
-                end
-                t_field += @elapsed begin
-                    on_axis_pressure = field_for_points(
-                        [horizontal_points[on_axis_idx]],
-                        mesh,
-                        pressure,
-                        q_neumann,
-                        k,
-                        field_cache,
-                    )[1]
-                    magnitude = abs(on_axis_pressure)
-                    channel_corrections[channel_name] = magnitude <= FloatType(1e-12) ? FloatType(1.0) : FloatType(1.0) / magnitude
-                end
+        channel_boundary_pressures = Vector{Vector{Complex{FloatType}}}()
+        horizontal_pressure_rows = Vector{Vector{Complex{FloatType}}}()
+        vertical_pressure_rows = Vector{Vector{Complex{FloatType}}}()
+        sphere_pressure_rows = sphere === nothing ? nothing : Vector{Vector{Complex{FloatType}}}()
+
+        combined_points = sphere === nothing ? vcat(horizontal_points, vertical_points) : vcat(horizontal_points, vertical_points, sphere.points)
+        horizontal_count = length(horizontal_points)
+        vertical_count = length(vertical_points)
+
+        for channel_name in channel_names
+            unit_drives = channel_unit_drives(radiators, channel_name, FloatType)
+            pressure = nothing
+            q_neumann = nothing
+            t_solve += @elapsed begin
+                pressure, q_neumann = pressure_for_drives(
+                    mesh,
+                    element_mesh_ids,
+                    operators,
+                    identity_p1_p1,
+                    identity_p1_dp0,
+                    radiators,
+                    unit_drives,
+                    rho,
+                    omega,
+                    k,
+                )
             end
-        end
-
-        drives = Complex{FloatType}[
-            drive_for_radiator(radiator, channels, freq) *
-            get(channel_corrections, String(get_value(radiator, "channel", "main")), FloatType(1.0))
-            for radiator in radiators
-        ]
-
-        pressure = nothing
-        q_neumann = nothing
-        t_solve += @elapsed begin
-            pressure, q_neumann = pressure_for_drives(
-                mesh,
-                element_mesh_ids,
-                operators,
-                identity_p1_p1,
-                identity_p1_dp0,
-                radiators,
-                drives,
-                rho,
-                omega,
-                k,
-            )
+            t_field += @elapsed begin
+                combined_pressure = field_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache)
+                push!(horizontal_pressure_rows, Complex{FloatType}.(combined_pressure[1:horizontal_count]))
+                push!(vertical_pressure_rows, Complex{FloatType}.(combined_pressure[(horizontal_count + 1):(horizontal_count + vertical_count)]))
+                if sphere !== nothing
+                    sphere_start = horizontal_count + vertical_count + 1
+                    push!(sphere_pressure_rows, Complex{FloatType}.(combined_pressure[sphere_start:end]))
+                end
+                push!(channel_boundary_pressures, Complex{FloatType}.(pressure))
+            end
         end
 
         horizontal_spl = Float32[]
@@ -591,22 +688,32 @@ function solve_request_impl(request)
         vertical_norm = Float32[]
         impedance = Vector{Vector{Float32}}()
         sphere_norm = nothing
+        synthesis = nothing
+        drives = Complex{FloatType}[]
+        mixed_boundary_pressure = zeros(Complex{FloatType}, length(mesh.vertices))
         t_field += @elapsed begin
-            combined_points = sphere === nothing ? vcat(horizontal_points, vertical_points) : vcat(horizontal_points, vertical_points, sphere.points)
-            combined_spl = spl_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, FloatType)
-            horizontal_count = length(horizontal_points)
-            vertical_count = length(vertical_points)
-            horizontal_spl = combined_spl[1:horizontal_count]
-            vertical_spl = combined_spl[(horizontal_count + 1):(horizontal_count + vertical_count)]
-            reference = horizontal_spl[on_axis_idx]
-            horizontal_norm = Float32.(horizontal_spl .- reference)
-            vertical_norm = Float32.(vertical_spl .- reference)
-            impedance = impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, drives, FloatType; symmetry_mode=Symbol(symmetry_mode))
-            if sphere !== nothing
-                sphere_start = horizontal_count + vertical_count + 1
-                sphere_spl = combined_spl[sphere_start:end]
-                sphere_norm = Float32.(sphere_spl .- reference)
+            synthesis = synthesize_channel_basis(
+                channel_names,
+                horizontal_pressure_rows,
+                vertical_pressure_rows,
+                sphere_pressure_rows,
+                channels,
+                freq,
+                polar_angles_deg,
+                flat_target_reference_angle_deg,
+                flat_target,
+                FloatType,
+            )
+            horizontal_spl = synthesis.horizontal_spl
+            vertical_spl = synthesis.vertical_spl
+            horizontal_norm = synthesis.horizontal_norm
+            vertical_norm = synthesis.vertical_norm
+            sphere_norm = synthesis.sphere_norm
+            drives = radiator_drives_from_channel_basis(radiators, channels, freq, synthesis.corrections, FloatType)
+            for channel_index in eachindex(channel_names)
+                mixed_boundary_pressure .+= channel_boundary_pressures[channel_index] .* synthesis.weights[channel_index]
             end
+            impedance = impedance_for_radiators(mesh, element_mesh_ids, mixed_boundary_pressure, radiators, drives, FloatType; symmetry_mode=Symbol(symmetry_mode))
         end
 
         release_operator_storage!(operators)
@@ -622,6 +729,10 @@ function solve_request_impl(request)
                 "horizontal_spl_db" => horizontal_spl,
                 "vertical_spl_db" => vertical_spl,
                 "sphere_spl_norm_db" => sphere_norm,
+                "channel_names" => channel_names,
+                "horizontal_pressure" => complex_rows_to_wire(horizontal_pressure_rows),
+                "vertical_pressure" => complex_rows_to_wire(vertical_pressure_rows),
+                "sphere_pressure" => sphere_pressure_rows === nothing ? nothing : complex_rows_to_wire(sphere_pressure_rows),
                 "timings" => Dict(
                     "assembly_s" => Float32(t_assembly),
                     "solve_s" => Float32(t_solve),

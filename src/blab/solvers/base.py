@@ -32,8 +32,20 @@ class FrequencyResult:
     horizontal_spl_db: np.ndarray | None = None
     vertical_spl_db: np.ndarray | None = None
     sphere_spl_norm_db: np.ndarray | None = None
+    channel_names: np.ndarray | None = None
+    horizontal_pressure: np.ndarray | None = None
+    vertical_pressure: np.ndarray | None = None
+    sphere_pressure: np.ndarray | None = None
     timings: FrequencySolveTimings = field(default_factory=FrequencySolveTimings)
     diagnostics: SolverDiagnostics | None = None
+
+    @property
+    def has_channel_basis(self) -> bool:
+        return (
+            self.channel_names is not None
+            and self.horizontal_pressure is not None
+            and self.vertical_pressure is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,7 @@ class SolverCapabilities:
     supports_impedance: bool = True
     supports_burton_miller: bool = True
     supports_flat_target_normalization: bool = True
+    supports_channel_resynthesis: bool = False
     supports_cancellation: bool = True
     supports_streaming: bool = True
     supports_remote_assets: bool = False

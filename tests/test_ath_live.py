@@ -27,6 +27,7 @@ from blab.live import (
 )
 from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
 from blab.balloon_export import export_touchdesigner_balloon_data
+from blab.config import ChannelConfig
 from blab.mesh_clean import triangle_quality_warning
 from blab.postprocess import PrepConfig
 
@@ -404,6 +405,76 @@ def test_live_dataset_builds_visualization_dataset_from_results() -> None:
     assert prepared["impedance_real"].tolist() == [[0.5, 1.0]]
 
 
+def test_live_dataset_resynthesizes_channel_basis_after_gain_change() -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["lf", "hf"]),
+        channel_configs=(ChannelConfig(name="LF"), ChannelConfig(name="HF")),
+        flat_target_normalization_enabled=False,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2], [2.0, 0.4]], dtype=np.float32),
+            channel_names=np.array(["LF", "HF"]),
+            horizontal_pressure=np.array(
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                dtype=np.complex64,
+            ),
+            vertical_pressure=np.array(
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                dtype=np.complex64,
+            ),
+        )
+    )
+
+    _, _, raw_before, _ = dataset.as_raw_polar_arrays()
+    dataset.set_channel_synthesis((ChannelConfig(name="LF"), ChannelConfig(name="HF", level_db=-6.0)))
+    _, _, raw_after, _ = dataset.as_raw_polar_arrays()
+
+    assert dataset.supports_channel_resynthesis
+    assert raw_after[0, 1] < raw_before[0, 1]
+    assert dataset.solved_count == 1
+
+
+def test_live_dataset_exposes_channel_on_axis_curves() -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["lf", "hf"]),
+        channel_configs=(ChannelConfig(name="LF"), ChannelConfig(name="HF", level_db=-6.0)),
+        flat_target_normalization_enabled=False,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2], [2.0, 0.4]], dtype=np.float32),
+            channel_names=np.array(["LF", "HF"]),
+            horizontal_pressure=np.array(
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                dtype=np.complex64,
+            ),
+            vertical_pressure=np.array(
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                dtype=np.complex64,
+            ),
+        )
+    )
+
+    prepared = dataset.as_visualization_dataset(
+        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
+    )
+
+    assert prepared["channel_on_axis_names"].tolist() == ["LF", "HF"]
+    assert prepared["channel_on_axis_spl_db"].shape == (2, 1)
+    assert prepared["channel_on_axis_spl_db"][1, 0] < prepared["channel_on_axis_spl_db"][0, 0]
+
+
 def test_live_dataset_builds_balloon_bundle_from_sphere_results() -> None:
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
     theta = np.linspace(0.1, np.pi - 0.1, 8, dtype=np.float32)
@@ -587,7 +658,7 @@ def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path)
         )
     )
 
-    written = export_polar_text_files(dataset, tmp_path)
+    written = export_polar_text_files(dataset, tmp_path, include_phase=False)
 
     assert len(written) == 6
     assert (tmp_path / "H 0.txt").read_text(encoding="utf-8").splitlines() == [
@@ -597,4 +668,38 @@ def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path)
     assert (tmp_path / "V 10.5.txt").read_text(encoding="utf-8").splitlines() == [
         "200.000000\t-3.500",
         "1000.000000\t-4.500",
+    ]
+
+
+def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["throat"]),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2]], dtype=np.float32),
+            channel_names=np.array(["main"]),
+            horizontal_pressure=np.array([[1.0 + 0.0j, 1.0 + 0.0j, 0.0 + 1.0j]], dtype=np.complex64),
+            vertical_pressure=np.array([[1.0 + 0.0j, 1.0 + 0.0j, 0.0 - 1.0j]], dtype=np.complex64),
+        )
+    )
+
+    written = export_polar_text_files(dataset, tmp_path)
+
+    assert len(written) == 6
+    assert (tmp_path / "H 0.txt").read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t0.000\t0.000",
+    ]
+    assert (tmp_path / "H 90.txt").read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t0.000\t90.000",
+    ]
+    assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t0.000\t-90.000",
     ]

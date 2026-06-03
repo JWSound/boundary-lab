@@ -9,7 +9,14 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from blab.config import SimulationConfig
+from blab.channel_synthesis import (
+    channel_drive,
+    complex_reference_pressure,
+    flat_target_corrections,
+    pressure_to_spl,
+    synthesize_channel_basis_spl,
+)
+from blab.config import ChannelConfig, SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solvers.base import FrequencyResult, SolveRequest
 
@@ -18,6 +25,9 @@ from blab.solvers.base import FrequencyResult, SolveRequest
 class LiveSolveDataset:
     polar_angle_deg: np.ndarray
     radiator_names: np.ndarray = field(default_factory=lambda: np.asarray(["Radiator"]))
+    channel_configs: tuple[ChannelConfig, ...] = ()
+    flat_target_normalization_enabled: bool = True
+    flat_target_reference_angle_deg: float = 0.0
     sphere_r_distance_m: np.ndarray | None = None
     sphere_theta_polar_rad: np.ndarray | None = None
     sphere_phi_azimuth_rad: np.ndarray | None = None
@@ -25,6 +35,16 @@ class LiveSolveDataset:
 
     def add(self, result: FrequencyResult) -> None:
         self.results[float(result.freq_hz)] = result
+
+    def set_channel_synthesis(
+        self,
+        channels: tuple[ChannelConfig, ...],
+        *,
+        flat_target_reference_angle_deg: float | None = None,
+    ) -> None:
+        self.channel_configs = tuple(channels)
+        if flat_target_reference_angle_deg is not None:
+            self.flat_target_reference_angle_deg = float(flat_target_reference_angle_deg)
 
     def ordered_results(self) -> list[FrequencyResult]:
         return [self.results[key] for key in sorted(self.results)]
@@ -37,14 +57,18 @@ class LiveSolveDataset:
     def solved_frequencies(self) -> np.ndarray:
         return np.asarray([result.freq_hz for result in self.ordered_results()], dtype=np.float32)
 
+    @property
+    def supports_channel_resynthesis(self) -> bool:
+        return bool(self.results) and all(result.has_channel_basis for result in self.results.values())
+
     def as_polar_export_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not self.results:
             raise ValueError("No solved polar data available.")
 
         ordered = self.ordered_results()
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        horizontal = np.vstack([item.horizontal_spl_norm_db for item in ordered]).astype(np.float32, copy=False)
-        vertical = np.vstack([item.vertical_spl_norm_db for item in ordered]).astype(np.float32, copy=False)
+        horizontal = np.vstack([self._synthesized_arrays(item)[0] for item in ordered]).astype(np.float32, copy=False)
+        vertical = np.vstack([self._synthesized_arrays(item)[1] for item in ordered]).astype(np.float32, copy=False)
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
 
     def as_raw_polar_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -53,22 +77,24 @@ class LiveSolveDataset:
 
         ordered = self.ordered_results()
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
+        horizontal = np.vstack([self._synthesized_arrays(item)[2] for item in ordered]).astype(np.float32, copy=False)
+        vertical = np.vstack([self._synthesized_arrays(item)[3] for item in ordered]).astype(np.float32, copy=False)
+        return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
+
+    def as_complex_polar_export_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if not self.results:
+            raise ValueError("No solved polar data available.")
+        if not self.supports_channel_resynthesis:
+            raise ValueError("Phase export requires channel-basis pressure data.")
+
+        ordered = self.ordered_results()
+        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
         horizontal = np.vstack(
-            [
-                item.horizontal_spl_db
-                if item.horizontal_spl_db is not None
-                else item.horizontal_spl_norm_db
-                for item in ordered
-            ]
-        ).astype(np.float32, copy=False)
+            [self._synthesized_complex_pressures(item)[0] for item in ordered]
+        ).astype(np.complex64, copy=False)
         vertical = np.vstack(
-            [
-                item.vertical_spl_db
-                if item.vertical_spl_db is not None
-                else item.vertical_spl_norm_db
-                for item in ordered
-            ]
-        ).astype(np.float32, copy=False)
+            [self._synthesized_complex_pressures(item)[1] for item in ordered]
+        ).astype(np.complex64, copy=False)
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
 
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
@@ -76,6 +102,10 @@ class LiveSolveDataset:
             return None
 
         prep_cfg = cfg or PrepConfig()
+        self.set_channel_synthesis(
+            self.channel_configs,
+            flat_target_reference_angle_deg=prep_cfg.hor_ref_angle,
+        )
         freqs, angles, horizontal, vertical = self.as_polar_export_arrays()
         _, _, raw_horizontal, raw_vertical = self.as_raw_polar_arrays()
         ordered = self.ordered_results()
@@ -93,7 +123,7 @@ class LiveSolveDataset:
             impedance_real=impedance[:, :, 0],
             impedance_imag=impedance[:, :, 1],
             cfg=prep_cfg,
-        )
+        ) | self._channel_on_axis_dataset(freqs)
 
     def as_balloon_raw_bundle(self) -> dict[str, np.ndarray] | None:
         if (
@@ -106,7 +136,7 @@ class LiveSolveDataset:
 
         ordered = self.ordered_results()
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        if any(item.sphere_spl_norm_db is None for item in ordered):
+        if any(self._synthesized_sphere(item) is None for item in ordered):
             return None
 
         return {
@@ -114,24 +144,182 @@ class LiveSolveDataset:
             "r_distance_m": np.asarray(self.sphere_r_distance_m, dtype=np.float32),
             "theta_polar_rad": np.asarray(self.sphere_theta_polar_rad, dtype=np.float32),
             "phi_azimuth_rad": np.asarray(self.sphere_phi_azimuth_rad, dtype=np.float32),
-            "spl_norm": np.vstack([item.sphere_spl_norm_db for item in ordered]).astype(np.float32, copy=False),
+            "spl_norm": np.vstack([self._synthesized_sphere(item) for item in ordered]).astype(np.float32, copy=False),
+        }
+
+    def _synthesized_arrays(
+        self,
+        result: FrequencyResult,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        if result.has_channel_basis:
+            synthesized = synthesize_channel_basis_spl(
+                freq_hz=float(result.freq_hz),
+                polar_angle_deg=self.polar_angle_deg,
+                channel_names=result.channel_names,
+                horizontal_pressure=result.horizontal_pressure,
+                vertical_pressure=result.vertical_pressure,
+                sphere_pressure=result.sphere_pressure,
+                channel_configs=self.channel_configs,
+                flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
+                flat_target_enabled=self.flat_target_normalization_enabled,
+            )
+            return (
+                synthesized["horizontal_spl_norm_db"],
+                synthesized["vertical_spl_norm_db"],
+                synthesized["horizontal_spl_db"],
+                synthesized["vertical_spl_db"],
+            )
+
+        return (
+            result.horizontal_spl_norm_db,
+            result.vertical_spl_norm_db,
+            result.horizontal_spl_db if result.horizontal_spl_db is not None else result.horizontal_spl_norm_db,
+            result.vertical_spl_db if result.vertical_spl_db is not None else result.vertical_spl_norm_db,
+        )
+
+    def _synthesized_complex_pressures(self, result: FrequencyResult) -> tuple[np.ndarray, np.ndarray]:
+        if (
+            result.channel_names is None
+            or result.horizontal_pressure is None
+            or result.vertical_pressure is None
+        ):
+            raise ValueError("Phase export requires channel-basis pressure data.")
+
+        weights = self._channel_basis_weights(result)
+        horizontal = np.sum(np.asarray(result.horizontal_pressure) * weights[:, np.newaxis], axis=0)
+        vertical = np.sum(np.asarray(result.vertical_pressure) * weights[:, np.newaxis], axis=0)
+        return (
+            horizontal.astype(np.complex64, copy=False),
+            vertical.astype(np.complex64, copy=False),
+        )
+
+    def _channel_basis_weights(self, result: FrequencyResult) -> np.ndarray:
+        if result.channel_names is None or result.horizontal_pressure is None:
+            raise ValueError("Channel-basis pressure data is unavailable.")
+
+        channel_configs_by_name = {channel.name: channel for channel in self.channel_configs}
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+        corrections = flat_target_corrections(
+            result.horizontal_pressure,
+            angles,
+            self.flat_target_reference_angle_deg,
+            enabled=self.flat_target_normalization_enabled,
+        )
+        return np.asarray(
+            [
+                channel_drive(
+                    channel_configs_by_name.get(str(channel_name), ChannelConfig(name=str(channel_name))),
+                    float(result.freq_hz),
+                )
+                * float(corrections[index])
+                for index, channel_name in enumerate(np.asarray(result.channel_names).tolist())
+            ],
+            dtype=np.complex64,
+        )
+
+    def _synthesized_sphere(self, result: FrequencyResult) -> np.ndarray | None:
+        if result.has_channel_basis and result.sphere_pressure is not None:
+            synthesized = synthesize_channel_basis_spl(
+                freq_hz=float(result.freq_hz),
+                polar_angle_deg=self.polar_angle_deg,
+                channel_names=result.channel_names,
+                horizontal_pressure=result.horizontal_pressure,
+                vertical_pressure=result.vertical_pressure,
+                sphere_pressure=result.sphere_pressure,
+                channel_configs=self.channel_configs,
+                flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
+                flat_target_enabled=self.flat_target_normalization_enabled,
+            )
+            return synthesized["sphere_spl_norm_db"]
+        return result.sphere_spl_norm_db
+
+    def _channel_on_axis_dataset(self, freqs: np.ndarray) -> dict[str, np.ndarray]:
+        if not self.supports_channel_resynthesis:
+            return {}
+
+        ordered = self.ordered_results()
+        first = ordered[0]
+        if first.channel_names is None:
+            return {}
+
+        channel_names = np.asarray(first.channel_names)
+        curves = np.empty((channel_names.size, len(ordered)), dtype=np.float32)
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+
+        for freq_index, result in enumerate(ordered):
+            if (
+                result.channel_names is None
+                or result.horizontal_pressure is None
+                or np.asarray(result.channel_names).size != channel_names.size
+            ):
+                return {}
+            weights = self._channel_basis_weights(result)
+            for channel_index, channel_name_raw in enumerate(np.asarray(result.channel_names).tolist()):
+                channel_name = str(channel_name_raw)
+                pressure = complex_reference_pressure(
+                    np.asarray(result.horizontal_pressure[channel_index]) * weights[channel_index],
+                    angles,
+                    0.0,
+                )
+                curves[channel_index, freq_index] = float(pressure_to_spl(np.asarray([pressure]))[0])
+
+        return {
+            "channel_on_axis_names": channel_names,
+            "channel_on_axis_spl_db": curves,
+            "channel_on_axis_freq_hz": freqs,
         }
 
 
-def export_polar_text_files(dataset: LiveSolveDataset, output_dir: str | Path) -> list[Path]:
+def export_polar_text_files(
+    dataset: LiveSolveDataset,
+    output_dir: str | Path,
+    *,
+    include_phase: bool = True,
+    relative_phase: bool = True,
+) -> list[Path]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
     freqs, angles, horizontal, vertical = dataset.as_polar_export_arrays()
+    horizontal_phase = None
+    vertical_phase = None
+    if include_phase:
+        _, _, horizontal_complex, vertical_complex = dataset.as_complex_polar_export_arrays()
+        reference_index = int(np.argmin(np.abs(angles)))
+        horizontal_phase = _polar_phase_deg(horizontal_complex, reference_index=reference_index, relative=relative_phase)
+        vertical_phase = _polar_phase_deg(vertical_complex, reference_index=reference_index, relative=relative_phase)
+
     written = []
-    for prefix, matrix in (("H", horizontal), ("V", vertical)):
+    for prefix, matrix, phase_matrix in (
+        ("H", horizontal, horizontal_phase),
+        ("V", vertical, vertical_phase),
+    ):
         for angle_index, angle in enumerate(angles):
             file_path = output_path / f"{prefix} {_format_angle_for_filename(float(angle))}.txt"
             with file_path.open("w", encoding="utf-8", newline="\n") as handle:
-                for freq, spl in zip(freqs, matrix[:, angle_index]):
-                    handle.write(f"{float(freq):.6f}\t{float(spl):.3f}\n")
+                if phase_matrix is None:
+                    for freq, spl in zip(freqs, matrix[:, angle_index]):
+                        handle.write(f"{float(freq):.6f}\t{float(spl):.3f}\n")
+                else:
+                    for freq, spl, phase in zip(freqs, matrix[:, angle_index], phase_matrix[:, angle_index]):
+                        handle.write(f"{float(freq):.6f}\t{float(spl):.3f}\t{float(phase):.3f}\n")
             written.append(file_path)
     return written
+
+
+def _polar_phase_deg(pressure: np.ndarray, *, reference_index: int, relative: bool) -> np.ndarray:
+    pressure = np.asarray(pressure, dtype=np.complex64)
+    if not relative:
+        return np.rad2deg(np.angle(pressure)).astype(np.float32, copy=False)
+
+    reference = pressure[:, int(reference_index)]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        relative_pressure = np.where(
+            np.abs(reference[:, np.newaxis]) > 1e-12,
+            pressure / reference[:, np.newaxis],
+            pressure,
+        )
+    return np.rad2deg(np.angle(relative_pressure)).astype(np.float32, copy=False)
 
 
 def _format_angle_for_filename(angle_deg: float) -> str:

@@ -186,6 +186,7 @@ class MainWindow(QMainWindow):
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
         self.balloon_window: QDialog | None = None
+        self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
@@ -1902,6 +1903,10 @@ class MainWindow(QMainWindow):
 
         output_dir = Path(dir_text)
         try:
+            self.live_dataset.set_channel_synthesis(
+                self._channel_configs(),
+                flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+            )
             written = export_polar_text_files(self.live_dataset, output_dir)
             self.status_label.setText(f"Exported {len(written)} polar files to {output_dir}")
         except Exception as exc:
@@ -1913,6 +1918,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No balloon data", "Run a solve before opening the balloon plot.")
             return
 
+        self.live_dataset.set_channel_synthesis(
+            self._channel_configs(),
+            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+        )
         raw_balloon = self.live_dataset.as_balloon_raw_bundle()
         if raw_balloon is None:
             QMessageBox.warning(
@@ -2001,11 +2010,48 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_channel_config(self) -> None:
-        dialog = ChannelConfigDialog(self._channel_configs(), self)
-        if dialog.exec() != QDialog.Accepted:
+        if self.channel_config_dialog is not None:
+            self.channel_config_dialog.show()
+            self.channel_config_dialog.raise_()
+            self.channel_config_dialog.activateWindow()
             return
 
-        channels = dialog.channels()
+        dialog = ChannelConfigDialog(self._channel_configs(), self)
+        self.channel_config_dialog = dialog
+        dialog.channelsChanged.connect(self._preview_channel_config)
+        dialog.channelsApplied.connect(self._apply_channel_config)
+        dialog.destroyed.connect(lambda *_args: setattr(self, "channel_config_dialog", None))
+        dialog.show()
+        dialog.raise_()
+
+    @Slot(object)
+    def _preview_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
+        if self.live_dataset is None or not self.live_dataset.supports_channel_resynthesis:
+            return
+        solved_channel_names = {
+            str(name)
+            for result in self.live_dataset.results.values()
+            if result.channel_names is not None
+            for name in result.channel_names
+        }
+        configured_names = {channel.name for channel in channels}
+        if not solved_channel_names.issubset(configured_names):
+            return
+        self.live_dataset.set_channel_synthesis(
+            tuple(channels),
+            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+        )
+        self._refresh_plots()
+        self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
+        self.status_label.setText("Channel edits previewed from solved data")
+
+    @Slot(object)
+    def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
+        channels = tuple(channels)
+        previous_radiator_assignments = tuple(
+            (radiator.mesh, radiator.tag, radiator.channel)
+            for radiator in self._all_radiators()
+        )
         self._save_channel_config(channels)
         valid_names = {channel.name for channel in channels}
         fallback = channels[0].name
@@ -2021,9 +2067,27 @@ class MainWindow(QMainWindow):
             self._save_source_config(self._surface_tags_for_meshes(), self._all_radiators())
         except Exception:
             pass
+        current_radiator_assignments = tuple(
+            (radiator.mesh, radiator.tag, radiator.channel)
+            for radiator in self._all_radiators()
+        )
+        radiator_assignments_changed = current_radiator_assignments != previous_radiator_assignments
         self.source_config_changed.emit("channel_config_changed")
-        self.solve_results_invalidated.emit("channel_config_changed")
-        self.status_label.setText(f"Channel config updated: {len(channels)} channels")
+        if (
+            not radiator_assignments_changed
+            and self.live_dataset is not None
+            and self.live_dataset.supports_channel_resynthesis
+        ):
+            self.live_dataset.set_channel_synthesis(
+                channels,
+                flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+            )
+            self._refresh_plots()
+            self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
+            self.status_label.setText(f"Channel config updated: {len(channels)} channels; plots resynthesized")
+        else:
+            self.solve_results_invalidated.emit("channel_config_changed")
+            self.status_label.setText(f"Channel config updated: {len(channels)} channels")
 
     @Slot()
     def open_source_config(self) -> None:
@@ -2119,6 +2183,7 @@ class MainWindow(QMainWindow):
         freqs = build_log_frequencies(freq_min, freq_max, freq_count)
         ordered_freqs = order_frequencies_for_live_plotting(freqs)
 
+        channels = self._channel_configs()
         config = SimulationConfig(
             mesh_file=mesh_configs[0].file if mesh_configs else "",
             freq_min=freq_min,
@@ -2127,12 +2192,13 @@ class MainWindow(QMainWindow):
             tag_throat=radiators[0].tag,
             meshes=mesh_configs,
             radiators=radiators,
-            channels=self._channel_configs(),
+            channels=channels,
             distance=self.preferences.polar_observation_distance_m,
             step_size=self.preferences.polar_angle_step_deg,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,
             workers=self.preferences.worker_count,
+            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
             symmetry=self.symmetry,
@@ -2193,6 +2259,8 @@ class MainWindow(QMainWindow):
         self.live_dataset = LiveSolveDataset(
             polar_angle_deg=np.asarray(angles, dtype=np.float32),
             radiator_names=np.asarray(radiator_names),
+            channel_configs=self._channel_configs(),
+            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
             sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),
@@ -2307,6 +2375,10 @@ class MainWindow(QMainWindow):
             angle_samples = live_plot_angle_samples(self.preferences.live_plot_quality)
         if freq_samples is None:
             freq_samples = live_plot_freq_samples(self.preferences.live_plot_quality)
+        self.live_dataset.set_channel_synthesis(
+            self._channel_configs(),
+            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+        )
         return self.live_dataset.as_visualization_dataset(
             PrepConfig(
                 angle_samples=angle_samples,
@@ -2375,6 +2447,8 @@ class MainWindow(QMainWindow):
             dataset["freq_hz"],
             dataset["polar_angle_deg"],
             dataset["horizontal_spl_db"],
+            dataset.get("channel_on_axis_names"),
+            dataset.get("channel_on_axis_spl_db"),
         )
 
     def _update_spinorama_plot(self, dataset: dict[str, np.ndarray]) -> None:

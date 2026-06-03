@@ -13,7 +13,7 @@ from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConf
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 def mesh_asset_references(config: SimulationConfig) -> list[str]:
@@ -176,6 +176,26 @@ def ndarray_from_wire(raw: Any) -> np.ndarray | None:
     return np.asarray(raw, dtype=np.float32)
 
 
+def complex_ndarray_to_wire(array: np.ndarray | None) -> dict[str, list] | None:
+    if array is None:
+        return None
+    values = np.asarray(array, dtype=np.complex64)
+    return {
+        "real": values.real.astype(np.float32, copy=False).tolist(),
+        "imag": values.imag.astype(np.float32, copy=False).tolist(),
+    }
+
+
+def complex_ndarray_from_wire(raw: Any) -> np.ndarray | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return np.asarray(raw, dtype=np.complex64)
+    real = np.asarray(raw.get("real"), dtype=np.float32)
+    imag = np.asarray(raw.get("imag"), dtype=np.float32)
+    return (real + 1j * imag).astype(np.complex64, copy=False)
+
+
 def frequency_result_to_dict(result: FrequencyResult) -> dict[str, Any]:
     return {
         "freq_hz": float(result.freq_hz),
@@ -185,6 +205,10 @@ def frequency_result_to_dict(result: FrequencyResult) -> dict[str, Any]:
         "horizontal_spl_db": ndarray_to_wire(result.horizontal_spl_db),
         "vertical_spl_db": ndarray_to_wire(result.vertical_spl_db),
         "sphere_spl_norm_db": ndarray_to_wire(result.sphere_spl_norm_db),
+        "channel_names": None if result.channel_names is None else [str(name) for name in result.channel_names],
+        "horizontal_pressure": complex_ndarray_to_wire(result.horizontal_pressure),
+        "vertical_pressure": complex_ndarray_to_wire(result.vertical_pressure),
+        "sphere_pressure": complex_ndarray_to_wire(result.sphere_pressure),
         "timings": frequency_solve_timings_to_dict(result.timings),
         "diagnostics": solver_diagnostics_to_dict(result.diagnostics),
     }
@@ -236,13 +260,21 @@ def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
         horizontal_spl_db=ndarray_from_wire(raw.get("horizontal_spl_db")),
         vertical_spl_db=ndarray_from_wire(raw.get("vertical_spl_db")),
         sphere_spl_norm_db=ndarray_from_wire(raw.get("sphere_spl_norm_db")),
+        channel_names=(
+            None
+            if raw.get("channel_names") is None
+            else np.asarray(raw.get("channel_names"))
+        ),
+        horizontal_pressure=complex_ndarray_from_wire(raw.get("horizontal_pressure")),
+        vertical_pressure=complex_ndarray_from_wire(raw.get("vertical_pressure")),
+        sphere_pressure=complex_ndarray_from_wire(raw.get("sphere_pressure")),
         timings=frequency_solve_timings_from_dict(raw.get("timings")),
         diagnostics=solver_diagnostics_from_dict(raw.get("diagnostics")),
     )
 
 
 def solve_request_to_config_and_frequencies(raw: dict[str, Any]) -> tuple[SimulationConfig, np.ndarray]:
-    if int(raw.get("schema_version", PROTOCOL_VERSION)) != PROTOCOL_VERSION:
+    if int(raw.get("schema_version", PROTOCOL_VERSION)) not in (1, PROTOCOL_VERSION):
         raise ValueError(f"Unsupported solve request schema_version {raw.get('schema_version')}.")
     if "config" not in raw:
         raise ValueError("Solve request must include config.")

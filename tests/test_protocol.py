@@ -82,6 +82,16 @@ def test_frequency_result_round_trips_through_wire_dict() -> None:
         horizontal_spl_db=np.array([82.0, 88.0, 85.0], dtype=np.float32),
         vertical_spl_db=np.array([80.0, 88.0, 84.0], dtype=np.float32),
         sphere_spl_norm_db=np.array([-12.0, -3.0], dtype=np.float32),
+        channel_names=np.array(["LF", "HF"]),
+        horizontal_pressure=np.array(
+            [[1.0 + 0.0j, 2.0 + 0.5j, 1.0 - 0.2j], [0.5 + 0.1j, 1.5 + 0.0j, 0.3 - 0.4j]],
+            dtype=np.complex64,
+        ),
+        vertical_pressure=np.array(
+            [[0.8 + 0.0j, 2.0 + 0.2j, 0.8 - 0.1j], [0.4 + 0.1j, 1.5 + 0.0j, 0.2 - 0.3j]],
+            dtype=np.complex64,
+        ),
+        sphere_pressure=np.array([[0.4 + 0.0j, 0.8 + 0.1j], [0.2 + 0.1j, 0.6 + 0.0j]], dtype=np.complex64),
         timings=FrequencySolveTimings(assembly_s=1.25, solve_s=2.5, field_s=0.75),
     )
 
@@ -91,6 +101,10 @@ def test_frequency_result_round_trips_through_wire_dict() -> None:
     assert np.allclose(restored.horizontal_spl_norm_db, result.horizontal_spl_norm_db)
     assert np.allclose(restored.impedance, result.impedance)
     assert np.allclose(restored.sphere_spl_norm_db, result.sphere_spl_norm_db)
+    assert restored.channel_names.tolist() == ["LF", "HF"]
+    assert np.allclose(restored.horizontal_pressure, result.horizontal_pressure)
+    assert np.allclose(restored.vertical_pressure, result.vertical_pressure)
+    assert np.allclose(restored.sphere_pressure, result.sphere_pressure)
     assert restored.timings == result.timings
 
 

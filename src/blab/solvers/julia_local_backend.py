@@ -373,6 +373,7 @@ class JuliaLocalBackend:
         supports_remote_assets=False,
         supports_parallel_workers=False,
         supports_symmetry=True,
+        supports_channel_resynthesis=True,
         is_remote=False,
     )
 

@@ -19,8 +19,12 @@ from typing import List, Sequence, Tuple
 import bempp_cl.api
 import meshio
 import numpy as np
-from scipy import signal
 import warnings
+from blab.channel_synthesis import (
+    channel_drive,
+    crossover_response,
+    synthesize_channel_basis_spl,
+)
 from blab.config import (
     ChannelConfig,
     CrossoverConfig,
@@ -242,6 +246,10 @@ class HornBEMSolver:
         )
 
         self.radiator_names = tuple(r.config.name for r in self.radiator_geometries)
+        self.channel_names = self._active_channel_names()
+
+    def _active_channel_names(self) -> tuple[str, ...]:
+        return tuple(sorted({radiator.config.channel for radiator in self.radiator_geometries}))
 
     def _resolved_mesh_configs(self) -> tuple[MeshConfig, ...]:
         if self.cfg.meshes:
@@ -491,38 +499,10 @@ class HornBEMSolver:
         return complex(level * radiator.polarity * delay * crossover)
 
     def _channel_drive(self, channel: ChannelConfig, freq: float) -> complex:
-        omega = 2.0 * np.pi * freq
-        level = 10.0 ** (channel.level_db / 20.0)
-        delay = np.exp(-1j * omega * (channel.delay_ms / 1000.0))
-        crossover = 1.0 + 0.0j
-        for crossover_config in (channel.hpf, channel.lpf):
-            if crossover_config.type.lower() != "none":
-                crossover *= HornBEMSolver._crossover_response(self, crossover_config, freq)
-        return complex(level * channel.polarity * delay * crossover)
+        return channel_drive(channel, freq)
 
     def _crossover_response(self, crossover: CrossoverConfig, freq: float) -> complex:
-        crossover_type = crossover.type.lower()
-        if crossover_type == "none":
-            return 1.0 + 0.0j
-
-        filter_name = crossover.filter.lower()
-        if filter_name == "linkwitz_riley":
-            section_order = crossover.order // 2
-            section = HornBEMSolver._butterworth_response(crossover_type, section_order, crossover.frequency_hz, freq)
-            return section * section
-
-        return HornBEMSolver._butterworth_response(crossover_type, crossover.order, crossover.frequency_hz, freq)
-
-    @staticmethod
-    def _butterworth_response(crossover_type: str, order: int, cutoff_hz: float, freq: float) -> complex:
-        b, a = signal.butter(
-            order,
-            2.0 * np.pi * cutoff_hz,
-            btype="lowpass" if crossover_type == "lowpass" else "highpass",
-            analog=True,
-        )
-        _, h = signal.freqs(b, a, worN=[2.0 * np.pi * freq])
-        return complex(h[0])
+        return crossover_response(crossover, freq)
 
     def _create_unit_velocity(self):
         # Create a normal velocity boundary condition with magnitude 1.0 on every radiator.
@@ -625,7 +605,7 @@ class HornBEMSolver:
         results_polar = []
         results_imp = []
         for i, freq in enumerate(frequencies):
-            res_h, res_v, res_z, raw_h, raw_v, sphere_spl = self._solve_single_frequency(freq)
+            res_h, res_v, res_z, raw_h, raw_v, sphere_spl, *_ = self._solve_single_frequency(freq)
             results_polar.append((freq, res_h, res_v, raw_h, raw_v, sphere_spl))
             results_imp.append(res_z)
             if show_progress:
@@ -646,6 +626,7 @@ class HornBEMSolver:
             raw_horizontal_spl,
             raw_vertical_spl,
             sphere_spl,
+            *_channel_basis,
         ), _timings = self._solve_single_frequency_with_timings(
             float(frequency_hz)
         )
@@ -685,7 +666,19 @@ class HornBEMSolver:
         self,
         frequency_hz: float,
     ) -> tuple[
-        tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None],
+        tuple[
+            float,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray | None,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray | None,
+        ],
         FrequencySolveTimings,
     ]:
         """Solve one frequency and return per-stage timings for live status updates."""
@@ -699,6 +692,10 @@ class HornBEMSolver:
                 result[3],
                 result[4],
                 result[5],
+                result[6],
+                result[7],
+                result[8],
+                result[9],
             ),
             timings,
         )
@@ -751,42 +748,141 @@ class HornBEMSolver:
         self._ensure_frequency_operator_assembly(operators)
         assembly_s = time.perf_counter() - assembly_start
 
-        channel_corrections, solve_s, field_s = self._channel_flat_target_corrections(
-            freq,
-            k,
-            omega,
-            operators,
-        )
-        velocity_fun, radiator_drives = self._create_velocity_with_channel_corrections(freq, channel_corrections)
-        neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
-
-        solve_start = time.perf_counter()
-        dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
-        solve_s += time.perf_counter() - solve_start
+        (
+            channel_names,
+            horizontal_pressure,
+            vertical_pressure,
+            sphere_pressure,
+            boundary_pressure_coefficients,
+            solve_s,
+            field_s,
+        ) = self._solve_channel_basis(freq, k, omega, operators)
 
         field_start = time.perf_counter()
-        z_data = self._calculate_impedance(dirichlet_fun, radiator_drives)
-        horizontal_spl = self._evaluate_field(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun, omega)
-        vertical_spl = self._evaluate_field(self.vertical_eval_points, k, dirichlet_fun, neumann_fun, omega)
-        horizontal_spl_norm, vertical_spl_norm = self._normalize_polar_to_on_axis(horizontal_spl, vertical_spl)
-        sphere_spl_norm = None
-        if self.spherical_sampling_enabled:
-            sphere_spl = self._evaluate_field(self.sphere_eval_points, k, dirichlet_fun, neumann_fun, omega)
-            sphere_spl_norm = sphere_spl - horizontal_spl[self.on_axis_idx]
+        synthesis = synthesize_channel_basis_spl(
+            freq_hz=freq,
+            polar_angle_deg=self.polar_angles_deg,
+            channel_names=channel_names,
+            horizontal_pressure=horizontal_pressure,
+            vertical_pressure=vertical_pressure,
+            sphere_pressure=sphere_pressure,
+            channel_configs=tuple(self.channel_configs.values()),
+            flat_target_reference_angle_deg=self.cfg.flat_target_reference_angle_deg,
+            flat_target_enabled=self.cfg.flat_target_normalization_enabled,
+        )
+        radiator_drives = self._radiator_drives_from_channel_basis(
+            freq,
+            channel_names,
+            synthesis["channel_corrections"],
+        )
+        mixed_boundary_coefficients = self._mix_boundary_pressure_coefficients(
+            freq,
+            channel_names,
+            synthesis["channel_corrections"],
+            boundary_pressure_coefficients,
+        )
+        z_data = self._calculate_impedance_from_pressure_coefficients(
+            mixed_boundary_coefficients,
+            radiator_drives,
+        )
         field_s += time.perf_counter() - field_start
 
         return (
-            horizontal_spl_norm,
-            vertical_spl_norm,
+            synthesis["horizontal_spl_norm_db"],
+            synthesis["vertical_spl_norm_db"],
             z_data,
-            horizontal_spl,
-            vertical_spl,
-            sphere_spl_norm,
+            synthesis["horizontal_spl_db"],
+            synthesis["vertical_spl_db"],
+            synthesis["sphere_spl_norm_db"],
+            channel_names,
+            horizontal_pressure,
+            vertical_pressure,
+            sphere_pressure,
         ), FrequencySolveTimings(
             assembly_s=assembly_s,
             solve_s=solve_s,
             field_s=field_s,
         )
+
+    def _solve_channel_basis(self, freq, k, omega, operators):
+        channel_names = np.asarray(self.channel_names)
+        horizontal_pressure = []
+        vertical_pressure = []
+        sphere_pressure = []
+        boundary_pressure_coefficients = []
+        solve_s = 0.0
+        field_s = 0.0
+
+        for channel_name in channel_names:
+            velocity_fun = self._create_channel_unit_velocity(str(channel_name))
+            neumann_fun = 1j * self.cfg.rho * omega * velocity_fun
+            solve_start = time.perf_counter()
+            dirichlet_fun = self._solve_boundary_pressure(operators, neumann_fun, freq)
+            solve_s += time.perf_counter() - solve_start
+
+            field_start = time.perf_counter()
+            horizontal_pressure.append(
+                self._evaluate_pressure(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun)
+            )
+            vertical_pressure.append(
+                self._evaluate_pressure(self.vertical_eval_points, k, dirichlet_fun, neumann_fun)
+            )
+            if self.spherical_sampling_enabled:
+                sphere_pressure.append(
+                    self._evaluate_pressure(self.sphere_eval_points, k, dirichlet_fun, neumann_fun)
+                )
+            boundary_pressure_coefficients.append(np.asarray(dirichlet_fun.coefficients, dtype=np.complex128))
+            field_s += time.perf_counter() - field_start
+
+        sphere_matrix = (
+            np.vstack(sphere_pressure).astype(np.complex64, copy=False)
+            if self.spherical_sampling_enabled
+            else None
+        )
+        return (
+            channel_names,
+            np.vstack(horizontal_pressure).astype(np.complex64, copy=False),
+            np.vstack(vertical_pressure).astype(np.complex64, copy=False),
+            sphere_matrix,
+            np.vstack(boundary_pressure_coefficients),
+            solve_s,
+            field_s,
+        )
+
+    def _radiator_drives_from_channel_basis(
+        self,
+        freq: float,
+        channel_names: np.ndarray,
+        channel_corrections: np.ndarray,
+    ) -> np.ndarray:
+        correction_by_channel = {
+            str(name): float(channel_corrections[index])
+            for index, name in enumerate(np.asarray(channel_names).tolist())
+        }
+        drives = np.empty(len(self.radiator_geometries), dtype=np.complex128)
+        for index, radiator in enumerate(self.radiator_geometries):
+            drive = self._radiator_drive(radiator.config, freq)
+            drive *= correction_by_channel.get(radiator.config.channel, 1.0)
+            drives[index] = drive
+        return drives
+
+    def _mix_boundary_pressure_coefficients(
+        self,
+        freq: float,
+        channel_names: np.ndarray,
+        channel_corrections: np.ndarray,
+        boundary_pressure_coefficients: np.ndarray,
+    ) -> np.ndarray:
+        channels_by_name = self.channel_configs
+        weights = np.asarray(
+            [
+                channel_drive(channels_by_name.get(str(name), ChannelConfig(name=str(name))), freq)
+                * float(channel_corrections[index])
+                for index, name in enumerate(np.asarray(channel_names).tolist())
+            ],
+            dtype=np.complex128,
+        )
+        return np.sum(boundary_pressure_coefficients * weights[:, np.newaxis], axis=0)
 
     def _assemble_frequency_operators(self, k: float) -> tuple:
         dlp = bempp_cl.api.operators.boundary.helmholtz.double_layer(
@@ -863,12 +959,19 @@ class HornBEMSolver:
         return corrections, solve_s, field_s
 
     def _calculate_impedance(self, dirichlet_fun, radiator_drives):
+        return self._calculate_impedance_from_pressure_coefficients(
+            dirichlet_fun.coefficients,
+            radiator_drives,
+        )
+
+    def _calculate_impedance_from_pressure_coefficients(self, pressure_coefficients, radiator_drives):
         z_data = np.empty((len(self.radiator_geometries), 2), dtype=np.float32)
+        pressure_coefficients = np.asarray(pressure_coefficients)
 
         for i, radiator in enumerate(self.radiator_geometries):
             # Pressure at local P1 dofs for each radiator element.
             # Do not index with raw mesh vertex ids: P1 global dof numbering may differ.
-            p_at_vertices = dirichlet_fun.coefficients[radiator.p1_dofs]
+            p_at_vertices = pressure_coefficients[radiator.p1_dofs]
             p_avg = np.mean(p_at_vertices, axis=1)
 
             # Force = Integral(p dS) ~ sum(p_avg * area).

@@ -83,6 +83,7 @@ class SimulationConfig:
     scale_factor: float = 0.001
     use_burton_miller: bool = True
     flat_target_normalization_enabled: bool = True
+    flat_target_reference_angle_deg: float = 0.0
     gmres_tolerance: float = 1e-3
     workers: int = 3
     spherical_sampling_enabled: bool = False

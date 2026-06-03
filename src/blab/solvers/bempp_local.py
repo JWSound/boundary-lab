@@ -45,6 +45,10 @@ class BemppLocalSession:
             raw_horizontal,
             raw_vertical,
             sphere_spl,
+            channel_names,
+            horizontal_pressure,
+            vertical_pressure,
+            sphere_pressure,
             timings,
         ) in self.solver.solve_frequencies_stream(
             self.request.frequencies_hz,
@@ -58,6 +62,10 @@ class BemppLocalSession:
                 horizontal_spl_db=raw_horizontal,
                 vertical_spl_db=raw_vertical,
                 sphere_spl_norm_db=sphere_spl,
+                channel_names=channel_names,
+                horizontal_pressure=horizontal_pressure,
+                vertical_pressure=vertical_pressure,
+                sphere_pressure=sphere_pressure,
                 timings=timings,
             )
 
@@ -71,6 +79,7 @@ class BemppLocalBackend:
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
         supports_parallel_workers=True,
+        supports_channel_resynthesis=True,
         is_remote=False,
     )
 

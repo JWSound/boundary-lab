@@ -276,6 +276,8 @@ class OnAxisResponseCanvas(FigureCanvas):
         freqs_hz: np.ndarray,
         angles_deg: np.ndarray,
         horizontal_spl_db: np.ndarray,
+        channel_names: np.ndarray | None = None,
+        channel_on_axis_spl_db: np.ndarray | None = None,
     ) -> None:
         clear_plot_axes(self.axes)
         self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
@@ -296,11 +298,31 @@ class OnAxisResponseCanvas(FigureCanvas):
                 ],
                 dtype=float,
             )
-            self.axes.plot(freqs_hz, on_axis, linewidth=1.8, color="#1f77b4")
+            self.axes.plot(freqs_hz, on_axis, linewidth=2.0, color="#1f77b4", label="Sum")
+            if channel_names is not None and channel_on_axis_spl_db is not None:
+                names = np.asarray(channel_names)
+                channel_curves = np.asarray(channel_on_axis_spl_db, dtype=float)
+                for index, name in enumerate(names):
+                    if index >= channel_curves.shape[0]:
+                        continue
+                    self.axes.plot(
+                        freqs_hz,
+                        channel_curves[index],
+                        linewidth=1.1,
+                        linestyle="--",
+                        alpha=0.85,
+                        label=str(name),
+                    )
             finite = on_axis[np.isfinite(on_axis)]
+            if channel_on_axis_spl_db is not None:
+                channel_finite = np.asarray(channel_on_axis_spl_db, dtype=float)
+                channel_finite = channel_finite[np.isfinite(channel_finite)]
+                if channel_finite.size:
+                    finite = np.concatenate([finite, channel_finite])
             if finite.size:
                 ymax = float(np.ceil(np.max(finite) / 5.0) * 5.0)
                 self.axes.set_ylim(ymax - ON_AXIS_DB_SPAN, ymax)
+            self.axes.legend(loc="best")
 
         apply_compact_plot_text(self.axes)
         self.draw_idle()

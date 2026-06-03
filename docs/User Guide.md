@@ -45,7 +45,7 @@ Displays the currently selected plots as configured from the `view` menu. Result
 - `Import .cfg`: imports only Ath config text into the editor.
 - `Export .cfg`: exports only the editor contents.
 - `Export Plot`: exports generated plot panels as PNG files.
-- `Export Polar Data`: exports solved horizontal and vertical polar text files.
+- `Export Polar Data`: exports solved horizontal and vertical polar text files. Channel-basis solves export frequency, normalized SPL, and relative phase.
 
 Project files do not store solved results or global preferences.
 

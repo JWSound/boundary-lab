@@ -49,4 +49,4 @@ Users can export any of the rendered plots as .png images.
 
 ## Exporting Polar Data
 
-Users can export simulated polar data as individual .txt files per angle sampled for horizontal and vertical axes. The .txt files can be directly imported into tools such as REW and VituixCAD for external analysis.
+Users can export simulated polar data as individual .txt files per angle sampled for horizontal and vertical axes. Channel-basis solves export three tab-separated columns: frequency in Hz, normalized SPL in dB, and relative phase in degrees. The .txt files can be directly imported into tools such as REW and VituixCAD for external analysis.
