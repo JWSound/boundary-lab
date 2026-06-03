@@ -21,13 +21,12 @@ from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
     build_log_frequencies,
-    export_polar_text_files,
     order_frequencies_for_live_plotting,
     split_frequency_order_for_workers,
 )
 from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
-from blab.balloon_export import export_touchdesigner_balloon_data
 from blab.config import ChannelConfig
+from blab.exporting import export_balloon_data, export_polar_text_files
 from blab.mesh_clean import triangle_quality_warning
 from blab.postprocess import PrepConfig
 
@@ -581,7 +580,7 @@ def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
     np.testing.assert_allclose(prepared["balloon_surface_spl"][0], expected, atol=1e-5)
 
 
-def test_export_touchdesigner_balloon_data_writes_fixed_topology_artifact(tmp_path: Path) -> None:
+def test_export_balloon_data_writes_fixed_topology_artifact(tmp_path: Path) -> None:
     theta, phi = np.meshgrid(
         np.linspace(0.0, np.pi, 5, dtype=np.float32),
         np.linspace(0.0, 2.0 * np.pi, 7, dtype=np.float32),
@@ -605,7 +604,7 @@ def test_export_touchdesigner_balloon_data_writes_fixed_topology_artifact(tmp_pa
         BalloonPrepConfig(theta_samples=5, phi_samples=7, min_db=-30.0, max_db=0.0),
     )
 
-    result = export_touchdesigner_balloon_data(prepared, tmp_path)
+    result = export_balloon_data(prepared, tmp_path)
 
     assert result.frequency_count == 2
     assert result.point_count == 35

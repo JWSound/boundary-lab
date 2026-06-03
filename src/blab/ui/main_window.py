@@ -50,11 +50,11 @@ from blab.ath import (
     write_ath_output_root,
 )
 from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.exporting import export_plot_png, export_polar_text_files
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
     build_log_frequencies,
-    export_polar_text_files,
     order_frequencies_for_live_plotting,
 )
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
@@ -1882,7 +1882,7 @@ class MainWindow(QMainWindow):
         try:
             entry.update(dataset)
             figure = getattr(entry.widget, "figure")
-            figure.savefig(output_path, dpi=VisualizerConfig.figure_dpi)
+            output_path = export_plot_png(figure, output_path, dpi=VisualizerConfig.figure_dpi)
             self.status_label.setText(f"Exported {entry.title} to {output_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Export plot failed", str(exc))

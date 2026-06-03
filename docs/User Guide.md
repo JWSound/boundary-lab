@@ -167,4 +167,4 @@ The viewer comprises:
 
 The balloon viewer uses the frequencies that completed before the solve ended.
 
-Use `File > Export Balloon Data` in the balloon plot window to export a TouchDesigner-friendly fixed-topology balloon dataset. The export folder contains metadata, shared surface topology, normalized SPL values, normalized radius values, and per-frequency XYZ positions for the balloon surface only. It does not include contour lines, guide axes, protractor geometry, or radar/isobar plots.
+Use `File > Export Balloon Data` in the balloon plot window to export a fixed-topology balloon dataset for external visualization tools. The export folder contains metadata, shared surface topology, normalized SPL values, normalized radius values, and per-frequency XYZ positions for the balloon surface only. It does not include contour lines, guide axes, protractor geometry, or radar/isobar plots.

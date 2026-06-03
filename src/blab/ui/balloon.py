@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
-from blab.balloon_export import export_touchdesigner_balloon_data
+from blab.exporting import export_balloon_data
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.plots import LIVE_ISOBAR_ANGLE_SAMPLES, LIVE_ISOBAR_FREQ_SAMPLES, IsobarCanvas
 
@@ -244,7 +244,7 @@ class BalloonPlotWindow(QDialog):
 
         try:
             prepared = self._prepared_balloon_data()
-            result = export_touchdesigner_balloon_data(prepared, output_text)
+            result = export_balloon_data(prepared, output_text)
             QMessageBox.information(
                 self,
                 "Balloon data exported",
