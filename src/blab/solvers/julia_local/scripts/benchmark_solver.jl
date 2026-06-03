@@ -20,7 +20,7 @@ end
 const GIT_COMMIT_CACHE = Ref{Any}(:unset)
 
 Base.@kwdef mutable struct BenchmarkConfig
-    mesh::String = joinpath(@__DIR__, "..", "test_meshes", "sample.msh")
+    mesh::String = joinpath(@__DIR__, "..", "test_meshes", "sample_detailed.msh")
     frequency::Float64 = 1000.0
     precision_name::String = "Float32"
     quadrature_order::Int = 4
@@ -69,7 +69,7 @@ function print_usage()
       --cpu-transfer-cuda-operators  Return CUDA assembled operators to CPU memory before GPU solving.
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
-      --regular-assembly-mode MODE   CUDA regular assembly mode: fused or split_atomic. Default: fused.
+      --regular-assembly-mode MODE   CUDA regular assembly mode: fused, split_atomic, or split_atomic_balanced. Default: fused.
       --verbose                      Print every timing bucket in the console summary.
       --help                         Print this message.
     """)
@@ -267,6 +267,8 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
         "regular_operator_probe_slp_adjoint_colored_kernel",
         "regular_operator_probe_split_slp_adjoint_atomic_kernel",
         "regular_operator_probe_split_dlp_hyp_atomic_kernel",
+        "regular_operator_probe_split_slp_hyp_atomic_kernel",
+        "regular_operator_probe_split_dlp_adjoint_atomic_kernel",
     ]
     regular_probe_total = sum(get(timings, key, 0.0) for key in regular_probe_keys)
     timings["regular_operator_profile_probe_total"] = regular_probe_total
@@ -525,6 +527,7 @@ function print_summary(payload)
         "regular_operator_kernel",
         "regular_operator_profile_probe_total",
         "regular_operator_probe_split_atomic_total",
+        "regular_operator_probe_split_balanced_atomic_total",
         "singular_corrections",
         "singular_correction_compute_scatter",
         "solve_total",

@@ -178,22 +178,29 @@ The fused kernel computes all regular operators in one pass:
 
 It then atomically scatters all real and imaginary element-block entries into dense operator buffers. This path remains available as `regular_assembly_mode=:fused` and is useful as a reference/fallback implementation.
 
-The default CUDA application path uses faster `regular_assembly_mode=:split_atomic`. This keeps the same one-block-per-element-pair parallel quadrature strategy and the same dense atomic accumulation model, but splits regular assembly into two kernels:
+The CUDA backend keeps a `regular_assembly_mode=:split_atomic` path available for comparison. This keeps the same one-block-per-element-pair parallel quadrature strategy and the same dense atomic accumulation model, but splits regular assembly into two kernels:
 
 - `_cuda_regular_quadrature_slp_adjoint_kernel!` computes single layer and adjoint double layer contributions;
 - `_cuda_regular_quadrature_dlp_hyp_kernel!` computes double layer and hypersingular contributions.
 
 The split atomic method intentionally recomputes the Green-function geometry in each split kernel, but it reduces the number of live accumulators and the dynamic shared-memory reduction width per launch. On moderate real-world meshes this has benchmarked faster than the fused all-operator kernel, because the fused kernel's 48 accumulator slots create enough register/shared-memory pressure to outweigh the extra launch and repeated math.
 
+The default CUDA application path uses `regular_assembly_mode=:split_atomic_balanced`, which uses the same two-launch atomic strategy with a different operator grouping:
+
+- `_cuda_regular_quadrature_slp_hyp_kernel!` computes single layer and hypersingular contributions;
+- `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double layer and adjoint double layer contributions.
+
+This changes the shared-memory reduction shape from the original split's 12-slot plus 36-slot launches to two 24-slot launches.
+
 The application default can be overridden in request config with:
 
 ```json
 {
-  "julia_cuda_regular_assembly_mode": "fused"
+  "julia_cuda_regular_assembly_mode": "split_atomic"
 }
 ```
 
-The benchmarking script exposes the same choice with `--regular-assembly-mode fused|split_atomic`.
+The benchmarking script exposes the same choice with `--regular-assembly-mode fused|split_atomic|split_atomic_balanced`.
 
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 

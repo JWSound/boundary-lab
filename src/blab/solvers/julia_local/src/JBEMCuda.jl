@@ -2601,6 +2601,75 @@ function _launch_regular_split_atomic_kernel!(
     return nothing
 end
 
+function _launch_regular_split_balanced_atomic_kernel!(
+    slp_re,
+    slp_im,
+    dlp_re,
+    dlp_im,
+    adj_re,
+    adj_im,
+    hyp_re,
+    hyp_im,
+    d_face_vertices,
+    d_normals,
+    d_areas,
+    d_faces,
+    d_curls,
+    d_test_indices,
+    d_trial_indices,
+    d_rule_points,
+    d_rule_weights,
+    k::T,
+    p1_dof_count::Int,
+    face_count::Int,
+    rule_count::Int,
+    total_pairs::Int,
+    threads::Int,
+) where {T<:AbstractFloat}
+    shmem = threads * 24 * sizeof(T)
+    CUDA.@cuda threads=threads blocks=total_pairs shmem=shmem _cuda_regular_quadrature_slp_hyp_kernel!(
+        slp_re,
+        slp_im,
+        hyp_re,
+        hyp_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_curls,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+    )
+
+    CUDA.@cuda threads=threads blocks=total_pairs shmem=shmem _cuda_regular_quadrature_dlp_adjoint_kernel!(
+        dlp_re,
+        dlp_im,
+        adj_re,
+        adj_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+    )
+    return nothing
+end
+
 function _launch_regular_symmetry_image_kernel!(
     slp_re,
     slp_im,
@@ -2693,8 +2762,8 @@ function assemble_regular_galerkin_operators_cuda_regular(
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
-    regular_assembly_mode in (:fused, :split_atomic) || error("Unknown regular CUDA assembly mode: $(regular_assembly_mode)")
-    regular_assembly_mode == :split_atomic && !parallel_quadrature && error("regular_assembly_mode=:split_atomic requires parallel_quadrature=true")
+    regular_assembly_mode in (:fused, :split_atomic, :split_atomic_balanced) || error("Unknown regular CUDA assembly mode: $(regular_assembly_mode)")
+    regular_assembly_mode in (:split_atomic, :split_atomic_balanced) && !parallel_quadrature && error("regular_assembly_mode=$(regular_assembly_mode) requires parallel_quadrature=true")
 
     indices = cache === nothing ? collect(element_indices) : cache.element_indices
     face_count = cache === nothing ? length(mesh.faces) : cache.face_count
@@ -2703,11 +2772,19 @@ function assemble_regular_galerkin_operators_cuda_regular(
     rule_count = cache === nothing ? length(rule.points) : cache.rule_count
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
-    kernel_mode = regular_assembly_mode == :split_atomic ? "split_atomic" : (parallel_quadrature ? "parallel_quadrature" : "serial_pair")
+    kernel_mode = if regular_assembly_mode in (:split_atomic, :split_atomic_balanced)
+        string(regular_assembly_mode)
+    elseif parallel_quadrature
+        "parallel_quadrature"
+    else
+        "serial_pair"
+    end
     kernel_threads = parallel_quadrature ? _regular_quadrature_threads(rule_count) : 128
     kernel_blocks = parallel_quadrature ? total_pairs : min(cld(total_pairs, kernel_threads), 65_535)
     kernel_shmem = if regular_assembly_mode == :split_atomic
         kernel_threads * 36 * sizeof(T)
+    elseif regular_assembly_mode == :split_atomic_balanced
+        kernel_threads * 24 * sizeof(T)
     elseif parallel_quadrature
         kernel_threads * 48 * sizeof(T)
     else
@@ -2854,6 +2931,32 @@ function assemble_regular_galerkin_operators_cuda_regular(
     _cuda_timed_stage!(timing, "regular_operator_kernel") do
         if regular_assembly_mode == :split_atomic
             _launch_regular_split_atomic_kernel!(
+                slp_re,
+                slp_im,
+                dlp_re,
+                dlp_im,
+                adj_re,
+                adj_im,
+                hyp_re,
+                hyp_im,
+                d_face_vertices,
+                d_normals,
+                d_areas,
+                d_faces,
+                d_curls,
+                d_test_indices,
+                d_trial_indices,
+                d_rule_points,
+                d_rule_weights,
+                k,
+                p1_dof_count,
+                face_count,
+                rule_count,
+                total_pairs,
+                kernel_threads,
+            )
+        elseif regular_assembly_mode == :split_atomic_balanced
+            _launch_regular_split_balanced_atomic_kernel!(
                 slp_re,
                 slp_im,
                 dlp_re,

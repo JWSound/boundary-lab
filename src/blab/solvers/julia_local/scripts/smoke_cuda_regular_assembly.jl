@@ -33,24 +33,28 @@ cpu = assemble_regular_galerkin_operators(
     element_indices=subset,
 )
 
-gpu = assemble_regular_galerkin_operators(
-    mesh,
-    p1,
-    dp0,
-    k,
-    rule;
-    skip_singular=false,
-    singular_order=2,
-    element_indices=subset,
-    use_cuda_regular=true,
-)
+for mode in (:fused, :split_atomic, :split_atomic_balanced)
+    gpu = assemble_regular_galerkin_operators(
+        mesh,
+        p1,
+        dp0,
+        k,
+        rule;
+        skip_singular=false,
+        singular_order=2,
+        element_indices=subset,
+        use_cuda_regular=true,
+        regular_assembly_mode=mode,
+    )
 
-println((
-    subset_faces=length(subset),
-    regular_pairs=(cpu.regular_pairs, gpu.regular_pairs),
-    singular_pairs=(cpu.singular_pairs, gpu.singular_pairs),
-    single_layer_error=norm(cpu.single_layer - gpu.single_layer),
-    double_layer_error=norm(cpu.double_layer - gpu.double_layer),
-    adjoint_double_layer_error=norm(cpu.adjoint_double_layer - gpu.adjoint_double_layer),
-    hypersingular_error=norm(cpu.hypersingular - gpu.hypersingular),
-))
+    println((
+        mode=mode,
+        subset_faces=length(subset),
+        regular_pairs=(cpu.regular_pairs, gpu.regular_pairs),
+        singular_pairs=(cpu.singular_pairs, gpu.singular_pairs),
+        single_layer_error=norm(cpu.single_layer - gpu.single_layer),
+        double_layer_error=norm(cpu.double_layer - gpu.double_layer),
+        adjoint_double_layer_error=norm(cpu.adjoint_double_layer - gpu.adjoint_double_layer),
+        hypersingular_error=norm(cpu.hypersingular - gpu.hypersingular),
+    ))
+end
