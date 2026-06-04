@@ -2527,80 +2527,6 @@ function _cuda_free_regular_real_buffers!(buffers)
     return nothing
 end
 
-function _launch_regular_split_atomic_kernel!(
-    slp_re,
-    slp_im,
-    dlp_re,
-    dlp_im,
-    adj_re,
-    adj_im,
-    hyp_re,
-    hyp_im,
-    d_face_vertices,
-    d_normals,
-    d_areas,
-    d_faces,
-    d_curls,
-    d_test_indices,
-    d_trial_indices,
-    d_rule_points,
-    d_rule_weights,
-    k::T,
-    p1_dof_count::Int,
-    face_count::Int,
-    rule_count::Int,
-    total_pairs::Int,
-    threads::Int,
-) where {T<:AbstractFloat}
-    slp_shmem = threads * 12 * sizeof(T)
-    CUDA.@cuda threads=threads blocks=total_pairs shmem=slp_shmem _cuda_regular_quadrature_slp_adjoint_kernel!(
-        slp_re,
-        slp_im,
-        adj_re,
-        adj_im,
-        d_face_vertices,
-        d_normals,
-        d_areas,
-        d_faces,
-        d_test_indices,
-        1,
-        length(d_test_indices),
-        d_trial_indices,
-        length(d_trial_indices),
-        d_rule_points,
-        d_rule_weights,
-        k,
-        p1_dof_count,
-        face_count,
-        rule_count,
-        total_pairs,
-        true,
-    )
-
-    dlp_shmem = threads * 36 * sizeof(T)
-    CUDA.@cuda threads=threads blocks=total_pairs shmem=dlp_shmem _cuda_regular_quadrature_dlp_hyp_kernel!(
-        dlp_re,
-        dlp_im,
-        hyp_re,
-        hyp_im,
-        d_face_vertices,
-        d_normals,
-        d_areas,
-        d_faces,
-        d_curls,
-        d_test_indices,
-        d_trial_indices,
-        d_rule_points,
-        d_rule_weights,
-        k,
-        p1_dof_count,
-        face_count,
-        rule_count,
-        total_pairs,
-    )
-    return nothing
-end
-
 function _launch_regular_split_balanced_atomic_kernel!(
     slp_re,
     slp_im,
@@ -2751,19 +2677,20 @@ function assemble_regular_galerkin_operators_cuda_regular(
     singular_order::Int=2,
     element_indices=eachindex(mesh.faces),
     cache=nothing,
-    return_gpu::Bool=false,
+    return_gpu::Bool=true,
     parallel_quadrature::Bool=true,
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
-    regular_assembly_mode::Symbol=:fused,
+    regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
-    regular_assembly_mode in (:fused, :split_atomic, :split_atomic_balanced) || error("Unknown regular CUDA assembly mode: $(regular_assembly_mode)")
-    regular_assembly_mode in (:split_atomic, :split_atomic_balanced) && !parallel_quadrature && error("regular_assembly_mode=$(regular_assembly_mode) requires parallel_quadrature=true")
+    regular_assembly_mode == :split_atomic_balanced || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
+    parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
+    return_gpu || error("Julia local solver is CUDA-only; CPU operator materialization has been removed.")
 
     indices = cache === nothing ? collect(element_indices) : cache.element_indices
     face_count = cache === nothing ? length(mesh.faces) : cache.face_count
@@ -2772,24 +2699,10 @@ function assemble_regular_galerkin_operators_cuda_regular(
     rule_count = cache === nothing ? length(rule.points) : cache.rule_count
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
-    kernel_mode = if regular_assembly_mode in (:split_atomic, :split_atomic_balanced)
-        string(regular_assembly_mode)
-    elseif parallel_quadrature
-        "parallel_quadrature"
-    else
-        "serial_pair"
-    end
-    kernel_threads = parallel_quadrature ? _regular_quadrature_threads(rule_count) : 128
-    kernel_blocks = parallel_quadrature ? total_pairs : min(cld(total_pairs, kernel_threads), 65_535)
-    kernel_shmem = if regular_assembly_mode == :split_atomic
-        kernel_threads * 36 * sizeof(T)
-    elseif regular_assembly_mode == :split_atomic_balanced
-        kernel_threads * 24 * sizeof(T)
-    elseif parallel_quadrature
-        kernel_threads * 48 * sizeof(T)
-    else
-        0
-    end
+    kernel_mode = "split_atomic_balanced"
+    kernel_threads = _regular_quadrature_threads(rule_count)
+    kernel_blocks = total_pairs
+    kernel_shmem = kernel_threads * 24 * sizeof(T)
     probe_pair_count = regular_probe_pair_limit <= 0 ? total_pairs : min(total_pairs, regular_probe_pair_limit)
 
     if cache === nothing
@@ -2842,7 +2755,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
         nothing
     end
 
-    if profile_regular_kernel && parallel_quadrature
+    if profile_regular_kernel
         _profile_regular_thread_sweep!(
             timing,
             T,
@@ -2929,118 +2842,31 @@ function assemble_regular_galerkin_operators_cuda_regular(
     end
 
     _cuda_timed_stage!(timing, "regular_operator_kernel") do
-        if regular_assembly_mode == :split_atomic
-            _launch_regular_split_atomic_kernel!(
-                slp_re,
-                slp_im,
-                dlp_re,
-                dlp_im,
-                adj_re,
-                adj_im,
-                hyp_re,
-                hyp_im,
-                d_face_vertices,
-                d_normals,
-                d_areas,
-                d_faces,
-                d_curls,
-                d_test_indices,
-                d_trial_indices,
-                d_rule_points,
-                d_rule_weights,
-                k,
-                p1_dof_count,
-                face_count,
-                rule_count,
-                total_pairs,
-                kernel_threads,
-            )
-        elseif regular_assembly_mode == :split_atomic_balanced
-            _launch_regular_split_balanced_atomic_kernel!(
-                slp_re,
-                slp_im,
-                dlp_re,
-                dlp_im,
-                adj_re,
-                adj_im,
-                hyp_re,
-                hyp_im,
-                d_face_vertices,
-                d_normals,
-                d_areas,
-                d_faces,
-                d_curls,
-                d_test_indices,
-                d_trial_indices,
-                d_rule_points,
-                d_rule_weights,
-                k,
-                p1_dof_count,
-                face_count,
-                rule_count,
-                total_pairs,
-                kernel_threads,
-            )
-        elseif parallel_quadrature
-            CUDA.@cuda threads=kernel_threads blocks=total_pairs shmem=kernel_shmem _cuda_regular_quadrature_kernel!(
-                slp_re,
-                slp_im,
-                dlp_re,
-                dlp_im,
-                adj_re,
-                adj_im,
-                hyp_re,
-                hyp_im,
-                d_face_vertices,
-                d_normals,
-                d_areas,
-                d_faces,
-                d_curls,
-                d_test_indices,
-                d_trial_indices,
-                d_rule_points,
-                d_rule_weights,
-                k,
-                p1_dof_count,
-                dp0_dof_count,
-                face_count,
-                rule_count,
-                total_pairs,
-            )
-        else
-            CUDA.@cuda threads=kernel_threads blocks=kernel_blocks _cuda_regular_kernel!(
-                slp_re,
-                slp_im,
-                dlp_re,
-                dlp_im,
-                adj_re,
-                adj_im,
-                hyp_re,
-                hyp_im,
-                d_face_vertices,
-                d_normals,
-                d_areas,
-                d_faces,
-                d_curls,
-                d_test_indices,
-                d_trial_indices,
-                d_rule_points,
-                d_rule_weights,
-                k,
-                p1_dof_count,
-                dp0_dof_count,
-                face_count,
-                rule_count,
-                total_pairs,
-                true,
-                one(T),
-                one(T),
-                one(T),
-                one(T),
-                one(T),
-                one(T),
-            )
-        end
+        _launch_regular_split_balanced_atomic_kernel!(
+            slp_re,
+            slp_im,
+            dlp_re,
+            dlp_im,
+            adj_re,
+            adj_im,
+            hyp_re,
+            hyp_im,
+            d_face_vertices,
+            d_normals,
+            d_areas,
+            d_faces,
+            d_curls,
+            d_test_indices,
+            d_trial_indices,
+            d_rule_points,
+            d_rule_weights,
+            k,
+            p1_dof_count,
+            face_count,
+            rule_count,
+            total_pairs,
+            kernel_threads,
+        )
         for transform in symmetry_images
             _launch_regular_symmetry_image_kernel!(
                 slp_re,
@@ -3085,67 +2911,39 @@ function assemble_regular_galerkin_operators_cuda_regular(
     regular_pairs = total_pairs - adjacent_pairs + length(symmetry_images) * total_pairs
 
     single_layer = double_layer = adjoint_double_layer = hypersingular = nothing
-    if return_gpu
-        _cuda_timed_stage!(timing, "regular_operator_complex_materialize") do
-            single_layer = _complex_gpu_matrix(slp_re, slp_im)
-            double_layer = _complex_gpu_matrix(dlp_re, dlp_im)
-            adjoint_double_layer = _complex_gpu_matrix(adj_re, adj_im)
-            hypersingular = _complex_gpu_matrix(hyp_re, hyp_im)
-            CUDA.synchronize()
-            nothing
-        end
-        timing !== nothing && (timing["regular_operator_cpu_transfer"] = 0.0)
-    else
-        timing !== nothing && (timing["regular_operator_complex_materialize"] = 0.0)
-        _cuda_timed_stage!(timing, "regular_operator_cpu_transfer") do
-            single_layer = _complex_cpu_matrix(slp_re, slp_im, T)
-            double_layer = _complex_cpu_matrix(dlp_re, dlp_im, T)
-            adjoint_double_layer = _complex_cpu_matrix(adj_re, adj_im, T)
-            hypersingular = _complex_cpu_matrix(hyp_re, hyp_im, T)
-            nothing
-        end
+    _cuda_timed_stage!(timing, "regular_operator_complex_materialize") do
+        single_layer = _complex_gpu_matrix(slp_re, slp_im)
+        double_layer = _complex_gpu_matrix(dlp_re, dlp_im)
+        adjoint_double_layer = _complex_gpu_matrix(adj_re, adj_im)
+        hypersingular = _complex_gpu_matrix(hyp_re, hyp_im)
+        CUDA.synchronize()
+        nothing
     end
+    timing !== nothing && (timing["regular_operator_cpu_transfer"] = 0.0)
 
     if skip_singular
         singular_pairs = 0
         skipped_pairs = adjacent_pairs
     else
-        if return_gpu
-            correction_cache === nothing && (correction_cache = build_singular_correction_cache(mesh, singular_order, indices))
-            singular_pairs = add_singular_corrections_cuda_compact!(
-                (
-                    single_layer=single_layer,
-                    double_layer=double_layer,
-                    adjoint_double_layer=adjoint_double_layer,
-                    hypersingular=hypersingular,
-                ),
-                mesh,
-                p1_space,
-                dp0_space,
-                k,
-                singular_order,
-                indices,
-                correction_cache,
-                cuda_singular_cache=cuda_singular_cache,
-                cuda_regular_cache=cache,
-                timing=timing,
-            )
-        else
-            correction_cache === nothing && (correction_cache = build_singular_correction_cache(mesh, singular_order, indices))
-            singular_pairs = assemble_singular_galerkin_corrections!(
-                single_layer,
-                double_layer,
-                adjoint_double_layer,
-                hypersingular,
-                mesh,
-                p1_space,
-                dp0_space,
-                k,
-                singular_order,
-                indices,
-                correction_cache,
-            )
-        end
+        correction_cache === nothing && (correction_cache = build_singular_correction_cache(mesh, singular_order, indices))
+        singular_pairs = add_singular_corrections_cuda_compact!(
+            (
+                single_layer=single_layer,
+                double_layer=double_layer,
+                adjoint_double_layer=adjoint_double_layer,
+                hypersingular=hypersingular,
+            ),
+            mesh,
+            p1_space,
+            dp0_space,
+            k,
+            singular_order,
+            indices,
+            correction_cache,
+            cuda_singular_cache=cuda_singular_cache,
+            cuda_regular_cache=cache,
+            timing=timing,
+        )
         skipped_pairs = 0
     end
 
@@ -3159,7 +2957,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
                     double_layer=double_layer,
                     adjoint_double_layer=adjoint_double_layer,
                     hypersingular=hypersingular,
-                    on_gpu=return_gpu,
+                    on_gpu=true,
                 ),
                 mesh,
                 p1_space,
@@ -3182,7 +2980,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
                 double_layer=double_layer,
                 adjoint_double_layer=adjoint_double_layer,
                 hypersingular=hypersingular,
-                on_gpu=return_gpu,
+                on_gpu=true,
             ),
             mesh,
             symmetry_mode,
@@ -3198,7 +2996,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
         singular_pairs=singular_pairs,
         skipped_pairs=skipped_pairs,
         image_singular_pairs=image_singular_pairs,
-        on_gpu=return_gpu,
+        on_gpu=true,
         regular_kernel_threads=kernel_threads,
         regular_kernel_blocks=kernel_blocks,
         regular_kernel_shared_memory_bytes=kernel_shmem,

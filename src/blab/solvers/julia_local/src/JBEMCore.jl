@@ -35,18 +35,14 @@ export BoundaryMesh,
     build_p1_space,
     duffy_rule,
     elements_are_adjacent,
-    evaluate_galerkin_field,
     evaluate_galerkin_field_cuda,
     fibonacci_sphere,
     helmholtz_adjoint_double_layer_kernel,
     helmholtz_double_layer_kernel,
-    helmholtz_hypersingular_element_matrix,
     helmholtz_single_layer_kernel,
     load_gmsh22_with_tags,
     mesh_for_frequency,
-    regular_galerkin_element_matrix,
     release_operator_storage!,
-    singular_galerkin_element_matrix,
     surface_curls,
     scatter_element_block!,
     solve_burton_miller_neumann,
@@ -55,7 +51,6 @@ export BoundaryMesh,
     reflect_point,
     reflect_vertices,
     p1_symmetry_orbit_weights,
-    assemble_symmetry_image_singular_correction_deltas!,
     symmetry_image_transforms,
     symmetry_reduction_factor,
     symmetry_transforms,
@@ -558,337 +553,6 @@ function helmholtz_adjoint_double_layer_kernel(x, y, test_normal, k::T) where {T
 end
 helmholtz_adjoint_double_layer_kernel(x, y, test_normal, trial_normal, k::T) where {T<:AbstractFloat} = helmholtz_adjoint_double_layer_kernel(x, y, test_normal, k)
 
-function regular_galerkin_element_matrix(test_vertices, trial_vertices, test_area, trial_area, test_normal, trial_normal, k::T, kernel, test_basis::Symbol, trial_basis::Symbol, rule::TriangleRule{T}) where {T}
-    test_dofs = test_basis == :p1 ? 3 : 1
-    trial_dofs = trial_basis == :p1 ? 3 : 1
-    block = zeros(Complex{T}, test_dofs, trial_dofs)
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-
-    for (test_point, test_weight) in zip(rule.points, rule.weights)
-        x = local_to_global(test_vertices, test_point)
-        test_vals = test_basis == :p1 ? p1_values(test_point) : SVector{1,T}(T(1.0))
-
-        for (trial_point, trial_weight) in zip(rule.points, rule.weights)
-            y = local_to_global(trial_vertices, trial_point)
-            trial_vals = trial_basis == :p1 ? p1_values(trial_point) : SVector{1,T}(T(1.0))
-            value = kernel(x, y, test_normal, trial_normal, k)
-            weight = test_weight * trial_weight * jac_scale
-
-            for i in 1:test_dofs
-                for j in 1:trial_dofs
-                    block[i, j] += test_vals[i] * trial_vals[j] * value * weight
-                end
-            end
-        end
-    end
-
-    return block
-end
-
-function helmholtz_hypersingular_element_matrix(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    k::T,
-    test_points,
-    trial_points,
-    weights,
-) where {T}
-    block = zeros(Complex{T}, 3, 3)
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-    test_curls = surface_curls(test_vertices, test_normal)
-    trial_curls = surface_curls(trial_vertices, trial_normal)
-    normal_product = dot(test_normal, trial_normal)
-
-    for q in eachindex(weights)
-        test_point = test_points[q]
-        trial_point = trial_points[q]
-        x = local_to_global(test_vertices, test_point)
-        y = local_to_global(trial_vertices, trial_point)
-        kernel_value = helmholtz_single_layer_kernel(x, y, k)
-        test_vals = p1_values(test_point)
-        trial_vals = p1_values(trial_point)
-        weight = weights[q] * jac_scale
-
-        for i in 1:3
-            for j in 1:3
-                block[i, j] += kernel_value * (
-                    dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * normal_product
-                ) * weight
-            end
-        end
-    end
-
-    return block
-end
-
-function regular_hypersingular_element_matrix(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    k::T,
-    rule::TriangleRule{T},
-) where {T}
-    block = zeros(Complex{T}, 3, 3)
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-    test_curls = surface_curls(test_vertices, test_normal)
-    trial_curls = surface_curls(trial_vertices, trial_normal)
-    normal_product = dot(test_normal, trial_normal)
-
-    for (test_point, test_weight) in zip(rule.points, rule.weights)
-        x = local_to_global(test_vertices, test_point)
-        test_vals = p1_values(test_point)
-
-        for (trial_point, trial_weight) in zip(rule.points, rule.weights)
-            y = local_to_global(trial_vertices, trial_point)
-            trial_vals = p1_values(trial_point)
-            kernel_value = helmholtz_single_layer_kernel(x, y, k)
-            weight = test_weight * trial_weight * jac_scale
-
-            for i in 1:3
-                for j in 1:3
-                    block[i, j] += kernel_value * (
-                        dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * normal_product
-                    ) * weight
-                end
-            end
-        end
-    end
-
-    return block
-end
-
-function regular_hypersingular_element_matrix_with_curls(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    test_curls,
-    trial_curls,
-    k::T,
-    rule::TriangleRule{T},
-) where {T}
-    block = zeros(Complex{T}, 3, 3)
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-    normal_product = dot(test_normal, trial_normal)
-
-    for (test_point, test_weight) in zip(rule.points, rule.weights)
-        x = local_to_global(test_vertices, test_point)
-        test_vals = p1_values(test_point)
-
-        for (trial_point, trial_weight) in zip(rule.points, rule.weights)
-            y = local_to_global(trial_vertices, trial_point)
-            trial_vals = p1_values(trial_point)
-            kernel_value = helmholtz_single_layer_kernel(x, y, k)
-            weight = test_weight * trial_weight * jac_scale
-
-            for i in 1:3
-                for j in 1:3
-                    block[i, j] += kernel_value * (
-                        dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * normal_product
-                    ) * weight
-                end
-            end
-        end
-    end
-
-    return block
-end
-
-function singular_galerkin_element_matrix(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    k::T,
-    kernel,
-    test_basis::Symbol,
-    trial_basis::Symbol,
-    rule::DuffyRule{T},
-    info,
-) where {T}
-    test_dofs = test_basis == :p1 ? 3 : 1
-    trial_dofs = trial_basis == :p1 ? 3 : 1
-    block = zeros(Complex{T}, test_dofs, trial_dofs)
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-
-    for q in eachindex(rule.weights)
-        test_point = remap_singular_point(rule.test_points[q], info.kind, info.test_vertices)
-        trial_point = remap_singular_point(rule.trial_points[q], info.kind, info.trial_vertices)
-        x = local_to_global(test_vertices, test_point)
-        y = local_to_global(trial_vertices, trial_point)
-        test_vals = test_basis == :p1 ? p1_values(test_point) : SVector{1,T}(T(1.0))
-        trial_vals = trial_basis == :p1 ? p1_values(trial_point) : SVector{1,T}(T(1.0))
-        value = kernel(x, y, test_normal, trial_normal, k)
-        weight = rule.weights[q] * jac_scale
-
-        for i in 1:test_dofs
-            for j in 1:trial_dofs
-                block[i, j] += test_vals[i] * trial_vals[j] * value * weight
-            end
-        end
-    end
-
-    return block
-end
-
-function singular_hypersingular_element_matrix(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    k::T,
-    rule::DuffyRule{T},
-    info,
-) where {T}
-    test_points = Vector{SVector{2,T}}(undef, length(rule.weights))
-    trial_points = Vector{SVector{2,T}}(undef, length(rule.weights))
-
-    for q in eachindex(rule.weights)
-        test_points[q] = remap_singular_point(rule.test_points[q], info.kind, info.test_vertices)
-        trial_points[q] = remap_singular_point(rule.trial_points[q], info.kind, info.trial_vertices)
-    end
-
-    return helmholtz_hypersingular_element_matrix(
-        test_vertices,
-        trial_vertices,
-        test_area,
-        trial_area,
-        test_normal,
-        trial_normal,
-        k,
-        test_points,
-        trial_points,
-        rule.weights,
-    )
-end
-
-function singular_galerkin_operator_blocks(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    k::T,
-    rule::DuffyRule{T},
-    info,
-) where {T}
-    ComplexType = Complex{T}
-    slp_block = zeros(MMatrix{3,1,ComplexType,3})
-    dlp_block = zeros(MMatrix{3,3,ComplexType,9})
-    adj_dlp_block = zeros(MMatrix{3,1,ComplexType,3})
-    hyp_block = zeros(MMatrix{3,3,ComplexType,9})
-    jac_scale = (T(2.0) * test_area) * (T(2.0) * trial_area)
-    test_curls = surface_curls(test_vertices, test_normal)
-    trial_curls = surface_curls(trial_vertices, trial_normal)
-    normal_product = dot(test_normal, trial_normal)
-
-    for q in eachindex(rule.weights)
-        test_point = remap_singular_point(rule.test_points[q], info.kind, info.test_vertices)
-        trial_point = remap_singular_point(rule.trial_points[q], info.kind, info.trial_vertices)
-        x = local_to_global(test_vertices, test_point)
-        y = local_to_global(trial_vertices, trial_point)
-        test_vals = p1_values(test_point)
-        trial_vals = p1_values(trial_point)
-        weight = rule.weights[q] * jac_scale
-        r_vec = y - x
-        radius = norm(r_vec)
-
-        if radius == zero(T)
-            single_value = zero(ComplexType)
-            double_value = zero(ComplexType)
-            adjoint_value = zero(ComplexType)
-        else
-            single_value = exp(ComplexType(1im) * k * radius) / (T(4.0) * T(pi) * radius)
-            gradient_factor = single_value * (ComplexType(1im) * k - T(1.0) / radius) * (r_vec / radius)
-            double_value = sum(gradient_factor .* trial_normal)
-            adjoint_value = sum((-gradient_factor) .* test_normal)
-        end
-
-        for i in 1:3
-            slp_block[i, 1] += test_vals[i] * single_value * weight
-            adj_dlp_block[i, 1] += test_vals[i] * adjoint_value * weight
-
-            for j in 1:3
-                dlp_block[i, j] += test_vals[i] * trial_vals[j] * double_value * weight
-                hyp_block[i, j] += single_value * (
-                    dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * normal_product
-                ) * weight
-            end
-        end
-    end
-
-    return slp_block, dlp_block, adj_dlp_block, hyp_block
-end
-
-function singular_galerkin_operator_blocks(
-    test_vertices,
-    trial_vertices,
-    test_normal,
-    trial_normal,
-    k::T,
-    rule::DuffyRule{T},
-    pair::SingularCorrectionPair{T},
-    test_curls,
-    trial_curls,
-) where {T}
-    ComplexType = Complex{T}
-    slp_block = zeros(MMatrix{3,1,ComplexType,3})
-    dlp_block = zeros(MMatrix{3,3,ComplexType,9})
-    adj_dlp_block = zeros(MMatrix{3,1,ComplexType,3})
-    hyp_block = zeros(MMatrix{3,3,ComplexType,9})
-
-    for q in eachindex(rule.weights)
-        test_point = rule.test_points[q]
-        trial_point = rule.trial_points[q]
-        x = local_to_global(test_vertices, test_point)
-        y = local_to_global(trial_vertices, trial_point)
-        test_vals = p1_values(test_point)
-        trial_vals = p1_values(trial_point)
-        weight = rule.weights[q] * pair.jac_scale
-        r_vec = y - x
-        radius = norm(r_vec)
-
-        if radius == zero(T)
-            single_value = zero(ComplexType)
-            double_value = zero(ComplexType)
-            adjoint_value = zero(ComplexType)
-        else
-            single_value = exp(ComplexType(1im) * k * radius) / (T(4.0) * T(pi) * radius)
-            gradient_factor = single_value * (ComplexType(1im) * k - T(1.0) / radius) * (r_vec / radius)
-            double_value = sum(gradient_factor .* trial_normal)
-            adjoint_value = sum((-gradient_factor) .* test_normal)
-        end
-
-        for i in 1:3
-            slp_block[i, 1] += test_vals[i] * single_value * weight
-            adj_dlp_block[i, 1] += test_vals[i] * adjoint_value * weight
-
-            for j in 1:3
-                dlp_block[i, j] += test_vals[i] * trial_vals[j] * double_value * weight
-                hyp_block[i, j] += single_value * (
-                    dot(test_curls[i], trial_curls[j]) - k^2 * test_vals[i] * trial_vals[j] * pair.normal_product
-                ) * weight
-            end
-        end
-    end
-
-    return slp_block, dlp_block, adj_dlp_block, hyp_block
-end
-
 function l2_identity_element_matrix(test_area::T, test_basis::Symbol, trial_basis::Symbol, rule::TriangleRule{T}) where {T}
     test_dofs = test_basis == :p1 ? 3 : 1
     trial_dofs = trial_basis == :p1 ? 3 : 1
@@ -1075,73 +739,6 @@ function build_singular_correction_cache(
     )
 end
 
-function assemble_singular_galerkin_corrections!(
-    single_layer,
-    double_layer,
-    adjoint_double_layer,
-    hypersingular,
-    mesh::BoundaryMesh{T},
-    p1_space::P1Space,
-    dp0_space::DP0Space,
-    k::T,
-    singular_order::Int,
-    element_indices,
-    singular_cache=nothing,
-) where {T<:AbstractFloat}
-    cache = singular_cache === nothing ? build_singular_correction_cache(mesh, singular_order, element_indices) : singular_cache
-    singular_counts = zeros(Int, Threads.maxthreadid())
-    row_locks = [ReentrantLock() for _ in 1:p1_space.global_dof_count]
-    test_indices = collect(element_indices)
-
-    Threads.@threads for test_loop_index in eachindex(test_indices)
-        test_index = test_indices[test_loop_index]
-        test_face = mesh.faces[test_index]
-        test_p1_dofs = p1_space.local_to_global[test_index]
-        test_vertices = mesh.face_vertices[test_index]
-        test_area = mesh.areas[test_index]
-        test_normal = mesh.normals[test_index]
-
-        for pair in cache.pairs_by_test[test_index]
-            trial_index = pair.trial_index
-            trial_vertices = mesh.face_vertices[trial_index]
-            trial_normal = mesh.normals[trial_index]
-            pair_rule = cache.rules[pair.rule_index]
-
-            slp_block, dlp_block, adj_dlp_block, hyp_block = singular_galerkin_operator_blocks(
-                test_vertices,
-                trial_vertices,
-                test_normal,
-                trial_normal,
-                k,
-                pair_rule,
-                pair,
-                cache.curls[test_index],
-                cache.curls[trial_index],
-            )
-
-            if Threads.nthreads() > 1
-                lock_rows!(row_locks, test_p1_dofs)
-                try
-                    scatter_element_block!(single_layer, slp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                    scatter_element_block!(double_layer, dlp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                    scatter_element_block!(adjoint_double_layer, adj_dlp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                    scatter_element_block!(hypersingular, hyp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                finally
-                    unlock_rows!(row_locks, test_p1_dofs)
-                end
-            else
-                scatter_element_block!(single_layer, slp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                scatter_element_block!(double_layer, dlp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                scatter_element_block!(adjoint_double_layer, adj_dlp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                scatter_element_block!(hypersingular, hyp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-            end
-            singular_counts[Threads.threadid()] += 1
-        end
-    end
-
-    return sum(singular_counts)
-end
-
 function image_singular_candidates(mesh::BoundaryMesh{T}, element_indices, transform::SymmetryTransform; tolerance::T=T(1e-8)) where {T<:AbstractFloat}
     indices = collect(element_indices)
     index_set = Set(indices)
@@ -1172,261 +769,9 @@ function image_singular_candidates(mesh::BoundaryMesh{T}, element_indices, trans
     return candidates
 end
 
-function image_regular_operator_blocks(
-    test_vertices,
-    trial_vertices,
-    test_area,
-    trial_area,
-    test_normal,
-    trial_normal,
-    test_curls,
-    trial_curls,
-    k::T,
-    rule::TriangleRule{T},
-) where {T<:AbstractFloat}
-    slp_block = regular_galerkin_element_matrix(
-        test_vertices,
-        trial_vertices,
-        test_area,
-        trial_area,
-        test_normal,
-        trial_normal,
-        k,
-        helmholtz_single_layer_kernel,
-        :p1,
-        :dp0,
-        rule,
-    )
-    dlp_block = regular_galerkin_element_matrix(
-        test_vertices,
-        trial_vertices,
-        test_area,
-        trial_area,
-        test_normal,
-        trial_normal,
-        k,
-        helmholtz_double_layer_kernel,
-        :p1,
-        :p1,
-        rule,
-    )
-    adj_dlp_block = regular_galerkin_element_matrix(
-        test_vertices,
-        trial_vertices,
-        test_area,
-        trial_area,
-        test_normal,
-        trial_normal,
-        k,
-        helmholtz_adjoint_double_layer_kernel,
-        :p1,
-        :dp0,
-        rule,
-    )
-    hyp_block = regular_hypersingular_element_matrix_with_curls(
-        test_vertices,
-        trial_vertices,
-        test_area,
-        trial_area,
-        test_normal,
-        trial_normal,
-        test_curls,
-        trial_curls,
-        k,
-        rule,
-    )
-    return slp_block, dlp_block, adj_dlp_block, hyp_block
-end
-
-function assemble_symmetry_image_singular_correction_deltas!(
-    single_layer,
-    double_layer,
-    adjoint_double_layer,
-    hypersingular,
-    mesh::BoundaryMesh{T},
-    p1_space::P1Space,
-    dp0_space::DP0Space,
-    k::T,
-    regular_rule::TriangleRule{T},
-    singular_order::Int,
-    element_indices,
-    symmetry_mode::Symbol;
-    tolerance::T=T(1e-8),
-) where {T<:AbstractFloat}
-    transforms = symmetry_image_transforms(symmetry_mode)
-    isempty(transforms) && return 0
-
-    base_rules = Dict(
-        :coincident => duffy_rule(T, singular_order, :coincident),
-        :edge_adjacent => duffy_rule(T, singular_order, :edge_adjacent),
-        :vertex_adjacent => duffy_rule(T, singular_order, :vertex_adjacent),
-    )
-    rules = DuffyRule{T}[]
-    rule_indices = Dict{NTuple{5,Int},Int}()
-    source_curls = [surface_curls(mesh.face_vertices[element_index], mesh.normals[element_index]) for element_index in eachindex(mesh.faces)]
-    correction_count = 0
-
-    for transform in transforms
-        for (test_index, trial_index) in image_singular_candidates(mesh, element_indices, transform; tolerance=tolerance)
-            test_vertices = mesh.face_vertices[test_index]
-            trial_vertices = reflect_vertices(transform, mesh.face_vertices[trial_index])
-            info = geometric_adjacency_info(test_vertices, trial_vertices; tolerance=tolerance)
-            info.kind == :regular && continue
-
-            test_normal = mesh.normals[test_index]
-            trial_normal = reflect_normal(transform, mesh.normals[trial_index])
-            test_curls = source_curls[test_index]
-            trial_curls = ntuple(i -> reflect_curl(transform, source_curls[trial_index][i]), 3)
-            test_area = mesh.areas[test_index]
-            trial_area = mesh.areas[trial_index]
-            rule_index = rule_for_singular_orientation!(rules, rule_indices, base_rules, info)
-            pair = SingularCorrectionPair(
-                test_index,
-                trial_index,
-                rule_index,
-                (T(2.0) * test_area) * (T(2.0) * trial_area),
-                dot(test_normal, trial_normal),
-            )
-
-            singular_slp, singular_dlp, singular_adj, singular_hyp = singular_galerkin_operator_blocks(
-                test_vertices,
-                trial_vertices,
-                test_normal,
-                trial_normal,
-                k,
-                rules[rule_index],
-                pair,
-                test_curls,
-                trial_curls,
-            )
-            regular_slp, regular_dlp, regular_adj, regular_hyp = image_regular_operator_blocks(
-                test_vertices,
-                trial_vertices,
-                test_area,
-                trial_area,
-                test_normal,
-                trial_normal,
-                test_curls,
-                trial_curls,
-                k,
-                regular_rule,
-            )
-
-            test_p1_dofs = p1_space.local_to_global[test_index]
-            trial_p1_dofs = p1_space.local_to_global[trial_index]
-            trial_dp0_dof = (dp0_space.local_to_global[trial_index],)
-            scatter_element_block!(single_layer, singular_slp .- regular_slp, test_p1_dofs, trial_dp0_dof)
-            scatter_element_block!(double_layer, singular_dlp .- regular_dlp, test_p1_dofs, trial_p1_dofs)
-            scatter_element_block!(adjoint_double_layer, singular_adj .- regular_adj, test_p1_dofs, trial_dp0_dof)
-            scatter_element_block!(hypersingular, singular_hyp .- regular_hyp, test_p1_dofs, trial_p1_dofs)
-            correction_count += 1
-        end
-    end
-
-    return correction_count
-end
-
-function assemble_singular_galerkin_correction_blocks(
-    mesh::BoundaryMesh{T},
-    p1_space::P1Space,
-    dp0_space::DP0Space,
-    k::T,
-    singular_order::Int,
-    element_indices,
-    singular_cache=nothing,
-) where {T<:AbstractFloat}
-    cache = singular_cache === nothing ? build_singular_correction_cache(mesh, singular_order, element_indices) : singular_cache
-    ComplexType = Complex{T}
-    pair_count = cache.pair_count
-    p1_rows = Matrix{Int32}(undef, pair_count, 3)
-    p1_cols = Matrix{Int32}(undef, pair_count, 3)
-    dp0_cols = Vector{Int32}(undef, pair_count)
-    slp_values = Matrix{ComplexType}(undef, pair_count, 3)
-    adjoint_values = Matrix{ComplexType}(undef, pair_count, 3)
-    dlp_values = Matrix{ComplexType}(undef, pair_count, 9)
-    hypersingular_values = Matrix{ComplexType}(undef, pair_count, 9)
-
-    Threads.@threads for pair_index in eachindex(cache.pairs)
-        pair = cache.pairs[pair_index]
-        test_index = pair.test_index
-        trial_index = pair.trial_index
-        test_p1_dofs = p1_space.local_to_global[test_index]
-        trial_p1_dofs = p1_space.local_to_global[trial_index]
-        pair_rule = cache.rules[pair.rule_index]
-
-        slp_block, dlp_block, adj_dlp_block, hyp_block = singular_galerkin_operator_blocks(
-            mesh.face_vertices[test_index],
-            mesh.face_vertices[trial_index],
-            mesh.normals[test_index],
-            mesh.normals[trial_index],
-            k,
-            pair_rule,
-            pair,
-            cache.curls[test_index],
-            cache.curls[trial_index],
-        )
-
-        dp0_cols[pair_index] = Int32(dp0_space.local_to_global[trial_index])
-        for i in 1:3
-            p1_rows[pair_index, i] = Int32(test_p1_dofs[i])
-            p1_cols[pair_index, i] = Int32(trial_p1_dofs[i])
-            slp_values[pair_index, i] = slp_block[i, 1]
-            adjoint_values[pair_index, i] = adj_dlp_block[i, 1]
-        end
-
-        value_index = 1
-        for j in 1:3
-            for i in 1:3
-                dlp_values[pair_index, value_index] = dlp_block[i, j]
-                hypersingular_values[pair_index, value_index] = hyp_block[i, j]
-                value_index += 1
-            end
-        end
-    end
-
-    row_weights = ComplexType.(p1_symmetry_orbit_weights(mesh, symmetry_mode))
-    single_layer .*= reshape(row_weights, :, 1)
-    double_layer .*= reshape(row_weights, :, 1)
-    adjoint_double_layer .*= reshape(row_weights, :, 1)
-    hypersingular .*= reshape(row_weights, :, 1)
-
-    return (
-        pair_count=pair_count,
-        p1_rows=p1_rows,
-        p1_cols=p1_cols,
-        dp0_cols=dp0_cols,
-        single_layer=slp_values,
-        adjoint_double_layer=adjoint_values,
-        double_layer=dlp_values,
-        hypersingular=hypersingular_values,
-    )
-end
-
 function count_adjacent_pairs(mesh::BoundaryMesh, element_indices)
     adjacent = adjacent_trial_indices_by_test(mesh, element_indices)
     return sum(length, values(adjacent))
-end
-
-function sorted_dofs(dofs::NTuple{3,Int})
-    a, b, c = dofs
-    a > b && ((a, b) = (b, a))
-    b > c && ((b, c) = (c, b))
-    a > b && ((a, b) = (b, a))
-    return (a, b, c)
-end
-
-function lock_rows!(row_locks, dofs::NTuple{3,Int})
-    rows = sorted_dofs(dofs)
-    lock(row_locks[rows[1]])
-    lock(row_locks[rows[2]])
-    lock(row_locks[rows[3]])
-end
-
-function unlock_rows!(row_locks, dofs::NTuple{3,Int})
-    rows = sorted_dofs(dofs)
-    unlock(row_locks[rows[3]])
-    unlock(row_locks[rows[2]])
-    unlock(row_locks[rows[1]])
 end
 
 function assemble_l2_identity_matrix(
@@ -1468,214 +813,41 @@ function assemble_regular_galerkin_operators(
     singular_order::Int=2,
     element_indices=eachindex(mesh.faces),
     threaded::Bool=true,
-    use_cuda_regular::Bool=false,
+    use_cuda_regular::Bool=true,
     cuda_cache=nothing,
-    return_gpu::Bool=false,
+    return_gpu::Bool=true,
     parallel_quadrature::Bool=true,
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
-    regular_assembly_mode::Symbol=:fused,
+    regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
-    if use_cuda_regular
-        return assemble_regular_galerkin_operators_cuda_regular(
-            mesh,
-            p1_space,
-            dp0_space,
-            k,
-            rule;
-            skip_singular=skip_singular,
-            singular_order=singular_order,
-            element_indices=element_indices,
-            cache=cuda_cache,
-            return_gpu=return_gpu,
-            parallel_quadrature=parallel_quadrature,
-            timing=timing,
-            singular_cache=singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
-            profile_regular_kernel=profile_regular_kernel,
-            regular_probe_pair_limit=regular_probe_pair_limit,
-            regular_assembly_mode=regular_assembly_mode,
-            symmetry_mode=symmetry_mode,
-        )
-    end
-
-    normalized_symmetry_mode(symmetry_mode) == :off || error("CPU regular assembly does not implement symmetry image contributions.")
-
-    ComplexType = Complex{T}
-    single_layer = zeros(ComplexType, p1_space.global_dof_count, dp0_space.global_dof_count)
-    double_layer = zeros(ComplexType, p1_space.global_dof_count, p1_space.global_dof_count)
-    adjoint_double_layer = zeros(ComplexType, p1_space.global_dof_count, dp0_space.global_dof_count)
-    hypersingular = zeros(ComplexType, p1_space.global_dof_count, p1_space.global_dof_count)
-    regular_pairs = Threads.Atomic{Int}(0)
-    skipped_pairs = Threads.Atomic{Int}(0)
-    singular_pairs = Threads.Atomic{Int}(0)
-    row_locks = [ReentrantLock() for _ in 1:p1_space.global_dof_count]
-    test_indices = collect(element_indices)
-    trial_indices = collect(element_indices)
-    singular_rules = Dict(
-        :coincident => duffy_rule(T, singular_order, :coincident),
-        :edge_adjacent => duffy_rule(T, singular_order, :edge_adjacent),
-        :vertex_adjacent => duffy_rule(T, singular_order, :vertex_adjacent),
-    )
-
-    Threads.@threads for test_loop_index in eachindex(test_indices)
-        test_index = test_indices[test_loop_index]
-        test_face = mesh.faces[test_index]
-        test_p1_dofs = p1_space.local_to_global[test_index]
-        test_vertices = mesh.face_vertices[test_index]
-        test_area = mesh.areas[test_index]
-        test_normal = mesh.normals[test_index]
-
-        for trial_index in trial_indices
-            trial_face = mesh.faces[trial_index]
-            info = adjacency_info(test_face, trial_face)
-            trial_vertices = mesh.face_vertices[trial_index]
-            trial_area = mesh.areas[trial_index]
-            trial_normal = mesh.normals[trial_index]
-
-            if info.kind == :regular
-                slp_block = regular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_single_layer_kernel,
-                    :p1,
-                    :dp0,
-                    rule,
-                )
-                dlp_block = regular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_double_layer_kernel,
-                    :p1,
-                    :p1,
-                    rule,
-                )
-                adj_dlp_block = regular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_adjoint_double_layer_kernel,
-                    :p1,
-                    :dp0,
-                    rule,
-                )
-                hyp_block = regular_hypersingular_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    rule,
-                )
-                Threads.atomic_add!(regular_pairs, 1)
-            elseif skip_singular
-                Threads.atomic_add!(skipped_pairs, 1)
-                continue
-            else
-                singular_rule = singular_rules[info.kind]
-                slp_block = singular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_single_layer_kernel,
-                    :p1,
-                    :dp0,
-                    singular_rule,
-                    info,
-                )
-                dlp_block = singular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_double_layer_kernel,
-                    :p1,
-                    :p1,
-                    singular_rule,
-                    info,
-                )
-                adj_dlp_block = singular_galerkin_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    helmholtz_adjoint_double_layer_kernel,
-                    :p1,
-                    :dp0,
-                    singular_rule,
-                    info,
-                )
-                hyp_block = singular_hypersingular_element_matrix(
-                    test_vertices,
-                    trial_vertices,
-                    test_area,
-                    trial_area,
-                    test_normal,
-                    trial_normal,
-                    k,
-                    singular_rule,
-                    info,
-                )
-                Threads.atomic_add!(singular_pairs, 1)
-            end
-
-            if Threads.nthreads() > 1
-                lock_rows!(row_locks, test_p1_dofs)
-                try
-                    scatter_element_block!(single_layer, slp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                    scatter_element_block!(double_layer, dlp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                    scatter_element_block!(adjoint_double_layer, adj_dlp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                    scatter_element_block!(hypersingular, hyp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                finally
-                    unlock_rows!(row_locks, test_p1_dofs)
-                end
-            else
-                scatter_element_block!(single_layer, slp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                scatter_element_block!(double_layer, dlp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-                scatter_element_block!(adjoint_double_layer, adj_dlp_block, test_p1_dofs, (dp0_space.local_to_global[trial_index],))
-                scatter_element_block!(hypersingular, hyp_block, test_p1_dofs, p1_space.local_to_global[trial_index])
-            end
-        end
-    end
-
-    return (
-        single_layer=single_layer,
-        double_layer=double_layer,
-        adjoint_double_layer=adjoint_double_layer,
-        hypersingular=hypersingular,
-        regular_pairs=regular_pairs[],
-        singular_pairs=singular_pairs[],
-        skipped_pairs=skipped_pairs[],
+    use_cuda_regular || error("Julia local solver is CUDA-only; CPU regular assembly has been removed.")
+    threaded || error("Julia local solver is CUDA-only; threaded CPU assembly has been removed.")
+    parallel_quadrature || error("Balanced CUDA regular assembly requires parallel quadrature.")
+    regular_assembly_mode == :split_atomic_balanced || error("Unsupported CUDA regular assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
+    return assemble_regular_galerkin_operators_cuda_regular(
+        mesh,
+        p1_space,
+        dp0_space,
+        k,
+        rule;
+        skip_singular=skip_singular,
+        singular_order=singular_order,
+        element_indices=element_indices,
+        cache=cuda_cache,
+        return_gpu=return_gpu,
+        parallel_quadrature=true,
+        timing=timing,
+        singular_cache=singular_cache,
+        cuda_singular_cache=cuda_singular_cache,
+        profile_regular_kernel=profile_regular_kernel,
+        regular_probe_pair_limit=regular_probe_pair_limit,
+        regular_assembly_mode=:split_atomic_balanced,
+        symmetry_mode=symmetry_mode,
     )
 end
 
@@ -1700,23 +872,17 @@ release_operator_storage!(operators) = nothing
 function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
     coupling = Complex{T}(0, 1) / k
     operators_on_gpu = get(operators, :on_gpu, false)
+    operators_on_gpu || error("Julia local solver is CUDA-only; CPU operator solves have been removed.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
-    if operators_on_gpu
-        d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
-        d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
-        d_q_neumann = cuda.CuArray(q_neumann)
-        d_lhs = Complex{T}(0.5) .* d_identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
-        d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* d_identity_p1_dp0)) * d_q_neumann
-        cuda.unsafe_free!(d_identity_p1_p1)
-        cuda.unsafe_free!(d_identity_p1_dp0)
-        cuda.unsafe_free!(d_q_neumann)
-    else
-        lhs = Complex{T}(0.5) .* Complex{T}.(identity_p1_p1) .- operators.double_layer .+ coupling .* operators.hypersingular
-        rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* Complex{T}.(identity_p1_dp0))) * q_neumann
-        d_lhs = cuda.CuArray(lhs)
-        d_rhs = cuda.CuArray(rhs)
-    end
+    d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
+    d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
+    d_q_neumann = cuda.CuArray(q_neumann)
+    d_lhs = Complex{T}(0.5) .* d_identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
+    d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* d_identity_p1_dp0)) * d_q_neumann
+    cuda.unsafe_free!(d_identity_p1_p1)
+    cuda.unsafe_free!(d_identity_p1_dp0)
+    cuda.unsafe_free!(d_q_neumann)
 
     d_pressure = d_lhs \ d_rhs
     pressure = Complex{T}.(Array(d_pressure))
@@ -1766,54 +932,6 @@ function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{
         source_elements,
         basis_values,
     )
-end
-
-function weighted_field_sources(cache::FieldEvaluationCache{T}, pressure, q_neumann) where {T<:AbstractFloat}
-    ComplexType = eltype(pressure)
-    pressure_sources = Vector{ComplexType}(undef, length(cache.source_points))
-    neumann_sources = Vector{ComplexType}(undef, length(cache.source_points))
-
-    for source_index in eachindex(cache.source_points)
-        face = cache.source_faces[source_index]
-        vals = cache.basis_values[source_index]
-        weight = ComplexType(cache.source_weights[source_index])
-        pressure_sources[source_index] = (
-            vals[1] * pressure[face[1]] +
-            vals[2] * pressure[face[2]] +
-            vals[3] * pressure[face[3]]
-        ) * weight
-        neumann_sources[source_index] = q_neumann[cache.source_elements[source_index]] * weight
-    end
-
-    return pressure_sources, neumann_sources
-end
-
-function evaluate_galerkin_field(eval_points, mesh::BoundaryMesh{T}, pressure, q_neumann, k::T, cache::FieldEvaluationCache{T}) where {T<:AbstractFloat}
-    ComplexType = Complex{T}
-    pot = zeros(ComplexType, length(eval_points))
-    pressure_sources, neumann_sources = weighted_field_sources(cache, pressure, q_neumann)
-
-    Threads.@threads for pt_idx in eachindex(eval_points)
-        x = eval_points[pt_idx]
-        local_pot = zero(ComplexType)
-
-        for source_index in eachindex(cache.source_points)
-            y = cache.source_points[source_index]
-            normal = cache.source_normals[source_index]
-            double_value = helmholtz_double_layer_kernel(x, y, normal, k)
-            single_value = helmholtz_single_layer_kernel(x, y, k)
-            local_pot += double_value * pressure_sources[source_index] - single_value * neumann_sources[source_index]
-        end
-
-        pot[pt_idx] = local_pot
-    end
-
-    return pot
-end
-
-function evaluate_galerkin_field(eval_points, mesh::BoundaryMesh{T}, pressure, q_neumann, k::T, rule::TriangleRule{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
-    cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode)
-    return evaluate_galerkin_field(eval_points, mesh, pressure, q_neumann, k, cache)
 end
 
 if CUDA_MODULE !== nothing

@@ -38,6 +38,7 @@ gmsh/gmsh-4.15.2-Windows64/examples/
 
 # Generated BEM solver outputs and run directories
 runs/
+references/
 pressure_data*.npz
 pressure_data_formatted.npz
 horizontal_isobar.png
@@ -47,26 +48,3 @@ acoustic_impedance.png
 
 # Julia solver benchmark/profiling outputs
 src/blab/solvers/julia_local/results/
-balloonvisual/01 - K-LONE - Strawberries.flac
-balloonvisual/10 - Inzo - It Goes In Waves.flac
-balloonvisual/179 - Peekaboo - Arrival.flac
-balloonvisual/183 - sumthin sumthin - Run The Track.flac
-balloonvisual/206 - Subtronics - Hieroglyph.flac
-balloonvisual/394 - Audio Goblin - The Wario Shuffle.flac
-balloonvisual/audio_frequency_chop_callbacks.py
-balloonvisual/balloon_script_sop_callbacks.py
-balloonvisual/Balloon.toe
-balloonvisual/Balloon2.2.toe
-balloonvisual/Balloon2.toe
-balloonvisual/balloonvisual.zip
-balloonvisual/Gentlemens Club, MPH - GOOD 4 U.flac
-balloonvisual/README.md
-balloonvisual/Ross from Friends - March.m4a
-balloonvisual/sample.wav
-balloonvisual/Seamoon - Six Synergies.flac
-balloonvisual/Backup/Balloon2.1.toe
-balloonvisual/exporteddata/metadata.json
-balloonvisual/exporteddata/positions_xyz.npy
-balloonvisual/exporteddata/radius_norm.npy
-balloonvisual/exporteddata/spl_db.npy
-balloonvisual/exporteddata/topology.npz

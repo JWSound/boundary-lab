@@ -604,9 +604,8 @@ function solve_request_impl(request)
     flat_target = Bool(get_value(config, "flat_target_normalization_enabled", true))
     flat_target_reference_angle_deg = FloatType(get_value(config, "flat_target_reference_angle_deg", 0.0))
     channel_names = sort(unique([String(get_value(radiator, "channel", "main")) for radiator in radiators]))
-    cuda_regular_assembly_mode = Symbol(String(get_value(config, "julia_cuda_regular_assembly_mode", "split_atomic_balanced")))
     singular_cache = build_singular_correction_cache(mesh, singular_order)
-    emit_event("status"; message="Julia solver using CUDA assembly ($(cuda_regular_assembly_mode)), GPU dense solve, and GPU field evaluation")
+    emit_event("status"; message="Julia solver using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
     cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
     field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
     cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
@@ -636,7 +635,7 @@ function solve_request_impl(request)
                 parallel_quadrature=true,
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
-                regular_assembly_mode=cuda_regular_assembly_mode,
+                regular_assembly_mode=:split_atomic_balanced,
                 symmetry_mode=Symbol(symmetry_mode),
             )
         end

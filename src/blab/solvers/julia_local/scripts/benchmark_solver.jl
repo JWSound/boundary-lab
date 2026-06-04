@@ -38,11 +38,9 @@ Base.@kwdef mutable struct BenchmarkConfig
     skip_field::Bool = false
     profile::String = "none"
     output::String = joinpath(@__DIR__, "..", "results", "benchmark_sample.json")
-    cuda_parallel_quadrature::Bool = true
     return_gpu::Bool = true
     profile_regular_kernel::Bool = false
     regular_probe_pair_limit::Int = 1_000_000
-    regular_assembly_mode::String = "fused"
     verbose::Bool = false
 end
 
@@ -65,11 +63,8 @@ function print_usage()
       --skip-field                   Do not evaluate the radiated field.
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
       --json PATH                    Write JSON results. Default: results/benchmark_sample.json
-      --serial-cuda-quadrature       Use the serial-pair CUDA regular assembly kernel.
-      --cpu-transfer-cuda-operators  Return CUDA assembled operators to CPU memory before GPU solving.
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
-      --regular-assembly-mode MODE   CUDA regular assembly mode: fused, split_atomic, or split_atomic_balanced. Default: fused.
       --verbose                      Print every timing bucket in the console summary.
       --help                         Print this message.
     """)
@@ -113,16 +108,10 @@ function parse_args(args)
             i += 1; config.profile = lowercase(args[i])
         elseif arg == "--json"
             i += 1; config.output = args[i]
-        elseif arg == "--serial-cuda-quadrature"
-            config.cuda_parallel_quadrature = false
-        elseif arg == "--cpu-transfer-cuda-operators"
-            config.return_gpu = false
         elseif arg == "--profile-regular-kernel"
             config.profile_regular_kernel = true
         elseif arg == "--regular-probe-pair-limit"
             i += 1; config.regular_probe_pair_limit = parse(Int, args[i])
-        elseif arg == "--regular-assembly-mode"
-            i += 1; config.regular_assembly_mode = lowercase(args[i])
         elseif arg == "--verbose"
             config.verbose = true
         else
@@ -187,28 +176,6 @@ function throat_rhs(mesh, config::BenchmarkConfig, ::Type{T}) where {T<:Abstract
     return q_neumann, throat_indices
 end
 
-function add_singular_corrections_cpu!(timings, operators, mesh, p1_space, dp0_space, k::T, singular_order::Int, element_indices, singular_cache) where {T<:AbstractFloat}
-    timings["singular_correction_alloc"] = 0.0
-    singular_pairs = timed_stage!(timings, "singular_correction_compute_scatter") do
-        JBEMCore.assemble_singular_galerkin_corrections!(
-            operators.single_layer,
-            operators.double_layer,
-            operators.adjoint_double_layer,
-            operators.hypersingular,
-            mesh,
-            p1_space,
-            dp0_space,
-            k,
-            singular_order,
-            element_indices,
-            singular_cache,
-        )
-    end
-    timings["singular_correction_transfer_to_gpu"] = 0.0
-    timings["singular_correction_gpu_add"] = 0.0
-    return singular_pairs
-end
-
 function add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k::T, singular_order::Int, element_indices, singular_cache, cuda_singular_cache, cuda_regular_cache) where {T<:AbstractFloat}
     singular_pairs = timed_stage!(timings, "singular_correction_compute_scatter") do
         JBEMCore.add_singular_corrections_cuda_compact!(
@@ -244,14 +211,14 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             element_indices=element_indices,
             use_cuda_regular=true,
             cuda_cache=cache,
-            return_gpu=config.return_gpu,
-            parallel_quadrature=config.cuda_parallel_quadrature,
+            return_gpu=true,
+            parallel_quadrature=true,
             timing=timings,
             singular_cache=singular_cache,
             cuda_singular_cache=cuda_singular_cache,
             profile_regular_kernel=config.profile_regular_kernel,
             regular_probe_pair_limit=config.regular_probe_pair_limit,
-            regular_assembly_mode=Symbol(config.regular_assembly_mode),
+            regular_assembly_mode=:split_atomic_balanced,
         )
     end
     regular_probe_keys = [
@@ -275,11 +242,7 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
     timings["regular_operator_assembly_without_probes"] = timings["regular_operator_assembly"] - regular_probe_total
 
     singular_pairs = timed_stage!(timings, "singular_corrections") do
-        if get(operators, :on_gpu, false)
-            add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k, config.singular_order, element_indices, singular_cache, cuda_singular_cache, cache)
-        else
-            add_singular_corrections_cpu!(timings, operators, mesh, p1_space, dp0_space, k, config.singular_order, element_indices, singular_cache)
-        end
+        add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k, config.singular_order, element_indices, singular_cache, cuda_singular_cache, cache)
     end
 
     timings["operator_total_assembly"] = timings["regular_operator_assembly"] + timings["singular_corrections"]
@@ -408,8 +371,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "singular_cache_pairs" => singular_cache.pair_count,
         "skipped_pairs" => get(operators, :skipped_pairs, nothing),
         "throat_elements" => length(throat_indices),
-        "return_gpu" => config.return_gpu,
-        "cuda_parallel_quadrature" => config.cuda_parallel_quadrature,
+        "return_gpu" => true,
+        "cuda_parallel_quadrature" => true,
         "regular_kernel_threads" => get(operators, :regular_kernel_threads, nothing),
         "regular_kernel_blocks" => get(operators, :regular_kernel_blocks, nothing),
         "regular_kernel_shared_memory_bytes" => get(operators, :regular_kernel_shared_memory_bytes, nothing),
@@ -417,7 +380,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "regular_kernel_total_pairs" => get(operators, :regular_kernel_total_pairs, nothing),
         "regular_probe_pair_count" => get(operators, :regular_probe_pair_count, nothing),
         "regular_kernel_mode" => get(operators, :regular_kernel_mode, nothing),
-        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, config.regular_assembly_mode)),
+        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :split_atomic_balanced)),
         "regular_color_count" => get(operators, :regular_color_count, nothing),
         "profile_regular_kernel" => config.profile_regular_kernel,
         "regular_probe_pair_limit" => config.regular_probe_pair_limit,
@@ -567,7 +530,7 @@ function benchmark_payload(config::BenchmarkConfig)
         "profile" => config.profile,
         "profile_regular_kernel" => config.profile_regular_kernel,
         "regular_probe_pair_limit" => config.regular_probe_pair_limit,
-        "regular_assembly_mode" => config.regular_assembly_mode,
+        "regular_assembly_mode" => "split_atomic_balanced",
         "verbose" => config.verbose,
     )
 
