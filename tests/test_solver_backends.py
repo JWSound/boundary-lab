@@ -4,7 +4,8 @@ import sys
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
-from blab.solvers.julia_local_backend import _resolve_julia_threads, shutdown_julia_workers
+from blab.solvers.afterburner_backend import AfterburnerBackend, _resolve_julia_threads, shutdown_afterburner_workers
+from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
     backend_info,
@@ -18,11 +19,13 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     labels = backend_label_to_id()
 
     assert labels["Server"] == "server"
-    assert labels["Julia CUDA GPU"] == "julia_local"
-    assert labels["Bempp OpenCL CPU"] == "local"
+    assert labels["Afterburner (Nvidia GPU)"] == "julia_local"
+    assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
     assert normalize_backend_id("local_julia") == "julia_local"
+    assert normalize_backend_id("afterburner") == "julia_local"
+    assert JuliaLocalBackend is AfterburnerBackend
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
@@ -213,7 +216,7 @@ for line in sys.stdin:
 
         assert starts_path.read_text(encoding="utf-8") == "1"
     finally:
-        shutdown_julia_workers()
+        shutdown_afterburner_workers()
 
 
 def test_julia_backend_cancel_keeps_persistent_worker_warm(tmp_path) -> None:
@@ -289,4 +292,4 @@ for line in sys.stdin:
         assert len(list(completed_session.solve_stream())) == 1
         assert starts_path.read_text(encoding="utf-8") == "1"
     finally:
-        shutdown_julia_workers()
+        shutdown_afterburner_workers()

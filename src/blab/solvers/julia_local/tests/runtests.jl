@@ -1,7 +1,7 @@
 using Test
 
-include(joinpath(@__DIR__, "..", "src", "JBEMCore.jl"))
-using .JBEMCore
+include(joinpath(@__DIR__, "..", "src", "AfterburnerCore.jl"))
+using .AfterburnerCore
 
 const CUDA_MODULE = try
     @eval import CUDA
@@ -29,7 +29,7 @@ end
 
 @testset "cuda production pipeline" begin
     if !cuda_available()
-        @test_skip "CUDA unavailable; skipping CUDA-only Julia solver tests."
+        @test_skip "CUDA unavailable; skipping CUDA-only Afterburner tests."
     else
         mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
         p1 = build_p1_space(mesh)
@@ -39,7 +39,7 @@ end
         element_indices = 1:min(16, length(mesh.faces))
         singular_cache = build_singular_correction_cache(mesh, 2, element_indices)
         cuda_cache = build_cuda_regular_assembly_cache(mesh, rule; element_indices=element_indices)
-        cuda_singular_cache = JBEMCore.build_cuda_singular_correction_cache(singular_cache, p1, dp0)
+        cuda_singular_cache = AfterburnerCore.build_cuda_singular_correction_cache(singular_cache, p1, dp0)
 
         operators = assemble_regular_galerkin_operators(
             mesh,

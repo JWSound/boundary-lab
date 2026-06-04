@@ -133,7 +133,7 @@ class PreferencesDialog(QDialog):
                 for label, value in self.solve_backend_options.items()
                 if value == current_backend
             ),
-            "Bempp OpenCL CPU",
+            "Bempp (OpenCL CPU)",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
 

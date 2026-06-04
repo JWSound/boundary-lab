@@ -2665,7 +2665,7 @@ function _launch_regular_symmetry_image_kernel!(
     return nothing
 end
 
-include(joinpath(@__DIR__, "JBEMCudaProfiling.jl"))
+include(joinpath(@__DIR__, "AfterburnerCudaProfiling.jl"))
 
 function assemble_regular_galerkin_operators_cuda_regular(
     mesh::BoundaryMesh{T},
@@ -2690,7 +2690,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
     regular_assembly_mode == :split_atomic_balanced || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
-    return_gpu || error("Julia local solver is CUDA-only; CPU operator materialization has been removed.")
+    return_gpu || error("Afterburner is CUDA-only; CPU operator materialization has been removed.")
 
     indices = cache === nothing ? collect(element_indices) : cache.element_indices
     face_count = cache === nothing ? length(mesh.faces) : cache.face_count

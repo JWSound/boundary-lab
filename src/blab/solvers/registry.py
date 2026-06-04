@@ -32,19 +32,19 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
     ),
     "julia_local": SolverBackendInfo(
         backend_id="julia_local",
-        label="Julia CUDA GPU",
+        label="Afterburner (Nvidia GPU)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
             supports_symmetry=True,
             is_remote=False,
         ),
-        factory=lambda **kwargs: _create_julia_local_backend(**kwargs),
-        description="Run the local Julia solver through the Boundary Lab subprocess adapter.",
+        factory=lambda **kwargs: _create_afterburner_backend(**kwargs),
+        description="Run the local Afterburner GPU solver through the Boundary Lab subprocess adapter.",
     ),
     "local": SolverBackendInfo(
         backend_id="local",
-        label="Bempp OpenCL CPU",
+        label="Bempp (OpenCL CPU)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=True,
@@ -83,6 +83,7 @@ def normalize_backend_id(backend_id: str) -> str:
         "local_bempp": "local",
         "local_bempp_cl": "local",
         "local_julia": "julia_local",
+        "afterburner": "julia_local",
     }
     return aliases.get(text, text or "local")
 
@@ -103,7 +104,7 @@ def _create_bempp_server_backend(*, server_url: str = "http://127.0.0.1:8765", *
     return BemppServerBackend(server_url)
 
 
-def _create_julia_local_backend(
+def _create_afterburner_backend(
     *,
     julia_executable: str = "julia",
     solver_script: str | None = None,
@@ -112,7 +113,7 @@ def _create_julia_local_backend(
     persistent_worker: bool = True,
     **_kwargs: Any,
 ) -> SolverBackend:
-    from blab.solvers.julia_local_backend import JuliaLocalBackend
+    from blab.solvers.afterburner_backend import AfterburnerBackend
 
     kwargs: dict[str, Any] = {
         "julia_executable": julia_executable,
@@ -123,4 +124,7 @@ def _create_julia_local_backend(
         kwargs["solver_script"] = solver_script
     if julia_project != "__default__":
         kwargs["julia_project"] = julia_project
-    return JuliaLocalBackend(**kwargs)
+    return AfterburnerBackend(**kwargs)
+
+
+_create_julia_local_backend = _create_afterburner_backend

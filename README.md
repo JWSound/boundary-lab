@@ -22,15 +22,15 @@ The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
-### Optional Julia CUDA GPU Solver
+### Optional Afterburner GPU Solver
 
-Boundary Lab can also run the local Julia CUDA GPU backend from the Preferences window by selecting `Julia CUDA GPU` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
+Boundary Lab can also run the local Afterburner GPU backend from the Preferences window by selecting `Afterburner (Nvidia GPU)` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
 
 Additional requirements:
 
 - NVIDIA GPU with a working CUDA-capable driver
 - [Julia](https://julialang.org/downloads/) installed and available on `PATH`, or configured as the Julia executable in Preferences
-- Boundary Lab's Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
+- Boundary Lab's Afterburner Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
 
 To prepare the Julia environment from the repository root:
 
@@ -38,7 +38,7 @@ To prepare the Julia environment from the repository root:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-The first Julia CUDA solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent Julia worker and warmed CUDA kernels.
+The first Afterburner solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent Afterburner worker and warmed CUDA kernels.
 
 CUDA GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 

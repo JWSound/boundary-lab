@@ -1,6 +1,6 @@
-# Julia BEM Backend
+# Afterburner BEM Backend
 
-Boundary Lab's Julia backend is a local direct dense BEM solver used through `src/blab/solvers/julia_local_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation in `src/blab/solvers/julia_local/src/JBEMCuda.jl` is the primary high-performance path; `JBEMCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
+Boundary Lab's Afterburner backend is a local direct dense BEM solver used through `src/blab/solvers/afterburner_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation in `src/blab/solvers/julia_local/src/AfterburnerCuda.jl` is the primary high-performance path; `AfterburnerCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
 
 The backend solves exterior acoustic radiation from prescribed normal velocity on tagged radiator surfaces. It currently uses single precision (`Float32`) for local solves.
 
@@ -133,9 +133,9 @@ The CUDA singular correction cache stores:
 
 ## Symmetry Mode
 
-The Julia backend supports `off`, `x`, and `xy` symmetry modes. Symmetry is implemented only in the Julia CUDA backend; the application disables the symmetry control for backends that do not advertise symmetry support.
+The Afterburner backend supports `off`, `x`, and `xy` symmetry modes. Symmetry is implemented only in the Afterburner CUDA backend; the application disables the symmetry control for backends that do not advertise symmetry support.
 
-The application passes a reduced-domain mesh plus symmetry metadata. The Julia solver does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
+The application passes a reduced-domain mesh plus symmetry metadata. Afterburner does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
 
 - `x`: all mesh vertices must be on or positive of the global X=0 plane.
 - `xy`: all mesh vertices must be on or positive of both the global X=0 and Y=0 planes.
@@ -312,7 +312,7 @@ The reason is that symmetry reduces the actual dense system dimension. Assembly 
 ## Important Files
 
 - `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, drive calculation.
-- `src/blab/solvers/julia_local/src/JBEMCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
-- `src/blab/solvers/julia_local/src/JBEMCuda.jl`: CUDA geometry cache, regular-pair kernels, GPU Duffy corrections, GPU atomics, GPU matrix materialization, GPU field evaluation.
-- `src/blab/solvers/julia_local/src/JBEMCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
-- `src/blab/solvers/julia_local_backend.py`: Python adapter that stages assets and streams JSON events.
+- `src/blab/solvers/julia_local/src/AfterburnerCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
+- `src/blab/solvers/julia_local/src/AfterburnerCuda.jl`: CUDA geometry cache, regular-pair kernels, GPU Duffy corrections, GPU atomics, GPU matrix materialization, GPU field evaluation.
+- `src/blab/solvers/julia_local/src/AfterburnerCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
+- `src/blab/solvers/afterburner_backend.py`: Python adapter that stages assets and streams JSON events.

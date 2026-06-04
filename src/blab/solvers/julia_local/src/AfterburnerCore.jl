@@ -1,4 +1,4 @@
-module JBEMCore
+module AfterburnerCore
 
 import Pkg
 
@@ -825,8 +825,8 @@ function assemble_regular_galerkin_operators(
     regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
-    use_cuda_regular || error("Julia local solver is CUDA-only; CPU regular assembly has been removed.")
-    threaded || error("Julia local solver is CUDA-only; threaded CPU assembly has been removed.")
+    use_cuda_regular || error("Afterburner is CUDA-only; CPU regular assembly has been removed.")
+    threaded || error("Afterburner is CUDA-only; threaded CPU assembly has been removed.")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel quadrature.")
     regular_assembly_mode == :split_atomic_balanced || error("Unsupported CUDA regular assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
     return assemble_regular_galerkin_operators_cuda_regular(
@@ -872,7 +872,7 @@ release_operator_storage!(operators) = nothing
 function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
     coupling = Complex{T}(0, 1) / k
     operators_on_gpu = get(operators, :on_gpu, false)
-    operators_on_gpu || error("Julia local solver is CUDA-only; CPU operator solves have been removed.")
+    operators_on_gpu || error("Afterburner is CUDA-only; CPU operator solves have been removed.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
@@ -935,7 +935,7 @@ function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{
 end
 
 if CUDA_MODULE !== nothing
-    include(joinpath(@__DIR__, "JBEMCuda.jl"))
+    include(joinpath(@__DIR__, "AfterburnerCuda.jl"))
 end
 
 end

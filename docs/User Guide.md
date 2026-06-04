@@ -76,14 +76,14 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Mesh Config
 - `Stitch Tolerance`: Set the search distance for nearby open edges when combining multiple mesh files in the same project.
-- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Currently only supported with the Julia CUDA solver backend. Mirrored mesh elements are shaded darker in the 3d viewport.
+- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Currently only supported with the Afterburner backend. Mirrored mesh elements are shaded darker in the 3d viewport.
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.
 - `Solve Backend`: Set the solver backend to either use a built-in application solver, or a server-based backend.
     1. **Server** - Use whatever solver is configured on the remote server via the HTTP streaming API.
-    2. **Julia CUDA GPU** - Use the Julia-based GPU solver. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
-    3. **Bempp OpenCL CPU** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
+    2. **Afterburner (Nvidia GPU)** - Use the Julia-based GPU solver. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
+    3. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. 
 
