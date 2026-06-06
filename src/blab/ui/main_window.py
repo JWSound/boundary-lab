@@ -1303,7 +1303,7 @@ class MainWindow(QMainWindow):
         return Path.cwd() / "runs" / "imported_meshes" / f"{safe_name}_{source_hash}_clean.msh"
 
     def _stitch_candidate_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        return (*self._ath_solver_mesh_configs(), *self._imported_solver_mesh_configs())
+        return (*self._ath_solver_mesh_configs_for_symmetry(self.symmetry), *self._imported_solver_mesh_configs())
 
     def _should_use_stitched_mesh(self) -> bool:
         return self.stitch_imported_meshes and len(self._stitch_candidate_mesh_configs()) > 1
@@ -1311,6 +1311,7 @@ class MainWindow(QMainWindow):
     def _stitched_mesh_path(self, mesh_configs: tuple[MeshConfig, ...]) -> Path:
         payload = {
             "symmetry": self.symmetry,
+            "ignored_boundary_axes": self._stitch_ignored_boundary_axes(),
             "tol_mm": round(float(self.preferences.stitch_tolerance_mm), 6),
             "meshes": [
                 {
@@ -1338,6 +1339,13 @@ class MainWindow(QMainWindow):
             field_data=mesh.field_data,
         )
 
+    def _stitch_ignored_boundary_axes(self) -> tuple[str, ...]:
+        if self.symmetry == "x":
+            return ("x",)
+        if self.symmetry == "xy":
+            return ("x", "y")
+        return ()
+
     def _stitched_solver_mesh_config(self) -> MeshConfig | None:
         if not self._should_use_stitched_mesh():
             return None
@@ -1351,6 +1359,7 @@ class MainWindow(QMainWindow):
                     tuple(self._mesh_for_stitching(mesh_cfg) for mesh_cfg in mesh_configs),
                     stitch_tol=float(self.preferences.stitch_tolerance_mm),
                     area_tol=AREA_TOL,
+                    ignored_boundary_axes=self._stitch_ignored_boundary_axes(),
                 )
                 meshio.write(stitched_path, stitched_mesh, file_format="gmsh22", binary=False)
             except Exception as exc:
@@ -1361,8 +1370,13 @@ class MainWindow(QMainWindow):
     def _active_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         return tuple(mesh for mesh in self.imported_meshes if mesh.enabled)
 
-    def _ath_result_for_solver_symmetry(self, script: AthScriptState, result: AthRunResult) -> AthRunResult:
-        if self.symmetry == "off":
+    def _ath_result_for_solver_symmetry(
+        self,
+        script: AthScriptState,
+        result: AthRunResult,
+        symmetry: str,
+    ) -> AthRunResult:
+        if symmetry == "off":
             return result
         if result.reduced_cleaned_msh_path is not None and result.reduced_cleaned_msh_path.exists():
             return result
@@ -1370,19 +1384,22 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id[script.id] = updated
         return updated
 
-    def _ath_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
+    def _ath_solver_mesh_configs_for_symmetry(self, symmetry: str) -> tuple[MeshConfig, ...]:
         configs = []
         for script, result in self._enabled_ath_results():
-            solver_result = self._ath_result_for_solver_symmetry(script, result)
+            solver_result = self._ath_result_for_solver_symmetry(script, result, symmetry)
             configs.append(
                 MeshConfig(
                     name=script.mesh_name,
-                    file=str(solver_result.solver_msh_path_for_symmetry(self.symmetry)),
+                    file=str(solver_result.solver_msh_path_for_symmetry(symmetry)),
                     scale_factor=float(script.mesh_scale_factor),
                     translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
                 )
             )
         return tuple(configs)
+
+    def _ath_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
+        return self._ath_solver_mesh_configs_for_symmetry(self.symmetry)
 
     def _imported_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
         configs = []
@@ -1465,6 +1482,29 @@ class MainWindow(QMainWindow):
                 surface_tags_by_mesh=surface_tags_by_mesh,
                 symmetry=self.symmetry,
             )
+        except Exception as exc:
+            if str(exc) == STITCH_FAILURE_MESSAGE and self.stitch_imported_meshes:
+                self._refresh_unstitched_mesh_preview_after_stitch_failure()
+                return
+            self.preview.clear()
+
+    def _refresh_unstitched_mesh_preview_after_stitch_failure(self) -> None:
+        try:
+            mesh_configs = self._stitch_candidate_mesh_configs()
+            if not mesh_configs:
+                self.preview.clear()
+                return
+            surface_tags_by_mesh = {
+                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file))
+                for mesh_cfg in mesh_configs
+            }
+            self.preview.load_mesh_configs(
+                mesh_configs,
+                driven_surfaces={(radiator.mesh, radiator.tag) for radiator in self._all_radiators()},
+                surface_tags_by_mesh=surface_tags_by_mesh,
+                symmetry=self.symmetry,
+            )
+            self.status_label.setText("Mesh preview showing unstitched meshes; stitching failed")
         except Exception:
             self.preview.clear()
 

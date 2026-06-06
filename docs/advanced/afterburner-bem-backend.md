@@ -117,11 +117,11 @@ For each frequency, CUDA allocates real and imaginary dense matrices for:
 - adjoint DLP real/imag
 - hypersingular real/imag
 
-The regular-pair kernel skips adjacent pairs. Singular and near-singular corrections use Duffy quadrature and are added after regular assembly. In the application path, `return_gpu=true`, so the regular dense matrices stay on GPU and CUDA evaluates the Duffy correction blocks on GPU before adding them to the resident operators.
+The regular-pair kernel skips adjacent pairs. Singular and near-singular corrections use Duffy quadrature and are added after regular assembly.
 
 The singular path builds a frequency-independent correction cache for the mesh and singular quadrature order. The cache stores adjacent/coincident element pairs, orientation-remapped Duffy rules, surface curls, and pair geometry scalars once, then reuses them across the frequency loop. Per-frequency work still evaluates the Helmholtz kernels because they depend on \(k\).
 
-When CUDA operators are resident on GPU, a Duffy block kernel computes compact per-pair correction blocks directly on device. A CUDA scatter kernel atomically accumulates those compact blocks into dense GPU correction buffers before adding them to the resident operators. The GPU Duffy kernel reuses the regular assembly geometry cache, so the per-frequency singular correction path does not transfer dense CPU correction matrices.
+A Duffy block kernel computes compact per-pair correction blocks directly on device. A CUDA scatter kernel atomically accumulates those compact blocks into dense correction buffers before adding them to the resident operators. The Duffy kernel reuses the regular assembly geometry cache, so the per-frequency singular correction path does not transfer dense CPU correction matrices.
 
 The CUDA singular correction cache stores:
 
@@ -151,56 +151,30 @@ Singular handling has two parts:
 - Identity-domain adjacent, edge-sharing, vertex-sharing, and coincident pairs use the normal Duffy correction cache.
 - Reflected image pairs that become coincident, edge-adjacent, or vertex-adjacent across a symmetry plane use an image-singular correction cache.
 
-The image-singular path computes compact `singular - regular` correction blocks on the GPU, then atomically scatters them into dense GPU correction buffers before adding them to the resident operators. This mirrors the ordinary singular correction path and avoids building dense CPU correction matrices during application solves.
+The image-singular path computes compact `singular - regular` correction blocks on the GPU, then atomically scatters them into dense correction buffers before adding them to the resident operators.
 
-Field evaluation is symmetry-aware by materializing mirrored quadrature sources in the field-evaluation cache. The existing CPU/GPU field kernels are then reused unchanged: source points and normals are reflected for each symmetry transform, while source faces, source elements, quadrature weights, and P1 basis values continue to reference the reduced mesh. Field evaluation is not currently a runtime bottleneck, so this simple expanded-source approach is preferred over a specialized field-only symmetry kernel.
+Field evaluation is symmetry-aware by materializing mirrored quadrature sources in the field-evaluation cache. The existing field kernels are then reused unchanged: source points and normals are reflected for each symmetry transform, while source faces, source elements, quadrature weights, and P1 basis values continue to reference the reduced mesh. Field evaluation is not currently a runtime bottleneck, so this simple expanded-source approach is preferred over a specialized field-only symmetry kernel.
 
 Radiator impedance is computed from reduced-domain pressure and then scaled by the symmetry reduction factor: 2 for `x`, 4 for `xy`. This reports force over the full physical radiator image set while keeping the solve unknowns reduced.
 
 ## CUDA Kernel Modes
 
-The CUDA backend has multiple regular assembly kernels, one singular correction block kernel, and two field-evaluation kernels.
+The CUDA backend has a regular assembly split kernel, one singular correction block kernel, and two field-evaluation kernels.
 
-`_cuda_regular_kernel!` maps GPU threads over element pairs. Each thread computes all quadrature pairs for one or more test/trial element pairs.
-
-`_cuda_regular_quadrature_kernel!` is the fused parallel-quadrature regular assembly kernel. It maps one CUDA block to one test/trial element pair and distributes the quadrature-pair work across threads in the block. Per-thread partial sums are reduced in dynamic shared memory:
+Regular assembly uses a balanced split kernel. It maps one CUDA block to one test/trial element pair and distributes the quadrature-pair work across threads in the block. Per-thread partial sums are reduced in dynamic shared memory:
 
 ```julia
 scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
 ```
 
-The fused kernel computes all regular operators in one pass:
+The balanced split path uses two regular assembly launches:
 
-- single layer;
-- adjoint double layer;
-- double layer;
-- hypersingular.
+- `_cuda_regular_quadrature_slp_hyp_kernel!` computes single-layer and hypersingular contributions.
+- `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double-layer and adjoint double-layer contributions.
 
-It then atomically scatters all real and imaginary element-block entries into dense operator buffers. This path remains available as `regular_assembly_mode=:fused` and is useful as a reference/fallback implementation.
+This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel.
 
-The CUDA backend keeps a `regular_assembly_mode=:split_atomic` path available for comparison. This keeps the same one-block-per-element-pair parallel quadrature strategy and the same dense atomic accumulation model, but splits regular assembly into two kernels:
-
-- `_cuda_regular_quadrature_slp_adjoint_kernel!` computes single layer and adjoint double layer contributions;
-- `_cuda_regular_quadrature_dlp_hyp_kernel!` computes double layer and hypersingular contributions.
-
-The split atomic method intentionally recomputes the Green-function geometry in each split kernel, but it reduces the number of live accumulators and the dynamic shared-memory reduction width per launch. On moderate real-world meshes this has benchmarked faster than the fused all-operator kernel, because the fused kernel's 48 accumulator slots create enough register/shared-memory pressure to outweigh the extra launch and repeated math.
-
-The default CUDA application path uses `regular_assembly_mode=:split_atomic_balanced`, which uses the same two-launch atomic strategy with a different operator grouping:
-
-- `_cuda_regular_quadrature_slp_hyp_kernel!` computes single layer and hypersingular contributions;
-- `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double layer and adjoint double layer contributions.
-
-This changes the shared-memory reduction shape from the original split's 12-slot plus 36-slot launches to two 24-slot launches.
-
-The application default can be overridden in request config with:
-
-```json
-{
-  "julia_cuda_regular_assembly_mode": "split_atomic"
-}
-```
-
-The benchmarking script exposes the same choice with `--regular-assembly-mode fused|split_atomic|split_atomic_balanced`.
+The balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
 
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 
@@ -223,7 +197,7 @@ $$
 A = A_{\mathrm{re}} + i A_{\mathrm{im}},
 $$
 
-This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The default split atomic regular assembly mode preserves this property: it still atomically accumulates into the same dense buffers, but does so through smaller operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
+This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The balanced split regular assembly path preserves this property: it atomically accumulates into the same dense buffers through two balanced operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
 
 ## GPU Dense Solve
 
@@ -279,7 +253,7 @@ u(x)
 \right]w_m,
 $$
 
-where \(y_m\), \(n_m\), and \(w_m\) come from the cached source quadrature data. The GPU result is materialized as a compact potential vector and copied back for SPL conversion and result serialization.
+where \(y_m\), \(n_m\), and \(w_m\) come from the cached source quadrature data. The result is materialized as a compact potential vector and copied back for SPL conversion and result serialization.
 
 SPL is reported as:
 
@@ -295,17 +269,17 @@ Horizontal, vertical, and spherical observation points are concatenated into one
 
 The expensive stages are:
 
-- dense operator assembly, roughly \(O(N_e^2 q^2)\), where \(N_e\) is face count and \(q\) is quadrature point count;
-- dense direct solve, roughly \(O(N_p^3)\), where \(N_p\) is P1 dof count;
-- field evaluation, roughly \(O(N_{\mathrm{obs}} N_e q)\).
+- dense operator assembly, roughly \(O(N_e^2 q^2)\), where \(N_e\) is face count and \(q\) is quadrature point count - Typically `85%` of runtime on benchmark tests
+- dense direct solve, roughly \(O(N_p^3)\), where \(N_p\) is P1 dof count - Typically `9%` of runtime on benchmark tests
+- field evaluation, roughly \(O(N_{\mathrm{obs}} N_e q)\) - Typically `1%` of runtime on benchmark tests
 
-CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The default split atomic regular assembly mode reduces regular-kernel pressure by assembling SLP/adjoint and DLP/hypersingular in separate launches while keeping dense operators resident on the GPU.
+CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The balanced split regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU.
 
 Symmetry can improve runtime by more than the simple physical-area reduction would suggest. A 7k-element in-application test over 50 frequencies measured:
 
 - symmetry disabled: 71.3 s
-- X symmetry: 21.3 s, about 70% faster
-- XY symmetry: 11.6 s, about 84% faster
+- X symmetry: 21.3 s, about `70%` faster
+- XY symmetry: 11.6 s, about `84%` faster
 
 The reason is that symmetry reduces the actual dense system dimension. Assembly has to include image contributions, so its scaling is closer to the expected half-domain or quarter-domain work plus image passes. The direct Burton-Miller solve, however, scales roughly as \(O(N_p^3)\). Halving the P1 unknown count can make the dense solve approach one eighth of the full cost, and quartering it can make that portion much smaller still. Smaller dense matrices also reduce GPU memory pressure and transfer/allocation overhead. As a result, the full solve can beat the naive "50% faster for X, 75% faster for XY" estimate when dense solve time is a meaningful share of the workload.
 

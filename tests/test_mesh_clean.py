@@ -309,3 +309,62 @@ def test_stitch_meshes_remaps_colliding_physical_surface_tags() -> None:
     assert sorted(set(physical_tags)) == [1, 2]
     assert stitched.field_data["surface_a"].tolist() == [1, 2]
     assert stitched.field_data["surface_b"].tolist() == [2, 2]
+
+
+def test_stitch_meshes_can_ignore_xy_symmetry_boundary_edges() -> None:
+    lower = meshio.Mesh(
+        points=np.array(
+            [
+                [0.0, 0.0, -1.0],
+                [2.0, 0.0, -1.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, -1.0],
+            ],
+            dtype=float,
+        ),
+        cells=[("triangle", np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.full(4, 1, dtype=np.int32)]},
+        field_data={"lower": np.array([1, 2], dtype=np.int32)},
+    )
+    upper = meshio.Mesh(
+        points=np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [2.0, 0.0, 1.0],
+                [2.0, 0.0, 0.0],
+                [2.0, 0.5, 0.0],
+                [2.0, 1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 1.0],
+            ],
+            dtype=float,
+        ),
+        cells=[
+            (
+                "triangle",
+                np.array(
+                    [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5], [0, 5, 6], [0, 6, 7]],
+                    dtype=np.int64,
+                ),
+            )
+        ],
+        cell_data={"gmsh:physical": [np.full(6, 2, dtype=np.int32)]},
+        field_data={"upper": np.array([2, 2], dtype=np.int32)},
+    )
+
+    try:
+        stitch_meshes((lower, upper), stitch_tol=1e-9)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Quarter-domain stitch unexpectedly matched full boundary loops.")
+
+    stitched, result = stitch_meshes((lower, upper), stitch_tol=1e-9, ignored_boundary_axes=("x", "y"))
+
+    assert result.stitched_loop_pairs == 1
+    assert result.seam_vertices == 5
+    assert result.after.boundary_edges > 0
+    assert sorted(stitched.field_data) == ["lower", "upper"]

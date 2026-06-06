@@ -77,6 +77,12 @@ class _StitchLoopCandidate:
     loop_b: int
 
 
+@dataclass(frozen=True)
+class _StitchPath:
+    vertices: List[int]
+    closed: bool
+
+
 def _find_triangle_block(mesh: meshio.Mesh) -> Tuple[str, np.ndarray]:
     cells_dict = mesh.cells_dict
     if "triangle" in cells_dict:
@@ -150,6 +156,92 @@ def _boundary_loops(triangles: np.ndarray) -> List[List[int]]:
                 loops.append(loop)
 
     return loops
+
+
+def _edge_on_ignored_boundary_plane(points: np.ndarray, edge: np.ndarray, axes: tuple[str, ...], tolerance: float) -> bool:
+    axis_indices = {"x": 0, "y": 1, "z": 2}
+    edge_points = points[np.asarray(edge, dtype=np.int64)]
+    return any(np.all(np.abs(edge_points[:, axis_indices[axis]]) <= tolerance) for axis in axes)
+
+
+def _order_boundary_component(adjacency: Dict[int, List[int]], component: List[int]) -> _StitchPath | None:
+    degrees = {vertex: len(adjacency[vertex]) for vertex in component}
+    endpoints = sorted(vertex for vertex, degree in degrees.items() if degree == 1)
+    if len(endpoints) == 0 and all(degree == 2 for degree in degrees.values()):
+        start = min(component)
+        closed = True
+    elif len(endpoints) == 2 and all(degree in (1, 2) for degree in degrees.values()):
+        start = endpoints[0]
+        closed = False
+    else:
+        return None
+
+    ordered = [start]
+    previous: int | None = None
+    current = start
+    seen_edges: set[Tuple[int, int]] = set()
+    while True:
+        candidates = [
+            vertex
+            for vertex in sorted(adjacency[current])
+            if vertex != previous and tuple(sorted((current, vertex))) not in seen_edges
+        ]
+        if not candidates:
+            break
+        nxt = candidates[0]
+        seen_edges.add(tuple(sorted((current, nxt))))
+        if closed and nxt == start:
+            break
+        ordered.append(nxt)
+        previous, current = current, nxt
+
+    min_vertices = 3 if closed else 2
+    return _StitchPath(ordered, closed) if len(ordered) >= min_vertices else None
+
+
+def _boundary_stitch_paths(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    *,
+    ignored_boundary_axes: tuple[str, ...] = (),
+    boundary_plane_tol: float = 1e-9,
+) -> List[_StitchPath]:
+    if not ignored_boundary_axes:
+        return [_StitchPath(loop, True) for loop in _boundary_loops(triangles)]
+
+    ignored_axes = _normalize_mirror_axes(ignored_boundary_axes)
+    edges = [
+        tuple(int(value) for value in edge)
+        for edge in _boundary_edges(triangles)
+        if not _edge_on_ignored_boundary_plane(points, edge, ignored_axes, boundary_plane_tol)
+    ]
+    if not edges:
+        return []
+
+    adjacency: Dict[int, List[int]] = {}
+    for a, b in edges:
+        adjacency.setdefault(a, []).append(b)
+        adjacency.setdefault(b, []).append(a)
+
+    paths: List[_StitchPath] = []
+    seen: set[int] = set()
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        component: List[int] = []
+        while stack:
+            vertex = stack.pop()
+            component.append(vertex)
+            for neighbor in adjacency[vertex]:
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        path = _order_boundary_component(adjacency, component)
+        if path is not None:
+            paths.append(path)
+    return paths
 
 
 def _connected_components(triangles: np.ndarray) -> int:
@@ -396,17 +488,48 @@ def _loop_lengths(points: np.ndarray, loop: Sequence[int]) -> Tuple[np.ndarray, 
     return cumulative, float(np.sum(edge_lengths))
 
 
+def _path_lengths(points: np.ndarray, path: Sequence[int], closed: bool) -> Tuple[np.ndarray, float]:
+    if closed:
+        return _loop_lengths(points, path)
+    if len(path) < 2:
+        return np.asarray([0.0]), 0.0
+    starts = points[np.asarray(path[:-1], dtype=np.int64)]
+    ends = points[np.asarray(path[1:], dtype=np.int64)]
+    edge_lengths = np.linalg.norm(ends - starts, axis=1)
+    cumulative = np.concatenate(([0.0], np.cumsum(edge_lengths)))
+    return cumulative, float(np.sum(edge_lengths))
+
+
+def _path_edge_count(path: Sequence[int], closed: bool) -> int:
+    return len(path) if closed else max(len(path) - 1, 0)
+
+
+def _path_edge_vertices(path: Sequence[int], edge_index: int, closed: bool) -> Tuple[int, int]:
+    start = int(path[edge_index])
+    end_index = (edge_index + 1) % len(path) if closed else edge_index + 1
+    return start, int(path[end_index])
+
+
 def _closest_point_on_loop(
     point: np.ndarray,
     points: np.ndarray,
     loop: Sequence[int],
 ) -> Tuple[float, int, float, np.ndarray]:
+    return _closest_point_on_path(point, points, loop, True)
+
+
+def _closest_point_on_path(
+    point: np.ndarray,
+    points: np.ndarray,
+    path: Sequence[int],
+    closed: bool,
+) -> Tuple[float, int, float, np.ndarray]:
     best_distance = float("inf")
     best_edge_index = 0
     best_t = 0.0
-    best_point = points[loop[0]]
-    for edge_index, start_vertex in enumerate(loop):
-        end_vertex = loop[(edge_index + 1) % len(loop)]
+    best_point = points[path[0]]
+    for edge_index in range(_path_edge_count(path, closed)):
+        start_vertex, end_vertex = _path_edge_vertices(path, edge_index, closed)
         distance, t, closest = _point_on_segment(point, points[start_vertex], points[end_vertex])
         if distance < best_distance:
             best_distance = distance
@@ -419,9 +542,21 @@ def _closest_point_on_loop(
 def _loop_distance(points: np.ndarray, source_loop: Sequence[int], target_loop: Sequence[int]) -> float:
     if not source_loop or not target_loop:
         return float("inf")
+    return _path_distance(points, source_loop, True, target_loop, True)
+
+
+def _path_distance(
+    points: np.ndarray,
+    source_path: Sequence[int],
+    source_closed: bool,
+    target_path: Sequence[int],
+    target_closed: bool,
+) -> float:
+    if not source_path or not target_path:
+        return float("inf")
     distances = [
-        _closest_point_on_loop(points[vertex], points, target_loop)[0]
-        for vertex in source_loop
+        _closest_point_on_path(points[vertex], points, target_path, target_closed)[0]
+        for vertex in source_path
     ]
     return float(max(distances))
 
@@ -450,17 +585,17 @@ def _choose_stitch_loop_pair(
 
 def _choose_stitch_loop_pairs(
     points: np.ndarray,
-    loops_by_mesh: Sequence[Sequence[Sequence[int]]],
+    loops_by_mesh: Sequence[Sequence[_StitchPath]],
     stitch_tol: float,
-) -> List[Tuple[List[int], List[int]]]:
+) -> List[Tuple[_StitchPath, _StitchPath]]:
     candidates: List[_StitchLoopCandidate] = []
     for mesh_a, loops_a in enumerate(loops_by_mesh[:-1]):
         for mesh_b in range(mesh_a + 1, len(loops_by_mesh)):
             loops_b = loops_by_mesh[mesh_b]
             for loop_a_index, loop_a in enumerate(loops_a):
                 for loop_b_index, loop_b in enumerate(loops_b):
-                    distance_ab = _loop_distance(points, loop_a, loop_b)
-                    distance_ba = _loop_distance(points, loop_b, loop_a)
+                    distance_ab = _path_distance(points, loop_a.vertices, loop_a.closed, loop_b.vertices, loop_b.closed)
+                    distance_ba = _path_distance(points, loop_b.vertices, loop_b.closed, loop_a.vertices, loop_a.closed)
                     score = max(distance_ab, distance_ba)
                     if score <= stitch_tol:
                         candidates.append(
@@ -473,7 +608,7 @@ def _choose_stitch_loop_pairs(
                             )
                         )
 
-    stitched_pairs: List[Tuple[List[int], List[int]]] = []
+    stitched_pairs: List[Tuple[_StitchPath, _StitchPath]] = []
     used_loops: set[Tuple[int, int]] = set()
     for candidate in sorted(candidates, key=lambda item: item.score):
         loop_key_a = (candidate.mesh_a, candidate.loop_a)
@@ -484,8 +619,8 @@ def _choose_stitch_loop_pairs(
         used_loops.add(loop_key_b)
         stitched_pairs.append(
             (
-                list(loops_by_mesh[candidate.mesh_a][candidate.loop_a]),
-                list(loops_by_mesh[candidate.mesh_b][candidate.loop_b]),
+                loops_by_mesh[candidate.mesh_a][candidate.loop_a],
+                loops_by_mesh[candidate.mesh_b][candidate.loop_b],
             )
         )
 
@@ -500,28 +635,50 @@ def _seam_points_from_loops(
     other_loop: Sequence[int],
     stitch_tol: float,
 ) -> np.ndarray:
-    cumulative, perimeter = _loop_lengths(points, reference_loop)
+    return _seam_points_from_paths(points, reference_loop, True, other_loop, True, stitch_tol)
+
+
+def _seam_points_from_paths(
+    points: np.ndarray,
+    reference_path: Sequence[int],
+    reference_closed: bool,
+    other_path: Sequence[int],
+    other_closed: bool,
+    stitch_tol: float,
+) -> np.ndarray:
+    cumulative, perimeter = _path_lengths(points, reference_path, reference_closed)
     if perimeter <= 0.0:
-        raise ValueError("Cannot stitch a zero-length boundary loop.")
+        raise ValueError("Cannot stitch a zero-length boundary path.")
 
     proposals: list[tuple[float, np.ndarray]] = []
-    for edge_index, vertex in enumerate(reference_loop):
+    for edge_index, vertex in enumerate(reference_path):
         ref_point = points[vertex]
-        distance, _other_edge, _other_t, other_point = _closest_point_on_loop(ref_point, points, other_loop)
+        distance, _other_edge, _other_t, other_point = _closest_point_on_path(
+            ref_point,
+            points,
+            other_path,
+            other_closed,
+        )
         if distance > stitch_tol:
-            raise ValueError("Reference boundary loop is not fully within the stitch tolerance.")
+            raise ValueError("Reference boundary path is not fully within the stitch tolerance.")
         proposals.append((float(cumulative[edge_index]), 0.5 * (ref_point + other_point)))
 
-    for vertex in other_loop:
+    for vertex in other_path:
         other_point = points[vertex]
-        distance, ref_edge, ref_t, ref_point = _closest_point_on_loop(other_point, points, reference_loop)
+        distance, ref_edge, ref_t, ref_point = _closest_point_on_path(
+            other_point,
+            points,
+            reference_path,
+            reference_closed,
+        )
         if distance > stitch_tol:
-            raise ValueError("Other boundary loop is not fully within the stitch tolerance.")
-        start = points[reference_loop[ref_edge]]
-        end = points[reference_loop[(ref_edge + 1) % len(reference_loop)]]
+            raise ValueError("Other boundary path is not fully within the stitch tolerance.")
+        start_vertex, end_vertex = _path_edge_vertices(reference_path, ref_edge, reference_closed)
+        start = points[start_vertex]
+        end = points[end_vertex]
         edge_length = float(np.linalg.norm(end - start))
         param = float(cumulative[ref_edge] + ref_t * edge_length)
-        if param >= perimeter:
+        if reference_closed and param >= perimeter:
             param = 0.0
         proposals.append((param, 0.5 * (other_point + ref_point)))
 
@@ -531,13 +688,14 @@ def _seam_points_from_loops(
     for param, point in proposals:
         if merged and abs(param - merged[-1][0]) <= param_tol:
             merged[-1][1].append(point)
-        elif merged and abs(param - perimeter) <= param_tol and abs(merged[0][0]) <= param_tol:
+        elif reference_closed and merged and abs(param - perimeter) <= param_tol and abs(merged[0][0]) <= param_tol:
             merged[0][1].append(point)
         else:
             merged.append((param, [point]))
 
     seam_points = np.asarray([np.mean(group, axis=0) for _param, group in merged], dtype=float)
-    if len(seam_points) < 3:
+    min_seam_points = 3 if reference_closed else 2
+    if len(seam_points) < min_seam_points:
         raise ValueError("Stitch seam needs at least three vertices.")
     return seam_points
 
@@ -559,6 +717,7 @@ def _split_stitched_loop_edges(
     seam_points: np.ndarray,
     seam_vertex_ids: np.ndarray,
     stitch_tol: float,
+    closed: bool = True,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], int, int]:
     seam_point_by_vertex_id = {
         int(vertex_id): seam_points[index]
@@ -572,29 +731,41 @@ def _split_stitched_loop_edges(
             raise ValueError("A boundary vertex could not be mapped onto the stitched seam.")
         loop_vertex_to_seam[int(vertex)] = int(seam_vertex_ids[seam_index])
     edge_to_seam: Dict[Tuple[int, int], List[Tuple[float, int]]] = {
-        tuple(sorted((int(loop[i]), int(loop[(i + 1) % len(loop)])))): []
-        for i in range(len(loop))
+        tuple(sorted(_path_edge_vertices(loop, i, closed))): []
+        for i in range(_path_edge_count(loop, closed))
     }
+    for i in range(_path_edge_count(loop, closed)):
+        start_vertex, end_vertex = _path_edge_vertices(loop, i, closed)
+        edge_key = tuple(sorted((start_vertex, end_vertex)))
+        edge_to_seam[edge_key].extend(
+            [
+                (0.0, loop_vertex_to_seam[start_vertex]),
+                (1.0, loop_vertex_to_seam[end_vertex]),
+            ]
+        )
 
     for seam_index, seam_point in enumerate(seam_points):
         best_distance = float("inf")
         best_edge: Tuple[int, int] | None = None
         best_t = 0.0
-        matching_edges: list[tuple[Tuple[int, int], float]] = []
-        for i, start_vertex in enumerate(loop):
-            end_vertex = int(loop[(i + 1) % len(loop)])
-            start_vertex = int(start_vertex)
+        edge_distances: list[tuple[float, Tuple[int, int], float]] = []
+        for i in range(_path_edge_count(loop, closed)):
+            start_vertex, end_vertex = _path_edge_vertices(loop, i, closed)
             distance, t, _closest = _point_on_segment(seam_point, points[start_vertex], points[end_vertex])
-            if distance <= stitch_tol:
-                matching_edges.append((tuple(sorted((start_vertex, end_vertex))), t))
+            edge_key = tuple(sorted((start_vertex, end_vertex)))
+            edge_distances.append((distance, edge_key, t))
             if distance < best_distance:
                 best_distance = distance
-                best_edge = tuple(sorted((start_vertex, end_vertex)))
+                best_edge = edge_key
                 best_t = t
         if best_edge is None or best_distance > stitch_tol:
             raise ValueError("A seam vertex could not be projected onto one of the stitched boundary loops.")
-        if not matching_edges:
-            matching_edges = [(best_edge, best_t)]
+        projection_tol = max(1e-8, stitch_tol * 1e-6)
+        matching_edges = [
+            (edge_key, t)
+            for distance, edge_key, t in edge_distances
+            if distance <= projection_tol
+        ] or [(best_edge, best_t)]
         for edge_key, t in matching_edges:
             edge_to_seam[edge_key].append((t, int(seam_vertex_ids[seam_index])))
 
@@ -626,7 +797,10 @@ def _split_stitched_loop_edges(
         ):
             ordered = list(reversed(ordered))
 
-        sequence = [vertex_id for _t, vertex_id in ordered]
+        sequence = []
+        for _t, vertex_id in ordered:
+            if not sequence or sequence[-1] != vertex_id:
+                sequence.append(vertex_id)
         if len(sequence) < 2:
             raise ValueError("Stitch boundary edge does not contain enough seam vertices.")
         replacement = [np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64) for i in range(len(sequence) - 1)]
@@ -801,17 +975,20 @@ def stitch_meshes(
     *,
     stitch_tol: float,
     area_tol: float = AREA_TOL,
+    ignored_boundary_axes: tuple[str, ...] = (),
+    boundary_plane_tol: float = 1e-9,
 ) -> Tuple[meshio.Mesh, StitchResult]:
     if len(meshes) < 2:
         raise ValueError("Boundary stitching requires at least two input meshes.")
     if stitch_tol <= 0:
         raise ValueError("stitch_tol must be greater than zero.")
+    ignored_boundary_axes = _normalize_mirror_axes(ignored_boundary_axes)
 
     point_parts = []
     triangle_parts = []
     cell_data_names: set[str] = set()
     per_mesh_cell_data: list[Dict[str, np.ndarray]] = []
-    loops_by_mesh: list[list[list[int]]] = []
+    triangles_by_mesh: list[np.ndarray] = []
     vertex_offset = 0
     field_data = {}
     used_surface_tags: set[int] = set()
@@ -846,12 +1023,21 @@ def stitch_meshes(
         point_parts.append(points)
         triangle_parts.append(offset_triangles)
         per_mesh_cell_data.append(cell_data)
-        loops_by_mesh.append(_boundary_loops(offset_triangles))
+        triangles_by_mesh.append(offset_triangles)
         vertex_offset += len(points)
 
     points = np.vstack(point_parts)
     triangles = np.vstack(triangle_parts)
     before = _mesh_stats(points, triangles, area_tol)
+    loops_by_mesh = [
+        _boundary_stitch_paths(
+            points,
+            mesh_triangles,
+            ignored_boundary_axes=ignored_boundary_axes,
+            boundary_plane_tol=boundary_plane_tol,
+        )
+        for mesh_triangles in triangles_by_mesh
+    ]
 
     cell_data: Dict[str, np.ndarray] = {}
     for name in sorted(cell_data_names):
@@ -872,8 +1058,15 @@ def stitch_meshes(
     split_boundary_edges = 0
     split_triangles = 0
 
-    for loop_a, loop_b in stitch_loop_pairs:
-        seam_points = _seam_points_from_loops(points_with_seam, loop_a, loop_b, stitch_tol)
+    for path_a, path_b in stitch_loop_pairs:
+        seam_points = _seam_points_from_paths(
+            points_with_seam,
+            path_a.vertices,
+            path_a.closed,
+            path_b.vertices,
+            path_b.closed,
+            stitch_tol,
+        )
         seam_vertex_ids = np.arange(
             len(points_with_seam),
             len(points_with_seam) + len(seam_points),
@@ -885,19 +1078,21 @@ def stitch_meshes(
             points_with_seam,
             triangles_split,
             cell_data_split,
-            loop_a,
+            path_a.vertices,
             seam_points,
             seam_vertex_ids,
             stitch_tol,
+            path_a.closed,
         )
         triangles_split, cell_data_split, split_edges_b, split_triangles_b = _split_stitched_loop_edges(
             points_with_seam,
             triangles_split,
             cell_data_split,
-            loop_b,
+            path_b.vertices,
             seam_points,
             seam_vertex_ids,
             stitch_tol,
+            path_b.closed,
         )
         seam_vertex_count += int(len(seam_points))
         split_boundary_edges += int(split_edges_a + split_edges_b)
