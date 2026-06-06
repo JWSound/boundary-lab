@@ -63,7 +63,14 @@ from blab.postprocess import PrepConfig
 from blab.solvers.registry import backend_info, normalize_backend_id
 from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
 from blab.ui.diagnostics import DiagnosticsDialog
-from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
+from blab.ui.dialogs import (
+    ChannelConfigDialog,
+    DonateDialog,
+    MeshConfigDialog,
+    MeshDialogEntry,
+    PreferencesDialog,
+    SourceConfigDialog,
+)
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
     AUDIO_FREQ_MIN_HZ,
@@ -389,6 +396,10 @@ class MainWindow(QMainWindow):
         diagnostics_action = QAction("Diagnostic Info", self)
         diagnostics_action.triggered.connect(self.open_diagnostics)
         about_menu.addAction(diagnostics_action)
+
+        donate_action = QAction("Donate", self)
+        donate_action.triggered.connect(self.open_donate)
+        about_menu.addAction(donate_action)
 
         help_action = QAction("Help", self)
         help_action.triggered.connect(self.open_help)
@@ -2007,6 +2018,11 @@ class MainWindow(QMainWindow):
     @Slot()
     def open_diagnostics(self) -> None:
         dialog = DiagnosticsDialog(self.preferences, self)
+        dialog.exec()
+
+    @Slot()
+    def open_donate(self) -> None:
+        dialog = DonateDialog(self)
         dialog.exec()
 
     @Slot()

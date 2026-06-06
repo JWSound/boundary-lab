@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -43,6 +44,13 @@ CROSSOVER_TYPE_OPTIONS = [
     ("Linkwitz-Riley 4th", ("linkwitz_riley", 4)),
     ("Linkwitz-Riley 6th", ("linkwitz_riley", 6)),
 ]
+APP_ROOT = Path(__file__).resolve().parents[3]
+DONATE_QR_PATH = APP_ROOT / "assets" / "donateqr.png"
+DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
+DONATE_BLURB = (
+    "Boundary Lab is free open source software. If you've found the tool helpful for your workflows and want "
+    "to contribute, please consider a donation to support future development."
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,52 @@ class MeshDialogEntry:
     translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     enabled: bool = True
     locked: bool = False
+
+
+class DonateDialog(QDialog):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Donate")
+
+        qr_label = QLabel()
+        qr_label.setAlignment(Qt.AlignCenter)
+        qr_pixmap = QPixmap(str(DONATE_QR_PATH))
+        if qr_pixmap.isNull():
+            qr_label.setText(f"Donation QR code could not be loaded:\n{DONATE_QR_PATH}")
+            qr_label.setWordWrap(True)
+        else:
+            qr_label.setPixmap(qr_pixmap.scaled(130, 130, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        blurb_label = QLabel(DONATE_BLURB)
+        blurb_label.setWordWrap(True)
+        blurb_label.setAlignment(Qt.AlignCenter)
+
+        donate_button = QPushButton("Donate with PayPal")
+        donate_button.clicked.connect(self._open_donate_url)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch(1)
+        button_row.addWidget(donate_button)
+        button_row.addStretch(1)
+
+        close_buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        close_buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.addWidget(qr_label, alignment=Qt.AlignCenter)
+        layout.addWidget(blurb_label)
+        layout.addLayout(button_row)
+        layout.addWidget(close_buttons)
+        self.resize(420, 440)
+
+    def _open_donate_url(self) -> None:
+        if not QDesktopServices.openUrl(QUrl(DONATE_URL)):
+            QMessageBox.warning(
+                self,
+                "Donation link failed",
+                "Unable to open the donation page in the default browser.",
+            )
 
 
 def _crossover_label(crossover: CrossoverConfig) -> str:
