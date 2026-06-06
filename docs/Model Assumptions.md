@@ -22,21 +22,21 @@ Despite each source being driven according to an idealized source, the resultant
 ## Boundary Integral Equation Model
 Boundary Lab solves the exterior acoustic Helmholtz problem in the frequency domain. For each solved frequency, the acoustic pressure `p` outside the mesh is assumed to satisfy:
 
-```text
-del^2 p + k^2 p = 0
-```
+$$
+\nabla^2 p + k^2 p = 0
+$$
 
 where:
 
-- `k = omega / c`
-- `omega = 2 pi f`
+- `k = \omega / c`
+- `\omega = 2 \pi f`
 - `c` is the speed of sound
 
 The mesh surface is treated as the boundary of the exterior acoustic domain. Boundary Lab uses a Neumann boundary condition, meaning the normal pressure gradient is prescribed from the configured surface velocity:
 
-```text
-q = dp/dn = i rho omega v_n
-```
+$$
+q = \frac{\partial p}{\partial n} = i \rho \omega v_n
+$$
 
 where:
 
@@ -57,9 +57,9 @@ At each frequency, Boundary Lab assembles Helmholtz boundary operators on these 
 ### Classical Exterior Neumann Form
 When Burton-Miller is disabled, Boundary Lab solves the classical exterior Neumann boundary integral equation:
 
-```text
-(K - 1/2 I) p = S q
-```
+$$
+(K - \frac{1}{2} I) p = S q
+$$
 
 where:
 
@@ -71,9 +71,9 @@ where:
 
 This corresponds to the exterior representation used later for field evaluation:
 
-```text
+$$
 p(x) = D[p](x) - S[q](x)
-```
+$$
 
 where `D[p]` is the double-layer potential and `S[q]` is the single-layer potential evaluated at observation point `x`.
 
@@ -89,15 +89,17 @@ When Burton-Miller is enabled, Boundary Lab assembles the double-layer, single-l
 
 The coupling factor is:
 
-```text
-alpha = i / k
-```
+$$
+\alpha = \frac{i}{k}
+$$
 
 Using Bempp-cl sign conventions, the implemented linear system is:
 
-```text
-(1/2 I - K - alpha (-W_bempp)) p = (-S - alpha (K' + 1/2 I)) q
-```
+$$
+\left(\frac{1}{2} I - K - \alpha(-W_\mathrm{bempp})\right)p
+=
+\left(-S - \alpha\left(K' + \frac{1}{2} I\right)\right)q
+$$
 
 The code explicitly applies the `-W_bempp` term because Bempp-cl's hypersingular operator has the opposite sign from the convention used in the Burton-Miller equation implemented here.
 
@@ -106,14 +108,14 @@ The practical effect is that Boundary Lab combines the pressure equation with it
 ### Field Evaluation and SPL Output
 After solving for boundary pressure, Boundary Lab evaluates the acoustic pressure at polar and spherical observation points using:
 
-```text
+$$
 p(x) = D[p](x) - S[q](x)
-```
+$$
 
 The complex pressure magnitude is converted to SPL with:
 
-```text
-SPL = 20 log10(|p(x)| / 20e-6)
-```
+$$
+\mathrm{SPL} = 20\log_{10}\left(\frac{|p(x)|}{20 \times 10^{-6}}\right)
+$$
 
 The raw solver output is normalized to the horizontal on-axis response. Plotting and export paths can then re-normalize the horizontal and vertical planes to the configured reference angles for directivity visualization.

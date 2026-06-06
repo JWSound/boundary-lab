@@ -12,8 +12,8 @@ from typing import Callable
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence, QPalette
+from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -64,7 +64,6 @@ from blab.solvers.registry import backend_info, normalize_backend_id
 from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import ChannelConfigDialog, MeshConfigDialog, MeshDialogEntry, PreferencesDialog, SourceConfigDialog
-from blab.ui.help import HelpBrowserDialog
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
     AUDIO_FREQ_MIN_HZ,
@@ -145,6 +144,7 @@ APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
 GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
+HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 EDITOR_RAIL_WIDTH = 24
 ADD_SCRIPT_TAB_LABEL = "+"
 
@@ -2011,8 +2011,19 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_help(self) -> None:
-        dialog = HelpBrowserDialog(APP_ROOT / "docs", self)
-        dialog.exec()
+        if not HELP_GUIDE_PDF.exists():
+            QMessageBox.warning(
+                self,
+                "Help guide missing",
+                f"The Boundary Lab guide PDF could not be found:\n{HELP_GUIDE_PDF}",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(HELP_GUIDE_PDF))):
+            QMessageBox.warning(
+                self,
+                "Help guide failed",
+                "Unable to open the Boundary Lab guide PDF in the default viewer.",
+            )
 
     @Slot()
     def open_mesh_config(self) -> None:
