@@ -1470,7 +1470,7 @@ class MainWindow(QMainWindow):
             "Mesh quality warning",
             (
                 "The cleaned mesh contains extremely thin triangles that may make the "
-                "Afterburner produced non-finite results.\n\n"
+                "BEAT Engine produced non-finite results.\n\n"
                 f"Thin triangles: {warning.sliver_triangles}\n"
                 f"Float32-singular triangles: {warning.float32_singular_triangles}\n"
                 f"Worst triangle: {warning.worst_triangle_index}\n"

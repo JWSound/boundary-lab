@@ -3,8 +3,8 @@ using LinearAlgebra
 using Printf
 using StaticArrays
 
-include(joinpath(@__DIR__, "src", "AfterburnerCore.jl"))
-using .AfterburnerCore
+include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
+using .BeatEngineCore
 
 LinearAlgebra.BLAS.set_num_threads(Threads.nthreads())
 
@@ -533,7 +533,7 @@ function solve_request(request)
 end
 
 function cleanup_cuda_after_solve!()
-    cuda = AfterburnerCore.CUDA_MODULE
+    cuda = BeatEngineCore.CUDA_MODULE
     if cuda !== nothing
         try
             cuda.functional() && cuda.synchronize()
@@ -583,7 +583,7 @@ function solve_request_impl(request)
     )
 
     emit_event("status"; message=@sprintf(
-        "Afterburner loading %d mesh%s with %d thread(s)",
+        "BEAT Engine loading %d mesh%s with %d thread(s)",
         length(mesh_inputs),
         length(mesh_inputs) == 1 ? "" : "es",
         Threads.nthreads(),
@@ -605,10 +605,10 @@ function solve_request_impl(request)
     flat_target_reference_angle_deg = FloatType(get_value(config, "flat_target_reference_angle_deg", 0.0))
     channel_names = sort(unique([String(get_value(radiator, "channel", "main")) for radiator in radiators]))
     singular_cache = build_singular_correction_cache(mesh, singular_order)
-    emit_event("status"; message="Afterburner using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
+    emit_event("status"; message="BEAT Engine using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
     cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
     field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
-    cuda_singular_cache = AfterburnerCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
 
     for (index, freq_raw) in enumerate(frequencies)
         if cancel_path !== nothing && isfile(String(cancel_path))

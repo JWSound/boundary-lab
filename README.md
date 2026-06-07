@@ -22,15 +22,15 @@ The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
-### Optional Afterburner GPU Solver
+### Optional BEAT Engine GPU Solver
 
-Boundary Lab can also run the local Afterburner GPU backend from the Preferences window by selecting `Afterburner (Nvidia GPU)` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
+Boundary Lab can also run the local BEAT Engine GPU backend, short for Boundary Element Acoustic Toolkit Engine, from the Preferences window by selecting `BEAT Engine (Nvidia GPU)` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
 
 Additional requirements:
 
 - NVIDIA GPU with a working CUDA-capable driver
-- [Julia](https://julialang.org/downloads/) installed and available on `PATH`, or configured as the Julia executable in Preferences
-- Boundary Lab's Afterburner Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
+- [Julia](https://julialang.org/downloads/) installed and available on `PATH`
+- Boundary Lab's BEAT Engine Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
 
 To prepare the Julia environment from the repository root:
 
@@ -38,7 +38,7 @@ To prepare the Julia environment from the repository root:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-The first Afterburner solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent Afterburner worker and warmed CUDA kernels.
+The first BEAT Engine solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent BEAT Engine worker and warmed CUDA kernels.
 
 CUDA GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 
@@ -104,3 +104,4 @@ API surface:
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
+- [BEAT Engine BEM backend](docs/advanced/beat-engine-bem-backend.md)

@@ -1,6 +1,6 @@
-include(joinpath(@__DIR__, "..", "src", "AfterburnerCore.jl"))
+include(joinpath(@__DIR__, "..", "src", "BeatEngineCore.jl"))
 
-using .AfterburnerCore
+using .BeatEngineCore
 
 for name in ("sample.msh", "sample_half.msh", "sample_quarter.msh")
     mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", name), Float32(0.001))

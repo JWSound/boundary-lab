@@ -1,17 +1,23 @@
-"""Compatibility imports for the renamed Afterburner backend."""
+"""Compatibility imports for the BEAT Engine backend."""
 
-from blab.solvers.afterburner_backend import (
+from blab.solvers.beat_engine_backend import (
     DEFAULT_AFTERBURNER_PROJECT,
     DEFAULT_AFTERBURNER_SOLVER_SCRIPT,
+    DEFAULT_BEAT_ENGINE_PROJECT,
+    DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
     DEFAULT_JULIA_PROJECT,
     DEFAULT_JULIA_SOLVER_SCRIPT,
     AfterburnerBackend,
     AfterburnerSession,
     AfterburnerWorkerProcess,
+    BeatEngineBackend,
+    BeatEngineSession,
+    BeatEngineWorkerProcess,
     JuliaLocalBackend,
     JuliaLocalSession,
     JuliaWorkerProcess,
     _resolve_julia_threads,
     shutdown_afterburner_workers,
+    shutdown_beat_engine_workers,
     shutdown_julia_workers,
 )

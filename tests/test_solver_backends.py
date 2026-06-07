@@ -4,7 +4,8 @@ import sys
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
-from blab.solvers.afterburner_backend import AfterburnerBackend, _resolve_julia_threads, shutdown_afterburner_workers
+from blab.solvers.afterburner_backend import AfterburnerBackend, shutdown_afterburner_workers
+from blab.solvers.beat_engine_backend import BeatEngineBackend, _resolve_julia_threads, shutdown_beat_engine_workers
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
@@ -19,13 +20,16 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     labels = backend_label_to_id()
 
     assert labels["Server"] == "server"
-    assert labels["Afterburner (Nvidia GPU)"] == "julia_local"
+    assert labels["BEAT Engine (Nvidia GPU)"] == "julia_local"
     assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
     assert normalize_backend_id("local_julia") == "julia_local"
+    assert normalize_backend_id("beat") == "julia_local"
+    assert normalize_backend_id("beat_engine") == "julia_local"
     assert normalize_backend_id("afterburner") == "julia_local"
-    assert JuliaLocalBackend is AfterburnerBackend
+    assert JuliaLocalBackend is BeatEngineBackend
+    assert AfterburnerBackend is BeatEngineBackend
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
@@ -216,7 +220,7 @@ for line in sys.stdin:
 
         assert starts_path.read_text(encoding="utf-8") == "1"
     finally:
-        shutdown_afterburner_workers()
+        shutdown_beat_engine_workers()
 
 
 def test_julia_backend_cancel_keeps_persistent_worker_warm(tmp_path) -> None:
@@ -292,4 +296,4 @@ for line in sys.stdin:
         assert len(list(completed_session.solve_stream())) == 1
         assert starts_path.read_text(encoding="utf-8") == "1"
     finally:
-        shutdown_afterburner_workers()
+        shutdown_beat_engine_workers()

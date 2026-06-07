@@ -1,0 +1,292 @@
+# BEAT Engine BEM Backend
+
+Boundary Lab's BEAT Engine backend, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation in `src/blab/solvers/julia_local/src/BeatEngineCuda.jl` is the primary high-performance path; `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
+
+The backend solves exterior acoustic radiation from prescribed normal velocity on tagged radiator surfaces. It currently uses single precision (`Float32`) for local solves.
+
+## Solve Pipeline
+
+For each solve request, Julia:
+
+1. Loads one or more Gmsh 2.2 ASCII triangle meshes.
+2. Applies per-mesh scale and translation, then combines them into one `BoundaryMesh`.
+3. Builds P1 pressure and DP0 velocity spaces.
+4. Builds frequency-independent identity matrices.
+5. For each frequency, assembles Helmholtz boundary operators.
+6. Solves the Burton-Miller Neumann system for boundary pressure.
+7. Evaluates SPL at polar and optional spherical observation points.
+8. Computes per-radiator acoustic impedance from pressure over driven elements.
+
+Radiators are resolved by both physical tag and mesh id, so duplicate physical tags are allowed across meshes when the radiator specifies its mesh.
+
+## Boundary Integral Formulation
+
+The backend uses the outgoing Helmholtz Green function
+
+$$
+G_k(x,y) = \frac{e^{i k \lVert y-x \rVert}}{4\pi \lVert y-x \rVert}.
+$$
+
+The assembled operator tuple contains:
+
+- `single_layer`: maps DP0 Neumann data to P1 test functions.
+- `double_layer`: maps P1 pressure data to P1 test functions.
+- `adjoint_double_layer`: maps DP0 Neumann data to P1 test functions.
+- `hypersingular`: maps P1 pressure data to P1 test functions.
+
+The dense Burton-Miller system is formed as:
+
+$$
+\left(\frac{1}{2} I_{P1,P1} - D + \eta H\right)p
+=
+\left(-S - \eta\left(D^{*} + \frac{1}{2} I_{P1,DP0}\right)\right)q,
+$$
+
+where:
+
+$$
+\eta = \frac{i}{k}.
+$$
+
+Here \(p\) is the solved boundary pressure and \(q\) is the Neumann/radiator drive vector. Radiator normal velocity is converted to Neumann data with:
+
+$$
+q = i \rho \omega v_n.
+$$
+
+## CUDA Operator Assembly
+
+The CUDA path assembles dense Galerkin operators by splitting triangle pairs into regular pairs and adjacent/coincident singular pairs. Regular pairs are assembled by CUDA kernels over test/trial element pairs. Adjacent, edge-sharing, vertex-sharing, and coincident pairs are handled by a separate GPU Duffy correction path.
+
+For a test triangle \(T_i\), trial triangle \(T_j\), test basis function \(\phi_a\), and trial basis function \(\psi_b\), a typical single-layer block entry is:
+
+$$
+S_{ab}^{ij}
+=
+\int_{T_i}\int_{T_j}
+\phi_a(x) G_k(x,y) \psi_b(y)\,dS_y\,dS_x.
+$$
+
+The double-layer and adjoint double-layer use normal derivatives of \(G_k\):
+
+$$
+D_{ab}^{ij}
+=
+\int_{T_i}\int_{T_j}
+\phi_a(x) \frac{\partial G_k(x,y)}{\partial n_y} \psi_b(y)\,dS_y\,dS_x,
+$$
+
+$$
+(D^{*})_{ab}^{ij}
+=
+\int_{T_i}\int_{T_j}
+\phi_a(x) \frac{\partial G_k(x,y)}{\partial n_x} \psi_b(y)\,dS_y\,dS_x.
+$$
+
+The hypersingular block is assembled with the surface-curl weak form:
+
+$$
+H_{ab}^{ij}
+=
+\int_{T_i}\int_{T_j}
+G_k(x,y)
+\left[
+\operatorname{curl}_\Gamma \phi_a(x)\cdot\operatorname{curl}_\Gamma \psi_b(y)
+- k^2 \phi_a(x)\psi_b(y)n_x\cdot n_y
+\right]\,dS_y\,dS_x.
+$$
+
+The Julia implementation stores all four dense matrices explicitly. This makes GPU dense solves straightforward, but memory usage scales quadratically with the P1/DP0 unknown counts.
+
+The application backend requires CUDA and moves geometry and quadrature arrays to the GPU:
+
+- face vertices
+- normals
+- areas
+- global face indices
+- surface curls
+- quadrature points and weights
+- test/trial element index arrays
+
+`build_cuda_regular_assembly_cache` keeps these arrays resident across frequencies, avoiding repeated host-to-device transfers for fixed mesh geometry.
+
+For each frequency, CUDA allocates real and imaginary dense matrices for:
+
+- SLP real/imag
+- DLP real/imag
+- adjoint DLP real/imag
+- hypersingular real/imag
+
+The regular-pair kernel skips adjacent pairs. Singular and near-singular corrections use Duffy quadrature and are added after regular assembly.
+
+The singular path builds a frequency-independent correction cache for the mesh and singular quadrature order. The cache stores adjacent/coincident element pairs, orientation-remapped Duffy rules, surface curls, and pair geometry scalars once, then reuses them across the frequency loop. Per-frequency work still evaluates the Helmholtz kernels because they depend on \(k\).
+
+A Duffy block kernel computes compact per-pair correction blocks directly on device. A CUDA scatter kernel atomically accumulates those compact blocks into dense correction buffers before adding them to the resident operators. The Duffy kernel reuses the regular assembly geometry cache, so the per-frequency singular correction path does not transfer dense CPU correction matrices.
+
+The CUDA singular correction cache stores:
+
+- test and trial element indices
+- rule indices for orientation-remapped Duffy rules
+- P1 row/column dofs and DP0 columns
+- pair Jacobian scales and normal products
+- flattened remapped Duffy points and weights
+
+## Symmetry Mode
+
+The BEAT Engine backend supports `off`, `x`, and `xy` symmetry modes. Symmetry is implemented only in the BEAT CUDA backend; the application disables the symmetry control for backends that do not advertise symmetry support.
+
+The application passes a reduced-domain mesh plus symmetry metadata. BEAT Engine does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
+
+- `x`: all mesh vertices must be on or positive of the global X=0 plane.
+- `xy`: all mesh vertices must be on or positive of both the global X=0 and Y=0 planes.
+
+For each enabled mirror plane, the backend builds image transforms. Points and normals are reflected as ordinary vectors. Surface curls in the hypersingular weak form are reflected as pseudovectors, using `det(R) * R * curl` for each mirror transform. For `x` symmetry, the reduced operator includes the identity domain plus the X-reflected image. For `xy` symmetry, it includes the identity domain plus X, Y, and XY images.
+
+The reduced Galerkin system remains defined on the reduced mesh's P1 pressure space and DP0 Neumann space. Regular operator assembly handles symmetry by adding reflected trial/source image contributions into the reduced matrices. This keeps the solved pressure vector on the reduced P1 dofs while accounting for the missing physical images.
+
+P1 test rows receive symmetry orbit weights for vertices on symmetry planes. These weights are applied consistently to the Helmholtz operators and to the Burton-Miller identity/mass matrices. This is required for seam vertices on X=0 and Y=0 to match the corresponding full expanded system.
+
+Singular handling has two parts:
+
+- Identity-domain adjacent, edge-sharing, vertex-sharing, and coincident pairs use the normal Duffy correction cache.
+- Reflected image pairs that become coincident, edge-adjacent, or vertex-adjacent across a symmetry plane use an image-singular correction cache.
+
+The image-singular path computes compact `singular - regular` correction blocks on the GPU, then atomically scatters them into dense correction buffers before adding them to the resident operators.
+
+Field evaluation is symmetry-aware by materializing mirrored quadrature sources in the field-evaluation cache. The existing field kernels are then reused unchanged: source points and normals are reflected for each symmetry transform, while source faces, source elements, quadrature weights, and P1 basis values continue to reference the reduced mesh. Field evaluation is not currently a runtime bottleneck, so this simple expanded-source approach is preferred over a specialized field-only symmetry kernel.
+
+Radiator impedance is computed from reduced-domain pressure and then scaled by the symmetry reduction factor: 2 for `x`, 4 for `xy`. This reports force over the full physical radiator image set while keeping the solve unknowns reduced.
+
+## CUDA Kernel Modes
+
+The CUDA backend has a regular assembly split kernel, one singular correction block kernel, and two field-evaluation kernels.
+
+Regular assembly uses a balanced split kernel. It maps one CUDA block to one test/trial element pair and distributes the quadrature-pair work across threads in the block. Per-thread partial sums are reduced in dynamic shared memory:
+
+```julia
+scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
+```
+
+The balanced split path uses two regular assembly launches:
+
+- `_cuda_regular_quadrature_slp_hyp_kernel!` computes single-layer and hypersingular contributions.
+- `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double-layer and adjoint double-layer contributions.
+
+This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel.
+
+The balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
+
+`_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
+
+`_cuda_weighted_field_sources_kernel!` maps GPU threads over cached source quadrature points and builds weighted pressure and Neumann source strengths. `_cuda_field_eval_kernel!` maps one CUDA block to one observation point and reduces source contributions in dynamic shared memory.
+
+## CUDA Atomics
+
+The GPU kernels accumulate element-block contributions into global dense matrices. Multiple CUDA blocks can target the same global row/column entries, especially because P1 basis functions are shared across adjacent faces. The regular assembly and singular scatter paths use device atomics for global accumulation:
+
+```julia
+@inline function _cuda_atomic_add!(array, index, value)
+    CUDA.@atomic array[index] += value
+    return nothing
+end
+```
+
+Dense operator accumulation buffers are stored as separate real and imaginary arrays during kernel execution, so atomic additions operate on scalar `Float32` values. After the kernel finishes, real and imaginary matrices are materialized into complex matrices on GPU:
+
+$$
+A = A_{\mathrm{re}} + i A_{\mathrm{im}},
+$$
+
+This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The balanced split regular assembly path preserves this property: it atomically accumulates into the same dense buffers through two balanced operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
+
+## GPU Dense Solve
+
+If operators are returned on GPU, `solve_burton_miller_neumann` forms the Burton-Miller matrix and RHS directly as `CuArray`s:
+
+$$
+A = \frac{1}{2}I - D + \eta H,
+$$
+
+$$
+b = \left(-S - \eta(D^{*} + \frac{1}{2}I_{P1,DP0})\right)q.
+$$
+
+It then calls Julia's dense linear solve:
+
+```julia
+d_pressure = d_lhs \ d_rhs
+```
+
+With CUDA arrays, this dispatches through CUDA.jl to GPU dense linear algebra. The solved pressure vector is currently copied back to CPU after the solve; CUDA field evaluation then transfers pressure and Neumann vectors back to the GPU for the observation pass. This keeps the public result path simple while leaving room to keep pressure resident across downstream stages later.
+
+Temporary GPU allocations are explicitly released with `CUDA.unsafe_free!` after assembly or solve stages to reduce memory pressure during frequency sweeps.
+
+## Field Evaluation
+
+After boundary pressure is solved, the backend evaluates the potential at observation points:
+
+$$
+u(x)
+=
+\int_\Gamma
+\frac{\partial G_k(x,y)}{\partial n_y}p(y)
+- G_k(x,y)q(y)
+\,dS_y.
+$$
+
+The implementation precomputes a field-evaluation cache containing quadrature source points, normals, weights, source faces, source elements, and P1 basis values. `build_cuda_field_evaluation_cache` mirrors those arrays to GPU as a `CudaFieldEvaluationCache`, using structure-of-arrays storage for coalesced source-point and normal reads.
+
+For each frequency, CUDA field evaluation uses two stages:
+
+1. `_cuda_weighted_field_sources_kernel!` interpolates solved P1 pressure to every source quadrature point, multiplies by quadrature weights, and builds the weighted Neumann source term.
+2. `_cuda_field_eval_kernel!` assigns one CUDA block to each observation point. Threads in the block stride over all source quadrature points, evaluate the single-layer and double-layer kernels, accumulate local real/imaginary potentials, and reduce those partial sums in dynamic shared memory.
+
+The kernel evaluates:
+
+$$
+u(x)
+=
+\sum_m
+\left[
+\frac{\partial G_k(x,y_m)}{\partial n_m}p_m
+- G_k(x,y_m)q_m
+\right]w_m,
+$$
+
+where \(y_m\), \(n_m\), and \(w_m\) come from the cached source quadrature data. The result is materialized as a compact potential vector and copied back for SPL conversion and result serialization.
+
+SPL is reported as:
+
+$$
+\mathrm{SPL}(x)
+=
+20\log_{10}\left(\frac{|u(x)|}{20\ \mu\mathrm{Pa}}\right).
+$$
+
+Horizontal, vertical, and spherical observation points are concatenated into one field evaluation per frequency, then sliced back into result arrays. This avoids rebuilding source strengths for each observation set.
+
+## Performance Notes
+
+The expensive stages are:
+
+- dense operator assembly, roughly \(O(N_e^2 q^2)\), where \(N_e\) is face count and \(q\) is quadrature point count - Typically `85%` of runtime on benchmark tests
+- dense direct solve, roughly \(O(N_p^3)\), where \(N_p\) is P1 dof count - Typically `9%` of runtime on benchmark tests
+- field evaluation, roughly \(O(N_{\mathrm{obs}} N_e q)\) - Typically `1%` of runtime on benchmark tests
+
+CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The balanced split regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU.
+
+Symmetry can improve runtime by more than the simple physical-area reduction would suggest. A 7k-element in-application test over 50 frequencies measured:
+
+- symmetry disabled: 71.3 s
+- X symmetry: 21.3 s, about `70%` faster
+- XY symmetry: 11.6 s, about `84%` faster
+
+The reason is that symmetry reduces the actual dense system dimension. Assembly has to include image contributions, so its scaling is closer to the expected half-domain or quarter-domain work plus image passes. The direct Burton-Miller solve, however, scales roughly as \(O(N_p^3)\). Halving the P1 unknown count can make the dense solve approach one eighth of the full cost, and quartering it can make that portion much smaller still. Smaller dense matrices also reduce GPU memory pressure and transfer/allocation overhead. As a result, the full solve can beat the naive "50% faster for X, 75% faster for XY" estimate when dense solve time is a meaningful share of the workload.
+
+## Important Files
+
+- `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, drive calculation.
+- `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
+- `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: CUDA geometry cache, regular-pair kernels, GPU Duffy corrections, GPU atomics, GPU matrix materialization, GPU field evaluation.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
+- `src/blab/solvers/beat_engine_backend.py`: Python adapter that stages assets and streams JSON events.

@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "..", "src", "AfterburnerCore.jl"))
+include(joinpath(@__DIR__, "..", "src", "BeatEngineCore.jl"))
 
 using Dates
 using InteractiveUtils
@@ -6,7 +6,7 @@ using LinearAlgebra
 using Printf
 using Profile
 using Statistics
-using .AfterburnerCore
+using .BeatEngineCore
 
 LinearAlgebra.BLAS.set_num_threads(Threads.nthreads())
 
@@ -178,7 +178,7 @@ end
 
 function add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k::T, singular_order::Int, element_indices, singular_cache, cuda_singular_cache, cuda_regular_cache) where {T<:AbstractFloat}
     singular_pairs = timed_stage!(timings, "singular_correction_compute_scatter") do
-        AfterburnerCore.add_singular_corrections_cuda_compact!(
+        BeatEngineCore.add_singular_corrections_cuda_compact!(
             operators,
             mesh,
             p1_space,
@@ -286,7 +286,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         build_singular_correction_cache(mesh, config.singular_order, element_indices)
     end
     cuda_singular_cache = timed_stage!(timings, "singular_correction_cuda_cache_build_request") do
-        AfterburnerCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+        BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
     end
 
     identity_p1_p1 = timed_stage!(timings, "identity_assembly_p1_p1") do
