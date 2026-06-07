@@ -8,9 +8,9 @@ import pytest
 pytest.importorskip("PySide6")
 
 from blab.ath import AthRunResult
-from blab.config import MeshConfig
+from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.main_window import MainWindow, STITCH_FAILURE_MESSAGE
+from blab.ui.main_window import MainWindow, STITCHED_MESH_NAME, STITCH_FAILURE_MESSAGE
 from blab.ui.project_state import AthScriptState
 
 
@@ -105,3 +105,86 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     assert loaded["kwargs"]["symmetry"] == "xy"
     assert loaded["status"] == "Mesh preview showing unstitched meshes; stitching failed"
     assert "cleared" not in loaded
+
+
+def test_stitched_solver_radiators_reference_stitched_mesh(tmp_path: Path) -> None:
+    ath_msh = tmp_path / "ath_clean.msh"
+    imported_msh = tmp_path / "external_clean.msh"
+    _write_triangle_mesh(ath_msh, tag=2)
+    _write_triangle_mesh(imported_msh, tag=2)
+
+    script = AthScriptState(id="script1", name="ath", config_text="")
+    result = AthRunResult(
+        output_dir=tmp_path,
+        msh_path=ath_msh,
+        config_path=tmp_path / "ath_case.cfg",
+        driven_tag=2,
+        radiators=(RadiatorConfig(name="ath:SD1D1001", mesh="ath", tag=2),),
+        cleaned_msh_path=ath_msh,
+    )
+
+    window = MainWindow.__new__(MainWindow)
+    window.symmetry = "off"
+    window.ath_scripts = (script,)
+    window.ath_results_by_script_id = {script.id: result}
+    window.imported_radiators = ()
+    window.imported_meshes = (
+        MeshDialogEntry(
+            name="external",
+            source_file=str(imported_msh),
+            cleaned_file=str(imported_msh),
+        ),
+    )
+
+    radiators = window._radiators_for_solver_meshes(
+        (MeshConfig(name=STITCHED_MESH_NAME, file=str(tmp_path / "stitched.msh")),),
+        (
+            *window._all_radiators(),
+            RadiatorConfig(name="external:SD1D1001", mesh="external", tag=2),
+        ),
+    )
+
+    assert [(radiator.name, radiator.mesh, radiator.tag) for radiator in radiators] == [
+        ("stitched:SD1D1001", "stitched", 2),
+        ("stitched:SD1D1001_mesh2", "stitched", 1),
+    ]
+
+
+def test_solver_channels_include_radiator_default_channel_when_missing() -> None:
+    window = MainWindow.__new__(MainWindow)
+    window._channel_configs = lambda: (ChannelConfig(name="HF"),)
+
+    channels = window._channels_for_solver_radiators(
+        (RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),)
+    )
+
+    assert [channel.name for channel in channels] == ["HF", "main"]
+
+
+def test_channel_dialog_channels_include_existing_radiator_channels() -> None:
+    window = MainWindow.__new__(MainWindow)
+    window._channel_configs = lambda: (ChannelConfig(name="HF", polarity=-1),)
+    window._all_radiators = lambda: (
+        RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),
+    )
+
+    channels = window._channel_configs_for_current_radiators()
+
+    assert [channel.name for channel in channels] == ["HF", "main"]
+    assert channels[0].polarity == -1
+
+
+def test_discard_channel_config_dialog_closes_stale_dialog() -> None:
+    closed = {}
+
+    class DialogStub:
+        def close(self) -> None:
+            closed["called"] = True
+
+    window = MainWindow.__new__(MainWindow)
+    window.channel_config_dialog = DialogStub()
+
+    window._discard_channel_config_dialog()
+
+    assert closed["called"] is True
+    assert window.channel_config_dialog is None

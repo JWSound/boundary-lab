@@ -132,8 +132,6 @@ STITCH_FAILURE_MESSAGE = (
     "Error - unable to stitch separate mesh entities. "
     "Refer to help documentation for more info on multi-mesh workflows."
 )
-IMPORTED_MESH_SETTINGS_KEY = "mesh/imported_meshes"
-ATH_MESH_SETTINGS_KEY = "mesh/ath_mesh"
 
 
 def _format_frequency_solve_timings(result: FrequencyResult) -> str:
@@ -187,7 +185,7 @@ class MainWindow(QMainWindow):
         self.symmetry = "off"
         self.preferences = self._load_preferences()
         self._apply_theme()
-        self.ath_scripts: tuple[AthScriptState, ...] = self._load_initial_ath_scripts()
+        self.ath_scripts: tuple[AthScriptState, ...] = default_scripts("")
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
@@ -310,6 +308,8 @@ class MainWindow(QMainWindow):
         self._connect_state_events()
         startup("Restoring window layout...")
         self._restore_window_state()
+        startup("Starting new project...")
+        self.new_project()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)
@@ -563,7 +563,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def add_ath_script(self) -> None:
         name = unique_script_name("ath", self.ath_scripts)
-        script = new_script(name, self._load_initial_config_text())
+        script = new_script(name, "")
         self.ath_scripts = (*self.ath_scripts, script)
         self.active_ath_script_id = script.id
         self._rebuild_ath_script_tabs()
@@ -1028,71 +1028,6 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(lambda _checked=False: self._clear_recent_projects())
         self.open_recent_menu.addAction(clear_action)
 
-    def _load_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
-        raw_config = self.settings.value(IMPORTED_MESH_SETTINGS_KEY, "[]")
-        try:
-            loaded = json.loads(str(raw_config))
-        except json.JSONDecodeError:
-            return ()
-        if not isinstance(loaded, list):
-            return ()
-
-        meshes = []
-        for item in loaded:
-            if not isinstance(item, dict):
-                continue
-            source_file = str(item.get("source_file", ""))
-            name = str(item.get("name", "")).strip()
-            if not source_file or not name or name == ATH_MESH_NAME:
-                continue
-            translation = item.get("translation_mm", [0.0, 0.0, 0.0])
-            if not isinstance(translation, list) or len(translation) != 3:
-                translation = [0.0, 0.0, 0.0]
-            meshes.append(
-                MeshDialogEntry(
-                    name=name,
-                    source_file=source_file,
-                    cleaned_file=None if item.get("cleaned_file") is None else str(item.get("cleaned_file")),
-                    scale_factor=self._mesh_scale_from_payload(item),
-                    translation_mm=tuple(float(int(round(float(value)))) for value in translation),
-                    enabled=bool(item.get("enabled", True)),
-                )
-            )
-        return tuple(meshes)
-
-    def _save_imported_meshes(self) -> None:
-        payload = [
-            self._mesh_entry_to_payload(mesh, absolute_paths=False)
-            for mesh in self.imported_meshes
-        ]
-        self.settings.setValue(IMPORTED_MESH_SETTINGS_KEY, json.dumps(payload, sort_keys=True))
-        self.settings.sync()
-
-    def _load_ath_mesh_settings(self) -> tuple[bool, tuple[float, float, float], float]:
-        raw_config = self.settings.value(ATH_MESH_SETTINGS_KEY, "{}")
-        try:
-            loaded = json.loads(str(raw_config))
-        except json.JSONDecodeError:
-            loaded = {}
-        if not isinstance(loaded, dict):
-            loaded = {}
-
-        translation = loaded.get("translation_mm", [0.0, 0.0, 0.0])
-        if not isinstance(translation, list) or len(translation) != 3:
-            translation = [0.0, 0.0, 0.0]
-        return (
-            bool(loaded.get("enabled", True)),
-            tuple(float(int(round(float(value)))) for value in translation),
-            self._mesh_scale_from_payload(loaded),
-        )
-
-    def _save_ath_mesh_settings(self) -> None:
-        self.settings.setValue(
-            ATH_MESH_SETTINGS_KEY,
-            json.dumps(self._ath_mesh_payload(absolute_paths=False), sort_keys=True),
-        )
-        self.settings.sync()
-
     def _ath_mesh_payload(self, *, absolute_paths: bool) -> dict:
         return {}
 
@@ -1296,7 +1231,6 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             self.status_label.setText(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
-            self._save_imported_meshes()
             self.mesh_state_changed.emit("imported_mesh_files_reloaded")
             self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             names = ", ".join(updated_names)
@@ -1437,6 +1371,85 @@ class MainWindow(QMainWindow):
             return (stitched_mesh,)
         return (*self._ath_solver_mesh_configs(), *self._imported_solver_mesh_configs())
 
+    def _unique_stitched_surface_name(
+        self,
+        surface_name: str,
+        used_surface_names: set[str],
+        mesh_index: int,
+    ) -> str:
+        if surface_name not in used_surface_names:
+            return surface_name
+        suffix = 2
+        candidate = f"{surface_name}_mesh{mesh_index + 1}"
+        while candidate in used_surface_names:
+            candidate = f"{surface_name}_mesh{mesh_index + 1}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _used_surface_tags_for_mesh(self, mesh_cfg: MeshConfig) -> tuple[int, ...]:
+        mesh = meshio.read(mesh_cfg.file)
+        physical_by_cell_type = mesh.cell_data_dict.get("gmsh:physical", {})
+        triangle_tags = physical_by_cell_type.get("triangle")
+        if triangle_tags is None:
+            return ()
+        return tuple(sorted(int(tag) for tag in np.unique(triangle_tags)))
+
+    def _stitched_radiator_map(self) -> dict[tuple[str | None, int], tuple[str, int]]:
+        mapping: dict[tuple[str | None, int], tuple[str, int]] = {}
+        used_surface_names: set[str] = set()
+        used_surface_tags: set[int] = set()
+        next_surface_tag = 1
+
+        for mesh_index, mesh_cfg in enumerate(self._stitch_candidate_mesh_configs()):
+            names_by_tag = {
+                tag: surface_name
+                for surface_name, tag in read_surface_physical_names(Path(mesh_cfg.file)).items()
+            }
+            for old_tag in self._used_surface_tags_for_mesh(mesh_cfg):
+                surface_name = names_by_tag.get(old_tag, f"mesh{mesh_index + 1}_surface_{old_tag}")
+                stitched_surface_name = self._unique_stitched_surface_name(
+                    surface_name,
+                    used_surface_names,
+                    mesh_index,
+                )
+                used_surface_names.add(stitched_surface_name)
+                if old_tag not in used_surface_tags:
+                    new_tag = old_tag
+                else:
+                    while next_surface_tag in used_surface_tags:
+                        next_surface_tag += 1
+                    new_tag = next_surface_tag
+                used_surface_tags.add(new_tag)
+                mapping[(mesh_cfg.name, old_tag)] = (f"{STITCHED_MESH_NAME}:{stitched_surface_name}", new_tag)
+
+        return mapping
+
+    def _radiators_for_solver_meshes(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        radiators: tuple[RadiatorConfig, ...],
+    ) -> tuple[RadiatorConfig, ...]:
+        if len(mesh_configs) != 1 or mesh_configs[0].name != STITCHED_MESH_NAME:
+            return radiators
+
+        stitched_map = self._stitched_radiator_map()
+        resolved = []
+        for radiator in radiators:
+            stitched_surface = stitched_map.get((radiator.mesh, radiator.tag))
+            if stitched_surface is None:
+                resolved.append(replace(radiator, mesh=STITCHED_MESH_NAME))
+                continue
+            stitched_name, stitched_tag = stitched_surface
+            resolved.append(
+                replace(
+                    radiator,
+                    name=stitched_name,
+                    mesh=STITCHED_MESH_NAME,
+                    tag=stitched_tag,
+                )
+            )
+        return tuple(resolved)
+
     def _show_stitch_or_generic_error(self, title: str, exc: Exception) -> None:
         if str(exc) != STITCH_FAILURE_MESSAGE:
             QMessageBox.critical(self, title, str(exc))
@@ -1489,7 +1502,10 @@ class MainWindow(QMainWindow):
             }
             self.preview.load_mesh_configs(
                 mesh_configs,
-                driven_surfaces={(radiator.mesh, radiator.tag) for radiator in self._all_radiators()},
+                driven_surfaces={
+                    (radiator.mesh, radiator.tag)
+                    for radiator in self._radiators_for_solver_meshes(mesh_configs, self._all_radiators())
+                },
                 surface_tags_by_mesh=surface_tags_by_mesh,
                 symmetry=self.symmetry,
             )
@@ -1580,6 +1596,28 @@ class MainWindow(QMainWindow):
                 )
             )
         return tuple(channels) or (ChannelConfig(name="main"),)
+
+    def _channels_for_solver_radiators(
+        self,
+        radiators: tuple[RadiatorConfig, ...],
+    ) -> tuple[ChannelConfig, ...]:
+        channels = list(self._channel_configs())
+        configured_names = {channel.name for channel in channels}
+        for radiator in radiators:
+            if radiator.channel in configured_names:
+                continue
+            channels.append(ChannelConfig(name=radiator.channel))
+            configured_names.add(radiator.channel)
+        return tuple(channels)
+
+    def _channel_configs_for_current_radiators(self) -> tuple[ChannelConfig, ...]:
+        return self._channels_for_solver_radiators(self._all_radiators())
+
+    def _discard_channel_config_dialog(self) -> None:
+        dialog = self.channel_config_dialog
+        self.channel_config_dialog = None
+        if dialog is not None:
+            dialog.close()
 
     def _crossover_settings(self, crossover: CrossoverConfig | None) -> dict:
         if crossover is None or crossover.type.lower() == "none":
@@ -1681,12 +1719,6 @@ class MainWindow(QMainWindow):
         self._save_window_state()
         super().closeEvent(event)
 
-    def _load_initial_config_text(self) -> str:
-        return ""
-
-    def _load_initial_ath_scripts(self) -> tuple[AthScriptState, ...]:
-        return default_scripts(self._load_initial_config_text())
-
     def _result_from_script_state(self, script: AthScriptState) -> AthRunResult | None:
         if not script.output_dir or not script.msh_path:
             return None
@@ -1753,18 +1785,19 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def new_project(self) -> None:
+        self._discard_channel_config_dialog()
         self.project_path = None
         self.ath_scripts = default_scripts("")
         self.active_ath_script_id = self.ath_scripts[0].id if self.ath_scripts else None
         self.ath_results_by_script_id = {}
         self._rebuild_ath_script_tabs()
         self.imported_meshes = ()
+        self.imported_radiators = ()
         self.stitch_imported_meshes = False
         self.symmetry = "off"
         self.settings.setValue("source/config_by_name", "{}")
         self.settings.setValue("channel/config_by_name", "{}")
         self.settings.sync()
-        self._save_imported_meshes()
         self.project_state_changed.emit("new_project")
         self.solve_results_invalidated.emit("new_project")
         self.status_label.setText("New project")
@@ -1844,6 +1877,7 @@ class MainWindow(QMainWindow):
         )
 
     def _apply_project_payload(self, payload: dict) -> None:
+        self._discard_channel_config_dialog()
         source_config = payload.get("source_config_by_name", {})
         if not isinstance(source_config, dict):
             source_config = {}
@@ -1875,8 +1909,6 @@ class MainWindow(QMainWindow):
             self.symmetry = "off"
         self._disable_symmetry_if_backend_unsupported()
         self.imported_radiators = ()
-        self._save_imported_meshes()
-
         try:
             self._apply_saved_imported_source_config(self._surface_tags_for_meshes())
         except Exception:
@@ -2063,7 +2095,6 @@ class MainWindow(QMainWindow):
             if symmetry_enabled:
                 self.symmetry = dialog.symmetry()
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
-            self._save_imported_meshes()
             self.mesh_state_changed.emit("mesh_config_changed")
             self.solve_results_invalidated.emit("mesh_config_changed")
             self.status_label.setText(
@@ -2083,34 +2114,12 @@ class MainWindow(QMainWindow):
             self.channel_config_dialog.activateWindow()
             return
 
-        dialog = ChannelConfigDialog(self._channel_configs(), self)
+        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)
         self.channel_config_dialog = dialog
-        dialog.channelsChanged.connect(self._preview_channel_config)
         dialog.channelsApplied.connect(self._apply_channel_config)
         dialog.destroyed.connect(lambda *_args: setattr(self, "channel_config_dialog", None))
         dialog.show()
         dialog.raise_()
-
-    @Slot(object)
-    def _preview_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
-        if self.live_dataset is None or not self.live_dataset.supports_channel_resynthesis:
-            return
-        solved_channel_names = {
-            str(name)
-            for result in self.live_dataset.results.values()
-            if result.channel_names is not None
-            for name in result.channel_names
-        }
-        configured_names = {channel.name for channel in channels}
-        if not solved_channel_names.issubset(configured_names):
-            return
-        self.live_dataset.set_channel_synthesis(
-            tuple(channels),
-            flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
-        )
-        self._refresh_plots()
-        self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
-        self.status_label.setText("Channel edits previewed from solved data")
 
     @Slot(object)
     def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
@@ -2169,7 +2178,7 @@ class MainWindow(QMainWindow):
             self._show_stitch_or_generic_error("Source config failed", exc)
             return
 
-        dialog = SourceConfigDialog(surface_tags, self._all_radiators(), self._channel_configs(), self)
+        dialog = SourceConfigDialog(surface_tags, self._all_radiators(), self._channel_configs_for_current_radiators(), self)
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -2233,8 +2242,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
-            self._save_imported_meshes()
             mesh_configs = self._solver_mesh_configs()
+            radiators = self._radiators_for_solver_meshes(mesh_configs, radiators)
         except Exception as exc:
             self._show_stitch_or_generic_error("Imported mesh preparation failed", exc)
             return
@@ -2250,7 +2259,7 @@ class MainWindow(QMainWindow):
         freqs = build_log_frequencies(freq_min, freq_max, freq_count)
         ordered_freqs = order_frequencies_for_live_plotting(freqs)
 
-        channels = self._channel_configs()
+        channels = self._channels_for_solver_radiators(radiators)
         config = SimulationConfig(
             mesh_file=mesh_configs[0].file if mesh_configs else "",
             freq_min=freq_min,

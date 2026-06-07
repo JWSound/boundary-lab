@@ -635,7 +635,6 @@ class MeshConfigDialog(QDialog):
 
 
 class ChannelConfigDialog(QDialog):
-    channelsChanged = Signal(object)
     channelsApplied = Signal(object)
 
     def __init__(self, channels: tuple[ChannelConfig, ...], parent: QWidget | None = None):
@@ -643,7 +642,6 @@ class ChannelConfigDialog(QDialog):
         self.setWindowTitle("Channel Config")
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._channels = list(channels) or [ChannelConfig(name="main")]
-        self._closing_from_button = False
 
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
@@ -667,8 +665,6 @@ class ChannelConfigDialog(QDialog):
         for channel in self._channels:
             self._append_row(channel)
 
-        self.table.itemChanged.connect(self._emit_channels_changed_if_valid)
-
         add_button = QPushButton("Add Channel")
         remove_button = QPushButton("Remove")
         add_button.clicked.connect(self._add_channel)
@@ -681,25 +677,13 @@ class ChannelConfigDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Close)
         buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)
-        buttons.rejected.connect(self.accept)
+        buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
         layout.addLayout(button_row)
         layout.addWidget(buttons)
         self.resize(1080, min(520, 160 + 34 * max(1, len(self._channels))))
-
-    def accept(self) -> None:
-        if not self.apply():
-            return
-        self._closing_from_button = True
-        super().accept()
-
-    def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if not self._closing_from_button and not self.apply():
-            event.ignore()
-            return
-        super().closeEvent(event)
 
     def apply(self) -> bool:
         try:
@@ -757,13 +741,8 @@ class ChannelConfigDialog(QDialog):
         self.table.setCellWidget(row, 7, lpf_freq_spin)
         self.lpf_freq_widgets.append(lpf_freq_spin)
 
-        for widget in (level_spin, delay_spin, hpf_freq_spin, lpf_freq_spin):
-            widget.editingFinished.connect(self._emit_channels_changed_if_valid)
-        polarity_combo.currentIndexChanged.connect(self._emit_channels_changed_if_valid)
         hpf_type_combo.currentTextChanged.connect(lambda _text, row=row: self._set_frequency_controls_enabled(row))
-        hpf_type_combo.currentIndexChanged.connect(self._emit_channels_changed_if_valid)
         lpf_type_combo.currentTextChanged.connect(lambda _text, row=row: self._set_frequency_controls_enabled(row))
-        lpf_type_combo.currentIndexChanged.connect(self._emit_channels_changed_if_valid)
         self._set_frequency_controls_enabled(row)
 
     def _add_channel(self) -> None:
@@ -772,7 +751,6 @@ class ChannelConfigDialog(QDialog):
         while f"channel_{index}" in used:
             index += 1
         self._append_row(ChannelConfig(name=f"channel_{index}"))
-        self._emit_channels_changed_if_valid()
 
     def _remove_selected_channels(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
@@ -788,7 +766,6 @@ class ChannelConfigDialog(QDialog):
             del self.hpf_freq_widgets[row]
             del self.lpf_type_widgets[row]
             del self.lpf_freq_widgets[row]
-        self._emit_channels_changed_if_valid()
 
     def _set_frequency_controls_enabled(self, row: int) -> None:
         self.hpf_freq_widgets[row].setEnabled(self.hpf_type_widgets[row].currentData() is not None)
@@ -831,14 +808,6 @@ class ChannelConfigDialog(QDialog):
                 )
             )
         return tuple(channels)
-
-    def _emit_channels_changed_if_valid(self, *args) -> None:
-        try:
-            channels = self.channels()
-        except ValueError:
-            return
-        self.channelsChanged.emit(channels)
-
 
 class SourceConfigDialog(QDialog):
     def __init__(

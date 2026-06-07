@@ -57,6 +57,31 @@ def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
     assert "self._refresh_plots()" in source
 
 
+def test_channel_config_changes_apply_only_on_apply_button() -> None:
+    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    channel_dialog = dialog_source[dialog_source.index("class ChannelConfigDialog"):dialog_source.index("class SourceConfigDialog")]
+
+    assert "channelsChanged" not in channel_dialog
+    assert "_emit_channels_changed" not in channel_dialog
+    assert "buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)" in channel_dialog
+    assert "buttons.rejected.connect(self.reject)" in channel_dialog
+    assert "_preview_channel_config" not in main_source
+    assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
+
+
+def test_application_startup_invokes_new_project_reset() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    init_block = source[source.index("    def __init__("):source.index("    def changeEvent")]
+
+    assert 'startup("Starting new project...")' in init_block
+    assert "self.new_project()" in init_block
+    assert "_load_initial_ath_scripts" not in source
+    assert "_load_imported_meshes" not in source
+    assert "mesh/imported_meshes" not in source
+    assert "mesh/ath_mesh" not in source
+
+
 def test_completed_solves_use_final_isobar_resolution() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
