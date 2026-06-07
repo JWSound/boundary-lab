@@ -1,6 +1,6 @@
 # BEAT Engine BEM Backend
 
-Boundary Lab's BEAT Engine backend, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation in `src/blab/solvers/julia_local/src/BeatEngineCuda.jl` is the primary high-performance path; `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
+Boundary Lab's BEAT Engine backend, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation under `src/blab/solvers/julia_local/src/BeatEngineCuda*.jl` is the primary high-performance path; `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
 
 The backend solves exterior acoustic radiation from prescribed normal velocity on tagged radiator surfaces. It currently uses single precision (`Float32`) for local solves.
 
@@ -287,6 +287,12 @@ The reason is that symmetry reduces the actual dense system dimension. Assembly 
 
 - `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, drive calculation.
 - `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
-- `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: CUDA geometry cache, regular-pair kernels, GPU Duffy corrections, GPU atomics, GPU matrix materialization, GPU field evaluation.
+- `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaCommon.jl`: CUDA package setup, shared cache structs, and shared device helpers.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaRegular.jl`: CUDA geometry/rule cache builders and regular-pair kernels.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaSingular.jl`: GPU Duffy corrections, singular cache mirroring, image-singular corrections, and scatter kernels.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaOperators.jl`: GPU operator storage helpers, timing helpers, and regular kernel launch helpers.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaAssembly.jl`: public CUDA Galerkin operator assembly entry point.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaField.jl`: GPU field-evaluation cache, source weighting, and observation kernels.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
 - `src/blab/solvers/beat_engine_backend.py`: Python adapter that stages assets and streams JSON events.
