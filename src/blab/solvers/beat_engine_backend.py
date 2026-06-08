@@ -30,6 +30,11 @@ _WORKERS_LOCK = threading.Lock()
 _WORKERS: dict[tuple[str, str, str, str], "BeatEngineWorkerProcess"] = {}
 
 
+BEAT_ENGINE_CUDA_BACKEND = "cuda"
+BEAT_ENGINE_CPU_BACKEND = "cpu"
+BEAT_ENGINE_BACKENDS = {BEAT_ENGINE_CUDA_BACKEND, BEAT_ENGINE_CPU_BACKEND}
+
+
 class BeatEngineSession:
     def __init__(
         self,
@@ -40,6 +45,7 @@ class BeatEngineSession:
         julia_threads: str | int = "auto",
         julia_project: str | Path | None = DEFAULT_BEAT_ENGINE_PROJECT,
         persistent_worker: bool = True,
+        beat_engine_backend: str = BEAT_ENGINE_CUDA_BACKEND,
     ):
         self.request_payload = request_payload
         self.julia_executable = julia_executable.strip() or "julia"
@@ -47,6 +53,7 @@ class BeatEngineSession:
         self.julia_threads = julia_threads
         self.julia_project = None if julia_project is None else Path(julia_project)
         self.persistent_worker = persistent_worker
+        self.beat_engine_backend = _normalize_beat_engine_backend(beat_engine_backend)
         self._stop = False
         self._temp_dir = tempfile.TemporaryDirectory(prefix="blab-beat-engine-")
         self._process: subprocess.Popen[str] | None = None
@@ -118,6 +125,7 @@ class BeatEngineSession:
             include_assets=False,
         )
         payload["cancel_path"] = str(self._cancel_path)
+        payload["beat_engine_backend"] = self.beat_engine_backend
         request_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
         if self.persistent_worker:
@@ -367,8 +375,9 @@ class BeatEngineWorkerProcess:
 
 
 class BeatEngineBackend:
-    backend_id = "julia_local"
-    label = "BEAT Engine (Nvidia GPU)"
+    backend_id = "beat_cuda"
+    label = "BEAT Engine (CUDA)"
+    beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
         supports_parallel_workers=False,
@@ -385,12 +394,23 @@ class BeatEngineBackend:
         julia_threads: str | int = "auto",
         julia_project: str | Path | None = DEFAULT_BEAT_ENGINE_PROJECT,
         persistent_worker: bool = True,
+        backend_id: str | None = None,
+        label: str | None = None,
+        beat_engine_backend: str | None = None,
     ):
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_threads = julia_threads
         self.julia_project = julia_project
         self.persistent_worker = persistent_worker
+        if backend_id is not None:
+            self.backend_id = backend_id
+        if label is not None:
+            self.label = label
+        if beat_engine_backend is not None:
+            self.beat_engine_backend = _normalize_beat_engine_backend(beat_engine_backend)
+        if self.beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
+            self.capabilities = BeatEngineCpuBackend.capabilities
 
     def create_session(self, request: SolveRequest) -> BeatEngineSession:
         return BeatEngineSession(
@@ -400,7 +420,45 @@ class BeatEngineBackend:
             julia_threads=self.julia_threads,
             julia_project=self.julia_project,
             persistent_worker=self.persistent_worker,
+            beat_engine_backend=self.beat_engine_backend,
         )
+
+
+class BeatEngineCudaBackend(BeatEngineBackend):
+    backend_id = "beat_cuda"
+    label = "BEAT Engine (CUDA)"
+    beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
+
+
+class BeatEngineCpuBackend(BeatEngineBackend):
+    backend_id = "beat_cpu"
+    label = "BEAT Engine (CPU)"
+    beat_engine_backend = BEAT_ENGINE_CPU_BACKEND
+    capabilities = SolverCapabilities(
+        supports_remote_assets=False,
+        supports_parallel_workers=False,
+        supports_symmetry=True,
+        supports_channel_resynthesis=True,
+        is_remote=False,
+    )
+
+
+def _normalize_beat_engine_backend(value: object) -> str:
+    text = str(value or BEAT_ENGINE_CUDA_BACKEND).strip().lower()
+    aliases = {
+        "beat_cuda": BEAT_ENGINE_CUDA_BACKEND,
+        "cuda": BEAT_ENGINE_CUDA_BACKEND,
+        "gpu": BEAT_ENGINE_CUDA_BACKEND,
+        "julia_local": BEAT_ENGINE_CUDA_BACKEND,
+        "local_julia": BEAT_ENGINE_CUDA_BACKEND,
+        "afterburner": BEAT_ENGINE_CUDA_BACKEND,
+        "beat_cpu": BEAT_ENGINE_CPU_BACKEND,
+        "cpu": BEAT_ENGINE_CPU_BACKEND,
+    }
+    backend = aliases.get(text, text)
+    if backend not in BEAT_ENGINE_BACKENDS:
+        raise ValueError(f"Unknown BEAT Engine backend: {value}")
+    return backend
 
 
 def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> SimulationConfig:

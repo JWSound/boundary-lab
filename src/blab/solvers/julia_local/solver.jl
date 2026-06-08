@@ -72,6 +72,21 @@ function symmetry_mode_from_config(config)
     return mode
 end
 
+function beat_backend_from_request(request)
+    backend = lowercase(strip(String(get_value(request, "beat_engine_backend", "cuda"))))
+    aliases = Dict(
+        "beat_cuda" => "cuda",
+        "gpu" => "cuda",
+        "julia_local" => "cuda",
+        "local_julia" => "cuda",
+        "afterburner" => "cuda",
+        "beat_cpu" => "cpu",
+    )
+    backend = get(aliases, backend, backend)
+    backend in ("cuda", "cpu") || error("Unsupported BEAT Engine backend: $(backend). Expected cuda or cpu.")
+    return Symbol(backend)
+end
+
 function mesh_inputs_from_config(config)
     meshes = get_value(config, "meshes", Any[])
     if !isempty(meshes)
@@ -354,7 +369,7 @@ function validate_radiator_elements(mesh, element_mesh_ids, radiators)
     end
 end
 
-function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k)
+function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k; cpu_solve_system=nothing)
     ComplexType = eltype(drives)
     q_neumann = zeros(ComplexType, length(mesh.faces))
     for (radiator_index, radiator) in enumerate(radiators)
@@ -366,16 +381,23 @@ function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, 
             end
         end
     end
-    pressure = solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+    pressure = cpu_solve_system === nothing ?
+        solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k) :
+        solve_burton_miller_neumann_cpu_system(cpu_solve_system, q_neumann, typeof(k))
     return pressure, q_neumann
 end
 
-function field_for_points(points, mesh, pressure, q_neumann, k, field_cache)
-    return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
+function field_for_points(points, mesh, pressure, q_neumann, k, field_cache, beat_backend::Symbol)
+    if beat_backend == :cuda
+        return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
+    elseif beat_backend == :cpu
+        return evaluate_galerkin_field_cpu(points, mesh, pressure, q_neumann, k, field_cache)
+    end
+    error("Unsupported BEAT Engine backend: $(beat_backend).")
 end
 
-function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, ::Type{T}) where {T<:AbstractFloat}
-    pot = field_for_points(points, mesh, pressure, q_neumann, k, field_cache)
+function spl_for_points(points, mesh, pressure, q_neumann, k, field_cache, beat_backend::Symbol, ::Type{T}) where {T<:AbstractFloat}
+    pot = field_for_points(points, mesh, pressure, q_neumann, k, field_cache, beat_backend)
     return Float32.(T(20.0) .* log10.(abs.(pot) ./ T(20e-6)))
 end
 
@@ -562,6 +584,7 @@ function solve_request_impl(request)
 
     config = request["config"]
     symmetry_mode = symmetry_mode_from_config(config)
+    beat_backend = beat_backend_from_request(request)
     frequencies = Float32.(request["frequencies_hz"])
     isempty(frequencies) && error("frequencies_hz must contain at least one frequency.")
     cancel_path = get_value(request, "cancel_path", nothing)
@@ -605,10 +628,17 @@ function solve_request_impl(request)
     flat_target_reference_angle_deg = FloatType(get_value(config, "flat_target_reference_angle_deg", 0.0))
     channel_names = sort(unique([String(get_value(radiator, "channel", "main")) for radiator in radiators]))
     singular_cache = build_singular_correction_cache(mesh, singular_order)
-    emit_event("status"; message="BEAT Engine using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
-    cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
-    field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
-    cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    cuda_cache = nothing
+    cuda_singular_cache = nothing
+    field_cache = cpu_field_cache
+    if beat_backend == :cuda
+        emit_event("status"; message="BEAT Engine using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
+        cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
+        field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
+        cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    else
+        emit_event("status"; message="BEAT Engine using CPU assembly, OpenBLAS/LAPACK dense solve, and CPU field evaluation")
+    end
 
     for (index, freq_raw) in enumerate(frequencies)
         if cancel_path !== nothing && isfile(String(cancel_path))
@@ -629,10 +659,10 @@ function solve_request_impl(request)
                 rule;
                 skip_singular=false,
                 singular_order=singular_order,
-                use_cuda_regular=true,
+                use_cuda_regular=beat_backend == :cuda,
                 cuda_cache=cuda_cache,
-                return_gpu=true,
-                parallel_quadrature=true,
+                return_gpu=beat_backend == :cuda,
+                parallel_quadrature=beat_backend == :cuda,
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
                 regular_assembly_mode=:split_atomic_balanced,
@@ -642,6 +672,12 @@ function solve_request_impl(request)
 
         t_solve = 0.0
         t_field = 0.0
+        cpu_solve_system = nothing
+        if beat_backend == :cpu
+            t_solve += @elapsed begin
+                cpu_solve_system = build_burton_miller_neumann_cpu_system(operators, identity_p1_p1, identity_p1_dp0, k)
+            end
+        end
         channel_boundary_pressures = Vector{Vector{Complex{FloatType}}}()
         horizontal_pressure_rows = Vector{Vector{Complex{FloatType}}}()
         vertical_pressure_rows = Vector{Vector{Complex{FloatType}}}()
@@ -667,10 +703,11 @@ function solve_request_impl(request)
                     rho,
                     omega,
                     k,
+                    cpu_solve_system=cpu_solve_system,
                 )
             end
             t_field += @elapsed begin
-                combined_pressure = field_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache)
+                combined_pressure = field_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, beat_backend)
                 push!(horizontal_pressure_rows, Complex{FloatType}.(combined_pressure[1:horizontal_count]))
                 push!(vertical_pressure_rows, Complex{FloatType}.(combined_pressure[(horizontal_count + 1):(horizontal_count + vertical_count)]))
                 if sphere !== nothing
@@ -740,6 +777,7 @@ function solve_request_impl(request)
                 "diagnostics" => Dict(
                     "convergence_info" => 0,
                     "message" => "Julia direct dense solve",
+                    "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
                 ),
             ),

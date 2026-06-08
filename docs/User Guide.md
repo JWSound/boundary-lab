@@ -76,14 +76,15 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Mesh Config
 - `Stitch Tolerance`: Set the search distance for nearby open edges when combining multiple mesh files in the same project.
-- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Currently only supported with the BEAT Engine backend. Mirrored mesh elements are shaded darker in the 3d viewport.
+- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Supported with the BEAT Engine CUDA and BEAT Engine CPU backends. Mirrored mesh elements are shaded darker in the 3d viewport.
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.
 - `Solve Backend`: Set the solver backend to either use a built-in application solver, or a server-based backend.
     1. **Server** - Use whatever solver is configured on the remote server via the HTTP streaming API.
-    2. **BEAT Engine (Nvidia GPU)** - Use the Julia-based GPU solver. BEAT Engine is short for Boundary Element Acoustic Toolkit Engine. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
-    3. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
+    2. **BEAT Engine (CUDA)** - Use the Julia-based CUDA solver. BEAT Engine is short for Boundary Element Acoustic Toolkit Engine. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
+    3. **BEAT Engine (CPU)** - Use the Julia-based CPU solver path. Uses the local CPU BLAS/LAPACK stack and supports BEAT Engine X/XY symmetry acceleration.
+    4. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. 
 

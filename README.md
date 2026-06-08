@@ -22,11 +22,11 @@ The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
-### Optional BEAT Engine GPU Solver
+### Optional BEAT Engine Solvers
 
-Boundary Lab can also run the local BEAT Engine GPU backend, short for Boundary Element Acoustic Toolkit Engine, from the Preferences window by selecting `BEAT Engine (Nvidia GPU)` as the solve backend. This optional backend is intended for faster local solves on NVIDIA GPUs.
+Boundary Lab can also run local BEAT Engine backends, short for Boundary Element Acoustic Toolkit Engine, from the Preferences window. Select `BEAT Engine (CUDA)` for the NVIDIA GPU path, or `BEAT Engine (CPU)` for the hardware-agnostic Julia/OpenBLAS path. Both BEAT Engine entries support X and XY symmetry acceleration.
 
-Additional requirements:
+Additional CUDA requirements:
 
 - NVIDIA GPU with a working CUDA-capable driver
 - [Julia](https://julialang.org/downloads/) installed and available on `PATH`
@@ -38,7 +38,7 @@ To prepare the Julia environment from the repository root:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-The first BEAT Engine solve may take longer while Julia compiles kernels and initializes CUDA. Subsequent solves reuse the persistent BEAT Engine worker and warmed CUDA kernels.
+The first BEAT Engine solve may take longer while Julia compiles the selected backend. Subsequent solves reuse the persistent BEAT Engine worker, and the CUDA path also reuses warmed GPU kernels.
 
 CUDA GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 

@@ -1,4 +1,4 @@
-include(joinpath(@__DIR__, "benchmark_solver.jl"))
+include(joinpath(@__DIR__, "benchmark_cuda.jl"))
 
 function main(args=ARGS)
     profile_args = isempty(args) ? [

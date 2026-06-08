@@ -76,7 +76,9 @@ def test_off_symmetry_skips_side_validation(tmp_path: Path) -> None:
 
 
 def test_effective_symmetry_for_backend_preserves_julia_modes() -> None:
-    assert effective_symmetry_for_backend("x", "julia_local") == "x"
+    assert effective_symmetry_for_backend("x", "beat_cuda") == "x"
+    assert effective_symmetry_for_backend("x", "beat_cpu") == "x"
+    assert effective_symmetry_for_backend("xy", "beat_cpu") == "xy"
     assert effective_symmetry_for_backend("xy", "local_julia") == "xy"
 
 

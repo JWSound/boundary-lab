@@ -30,17 +30,29 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         factory=lambda **kwargs: _create_bempp_server_backend(**kwargs),
         description="Use the Boundary Lab bempp-cl solve server.",
     ),
-    "julia_local": SolverBackendInfo(
-        backend_id="julia_local",
-        label="BEAT Engine (Nvidia GPU)",
+    "beat_cuda": SolverBackendInfo(
+        backend_id="beat_cuda",
+        label="BEAT Engine (CUDA)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
             supports_symmetry=True,
             is_remote=False,
         ),
-        factory=lambda **kwargs: _create_beat_engine_backend(**kwargs),
-        description="Run the local Boundary Element Acoustic Toolkit Engine GPU solver through the Boundary Lab subprocess adapter.",
+        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cuda", **kwargs),
+        description="Run the local Boundary Element Acoustic Toolkit Engine CUDA solver through the Boundary Lab subprocess adapter.",
+    ),
+    "beat_cpu": SolverBackendInfo(
+        backend_id="beat_cpu",
+        label="BEAT Engine (CPU)",
+        capabilities=SolverCapabilities(
+            supports_remote_assets=False,
+            supports_parallel_workers=False,
+            supports_symmetry=True,
+            is_remote=False,
+        ),
+        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
+        description="Run the local Boundary Element Acoustic Toolkit Engine CPU solver through the Boundary Lab subprocess adapter.",
     ),
     "local": SolverBackendInfo(
         backend_id="local",
@@ -82,10 +94,16 @@ def normalize_backend_id(backend_id: str) -> str:
         "bempp_server": "server",
         "local_bempp": "local",
         "local_bempp_cl": "local",
-        "local_julia": "julia_local",
-        "beat": "julia_local",
-        "beat_engine": "julia_local",
-        "afterburner": "julia_local",
+        "julia_local": "beat_cuda",
+        "local_julia": "beat_cuda",
+        "beat": "beat_cuda",
+        "beat_engine": "beat_cuda",
+        "beat_cuda": "beat_cuda",
+        "beat_gpu": "beat_cuda",
+        "cuda": "beat_cuda",
+        "afterburner": "beat_cuda",
+        "beat_cpu": "beat_cpu",
+        "cpu_beat": "beat_cpu",
     }
     return aliases.get(text, text or "local")
 
@@ -113,14 +131,21 @@ def _create_beat_engine_backend(
     julia_threads: str | int = "auto",
     julia_project: str | None = "__default__",
     persistent_worker: bool = True,
+    beat_engine_backend: str = "cuda",
     **_kwargs: Any,
 ) -> SolverBackend:
     from blab.solvers.beat_engine_backend import BeatEngineBackend
 
+    normalized_backend = "cpu" if beat_engine_backend == "cpu" else "cuda"
+    backend_id = "beat_cpu" if normalized_backend == "cpu" else "beat_cuda"
+    label = "BEAT Engine (CPU)" if normalized_backend == "cpu" else "BEAT Engine (CUDA)"
     kwargs: dict[str, Any] = {
         "julia_executable": julia_executable,
         "julia_threads": julia_threads,
         "persistent_worker": persistent_worker,
+        "backend_id": backend_id,
+        "label": label,
+        "beat_engine_backend": normalized_backend,
     }
     if solver_script:
         kwargs["solver_script"] = solver_script

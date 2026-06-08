@@ -1,6 +1,6 @@
 # BEAT Engine BEM Backend
 
-Boundary Lab's BEAT Engine backend, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation under `src/blab/solvers/julia_local/src/BeatEngineCuda*.jl` is the primary high-performance path; `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, and fallback utilities.
+Boundary Lab's BEAT Engine backend, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. The CUDA implementation under `src/blab/solvers/julia_local/src/BeatEngineCuda*.jl` is the primary high-performance path; the CPU implementation under `src/blab/solvers/julia_local/src/BeatEngineCpu*.jl` is the hardware-agnostic Julia/OpenBLAS path. `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, and dispatch utilities.
 
 The backend solves exterior acoustic radiation from prescribed normal velocity on tagged radiator surfaces. It currently uses single precision (`Float32`) for local solves.
 
@@ -133,7 +133,7 @@ The CUDA singular correction cache stores:
 
 ## Symmetry Mode
 
-The BEAT Engine backend supports `off`, `x`, and `xy` symmetry modes. Symmetry is implemented only in the BEAT CUDA backend; the application disables the symmetry control for backends that do not advertise symmetry support.
+The BEAT Engine backend supports `off`, `x`, and `xy` symmetry modes in both the BEAT CUDA and BEAT CPU backends. The application disables the symmetry control for backends that do not advertise symmetry support.
 
 The application passes a reduced-domain mesh plus symmetry metadata. BEAT Engine does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
 
@@ -151,7 +151,7 @@ Singular handling has two parts:
 - Identity-domain adjacent, edge-sharing, vertex-sharing, and coincident pairs use the normal Duffy correction cache.
 - Reflected image pairs that become coincident, edge-adjacent, or vertex-adjacent across a symmetry plane use an image-singular correction cache.
 
-The image-singular path computes compact `singular - regular` correction blocks on the GPU, then atomically scatters them into dense correction buffers before adding them to the resident operators.
+The image-singular path computes compact `singular - regular` correction blocks before adding them to the dense operators. CUDA scatters those blocks through GPU correction buffers with atomics; CPU applies the same correction logic directly on host matrices.
 
 Field evaluation is symmetry-aware by materializing mirrored quadrature sources in the field-evaluation cache. The existing field kernels are then reused unchanged: source points and normals are reflected for each symmetry transform, while source faces, source elements, quadrature weights, and P1 basis values continue to reference the reduced mesh. Field evaluation is not currently a runtime bottleneck, so this simple expanded-source approach is preferred over a specialized field-only symmetry kernel.
 
@@ -288,6 +288,10 @@ The reason is that symmetry reduces the actual dense system dimension. Assembly 
 - `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, drive calculation.
 - `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
 - `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
+- `src/blab/solvers/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
+- `src/blab/solvers/julia_local/src/BeatEngineCpuAssembly.jl`: CPU Galerkin operator assembly entry point.
+- `src/blab/solvers/julia_local/src/BeatEngineCpuField.jl`: CPU field-evaluation path.
+- `src/blab/solvers/julia_local/src/BeatEngineCpuSolve.jl`: CPU Burton-Miller dense solve through Julia's LAPACK/BLAS path.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaCommon.jl`: CUDA package setup, shared cache structs, and shared device helpers.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaRegular.jl`: CUDA geometry/rule cache builders and regular-pair kernels.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaSingular.jl`: GPU Duffy corrections, singular cache mirroring, image-singular corrections, and scatter kernels.

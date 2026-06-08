@@ -37,7 +37,7 @@ Base.@kwdef mutable struct BenchmarkConfig
     skip_solve::Bool = false
     skip_field::Bool = false
     profile::String = "none"
-    output::String = joinpath(@__DIR__, "..", "results", "benchmark_sample.json")
+    output::String = joinpath(@__DIR__, "..", "results", "benchmark_cuda_sample.json")
     return_gpu::Bool = true
     profile_regular_kernel::Bool = false
     regular_probe_pair_limit::Int = 1_000_000
@@ -47,7 +47,7 @@ end
 function print_usage()
     println("""
     Usage:
-      julia scripts/benchmark_solver.jl [options]
+      julia scripts/benchmark_cuda.jl [options]
 
     Options:
       --mesh PATH                    Mesh path. Default: test_meshes/sample.msh
@@ -62,7 +62,7 @@ function print_usage()
       --skip-solve                   Do not build/solve the Burton-Miller system.
       --skip-field                   Do not evaluate the radiated field.
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
-      --json PATH                    Write JSON results. Default: results/benchmark_sample.json
+      --json PATH                    Write JSON results. Default: results/benchmark_cuda_sample.json
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
       --verbose                      Print every timing bucket in the console summary.

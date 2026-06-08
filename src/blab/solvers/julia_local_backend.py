@@ -11,6 +11,8 @@ from blab.solvers.beat_engine_backend import (
     AfterburnerSession,
     AfterburnerWorkerProcess,
     BeatEngineBackend,
+    BeatEngineCpuBackend,
+    BeatEngineCudaBackend,
     BeatEngineSession,
     BeatEngineWorkerProcess,
     JuliaLocalBackend,

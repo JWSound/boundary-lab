@@ -28,6 +28,7 @@ export BoundaryMesh,
     build_cuda_field_evaluation_cache,
     build_field_evaluation_cache,
     build_singular_correction_cache,
+    assemble_regular_galerkin_operators_cpu,
     assemble_regular_galerkin_operators_cuda_regular,
     assemble_regular_galerkin_operators,
     adjacency_info,
@@ -35,6 +36,7 @@ export BoundaryMesh,
     build_p1_space,
     duffy_rule,
     elements_are_adjacent,
+    evaluate_galerkin_field_cpu,
     evaluate_galerkin_field_cuda,
     fibonacci_sphere,
     helmholtz_adjoint_double_layer_kernel,
@@ -45,6 +47,9 @@ export BoundaryMesh,
     release_operator_storage!,
     surface_curls,
     scatter_element_block!,
+    build_burton_miller_neumann_cpu_system,
+    solve_burton_miller_neumann_cpu_system,
+    solve_burton_miller_neumann_cpu,
     solve_burton_miller_neumann,
     reflect_curl,
     reflect_normal,
@@ -825,8 +830,23 @@ function assemble_regular_galerkin_operators(
     regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
-    use_cuda_regular || error("BEAT Engine is CUDA-only; CPU regular assembly has been removed.")
-    threaded || error("BEAT Engine is CUDA-only; threaded CPU assembly has been removed.")
+    if !use_cuda_regular
+        return assemble_regular_galerkin_operators_cpu(
+            mesh,
+            p1_space,
+            dp0_space,
+            k,
+            rule;
+            skip_singular=skip_singular,
+            singular_order=singular_order,
+            element_indices=element_indices,
+            threaded=threaded,
+            timing=timing,
+            singular_cache=singular_cache,
+            symmetry_mode=symmetry_mode,
+        )
+    end
+
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel quadrature.")
     regular_assembly_mode == :split_atomic_balanced || error("Unsupported CUDA regular assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
     return assemble_regular_galerkin_operators_cuda_regular(
@@ -872,7 +892,9 @@ release_operator_storage!(operators) = nothing
 function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
     coupling = Complex{T}(0, 1) / k
     operators_on_gpu = get(operators, :on_gpu, false)
-    operators_on_gpu || error("BEAT Engine is CUDA-only; CPU operator solves have been removed.")
+    if !operators_on_gpu
+        return solve_burton_miller_neumann_cpu(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+    end
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
@@ -933,6 +955,8 @@ function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{
         basis_values,
     )
 end
+
+include(joinpath(@__DIR__, "BeatEngineCpu.jl"))
 
 if CUDA_MODULE !== nothing
     include(joinpath(@__DIR__, "BeatEngineCuda.jl"))

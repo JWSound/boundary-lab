@@ -20,21 +20,26 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     labels = backend_label_to_id()
 
     assert labels["Server"] == "server"
-    assert labels["BEAT Engine (Nvidia GPU)"] == "julia_local"
+    assert labels["BEAT Engine (CUDA)"] == "beat_cuda"
+    assert labels["BEAT Engine (CPU)"] == "beat_cpu"
     assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
-    assert normalize_backend_id("local_julia") == "julia_local"
-    assert normalize_backend_id("beat") == "julia_local"
-    assert normalize_backend_id("beat_engine") == "julia_local"
-    assert normalize_backend_id("afterburner") == "julia_local"
+    assert normalize_backend_id("julia_local") == "beat_cuda"
+    assert normalize_backend_id("local_julia") == "beat_cuda"
+    assert normalize_backend_id("beat") == "beat_cuda"
+    assert normalize_backend_id("beat_engine") == "beat_cuda"
+    assert normalize_backend_id("afterburner") == "beat_cuda"
+    assert normalize_backend_id("beat_cpu") == "beat_cpu"
     assert JuliaLocalBackend is BeatEngineBackend
     assert AfterburnerBackend is BeatEngineBackend
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
-    assert backend_info("julia_local").capabilities.supports_symmetry is True
-    assert "julia_local" in {info.backend_id for info in available_backend_infos()}
+    assert backend_info("beat_cuda").capabilities.supports_symmetry is True
+    assert backend_info("beat_cpu").capabilities.supports_symmetry is True
+    assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
+    assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:
@@ -61,10 +66,16 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert server_backend.capabilities.is_remote is True
 
     julia_backend = create_backend("julia_local")
-    assert julia_backend.backend_id == "julia_local"
+    assert julia_backend.backend_id == "beat_cuda"
     assert julia_backend.capabilities.is_remote is False
     assert julia_backend.capabilities.supports_parallel_workers is False
     assert julia_backend.capabilities.supports_symmetry is True
+
+    beat_cpu_backend = create_backend("beat_cpu")
+    assert beat_cpu_backend.backend_id == "beat_cpu"
+    assert beat_cpu_backend.capabilities.is_remote is False
+    assert beat_cpu_backend.capabilities.supports_parallel_workers is False
+    assert beat_cpu_backend.capabilities.supports_symmetry is True
 
 
 def test_bempp_backend_rejects_symmetry() -> None:
@@ -95,6 +106,9 @@ import sys
 request_path = sys.argv[sys.argv.index("--request") + 1]
 with open(request_path, "r", encoding="utf-8") as handle:
     request = json.load(handle)
+
+if request.get("beat_engine_backend") != "cuda":
+    raise SystemExit("expected cuda BEAT backend")
 
 print(json.dumps({
     "type": "initialized",
@@ -145,6 +159,51 @@ print(json.dumps({"type": "completed", "solved_count": 1}), flush=True)
     assert results[0].impedance.tolist() == [[6.0, 1.0]]
     assert results[0].timings.assembly_s == 0.1
     assert results[0].diagnostics.message == "3"
+
+
+def test_beat_cpu_backend_passes_cpu_selector_to_julia(tmp_path) -> None:
+    mesh_path = tmp_path / "mesh.msh"
+    mesh_path.write_text("mesh", encoding="utf-8")
+    fake_solver = tmp_path / "fake_beat_cpu_solver.py"
+    fake_solver.write_text(
+        """
+import json
+import sys
+
+request_path = sys.argv[sys.argv.index("--request") + 1]
+with open(request_path, "r", encoding="utf-8") as handle:
+    request = json.load(handle)
+
+if request.get("beat_engine_backend") != "cpu":
+    raise SystemExit("expected cpu BEAT backend")
+
+print(json.dumps({
+    "type": "initialized",
+    "polar_angle_deg": [0.0],
+    "radiator_names": ["Woofer"],
+    "sphere_metadata": None,
+}), flush=True)
+print(json.dumps({"type": "completed", "solved_count": 0}), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    backend = create_backend(
+        "beat_cpu",
+        julia_executable=sys.executable,
+        solver_script=str(fake_solver),
+        julia_project=None,
+        persistent_worker=False,
+    )
+    session = backend.create_session(
+        SolveRequest(
+            config=SimulationConfig(mesh_file=str(mesh_path)),
+            frequencies_hz=np.array([1000.0], dtype=np.float32),
+        )
+    )
+
+    assert session.metadata.radiator_names.tolist() == ["Woofer"]
+    assert list(session.solve_stream()) == []
 
 
 def test_julia_threads_auto_maps_to_cpu_count() -> None:
