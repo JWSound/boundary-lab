@@ -49,7 +49,7 @@ end
 
 _cuda_timed_stage!(thunk, timing, name::String) = _cuda_timed_stage!(timing, name, thunk)
 
-_regular_quadrature_threads(rule_count::Int) = 32
+_regular_quadrature_threads(rule_count::Int) = 16
 
 function _cuda_regular_real_buffers(::Type{T}, p1_dof_count::Int, dp0_dof_count::Int) where {T<:AbstractFloat}
     return (

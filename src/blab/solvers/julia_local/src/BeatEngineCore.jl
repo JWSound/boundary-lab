@@ -827,6 +827,7 @@ function assemble_regular_galerkin_operators(
     cuda_singular_cache=nothing,
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
+    regular_kernel_threads_override::Union{Nothing,Int}=nothing,
     regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
@@ -866,6 +867,7 @@ function assemble_regular_galerkin_operators(
         cuda_singular_cache=cuda_singular_cache,
         profile_regular_kernel=profile_regular_kernel,
         regular_probe_pair_limit=regular_probe_pair_limit,
+        regular_kernel_threads_override=regular_kernel_threads_override,
         regular_assembly_mode=:split_atomic_balanced,
         symmetry_mode=symmetry_mode,
     )

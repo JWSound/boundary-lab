@@ -41,6 +41,7 @@ Base.@kwdef mutable struct BenchmarkConfig
     return_gpu::Bool = true
     profile_regular_kernel::Bool = false
     regular_probe_pair_limit::Int = 1_000_000
+    regular_kernel_threads::Union{Nothing,Int} = nothing
     verbose::Bool = false
 end
 
@@ -65,6 +66,7 @@ function print_usage()
       --json PATH                    Write JSON results. Default: results/benchmark_cuda_sample.json
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
+      --regular-kernel-threads N     Override CUDA regular pair assembly threads per block.
       --verbose                      Print every timing bucket in the console summary.
       --help                         Print this message.
     """)
@@ -112,6 +114,11 @@ function parse_args(args)
             config.profile_regular_kernel = true
         elseif arg == "--regular-probe-pair-limit"
             i += 1; config.regular_probe_pair_limit = parse(Int, args[i])
+        elseif arg == "--regular-kernel-threads"
+            i += 1
+            config.regular_kernel_threads = parse(Int, args[i])
+            config.regular_kernel_threads > 0 || error("--regular-kernel-threads must be positive.")
+            ispow2(config.regular_kernel_threads) || error("--regular-kernel-threads must be a power of two for the current reduction kernels.")
         elseif arg == "--verbose"
             config.verbose = true
         else
@@ -218,6 +225,7 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             cuda_singular_cache=cuda_singular_cache,
             profile_regular_kernel=config.profile_regular_kernel,
             regular_probe_pair_limit=config.regular_probe_pair_limit,
+            regular_kernel_threads_override=config.regular_kernel_threads,
             regular_assembly_mode=:split_atomic_balanced,
         )
     end
@@ -530,6 +538,7 @@ function benchmark_payload(config::BenchmarkConfig)
         "profile" => config.profile,
         "profile_regular_kernel" => config.profile_regular_kernel,
         "regular_probe_pair_limit" => config.regular_probe_pair_limit,
+        "regular_kernel_threads" => config.regular_kernel_threads,
         "regular_assembly_mode" => "split_atomic_balanced",
         "verbose" => config.verbose,
     )

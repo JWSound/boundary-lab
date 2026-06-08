@@ -15,10 +15,15 @@ function assemble_regular_galerkin_operators_cuda_regular(
     cuda_singular_cache=nothing,
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
+    regular_kernel_threads_override::Union{Nothing,Int}=nothing,
     regular_assembly_mode::Symbol=:split_atomic_balanced,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
+    if regular_kernel_threads_override !== nothing
+        regular_kernel_threads_override > 0 || error("regular_kernel_threads_override must be positive.")
+        ispow2(regular_kernel_threads_override) || error("regular_kernel_threads_override must be a power of two for the current reduction kernels.")
+    end
     regular_assembly_mode == :split_atomic_balanced || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
     return_gpu || error("BEAT Engine is CUDA-only; CPU operator materialization has been removed.")
@@ -31,7 +36,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
     kernel_mode = "split_atomic_balanced"
-    kernel_threads = _regular_quadrature_threads(rule_count)
+    kernel_threads = regular_kernel_threads_override === nothing ? _regular_quadrature_threads(rule_count) : regular_kernel_threads_override
     kernel_blocks = total_pairs
     kernel_shmem = kernel_threads * 24 * sizeof(T)
     probe_pair_count = regular_probe_pair_limit <= 0 ? total_pairs : min(total_pairs, regular_probe_pair_limit)

@@ -25,9 +25,9 @@ Regular pair assembly skips adjacent/coincident pairs, which are handled afterwa
 
 Symmetry image contributions are assembled on the host by reflecting trial/source element geometry and quadrature data. Reflected image pairs that become singular across a symmetry plane use image-singular correction caches.
 
-## Wavelength-Driven Regular Quadrature
+## Dynamic Quadrature
 
-The CPU path defaults to wavelength-driven regular quadrature. This is a CPU-only production feature; CUDA currently remains fixed-order.
+The CPU path defaults to wavelength-driven regular quadrature. This is a CPU-only production feature; CUDA currently remains fixed-order as the GPU solver does not meaningfully benefit from dynamic quadrature.
 
 The goal is to reduce low-frequency regular-pair assembly cost without changing singular-pair quadrature. Regular-pair assembly dominates dense BEM workload, and low frequencies do not need the same regular quadrature density as high frequencies on typical Boundary Lab loudspeaker meshes.
 
