@@ -409,6 +409,45 @@ class PreferencesDialog(QDialog):
         )
 
 
+def _local_drop_paths(event) -> list[Path]:
+    mime_data = event.mimeData()
+    if not mime_data.hasUrls():
+        return []
+    return [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
+
+
+class MeshDropTable(QTableWidget):
+    meshFilesDropped = Signal(object)
+
+    def __init__(self, rows: int, columns: int, parent: QWidget | None = None):
+        super().__init__(rows, columns, parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:
+        if self._msh_drop_paths(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._msh_drop_paths(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        paths = self._msh_drop_paths(event)
+        if not paths:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        self.meshFilesDropped.emit(paths)
+
+    @staticmethod
+    def _msh_drop_paths(event) -> list[Path]:
+        return [path for path in _local_drop_paths(event) if path.suffix.lower() == ".msh"]
+
+
 class MeshConfigDialog(QDialog):
     def __init__(
         self,
@@ -423,7 +462,7 @@ class MeshConfigDialog(QDialog):
         self.setWindowTitle("Mesh Config")
         self._meshes = list(meshes)
 
-        self.table = QTableWidget(0, 7)
+        self.table = MeshDropTable(0, 7)
         self.table.setHorizontalHeaderLabels(["Enabled", "Name", "Mesh File", "Scale", "X mm", "Y mm", "Z mm"])
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -461,6 +500,7 @@ class MeshConfigDialog(QDialog):
         self.symmetry_combo.setEnabled(symmetry_enabled)
         self.add_button.clicked.connect(self._add_mesh)
         self.remove_button.clicked.connect(self._remove_selected_meshes)
+        self.table.meshFilesDropped.connect(self._add_mesh_paths)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.add_button)
@@ -552,10 +592,17 @@ class MeshConfigDialog(QDialog):
             return
 
         path = Path(path_text)
-        if path.suffix.lower() != ".msh":
+        self._add_mesh_paths([path])
+
+    def _add_mesh_paths(self, paths: list[Path]) -> None:
+        unsupported = [path for path in paths if path.suffix.lower() != ".msh"]
+        if unsupported:
             QMessageBox.warning(self, "Unsupported mesh", "Only .msh mesh files can be imported.")
             return
+        for path in paths:
+            self._append_mesh_path(path)
 
+    def _append_mesh_path(self, path: Path) -> None:
         self._append_row(
             MeshDialogEntry(
                 name=self._unique_mesh_name(path.stem),

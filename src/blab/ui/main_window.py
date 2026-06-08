@@ -163,6 +163,48 @@ class PlotEntry:
     update: Callable[[dict[str, np.ndarray]], None]
 
 
+def _local_drop_paths(event) -> list[Path]:
+    mime_data = event.mimeData()
+    if not mime_data.hasUrls():
+        return []
+    return [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
+
+
+class AthScriptEditor(QPlainTextEdit):
+    configDropped = Signal(object)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event) -> None:
+        if self._cfg_drop_path(event) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._cfg_drop_path(event) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        path = self._cfg_drop_path(event)
+        if path is None:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        self.configDropped.emit(path)
+
+    @staticmethod
+    def _cfg_drop_path(event) -> Path | None:
+        for path in _local_drop_paths(event):
+            if path.suffix.lower() == ".cfg":
+                return path
+        return None
+
+
 class MainWindow(QMainWindow):
     mesh_state_changed = Signal(str)
     source_config_changed = Signal(str)
@@ -317,6 +359,11 @@ class MainWindow(QMainWindow):
             self._reload_updated_imported_meshes_on_focus()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonRelease:
+            index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
+            if index == len(self.ath_scripts):
+                self.add_ath_script()
+                return True
         if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
             index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
             if 0 <= index < len(self.ath_scripts):
@@ -524,12 +571,17 @@ class MainWindow(QMainWindow):
         self.editor_tabs.blockSignals(True)
         self.editor_tabs.clear()
         for script in self.ath_scripts:
-            editor = QPlainTextEdit()
+            editor = AthScriptEditor()
             editor.setFont(QFont("Consolas", 10))
             editor.setPlainText(script.config_text)
             editor.textChanged.connect(lambda script_id=script.id, editor=editor: self._update_script_text(script_id, editor))
+            editor.configDropped.connect(
+                lambda path, script_id=script.id: self._import_config_path(Path(path), script_id=script_id)
+            )
             self.editor_tabs.addTab(editor, script.name)
-        add_tab = QWidget()
+        add_tab = AthScriptEditor()
+        add_tab.setReadOnly(True)
+        add_tab.configDropped.connect(lambda path: self._import_config_path(Path(path)))
         add_index = self.editor_tabs.addTab(add_tab, ADD_SCRIPT_TAB_LABEL)
         self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
         self.editor_tabs.tabBar().setTabToolTip(add_index, "Add Ath script")
@@ -1769,15 +1821,18 @@ class MainWindow(QMainWindow):
         if not path_text:
             return
 
-        path = Path(path_text)
+        self._import_config_path(Path(path_text))
+
+    def _import_config_path(self, path: Path, *, script_id: str | None = None) -> None:
         try:
-            script = self._active_script()
+            config_text = path.read_text(encoding="utf-8")
+            script = next((item for item in self.ath_scripts if item.id == script_id), None) if script_id else self._active_script()
             if script is None:
-                script = new_script(unique_script_name(path.stem, self.ath_scripts), path.read_text(encoding="utf-8"))
+                script = new_script(unique_script_name(path.stem, self.ath_scripts), config_text)
                 self.ath_scripts = (*self.ath_scripts, script)
                 self.active_ath_script_id = script.id
             else:
-                self.ath_scripts = replace_script(self.ath_scripts, script.id, config_text=path.read_text(encoding="utf-8"))
+                self.ath_scripts = replace_script(self.ath_scripts, script.id, config_text=config_text)
             self._rebuild_ath_script_tabs()
             self.status_label.setText(f"Imported {path}")
         except Exception as exc:
