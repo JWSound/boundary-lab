@@ -14,6 +14,10 @@ Base.@kwdef mutable struct CpuBenchmarkConfig
     frequency::Float64 = 1000.0
     precision_name::String = "Float32"
     quadrature_order::Int = 2
+    quadrature_mode::String = "fixed"
+    wavelength_mesh_stat::String = "p90"
+    wavelength_kh_q1_max::Float64 = 0.0
+    wavelength_kh_q2_max::Float64 = 2.0
     singular_order::Int = 2
     eval_points::Int = 0
     subset_faces::Int = 128
@@ -44,6 +48,12 @@ function print_usage()
       --freq HZ                      Frequency in Hz. Default: 1000
       --precision Float32|Float64    Numeric precision. Default: Float32
       --quadrature-order N           Regular quadrature order. Default: 2
+      --quadrature-mode fixed|wavelength
+                                      Select fixed order or wavelength-driven q1/q2/q4. Default: fixed
+      --wavelength-mesh-stat median|p75|p90|max
+                                      Area statistic used for h=sqrt(area). Default: p90
+      --wavelength-kh-q1-max VALUE    q1 cutoff for k*h. Default: 0.0
+      --wavelength-kh-q2-max VALUE    q2 cutoff for k*h. Default: 2.0
       --singular-order N             Singular quadrature order. Default: 2
       --eval-points N                CPU field evaluation point count. Default: 0
       --subset-faces N               Use first N faces. Default: 128. 0 means full mesh.
@@ -79,6 +89,14 @@ function parse_args(args)
             i += 1; config.precision_name = args[i]
         elseif arg == "--quadrature-order"
             i += 1; config.quadrature_order = parse(Int, args[i])
+        elseif arg == "--quadrature-mode"
+            i += 1; config.quadrature_mode = lowercase(strip(args[i]))
+        elseif arg == "--wavelength-mesh-stat"
+            i += 1; config.wavelength_mesh_stat = lowercase(strip(args[i]))
+        elseif arg == "--wavelength-kh-q1-max"
+            i += 1; config.wavelength_kh_q1_max = parse(Float64, args[i])
+        elseif arg == "--wavelength-kh-q2-max"
+            i += 1; config.wavelength_kh_q2_max = parse(Float64, args[i])
         elseif arg == "--singular-order"
             i += 1; config.singular_order = parse(Int, args[i])
         elseif arg == "--eval-points"
@@ -114,6 +132,10 @@ function parse_args(args)
         end
         i += 1
     end
+    config.quadrature_mode in ("fixed", "wavelength") || error("Unsupported quadrature mode: $(config.quadrature_mode)")
+    config.wavelength_mesh_stat in ("median", "p75", "p90", "max") || error("Unsupported wavelength mesh stat: $(config.wavelength_mesh_stat)")
+    config.wavelength_kh_q1_max >= 0.0 || error("--wavelength-kh-q1-max must be non-negative.")
+    config.wavelength_kh_q2_max > config.wavelength_kh_q1_max || error("--wavelength-kh-q2-max must be greater than --wavelength-kh-q1-max.")
     return config
 end
 
@@ -144,6 +166,44 @@ function timed_stage!(timings::Dict{String,Float64}, name::String, thunk)
 end
 
 timed_stage!(thunk, timings::Dict{String,Float64}, name::String) = timed_stage!(timings, name, thunk)
+
+function mesh_area_statistic(areas, stat::String)
+    values = collect(Float64.(areas))
+    isempty(values) && error("Cannot select wavelength quadrature order from an empty element set.")
+    if stat == "median"
+        return median(values)
+    elseif stat == "p75"
+        return quantile(values, 0.75)
+    elseif stat == "p90"
+        return quantile(values, 0.90)
+    elseif stat == "max"
+        return maximum(values)
+    end
+    error("Unsupported wavelength mesh stat: $stat")
+end
+
+function selected_regular_quadrature_order(config::CpuBenchmarkConfig, mesh, element_indices, ::Type{T}) where {T<:AbstractFloat}
+    if config.quadrature_mode == "fixed"
+        return (
+            order=config.quadrature_order,
+            mesh_area_stat=nothing,
+            element_length_m=nothing,
+            kh=nothing,
+        )
+    end
+
+    area_stat = mesh_area_statistic(mesh.areas[element_indices], config.wavelength_mesh_stat)
+    element_length = sqrt(area_stat)
+    k = 2pi * config.frequency / config.sound_speed
+    kh = k * element_length
+    order = kh <= config.wavelength_kh_q1_max ? 1 : kh <= config.wavelength_kh_q2_max ? 2 : 4
+    return (
+        order=order,
+        mesh_area_stat=area_stat,
+        element_length_m=element_length,
+        kh=kh,
+    )
+end
 
 function throat_rhs(mesh, config::CpuBenchmarkConfig, ::Type{T}) where {T<:AbstractFloat}
     omega = T(2pi) * T(config.frequency)
@@ -191,14 +251,17 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
         nothing
     end
 
-    rule = timed_stage!(timings, "quadrature_rule_build") do
-        triangle_rule(T, config.quadrature_order)
-    end
     element_count = config.subset_faces > 0 ? min(config.subset_faces, length(mesh.faces)) : length(mesh.faces)
     element_indices = 1:element_count
     subset_run = element_count != length(mesh.faces)
     if measured && subset_run && !config.skip_solve
         @warn "subset-faces creates an assembly microbenchmark, not a physically complete solve. Use --subset-faces 0 for full end-to-end timing."
+    end
+
+    quadrature_selection = selected_regular_quadrature_order(config, mesh, element_indices, T)
+    timings["quadrature_order_selection"] = 0.0
+    rule = timed_stage!(timings, "quadrature_rule_build") do
+        triangle_rule(T, quadrature_selection.order)
     end
 
     singular_cache = timed_stage!(timings, "singular_correction_cache_build") do
@@ -298,6 +361,14 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
         "precision" => config.precision_name,
         "backend" => "cpu",
         "quadrature_order" => config.quadrature_order,
+        "selected_quadrature_order" => quadrature_selection.order,
+        "quadrature_mode" => config.quadrature_mode,
+        "wavelength_mesh_stat" => config.wavelength_mesh_stat,
+        "wavelength_mesh_area_stat_m2" => quadrature_selection.mesh_area_stat,
+        "wavelength_element_length_m" => quadrature_selection.element_length_m,
+        "wavelength_kh" => quadrature_selection.kh,
+        "wavelength_kh_q1_max" => config.wavelength_kh_q1_max,
+        "wavelength_kh_q2_max" => config.wavelength_kh_q2_max,
         "singular_order" => config.singular_order,
         "eval_points" => config.eval_points,
         "regular_pairs" => get(operators, :regular_pairs, nothing),
@@ -376,18 +447,30 @@ end
 function print_summary(payload)
     config = payload["config"]
     base = payload["runs"][1]
+    selected_order = get(base, "selected_quadrature_order", config["quadrature_order"])
     println(@sprintf(
-        "Benchmark: %s | %s | %.1f Hz | %d/%d faces | q%d/s%d | eval %d | BLAS %d",
+        "Benchmark: %s | %s | %.1f Hz | %d/%d faces | %s q%d/s%d | eval %d | BLAS %d",
         config["backend"],
         config["precision"],
         config["frequency_hz"],
         base["element_count"],
         base["mesh_faces"],
-        config["quadrature_order"],
+        config["quadrature_mode"],
+        selected_order,
         config["singular_order"],
         config["eval_points"],
         base["blas_threads"],
     ))
+    if config["quadrature_mode"] == "wavelength"
+        println(@sprintf(
+            "Wavelength selector: stat %s | h %.6g m | k*h %.6g | cutoffs %.6g / %.6g",
+            string(get(base, "wavelength_mesh_stat", config["wavelength_mesh_stat"])),
+            get(base, "wavelength_element_length_m", NaN),
+            get(base, "wavelength_kh", NaN),
+            config["wavelength_kh_q1_max"],
+            config["wavelength_kh_q2_max"],
+        ))
+    end
     println(@sprintf(
         "Dofs: P1 %d | DP0 %d | colors %s | pairs regular %s singular %s skipped %s",
         base["p1_dofs"],
@@ -435,6 +518,10 @@ function benchmark_payload(config::CpuBenchmarkConfig)
         "precision" => string(T),
         "backend" => "cpu",
         "quadrature_order" => config.quadrature_order,
+        "quadrature_mode" => config.quadrature_mode,
+        "wavelength_mesh_stat" => config.wavelength_mesh_stat,
+        "wavelength_kh_q1_max" => config.wavelength_kh_q1_max,
+        "wavelength_kh_q2_max" => config.wavelength_kh_q2_max,
         "singular_order" => config.singular_order,
         "eval_points" => config.eval_points,
         "subset_faces" => config.subset_faces,

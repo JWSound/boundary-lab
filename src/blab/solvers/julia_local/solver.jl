@@ -1,6 +1,7 @@
 using JSON
 using LinearAlgebra
 using Printf
+using Statistics
 using StaticArrays
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
@@ -85,6 +86,65 @@ function beat_backend_from_request(request)
     backend = get(aliases, backend, backend)
     backend in ("cuda", "cpu") || error("Unsupported BEAT Engine backend: $(backend). Expected cuda or cpu.")
     return Symbol(backend)
+end
+
+function regular_quadrature_mode_from_config(config, beat_backend::Symbol)
+    default_mode = beat_backend == :cpu ? "wavelength" : "fixed"
+    mode = lowercase(strip(String(get_value(config, "regular_quadrature_mode", get_value(config, "quadrature_mode", default_mode)))))
+    mode in ("fixed", "wavelength") || error("Unsupported regular quadrature mode: $(mode). Expected fixed or wavelength.")
+    if beat_backend != :cpu && mode == "wavelength"
+        error("Wavelength-driven regular quadrature is currently implemented only for the BEAT CPU backend.")
+    end
+    return mode
+end
+
+function mesh_area_statistic(areas, stat::String)
+    values = collect(Float64.(areas))
+    isempty(values) && error("Cannot select wavelength quadrature order from an empty mesh.")
+    if stat == "median"
+        return median(values)
+    elseif stat == "p75"
+        return quantile(values, 0.75)
+    elseif stat == "p90"
+        return quantile(values, 0.90)
+    elseif stat == "max"
+        return maximum(values)
+    end
+    error("Unsupported wavelength mesh stat: $(stat). Expected median, p75, p90, or max.")
+end
+
+function regular_quadrature_selection(config, mesh::BoundaryMesh{T}, freq::T, sound_speed::T, base_order::Int, mode::String) where {T<:AbstractFloat}
+    if mode == "fixed"
+        return (
+            order=base_order,
+            mesh_area_stat=nothing,
+            element_length_m=nothing,
+            kh=nothing,
+            q1_cutoff=nothing,
+            q2_cutoff=nothing,
+            mesh_stat=nothing,
+        )
+    end
+
+    mesh_stat = lowercase(strip(String(get_value(config, "wavelength_mesh_stat", "p90"))))
+    area_stat = mesh_area_statistic(mesh.areas, mesh_stat)
+    element_length = sqrt(area_stat)
+    k = Float64(2pi * freq / sound_speed)
+    kh = k * element_length
+    q1_cutoff = Float64(get_value(config, "wavelength_kh_q1_max", 0.0))
+    q2_cutoff = Float64(get_value(config, "wavelength_kh_q2_max", 2.0))
+    q1_cutoff >= 0.0 || error("wavelength_kh_q1_max must be non-negative.")
+    q2_cutoff > q1_cutoff || error("wavelength_kh_q2_max must be greater than wavelength_kh_q1_max.")
+    order = kh <= q1_cutoff ? 1 : kh <= q2_cutoff ? 2 : base_order
+    return (
+        order=order,
+        mesh_area_stat=area_stat,
+        element_length_m=element_length,
+        kh=kh,
+        q1_cutoff=q1_cutoff,
+        q2_cutoff=q2_cutoff,
+        mesh_stat=mesh_stat,
+    )
 end
 
 function mesh_inputs_from_config(config)
@@ -617,7 +677,9 @@ function solve_request_impl(request)
     validate_radiator_elements(mesh, element_mesh_ids, radiators)
     p1_space = build_p1_space(mesh)
     dp0_space = build_dp0_space(mesh)
-    rule = triangle_rule(FloatType, Int(get_value(config, "quadrature_order", 4)))
+    base_regular_order = Int(get_value(config, "quadrature_order", 4))
+    regular_quadrature_mode = regular_quadrature_mode_from_config(config, beat_backend)
+    rule = triangle_rule(FloatType, base_regular_order)
     cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=Symbol(symmetry_mode))
     singular_order = Int(get_value(config, "singular_order", 4))
     identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=Symbol(symmetry_mode))
@@ -631,13 +693,16 @@ function solve_request_impl(request)
     cuda_cache = nothing
     cuda_singular_cache = nothing
     field_cache = cpu_field_cache
+    regular_rule_cache = Dict{Int,Any}(base_regular_order => rule)
+    identity_cache = Dict{Int,Any}(base_regular_order => (identity_p1_p1, identity_p1_dp0))
+    cpu_field_cache_by_order = Dict{Int,Any}(base_regular_order => cpu_field_cache)
     if beat_backend == :cuda
         emit_event("status"; message="BEAT Engine using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
         cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
         field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
         cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
     else
-        emit_event("status"; message="BEAT Engine using CPU assembly, OpenBLAS/LAPACK dense solve, and CPU field evaluation")
+        emit_event("status"; message="BEAT Engine using CPU assembly, OpenBLAS/LAPACK dense solve, CPU field evaluation, and $(regular_quadrature_mode) regular quadrature")
     end
 
     for (index, freq_raw) in enumerate(frequencies)
@@ -649,6 +714,30 @@ function solve_request_impl(request)
         freq = FloatType(freq_raw)
         omega = FloatType(2pi) * freq
         k = omega / sound_speed
+        quadrature_selection = regular_quadrature_selection(config, mesh, freq, sound_speed, base_regular_order, regular_quadrature_mode)
+        selected_rule = if beat_backend == :cpu
+            get!(regular_rule_cache, quadrature_selection.order) do
+                triangle_rule(FloatType, quadrature_selection.order)
+            end
+        else
+            rule
+        end
+        selected_identity_p1_p1 = identity_p1_p1
+        selected_identity_p1_dp0 = identity_p1_dp0
+        selected_field_cache = field_cache
+        if beat_backend == :cpu
+            selected_identity = get!(identity_cache, quadrature_selection.order) do
+                (
+                    assemble_l2_identity_matrix(mesh, p1_space, dp0_space, selected_rule, :p1, :p1; symmetry_mode=Symbol(symmetry_mode)),
+                    assemble_l2_identity_matrix(mesh, p1_space, dp0_space, selected_rule, :p1, :dp0; symmetry_mode=Symbol(symmetry_mode)),
+                )
+            end
+            selected_identity_p1_p1 = selected_identity[1]
+            selected_identity_p1_dp0 = selected_identity[2]
+            selected_field_cache = get!(cpu_field_cache_by_order, quadrature_selection.order) do
+                build_field_evaluation_cache(mesh, selected_rule; symmetry_mode=Symbol(symmetry_mode))
+            end
+        end
 
         t_assembly = @elapsed begin
             operators = assemble_regular_galerkin_operators(
@@ -656,7 +745,7 @@ function solve_request_impl(request)
                 p1_space,
                 dp0_space,
                 k,
-                rule;
+                selected_rule;
                 skip_singular=false,
                 singular_order=singular_order,
                 use_cuda_regular=beat_backend == :cuda,
@@ -675,7 +764,7 @@ function solve_request_impl(request)
         cpu_solve_system = nothing
         if beat_backend == :cpu
             t_solve += @elapsed begin
-                cpu_solve_system = build_burton_miller_neumann_cpu_system(operators, identity_p1_p1, identity_p1_dp0, k)
+                cpu_solve_system = build_burton_miller_neumann_cpu_system(operators, selected_identity_p1_p1, selected_identity_p1_dp0, k)
             end
         end
         channel_boundary_pressures = Vector{Vector{Complex{FloatType}}}()
@@ -696,8 +785,8 @@ function solve_request_impl(request)
                     mesh,
                     element_mesh_ids,
                     operators,
-                    identity_p1_p1,
-                    identity_p1_dp0,
+                    selected_identity_p1_p1,
+                    selected_identity_p1_dp0,
                     radiators,
                     unit_drives,
                     rho,
@@ -707,7 +796,7 @@ function solve_request_impl(request)
                 )
             end
             t_field += @elapsed begin
-                combined_pressure = field_for_points(combined_points, mesh, pressure, q_neumann, k, field_cache, beat_backend)
+                combined_pressure = field_for_points(combined_points, mesh, pressure, q_neumann, k, selected_field_cache, beat_backend)
                 push!(horizontal_pressure_rows, Complex{FloatType}.(combined_pressure[1:horizontal_count]))
                 push!(vertical_pressure_rows, Complex{FloatType}.(combined_pressure[(horizontal_count + 1):(horizontal_count + vertical_count)]))
                 if sphere !== nothing
@@ -779,6 +868,15 @@ function solve_request_impl(request)
                     "message" => "Julia direct dense solve",
                     "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
+                    "regular_quadrature_mode" => regular_quadrature_mode,
+                    "regular_quadrature_order" => quadrature_selection.order,
+                    "regular_quadrature_base_order" => base_regular_order,
+                    "regular_quadrature_wavelength_mesh_stat" => quadrature_selection.mesh_stat,
+                    "regular_quadrature_wavelength_mesh_area_stat_m2" => quadrature_selection.mesh_area_stat,
+                    "regular_quadrature_wavelength_element_length_m" => quadrature_selection.element_length_m,
+                    "regular_quadrature_wavelength_kh" => quadrature_selection.kh,
+                    "regular_quadrature_wavelength_kh_q1_max" => quadrature_selection.q1_cutoff,
+                    "regular_quadrature_wavelength_kh_q2_max" => quadrature_selection.q2_cutoff,
                 ),
             ),
         )

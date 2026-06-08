@@ -104,4 +104,6 @@ API surface:
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
-- [BEAT Engine BEM backend](docs/advanced/beat-engine-bem-backend.md)
+- [BEAT Engine Core](docs/advanced/beat-engine-core.md)
+- [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
+- [BEAT Engine CUDA](docs/advanced/beat-engine-CUDA.md)
