@@ -134,6 +134,7 @@ function _launch_regular_split_balanced_atomic_kernel!(
         face_count,
         rule_count,
         total_pairs,
+        1,
     )
 
     CUDA.@cuda threads=threads blocks=total_pairs shmem=shmem _cuda_regular_quadrature_dlp_adjoint_kernel!(
@@ -154,6 +155,168 @@ function _launch_regular_split_balanced_atomic_kernel!(
         face_count,
         rule_count,
         total_pairs,
+        1,
+    )
+    return nothing
+end
+
+function _launch_regular_split_balanced_multipair_atomic_kernel!(
+    slp_re,
+    slp_im,
+    dlp_re,
+    dlp_im,
+    adj_re,
+    adj_im,
+    hyp_re,
+    hyp_im,
+    d_face_vertices,
+    d_normals,
+    d_areas,
+    d_faces,
+    d_curls,
+    d_test_indices,
+    d_trial_indices,
+    d_rule_points,
+    d_rule_weights,
+    k::T,
+    p1_dof_count::Int,
+    face_count::Int,
+    rule_count::Int,
+    total_pairs::Int,
+    threads_per_pair::Int,
+) where {T<:AbstractFloat}
+    pairs_per_block = 8
+    block_threads = threads_per_pair * pairs_per_block
+    blocks = cld(total_pairs, pairs_per_block)
+    shmem = block_threads * 24 * sizeof(T)
+    CUDA.@cuda threads=block_threads blocks=blocks shmem=shmem _cuda_regular_quadrature_slp_hyp_kernel!(
+        slp_re,
+        slp_im,
+        hyp_re,
+        hyp_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_curls,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+        pairs_per_block,
+    )
+
+    CUDA.@cuda threads=block_threads blocks=blocks shmem=shmem _cuda_regular_quadrature_dlp_adjoint_kernel!(
+        dlp_re,
+        dlp_im,
+        adj_re,
+        adj_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+        pairs_per_block,
+    )
+    return nothing
+end
+
+function _launch_regular_split_slp_hyp_separate_atomic_kernel!(
+    slp_re,
+    slp_im,
+    dlp_re,
+    dlp_im,
+    adj_re,
+    adj_im,
+    hyp_re,
+    hyp_im,
+    d_face_vertices,
+    d_normals,
+    d_areas,
+    d_faces,
+    d_curls,
+    d_test_indices,
+    d_trial_indices,
+    d_rule_points,
+    d_rule_weights,
+    k::T,
+    p1_dof_count::Int,
+    face_count::Int,
+    rule_count::Int,
+    total_pairs::Int,
+    threads::Int,
+) where {T<:AbstractFloat}
+    slp_shmem = threads * 6 * sizeof(T)
+    CUDA.@cuda threads=threads blocks=total_pairs shmem=slp_shmem _cuda_regular_quadrature_slp_kernel!(
+        slp_re,
+        slp_im,
+        d_face_vertices,
+        d_areas,
+        d_faces,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+    )
+
+    hyp_shmem = threads * 18 * sizeof(T)
+    CUDA.@cuda threads=threads blocks=total_pairs shmem=hyp_shmem _cuda_regular_quadrature_hyp_kernel!(
+        hyp_re,
+        hyp_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_curls,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+    )
+
+    dlp_adjoint_shmem = threads * 24 * sizeof(T)
+    CUDA.@cuda threads=threads blocks=total_pairs shmem=dlp_adjoint_shmem _cuda_regular_quadrature_dlp_adjoint_kernel!(
+        dlp_re,
+        dlp_im,
+        adj_re,
+        adj_im,
+        d_face_vertices,
+        d_normals,
+        d_areas,
+        d_faces,
+        d_test_indices,
+        d_trial_indices,
+        d_rule_points,
+        d_rule_weights,
+        k,
+        p1_dof_count,
+        face_count,
+        rule_count,
+        total_pairs,
+        1,
     )
     return nothing
 end

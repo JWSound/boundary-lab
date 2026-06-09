@@ -697,12 +697,12 @@ function solve_request_impl(request)
     identity_cache = Dict{Int,Any}(base_regular_order => (identity_p1_p1, identity_p1_dp0))
     cpu_field_cache_by_order = Dict{Int,Any}(base_regular_order => cpu_field_cache)
     if beat_backend == :cuda
-        emit_event("status"; message="BEAT Engine using CUDA balanced split assembly, GPU dense solve, and GPU field evaluation")
+        emit_event("status"; message="Initializing BEAT Engine using CUDA...")
         cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
         field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
         cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
     else
-        emit_event("status"; message="BEAT Engine using CPU assembly, OpenBLAS/LAPACK dense solve, CPU field evaluation, and $(regular_quadrature_mode) regular quadrature")
+        emit_event("status"; message="Initializing BEAT Engine using CPU...")
     end
 
     for (index, freq_raw) in enumerate(frequencies)
@@ -754,7 +754,6 @@ function solve_request_impl(request)
                 parallel_quadrature=beat_backend == :cuda,
                 singular_cache=singular_cache,
                 cuda_singular_cache=cuda_singular_cache,
-                regular_assembly_mode=:split_atomic_balanced,
                 symmetry_mode=Symbol(symmetry_mode),
             )
         end
@@ -868,6 +867,7 @@ function solve_request_impl(request)
                     "message" => "Julia direct dense solve",
                     "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
+                    "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :split_atomic_balanced_multipair : :cpu_default)),
                     "regular_quadrature_mode" => regular_quadrature_mode,
                     "regular_quadrature_order" => quadrature_selection.order,
                     "regular_quadrature_base_order" => base_regular_order,

@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         self.solve_started_at: float | None = None
         self.solve_cancel_requested = False
         self._use_final_isobar_resolution = False
+        self._final_isobar_plots_rendered = False
         self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
         self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
@@ -293,6 +294,10 @@ class MainWindow(QMainWindow):
         self.freq_min_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_min)
         self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
         self.freq_count_spin = self._make_spin(3, 161, freq_count)
+        self.capture_contours_button = QPushButton("Capture Contours")
+        self.capture_contours_button.setEnabled(False)
+        self.clear_contours_button = QPushButton("Clear Contours")
+        self.clear_contours_button.setEnabled(False)
 
         self.status_label = QLabel("Ready")
         startup("Creating plot panels...")
@@ -504,6 +509,8 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(QLabel("Frequencies"))
         controls_layout.addWidget(self.freq_count_slider)
         controls_layout.addWidget(self.freq_count_spin)
+        controls_layout.addWidget(self.capture_contours_button)
+        controls_layout.addWidget(self.clear_contours_button)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -519,6 +526,8 @@ class MainWindow(QMainWindow):
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
+        self.capture_contours_button.clicked.connect(self.capture_visible_isobar_contours)
+        self.clear_contours_button.clicked.connect(self.clear_isobar_contours)
 
         self.freq_min_slider.valueChanged.connect(
             lambda value: self._sync_frequency_spin_from_slider(self.freq_min_spin, value)
@@ -2340,6 +2349,7 @@ class MainWindow(QMainWindow):
         self.solve_expected_count = int(ordered_freqs.size)
         self.solve_failed = False
         self._use_final_isobar_resolution = False
+        self._final_isobar_plots_rendered = False
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
@@ -2348,6 +2358,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self._set_contour_button_states()
         self.solve_started_at = time.perf_counter()
         self.solve_cancel_requested = False
         self.status_label.setText("Initializing Solver...")
@@ -2438,9 +2449,11 @@ class MainWindow(QMainWindow):
                 self.status_label.setText("Rendering final high-resolution plots...")
                 QApplication.processEvents()
             self._refresh_plots()
+            self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
             self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
+            self._set_contour_button_states()
             elapsed_text = "" if elapsed_s is None else f" in {elapsed_s:.1f} s"
             if self.solve_cancel_requested:
                 self.status_label.setText(
@@ -2469,15 +2482,18 @@ class MainWindow(QMainWindow):
         self.solve_expected_count = 0
         self.solve_worker = None
         self.solve_thread = None
+        self._set_contour_button_states()
 
     def _clear_plots(self) -> None:
         self.live_dataset = None
         self._use_final_isobar_resolution = False
+        self._final_isobar_plots_rendered = False
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
         self.balloon_plot_action.setEnabled(False)
+        self._set_contour_button_states()
 
     def _set_plot_visible(self, plot_id: str, visible: bool) -> None:
         for entry in self.plot_entries:
@@ -2488,11 +2504,53 @@ class MainWindow(QMainWindow):
             self.settings.sync()
             if visible:
                 self._refresh_plots()
+                if self._use_final_isobar_resolution and plot_id in {"horizontal_isobar", "vertical_isobar"}:
+                    self._final_isobar_plots_rendered = True
+            self._set_contour_button_states()
             break
 
     def _set_export_plot_actions_enabled(self, enabled: bool) -> None:
         for action in self.export_plot_actions.values():
             action.setEnabled(enabled)
+
+    def _visible_isobar_plots(self) -> tuple[IsobarCanvas, ...]:
+        plots: list[IsobarCanvas] = []
+        if self.horizontal_plot.isVisible():
+            plots.append(self.horizontal_plot)
+        if self.vertical_plot.isVisible():
+            plots.append(self.vertical_plot)
+        return tuple(plots)
+
+    def _has_captured_isobar_contours(self) -> bool:
+        return self.horizontal_plot.has_captured_contours or self.vertical_plot.has_captured_contours
+
+    def _set_contour_button_states(self) -> None:
+        capture_enabled = bool(
+            self.live_dataset is not None
+            and self._use_final_isobar_resolution
+            and self._final_isobar_plots_rendered
+            and self._visible_isobar_plots()
+        )
+        self.capture_contours_button.setEnabled(capture_enabled)
+        self.clear_contours_button.setEnabled(self._has_captured_isobar_contours())
+
+    @Slot()
+    def capture_visible_isobar_contours(self) -> None:
+        captured_count = 0
+        for plot in self._visible_isobar_plots():
+            if plot.capture_contours():
+                captured_count += 1
+        self._set_contour_button_states()
+        if captured_count:
+            suffix = "" if captured_count == 1 else "s"
+            self.status_label.setText(f"Captured contours for {captured_count} isobar plot{suffix}")
+
+    @Slot()
+    def clear_isobar_contours(self) -> None:
+        self.horizontal_plot.clear_contours()
+        self.vertical_plot.clear_contours()
+        self._set_contour_button_states()
+        self.status_label.setText("Cleared captured contours")
 
     def _prepared_live_plot_dataset(
         self,

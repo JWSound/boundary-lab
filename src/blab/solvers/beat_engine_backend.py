@@ -88,6 +88,7 @@ class BeatEngineSession:
                     if not self._stop:
                         yield frequency_result_from_dict(event["result"])
                 elif event_type == "status":
+                    self._emit_status(str(event.get("message", "")))
                     continue
                 elif event_type == "cancelled":
                     return
@@ -165,6 +166,7 @@ class BeatEngineSession:
         for event in self._events:
             event_type = str(event.get("type", ""))
             if event_type == "status":
+                self._emit_status(str(event.get("message", "")))
                 continue
             elif event_type == "initialized":
                 sphere_metadata = event.get("sphere_metadata") or {}

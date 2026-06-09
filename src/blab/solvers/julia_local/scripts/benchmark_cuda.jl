@@ -42,6 +42,7 @@ Base.@kwdef mutable struct BenchmarkConfig
     profile_regular_kernel::Bool = false
     regular_probe_pair_limit::Int = 1_000_000
     regular_kernel_threads::Union{Nothing,Int} = nothing
+    regular_assembly_mode::Symbol = :split_atomic_balanced_multipair
     verbose::Bool = false
 end
 
@@ -67,6 +68,7 @@ function print_usage()
       --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
       --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
       --regular-kernel-threads N     Override CUDA regular pair assembly threads per block.
+      --regular-assembly-mode MODE   multipair|balanced|slp_hyp_split regular split kernel grouping. Default: multipair.
       --verbose                      Print every timing bucket in the console summary.
       --help                         Print this message.
     """)
@@ -119,6 +121,18 @@ function parse_args(args)
             config.regular_kernel_threads = parse(Int, args[i])
             config.regular_kernel_threads > 0 || error("--regular-kernel-threads must be positive.")
             ispow2(config.regular_kernel_threads) || error("--regular-kernel-threads must be a power of two for the current reduction kernels.")
+        elseif arg == "--regular-assembly-mode"
+            i += 1
+            mode = lowercase(args[i])
+            if mode == "balanced" || mode == "split_atomic_balanced"
+                config.regular_assembly_mode = :split_atomic_balanced
+            elseif mode == "multipair" || mode == "split_atomic_balanced_multipair"
+                config.regular_assembly_mode = :split_atomic_balanced_multipair
+            elseif mode == "slp_hyp_split" || mode == "split_atomic_slp_hyp_separate"
+                config.regular_assembly_mode = :split_atomic_slp_hyp_separate
+            else
+                error("--regular-assembly-mode must be balanced, multipair, or slp_hyp_split.")
+            end
         elseif arg == "--verbose"
             config.verbose = true
         else
@@ -226,7 +240,7 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             profile_regular_kernel=config.profile_regular_kernel,
             regular_probe_pair_limit=config.regular_probe_pair_limit,
             regular_kernel_threads_override=config.regular_kernel_threads,
-            regular_assembly_mode=:split_atomic_balanced,
+            regular_assembly_mode=config.regular_assembly_mode,
         )
     end
     regular_probe_keys = [
@@ -388,7 +402,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "regular_kernel_total_pairs" => get(operators, :regular_kernel_total_pairs, nothing),
         "regular_probe_pair_count" => get(operators, :regular_probe_pair_count, nothing),
         "regular_kernel_mode" => get(operators, :regular_kernel_mode, nothing),
-        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :split_atomic_balanced)),
+        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :split_atomic_balanced_multipair)),
         "regular_color_count" => get(operators, :regular_color_count, nothing),
         "profile_regular_kernel" => config.profile_regular_kernel,
         "regular_probe_pair_limit" => config.regular_probe_pair_limit,
@@ -539,7 +553,7 @@ function benchmark_payload(config::BenchmarkConfig)
         "profile_regular_kernel" => config.profile_regular_kernel,
         "regular_probe_pair_limit" => config.regular_probe_pair_limit,
         "regular_kernel_threads" => config.regular_kernel_threads,
-        "regular_assembly_mode" => "split_atomic_balanced",
+        "regular_assembly_mode" => string(config.regular_assembly_mode),
         "verbose" => config.verbose,
     )
 

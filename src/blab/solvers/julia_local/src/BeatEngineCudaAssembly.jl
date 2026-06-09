@@ -16,7 +16,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
     profile_regular_kernel::Bool=false,
     regular_probe_pair_limit::Int=1_000_000,
     regular_kernel_threads_override::Union{Nothing,Int}=nothing,
-    regular_assembly_mode::Symbol=:split_atomic_balanced,
+    regular_assembly_mode::Symbol=:split_atomic_balanced_multipair,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
@@ -24,7 +24,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
         regular_kernel_threads_override > 0 || error("regular_kernel_threads_override must be positive.")
         ispow2(regular_kernel_threads_override) || error("regular_kernel_threads_override must be a power of two for the current reduction kernels.")
     end
-    regular_assembly_mode == :split_atomic_balanced || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode). Only :split_atomic_balanced is available.")
+    regular_assembly_mode in (:split_atomic_balanced, :split_atomic_balanced_multipair, :split_atomic_slp_hyp_separate) || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode).")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
     return_gpu || error("BEAT Engine is CUDA-only; CPU operator materialization has been removed.")
 
@@ -35,10 +35,11 @@ function assemble_regular_galerkin_operators_cuda_regular(
     rule_count = cache === nothing ? length(rule.points) : cache.rule_count
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
-    kernel_mode = "split_atomic_balanced"
+    kernel_mode = string(regular_assembly_mode)
     kernel_threads = regular_kernel_threads_override === nothing ? _regular_quadrature_threads(rule_count) : regular_kernel_threads_override
-    kernel_blocks = total_pairs
-    kernel_shmem = kernel_threads * 24 * sizeof(T)
+    regular_pairs_per_block = regular_assembly_mode == :split_atomic_balanced_multipair ? 8 : 1
+    kernel_blocks = cld(total_pairs, regular_pairs_per_block)
+    kernel_shmem = kernel_threads * regular_pairs_per_block * 24 * sizeof(T)
     probe_pair_count = regular_probe_pair_limit <= 0 ? total_pairs : min(total_pairs, regular_probe_pair_limit)
 
     if cache === nothing
@@ -178,7 +179,11 @@ function assemble_regular_galerkin_operators_cuda_regular(
     end
 
     _cuda_timed_stage!(timing, "regular_operator_kernel") do
-        _launch_regular_split_balanced_atomic_kernel!(
+        launch_regular_kernel! =
+            regular_assembly_mode == :split_atomic_balanced_multipair ? _launch_regular_split_balanced_multipair_atomic_kernel! :
+            regular_assembly_mode == :split_atomic_slp_hyp_separate ? _launch_regular_split_slp_hyp_separate_atomic_kernel! :
+            _launch_regular_split_balanced_atomic_kernel!
+        launch_regular_kernel!(
             slp_re,
             slp_im,
             dlp_re,

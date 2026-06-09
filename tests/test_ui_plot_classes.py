@@ -37,7 +37,10 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
     assert "PLOT_TITLE_PAD = 1" in plot_source
+    assert "GRID_LINE_ALPHA = 0.6" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
+    assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
+    assert 'grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)' in plot_source
     assert "plot_layout.setSpacing(4)" in main_source
 
 
@@ -122,12 +125,72 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     isobar_block = source[source.index("class IsobarCanvas"):source.index("class ImpedanceCanvas")]
 
     assert "self._mesh_artist" in isobar_block
+    assert "self._image_artist" in isobar_block
     assert "def _mesh_matches(" in isobar_block
     assert "self._mesh_artist.set_array" in isobar_block
     assert "self.axes.pcolormesh(" in isobar_block
     assert "shading=shading" in isobar_block
     assert "self._mesh_shading == shading" in isobar_block
+    assert 'render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"' in isobar_block
+    assert "self.axes.imshow(" in isobar_block
+    assert 'interpolation="bilinear"' in isobar_block
+    assert "np.log10(freqs_hz)" in isobar_block
+    assert "apply_log_image_frequency_axis" in source
     assert isobar_block.count("clear_plot_axes(self.axes)") == 1
+
+
+def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
+    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    isobar_block = source[source.index("class IsobarCanvas"):source.index("class ImpedanceCanvas")]
+    draw_empty_block = isobar_block[isobar_block.index("    def _draw_empty"):isobar_block.index("    def _remove_artist")]
+    remove_contour_block = isobar_block[
+        isobar_block.index("    def _remove_contour_artist"):isobar_block.index("    @property")
+    ]
+
+    assert "self._captured_contours" in isobar_block
+    assert "self._mesh_values_db" in isobar_block
+    assert "def capture_contours(" in isobar_block
+    assert "def clear_contours(" in isobar_block
+    assert "def _redraw_captured_contours(" in isobar_block
+    assert "np.arange(np.ceil(clip_min_db / 3.0) * 3.0" in isobar_block
+    assert "levels.copy()" in isobar_block
+    assert "colors=\"white\"" in isobar_block
+    assert "linewidths=0.9" in isobar_block
+    assert "linestyles=\"solid\"" in isobar_block
+    assert "alpha=0.85" in isobar_block
+    assert "self._redraw_captured_contours()" in isobar_block
+    assert "self._captured_contours = None" not in draw_empty_block
+    assert "self._contour_artist = None" in draw_empty_block
+    assert "NotImplementedError" in remove_contour_block
+
+
+def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert 'QPushButton("Capture Contours")' in source
+    assert 'QPushButton("Clear Contours")' in source
+    assert "controls_layout.addWidget(self.capture_contours_button)" in source
+    assert "controls_layout.addWidget(self.clear_contours_button)" in source
+    assert "self.capture_contours_button.clicked.connect(self.capture_visible_isobar_contours)" in source
+    assert "self.clear_contours_button.clicked.connect(self.clear_isobar_contours)" in source
+    assert "self._final_isobar_plots_rendered = False" in source
+    assert "self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())" in source
+    assert "self._use_final_isobar_resolution" in source
+    assert "and self._final_isobar_plots_rendered" in source
+    assert "and self._visible_isobar_plots()" in source
+
+
+def test_main_window_captures_only_visible_isobar_plots_and_preserves_until_clear() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert "def _visible_isobar_plots(" in source
+    assert "if self.horizontal_plot.isVisible()" in source
+    assert "if self.vertical_plot.isVisible()" in source
+    assert "for plot in self._visible_isobar_plots():" in source
+    assert "plot.capture_contours()" in source
+    assert "self.horizontal_plot.clear_contours()" in source
+    assert "self.vertical_plot.clear_contours()" in source
+    assert "self.clear_contours_button.setEnabled(self._has_captured_isobar_contours())" in source
 
 
 def test_balloon_contours_exclude_configured_maximum() -> None:
