@@ -44,18 +44,19 @@ def test_plot_widgets_use_compact_title_padding() -> None:
 
 def test_main_window_uses_detachable_panel_docks() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    widgets_source = Path("src/blab/ui/main_window_widgets.py").read_text(encoding="utf-8")
 
     assert "QDockWidget" in source
-    assert "class DockTitleBar" in source
-    assert "save_action: QAction | None = None" in source
-    assert "tool_actions: tuple[QAction, ...] = ()" in source
-    assert "button.setDefaultAction(action)" in source
-    assert "self.tool_buttons.append(button)" in source
+    assert "class DockTitleBar" in widgets_source
+    assert "save_action: QAction | None = None" in widgets_source
+    assert "tool_actions: tuple[QAction, ...] = ()" in widgets_source
+    assert "button.setDefaultAction(action)" in widgets_source
+    assert "self.tool_buttons.append(button)" in widgets_source
     assert "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))" in source
     assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
     assert "tool_actions=tuple(" in source
-    assert "close_button.clicked.connect(dock.close)" in source
-    assert "event.ignore()" in source
+    assert "close_button.clicked.connect(dock.close)" in widgets_source
+    assert "event.ignore()" in widgets_source
     assert "collapse_editor" not in source
     assert "ath_editor_collapsed" not in source
     assert "ath_editor_width" not in source
@@ -158,7 +159,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
     assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
     assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
-    assert '"preferences/live_plot_quality"' in main_source
+    assert '"preferences/live_plot_quality"' in settings_source
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
     assert "FINAL_ISOBAR_ANGLE_SAMPLES = 1000" in plot_source

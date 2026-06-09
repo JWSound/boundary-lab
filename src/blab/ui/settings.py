@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QSettings
 
+from blab.solvers.registry import normalize_backend_id
+
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
@@ -70,6 +72,140 @@ def preferences_require_solve_invalidation(previous: GuiPreferences, current: Gu
 
 def preferences_require_visualization_refresh(previous: GuiPreferences, current: GuiPreferences) -> bool:
     return _preferences_changed(previous, current, VISUALIZATION_PREFERENCE_FIELDS)
+
+
+def load_gui_preferences(settings: QSettings) -> GuiPreferences:
+    defaults = GuiPreferences()
+    return GuiPreferences(
+        theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
+        solve_backend=normalize_backend_id(
+            settings_str(settings, "preferences/solve_backend", defaults.solve_backend)
+        ),
+        solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
+        live_plot_quality=normalize_live_plot_quality(
+            settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
+        ),
+        gmres_tolerance=settings_float(settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
+        polar_angle_step_deg=settings_float(
+            settings,
+            "preferences/polar_angle_step_deg",
+            defaults.polar_angle_step_deg,
+        ),
+        polar_observation_distance_m=settings_float(
+            settings,
+            "preferences/polar_observation_distance_m",
+            defaults.polar_observation_distance_m,
+        ),
+        use_burton_miller=settings_bool(
+            settings,
+            "preferences/use_burton_miller",
+            defaults.use_burton_miller,
+        ),
+        worker_count=settings_int(settings, "preferences/worker_count", defaults.worker_count),
+        polar_smoothing=settings_optional_int(
+            settings,
+            "preferences/polar_smoothing",
+            defaults.polar_smoothing,
+        ),
+        horizontal_normalization_angle=settings_float(
+            settings,
+            "preferences/horizontal_normalization_angle",
+            defaults.horizontal_normalization_angle,
+        ),
+        vertical_normalization_angle=settings_float(
+            settings,
+            "preferences/vertical_normalization_angle",
+            defaults.vertical_normalization_angle,
+        ),
+        spin_horizontal_reference_angle=settings_float(
+            settings,
+            "preferences/spin_horizontal_reference_angle",
+            defaults.spin_horizontal_reference_angle,
+        ),
+        spin_vertical_reference_angle=settings_float(
+            settings,
+            "preferences/spin_vertical_reference_angle",
+            defaults.spin_vertical_reference_angle,
+        ),
+        spl_max_db=settings_float(settings, "preferences/spl_max_db", defaults.spl_max_db),
+        spl_min_db=settings_float(settings, "preferences/spl_min_db", defaults.spl_min_db),
+        stitch_tolerance_mm=settings_float(
+            settings,
+            "preferences/stitch_tolerance_mm",
+            defaults.stitch_tolerance_mm,
+        ),
+        spherical_sampling_enabled=settings_bool(
+            settings,
+            "preferences/spherical_sampling_enabled",
+            defaults.spherical_sampling_enabled,
+        ),
+        balloon_angle_precision_deg=load_balloon_angle_precision_deg(settings, defaults),
+    )
+
+
+def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
+    settings.setValue("preferences/theme", preferences.theme)
+    settings.setValue("preferences/solve_backend", preferences.solve_backend)
+    settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
+    settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
+    settings.setValue("preferences/gmres_tolerance", preferences.gmres_tolerance)
+    settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
+    settings.setValue(
+        "preferences/polar_observation_distance_m",
+        preferences.polar_observation_distance_m,
+    )
+    settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
+    settings.setValue("preferences/worker_count", preferences.worker_count)
+    settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)
+    settings.setValue(
+        "preferences/horizontal_normalization_angle",
+        preferences.horizontal_normalization_angle,
+    )
+    settings.setValue(
+        "preferences/vertical_normalization_angle",
+        preferences.vertical_normalization_angle,
+    )
+    settings.setValue(
+        "preferences/spin_horizontal_reference_angle",
+        preferences.spin_horizontal_reference_angle,
+    )
+    settings.setValue(
+        "preferences/spin_vertical_reference_angle",
+        preferences.spin_vertical_reference_angle,
+    )
+    settings.setValue("preferences/spl_max_db", preferences.spl_max_db)
+    settings.setValue("preferences/spl_min_db", preferences.spl_min_db)
+    settings.setValue("preferences/stitch_tolerance_mm", preferences.stitch_tolerance_mm)
+    settings.setValue("preferences/spherical_sampling_enabled", preferences.spherical_sampling_enabled)
+    settings.setValue(
+        "preferences/balloon_angle_precision_deg",
+        preferences.balloon_angle_precision_deg,
+    )
+
+
+def load_balloon_angle_precision_deg(settings: QSettings, defaults: GuiPreferences) -> float:
+    if settings.contains("preferences/balloon_angle_precision_deg"):
+        return normalize_balloon_angle_precision_deg(
+            settings_float(
+                settings,
+                "preferences/balloon_angle_precision_deg",
+                defaults.balloon_angle_precision_deg,
+            )
+        )
+    if settings.contains("preferences/spherical_sampling_points"):
+        return balloon_angle_precision_from_points(
+            settings_int(
+                settings,
+                "preferences/spherical_sampling_points",
+                balloon_sampling_points(defaults.balloon_angle_precision_deg),
+            )
+        )
+    return defaults.balloon_angle_precision_deg
+
+
+def normalize_theme(theme: object) -> str:
+    normalized = str(theme).strip().lower()
+    return normalized if normalized in {"system", "light", "dark"} else "system"
 
 
 def settings_bool(settings: QSettings, key: str, default: bool) -> bool:

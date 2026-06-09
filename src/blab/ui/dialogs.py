@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
+from blab.ui.drag_drop import local_drop_paths
 from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
 
 
@@ -409,13 +410,6 @@ class PreferencesDialog(QDialog):
         )
 
 
-def _local_drop_paths(event) -> list[Path]:
-    mime_data = event.mimeData()
-    if not mime_data.hasUrls():
-        return []
-    return [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
-
-
 class MeshDropTable(QTableWidget):
     meshFilesDropped = Signal(object)
 
@@ -445,7 +439,7 @@ class MeshDropTable(QTableWidget):
 
     @staticmethod
     def _msh_drop_paths(event) -> list[Path]:
-        return [path for path in _local_drop_paths(event) if path.suffix.lower() == ".msh"]
+        return [path for path in local_drop_paths(event) if path.suffix.lower() == ".msh"]
 
 
 class MeshConfigDialog(QDialog):

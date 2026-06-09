@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -13,7 +13,7 @@ from typing import Callable
 import meshio
 import numpy as np
 from PySide6.QtCore import QByteArray, QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPalette
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTabBar,
     QTabWidget,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,7 +47,7 @@ from blab.ath import (
     write_ath_gmsh_path,
     write_ath_output_root,
 )
-from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.exporting import export_plot_png, export_polar_text_files
 from blab.live import (
     FrequencyResult,
@@ -59,7 +58,7 @@ from blab.live import (
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
-from blab.solvers.registry import backend_info, normalize_backend_id
+from blab.solvers.registry import backend_info
 from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import (
@@ -93,6 +92,12 @@ from blab.ui.project_io import (
     read_project_file,
     write_project_file,
 )
+from blab.ui.project_history import (
+    clear_recent_projects,
+    load_recent_project_paths,
+    remember_recent_project,
+    remove_recent_project,
+)
 from blab.ui.project_state import (
     AthScriptState,
     default_scripts,
@@ -107,21 +112,36 @@ from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
     GuiPreferences,
-    balloon_angle_precision_from_points,
     balloon_sampling_points,
     live_plot_angle_samples,
     live_plot_freq_samples,
-    normalize_balloon_angle_precision_deg,
-    normalize_live_plot_quality,
-    settings_bool,
-    settings_float,
     settings_int,
-    settings_optional_int,
-    settings_str,
+    load_gui_preferences,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
+    save_gui_preferences,
 )
 from blab.ui.solve_worker import SolveWorker
+from blab.ui.source_channel_config import (
+    apply_saved_imported_source_config,
+    apply_saved_source_config_to_result,
+    channel_configs,
+    channels_for_solver_radiators,
+    clear_source_channel_configs,
+    load_channel_config_by_name,
+    load_source_config_by_name,
+    save_channel_config,
+    save_channel_config_by_name,
+    save_source_config,
+    save_source_config_by_name,
+)
+from blab.ui.main_window_widgets import (
+    AthScriptEditor,
+    DockTitleBar,
+    PlotEntry,
+    format_frequency_solve_timings,
+)
+from blab.ui.theme import apply_application_theme
 
 
 ATH_MESH_NAME = "ath"
@@ -133,17 +153,6 @@ STITCH_FAILURE_MESSAGE = (
 )
 
 
-def _format_frequency_solve_timings(result: FrequencyResult) -> str:
-    timings = result.timings
-    return (
-        f"Assembly {timings.assembly_s:.2f}s | "
-        f"Solve {timings.solve_s:.2f}s | "
-        f"Field {timings.field_s:.2f}s"
-    )
-
-
-RECENT_PROJECTS_SETTINGS_KEY = "projects/recent"
-MAX_RECENT_PROJECTS = 10
 APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
@@ -167,103 +176,6 @@ DEFAULT_DOCK_STATE_B64 = (
     "AP////8AAACNAP////sAAAA+AG8AbgBfAGEAeABpAHMAXwBmAHIAZQBxAHUAZQBuAGMAeQBfAHIAZQBzAHAAbwBuAHMA"
     "ZQBfAGQAbwBjAGsIAAAF/AAAAXIAAAC6AP///wAAAAAAAAN2AAAABAAAAAQAAAAIAAAACPwAAAAA"
 )
-
-
-@dataclass(frozen=True)
-class PlotEntry:
-    plot_id: str
-    title: str
-    default_filename: str
-    widget: QWidget
-    update: Callable[[dict[str, np.ndarray]], None]
-
-
-def _local_drop_paths(event) -> list[Path]:
-    mime_data = event.mimeData()
-    if not mime_data.hasUrls():
-        return []
-    return [Path(url.toLocalFile()) for url in mime_data.urls() if url.isLocalFile()]
-
-
-class AthScriptEditor(QPlainTextEdit):
-    configDropped = Signal(object)
-
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event) -> None:
-        if self._cfg_drop_path(event) is not None:
-            event.acceptProposedAction()
-            return
-        super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event) -> None:
-        if self._cfg_drop_path(event) is not None:
-            event.acceptProposedAction()
-            return
-        super().dragMoveEvent(event)
-
-    def dropEvent(self, event) -> None:
-        path = self._cfg_drop_path(event)
-        if path is None:
-            super().dropEvent(event)
-            return
-        event.acceptProposedAction()
-        self.configDropped.emit(path)
-
-    @staticmethod
-    def _cfg_drop_path(event) -> Path | None:
-        for path in _local_drop_paths(event):
-            if path.suffix.lower() == ".cfg":
-                return path
-        return None
-
-
-class DockTitleBar(QWidget):
-    def __init__(
-        self,
-        title: str,
-        dock: QDockWidget,
-        *,
-        save_action: QAction | None = None,
-        tool_actions: tuple[QAction, ...] = (),
-    ):
-        super().__init__(dock)
-        self.dock = dock
-        self.tool_buttons: list[QToolButton] = []
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(6, 2, 2, 2)
-        layout.setSpacing(4)
-        label = QLabel(title)
-        for action in (*(() if save_action is None else (save_action,)), *tool_actions):
-            button = QToolButton()
-            button.setAutoRaise(True)
-            button.setDefaultAction(action)
-            button.setToolTip(action.toolTip())
-            self.tool_buttons.append(button)
-        close_button = QToolButton()
-        close_button.setAutoRaise(True)
-        close_button.setText("x")
-        close_button.setToolTip(f"Close {title}")
-        close_button.clicked.connect(dock.close)
-        layout.addWidget(label, 1)
-        for button in self.tool_buttons:
-            layout.addWidget(button)
-        layout.addWidget(close_button)
-
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
-        self.dock.setFloating(not self.dock.isFloating())
-        event.accept()
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
-        event.ignore()
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
-        event.ignore()
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
-        event.ignore()
 
 
 class MainWindow(QMainWindow):
@@ -810,215 +722,14 @@ class MainWindow(QMainWindow):
         return spin
 
     def _load_preferences(self) -> GuiPreferences:
-        defaults = GuiPreferences()
-        return GuiPreferences(
-            theme=self._normalized_theme(settings_str(self.settings, "preferences/theme", defaults.theme)),
-            solve_backend=normalize_backend_id(
-                settings_str(self.settings, "preferences/solve_backend", defaults.solve_backend)
-            ),
-            solve_server_url=settings_str(self.settings, "preferences/solve_server_url", defaults.solve_server_url),
-            live_plot_quality=normalize_live_plot_quality(
-                settings_str(self.settings, "preferences/live_plot_quality", defaults.live_plot_quality)
-            ),
-            gmres_tolerance=settings_float(self.settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
-            polar_angle_step_deg=settings_float(
-                self.settings,
-                "preferences/polar_angle_step_deg",
-                defaults.polar_angle_step_deg,
-            ),
-            polar_observation_distance_m=settings_float(
-                self.settings,
-                "preferences/polar_observation_distance_m",
-                defaults.polar_observation_distance_m,
-            ),
-            use_burton_miller=settings_bool(
-                self.settings,
-                "preferences/use_burton_miller",
-                defaults.use_burton_miller,
-            ),
-            worker_count=settings_int(self.settings, "preferences/worker_count", defaults.worker_count),
-            polar_smoothing=settings_optional_int(
-                self.settings,
-                "preferences/polar_smoothing",
-                defaults.polar_smoothing,
-            ),
-            horizontal_normalization_angle=settings_float(
-                self.settings,
-                "preferences/horizontal_normalization_angle",
-                defaults.horizontal_normalization_angle,
-            ),
-            vertical_normalization_angle=settings_float(
-                self.settings,
-                "preferences/vertical_normalization_angle",
-                defaults.vertical_normalization_angle,
-            ),
-            spin_horizontal_reference_angle=settings_float(
-                self.settings,
-                "preferences/spin_horizontal_reference_angle",
-                defaults.spin_horizontal_reference_angle,
-            ),
-            spin_vertical_reference_angle=settings_float(
-                self.settings,
-                "preferences/spin_vertical_reference_angle",
-                defaults.spin_vertical_reference_angle,
-            ),
-            spl_max_db=settings_float(self.settings, "preferences/spl_max_db", defaults.spl_max_db),
-            spl_min_db=settings_float(self.settings, "preferences/spl_min_db", defaults.spl_min_db),
-            stitch_tolerance_mm=settings_float(
-                self.settings,
-                "preferences/stitch_tolerance_mm",
-                defaults.stitch_tolerance_mm,
-            ),
-            spherical_sampling_enabled=settings_bool(
-                self.settings,
-                "preferences/spherical_sampling_enabled",
-                defaults.spherical_sampling_enabled,
-            ),
-            balloon_angle_precision_deg=self._load_balloon_angle_precision_deg(defaults),
-        )
+        return load_gui_preferences(self.settings)
 
     def _save_preferences(self) -> None:
-        self.settings.setValue("preferences/theme", self.preferences.theme)
-        self.settings.setValue("preferences/solve_backend", self.preferences.solve_backend)
-        self.settings.setValue("preferences/solve_server_url", self.preferences.solve_server_url)
-        self.settings.setValue("preferences/live_plot_quality", self.preferences.live_plot_quality)
-        self.settings.setValue("preferences/gmres_tolerance", self.preferences.gmres_tolerance)
-        self.settings.setValue("preferences/polar_angle_step_deg", self.preferences.polar_angle_step_deg)
-        self.settings.setValue(
-            "preferences/polar_observation_distance_m",
-            self.preferences.polar_observation_distance_m,
-        )
-        self.settings.setValue("preferences/use_burton_miller", self.preferences.use_burton_miller)
-        self.settings.setValue("preferences/worker_count", self.preferences.worker_count)
-        self.settings.setValue("preferences/polar_smoothing", self.preferences.polar_smoothing)
-        self.settings.setValue(
-            "preferences/horizontal_normalization_angle",
-            self.preferences.horizontal_normalization_angle,
-        )
-        self.settings.setValue(
-            "preferences/vertical_normalization_angle",
-            self.preferences.vertical_normalization_angle,
-        )
-        self.settings.setValue(
-            "preferences/spin_horizontal_reference_angle",
-            self.preferences.spin_horizontal_reference_angle,
-        )
-        self.settings.setValue(
-            "preferences/spin_vertical_reference_angle",
-            self.preferences.spin_vertical_reference_angle,
-        )
-        self.settings.setValue("preferences/spl_max_db", self.preferences.spl_max_db)
-        self.settings.setValue("preferences/spl_min_db", self.preferences.spl_min_db)
-        self.settings.setValue("preferences/stitch_tolerance_mm", self.preferences.stitch_tolerance_mm)
-        self.settings.setValue("preferences/spherical_sampling_enabled", self.preferences.spherical_sampling_enabled)
-        self.settings.setValue(
-            "preferences/balloon_angle_precision_deg",
-            self.preferences.balloon_angle_precision_deg,
-        )
-
-    def _load_balloon_angle_precision_deg(self, defaults: GuiPreferences) -> float:
-        if self.settings.contains("preferences/balloon_angle_precision_deg"):
-            return normalize_balloon_angle_precision_deg(
-                settings_float(
-                    self.settings,
-                    "preferences/balloon_angle_precision_deg",
-                    defaults.balloon_angle_precision_deg,
-                )
-            )
-        if self.settings.contains("preferences/spherical_sampling_points"):
-            return balloon_angle_precision_from_points(
-                settings_int(
-                    self.settings,
-                    "preferences/spherical_sampling_points",
-                    balloon_sampling_points(defaults.balloon_angle_precision_deg),
-                )
-            )
-        return defaults.balloon_angle_precision_deg
-
-    @staticmethod
-    def _normalized_theme(theme: str) -> str:
-        normalized = str(theme).strip().lower()
-        return normalized if normalized in {"system", "light", "dark"} else "system"
+        save_gui_preferences(self.settings, self.preferences)
 
     def _apply_theme(self) -> None:
-        app = QApplication.instance()
-        if app is None:
-            return
-
-        theme = self._normalized_theme(self.preferences.theme)
-        app.setStyleSheet("")
-        dark_text = QColor(30, 30, 30)
-        light_text = QColor(245, 245, 245)
-        if theme == "system":
-            palette = app.style().standardPalette()
-            window_color = palette.color(QPalette.Window)
-            base_color = palette.color(QPalette.Base)
-            text_color = dark_text if window_color.lightness() >= 128 else light_text
-            self._set_palette_text_colors(palette, text_color)
-            app.setPalette(palette)
-            app.setStyleSheet(self._theme_stylesheet(text_color, window_color, base_color))
-        elif theme == "dark":
-            palette = app.style().standardPalette()
-            window_color = QColor(45, 45, 48)
-            base_color = QColor(30, 30, 30)
-            palette.setColor(QPalette.Window, QColor(45, 45, 48))
-            palette.setColor(QPalette.Base, base_color)
-            palette.setColor(QPalette.AlternateBase, QColor(45, 45, 48))
-            palette.setColor(QPalette.ToolTipBase, QColor(30, 30, 30))
-            palette.setColor(QPalette.Button, QColor(45, 45, 48))
-            palette.setColor(QPalette.BrightText, QColor(255, 80, 80))
-            palette.setColor(QPalette.Highlight, QColor(61, 126, 154))
-            palette.setColor(QPalette.HighlightedText, light_text)
-            self._set_palette_text_colors(palette, light_text)
-            app.setPalette(palette)
-            app.setStyleSheet(self._theme_stylesheet(light_text, window_color, base_color))
-        else:
-            palette = app.style().standardPalette()
-            window_color = QColor(245, 245, 245)
-            base_color = QColor(255, 255, 255)
-            palette.setColor(QPalette.Window, window_color)
-            palette.setColor(QPalette.Base, Qt.white)
-            palette.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
-            palette.setColor(QPalette.ToolTipBase, Qt.white)
-            palette.setColor(QPalette.Button, QColor(245, 245, 245))
-            palette.setColor(QPalette.BrightText, Qt.red)
-            palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
-            palette.setColor(QPalette.HighlightedText, Qt.white)
-            self._set_palette_text_colors(palette, dark_text)
-            app.setPalette(palette)
-            app.setStyleSheet(self._theme_stylesheet(dark_text, window_color, base_color))
-
-        self._refresh_theme_widgets(app)
+        apply_application_theme(self.preferences.theme)
         self._refresh_plot_export_icons()
-
-    @staticmethod
-    def _set_palette_text_colors(palette: QPalette, color: QColor) -> None:
-        roles = (
-            QPalette.WindowText,
-            QPalette.Text,
-            QPalette.ButtonText,
-            QPalette.ToolTipText,
-        )
-        if hasattr(QPalette, "PlaceholderText"):
-            roles = (*roles, QPalette.PlaceholderText)
-
-        disabled_color = QColor(color)
-        disabled_color.setAlpha(140)
-        for group, group_color in (
-            (QPalette.Active, color),
-            (QPalette.Inactive, color),
-            (QPalette.Disabled, disabled_color),
-        ):
-            for role in roles:
-                palette.setColor(group, role, group_color)
-
-    def _refresh_theme_widgets(self, app: QApplication) -> None:
-        style = app.style()
-        for widget in app.allWidgets():
-            style.unpolish(widget)
-            style.polish(widget)
-            widget.update()
-        app.processEvents()
 
     def _refresh_plot_export_icons(self) -> None:
         if not hasattr(self, "export_plot_actions"):
@@ -1035,54 +746,6 @@ class MainWindow(QMainWindow):
             action.setIcon(capture_icon)
         for action in self.clear_contour_actions.values():
             action.setIcon(clear_icon)
-
-    @staticmethod
-    def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QColor) -> str:
-        text = text_color.name()
-        window = window_color.name()
-        base = base_color.name()
-        border = QColor(85, 85, 85).name() if text_color.lightness() > 128 else QColor(190, 190, 190).name()
-        selected = QColor(61, 126, 154).name() if text_color.lightness() > 128 else QColor(0, 120, 215).name()
-        selected_text = QColor(255, 255, 255).name()
-        hover = QColor(65, 65, 68).name() if text_color.lightness() > 128 else QColor(225, 225, 225).name()
-        disabled = QColor(text_color)
-        disabled.setAlpha(150)
-        disabled_css = f"rgba({disabled.red()}, {disabled.green()}, {disabled.blue()}, {disabled.alpha()})"
-
-        return f"""
-            QWidget {{
-                color: {text};
-            }}
-            QMenuBar, QMenuBar::item, QMenu {{
-                background-color: {window};
-                color: {text};
-            }}
-            QMenuBar::item:selected, QMenu::item:selected {{
-                background-color: {hover};
-                color: {text};
-            }}
-            QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox,
-            QTableWidget, QTableView, QListView, QTreeView {{
-                background-color: {base};
-                color: {text};
-                border: 1px solid {border};
-                selection-background-color: {selected};
-                selection-color: {selected_text};
-            }}
-            QHeaderView::section {{
-                background-color: {window};
-                color: {text};
-                border: 1px solid {border};
-            }}
-            QWidget:disabled {{
-                color: {disabled_css};
-            }}
-            QToolTip {{
-                background-color: {base};
-                color: {text};
-                border: 1px solid {border};
-            }}
-        """
 
     @Slot()
     def _save_frequency_settings(self) -> None:
@@ -1113,68 +776,23 @@ class MainWindow(QMainWindow):
         self.settings.setValue("window/dock_state", self.workspace.saveState())
         self.settings.sync()
 
-    def _load_recent_project_paths(self) -> list[Path]:
-        raw_paths = self.settings.value(RECENT_PROJECTS_SETTINGS_KEY, "[]")
-        try:
-            values = json.loads(str(raw_paths))
-        except json.JSONDecodeError:
-            values = []
-        if not isinstance(values, list):
-            return []
-
-        paths: list[Path] = []
-        seen = set()
-        for value in values:
-            path_text = str(value).strip()
-            if not path_text:
-                continue
-            path = Path(path_text)
-            key = str(path).casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            paths.append(path)
-            if len(paths) >= MAX_RECENT_PROJECTS:
-                break
-        return paths
-
-    def _save_recent_project_paths(self, paths: list[Path]) -> None:
-        self.settings.setValue(
-            RECENT_PROJECTS_SETTINGS_KEY,
-            json.dumps([str(path) for path in paths[:MAX_RECENT_PROJECTS]]),
-        )
-        self.settings.sync()
+    def _remember_recent_project(self, path: Path) -> None:
+        remember_recent_project(self.settings, path)
         if hasattr(self, "open_recent_menu"):
             self._rebuild_open_recent_menu()
 
-    def _remember_recent_project(self, path: Path) -> None:
-        try:
-            normalized = path.resolve()
-        except OSError:
-            normalized = path
-
-        recent = [
-            existing
-            for existing in self._load_recent_project_paths()
-            if str(existing).casefold() != str(normalized).casefold()
-        ]
-        self._save_recent_project_paths([normalized, *recent])
-
     def _remove_recent_project(self, path: Path) -> None:
-        self._save_recent_project_paths(
-            [
-                existing
-                for existing in self._load_recent_project_paths()
-                if str(existing).casefold() != str(path).casefold()
-            ]
-        )
+        remove_recent_project(self.settings, path)
+        if hasattr(self, "open_recent_menu"):
+            self._rebuild_open_recent_menu()
 
     def _clear_recent_projects(self) -> None:
-        self._save_recent_project_paths([])
+        clear_recent_projects(self.settings)
+        self._rebuild_open_recent_menu()
 
     def _rebuild_open_recent_menu(self) -> None:
         self.open_recent_menu.clear()
-        recent_paths = self._load_recent_project_paths()
+        recent_paths = load_recent_project_paths(self.settings)
         if not recent_paths:
             empty_action = QAction("No Recent Projects", self)
             empty_action.setEnabled(False)
@@ -1700,79 +1318,25 @@ class MainWindow(QMainWindow):
             self.preview.clear()
 
     def _load_source_config_by_name(self) -> dict[str, dict]:
-        raw_config = self.settings.value("source/config_by_name", "{}")
-        try:
-            loaded = json.loads(str(raw_config))
-        except json.JSONDecodeError:
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return load_source_config_by_name(self.settings)
 
     def _save_source_config(self, surface_tags: dict[str, tuple[str, int]], radiators: tuple[RadiatorConfig, ...]) -> None:
-        radiators_by_name = {radiator.name: radiator for radiator in radiators}
-        config_by_name = self._load_source_config_by_name()
-        for surface_name in surface_tags:
-            radiator = radiators_by_name.get(surface_name)
-            config_by_name[surface_name] = {
-                "driven": radiator is not None,
-                "channel": "main" if radiator is None else radiator.channel,
-                "velocity_offset_db": 0.0 if radiator is None else float(radiator.velocity_offset_db),
-            }
-        self.settings.setValue("source/config_by_name", json.dumps(config_by_name, sort_keys=True))
-        self.settings.sync()
+        save_source_config(self.settings, surface_tags, radiators)
 
     def _load_channel_config_by_name(self) -> dict[str, dict]:
-        raw_config = self.settings.value("channel/config_by_name", "{}")
-        try:
-            loaded = json.loads(str(raw_config))
-        except json.JSONDecodeError:
-            return {}
-        return loaded if isinstance(loaded, dict) else {}
+        return load_channel_config_by_name(self.settings)
 
     def _save_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
-        payload = {
-            channel.name: {
-                "level_db": float(channel.level_db),
-                "polarity": int(channel.polarity),
-                "delay_ms": float(channel.delay_ms),
-                "hpf": self._crossover_settings(channel.hpf),
-                "lpf": self._crossover_settings(channel.lpf),
-            }
-            for channel in channels
-        }
-        self.settings.setValue("channel/config_by_name", json.dumps(payload, sort_keys=True))
-        self.settings.sync()
+        save_channel_config(self.settings, channels)
 
     def _channel_configs(self) -> tuple[ChannelConfig, ...]:
-        raw = self._load_channel_config_by_name()
-        if not raw:
-            return (ChannelConfig(name="main"),)
-        channels = []
-        for name, payload in sorted(raw.items()):
-            payload = payload if isinstance(payload, dict) else {}
-            channels.append(
-                ChannelConfig(
-                    name=str(name),
-                    level_db=float(payload.get("level_db", 0.0)),
-                    polarity=int(payload.get("polarity", 1)),
-                    delay_ms=float(payload.get("delay_ms", 0.0)),
-                    hpf=self._saved_crossover(payload.get("hpf"), crossover_type="highpass"),
-                    lpf=self._saved_crossover(payload.get("lpf"), crossover_type="lowpass"),
-                )
-            )
-        return tuple(channels) or (ChannelConfig(name="main"),)
+        return channel_configs(self.settings)
 
     def _channels_for_solver_radiators(
         self,
         radiators: tuple[RadiatorConfig, ...],
     ) -> tuple[ChannelConfig, ...]:
-        channels = list(self._channel_configs())
-        configured_names = {channel.name for channel in channels}
-        for radiator in radiators:
-            if radiator.channel in configured_names:
-                continue
-            channels.append(ChannelConfig(name=radiator.channel))
-            configured_names.add(radiator.channel)
-        return tuple(channels)
+        return channels_for_solver_radiators(self._channel_configs(), radiators)
 
     def _channel_configs_for_current_radiators(self) -> tuple[ChannelConfig, ...]:
         return self._channels_for_solver_radiators(self._all_radiators())
@@ -1793,99 +1357,20 @@ class MainWindow(QMainWindow):
             with QSignalBlocker(action):
                 action.setChecked(False)
 
-    def _crossover_settings(self, crossover: CrossoverConfig | None) -> dict:
-        if crossover is None or crossover.type.lower() == "none":
-            return {}
-        return {
-            "type": crossover.type,
-            "filter": crossover.filter,
-            "order": int(crossover.order),
-            "frequency_hz": None if crossover.frequency_hz is None else float(crossover.frequency_hz),
-        }
-
-    def _saved_crossover(self, raw: object, *, crossover_type: str) -> CrossoverConfig:
-        if not isinstance(raw, dict) or raw.get("frequency_hz") is None:
-            return CrossoverConfig()
-        return CrossoverConfig(
-            type=crossover_type,
-            filter=str(raw.get("filter", "butterworth")).lower(),
-            order=int(raw.get("order", 1)),
-            frequency_hz=float(raw["frequency_hz"]),
-        )
-
     def _apply_saved_source_config_to_result(self, result: AthRunResult | None, mesh_name: str) -> AthRunResult | None:
-        if result is None:
-            return None
-        try:
-            surface_tags = {
-                f"{mesh_name}:{surface_name}": (mesh_name, tag)
-                for surface_name, tag in read_surface_physical_names(result.solver_msh_path).items()
-            }
-        except Exception:
-            return result
-
-        config_by_name = self._load_source_config_by_name()
-        existing_by_tag = {radiator.tag: radiator for radiator in result.radiators}
-        radiators = []
-        for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
-            saved = config_by_name.get(surface_name)
-            if isinstance(saved, dict):
-                if not bool(saved.get("driven", False)):
-                    continue
-                radiators.append(
-                    RadiatorConfig(
-                        name=surface_name,
-                        mesh=mesh_name,
-                        tag=tag,
-                        channel=str(saved.get("channel", "main")),
-                        velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
-                    )
-                )
-                continue
-
-            existing = existing_by_tag.get(tag)
-            if existing is not None:
-                radiators.append(
-                    replace(
-                        existing,
-                        name=surface_name,
-                        mesh=mesh_name,
-                        tag=tag,
-                        channel=existing.channel or "main",
-                        velocity_offset_db=float(existing.velocity_offset_db),
-                    )
-                )
-
-        return replace(result, radiators=tuple(radiators))
+        return apply_saved_source_config_to_result(result, mesh_name, self._load_source_config_by_name())
 
     def _apply_saved_source_config(self, result: AthRunResult | None) -> AthRunResult | None:
         return self._apply_saved_source_config_to_result(result, ATH_MESH_NAME)
 
     def _apply_saved_imported_source_config(self, surface_tags: dict[str, tuple[str, int]]) -> None:
         generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
-        config_by_name = self._load_source_config_by_name()
-        existing_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in self.imported_radiators}
-        radiators = []
-        for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
-            if mesh_name in generated_mesh_names:
-                continue
-            saved = config_by_name.get(surface_name)
-            existing = existing_by_key.get((mesh_name, tag))
-            if isinstance(saved, dict):
-                if not bool(saved.get("driven", False)):
-                    continue
-                radiators.append(
-                    RadiatorConfig(
-                        name=surface_name,
-                        mesh=mesh_name,
-                        tag=tag,
-                        channel=str(saved.get("channel", "main")),
-                        velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
-                    )
-                )
-            elif existing is not None:
-                radiators.append(existing)
-        self.imported_radiators = tuple(radiators)
+        self.imported_radiators = apply_saved_imported_source_config(
+            surface_tags=surface_tags,
+            generated_mesh_names=generated_mesh_names,
+            existing_radiators=self.imported_radiators,
+            config_by_name=self._load_source_config_by_name(),
+        )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         self._save_frequency_settings()
@@ -1972,9 +1457,7 @@ class MainWindow(QMainWindow):
         self.imported_radiators = ()
         self.stitch_imported_meshes = False
         self.symmetry = "off"
-        self.settings.setValue("source/config_by_name", "{}")
-        self.settings.setValue("channel/config_by_name", "{}")
-        self.settings.sync()
+        clear_source_channel_configs(self.settings)
         self.project_state_changed.emit("new_project")
         self.solve_results_invalidated.emit("new_project")
         self.status_label.setText("New project")
@@ -2058,12 +1541,11 @@ class MainWindow(QMainWindow):
         source_config = payload.get("source_config_by_name", {})
         if not isinstance(source_config, dict):
             source_config = {}
-        self.settings.setValue("source/config_by_name", json.dumps(source_config, sort_keys=True))
+        save_source_config_by_name(self.settings, source_config)
         channel_config = payload.get("channel_config_by_name", {})
         if not isinstance(channel_config, dict):
             channel_config = {}
-        self.settings.setValue("channel/config_by_name", json.dumps(channel_config, sort_keys=True))
-        self.settings.sync()
+        save_channel_config_by_name(self.settings, channel_config)
 
         self.ath_scripts = scripts_from_payload(
             payload.get("ath_scripts"),
@@ -2584,7 +2066,7 @@ class MainWindow(QMainWindow):
         self.live_dataset.add(result)
         self.status_label.setText(
             f"Solved {self.live_dataset.solved_count}/{self.freq_count_spin.value()} "
-            f"({result.freq_hz:.1f} Hz) | {_format_frequency_solve_timings(result)}"
+            f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
         )
         self._refresh_plots()
 
