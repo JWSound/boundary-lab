@@ -683,11 +683,13 @@ class MeshConfigDialog(QDialog):
 
 class ChannelConfigDialog(QDialog):
     channelsApplied = Signal(object)
+    closeRequested = Signal()
 
-    def __init__(self, channels: tuple[ChannelConfig, ...], parent: QWidget | None = None):
+    def __init__(self, channels: tuple[ChannelConfig, ...], parent: QWidget | None = None, *, embedded: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Channel Config")
-        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WA_DeleteOnClose, not embedded)
+        self._embedded = bool(embedded)
         self._channels = list(channels) or [ChannelConfig(name="main")]
 
         self.table = QTableWidget(0, 8)
@@ -722,15 +724,17 @@ class ChannelConfigDialog(QDialog):
         button_row.addWidget(remove_button)
         button_row.addStretch(1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Close)
+        button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close
+        buttons = QDialogButtonBox(button_flags)
         buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)
-        buttons.rejected.connect(self.reject)
+        buttons.rejected.connect(self.closeRequested.emit if self._embedded else self.reject)
+        button_row.addWidget(buttons)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.table)
         layout.addLayout(button_row)
-        layout.addWidget(buttons)
-        self.resize(1080, min(520, 160 + 34 * max(1, len(self._channels))))
+        if not self._embedded:
+            self.resize(1080, min(520, 160 + 34 * max(1, len(self._channels))))
 
     def apply(self) -> bool:
         try:

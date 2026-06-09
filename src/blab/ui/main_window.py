@@ -151,6 +151,10 @@ GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
 SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+CAPTURE_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "capturecontours_dark.ico"
+CAPTURE_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "capturecontours_light.ico"
+CLEAR_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "clearcontours_dark.ico"
+CLEAR_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "clearcontours_light.ico"
 ADD_SCRIPT_TAB_LABEL = "+"
 DEFAULT_DOCK_STATE_B64 = (
     "AAAA/wAAAAD9AAAAAQAAAAAAAAduAAADdvwCAAAAAfwAAAAAAAADdgAAAG4A/////AEAAAAG+wAAAB4AYQB0AGgAXwBl"
@@ -217,27 +221,35 @@ class AthScriptEditor(QPlainTextEdit):
 
 
 class DockTitleBar(QWidget):
-    def __init__(self, title: str, dock: QDockWidget, *, save_action: QAction | None = None):
+    def __init__(
+        self,
+        title: str,
+        dock: QDockWidget,
+        *,
+        save_action: QAction | None = None,
+        tool_actions: tuple[QAction, ...] = (),
+    ):
         super().__init__(dock)
         self.dock = dock
-        self.save_button: QToolButton | None = None
+        self.tool_buttons: list[QToolButton] = []
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 2, 2)
         layout.setSpacing(4)
         label = QLabel(title)
-        if save_action is not None:
-            self.save_button = QToolButton()
-            self.save_button.setAutoRaise(True)
-            self.save_button.setDefaultAction(save_action)
-            self.save_button.setToolTip(save_action.toolTip())
+        for action in (*(() if save_action is None else (save_action,)), *tool_actions):
+            button = QToolButton()
+            button.setAutoRaise(True)
+            button.setDefaultAction(action)
+            button.setToolTip(action.toolTip())
+            self.tool_buttons.append(button)
         close_button = QToolButton()
         close_button.setAutoRaise(True)
         close_button.setText("x")
         close_button.setToolTip(f"Close {title}")
         close_button.clicked.connect(dock.close)
         layout.addWidget(label, 1)
-        if self.save_button is not None:
-            layout.addWidget(self.save_button)
+        for button in self.tool_buttons:
+            layout.addWidget(button)
         layout.addWidget(close_button)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -283,6 +295,7 @@ class MainWindow(QMainWindow):
         self.live_dataset: LiveSolveDataset | None = None
         self.balloon_window: QDialog | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
+        self.channel_config_dock: QDockWidget | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
@@ -320,7 +333,6 @@ class MainWindow(QMainWindow):
         self.cancel_button.setShortcut(QKeySequence("Shift+F5"))
         self.cancel_button.setEnabled(False)
         self.mesh_config_button = QPushButton("Mesh Config")
-        self.channel_config_button = QPushButton("Channel Config")
         self.source_config_button = QPushButton("Source Config")
         self.source_config_button.setEnabled(self._has_solver_meshes())
 
@@ -336,10 +348,6 @@ class MainWindow(QMainWindow):
         self.freq_min_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_min)
         self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
         self.freq_count_spin = self._make_spin(3, 161, freq_count)
-        self.capture_contours_button = QPushButton("Capture Contours")
-        self.capture_contours_button.setEnabled(False)
-        self.clear_contours_button = QPushButton("Clear Contours")
-        self.clear_contours_button.setEnabled(False)
 
         self.status_label = QLabel("Ready")
         startup("Creating plot panels...")
@@ -389,6 +397,8 @@ class MainWindow(QMainWindow):
         self.export_plot_actions: dict[str, QAction] = {}
         self.panel_view_actions: dict[str, QAction] = {}
         self.plot_docks: dict[str, QDockWidget] = {}
+        self.capture_contour_actions: dict[str, QAction] = {}
+        self.clear_contour_actions: dict[str, QAction] = {}
 
         startup("Wiring controls...")
         self._wire_controls()
@@ -461,6 +471,21 @@ class MainWindow(QMainWindow):
             action.setEnabled(False)
             action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot(plot_id))
             self.export_plot_actions[entry.plot_id] = action
+            if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
+                capture_action = QAction("Capture Contours", self)
+                capture_action.setToolTip(f"Capture contours for {entry.title}")
+                capture_action.setEnabled(False)
+                capture_action.triggered.connect(
+                    lambda _checked=False, plot_id=entry.plot_id: self.capture_isobar_contours(plot_id)
+                )
+                self.capture_contour_actions[entry.plot_id] = capture_action
+                clear_action = QAction("Clear Contours", self)
+                clear_action.setToolTip(f"Clear contours for {entry.title}")
+                clear_action.setEnabled(False)
+                clear_action.triggered.connect(
+                    lambda _checked=False, plot_id=entry.plot_id: self.clear_isobar_contours(plot_id)
+                )
+                self.clear_contour_actions[entry.plot_id] = clear_action
 
         self.export_polar_data_action = QAction("Export Polar Data", self)
         self.export_polar_data_action.setEnabled(False)
@@ -476,10 +501,13 @@ class MainWindow(QMainWindow):
         for dock_id, title in (
             ("editor", "Ath Editor Panel"),
             ("preview", "Mesh Preview Panel"),
+            ("channel_config", "Channel Config Panel"),
         ):
             action = QAction(title, self)
             action.setCheckable(True)
-            action.setChecked(True)
+            action.setChecked(dock_id != "channel_config")
+            if dock_id == "channel_config":
+                action.toggled.connect(self._set_channel_config_visible)
             view_menu.addAction(action)
             self.panel_view_actions[dock_id] = action
         view_menu.addSeparator()
@@ -515,6 +543,7 @@ class MainWindow(QMainWindow):
         widget: QWidget,
         *,
         save_action: QAction | None = None,
+        tool_actions: tuple[QAction, ...] = (),
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
@@ -525,7 +554,7 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFloatable
             | QDockWidget.DockWidgetClosable
         )
-        dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action))
+        dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))
         return dock
 
     def _build_layout(self) -> None:
@@ -558,6 +587,14 @@ class MainWindow(QMainWindow):
                 entry.title,
                 entry.widget,
                 save_action=self.export_plot_actions.get(entry.plot_id),
+                tool_actions=tuple(
+                    action
+                    for action in (
+                        self.capture_contour_actions.get(entry.plot_id),
+                        self.clear_contour_actions.get(entry.plot_id),
+                    )
+                    if action is not None
+                ),
             )
             self.plot_docks[entry.plot_id] = dock
             self.workspace.addDockWidget(Qt.RightDockWidgetArea, dock)
@@ -579,8 +616,8 @@ class MainWindow(QMainWindow):
         ):
             action = self.panel_view_actions.get(dock_id)
             if action is not None:
-                action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))
-                dock.visibilityChanged.connect(action.setChecked)
+                action.toggled.connect(lambda checked, dock_id=dock_id: self._set_panel_visible(dock_id, checked))
+                dock.visibilityChanged.connect(lambda _visible, dock_id=dock_id: self._sync_panel_view_action(dock_id))
         for entry in self.plot_entries:
             dock = self.plot_docks[entry.plot_id]
             action = self.plot_view_actions.get(entry.plot_id)
@@ -594,7 +631,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.solve_button)
         controls_layout.addWidget(self.cancel_button)
         controls_layout.addWidget(self.mesh_config_button)
-        controls_layout.addWidget(self.channel_config_button)
         controls_layout.addWidget(self.source_config_button)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(QLabel("Min Hz"))
@@ -606,8 +642,6 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(QLabel("Frequencies"))
         controls_layout.addWidget(self.freq_count_slider)
         controls_layout.addWidget(self.freq_count_spin)
-        controls_layout.addWidget(self.capture_contours_button)
-        controls_layout.addWidget(self.clear_contours_button)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -622,10 +656,7 @@ class MainWindow(QMainWindow):
         self.solve_button.clicked.connect(self.start_solve)
         self.cancel_button.clicked.connect(self.cancel_solve)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
-        self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
-        self.capture_contours_button.clicked.connect(self.capture_visible_isobar_contours)
-        self.clear_contours_button.clicked.connect(self.clear_isobar_contours)
 
         self.freq_min_slider.valueChanged.connect(
             lambda value: self._sync_frequency_spin_from_slider(self.freq_min_spin, value)
@@ -994,10 +1025,16 @@ class MainWindow(QMainWindow):
             return
         palette = self.palette()
         window_color = palette.color(QPalette.Window)
-        icon_path = SAVE_LIGHT_ICON if window_color.lightness() >= 128 else SAVE_DARK_ICON
-        icon = QIcon(str(icon_path))
+        light_theme = window_color.lightness() >= 128
+        icon = QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))
+        capture_icon = QIcon(str(CAPTURE_CONTOURS_LIGHT_ICON if light_theme else CAPTURE_CONTOURS_DARK_ICON))
+        clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
         for action in self.export_plot_actions.values():
             action.setIcon(icon)
+        for action in self.capture_contour_actions.values():
+            action.setIcon(capture_icon)
+        for action in self.clear_contour_actions.values():
+            action.setIcon(clear_icon)
 
     @staticmethod
     def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QColor) -> str:
@@ -1063,6 +1100,8 @@ class MainWindow(QMainWindow):
             dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
+        for dock_id in ("editor", "preview", "channel_config"):
+            self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:
             action = self.plot_view_actions.get(entry.plot_id)
             dock = self.plot_docks.get(entry.plot_id)
@@ -1740,9 +1779,19 @@ class MainWindow(QMainWindow):
 
     def _discard_channel_config_dialog(self) -> None:
         dialog = self.channel_config_dialog
+        dock = self.channel_config_dock
         self.channel_config_dialog = None
+        self.channel_config_dock = None
+        if dock is not None:
+            dock.setWidget(None)
+            dock.close()
+            dock.deleteLater()
         if dialog is not None:
-            dialog.close()
+            dialog.deleteLater()
+        action = self.panel_view_actions.get("channel_config") if hasattr(self, "panel_view_actions") else None
+        if action is not None:
+            with QSignalBlocker(action):
+                action.setChecked(False)
 
     def _crossover_settings(self, crossover: CrossoverConfig | None) -> dict:
         if crossover is None or crossover.type.lower() == "none":
@@ -2239,18 +2288,68 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_channel_config(self) -> None:
-        if self.channel_config_dialog is not None:
-            self.channel_config_dialog.show()
-            self.channel_config_dialog.raise_()
-            self.channel_config_dialog.activateWindow()
+        if self.channel_config_dock is not None and self.channel_config_dialog is not None:
+            self.channel_config_dock.show()
+            self.channel_config_dock.raise_()
             return
 
-        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)
+        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self, embedded=True)
+        dialog.setWindowFlags(Qt.Widget)
         self.channel_config_dialog = dialog
         dialog.channelsApplied.connect(self._apply_channel_config)
+        dock = self._make_panel_dock("channel_config_dock", "Channel Config", dialog)
+        self.channel_config_dock = dock
+        dialog.closeRequested.connect(dock.close)
+        action = self.panel_view_actions.get("channel_config")
+        if action is not None:
+            action.setEnabled(True)
+            dock.visibilityChanged.connect(lambda _visible: self._sync_panel_view_action("channel_config"))
+        dock.destroyed.connect(lambda *_args: setattr(self, "channel_config_dock", None))
         dialog.destroyed.connect(lambda *_args: setattr(self, "channel_config_dialog", None))
-        dialog.show()
-        dialog.raise_()
+        self.workspace.addDockWidget(Qt.BottomDockWidgetArea, dock)
+        dock.setFloating(True)
+        dock.resize(1080, min(520, 160 + 34 * max(1, len(self._channel_configs_for_current_radiators()))))
+        if action is not None:
+            with QSignalBlocker(action):
+                action.setChecked(True)
+        dock.show()
+        dock.raise_()
+
+    @Slot(bool)
+    def _set_channel_config_visible(self, visible: bool) -> None:
+        if self.channel_config_dock is None:
+            if visible:
+                self.open_channel_config()
+            return
+        self.channel_config_dock.setVisible(bool(visible))
+        if visible:
+            self.channel_config_dock.raise_()
+
+    def _set_panel_visible(self, dock_id: str, visible: bool) -> None:
+        if dock_id == "channel_config":
+            self._set_channel_config_visible(visible)
+            return
+        dock = self.editor_dock if dock_id == "editor" else self.preview_dock if dock_id == "preview" else None
+        if dock is None:
+            return
+        if dock.isHidden() == visible:
+            dock.setVisible(bool(visible))
+        if visible:
+            dock.raise_()
+
+    def _sync_panel_view_action(self, dock_id: str) -> None:
+        action = self.panel_view_actions.get(dock_id)
+        if action is None:
+            return
+        dock = None
+        if dock_id == "editor":
+            dock = self.editor_dock
+        elif dock_id == "preview":
+            dock = self.preview_dock
+        elif dock_id == "channel_config":
+            dock = self.channel_config_dock
+        with QSignalBlocker(action):
+            action.setChecked(dock is not None and not dock.isHidden())
 
     @Slot(object)
     def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
@@ -2420,7 +2519,9 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
-        self.channel_config_button.setEnabled(False)
+        channel_config_action = self.panel_view_actions.get("channel_config")
+        if channel_config_action is not None:
+            channel_config_action.setEnabled(False)
         self.source_config_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
@@ -2498,7 +2599,9 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
-        self.channel_config_button.setEnabled(True)
+        channel_config_action = self.panel_view_actions.get("channel_config")
+        if channel_config_action is not None:
+            channel_config_action.setEnabled(True)
         self.source_config_button.setEnabled(self._has_solver_meshes())
         self.cancel_button.setEnabled(False)
         elapsed_s = None if self.solve_started_at is None else time.perf_counter() - self.solve_started_at
@@ -2603,36 +2706,51 @@ class MainWindow(QMainWindow):
             plots.append(self.vertical_plot)
         return tuple(plots)
 
-    def _has_captured_isobar_contours(self) -> bool:
-        return self.horizontal_plot.has_captured_contours or self.vertical_plot.has_captured_contours
-
     def _set_contour_button_states(self) -> None:
-        capture_enabled = bool(
+        capture_base_enabled = bool(
             self.live_dataset is not None
             and self._use_final_isobar_resolution
             and self._final_isobar_plots_rendered
-            and self._visible_isobar_plots()
         )
-        self.capture_contours_button.setEnabled(capture_enabled)
-        self.clear_contours_button.setEnabled(self._has_captured_isobar_contours())
+        for plot_id, plot in (
+            ("horizontal_isobar", self.horizontal_plot),
+            ("vertical_isobar", self.vertical_plot),
+        ):
+            dock = self.plot_docks.get(plot_id)
+            visible = dock is not None and not dock.isHidden()
+            capture_action = self.capture_contour_actions.get(plot_id)
+            clear_action = self.clear_contour_actions.get(plot_id)
+            if capture_action is not None:
+                capture_action.setEnabled(capture_base_enabled and visible)
+            if clear_action is not None:
+                clear_action.setEnabled(plot.has_captured_contours)
 
-    @Slot()
-    def capture_visible_isobar_contours(self) -> None:
-        captured_count = 0
-        for plot in self._visible_isobar_plots():
-            if plot.capture_contours():
-                captured_count += 1
+    @Slot(str)
+    def capture_isobar_contours(self, plot_id: str) -> None:
+        plot = self._isobar_plot_for_id(plot_id)
+        if plot is None:
+            return
+        if plot.capture_contours():
+            entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
+            self.status_label.setText(f"Captured contours for {entry.title if entry is not None else 'isobar plot'}")
         self._set_contour_button_states()
-        if captured_count:
-            suffix = "" if captured_count == 1 else "s"
-            self.status_label.setText(f"Captured contours for {captured_count} isobar plot{suffix}")
 
-    @Slot()
-    def clear_isobar_contours(self) -> None:
-        self.horizontal_plot.clear_contours()
-        self.vertical_plot.clear_contours()
+    @Slot(str)
+    def clear_isobar_contours(self, plot_id: str) -> None:
+        plot = self._isobar_plot_for_id(plot_id)
+        if plot is None:
+            return
+        plot.clear_contours()
+        entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
+        self.status_label.setText(f"Cleared contours for {entry.title if entry is not None else 'isobar plot'}")
         self._set_contour_button_states()
-        self.status_label.setText("Cleared captured contours")
+
+    def _isobar_plot_for_id(self, plot_id: str) -> IsobarCanvas | None:
+        if plot_id == "horizontal_isobar":
+            return self.horizontal_plot
+        if plot_id == "vertical_isobar":
+            return self.vertical_plot
+        return None
 
     def _prepared_live_plot_dataset(
         self,

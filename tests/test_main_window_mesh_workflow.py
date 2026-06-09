@@ -174,17 +174,44 @@ def test_channel_dialog_channels_include_existing_radiator_channels() -> None:
     assert channels[0].polarity == -1
 
 
-def test_discard_channel_config_dialog_closes_stale_dialog() -> None:
-    closed = {}
+def test_discard_channel_config_dialog_deletes_stale_dialog_and_dock() -> None:
+    deleted = {}
 
     class DialogStub:
+        def deleteLater(self) -> None:
+            deleted["dialog"] = True
+
+    class DockStub:
+        def setWidget(self, widget) -> None:
+            deleted["dock_widget"] = widget
+
         def close(self) -> None:
-            closed["called"] = True
+            deleted["dock_closed"] = True
+
+        def deleteLater(self) -> None:
+            deleted["dock"] = True
 
     window = MainWindow.__new__(MainWindow)
     window.channel_config_dialog = DialogStub()
+    window.channel_config_dock = DockStub()
 
     window._discard_channel_config_dialog()
 
-    assert closed["called"] is True
+    assert deleted["dialog"] is True
+    assert deleted["dock_widget"] is None
+    assert deleted["dock_closed"] is True
+    assert deleted["dock"] is True
     assert window.channel_config_dialog is None
+    assert window.channel_config_dock is None
+
+
+def test_channel_config_dock_opens_floating_by_default() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    open_channel_config = source[source.index("def open_channel_config"):source.index("def _set_channel_config_visible")]
+
+    assert 'dock = self._make_panel_dock("channel_config_dock", "Channel Config", dialog)' in open_channel_config
+    assert "self.workspace.addDockWidget(Qt.BottomDockWidgetArea, dock)" in open_channel_config
+    assert "preview_dock" not in open_channel_config
+    assert "splitDockWidget" not in open_channel_config
+    assert "dock.setFloating(True)" in open_channel_config
+    assert "dock.resize(1080, min(520, 160 + 34 * max(1, len(self._channel_configs_for_current_radiators()))))" in open_channel_config

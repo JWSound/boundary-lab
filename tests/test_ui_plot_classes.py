@@ -48,9 +48,12 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert "QDockWidget" in source
     assert "class DockTitleBar" in source
     assert "save_action: QAction | None = None" in source
-    assert "self.save_button.setDefaultAction(save_action)" in source
-    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action))" in source
+    assert "tool_actions: tuple[QAction, ...] = ()" in source
+    assert "button.setDefaultAction(action)" in source
+    assert "self.tool_buttons.append(button)" in source
+    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))" in source
     assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
+    assert "tool_actions=tuple(" in source
     assert "close_button.clicked.connect(dock.close)" in source
     assert "event.ignore()" in source
     assert "collapse_editor" not in source
@@ -69,7 +72,11 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert "self.plots_dock" not in source
     assert "settings_bool(self.settings, f\"plots/{entry.plot_id}/visible\", True)" not in source
     assert "settings.setValue(f\"plots/{plot_id}/visible\"" not in source
-    assert "action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))" in source
+    assert "action.toggled.connect(lambda checked, dock_id=dock_id: self._set_panel_visible(dock_id, checked))" in source
+    assert "dock.visibilityChanged.connect(lambda _visible, dock_id=dock_id: self._sync_panel_view_action(dock_id))" in source
+    assert "def _set_panel_visible(" in source
+    assert "def _sync_panel_view_action(" in source
+    assert "channel_config_button" not in source
     assert "dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))" in source
     assert "self.workspace.saveState()" in source
     assert "self.workspace.restoreState(dock_state)" in source
@@ -86,9 +93,16 @@ def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
     assert "action.setToolTip(f\"Export {entry.title}\")" in source
     assert "SAVE_DARK_ICON" in source
     assert "SAVE_LIGHT_ICON" in source
+    assert "CAPTURE_CONTOURS_DARK_ICON" in source
+    assert "CAPTURE_CONTOURS_LIGHT_ICON" in source
+    assert "CLEAR_CONTOURS_DARK_ICON" in source
+    assert "CLEAR_CONTOURS_LIGHT_ICON" in source
     assert "def _refresh_plot_export_icons(" in source
-    assert "icon_path = SAVE_LIGHT_ICON if window_color.lightness() >= 128 else SAVE_DARK_ICON" in source
+    assert "light_theme = window_color.lightness() >= 128" in source
+    assert "QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))" in source
     assert "action.setIcon(icon)" in source
+    assert "action.setIcon(capture_icon)" in source
+    assert "action.setIcon(clear_icon)" in source
     assert "self._refresh_plot_export_icons()" in source
 
 
@@ -110,8 +124,11 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
 
     assert "channelsChanged" not in channel_dialog
     assert "_emit_channels_changed" not in channel_dialog
+    assert "button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close" in channel_dialog
     assert "buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)" in channel_dialog
-    assert "buttons.rejected.connect(self.reject)" in channel_dialog
+    assert "buttons.rejected.connect(self.closeRequested.emit if self._embedded else self.reject)" in channel_dialog
+    assert "button_row.addWidget(buttons)" in channel_dialog
+    assert "layout.addWidget(buttons)" not in channel_dialog
     assert "_preview_channel_config" not in main_source
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 
@@ -212,32 +229,36 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
 def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
-    assert 'QPushButton("Capture Contours")' in source
-    assert 'QPushButton("Clear Contours")' in source
-    assert "controls_layout.addWidget(self.capture_contours_button)" in source
-    assert "controls_layout.addWidget(self.clear_contours_button)" in source
-    assert "self.capture_contours_button.clicked.connect(self.capture_visible_isobar_contours)" in source
-    assert "self.clear_contours_button.clicked.connect(self.clear_isobar_contours)" in source
+    assert "self.capture_contour_actions: dict[str, QAction]" in source
+    assert "self.clear_contour_actions: dict[str, QAction]" in source
+    assert 'capture_action = QAction("Capture Contours", self)' in source
+    assert 'clear_action = QAction("Clear Contours", self)' in source
+    assert "self.capture_contour_actions[entry.plot_id] = capture_action" in source
+    assert "self.clear_contour_actions[entry.plot_id] = clear_action" in source
+    assert "self.capture_contours_button" not in source
+    assert "self.clear_contours_button" not in source
     assert "self._final_isobar_plots_rendered = False" in source
     assert "self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())" in source
     assert "self._use_final_isobar_resolution" in source
     assert "and self._final_isobar_plots_rendered" in source
-    assert "and self._visible_isobar_plots()" in source
+    assert "capture_action.setEnabled(capture_base_enabled and visible)" in source
+    assert "clear_action.setEnabled(plot.has_captured_contours)" in source
 
 
-def test_main_window_captures_only_visible_isobar_plots_and_preserves_until_clear() -> None:
+def test_main_window_captures_and_clears_contours_per_isobar_plot() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
     assert "def _visible_isobar_plots(" in source
     assert "def _sync_plot_view_action(" in source
+    assert "def capture_isobar_contours(" in source
+    assert "def clear_isobar_contours(" in source
+    assert "def _isobar_plot_for_id(" in source
     assert 'self.plot_docks.get("horizontal_isobar")' in source
     assert 'self.plot_docks.get("vertical_isobar")' in source
     assert "action.setChecked(not dock.isHidden())" in source
-    assert "for plot in self._visible_isobar_plots():" in source
+    assert "plot = self._isobar_plot_for_id(plot_id)" in source
     assert "plot.capture_contours()" in source
-    assert "self.horizontal_plot.clear_contours()" in source
-    assert "self.vertical_plot.clear_contours()" in source
-    assert "self.clear_contours_button.setEnabled(self._has_captured_isobar_contours())" in source
+    assert "plot.clear_contours()" in source
 
 
 def test_balloon_contours_exclude_configured_maximum() -> None:
