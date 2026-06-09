@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -23,6 +25,16 @@ def test_surface_hover_label_handles_untagged_single_mesh_preview() -> None:
     label = _surface_hover_label(None, "untagged", None, 12)
 
     assert label == "Surface: untagged | Tag: untagged | Elements: 12"
+
+
+def test_preview_status_labels_do_not_force_panel_width() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert "QSizePolicy" in source
+    assert "self.hover_label.setMinimumWidth(0)" in source
+    assert "self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
+    assert "self.total_elements_label.setMinimumWidth(0)" in source
+    assert "self.total_elements_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
 
 
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:

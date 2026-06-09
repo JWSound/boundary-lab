@@ -17,6 +17,7 @@ from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDockWidget,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QSplitter,
     QTabBar,
     QTabWidget,
     QToolButton,
@@ -205,6 +205,36 @@ class AthScriptEditor(QPlainTextEdit):
         return None
 
 
+class DockTitleBar(QWidget):
+    def __init__(self, title: str, dock: QDockWidget):
+        super().__init__(dock)
+        self.dock = dock
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 2, 2)
+        layout.setSpacing(4)
+        label = QLabel(title)
+        close_button = QToolButton()
+        close_button.setAutoRaise(True)
+        close_button.setText("x")
+        close_button.setToolTip(f"Close {title}")
+        close_button.clicked.connect(dock.close)
+        layout.addWidget(label, 1)
+        layout.addWidget(close_button)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self.dock.setFloating(not self.dock.isFloating())
+        event.accept()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        event.ignore()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        event.ignore()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
+        event.ignore()
+
+
 class MainWindow(QMainWindow):
     mesh_state_changed = Signal(str)
     source_config_changed = Signal(str)
@@ -345,6 +375,7 @@ class MainWindow(QMainWindow):
         )
         self.plot_view_actions: dict[str, QAction] = {}
         self.export_plot_actions: dict[str, QAction] = {}
+        self.panel_view_actions: dict[str, QAction] = {}
 
         startup("Wiring controls...")
         self._wire_controls()
@@ -430,6 +461,17 @@ class MainWindow(QMainWindow):
         self.balloon_plot_action.triggered.connect(self.open_balloon_plot)
         view_menu.addAction(self.balloon_plot_action)
         view_menu.addSeparator()
+        for dock_id, title in (
+            ("editor", "Ath Editor Panel"),
+            ("preview", "Mesh Preview Panel"),
+            ("plots", "Plots Panel"),
+        ):
+            action = QAction(title, self)
+            action.setCheckable(True)
+            action.setChecked(True)
+            view_menu.addAction(action)
+            self.panel_view_actions[dock_id] = action
+        view_menu.addSeparator()
         for entry in self.plot_entries:
             action = QAction(entry.title, self)
             action.setCheckable(True)
@@ -457,6 +499,19 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(self.open_help)
         about_menu.addAction(help_action)
 
+    def _make_panel_dock(self, object_name: str, title: str, widget: QWidget) -> QDockWidget:
+        dock = QDockWidget(title, self)
+        dock.setObjectName(object_name)
+        dock.setWidget(widget)
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetMovable
+            | QDockWidget.DockWidgetFloatable
+            | QDockWidget.DockWidgetClosable
+        )
+        dock.setTitleBarWidget(DockTitleBar(title, dock))
+        return dock
+
     def _build_layout(self) -> None:
         self.editor_panel = QWidget()
         editor_layout = QVBoxLayout(self.editor_panel)
@@ -477,19 +532,39 @@ class MainWindow(QMainWindow):
         for entry in self.plot_entries:
             plot_layout.addWidget(entry.widget)
 
-        plot_panel = QScrollArea()
-        plot_panel.setWidgetResizable(True)
-        plot_panel.setFrameShape(QFrame.NoFrame)
-        plot_panel.setWidget(plot_content)
+        self.plot_panel = QScrollArea()
+        self.plot_panel.setWidgetResizable(True)
+        self.plot_panel.setFrameShape(QFrame.NoFrame)
+        self.plot_panel.setWidget(plot_content)
 
-        self.main_splitter = QSplitter(Qt.Horizontal)
-        self.main_splitter.setOpaqueResize(False)
-        self.main_splitter.addWidget(self.editor_container)
-        self.main_splitter.addWidget(self.preview)
-        self.main_splitter.addWidget(plot_panel)
-        self.main_splitter.setStretchFactor(0, 1)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.setStretchFactor(2, 1)
+        self.workspace = QMainWindow()
+        self.workspace.setDockOptions(
+            QMainWindow.AllowNestedDocks
+            | QMainWindow.AllowTabbedDocks
+            | QMainWindow.AnimatedDocks
+        )
+        self.editor_dock = self._make_panel_dock("ath_editor_dock", "Ath Editor", self.editor_container)
+        self.preview_dock = self._make_panel_dock("mesh_preview_dock", "Mesh Preview", self.preview)
+        self.plots_dock = self._make_panel_dock("plots_dock", "Plots", self.plot_panel)
+        self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
+        self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
+        self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.plots_dock)
+        self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
+        self.workspace.splitDockWidget(self.preview_dock, self.plots_dock, Qt.Horizontal)
+        self.workspace.resizeDocks(
+            [self.editor_dock, self.preview_dock, self.plots_dock],
+            [420, 520, 520],
+            Qt.Horizontal,
+        )
+        for dock_id, dock in (
+            ("editor", self.editor_dock),
+            ("preview", self.preview_dock),
+            ("plots", self.plots_dock),
+        ):
+            action = self.panel_view_actions.get(dock_id)
+            if action is not None:
+                action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))
+                dock.visibilityChanged.connect(action.setChecked)
 
         controls = QFrame()
         controls_layout = QHBoxLayout(controls)
@@ -514,7 +589,7 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.addWidget(self.main_splitter, stretch=1)
+        layout.addWidget(self.workspace, stretch=1)
         layout.addWidget(controls)
         layout.addWidget(self.status_label)
         self.setCentralWidget(central)
@@ -665,37 +740,16 @@ class MainWindow(QMainWindow):
         self._set_editor_collapsed(not self._editor_collapsed)
 
     def _set_editor_collapsed(self, collapsed: bool) -> None:
-        if hasattr(self, "main_splitter") and not collapsed and self._editor_collapsed:
-            sizes = self.main_splitter.sizes()
-            plot_width = sizes[2] if len(sizes) >= 3 else 400
-            current_editor_width = sizes[0] if sizes else EDITOR_RAIL_WIDTH
-            preview_width = sizes[1] if len(sizes) >= 2 else max(self.preview.width(), 400)
-            editor_delta = max(self._last_editor_width - current_editor_width, 0)
+        if hasattr(self, "editor_dock") and not collapsed:
             self.editor_container.setMinimumWidth(0)
             self.editor_container.setMaximumWidth(16777215)
-            self.main_splitter.setSizes(
-                [
-                    self._last_editor_width,
-                    max(preview_width - editor_delta, 1),
-                    plot_width,
-                ]
-            )
-        elif hasattr(self, "main_splitter") and collapsed:
-            sizes = self.main_splitter.sizes()
-            plot_width = sizes[2] if len(sizes) >= 3 else 400
-            preview_width = sizes[1] if len(sizes) >= 2 else max(self.preview.width(), 400)
-            if sizes and sizes[0] > EDITOR_RAIL_WIDTH:
-                self._last_editor_width = sizes[0]
-            editor_delta = max(self._last_editor_width - EDITOR_RAIL_WIDTH, 0)
+            if self.editor_dock.isVisible() and not self.editor_dock.isFloating():
+                self.workspace.resizeDocks([self.editor_dock], [self._last_editor_width], Qt.Horizontal)
+        elif hasattr(self, "editor_dock") and collapsed:
+            if self.editor_dock.width() > EDITOR_RAIL_WIDTH:
+                self._last_editor_width = self.editor_dock.width()
             self.editor_container.setMinimumWidth(EDITOR_RAIL_WIDTH)
             self.editor_container.setMaximumWidth(EDITOR_RAIL_WIDTH)
-            self.main_splitter.setSizes(
-                [
-                    EDITOR_RAIL_WIDTH,
-                    preview_width + editor_delta,
-                    plot_width,
-                ]
-            )
 
         self._editor_collapsed = collapsed
         self.editor_panel.setVisible(not collapsed)
@@ -995,17 +1049,16 @@ class MainWindow(QMainWindow):
         if geometry is not None:
             self.restoreGeometry(geometry)
 
-        splitter_state = self.settings.value("window/main_splitter")
-        if splitter_state is not None:
-            self.main_splitter.restoreState(splitter_state)
+        dock_state = self.settings.value("window/dock_state")
+        if dock_state is not None:
+            self.workspace.restoreState(dock_state)
         self._set_editor_collapsed(self._editor_collapsed)
 
     def _save_window_state(self) -> None:
-        sizes = self.main_splitter.sizes()
-        if sizes and not self._editor_collapsed:
-            self._last_editor_width = sizes[0]
+        if hasattr(self, "editor_dock") and not self._editor_collapsed and self.editor_dock.width() > EDITOR_RAIL_WIDTH:
+            self._last_editor_width = self.editor_dock.width()
         self.settings.setValue("window/geometry", self.saveGeometry())
-        self.settings.setValue("window/main_splitter", self.main_splitter.saveState())
+        self.settings.setValue("window/dock_state", self.workspace.saveState())
         self.settings.setValue("window/ath_editor_collapsed", self._editor_collapsed)
         self.settings.setValue("window/ath_editor_width", self._last_editor_width)
         self.settings.sync()

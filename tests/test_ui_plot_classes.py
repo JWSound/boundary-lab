@@ -44,10 +44,24 @@ def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
     assert "plot_layout.setSpacing(4)" in main_source
 
 
-def test_main_splitter_defers_expensive_resizes_until_drag_release() -> None:
+def test_main_window_uses_detachable_panel_docks() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
-    assert "self.main_splitter.setOpaqueResize(False)" in source
+    assert "QDockWidget" in source
+    assert "class DockTitleBar" in source
+    assert "dock.setTitleBarWidget(DockTitleBar(title, dock))" in source
+    assert "close_button.clicked.connect(dock.close)" in source
+    assert "event.ignore()" in source
+    assert "self.workspace = QMainWindow()" in source
+    assert "self.workspace.setCentralWidget(QWidget())" not in source
+    assert "QMainWindow.AllowNestedDocks" in source
+    assert "QMainWindow.AllowTabbedDocks" in source
+    assert "self.workspace.addDockWidget" in source
+    assert "self.workspace.splitDockWidget" in source
+    assert "action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))" in source
+    assert "self.workspace.saveState()" in source
+    assert "self.workspace.restoreState(dock_state)" in source
+    assert "window/dock_state" in source
 
 
 def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:

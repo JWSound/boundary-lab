@@ -7,7 +7,7 @@ from pathlib import Path
 import meshio
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from blab.ath import AthRunResult, read_surface_physical_names
 from blab.config import MeshConfig
@@ -55,9 +55,13 @@ class MeshPreview(QWidget):
         status_row.setContentsMargins(0, 0, 0, 0)
         self.hover_label = QLabel("")
         self.hover_label.setMinimumHeight(22)
+        self.hover_label.setMinimumWidth(0)
+        self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.total_elements_label = QLabel("")
         self.total_elements_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.total_elements_label.setMinimumHeight(22)
+        self.total_elements_label.setMinimumWidth(0)
+        self.total_elements_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         status_row.addWidget(self.hover_label, 1)
         status_row.addWidget(self.total_elements_label)
         layout.addLayout(status_row)
