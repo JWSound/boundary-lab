@@ -12,8 +12,8 @@ from typing import Callable
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QKeySequence, QPalette
+from PySide6.QtCore import QByteArray, QEvent, QSettings, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIcon, QKeySequence, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QTabBar,
@@ -150,8 +149,20 @@ ATH_BUNDLE_DIR = APP_ROOT / "ath"
 ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
 GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
-EDITOR_RAIL_WIDTH = 24
+SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
+SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
 ADD_SCRIPT_TAB_LABEL = "+"
+DEFAULT_DOCK_STATE_B64 = (
+    "AAAA/wAAAAD9AAAAAQAAAAAAAAduAAADdvwCAAAAAfwAAAAAAAADdgAAAG4A/////AEAAAAG+wAAAB4AYQB0AGgAXwBl"
+    "AGQAaQB0AG8AcgBfAGQAbwBjAGsBAAAAAAAAAdsAAACFAP////wAAAHfAAADRQAAAGoA/////AIAAAAC+wAAACIAbQBl"
+    "AHMAaABfAHAAcgBlAHYAaQBlAHcAXwBkAG8AYwBrAQAAAAAAAAN2AAAANAD////7AAAAHABzAHAAaQBuAG8AcgBhAG0A"
+    "YQBfAGQAbwBjAGsIAAAB4AAAAZYAAAAiAP////sAAAAUAHAAbABvAHQAcwBfAGQAbwBjAGsBAAAE9QAAAnkAAAAAAAAA"
+    "APwAAAUoAAACRgAAAHsA/////AIAAAAC+wAAACwAaABvAHIAaQB6AG8AbgB0AGEAbABfAGkAcwBvAGIAYQByAF8AZABv"
+    "AGMAawEAAAAAAAABugAAACIA////+wAAACgAdgBlAHIAdABpAGMAYQBsAF8AaQBzAG8AYgBhAHIAXwBkAG8AYwBrAQAA"
+    "Ab4AAAG4AAAAIgD////7AAAALgBhAGMAbwB1AHMAdABpAGMAXwBpAG0AcABlAGQAYQBuAGMAZQBfAGQAbwBjAGsAAAAA"
+    "AP////8AAACNAP////sAAAA+AG8AbgBfAGEAeABpAHMAXwBmAHIAZQBxAHUAZQBuAGMAeQBfAHIAZQBzAHAAbwBuAHMA"
+    "ZQBfAGQAbwBjAGsIAAAF/AAAAXIAAAC6AP///wAAAAAAAAN2AAAABAAAAAQAAAAIAAAACPwAAAAA"
+)
 
 
 @dataclass(frozen=True)
@@ -206,19 +217,27 @@ class AthScriptEditor(QPlainTextEdit):
 
 
 class DockTitleBar(QWidget):
-    def __init__(self, title: str, dock: QDockWidget):
+    def __init__(self, title: str, dock: QDockWidget, *, save_action: QAction | None = None):
         super().__init__(dock)
         self.dock = dock
+        self.save_button: QToolButton | None = None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 2, 2)
         layout.setSpacing(4)
         label = QLabel(title)
+        if save_action is not None:
+            self.save_button = QToolButton()
+            self.save_button.setAutoRaise(True)
+            self.save_button.setDefaultAction(save_action)
+            self.save_button.setToolTip(save_action.toolTip())
         close_button = QToolButton()
         close_button.setAutoRaise(True)
         close_button.setText("x")
         close_button.setToolTip(f"Close {title}")
         close_button.clicked.connect(dock.close)
         layout.addWidget(label, 1)
+        if self.save_button is not None:
+            layout.addWidget(self.save_button)
         layout.addWidget(close_button)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -273,8 +292,6 @@ class MainWindow(QMainWindow):
         self.solve_cancel_requested = False
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
-        self._editor_collapsed = settings_bool(self.settings, "window/ath_editor_collapsed", False)
-        self._last_editor_width = settings_int(self.settings, "window/ath_editor_width", 420)
         self._last_imported_mesh_focus_check_at = 0.0
         startup("Preparing Ath runtime config...")
         self._ensure_ath_runtime_config()
@@ -285,11 +302,6 @@ class MainWindow(QMainWindow):
         self.editor_tabs.currentChanged.connect(self._on_active_ath_tab_changed)
         self.editor_tabs.tabCloseRequested.connect(self._remove_ath_script_at)
         self.editor_tabs.tabBar().installEventFilter(self)
-        self.collapse_editor_button = QToolButton()
-        self.collapse_editor_button.setToolTip("Collapse Ath script editor")
-        self.collapse_editor_button.setAutoRaise(True)
-        self.collapse_editor_button.setFixedWidth(EDITOR_RAIL_WIDTH)
-        self.collapse_editor_button.clicked.connect(self.toggle_editor_panel)
         self._rebuild_ath_script_tabs()
 
         startup("Creating mesh preview...")
@@ -376,6 +388,7 @@ class MainWindow(QMainWindow):
         self.plot_view_actions: dict[str, QAction] = {}
         self.export_plot_actions: dict[str, QAction] = {}
         self.panel_view_actions: dict[str, QAction] = {}
+        self.plot_docks: dict[str, QDockWidget] = {}
 
         startup("Wiring controls...")
         self._wire_controls()
@@ -442,12 +455,11 @@ class MainWindow(QMainWindow):
         export_cfg_action.triggered.connect(self.export_config)
         file_menu.addAction(export_cfg_action)
 
-        export_plot_menu = file_menu.addMenu("Export Plot")
         for entry in self.plot_entries:
             action = QAction(entry.title, self)
+            action.setToolTip(f"Export {entry.title}")
             action.setEnabled(False)
             action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot(plot_id))
-            export_plot_menu.addAction(action)
             self.export_plot_actions[entry.plot_id] = action
 
         self.export_polar_data_action = QAction("Export Polar Data", self)
@@ -464,7 +476,6 @@ class MainWindow(QMainWindow):
         for dock_id, title in (
             ("editor", "Ath Editor Panel"),
             ("preview", "Mesh Preview Panel"),
-            ("plots", "Plots Panel"),
         ):
             action = QAction(title, self)
             action.setCheckable(True)
@@ -475,11 +486,9 @@ class MainWindow(QMainWindow):
         for entry in self.plot_entries:
             action = QAction(entry.title, self)
             action.setCheckable(True)
-            action.setChecked(settings_bool(self.settings, f"plots/{entry.plot_id}/visible", True))
-            action.toggled.connect(lambda visible, plot_id=entry.plot_id: self._set_plot_visible(plot_id, visible))
+            action.setChecked(True)
             view_menu.addAction(action)
             self.plot_view_actions[entry.plot_id] = action
-            entry.widget.setVisible(action.isChecked())
 
         edit_menu = self.menuBar().addMenu("Edit")
         preferences_action = QAction("Preferences", self)
@@ -499,7 +508,14 @@ class MainWindow(QMainWindow):
         help_action.triggered.connect(self.open_help)
         about_menu.addAction(help_action)
 
-    def _make_panel_dock(self, object_name: str, title: str, widget: QWidget) -> QDockWidget:
+    def _make_panel_dock(
+        self,
+        object_name: str,
+        title: str,
+        widget: QWidget,
+        *,
+        save_action: QAction | None = None,
+    ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
         dock.setWidget(widget)
@@ -509,7 +525,7 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFloatable
             | QDockWidget.DockWidgetClosable
         )
-        dock.setTitleBarWidget(DockTitleBar(title, dock))
+        dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action))
         return dock
 
     def _build_layout(self) -> None:
@@ -523,19 +539,6 @@ class MainWindow(QMainWindow):
         editor_container_layout.setContentsMargins(0, 0, 0, 0)
         editor_container_layout.setSpacing(0)
         editor_container_layout.addWidget(self.editor_panel, 1)
-        editor_container_layout.addWidget(self.collapse_editor_button)
-
-        plot_content = QWidget()
-        plot_layout = QVBoxLayout(plot_content)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.setSpacing(4)
-        for entry in self.plot_entries:
-            plot_layout.addWidget(entry.widget)
-
-        self.plot_panel = QScrollArea()
-        self.plot_panel.setWidgetResizable(True)
-        self.plot_panel.setFrameShape(QFrame.NoFrame)
-        self.plot_panel.setWidget(plot_content)
 
         self.workspace = QMainWindow()
         self.workspace.setDockOptions(
@@ -545,26 +548,45 @@ class MainWindow(QMainWindow):
         )
         self.editor_dock = self._make_panel_dock("ath_editor_dock", "Ath Editor", self.editor_container)
         self.preview_dock = self._make_panel_dock("mesh_preview_dock", "Mesh Preview", self.preview)
-        self.plots_dock = self._make_panel_dock("plots_dock", "Plots", self.plot_panel)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
-        self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.plots_dock)
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
-        self.workspace.splitDockWidget(self.preview_dock, self.plots_dock, Qt.Horizontal)
+        previous_plot_dock = None
+        for entry in self.plot_entries:
+            dock = self._make_panel_dock(
+                f"{entry.plot_id}_dock",
+                entry.title,
+                entry.widget,
+                save_action=self.export_plot_actions.get(entry.plot_id),
+            )
+            self.plot_docks[entry.plot_id] = dock
+            self.workspace.addDockWidget(Qt.RightDockWidgetArea, dock)
+            if previous_plot_dock is None:
+                self.workspace.splitDockWidget(self.preview_dock, dock, Qt.Horizontal)
+            else:
+                self.workspace.tabifyDockWidget(previous_plot_dock, dock)
+            previous_plot_dock = dock
+        if previous_plot_dock is not None:
+            previous_plot_dock.raise_()
         self.workspace.resizeDocks(
-            [self.editor_dock, self.preview_dock, self.plots_dock],
-            [420, 520, 520],
+            [self.editor_dock, self.preview_dock, *self.plot_docks.values()],
+            [420, 520, *([520] * len(self.plot_docks))],
             Qt.Horizontal,
         )
         for dock_id, dock in (
             ("editor", self.editor_dock),
             ("preview", self.preview_dock),
-            ("plots", self.plots_dock),
         ):
             action = self.panel_view_actions.get(dock_id)
             if action is not None:
                 action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))
                 dock.visibilityChanged.connect(action.setChecked)
+        for entry in self.plot_entries:
+            dock = self.plot_docks[entry.plot_id]
+            action = self.plot_view_actions.get(entry.plot_id)
+            if action is not None:
+                action.toggled.connect(lambda checked, plot_id=entry.plot_id: self._set_plot_visible(plot_id, checked))
+                dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))
 
         controls = QFrame()
         controls_layout = QHBoxLayout(controls)
@@ -593,6 +615,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(controls)
         layout.addWidget(self.status_label)
         self.setCentralWidget(central)
+        self._refresh_plot_export_icons()
 
     def _wire_controls(self) -> None:
         self.generate_button.clicked.connect(self.generate_geometry)
@@ -734,31 +757,6 @@ class MainWindow(QMainWindow):
         self._rebuild_ath_script_tabs()
         self.mesh_state_changed.emit("ath_script_removed")
         self.solve_results_invalidated.emit("ath_script_removed")
-
-    @Slot()
-    def toggle_editor_panel(self) -> None:
-        self._set_editor_collapsed(not self._editor_collapsed)
-
-    def _set_editor_collapsed(self, collapsed: bool) -> None:
-        if hasattr(self, "editor_dock") and not collapsed:
-            self.editor_container.setMinimumWidth(0)
-            self.editor_container.setMaximumWidth(16777215)
-            if self.editor_dock.isVisible() and not self.editor_dock.isFloating():
-                self.workspace.resizeDocks([self.editor_dock], [self._last_editor_width], Qt.Horizontal)
-        elif hasattr(self, "editor_dock") and collapsed:
-            if self.editor_dock.width() > EDITOR_RAIL_WIDTH:
-                self._last_editor_width = self.editor_dock.width()
-            self.editor_container.setMinimumWidth(EDITOR_RAIL_WIDTH)
-            self.editor_container.setMaximumWidth(EDITOR_RAIL_WIDTH)
-
-        self._editor_collapsed = collapsed
-        self.editor_panel.setVisible(not collapsed)
-        self.collapse_editor_button.setText(">" if collapsed else "<")
-        self.collapse_editor_button.setToolTip(
-            "Expand Ath script editor" if collapsed else "Collapse Ath script editor"
-        )
-        self.settings.setValue("window/ath_editor_collapsed", collapsed)
-        self.settings.setValue("window/ath_editor_width", self._last_editor_width)
 
     def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
         with QSignalBlocker(spin):
@@ -960,6 +958,7 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(self._theme_stylesheet(dark_text, window_color, base_color))
 
         self._refresh_theme_widgets(app)
+        self._refresh_plot_export_icons()
 
     @staticmethod
     def _set_palette_text_colors(palette: QPalette, color: QColor) -> None:
@@ -989,6 +988,16 @@ class MainWindow(QMainWindow):
             style.polish(widget)
             widget.update()
         app.processEvents()
+
+    def _refresh_plot_export_icons(self) -> None:
+        if not hasattr(self, "export_plot_actions"):
+            return
+        palette = self.palette()
+        window_color = palette.color(QPalette.Window)
+        icon_path = SAVE_LIGHT_ICON if window_color.lightness() >= 128 else SAVE_DARK_ICON
+        icon = QIcon(str(icon_path))
+        for action in self.export_plot_actions.values():
+            action.setIcon(icon)
 
     @staticmethod
     def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QColor) -> str:
@@ -1050,17 +1059,19 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
 
         dock_state = self.settings.value("window/dock_state")
+        if dock_state is None:
+            dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
-        self._set_editor_collapsed(self._editor_collapsed)
+        for entry in self.plot_entries:
+            action = self.plot_view_actions.get(entry.plot_id)
+            dock = self.plot_docks.get(entry.plot_id)
+            if action is not None and dock is not None:
+                self._sync_plot_view_action(entry.plot_id)
 
     def _save_window_state(self) -> None:
-        if hasattr(self, "editor_dock") and not self._editor_collapsed and self.editor_dock.width() > EDITOR_RAIL_WIDTH:
-            self._last_editor_width = self.editor_dock.width()
         self.settings.setValue("window/geometry", self.saveGeometry())
         self.settings.setValue("window/dock_state", self.workspace.saveState())
-        self.settings.setValue("window/ath_editor_collapsed", self._editor_collapsed)
-        self.settings.setValue("window/ath_editor_width", self._last_editor_width)
         self.settings.sync()
 
     def _load_recent_project_paths(self) -> list[Path]:
@@ -2058,7 +2069,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def export_plot(self, plot_id: str) -> None:
-        dataset = self._prepared_live_plot_dataset()
+        dataset = self._prepared_live_plot_dataset(
+            angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None,
+            freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None,
+        )
         if dataset is None:
             QMessageBox.warning(self, "No plot data", "Run a solve before exporting a plot.")
             return
@@ -2552,9 +2566,9 @@ class MainWindow(QMainWindow):
         for entry in self.plot_entries:
             if entry.plot_id != plot_id:
                 continue
-            entry.widget.setVisible(visible)
-            self.settings.setValue(f"plots/{plot_id}/visible", visible)
-            self.settings.sync()
+            dock = self.plot_docks.get(plot_id)
+            if dock is not None and dock.isVisible() != visible:
+                dock.setVisible(visible)
             if visible:
                 self._refresh_plots()
                 if self._use_final_isobar_resolution and plot_id in {"horizontal_isobar", "vertical_isobar"}:
@@ -2562,15 +2576,30 @@ class MainWindow(QMainWindow):
             self._set_contour_button_states()
             break
 
+    def _sync_plot_view_action(self, plot_id: str) -> None:
+        action = self.plot_view_actions.get(plot_id)
+        dock = self.plot_docks.get(plot_id)
+        if action is None or dock is None:
+            return
+        with QSignalBlocker(action):
+            action.setChecked(not dock.isHidden())
+        if not dock.isHidden():
+            self._refresh_plots()
+            if self._use_final_isobar_resolution and plot_id in {"horizontal_isobar", "vertical_isobar"}:
+                self._final_isobar_plots_rendered = True
+        self._set_contour_button_states()
+
     def _set_export_plot_actions_enabled(self, enabled: bool) -> None:
         for action in self.export_plot_actions.values():
             action.setEnabled(enabled)
 
     def _visible_isobar_plots(self) -> tuple[IsobarCanvas, ...]:
         plots: list[IsobarCanvas] = []
-        if self.horizontal_plot.isVisible():
+        horizontal_dock = self.plot_docks.get("horizontal_isobar")
+        vertical_dock = self.plot_docks.get("vertical_isobar")
+        if horizontal_dock is not None and not horizontal_dock.isHidden():
             plots.append(self.horizontal_plot)
-        if self.vertical_plot.isVisible():
+        if vertical_dock is not None and not vertical_dock.isHidden():
             plots.append(self.vertical_plot)
         return tuple(plots)
 
@@ -2638,7 +2667,11 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_plots(self) -> None:
-        visible_entries = [entry for entry in self.plot_entries if entry.widget.isVisible()]
+        visible_entries = [
+            entry
+            for entry in self.plot_entries
+            if (dock := self.plot_docks.get(entry.plot_id)) is not None and not dock.isHidden()
+        ]
         if not visible_entries:
             return
 

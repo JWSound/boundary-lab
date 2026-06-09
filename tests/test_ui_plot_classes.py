@@ -32,16 +32,14 @@ def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
     assert "ncols=4" in spinorama_block
 
 
-def test_plot_panel_uses_compact_spacing_and_title_padding() -> None:
+def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
     assert "PLOT_TITLE_PAD = 1" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
     assert 'grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)' in plot_source
-    assert "plot_layout.setSpacing(4)" in main_source
 
 
 def test_main_window_uses_detachable_panel_docks() -> None:
@@ -49,19 +47,49 @@ def test_main_window_uses_detachable_panel_docks() -> None:
 
     assert "QDockWidget" in source
     assert "class DockTitleBar" in source
-    assert "dock.setTitleBarWidget(DockTitleBar(title, dock))" in source
+    assert "save_action: QAction | None = None" in source
+    assert "self.save_button.setDefaultAction(save_action)" in source
+    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action))" in source
+    assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
     assert "close_button.clicked.connect(dock.close)" in source
     assert "event.ignore()" in source
+    assert "collapse_editor" not in source
+    assert "ath_editor_collapsed" not in source
+    assert "ath_editor_width" not in source
     assert "self.workspace = QMainWindow()" in source
     assert "self.workspace.setCentralWidget(QWidget())" not in source
     assert "QMainWindow.AllowNestedDocks" in source
     assert "QMainWindow.AllowTabbedDocks" in source
     assert "self.workspace.addDockWidget" in source
     assert "self.workspace.splitDockWidget" in source
+    assert "self.plot_docks: dict[str, QDockWidget]" in source
+    assert "self.plot_docks[entry.plot_id] = dock" in source
+    assert "self.workspace.tabifyDockWidget(previous_plot_dock, dock)" in source
+    assert '"Plots Panel"' not in source
+    assert "self.plots_dock" not in source
+    assert "settings_bool(self.settings, f\"plots/{entry.plot_id}/visible\", True)" not in source
+    assert "settings.setValue(f\"plots/{plot_id}/visible\"" not in source
     assert "action.toggled.connect(lambda checked, dock=dock: dock.setVisible(bool(checked)))" in source
+    assert "dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))" in source
     assert "self.workspace.saveState()" in source
     assert "self.workspace.restoreState(dock_state)" in source
     assert "window/dock_state" in source
+    assert "DEFAULT_DOCK_STATE_B64" in source
+    assert "QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode(\"ascii\"))" in source
+
+
+def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert 'file_menu.addMenu("Export Plot")' not in source
+    assert "self.export_plot_actions[entry.plot_id] = action" in source
+    assert "action.setToolTip(f\"Export {entry.title}\")" in source
+    assert "SAVE_DARK_ICON" in source
+    assert "SAVE_LIGHT_ICON" in source
+    assert "def _refresh_plot_export_icons(" in source
+    assert "icon_path = SAVE_LIGHT_ICON if window_color.lightness() >= 128 else SAVE_DARK_ICON" in source
+    assert "action.setIcon(icon)" in source
+    assert "self._refresh_plot_export_icons()" in source
 
 
 def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
@@ -69,7 +97,8 @@ def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
 
     assert "_request_plot_refresh" not in source
     assert "_plot_refresh_timer" not in source
-    assert "visible_entries = [entry for entry in self.plot_entries if entry.widget.isVisible()]" in source
+    assert "self.plot_docks.get(entry.plot_id)" in source
+    assert "not dock.isHidden()" in source
     assert "for entry in visible_entries:" in source
     assert "self._refresh_plots()" in source
 
@@ -122,6 +151,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "self._use_final_isobar_resolution = solve_completed" in main_source
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
+    assert 'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None' in main_source
+    assert 'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None' in main_source
     assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
 
 
@@ -198,8 +229,10 @@ def test_main_window_captures_only_visible_isobar_plots_and_preserves_until_clea
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
     assert "def _visible_isobar_plots(" in source
-    assert "if self.horizontal_plot.isVisible()" in source
-    assert "if self.vertical_plot.isVisible()" in source
+    assert "def _sync_plot_view_action(" in source
+    assert 'self.plot_docks.get("horizontal_isobar")' in source
+    assert 'self.plot_docks.get("vertical_isobar")' in source
+    assert "action.setChecked(not dock.isHidden())" in source
     assert "for plot in self._visible_isobar_plots():" in source
     assert "plot.capture_contours()" in source
     assert "self.horizontal_plot.clear_contours()" in source

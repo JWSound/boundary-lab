@@ -61,7 +61,7 @@ class MeshPreview(QWidget):
         self.total_elements_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.total_elements_label.setMinimumHeight(22)
         self.total_elements_label.setMinimumWidth(0)
-        self.total_elements_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         status_row.addWidget(self.hover_label, 1)
         status_row.addWidget(self.total_elements_label)
         layout.addLayout(status_row)

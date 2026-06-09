@@ -34,7 +34,7 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
     assert "self.hover_label.setMinimumWidth(0)" in source
     assert "self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
     assert "self.total_elements_label.setMinimumWidth(0)" in source
-    assert "self.total_elements_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
+    assert "self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
 
 
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:
