@@ -77,7 +77,7 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert "dock.visibilityChanged.connect(lambda _visible, dock_id=dock_id: self._sync_panel_view_action(dock_id))" in source
     assert "def _set_panel_visible(" in source
     assert "def _sync_panel_view_action(" in source
-    assert "channel_config_button" not in source
+    assert '("channel_config", "Channel Config Panel")' not in source
     assert "dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))" in source
     assert "self.workspace.saveState()" in source
     assert "self.workspace.restoreState(dock_state)" in source

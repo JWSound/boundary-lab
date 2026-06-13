@@ -207,7 +207,6 @@ class MainWindow(QMainWindow):
         self.live_dataset: LiveSolveDataset | None = None
         self.balloon_window: QDialog | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
-        self.channel_config_dock: QDockWidget | None = None
         self.project_path: Path | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
@@ -245,6 +244,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setShortcut(QKeySequence("Shift+F5"))
         self.cancel_button.setEnabled(False)
         self.mesh_config_button = QPushButton("Mesh Config")
+        self.channel_config_button = QPushButton("Channel Config")
         self.source_config_button = QPushButton("Source Config")
         self.source_config_button.setEnabled(self._has_solver_meshes())
 
@@ -413,13 +413,10 @@ class MainWindow(QMainWindow):
         for dock_id, title in (
             ("editor", "Ath Editor Panel"),
             ("preview", "Mesh Preview Panel"),
-            ("channel_config", "Channel Config Panel"),
         ):
             action = QAction(title, self)
             action.setCheckable(True)
-            action.setChecked(dock_id != "channel_config")
-            if dock_id == "channel_config":
-                action.toggled.connect(self._set_channel_config_visible)
+            action.setChecked(True)
             view_menu.addAction(action)
             self.panel_view_actions[dock_id] = action
         view_menu.addSeparator()
@@ -543,6 +540,7 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.solve_button)
         controls_layout.addWidget(self.cancel_button)
         controls_layout.addWidget(self.mesh_config_button)
+        controls_layout.addWidget(self.channel_config_button)
         controls_layout.addWidget(self.source_config_button)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(QLabel("Min Hz"))
@@ -568,6 +566,7 @@ class MainWindow(QMainWindow):
         self.solve_button.clicked.connect(self.start_solve)
         self.cancel_button.clicked.connect(self.cancel_solve)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
+        self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
 
         self.freq_min_slider.valueChanged.connect(
@@ -763,7 +762,7 @@ class MainWindow(QMainWindow):
             dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
-        for dock_id in ("editor", "preview", "channel_config"):
+        for dock_id in ("editor", "preview"):
             self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:
             action = self.plot_view_actions.get(entry.plot_id)
@@ -1343,19 +1342,9 @@ class MainWindow(QMainWindow):
 
     def _discard_channel_config_dialog(self) -> None:
         dialog = self.channel_config_dialog
-        dock = self.channel_config_dock
         self.channel_config_dialog = None
-        self.channel_config_dock = None
-        if dock is not None:
-            dock.setWidget(None)
-            dock.close()
-            dock.deleteLater()
         if dialog is not None:
             dialog.deleteLater()
-        action = self.panel_view_actions.get("channel_config") if hasattr(self, "panel_view_actions") else None
-        if action is not None:
-            with QSignalBlocker(action):
-                action.setChecked(False)
 
     def _apply_saved_source_config_to_result(self, result: AthRunResult | None, mesh_name: str) -> AthRunResult | None:
         return apply_saved_source_config_to_result(result, mesh_name, self._load_source_config_by_name())
@@ -1770,47 +1759,21 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_channel_config(self) -> None:
-        if self.channel_config_dock is not None and self.channel_config_dialog is not None:
-            self.channel_config_dock.show()
-            self.channel_config_dock.raise_()
+        if self.channel_config_dialog is not None:
+            self.channel_config_dialog.show()
+            self.channel_config_dialog.raise_()
+            self.channel_config_dialog.activateWindow()
             return
 
-        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self, embedded=True)
-        dialog.setWindowFlags(Qt.Widget)
+        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)
         self.channel_config_dialog = dialog
         dialog.channelsApplied.connect(self._apply_channel_config)
-        dock = self._make_panel_dock("channel_config_dock", "Channel Config", dialog)
-        self.channel_config_dock = dock
-        dialog.closeRequested.connect(dock.close)
-        action = self.panel_view_actions.get("channel_config")
-        if action is not None:
-            action.setEnabled(True)
-            dock.visibilityChanged.connect(lambda _visible: self._sync_panel_view_action("channel_config"))
-        dock.destroyed.connect(lambda *_args: setattr(self, "channel_config_dock", None))
         dialog.destroyed.connect(lambda *_args: setattr(self, "channel_config_dialog", None))
-        self.workspace.addDockWidget(Qt.BottomDockWidgetArea, dock)
-        dock.setFloating(True)
-        dock.resize(1080, min(520, 160 + 34 * max(1, len(self._channel_configs_for_current_radiators()))))
-        if action is not None:
-            with QSignalBlocker(action):
-                action.setChecked(True)
-        dock.show()
-        dock.raise_()
-
-    @Slot(bool)
-    def _set_channel_config_visible(self, visible: bool) -> None:
-        if self.channel_config_dock is None:
-            if visible:
-                self.open_channel_config()
-            return
-        self.channel_config_dock.setVisible(bool(visible))
-        if visible:
-            self.channel_config_dock.raise_()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _set_panel_visible(self, dock_id: str, visible: bool) -> None:
-        if dock_id == "channel_config":
-            self._set_channel_config_visible(visible)
-            return
         dock = self.editor_dock if dock_id == "editor" else self.preview_dock if dock_id == "preview" else None
         if dock is None:
             return
@@ -1828,8 +1791,6 @@ class MainWindow(QMainWindow):
             dock = self.editor_dock
         elif dock_id == "preview":
             dock = self.preview_dock
-        elif dock_id == "channel_config":
-            dock = self.channel_config_dock
         with QSignalBlocker(action):
             action.setChecked(dock is not None and not dock.isHidden())
 
@@ -2001,9 +1962,7 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
-        channel_config_action = self.panel_view_actions.get("channel_config")
-        if channel_config_action is not None:
-            channel_config_action.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
         self.source_config_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
@@ -2081,9 +2040,7 @@ class MainWindow(QMainWindow):
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
-        channel_config_action = self.panel_view_actions.get("channel_config")
-        if channel_config_action is not None:
-            channel_config_action.setEnabled(True)
+        self.channel_config_button.setEnabled(True)
         self.source_config_button.setEnabled(self._has_solver_meshes())
         self.cancel_button.setEnabled(False)
         elapsed_s = None if self.solve_started_at is None else time.perf_counter() - self.solve_started_at

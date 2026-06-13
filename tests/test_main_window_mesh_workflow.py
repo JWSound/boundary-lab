@@ -174,44 +174,34 @@ def test_channel_dialog_channels_include_existing_radiator_channels() -> None:
     assert channels[0].polarity == -1
 
 
-def test_discard_channel_config_dialog_deletes_stale_dialog_and_dock() -> None:
+def test_discard_channel_config_dialog_deletes_stale_dialog() -> None:
     deleted = {}
 
     class DialogStub:
         def deleteLater(self) -> None:
             deleted["dialog"] = True
 
-    class DockStub:
-        def setWidget(self, widget) -> None:
-            deleted["dock_widget"] = widget
-
-        def close(self) -> None:
-            deleted["dock_closed"] = True
-
-        def deleteLater(self) -> None:
-            deleted["dock"] = True
-
     window = MainWindow.__new__(MainWindow)
     window.channel_config_dialog = DialogStub()
-    window.channel_config_dock = DockStub()
 
     window._discard_channel_config_dialog()
 
     assert deleted["dialog"] is True
-    assert deleted["dock_widget"] is None
-    assert deleted["dock_closed"] is True
-    assert deleted["dock"] is True
     assert window.channel_config_dialog is None
-    assert window.channel_config_dock is None
 
 
-def test_channel_config_dock_opens_floating_by_default() -> None:
+def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    open_channel_config = source[source.index("def open_channel_config"):source.index("def _set_channel_config_visible")]
+    open_channel_config = source[source.index("def open_channel_config"):source.index("def _set_panel_visible")]
 
-    assert 'dock = self._make_panel_dock("channel_config_dock", "Channel Config", dialog)' in open_channel_config
-    assert "self.workspace.addDockWidget(Qt.BottomDockWidgetArea, dock)" in open_channel_config
-    assert "preview_dock" not in open_channel_config
-    assert "splitDockWidget" not in open_channel_config
-    assert "dock.setFloating(True)" in open_channel_config
-    assert "dock.resize(1080, min(520, 160 + 34 * max(1, len(self._channel_configs_for_current_radiators()))))" in open_channel_config
+    assert 'self.channel_config_button = QPushButton("Channel Config")' in source
+    assert "controls_layout.addWidget(self.mesh_config_button)" in source
+    assert "controls_layout.addWidget(self.channel_config_button)" in source
+    assert "controls_layout.addWidget(self.source_config_button)" in source
+    assert "self.channel_config_button.clicked.connect(self.open_channel_config)" in source
+    assert '("channel_config", "Channel Config Panel")' not in source
+    assert 'ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)' in open_channel_config
+    assert "dialog.show()" in open_channel_config
+    assert "dialog.activateWindow()" in open_channel_config
+    assert "_make_panel_dock" not in open_channel_config
+    assert "addDockWidget" not in open_channel_config
