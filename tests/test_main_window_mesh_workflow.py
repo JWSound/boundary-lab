@@ -205,3 +205,38 @@ def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
     assert "dialog.activateWindow()" in open_channel_config
     assert "_make_panel_dock" not in open_channel_config
     assert "addDockWidget" not in open_channel_config
+
+
+def test_project_dirty_state_ignores_generated_ath_mesh_paths() -> None:
+    payload = {
+        "ath_scripts": [
+            {
+                "id": "script1",
+                "config_text": "",
+                "output_dir": "",
+                "msh_path": "",
+                "cleaned_msh_path": "",
+                "config_path": "",
+            }
+        ]
+    }
+    window = MainWindow.__new__(MainWindow)
+    window._project_clean_payload = None
+    window._project_payload = lambda: payload
+
+    assert not window._has_unsaved_project_changes()
+
+    window._mark_project_clean()
+
+    assert not window._has_unsaved_project_changes()
+
+    payload["ath_scripts"][0]["output_dir"] = "runs/ath_output/example"
+    payload["ath_scripts"][0]["msh_path"] = "runs/ath_output/example/example.msh"
+    payload["ath_scripts"][0]["cleaned_msh_path"] = "runs/ath_output/example/example_clean.msh"
+    payload["ath_scripts"][0]["config_path"] = "runs/ath_output/example.cfg"
+
+    assert not window._has_unsaved_project_changes()
+
+    payload["ath_scripts"][0]["mesh_scale_factor"] = 0.002
+
+    assert window._has_unsaved_project_changes()

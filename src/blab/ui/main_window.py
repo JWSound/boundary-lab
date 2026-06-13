@@ -208,6 +208,7 @@ class MainWindow(QMainWindow):
         self.balloon_window: QDialog | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
+        self._project_clean_payload: dict | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
         self.solve_expected_count = 0
@@ -611,6 +612,25 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_solve_results_invalidated(self, _reason: str) -> None:
         self._clear_plots()
+
+    def _has_solved_data(self) -> bool:
+        return bool(self.live_dataset is not None and self.live_dataset.solved_count > 0)
+
+    def _confirm_clear_solved_data(self) -> bool:
+        if not self._has_solved_data():
+            return True
+        message = QMessageBox(
+            QMessageBox.Warning,
+            "Clear solved data?",
+            "Applying this action will clear solved data",
+            QMessageBox.NoButton,
+            self,
+        )
+        continue_button = message.addButton("Continue", QMessageBox.AcceptRole)
+        cancel_button = message.addButton("Cancel", QMessageBox.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+        return message.clickedButton() is continue_button
 
     @Slot(str)
     def _on_visualization_settings_changed(self, _reason: str) -> None:
@@ -1362,6 +1382,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if not self._confirm_unsaved_project_changes("close"):
+            event.ignore()
+            return
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
@@ -1436,6 +1459,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def new_project(self) -> None:
+        if not self._confirm_unsaved_project_changes("new_project"):
+            return
         self._discard_channel_config_dialog()
         self.project_path = None
         self.ath_scripts = default_scripts("")
@@ -1449,17 +1474,17 @@ class MainWindow(QMainWindow):
         clear_source_channel_configs(self.settings)
         self.project_state_changed.emit("new_project")
         self.solve_results_invalidated.emit("new_project")
+        self._mark_project_clean()
         self.status_label.setText("New project")
 
     @Slot()
-    def save_project(self) -> None:
+    def save_project(self) -> bool:
         if self.project_path is None:
-            self.save_project_as()
-            return
-        self._save_project_to_path(self.project_path)
+            return self.save_project_as()
+        return self._save_project_to_path(self.project_path)
 
     @Slot()
-    def save_project_as(self) -> None:
+    def save_project_as(self) -> bool:
         default_path = self.project_path or (Path.cwd() / PROJECT_DEFAULT_NAME)
         path_text, _ = QFileDialog.getSaveFileName(
             self,
@@ -1468,20 +1493,25 @@ class MainWindow(QMainWindow):
             PROJECT_FILE_FILTER,
         )
         if not path_text:
-            return
-        self._save_project_to_path(normalize_project_path(path_text))
+            return False
+        return self._save_project_to_path(normalize_project_path(path_text))
 
-    def _save_project_to_path(self, path: Path) -> None:
+    def _save_project_to_path(self, path: Path) -> bool:
         try:
             project_path = write_project_file(path, self._project_payload())
             self.project_path = project_path
             self._remember_recent_project(project_path)
+            self._mark_project_clean()
             self.status_label.setText(f"Saved project {project_path}")
+            return True
         except Exception as exc:
             QMessageBox.critical(self, "Save project failed", str(exc))
+            return False
 
     @Slot()
     def load_project(self) -> None:
+        if not self._confirm_unsaved_project_changes("open_project"):
+            return
         path_text, _ = QFileDialog.getOpenFileName(
             self,
             "Open Project",
@@ -1499,6 +1529,8 @@ class MainWindow(QMainWindow):
             self._remove_recent_project(path)
             QMessageBox.warning(self, "Open project failed", f"Recent project not found:\n{path}")
             return
+        if not self._confirm_unsaved_project_changes("open_project"):
+            return
         self._load_project_from_path(path)
 
     def _load_project_from_path(self, path: Path) -> None:
@@ -1507,6 +1539,7 @@ class MainWindow(QMainWindow):
             self._apply_project_payload(payload)
             self.project_path = path
             self._remember_recent_project(path)
+            self._mark_project_clean()
             self.status_label.setText(f"Opened project {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Open project failed", str(exc))
@@ -1524,6 +1557,50 @@ class MainWindow(QMainWindow):
             active_ath_script_id=self.active_ath_script_id,
             channel_config_by_name=self._load_channel_config_by_name(),
         )
+
+    def _canonical_project_payload(self) -> dict:
+        payload = json.loads(json.dumps(self._project_payload(), sort_keys=True))
+        for script in payload.get("ath_scripts", []):
+            if not isinstance(script, dict):
+                continue
+            for field in ("output_dir", "msh_path", "cleaned_msh_path", "config_path"):
+                script.pop(field, None)
+        return payload
+
+    def _mark_project_clean(self) -> None:
+        self._project_clean_payload = self._canonical_project_payload()
+
+    def _has_unsaved_project_changes(self) -> bool:
+        if self._project_clean_payload is None:
+            return False
+        return self._canonical_project_payload() != self._project_clean_payload
+
+    def _confirm_unsaved_project_changes(self, action: str) -> bool:
+        if not self._has_unsaved_project_changes():
+            return True
+        message_text = (
+            "You have unsaved changes. Are you sure you want to close?"
+            if action == "close"
+            else "You have unsaved changes. Save before continuing?"
+        )
+        message = QMessageBox(
+            QMessageBox.Warning,
+            "Unsaved Changes",
+            message_text,
+            QMessageBox.NoButton,
+            self,
+        )
+        save_button = message.addButton("Save", QMessageBox.AcceptRole)
+        discard_button = message.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel_button = message.addButton("Cancel", QMessageBox.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+        clicked = message.clickedButton()
+        if clicked is save_button:
+            return self.save_project()
+        if clicked is discard_button:
+            return True
+        return False
 
     def _apply_project_payload(self, payload: dict) -> None:
         self._discard_channel_config_dialog()
@@ -1686,8 +1763,17 @@ class MainWindow(QMainWindow):
         dialog = PreferencesDialog(self.preferences, self)
         if dialog.exec() != QDialog.Accepted:
             return
-        self.preferences = dialog.preferences()
+        preferences = dialog.preferences()
         dialog.deleteLater()
+        symmetry_will_be_disabled = effective_symmetry_for_backend(self.symmetry, preferences.solve_backend) != self.symmetry
+        requires_invalidation = (
+            symmetry_will_be_disabled
+            or preferences_require_solve_invalidation(previous_preferences, preferences)
+        )
+        if requires_invalidation and not self._confirm_clear_solved_data():
+            return
+
+        self.preferences = preferences
         self._save_preferences()
         symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)
@@ -1738,13 +1824,27 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
 
+        meshes = dialog.meshes()
+        stitch_imported_meshes = dialog.stitch_imported_meshes()
+        symmetry = dialog.symmetry() if symmetry_enabled else self.symmetry
+        config_changed = (
+            meshes != self._mesh_config_dialog_entries()
+            or stitch_imported_meshes != self.stitch_imported_meshes
+            or symmetry != self.symmetry
+        )
+        if not config_changed:
+            self.status_label.setText("Mesh config unchanged")
+            return
+        if not self._confirm_clear_solved_data():
+            return
+
         try:
             self.status_label.setText("Cleaning imported meshes...")
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            self._apply_mesh_config_dialog_entries(dialog.meshes())
-            self.stitch_imported_meshes = dialog.stitch_imported_meshes()
+            self._apply_mesh_config_dialog_entries(meshes)
+            self.stitch_imported_meshes = stitch_imported_meshes
             if symmetry_enabled:
-                self.symmetry = dialog.symmetry()
+                self.symmetry = symmetry
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
             self.mesh_state_changed.emit("mesh_config_changed")
             self.solve_results_invalidated.emit("mesh_config_changed")
@@ -1797,13 +1897,29 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
         channels = tuple(channels)
+        channel_config_changed = channels != self._channel_configs()
         previous_radiator_assignments = tuple(
             (radiator.mesh, radiator.tag, radiator.channel)
             for radiator in self._all_radiators()
         )
-        self._save_channel_config(channels)
         valid_names = {channel.name for channel in channels}
         fallback = channels[0].name
+        radiator_assignments_changed = any(
+            radiator.channel not in valid_names
+            for radiator in self._all_radiators()
+        )
+        can_resynthesize = (
+            not radiator_assignments_changed
+            and self.live_dataset is not None
+            and self.live_dataset.supports_channel_resynthesis
+        )
+        if not channel_config_changed and not radiator_assignments_changed:
+            self.status_label.setText("Channel config unchanged")
+            return
+        if not can_resynthesize and not self._confirm_clear_solved_data():
+            return
+
+        self._save_channel_config(channels)
         for script_id, result in tuple(self.ath_results_by_script_id.items()):
             self.ath_results_by_script_id[script_id] = replace(
                 result,
@@ -1822,11 +1938,7 @@ class MainWindow(QMainWindow):
         )
         radiator_assignments_changed = current_radiator_assignments != previous_radiator_assignments
         self.source_config_changed.emit("channel_config_changed")
-        if (
-            not radiator_assignments_changed
-            and self.live_dataset is not None
-            and self.live_dataset.supports_channel_resynthesis
-        ):
+        if can_resynthesize:
             self.live_dataset.set_channel_synthesis(
                 channels,
                 flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
@@ -1856,6 +1968,11 @@ class MainWindow(QMainWindow):
             return
 
         radiators = dialog.radiators()
+        if radiators == self._all_radiators():
+            self.status_label.setText("Source config unchanged")
+            return
+        if not self._confirm_clear_solved_data():
+            return
         self._apply_radiators_to_results(radiators)
         self._save_source_config(surface_tags, radiators)
         self.source_config_changed.emit("source_config_changed")

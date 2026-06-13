@@ -134,16 +134,65 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 
 
+def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    confirm_block = source[source.index("def _confirm_clear_solved_data"):source.index("    @Slot(str)", source.index("def _confirm_clear_solved_data"))]
+    preferences_block = source[source.index("def open_preferences"):source.index("def open_diagnostics")]
+    mesh_block = source[source.index("def open_mesh_config"):source.index("def open_channel_config")]
+    channel_block = source[source.index("def _apply_channel_config"):source.index("    @Slot()", source.index("def _apply_channel_config"))]
+    source_block = source[source.index("def open_source_config"):source.index("def generate_geometry")]
+
+    assert "Applying this action will clear solved data" in confirm_block
+    assert 'message.addButton("Continue", QMessageBox.AcceptRole)' in confirm_block
+    assert 'message.addButton("Cancel", QMessageBox.RejectRole)' in confirm_block
+    assert "message.setDefaultButton(cancel_button)" in confirm_block
+    assert "if requires_invalidation and not self._confirm_clear_solved_data():" in preferences_block
+    assert "if not config_changed:" in mesh_block
+    assert "if not self._confirm_clear_solved_data():" in mesh_block
+    assert "if not channel_config_changed and not radiator_assignments_changed:" in channel_block
+    assert "if not can_resynthesize and not self._confirm_clear_solved_data():" in channel_block
+    assert "if radiators == self._all_radiators():" in source_block
+    assert "if not self._confirm_clear_solved_data():" in source_block
+
+
 def test_application_startup_invokes_new_project_reset() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     init_block = source[source.index("    def __init__("):source.index("    def changeEvent")]
 
     assert 'startup("Starting new project...")' in init_block
     assert "self.new_project()" in init_block
+    assert "self._project_clean_payload: dict | None = None" in init_block
     assert "_load_initial_ath_scripts" not in source
     assert "_load_imported_meshes" not in source
     assert "mesh/imported_meshes" not in source
     assert "mesh/ath_mesh" not in source
+
+
+def test_unsaved_project_changes_guard_close_new_and_open() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    close_block = source[source.index("def closeEvent"):source.index("def _result_from_script_state")]
+    new_block = source[source.index("def new_project"):source.index("def save_project")]
+    save_block = source[source.index("def save_project"):source.index("def load_project")]
+    load_block = source[source.index("def load_project"):source.index("def _project_payload")]
+    confirm_block = source[source.index("def _confirm_unsaved_project_changes"):source.index("def _apply_project_payload")]
+
+    assert 'if not self._confirm_unsaved_project_changes("close"):' in close_block
+    assert "event.ignore()" in close_block
+    assert 'if not self._confirm_unsaved_project_changes("new_project"):' in new_block
+    assert "self._mark_project_clean()" in new_block
+    assert "def save_project(self) -> bool:" in save_block
+    assert "def save_project_as(self) -> bool:" in save_block
+    assert "return False" in save_block
+    assert "def _save_project_to_path(self, path: Path) -> bool:" in save_block
+    assert "self._mark_project_clean()" in save_block
+    assert 'if not self._confirm_unsaved_project_changes("open_project"):' in load_block
+    assert "self._mark_project_clean()" in load_block
+    assert "You have unsaved changes. Are you sure you want to close?" in confirm_block
+    assert "You have unsaved changes. Save before continuing?" in confirm_block
+    assert 'message.addButton("Save", QMessageBox.AcceptRole)' in confirm_block
+    assert 'message.addButton("Discard", QMessageBox.DestructiveRole)' in confirm_block
+    assert 'message.addButton("Cancel", QMessageBox.RejectRole)' in confirm_block
+    assert "message.setDefaultButton(cancel_button)" in confirm_block
 
 
 def test_completed_solves_use_final_isobar_resolution() -> None:
