@@ -1,14 +1,5 @@
 module BeatEngineCore
 
-import Pkg
-
-required_packages = ["StaticArrays"]
-for pkg in required_packages
-    if !haskey(Pkg.project().dependencies, pkg)
-        Pkg.add(pkg)
-    end
-end
-
 using Base.Threads, LinearAlgebra, StaticArrays
 
 const CUDA_MODULE = try

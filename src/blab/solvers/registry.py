@@ -134,14 +134,24 @@ def _create_beat_engine_backend(
     beat_engine_backend: str = "cuda",
     **_kwargs: Any,
 ) -> SolverBackend:
-    from blab.solvers.beat_engine_backend import BeatEngineBackend
+    from blab.solvers.beat_engine_backend import (
+        DEFAULT_BEAT_ENGINE_CPU_PROJECT,
+        DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+        BeatEngineBackend,
+    )
 
     normalized_backend = "cpu" if beat_engine_backend == "cpu" else "cuda"
     backend_id = "beat_cpu" if normalized_backend == "cpu" else "beat_cuda"
     label = "BEAT Engine (CPU)" if normalized_backend == "cpu" else "BEAT Engine (CUDA)"
+    default_project = (
+        DEFAULT_BEAT_ENGINE_CPU_PROJECT
+        if normalized_backend == "cpu"
+        else DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+    )
     kwargs: dict[str, Any] = {
         "julia_executable": julia_executable,
         "julia_threads": julia_threads,
+        "julia_project": default_project,
         "persistent_worker": persistent_worker,
         "backend_id": backend_id,
         "label": label,

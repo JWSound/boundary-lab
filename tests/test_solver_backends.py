@@ -5,7 +5,14 @@ import sys
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
 from blab.solvers.afterburner_backend import AfterburnerBackend, shutdown_afterburner_workers
-from blab.solvers.beat_engine_backend import BeatEngineBackend, _resolve_julia_threads, shutdown_beat_engine_workers
+from blab.solvers.beat_engine_backend import (
+    DEFAULT_BEAT_ENGINE_CPU_PROJECT,
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    BeatEngineBackend,
+    _friendly_julia_error,
+    _resolve_julia_threads,
+    shutdown_beat_engine_workers,
+)
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
@@ -67,15 +74,20 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
 
     julia_backend = create_backend("julia_local")
     assert julia_backend.backend_id == "beat_cuda"
+    assert julia_backend.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert julia_backend.capabilities.is_remote is False
     assert julia_backend.capabilities.supports_parallel_workers is False
     assert julia_backend.capabilities.supports_symmetry is True
 
     beat_cpu_backend = create_backend("beat_cpu")
     assert beat_cpu_backend.backend_id == "beat_cpu"
+    assert beat_cpu_backend.julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
     assert beat_cpu_backend.capabilities.is_remote is False
     assert beat_cpu_backend.capabilities.supports_parallel_workers is False
     assert beat_cpu_backend.capabilities.supports_symmetry is True
+
+    assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+    assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
 
 
 def test_bempp_backend_rejects_symmetry() -> None:
@@ -210,6 +222,29 @@ def test_julia_threads_auto_maps_to_cpu_count() -> None:
     assert _resolve_julia_threads("auto") == str(os.cpu_count() or 1)
     assert _resolve_julia_threads(16) == "16"
     assert _resolve_julia_threads("bad") == str(os.cpu_count() or 1)
+
+
+def test_julia_dependency_load_error_gets_install_hint() -> None:
+    message = """Warm BEAT Engine solver exited with code 1.
+ArgumentError: Package CUDA not found in current path.
+- Run `import Pkg; Pkg.add("CUDA")` to install the CUDA package.
+Stacktrace:
+ [6] require(into::Module, mod::Symbol)
+ @ Base .\\loading.jl:2388"""
+
+    friendly = _friendly_julia_error(
+        message,
+        julia_project=DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+        beat_engine_backend="cuda",
+    )
+
+    assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (CUDA)." in friendly
+    assert "julia --project=" in friendly
+    assert "src" in friendly
+    assert "julia_cuda" in friendly
+    assert "Pkg.instantiate()" in friendly
+    assert "Julia reported:" in friendly
+    assert "Package CUDA not found" in friendly
 
 
 def test_julia_backend_reuses_persistent_worker(tmp_path) -> None:

@@ -1,28 +1,25 @@
 # Main Window
 
-The main window is divided into 3 panes:
+The main window is divided into 3 panes in the default view:
 
 - Ath script editor on the left
 - 3D viewport in the middle
-- Output plots on the right
+- Directivity plots on the right
 
-![Main Window](../assets/mainwindow.png)
+<img src="../assets/mainwindow.png" alt="Script Editor" width="500">
 
-Each pane can be resized as needed for various workflows and screen sizes.
+Each panel can be resized, moved, or dragged out of the main window. If a panel is closed, it can be reopened from the View menu at the top of the window.
 
 The command strip along the bottom of the window contains geometry generation, solve controls, mesh/source/channel configuration, and frequency range settings.
 
 ## Ath Script Editor
-The Ath script editor on the left pane contains a text editor for defining Ath shapes. Existing Ath .cfg files can be imported/exported into this editor using `File` > `Import/Export .cfg`.
+The Ath script editor contains a text editor for defining Ath shapes. Existing Ath .cfg files can be imported/exported into this editor using `File` > `Import/Export .cfg`.
 
 <img src="../assets/scripteditor.png" alt="Script Editor" width="300">
-
-The pane can be collapsed or expanded using the chevron button the right of it. 
 
 Ath scripts can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a script, double click its tab. Multi-script workflows can be useful for complex multiway designs (see /examples/MultiAth+Mesh_3WayIntegrated), or worflows where you might be comparing outputs on the same script with different values by copy/pasting it into multiple script tabs and enabling/disabling them in the `Mesh Config` window.
 
 ## 3D Viewport
-
 
 The 3d viewport contains all active mesh files in the project. Surfaces are color coded as blue for driven and grey for rigid. Hovering over the meshes displays the mesh name, surface name, surface index, and number of elements for that surface group. The bottom right of the 3D viewport displays the total element count for all active meshes.
 
@@ -30,8 +27,8 @@ The 3d viewport contains all active mesh files in the project. Surfaces are colo
 
 The viewport displays a yellow line for the on-axis vector, a blue line for the vertical axis, and a red line for the horizontal axis emanating from the origin. All directivity calculations are performed relative to the origin, with the on-axis direction facing along the +z axis. Use the mesh config window to move the active mesh files in 3D space so that the appropriate location for the origin is used.
 
-## Plot Viewer
-Displays the currently selected plots as configured from the `view` menu. Results are streamed in realtime to the plots as solves are ran.
+## Plot Views
+Plots are displayed when selected from the `view` menu. Results are streamed in realtime to the plots as solves are ran.
 
 <img src="../assets/plotviewer.png" alt="Script Editor" width="300">
 
@@ -63,11 +60,12 @@ The preferences menu contains various application-level settings for Boundary La
 - `GMRES Tolerance`: sets the threshold for how accurate the BEM solution needs to be at each frequency being solved. Lower values (moving the 1 to the right) increase solve times but may produce more accurate results. High values (moving the 1 to the left) decrease solve accuracy but also decrease solve times.
 - `Burton Miller Formulation`: enable/disable the Burton-Miller formulation to prevent the exterior Helmholtz boundary integral equation from becoming unreliable at certain frequencies due to fictitious cavity resonances. Not always required but turning this feature on can reduce polar irregularities with certain meshes- especially ones having enclosed volumes. Turning this feature off can typically decrease solve times by 30-40%.
 - `Worker Count`: Experimental - allocate CPU worker threads to the solver. The default value is 1, but changing this may either increase or decrease solve times depending on your hardware and mesh complexity.
-- `Spherical Sampling`: Enable or disable spherical sampling needed to generate balloon plots. This feature generates a 2 meter diameter grid of sampling points around the origin according to a Fibonacci spherical sampling sequence to approximate equal point spacing. Enabling/disabling this feature typically has a minimal (<3%) impact on performance.
-- `Spherical Sample Points`: The number of points generated for the spherical balloon plot sampler. More points produce more detailed balloon plots, but slightly increase run times. The default value of 6000 produces an angular resolution of 2.5 degrees, which is sufficient for most loudspeaker BEM analysis.
+- `Balloon Sampling`: Enable or disable spherical sampling needed to generate balloon plots. This feature generates a 2 meter diameter grid of sampling points around the origin according to a Fibonacci spherical sampling sequence to approximate equal point spacing. Enabling/disabling this feature typically has a minimal (<3%) impact on performance.
+- `Balloon Angle Precision`: Drives the number of points generated for the spherical balloon plot sampler. More points produce more detailed balloon plots, but slightly increase run times. The default value of 2.5 degrees produces 6,500 points in a sphere around the origin to sample from.
 
 ### Observation Config
 - `Polar Angle Step`: The number of degrees between each observation point that generates the horizontal/vertical polar plots. A step angle of 5 degrees evaluates 72 points across a 360 degree arc on each axis. If you intend to view the Spinorama-style plot, ensure this value is set to max 10 degrees. Changing this value has extremely little impact on solve times (<1%).
+- `Polar Observation Distance`: Set the distance from the origin for the field point sampling positions. Default is 2 meters.
 - `Normalization Angles`: Set the polar normalization angles used to offset SPL values in polar directivity plots and balloon plots.
 - `Spin Horizontal/Vertical Ref Angle`: Set the reference axis angles used by the spinorama-style reference-axis and listening-window curves. These angles do not renormalize the polar data used for early reflections or sound power.
 - `Polar Smoothing`: Set the smoothing scale for polar directivity plots, spinorama-style plots, and balloon plots.
@@ -76,7 +74,7 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Mesh Config
 - `Stitch Tolerance`: Set the search distance for nearby open edges when combining multiple mesh files in the same project.
-- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Supported with the BEAT Engine CUDA and BEAT Engine CPU backends. Mirrored mesh elements are shaded darker in the 3d viewport.
+- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Supported by the BEAT Engine CUDA and BEAT Engine CPU solvers. Mirrored mesh elements are shaded darker in the 3d viewport.
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.

@@ -1,36 +1,64 @@
 # Boundary Lab
 
-Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves with `bempp-cl`, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application.
+<img src="assets/mainwindow.png" alt="Script Editor" width="500">
+
+Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application.
 
 ## Features
 
 - [Ath4](https://at-horns.eu/) `.cfg` editor with one-click geometry generation
-- Mesh preview for generated Ath meshes and imported `.msh` files
+- 3D mesh viewport for generated Ath meshes and imported `.msh` files
 - Multi-mesh and multi-radiator BEM solves
 - Source controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and impedance plots
+- dB/phase exporting into .txt files
 - 3D balloon plot viewer with spherical sampling
 - Project save/load with readable `.blab.json` files
 
-## Requirements
+## Base Requirements
 
 - Windows 10/11 64-bit
 - Python 3.11 or newer
-- An OpenCL runtime for `bempp-cl`/`pyopencl`
 
-The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
-### Optional BEAT Engine Solvers
+## Solver Requirements
 
-Boundary Lab can also run local BEAT Engine backends, short for Boundary Element Acoustic Toolkit Engine, from the Preferences window. Select `BEAT Engine (CUDA)` for the NVIDIA GPU path, or `BEAT Engine (CPU)` for the hardware-agnostic Julia/OpenBLAS path. Both BEAT Engine entries support X and XY symmetry acceleration.
+Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware, but typically GPU-based solving is the fastest option if available.
 
-Additional CUDA requirements:
+### BEAT Engine CUDA GPU Solver Requirements
 
-- NVIDIA GPU with a working CUDA-capable driver
-- [Julia](https://julialang.org/downloads/) installed and available on `PATH`
-- Boundary Lab's BEAT Engine Julia project dependencies installed from `src/blab/solvers/julia_local/Project.toml`
+* NVIDIA Maxwell-generation or newer GPU
+* Latest NVIDIA Studio/Game Ready driver recommended
+* [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
+
+To prepare the Julia environment from the repository root:
+
+```bash
+julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
+```
+
+
+GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
+
+| Total Elements | Practical VRAM Budget |
+|---:|---:|
+| 1,000 | ~50-100 MB |
+| 2,000 | ~200-300 MB |
+| 3,000 | ~400-600 MB |
+| 5,000 | ~1.0-1.5 GB |
+| 7,000 | ~2.0-3.0 GB |
+| 10,000 | ~4-6 GB |
+| 15,000 | ~8-12 GB |
+| 20,000 | ~14-20 GB |
+
+##
+
+### BEAT Engine CPU Solver Requirements
+
+* Intel, AMD, or ARM CPU
+* [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
 To prepare the Julia environment from the repository root:
 
@@ -38,24 +66,20 @@ To prepare the Julia environment from the repository root:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-The first BEAT Engine solve may take longer while Julia compiles the selected backend. Subsequent solves reuse the persistent BEAT Engine worker, and the CUDA path also reuses warmed GPU kernels.
+##
 
-CUDA GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
+### Bempp CPU Solver Requirements
 
-| Elements | Est. P1 Dofs / Vertices | Persistent Operators | Practical VRAM Budget |
-|---:|---:|---:|---:|
-| 1,000 | 500 | ~12 MB | ~50-100 MB |
-| 2,000 | 1,000 | ~48 MB | ~200-300 MB |
-| 3,000 | 1,500 | ~108 MB | ~400-600 MB |
-| 5,000 | 2,500 | ~300 MB | ~1.0-1.5 GB |
-| 7,000 | 3,500 | ~588 MB | ~2.0-3.0 GB |
-| 10,000 | 5,000 | ~1.2 GB | ~4-6 GB |
-| 15,000 | 7,500 | ~2.7 GB | ~8-12 GB |
-| 20,000 | 10,000 | ~4.8 GB | ~14-20 GB |
+* Intel or AMD CPU
+* An OpenCL runtime
 
-## Install
+The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
 
-From the repository root:
+##
+
+## Application Installation
+
+From the repository root run:
 
 ```bash
 python -m pip install -e ".[gui]"
@@ -67,7 +91,7 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-On startup, Boundary Lab updates `ath/ath.cfg` so Ath uses the bundled Gmsh executable and writes generated files into:
+On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes generated files into:
 
 ```text
 runs/ath_output

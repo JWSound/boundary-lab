@@ -25,7 +25,10 @@ from blab.solvers.base import FrequencyResult, SolveMetadata, SolveRequest, Solv
 
 
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
-DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
+DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
+DEFAULT_BEAT_ENGINE_CUDA_PROJECT = Path(__file__).with_name("julia_cuda")
+DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
+_DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL = "__default__"
 _WORKERS_LOCK = threading.Lock()
 _WORKERS: dict[tuple[str, str, str, str], "BeatEngineWorkerProcess"] = {}
 
@@ -43,7 +46,7 @@ class BeatEngineSession:
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
         julia_threads: str | int = "auto",
-        julia_project: str | Path | None = DEFAULT_BEAT_ENGINE_PROJECT,
+        julia_project: str | Path | None = _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL,
         persistent_worker: bool = True,
         beat_engine_backend: str = BEAT_ENGINE_CUDA_BACKEND,
     ):
@@ -51,9 +54,12 @@ class BeatEngineSession:
         self.julia_executable = julia_executable.strip() or "julia"
         self.solver_script = Path(solver_script)
         self.julia_threads = julia_threads
-        self.julia_project = None if julia_project is None else Path(julia_project)
         self.persistent_worker = persistent_worker
         self.beat_engine_backend = _normalize_beat_engine_backend(beat_engine_backend)
+        if julia_project == _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL:
+            self.julia_project = _default_beat_engine_project(self.beat_engine_backend)
+        else:
+            self.julia_project = None if julia_project is None else Path(julia_project)
         self._stop = False
         self._temp_dir = tempfile.TemporaryDirectory(prefix="blab-beat-engine-")
         self._process: subprocess.Popen[str] | None = None
@@ -95,7 +101,13 @@ class BeatEngineSession:
                 elif event_type == "completed":
                     return
                 elif event_type == "failed":
-                    raise RuntimeError(str(event.get("error", "BEAT Engine solver failed.")))
+                    raise RuntimeError(
+                        _friendly_julia_error(
+                            str(event.get("error", "BEAT Engine solver failed.")),
+                            julia_project=self.julia_project,
+                            beat_engine_backend=self.beat_engine_backend,
+                        )
+                    )
         finally:
             self._close()
 
@@ -180,7 +192,13 @@ class BeatEngineSession:
                 )
                 return
             elif event_type == "failed":
-                raise RuntimeError(str(event.get("error", "BEAT Engine solver failed.")))
+                raise RuntimeError(
+                    _friendly_julia_error(
+                        str(event.get("error", "BEAT Engine solver failed.")),
+                        julia_project=self.julia_project,
+                        beat_engine_backend=self.beat_engine_backend,
+                    )
+                )
             elif event_type in {"completed", "cancelled"}:
                 raise RuntimeError(f"BEAT Engine solver ended before initialization: {event_type}")
 
@@ -220,7 +238,13 @@ class BeatEngineSession:
 
     def _process_error(self, fallback: str) -> str:
         detail = "\n".join(self._stderr_lines[-10:])
-        return f"{fallback}\n{detail}" if detail else fallback
+        message = f"{fallback}\n{detail}" if detail else fallback
+        return _friendly_julia_error(
+            message,
+            julia_project=self.julia_project,
+            beat_engine_backend=self.beat_engine_backend,
+            detection_text="\n".join(self._stderr_lines),
+        )
 
     def _close(self) -> None:
         events = self._events
@@ -325,7 +349,12 @@ class BeatEngineWorkerProcess:
             if event_type == "ready":
                 return
             if event_type == "failed":
-                raise RuntimeError(str(event.get("error", "BEAT Engine solver failed during startup.")))
+                raise RuntimeError(
+                    _friendly_julia_error(
+                        str(event.get("error", "BEAT Engine solver failed during startup.")),
+                        julia_project=self.julia_project,
+                    )
+                )
 
         raise RuntimeError(self._process_error("Warm BEAT Engine solver ended before startup completed."))
 
@@ -373,7 +402,12 @@ class BeatEngineWorkerProcess:
 
     def _process_error(self, fallback: str) -> str:
         detail = "\n".join(self._stderr_lines[-10:])
-        return f"{fallback}\n{detail}" if detail else fallback
+        message = f"{fallback}\n{detail}" if detail else fallback
+        return _friendly_julia_error(
+            message,
+            julia_project=self.julia_project,
+            detection_text="\n".join(self._stderr_lines),
+        )
 
 
 class BeatEngineBackend:
@@ -394,7 +428,7 @@ class BeatEngineBackend:
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
         julia_threads: str | int = "auto",
-        julia_project: str | Path | None = DEFAULT_BEAT_ENGINE_PROJECT,
+        julia_project: str | Path | None = _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL,
         persistent_worker: bool = True,
         backend_id: str | None = None,
         label: str | None = None,
@@ -403,7 +437,6 @@ class BeatEngineBackend:
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_threads = julia_threads
-        self.julia_project = julia_project
         self.persistent_worker = persistent_worker
         if backend_id is not None:
             self.backend_id = backend_id
@@ -411,6 +444,10 @@ class BeatEngineBackend:
             self.label = label
         if beat_engine_backend is not None:
             self.beat_engine_backend = _normalize_beat_engine_backend(beat_engine_backend)
+        if julia_project == _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL:
+            self.julia_project = _default_beat_engine_project(self.beat_engine_backend)
+        else:
+            self.julia_project = julia_project
         if self.beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
             self.capabilities = BeatEngineCpuBackend.capabilities
 
@@ -461,6 +498,69 @@ def _normalize_beat_engine_backend(value: object) -> str:
     if backend not in BEAT_ENGINE_BACKENDS:
         raise ValueError(f"Unknown BEAT Engine backend: {value}")
     return backend
+
+
+def _default_beat_engine_project(beat_engine_backend: str) -> Path:
+    return (
+        DEFAULT_BEAT_ENGINE_CPU_PROJECT
+        if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND
+        else DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+    )
+
+
+def _friendly_julia_error(
+    message: str,
+    *,
+    julia_project: str | Path | None,
+    beat_engine_backend: str | None = None,
+    detection_text: str | None = None,
+) -> str:
+    if julia_project is None:
+        return message
+
+    text = f"{detection_text or message}\n{message}".lower()
+    missing_dependency_markers = (
+        "argumenterror: package",
+        "not found in current path",
+        "run `import pkg; pkg.add",
+        "could not load project",
+        "failed to precompile",
+    )
+    julia_load_markers = (
+        "loading.jl",
+        "require(into::module",
+        "require(uuidkey::base.pkgid",
+    )
+    cuda_load_markers = (
+        "cuda.jl could not be loaded",
+        "package cuda",
+        "using cuda",
+        "import cuda",
+    )
+    looks_like_dependency_error = any(marker in text for marker in missing_dependency_markers)
+    looks_like_julia_load_error = any(marker in text for marker in julia_load_markers)
+    looks_like_cuda_error = any(marker in text for marker in cuda_load_markers)
+    if not (looks_like_dependency_error or looks_like_julia_load_error or looks_like_cuda_error):
+        return message
+
+    project_path = Path(julia_project)
+    backend_label = _julia_project_backend_label(project_path, beat_engine_backend)
+    install_command = f'julia --project={project_path} -e "using Pkg; Pkg.instantiate()"'
+    return (
+        f"BEAT Engine could not load the Julia dependencies for {backend_label}.\n\n"
+        "This usually means the selected BEAT Engine Julia environment has not been installed yet. "
+        "From the Boundary Lab repository root, run:\n\n"
+        f"{install_command}\n\n"
+        f"Julia reported:\n{message}"
+    )
+
+
+def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | None) -> str:
+    if beat_engine_backend == BEAT_ENGINE_CUDA_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CUDA_PROJECT:
+        return "BEAT Engine (CUDA)"
+    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
+        return "BEAT Engine (CPU)"
+    return "the selected BEAT Engine backend"
 
 
 def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> SimulationConfig:

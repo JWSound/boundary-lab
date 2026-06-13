@@ -1,13 +1,4 @@
-import Pkg
-
-required_packages = ["CUDA"]
-for pkg in required_packages
-    if !haskey(Pkg.project().dependencies, pkg)
-        Pkg.add(pkg)
-    end
-end
-
-using CUDA 
+using CUDA
 
 struct CudaRegularAssemblyCache{T}
     face_vertices
