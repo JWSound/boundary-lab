@@ -195,6 +195,26 @@ def test_unsaved_project_changes_guard_close_new_and_open() -> None:
     assert "message.setDefaultButton(cancel_button)" in confirm_block
 
 
+def test_plot_canvases_refresh_backing_store_on_screen_dpi_changes() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    init_block = source[source.index("    def __init__("):source.index("    def changeEvent")]
+    screen_block = source[source.index("def showEvent"):source.index("    def eventFilter")]
+
+    assert "self._plot_dpi_screen = None" in init_block
+    assert "self._plot_dpi_window_handle = None" in init_block
+    assert "self._plot_dpi_refresh_pending = False" in init_block
+    assert "window.screenChanged.connect(self._on_plot_screen_changed)" in screen_block
+    assert "screen.logicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
+    assert "screen.physicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
+    assert "screen.geometryChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
+    assert "QTimer.singleShot(0, self._refresh_plot_canvas_dpi)" in screen_block
+    assert "canvas._update_screen(screen)" in screen_block
+    assert "canvas._update_pixel_ratio()" in screen_block
+    assert "canvas.draw_idle()" in screen_block
+    assert "_refresh_plots()" not in screen_block
+    assert "_prepared_live_plot_dataset" not in screen_block
+
+
 def test_completed_solves_use_final_isobar_resolution() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")

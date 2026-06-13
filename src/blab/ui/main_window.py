@@ -218,6 +218,9 @@ class MainWindow(QMainWindow):
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
         self._last_imported_mesh_focus_check_at = 0.0
+        self._plot_dpi_screen = None
+        self._plot_dpi_window_handle = None
+        self._plot_dpi_refresh_pending = False
         startup("Preparing Ath runtime config...")
         self._ensure_ath_runtime_config()
 
@@ -329,6 +332,69 @@ class MainWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self._reload_updated_imported_meshes_on_focus()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._connect_plot_dpi_signals()
+
+    def _connect_plot_dpi_signals(self) -> None:
+        window = self.windowHandle()
+        if window is None:
+            QTimer.singleShot(0, self._connect_plot_dpi_signals)
+            return
+        if self._plot_dpi_window_handle is not window:
+            if self._plot_dpi_window_handle is not None:
+                try:
+                    self._plot_dpi_window_handle.screenChanged.disconnect(self._on_plot_screen_changed)
+                except (RuntimeError, TypeError):
+                    pass
+            window.screenChanged.connect(self._on_plot_screen_changed)
+            self._plot_dpi_window_handle = window
+        self._on_plot_screen_changed(window.screen())
+
+    def _on_plot_screen_changed(self, screen) -> None:
+        if screen is self._plot_dpi_screen:
+            return
+        self._disconnect_plot_dpi_screen()
+        self._plot_dpi_screen = screen
+        if screen is not None:
+            screen.logicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)
+            screen.physicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)
+            screen.geometryChanged.connect(self._schedule_plot_canvas_dpi_refresh)
+        self._schedule_plot_canvas_dpi_refresh()
+
+    def _disconnect_plot_dpi_screen(self) -> None:
+        screen = self._plot_dpi_screen
+        self._plot_dpi_screen = None
+        if screen is None:
+            return
+        for signal in (
+            screen.logicalDotsPerInchChanged,
+            screen.physicalDotsPerInchChanged,
+            screen.geometryChanged,
+        ):
+            try:
+                signal.disconnect(self._schedule_plot_canvas_dpi_refresh)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _schedule_plot_canvas_dpi_refresh(self, *_args) -> None:
+        if self._plot_dpi_refresh_pending:
+            return
+        self._plot_dpi_refresh_pending = True
+        QTimer.singleShot(0, self._refresh_plot_canvas_dpi)
+
+    def _refresh_plot_canvas_dpi(self) -> None:
+        self._plot_dpi_refresh_pending = False
+        window = self.windowHandle()
+        screen = None if window is None else window.screen()
+        for entry in self.plot_entries:
+            canvas = entry.widget
+            if screen is not None and hasattr(canvas, "_update_screen"):
+                canvas._update_screen(screen)
+            if hasattr(canvas, "_update_pixel_ratio"):
+                canvas._update_pixel_ratio()
+            canvas.draw_idle()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
         if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonRelease:
