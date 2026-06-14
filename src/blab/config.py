@@ -85,7 +85,7 @@ class SimulationConfig:
     flat_target_normalization_enabled: bool = True
     flat_target_reference_angle_deg: float = 0.0
     gmres_tolerance: float = 1e-3
-    workers: int = 3
+    workers: int = 1
     spherical_sampling_enabled: bool = False
     spherical_sampling_points: int = 6000
     symmetry: str = "off"

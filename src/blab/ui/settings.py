@@ -31,7 +31,6 @@ class GuiPreferences:
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
     use_burton_miller: bool = True
-    worker_count: int = 1
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
@@ -101,7 +100,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             "preferences/use_burton_miller",
             defaults.use_burton_miller,
         ),
-        worker_count=settings_int(settings, "preferences/worker_count", defaults.worker_count),
         polar_smoothing=settings_optional_int(
             settings,
             "preferences/polar_smoothing",
@@ -155,7 +153,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
         preferences.polar_observation_distance_m,
     )
     settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
-    settings.setValue("preferences/worker_count", preferences.worker_count)
     settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)
     settings.setValue(
         "preferences/horizontal_normalization_angle",

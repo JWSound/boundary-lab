@@ -83,9 +83,9 @@ def test_preference_change_classification() -> None:
 
     assert not preferences_require_solve_invalidation(
         baseline,
-        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+        GuiPreferences(theme="dark", solve_server_url="http://127.0.0.1:9999"),
     )
     assert not preferences_require_visualization_refresh(
         baseline,
-        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+        GuiPreferences(theme="dark", solve_server_url="http://127.0.0.1:9999"),
     )

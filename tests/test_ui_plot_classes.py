@@ -215,6 +215,23 @@ def test_plot_canvases_refresh_backing_store_on_screen_dpi_changes() -> None:
     assert "_prepared_live_plot_dataset" not in screen_block
 
 
+def test_preferences_no_longer_expose_worker_count() -> None:
+    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
+    settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    config_source = Path("src/blab/config.py").read_text(encoding="utf-8")
+    start_solve = main_source[main_source.index("def start_solve"):main_source.index("    @Slot()", main_source.index("def start_solve"))]
+
+    assert "worker_count_spin" not in dialog_source
+    assert '"Worker Count"' not in dialog_source
+    assert "worker_count:" not in settings_source
+    assert '"preferences/worker_count"' not in settings_source
+    assert "preferences.worker_count" not in main_source
+    assert "workers=1" in start_solve
+    assert "worker_count=1" in start_solve
+    assert "workers: int = 1" in config_source
+
+
 def test_completed_solves_use_final_isobar_resolution() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
@@ -226,6 +243,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"high": 500' in settings_source
     assert "def live_plot_freq_samples(" in settings_source
     assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
+    assert '"BEM Solver", self.solve_backend_combo' in dialog_source
+    assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
     assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
     assert '"preferences/live_plot_quality"' in settings_source

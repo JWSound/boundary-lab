@@ -2129,7 +2129,7 @@ class MainWindow(QMainWindow):
             step_size=self.preferences.polar_angle_step_deg,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,
-            workers=self.preferences.worker_count,
+            workers=1,
             flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
@@ -2159,7 +2159,7 @@ class MainWindow(QMainWindow):
         self.solve_worker = SolveWorker(
             config,
             ordered_freqs,
-            worker_count=self.preferences.worker_count,
+            worker_count=1,
             backend_id=self.preferences.solve_backend,
             server_url=self.preferences.solve_server_url,
         )

@@ -227,10 +227,6 @@ class PreferencesDialog(QDialog):
         self.burton_miller_check = QCheckBox("Enabled")
         self.burton_miller_check.setChecked(preferences.use_burton_miller)
 
-        self.worker_count_spin = QSpinBox()
-        self.worker_count_spin.setRange(1, 64)
-        self.worker_count_spin.setValue(preferences.worker_count)
-
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
             "off": None,
@@ -322,7 +318,6 @@ class PreferencesDialog(QDialog):
                 (
                     ("GMRES Tolerance", self.gmres_spin),
                     ("Burton Miller Formulation", self.burton_miller_check),
-                    ("Worker Count", self.worker_count_spin),
                     ("Balloon Sampling", self.spherical_sampling_check),
                     ("Balloon Angle Precision", self.balloon_angle_precision_spin),
                 ),
@@ -360,7 +355,7 @@ class PreferencesDialog(QDialog):
                 (
                     ("Theme", self.theme_combo),
                     ("Live Plot Quality", self.live_plot_quality_combo),
-                    ("Solve Backend", self.solve_backend_combo),
+                    ("BEM Solver", self.solve_backend_combo),
                     ("Solve Server URL", self.solve_server_url_edit),
                 ),
             )
@@ -396,7 +391,6 @@ class PreferencesDialog(QDialog):
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
-            worker_count=int(self.worker_count_spin.value()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
