@@ -10,12 +10,9 @@ struct CudaRegularAssemblyCache{T}
     rule_weights
     test_indices
     trial_indices
-    color_indices
-    color_offsets
     element_indices::Vector{Int}
     face_count::Int
     rule_count::Int
-    color_count::Int
 end
 
 struct CudaFieldEvaluationCache{T}

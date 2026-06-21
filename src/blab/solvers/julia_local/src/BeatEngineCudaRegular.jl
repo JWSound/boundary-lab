@@ -818,42 +818,6 @@ function _cuda_rule_arrays(rule::TriangleRule{T}) where {T}
     return points, weights
 end
 
-function _regular_face_color_arrays(mesh::BoundaryMesh, indices::Vector{Int})
-    vertex_colors = [Int[] for _ in eachindex(mesh.vertices)]
-    color_groups = Vector{Int}[]
-    forbidden = Set{Int}()
-
-    for element_index in indices
-        empty!(forbidden)
-        for vertex in mesh.faces[element_index]
-            union!(forbidden, vertex_colors[vertex])
-        end
-
-        color = 1
-        while color in forbidden
-            color += 1
-        end
-        while length(color_groups) < color
-            push!(color_groups, Int[])
-        end
-
-        push!(color_groups[color], element_index)
-        for vertex in mesh.faces[element_index]
-            push!(vertex_colors[vertex], color)
-        end
-    end
-
-    offsets = Vector{Int32}(undef, length(color_groups) + 1)
-    flat_indices = Int32[]
-    offsets[1] = Int32(1)
-    for (color_index, group) in enumerate(color_groups)
-        append!(flat_indices, Int32.(group))
-        offsets[color_index + 1] = Int32(length(flat_indices) + 1)
-    end
-
-    return flat_indices, offsets, length(color_groups)
-end
-
 function build_cuda_regular_assembly_cache(
     mesh::BoundaryMesh{T},
     rule::TriangleRule{T};
@@ -863,7 +827,6 @@ function build_cuda_regular_assembly_cache(
     indices = collect(element_indices)
     face_vertices, normals, areas, faces, curls = _cuda_geometry_arrays(mesh)
     rule_points, rule_weights = _cuda_rule_arrays(rule)
-    color_indices, color_offsets, color_count = _regular_face_color_arrays(mesh, indices)
 
     return CudaRegularAssemblyCache{T}(
         CuArray(face_vertices),
@@ -875,11 +838,8 @@ function build_cuda_regular_assembly_cache(
         CuArray(rule_weights),
         CuArray(Int32.(indices)),
         CuArray(Int32.(indices)),
-        CuArray(color_indices),
-        CuArray(color_offsets),
         indices,
         length(mesh.faces),
         length(rule.points),
-        color_count,
     )
 end

@@ -1,7 +1,7 @@
 include(joinpath(@__DIR__, "BeatEngineCudaCommon.jl"))
 include(joinpath(@__DIR__, "BeatEngineCudaRegular.jl"))
+include(joinpath(@__DIR__, "BeatEngineCudaRegularKernels.jl"))
 include(joinpath(@__DIR__, "BeatEngineCudaField.jl"))
 include(joinpath(@__DIR__, "BeatEngineCudaSingular.jl"))
 include(joinpath(@__DIR__, "BeatEngineCudaOperators.jl"))
-include(joinpath(@__DIR__, "BeatEngineCudaProfiling.jl"))
 include(joinpath(@__DIR__, "BeatEngineCudaAssembly.jl"))

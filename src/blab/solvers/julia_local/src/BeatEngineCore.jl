@@ -816,10 +816,6 @@ function assemble_regular_galerkin_operators(
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
-    profile_regular_kernel::Bool=false,
-    regular_probe_pair_limit::Int=1_000_000,
-    regular_kernel_threads_override::Union{Nothing,Int}=nothing,
-    regular_assembly_mode::Symbol=:split_atomic_balanced_multipair,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if !use_cuda_regular
@@ -840,7 +836,6 @@ function assemble_regular_galerkin_operators(
     end
 
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel quadrature.")
-    regular_assembly_mode in (:split_atomic_balanced, :split_atomic_balanced_multipair, :split_atomic_slp_hyp_separate) || error("Unsupported CUDA regular assembly mode: $(regular_assembly_mode).")
     return assemble_regular_galerkin_operators_cuda_regular(
         mesh,
         p1_space,
@@ -856,10 +851,6 @@ function assemble_regular_galerkin_operators(
         timing=timing,
         singular_cache=singular_cache,
         cuda_singular_cache=cuda_singular_cache,
-        profile_regular_kernel=profile_regular_kernel,
-        regular_probe_pair_limit=regular_probe_pair_limit,
-        regular_kernel_threads_override=regular_kernel_threads_override,
-        regular_assembly_mode=regular_assembly_mode,
         symmetry_mode=symmetry_mode,
     )
 end

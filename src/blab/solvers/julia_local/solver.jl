@@ -80,7 +80,6 @@ function beat_backend_from_request(request)
         "gpu" => "cuda",
         "julia_local" => "cuda",
         "local_julia" => "cuda",
-        "afterburner" => "cuda",
         "beat_cpu" => "cpu",
     )
     backend = get(aliases, backend, backend)

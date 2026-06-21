@@ -490,7 +490,6 @@ def _normalize_beat_engine_backend(value: object) -> str:
         "gpu": BEAT_ENGINE_CUDA_BACKEND,
         "julia_local": BEAT_ENGINE_CUDA_BACKEND,
         "local_julia": BEAT_ENGINE_CUDA_BACKEND,
-        "afterburner": BEAT_ENGINE_CUDA_BACKEND,
         "beat_cpu": BEAT_ENGINE_CPU_BACKEND,
         "cpu": BEAT_ENGINE_CPU_BACKEND,
     }
@@ -682,11 +681,3 @@ JuliaLocalSession = BeatEngineSession
 JuliaWorkerProcess = BeatEngineWorkerProcess
 JuliaLocalBackend = BeatEngineBackend
 shutdown_julia_workers = shutdown_beat_engine_workers
-
-# Legacy aliases retained for old imports and saved tool scripts.
-DEFAULT_AFTERBURNER_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT
-DEFAULT_AFTERBURNER_PROJECT = DEFAULT_BEAT_ENGINE_PROJECT
-AfterburnerSession = BeatEngineSession
-AfterburnerWorkerProcess = BeatEngineWorkerProcess
-AfterburnerBackend = BeatEngineBackend
-shutdown_afterburner_workers = shutdown_beat_engine_workers

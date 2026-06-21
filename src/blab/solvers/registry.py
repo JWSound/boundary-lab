@@ -101,7 +101,6 @@ def normalize_backend_id(backend_id: str) -> str:
         "beat_cuda": "beat_cuda",
         "beat_gpu": "beat_cuda",
         "cuda": "beat_cuda",
-        "afterburner": "beat_cuda",
         "beat_cpu": "beat_cpu",
         "cpu_beat": "beat_cpu",
     }
@@ -165,4 +164,3 @@ def _create_beat_engine_backend(
 
 
 _create_julia_local_backend = _create_beat_engine_backend
-_create_afterburner_backend = _create_beat_engine_backend

@@ -4,7 +4,6 @@ import sys
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
-from blab.solvers.afterburner_backend import AfterburnerBackend, shutdown_afterburner_workers
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -36,10 +35,8 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("local_julia") == "beat_cuda"
     assert normalize_backend_id("beat") == "beat_cuda"
     assert normalize_backend_id("beat_engine") == "beat_cuda"
-    assert normalize_backend_id("afterburner") == "beat_cuda"
     assert normalize_backend_id("beat_cpu") == "beat_cpu"
     assert JuliaLocalBackend is BeatEngineBackend
-    assert AfterburnerBackend is BeatEngineBackend
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
