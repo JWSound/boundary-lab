@@ -31,6 +31,7 @@ class GuiPreferences:
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
+    normalized_channel_correction: bool = True
     use_burton_miller: bool = True
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
@@ -49,6 +50,7 @@ SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "gmres_tolerance",
     "polar_angle_step_deg",
     "polar_observation_distance_m",
+    "normalized_channel_correction",
     "use_burton_miller",
     "stitch_tolerance_mm",
     "spherical_sampling_enabled",
@@ -100,6 +102,11 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             settings,
             "preferences/polar_observation_distance_m",
             defaults.polar_observation_distance_m,
+        ),
+        normalized_channel_correction=settings_bool(
+            settings,
+            "preferences/normalized_channel_correction",
+            defaults.normalized_channel_correction,
         ),
         use_burton_miller=settings_bool(
             settings,
@@ -158,6 +165,10 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue(
         "preferences/polar_observation_distance_m",
         preferences.polar_observation_distance_m,
+    )
+    settings.setValue(
+        "preferences/normalized_channel_correction",
+        preferences.normalized_channel_correction,
     )
     settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
     settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)

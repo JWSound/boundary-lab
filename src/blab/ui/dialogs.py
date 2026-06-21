@@ -229,6 +229,9 @@ class PreferencesDialog(QDialog):
         self.polar_distance_spin.setSuffix(" m")
         self.polar_distance_spin.setValue(preferences.polar_observation_distance_m)
 
+        self.normalized_channel_correction_check = QCheckBox("Enabled")
+        self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
+
         self.burton_miller_check = QCheckBox("Enabled")
         self.burton_miller_check.setChecked(preferences.use_burton_miller)
 
@@ -334,6 +337,7 @@ class PreferencesDialog(QDialog):
                 (
                     ("Polar Angle Step", self.polar_step_spin),
                     ("Polar Observation Distance", self.polar_distance_spin),
+                    ("Normalized Channel Correction", self.normalized_channel_correction_check),
                     ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
                     ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
                     ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin),
@@ -397,6 +401,7 @@ class PreferencesDialog(QDialog):
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
+            normalized_channel_correction=bool(self.normalized_channel_correction_check.isChecked()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),

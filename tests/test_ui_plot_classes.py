@@ -250,6 +250,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
     assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
+    assert '"Normalized Channel Correction", self.normalized_channel_correction_check' in dialog_source
+    assert '"preferences/normalized_channel_correction"' in settings_source
+    assert "normalized_channel_correction: bool = True" in settings_source
+    assert "flat_target_normalization_enabled=self.preferences.normalized_channel_correction" in main_source
     assert '"preferences/live_plot_quality"' in settings_source
     assert '"preferences/live_plot_streaming"' in settings_source
     assert "live_plot_streaming: bool = True" in settings_source
