@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -47,6 +47,7 @@ CROSSOVER_TYPE_OPTIONS = [
 ]
 APP_ROOT = Path(__file__).resolve().parents[3]
 DONATE_QR_PATH = APP_ROOT / "assets" / "donateqr.png"
+INFO_ICON_PATH = APP_ROOT / "assets" / "info-16.ico"
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
 DONATE_BLURB = (
     "Boundary Lab is free open source software. If you've found the tool helpful for your workflows and want "
@@ -324,10 +325,26 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Solver Config",
                 (
-                    ("GMRES Tolerance", self.gmres_spin, ""),
-                    ("Burton Miller Formulation", self.burton_miller_check, ""),
-                    ("Balloon Sampling", self.spherical_sampling_check, ""),
-                    ("Balloon Angle Precision", self.balloon_angle_precision_spin, ""),
+                    (
+                        "GMRES Tolerance",
+                        self.gmres_spin,
+                        "Solution accuracy for the BEMPP iterative solver. Lower values offer higher quality solves but take longer.",
+                    ),
+                    (
+                        "Burton Miller Formulation",
+                        self.burton_miller_check,
+                        "Enable to resolve fictitious interior resonances when using BEMPP solver. Always enabled for BEAT Engine.",
+                    ),
+                    (
+                        "Balloon Sampling",
+                        self.spherical_sampling_check,
+                        "Gather spherical observation data for 3d ballon viewer",
+                    ),
+                    (
+                        "Balloon Angle Precision",
+                        self.balloon_angle_precision_spin,
+                        "Resolution of spherical sampling. 2.5 degrees = ~6,000 points.",
+                    ),
                 ),
             )
         )
@@ -335,9 +352,17 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Observation Config",
                 (
-                    ("Polar Angle Step", self.polar_step_spin, ""),
+                    (
+                        "Polar Angle Step",
+                        self.polar_step_spin,
+                        "Angular resolution for horizontal/vertical polars - spin plot requires a minimum of 10 degrees",
+                    ),
                     ("Polar Observation Distance", self.polar_distance_spin, ""),
-                    ("Normalized Channel Correction", self.normalized_channel_correction_check, ""),
+                    (
+                        "Normalized Channel Correction",
+                        self.normalized_channel_correction_check,
+                        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters.",
+                    ),
                     ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin, ""),
                     ("Vertical Normalization Angle", self.vertical_norm_angle_spin, ""),
                     ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin, ""),
@@ -382,6 +407,7 @@ class PreferencesDialog(QDialog):
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
         group = QGroupBox(title)
         form = QFormLayout(group)
+        info_icon = QIcon(str(INFO_ICON_PATH))
         for row in rows:
             label_text, widget = row[:2]
             tooltip = row[2] if len(row) > 2 else ""
@@ -389,6 +415,18 @@ class PreferencesDialog(QDialog):
             if tooltip:
                 label.setToolTip(tooltip)
                 widget.setToolTip(tooltip)
+                label_row = QWidget()
+                label_layout = QHBoxLayout(label_row)
+                label_layout.setContentsMargins(0, 0, 0, 0)
+                label_layout.setSpacing(4)
+                icon_label = QLabel()
+                icon_label.setPixmap(info_icon.pixmap(16, 16))
+                icon_label.setToolTip(tooltip)
+                label_layout.addWidget(icon_label)
+                label_layout.addWidget(label)
+                label_layout.addStretch(1)
+                form.addRow(label_row, widget)
+                continue
             form.addRow(label, widget)
         return group
 

@@ -245,15 +245,20 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
     assert '"Live Plot Streaming", self.live_plot_streaming_check' in dialog_source
     assert '("Live Plot Streaming", self.live_plot_streaming_check, "")' in dialog_source
+    assert 'INFO_ICON_PATH = APP_ROOT / "assets" / "info-16.ico"' in dialog_source
+    assert "info_icon = QIcon(str(INFO_ICON_PATH))" in dialog_source
     assert "label.setToolTip(tooltip)" in dialog_source
     assert "widget.setToolTip(tooltip)" in dialog_source
+    assert "icon_label.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
-    assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
-    assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
-    assert '"Normalized Channel Correction", self.normalized_channel_correction_check' in dialog_source
+    assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
+    assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
+    assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
+    assert '"Normalized Channel Correction",\n                        self.normalized_channel_correction_check,' in dialog_source
+    assert "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters." in dialog_source
     assert '"preferences/normalized_channel_correction"' in settings_source
     assert "normalized_channel_correction: bool = True" in settings_source
     assert "flat_target_normalization_enabled=self.preferences.normalized_channel_correction" in main_source
