@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-tests:
+    name: Python tests
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MPLBACKEND: Agg
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[gui]"
+          python -m pip install pytest
+
+      - name: Run pytest
+        run: python -m pytest
+
+  julia-cpu-tests:
+    name: Julia CPU solver tests
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+
+      - name: Instantiate Julia project
+        shell: pwsh
+        run: julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
+
+      - name: Run Julia tests
+        shell: pwsh
+        run: julia --project=src/blab/solvers/julia_local src/blab/solvers/julia_local/tests/runtests.jl
