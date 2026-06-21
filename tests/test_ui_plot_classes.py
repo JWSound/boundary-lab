@@ -252,8 +252,21 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "icon_label.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
+    solver_config_block = dialog_source[
+        dialog_source.index('"Solver Config"'):dialog_source.index('"Observation Config"')
+    ]
+    application_block = dialog_source[
+        dialog_source.index('"Application"'):dialog_source.index("right_column.addStretch", dialog_source.index('"Application"'))
+    ]
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
+    assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
+    assert '"Solve Server URL", self.solve_server_url_edit' in solver_config_block
+    assert '"BEM Solver", self.solve_backend_combo' not in application_block
+    assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
+    assert 'uses_bempp = backend_id in {"local", "server"}' in dialog_source
+    assert "self.gmres_spin.setEnabled(uses_bempp)" in dialog_source
+    assert "self.burton_miller_check.setEnabled(uses_bempp)" in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
     assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
     assert "Gather spherical observation data for 3d ballon viewer" in dialog_source

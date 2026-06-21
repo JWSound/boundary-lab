@@ -200,15 +200,6 @@ class PreferencesDialog(QDialog):
 
         self.solve_server_url_edit = QLineEdit()
         self.solve_server_url_edit.setText(preferences.solve_server_url)
-        self.solve_server_url_edit.setEnabled(backend_info(current_backend).capabilities.is_remote)
-
-        def update_backend_fields(label: str) -> None:
-            backend_id = self.solve_backend_options.get(label, "local")
-            self.solve_server_url_edit.setEnabled(backend_info(backend_id).capabilities.is_remote)
-
-        self.solve_backend_combo.currentTextChanged.connect(
-            update_backend_fields
-        )
 
         self.gmres_spin = QDoubleSpinBox()
         self.gmres_spin.setRange(1e-8, 1e-2)
@@ -235,6 +226,16 @@ class PreferencesDialog(QDialog):
 
         self.burton_miller_check = QCheckBox("Enabled")
         self.burton_miller_check.setChecked(preferences.use_burton_miller)
+
+        def update_backend_fields(label: str) -> None:
+            backend_id = self.solve_backend_options.get(label, "local")
+            uses_bempp = backend_id in {"local", "server"}
+            self.solve_server_url_edit.setEnabled(backend_info(backend_id).capabilities.is_remote)
+            self.gmres_spin.setEnabled(uses_bempp)
+            self.burton_miller_check.setEnabled(uses_bempp)
+
+        update_backend_fields(backend_label)
+        self.solve_backend_combo.currentTextChanged.connect(update_backend_fields)
 
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
@@ -325,6 +326,8 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Solver Config",
                 (
+                    ("BEM Solver", self.solve_backend_combo, ""),
+                    ("Solve Server URL", self.solve_server_url_edit, ""),
                     (
                         "GMRES Tolerance",
                         self.gmres_spin,
@@ -390,8 +393,6 @@ class PreferencesDialog(QDialog):
                     ("Theme", self.theme_combo, ""),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
-                    ("BEM Solver", self.solve_backend_combo, ""),
-                    ("Solve Server URL", self.solve_server_url_edit, ""),
                 ),
             )
         )
