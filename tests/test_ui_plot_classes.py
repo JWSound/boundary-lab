@@ -239,6 +239,18 @@ def test_plot_canvases_refresh_backing_store_on_screen_dpi_changes() -> None:
     assert "_prepared_live_plot_dataset" not in screen_block
 
 
+def test_server_health_worker_runs_query_with_timeout() -> None:
+    worker_source = (Path(__file__).resolve().parents[1] / "src" / "blab" / "ui" / "server_health_worker.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "class ServerHealthCheckWorker(QObject)" in worker_source
+    assert "succeeded = Signal(str, object)" in worker_source
+    assert "failed = Signal(str)" in worker_source
+    assert "query_server_health(self.server_url, timeout_s=self.timeout_s)" in worker_source
+    assert "self.finished.emit()" in worker_source
+
+
 def test_preferences_no_longer_expose_worker_count() -> None:
     dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
     settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
@@ -297,8 +309,15 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert 'uses_bempp = backend_id in {"local", "server"}' in dialog_source
     assert "self.server_health_payload: dict | None = None" in main_source
+    assert "self.server_health_thread: QThread | None = None" in main_source
+    assert "QTimer.singleShot(0, self._check_configured_server_health_on_startup)" in main_source
     assert "def _backend_supports_symmetry(" in main_source
     assert "server_health_supports_symmetry" in main_source
+    assert "def _check_configured_server_health_on_startup" in main_source
+    assert 'self.preferences.solve_backend != "server"' in main_source
+    assert "ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)" in main_source
+    assert "worker.failed.connect(lambda _message: None)" in main_source
+    assert 'self.mesh_state_changed.emit("server_health_checked")' in main_source
     assert "self.gmres_spin.setEnabled(uses_bempp)" in dialog_source
     assert "self.burton_miller_check.setEnabled(uses_bempp)" in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source

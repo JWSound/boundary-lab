@@ -113,6 +113,7 @@ from blab.ui.project_state import (
     scripts_from_payload,
     unique_script_name,
 )
+from blab.ui.server_health_worker import ServerHealthCheckWorker
 from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
@@ -200,6 +201,8 @@ class MainWindow(QMainWindow):
         self.preferences = self._load_preferences()
         self.server_health_payload: dict | None = None
         self.server_health_url: str | None = None
+        self.server_health_thread: QThread | None = None
+        self.server_health_worker: ServerHealthCheckWorker | None = None
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = default_scripts("")
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
@@ -335,6 +338,7 @@ class MainWindow(QMainWindow):
         self._restore_window_state()
         startup("Starting new project...")
         self.new_project()
+        QTimer.singleShot(0, self._check_configured_server_health_on_startup)
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)
@@ -1107,6 +1111,42 @@ class MainWindow(QMainWindow):
             return False
         self.symmetry = effective_symmetry
         return True
+
+    @Slot()
+    def _check_configured_server_health_on_startup(self) -> None:
+        if self.preferences.solve_backend != "server" or self.server_health_thread is not None:
+            return
+        worker = ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)
+        thread = QThread(self)
+        self.server_health_thread = thread
+        self.server_health_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._on_startup_server_health_succeeded)
+        worker.failed.connect(lambda _message: None)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_startup_server_health_finished)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    @Slot(str, object)
+    def _on_startup_server_health_succeeded(self, server_url: str, payload: dict) -> None:
+        if self.preferences.solve_backend != "server":
+            return
+        normalized_url = server_url.rstrip("/")
+        if normalized_url != self.preferences.solve_server_url.rstrip("/"):
+            return
+        previously_supported = self._selected_backend_supports_symmetry()
+        self.server_health_payload = payload
+        self.server_health_url = normalized_url
+        if self._selected_backend_supports_symmetry() != previously_supported:
+            self.mesh_state_changed.emit("server_health_checked")
+
+    @Slot()
+    def _on_startup_server_health_finished(self) -> None:
+        self.server_health_thread = None
+        self.server_health_worker = None
 
     def _imported_mesh_needs_reload(self, mesh: MeshDialogEntry) -> bool:
         if not mesh.enabled:

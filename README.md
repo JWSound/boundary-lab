@@ -125,17 +125,10 @@ the server to that machine's LAN address or `0.0.0.0` and use
 with each server job, so the server does not need access to the client's local
 paths.
 
-Server API:
-
-- `POST /jobs` submits a solve request with `SimulationConfig` and `frequencies_hz`.
-- `GET /jobs/{job_id}` returns job status and artifact links.
-- `GET /jobs/{job_id}/events?since=0` streams job events as newline-delimited JSON.
-- `POST /jobs/{job_id}/cancel` requests cancellation.
-- `GET /jobs/{job_id}/artifacts/result.npz` downloads the completed result bundle.
-
 ## Documentation
 
 - [User Guide](docs/User%20Guide.md)
+- [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
