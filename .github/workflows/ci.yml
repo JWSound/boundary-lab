@@ -29,7 +29,9 @@ jobs:
           python -m pip install -e ".[gui,dev]"
 
       - name: Run Ruff
-        run: python -m ruff check .
+        run: |
+          python -m ruff check .
+          python -m ruff format --check pyproject.toml scripts src tests
 
       - name: Run pytest
         run: python -m pytest

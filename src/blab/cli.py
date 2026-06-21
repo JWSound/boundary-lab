@@ -4,7 +4,6 @@ import argparse
 from collections.abc import Sequence
 from importlib import import_module
 
-
 COMMAND_MODULES = {
     "clean": "blab.mesh_clean",
     "gui": "blab.gui",

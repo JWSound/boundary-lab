@@ -1,6 +1,7 @@
-import numpy as np
 import os
 import sys
+
+import numpy as np
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest

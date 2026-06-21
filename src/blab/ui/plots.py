@@ -10,7 +10,6 @@ from matplotlib.figure import Figure
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
-
 AUDIO_FREQ_MIN_HZ = 20
 AUDIO_FREQ_MAX_HZ = 20000
 AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
@@ -67,17 +66,15 @@ def clear_plot_axes(axes) -> None:
 
 def frequency_to_slider_value(freq_hz: int | float) -> int:
     clamped = min(max(float(freq_hz), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-    fraction = (
-        np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)
-    ) / (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
+    fraction = (np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)) / (
+        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
+    )
     return int(round(fraction * FREQ_SLIDER_STEPS))
 
 
 def slider_value_to_frequency(value: int) -> int:
     fraction = float(value) / FREQ_SLIDER_STEPS
-    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (
-        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
-    )
+    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
     return int(round(10.0**log_freq))
 
 
@@ -178,12 +175,7 @@ class IsobarCanvas(FigureCanvas):
         data_min = float(np.min(finite))
         data_max = float(np.max(finite))
         levels = np.arange(np.ceil(clip_min_db / 3.0) * 3.0, clip_max_db + 1.5, 3.0, dtype=np.float32)
-        return levels[
-            (levels > clip_min_db)
-            & (levels < clip_max_db)
-            & (levels > data_min)
-            & (levels < data_max)
-        ]
+        return levels[(levels > clip_min_db) & (levels < clip_max_db) & (levels > data_min) & (levels < data_max)]
 
     def _redraw_captured_contours(self) -> None:
         self._remove_contour_artist()

@@ -9,7 +9,6 @@ from typing import Any
 
 import numpy as np
 
-
 BALLOON_EXPORT_SCHEMA_VERSION = 1
 
 

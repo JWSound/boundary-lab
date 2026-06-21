@@ -20,7 +20,7 @@ def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> Non
 
 def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    spinorama_block = source[source.index("class SpinoramaCanvas"):]
+    spinorama_block = source[source.index("class SpinoramaCanvas") :]
 
     assert "tight_layout=True" not in spinorama_block
     assert "subplots_adjust" in spinorama_block
@@ -52,7 +52,10 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert "tool_actions: tuple[QAction, ...] = ()" in widgets_source
     assert "button.setDefaultAction(action)" in widgets_source
     assert "self.tool_buttons.append(button)" in widgets_source
-    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))" in source
+    assert (
+        "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))"
+        in source
+    )
     assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
     assert "tool_actions=tuple(" in source
     assert "close_button.clicked.connect(dock.close)" in widgets_source
@@ -71,19 +74,25 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert "self.workspace.tabifyDockWidget(previous_plot_dock, dock)" in source
     assert '"Plots Panel"' not in source
     assert "self.plots_dock" not in source
-    assert "settings_bool(self.settings, f\"plots/{entry.plot_id}/visible\", True)" not in source
-    assert "settings.setValue(f\"plots/{plot_id}/visible\"" not in source
-    assert "action.toggled.connect(lambda checked, dock_id=dock_id: self._set_panel_visible(dock_id, checked))" in source
-    assert "dock.visibilityChanged.connect(lambda _visible, dock_id=dock_id: self._sync_panel_view_action(dock_id))" in source
+    assert 'settings_bool(self.settings, f"plots/{entry.plot_id}/visible", True)' not in source
+    assert 'settings.setValue(f"plots/{plot_id}/visible"' not in source
+    assert (
+        "action.toggled.connect(lambda checked, dock_id=dock_id: self._set_panel_visible(dock_id, checked))" in source
+    )
+    assert (
+        "dock.visibilityChanged.connect(lambda _visible, dock_id=dock_id: self._sync_panel_view_action(dock_id))"
+        in source
+    )
     assert "def _set_panel_visible(" in source
     assert "def _sync_panel_view_action(" in source
     assert '("channel_config", "Channel Config Panel")' not in source
-    assert "dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))" in source
+    assert "dock.visibilityChanged.connect(" in source
+    assert "lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id)" in source
     assert "self.workspace.saveState()" in source
     assert "self.workspace.restoreState(dock_state)" in source
     assert "window/dock_state" in source
     assert "DEFAULT_DOCK_STATE_B64" in source
-    assert "QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode(\"ascii\"))" in source
+    assert 'QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))' in source
 
 
 def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
@@ -91,7 +100,7 @@ def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
 
     assert 'file_menu.addMenu("Export Plot")' not in source
     assert "self.export_plot_actions[entry.plot_id] = action" in source
-    assert "action.setToolTip(f\"Export {entry.title}\")" in source
+    assert 'action.setToolTip(f"Export {entry.title}")' in source
     assert "SAVE_DARK_ICON" in source
     assert "SAVE_LIGHT_ICON" in source
     assert "CAPTURE_CONTOURS_DARK_ICON" in source
@@ -121,11 +130,16 @@ def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
 def test_channel_config_changes_apply_only_on_apply_button() -> None:
     dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    channel_dialog = dialog_source[dialog_source.index("class ChannelConfigDialog"):dialog_source.index("class SourceConfigDialog")]
+    channel_dialog = dialog_source[
+        dialog_source.index("class ChannelConfigDialog") : dialog_source.index("class SourceConfigDialog")
+    ]
 
     assert "channelsChanged" not in channel_dialog
     assert "_emit_channels_changed" not in channel_dialog
-    assert "button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close" in channel_dialog
+    assert (
+        "button_flags = QDialogButtonBox.Apply if self._embedded else QDialogButtonBox.Apply | QDialogButtonBox.Close"
+        in channel_dialog
+    )
     assert "buttons.button(QDialogButtonBox.Apply).clicked.connect(self.apply)" in channel_dialog
     assert "buttons.rejected.connect(self.closeRequested.emit if self._embedded else self.reject)" in channel_dialog
     assert "button_row.addWidget(buttons)" in channel_dialog
@@ -136,11 +150,19 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
 
 def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    confirm_block = source[source.index("def _confirm_clear_solved_data"):source.index("    @Slot(str)", source.index("def _confirm_clear_solved_data"))]
-    preferences_block = source[source.index("def open_preferences"):source.index("def open_diagnostics")]
-    mesh_block = source[source.index("def open_mesh_config"):source.index("def open_channel_config")]
-    channel_block = source[source.index("def _apply_channel_config"):source.index("    @Slot()", source.index("def _apply_channel_config"))]
-    source_block = source[source.index("def open_source_config"):source.index("def generate_geometry")]
+    confirm_block = source[
+        source.index("def _confirm_clear_solved_data") : source.index(
+            "    @Slot(str)", source.index("def _confirm_clear_solved_data")
+        )
+    ]
+    preferences_block = source[source.index("def open_preferences") : source.index("def open_diagnostics")]
+    mesh_block = source[source.index("def open_mesh_config") : source.index("def open_channel_config")]
+    channel_block = source[
+        source.index("def _apply_channel_config") : source.index(
+            "    @Slot()", source.index("def _apply_channel_config")
+        )
+    ]
+    source_block = source[source.index("def open_source_config") : source.index("def generate_geometry")]
 
     assert "Applying this action will clear solved data" in confirm_block
     assert 'message.addButton("Continue", QMessageBox.AcceptRole)' in confirm_block
@@ -157,7 +179,7 @@ def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() 
 
 def test_application_startup_invokes_new_project_reset() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    init_block = source[source.index("    def __init__("):source.index("    def changeEvent")]
+    init_block = source[source.index("    def __init__(") : source.index("    def changeEvent")]
 
     assert 'startup("Starting new project...")' in init_block
     assert "self.new_project()" in init_block
@@ -170,11 +192,13 @@ def test_application_startup_invokes_new_project_reset() -> None:
 
 def test_unsaved_project_changes_guard_close_new_and_open() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    close_block = source[source.index("def closeEvent"):source.index("def _result_from_script_state")]
-    new_block = source[source.index("def new_project"):source.index("def save_project")]
-    save_block = source[source.index("def save_project"):source.index("def load_project")]
-    load_block = source[source.index("def load_project"):source.index("def _project_payload")]
-    confirm_block = source[source.index("def _confirm_unsaved_project_changes"):source.index("def _apply_project_payload")]
+    close_block = source[source.index("def closeEvent") : source.index("def _result_from_script_state")]
+    new_block = source[source.index("def new_project") : source.index("def save_project")]
+    save_block = source[source.index("def save_project") : source.index("def load_project")]
+    load_block = source[source.index("def load_project") : source.index("def _project_payload")]
+    confirm_block = source[
+        source.index("def _confirm_unsaved_project_changes") : source.index("def _apply_project_payload")
+    ]
 
     assert 'if not self._confirm_unsaved_project_changes("close"):' in close_block
     assert "event.ignore()" in close_block
@@ -197,8 +221,8 @@ def test_unsaved_project_changes_guard_close_new_and_open() -> None:
 
 def test_plot_canvases_refresh_backing_store_on_screen_dpi_changes() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    init_block = source[source.index("    def __init__("):source.index("    def changeEvent")]
-    screen_block = source[source.index("def showEvent"):source.index("    def eventFilter")]
+    init_block = source[source.index("    def __init__(") : source.index("    def changeEvent")]
+    screen_block = source[source.index("def showEvent") : source.index("    def eventFilter")]
 
     assert "self._plot_dpi_screen = None" in init_block
     assert "self._plot_dpi_window_handle = None" in init_block
@@ -220,7 +244,9 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     config_source = Path("src/blab/config.py").read_text(encoding="utf-8")
-    start_solve = main_source[main_source.index("def start_solve"):main_source.index("    @Slot()", main_source.index("def start_solve"))]
+    start_solve = main_source[
+        main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
+    ]
 
     assert "worker_count_spin" not in dialog_source
     assert '"Worker Count"' not in dialog_source
@@ -253,10 +279,12 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
     solver_config_block = dialog_source[
-        dialog_source.index('"Solver Config"'):dialog_source.index('"Observation Config"')
+        dialog_source.index('"Solver Config"') : dialog_source.index('"Observation Config"')
     ]
     application_block = dialog_source[
-        dialog_source.index('"Application"'):dialog_source.index("right_column.addStretch", dialog_source.index('"Application"'))
+        dialog_source.index('"Application"') : dialog_source.index(
+            "right_column.addStretch", dialog_source.index('"Application"')
+        )
     ]
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
@@ -270,8 +298,14 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
     assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
     assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
-    assert '"Normalized Channel Correction",\n                        self.normalized_channel_correction_check,' in dialog_source
-    assert "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters." in dialog_source
+    assert (
+        '"Normalized Channel Correction",\n                        self.normalized_channel_correction_check,'
+        in dialog_source
+    )
+    assert (
+        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters."
+        in dialog_source
+    )
     assert '"preferences/normalized_channel_correction"' in settings_source
     assert "normalized_channel_correction: bool = True" in settings_source
     assert "flat_target_normalization_enabled=self.preferences.normalized_channel_correction" in main_source
@@ -280,7 +314,9 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "live_plot_streaming: bool = True" in settings_source
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
-    start_solve = main_source[main_source.index("def start_solve"):main_source.index("    @Slot()", main_source.index("def start_solve"))]
+    start_solve = main_source[
+        main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
+    ]
     assert "self.live_dataset = None\n        self._clear_plots()" in start_solve
     assert "if not self.preferences.live_plot_streaming:" in main_source
     assert "if self.preferences.live_plot_streaming or solve_completed:" in main_source
@@ -291,8 +327,14 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "self._use_final_isobar_resolution = solve_completed" in main_source
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
-    assert 'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None' in main_source
-    assert 'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None' in main_source
+    assert (
+        'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
+        in main_source
+    )
+    assert (
+        'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
+        in main_source
+    )
     assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
 
 
@@ -307,7 +349,7 @@ def test_isobar_canvas_allows_custom_right_margin() -> None:
 
 def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    isobar_block = source[source.index("class IsobarCanvas"):source.index("class ImpedanceCanvas")]
+    isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
 
     assert "self._mesh_artist" in isobar_block
     assert "self._image_artist" in isobar_block
@@ -326,10 +368,12 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
 
 def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    isobar_block = source[source.index("class IsobarCanvas"):source.index("class ImpedanceCanvas")]
-    draw_empty_block = isobar_block[isobar_block.index("    def _draw_empty"):isobar_block.index("    def _remove_artist")]
+    isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
+    draw_empty_block = isobar_block[
+        isobar_block.index("    def _draw_empty") : isobar_block.index("    def _remove_artist")
+    ]
     remove_contour_block = isobar_block[
-        isobar_block.index("    def _remove_contour_artist"):isobar_block.index("    @property")
+        isobar_block.index("    def _remove_contour_artist") : isobar_block.index("    @property")
     ]
 
     assert "self._captured_contours" in isobar_block
@@ -339,9 +383,9 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
     assert "def _redraw_captured_contours(" in isobar_block
     assert "np.arange(np.ceil(clip_min_db / 3.0) * 3.0" in isobar_block
     assert "levels.copy()" in isobar_block
-    assert "colors=\"white\"" in isobar_block
+    assert 'colors="white"' in isobar_block
     assert "linewidths=0.9" in isobar_block
-    assert "linestyles=\"solid\"" in isobar_block
+    assert 'linestyles="solid"' in isobar_block
     assert "alpha=0.85" in isobar_block
     assert "self._redraw_captured_contours()" in isobar_block
     assert "self._captured_contours = None" not in draw_empty_block
@@ -361,8 +405,7 @@ def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> 
     assert "self.capture_contours_button" not in source
     assert "self.clear_contours_button" not in source
     assert "self._final_isobar_plots_rendered = False" in source
-    assert "self._final_isobar_plots_rendered = (" in source
-    assert "solve_completed\n                and bool(self._visible_isobar_plots())" in source
+    assert "self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())" in source
     assert "self._use_final_isobar_resolution" in source
     assert "and self._final_isobar_plots_rendered" in source
     assert "capture_action.setEnabled(capture_base_enabled and visible)" in source

@@ -10,7 +10,6 @@ import numpy as np
 from blab.config import MeshConfig, normalize_symmetry
 from blab.solvers.registry import backend_info
 
-
 _SYMMETRY_AXES = {
     "off": (),
     "x": (0,),

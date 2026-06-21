@@ -21,8 +21,7 @@ from blab.protocol import (
     solve_request_from_config_and_frequencies,
 )
 from blab.server import _safe_asset_filename
-from blab.solvers.base import FrequencyResult, SolveMetadata, SolveRequest, SolverCapabilities
-
+from blab.solvers.base import FrequencyResult, SolveMetadata, SolverCapabilities, SolveRequest
 
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
 DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
@@ -191,10 +190,7 @@ class BeatEngineSession:
                 self._metadata = SolveMetadata(
                     polar_angle_deg=ndarray_from_wire(event["polar_angle_deg"]),
                     radiator_names=np.asarray(event.get("radiator_names", ["Radiator"])),
-                    sphere_metadata={
-                        key: ndarray_from_wire(value)
-                        for key, value in sphere_metadata.items()
-                    },
+                    sphere_metadata={key: ndarray_from_wire(value) for key, value in sphere_metadata.items()},
                 )
                 return
             elif event_type == "failed":
@@ -343,9 +339,7 @@ class BeatEngineWorkerProcess:
                 env=_julia_process_env(self.julia_threads),
             )
         except FileNotFoundError as exc:
-            raise RuntimeError(
-                "Julia executable was not found. Set the Julia executable path in Preferences."
-            ) from exc
+            raise RuntimeError("Julia executable was not found. Set the Julia executable path in Preferences.") from exc
 
         self._stderr_thread = threading.Thread(target=self._collect_stderr, daemon=True)
         self._stderr_thread.start()
@@ -563,10 +557,7 @@ def _friendly_julia_error(
     looks_like_cuda_error = any(marker in text for marker in cuda_load_markers)
     looks_like_rocm_error = any(marker in text for marker in rocm_load_markers)
     if not (
-        looks_like_dependency_error
-        or looks_like_julia_load_error
-        or looks_like_cuda_error
-        or looks_like_rocm_error
+        looks_like_dependency_error or looks_like_julia_load_error or looks_like_cuda_error or looks_like_rocm_error
     ):
         return message
 
@@ -610,10 +601,7 @@ def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> Simulatio
         staged_path.write_bytes(Path(original_path).read_bytes())
         staged_by_original_path[original_path] = str(staged_path)
 
-    meshes = tuple(
-        replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file))
-        for mesh in config.meshes
-    )
+    meshes = tuple(replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file)) for mesh in config.meshes)
     return replace(
         config,
         mesh_file=staged_by_original_path.get(config.mesh_file, config.mesh_file),

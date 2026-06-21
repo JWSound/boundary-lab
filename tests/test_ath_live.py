@@ -1,5 +1,5 @@
-from pathlib import Path
 import json
+from pathlib import Path
 
 import meshio
 import numpy as np
@@ -18,6 +18,9 @@ from blab.ath import (
     write_ath_gmsh_path,
     write_ath_output_root,
 )
+from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
+from blab.config import ChannelConfig
+from blab.exporting import export_balloon_data, export_polar_text_files
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -25,9 +28,6 @@ from blab.live import (
     order_frequencies_for_live_plotting,
     split_frequency_order_for_workers,
 )
-from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
-from blab.config import ChannelConfig
-from blab.exporting import export_balloon_data, export_polar_text_files
 from blab.mesh_clean import triangle_quality_warning
 from blab.postprocess import PrepConfig
 
@@ -626,11 +626,7 @@ def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
         np.linspace(0.0, 2.0 * np.pi, 8, dtype=np.float32),
         indexing="ij",
     )
-    spl = (
-        -12.0
-        + 3.0 * np.cos(theta.ravel())
-        + 2.0 * np.sin(phi.ravel())
-    ).astype(np.float32)
+    spl = (-12.0 + 3.0 * np.cos(theta.ravel()) + 2.0 * np.sin(phi.ravel())).astype(np.float32)
     raw = {
         "freq_hz": np.array([1000.0], dtype=np.float32),
         "theta_polar_rad": theta.ravel().astype(np.float32),

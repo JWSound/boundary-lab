@@ -23,4 +23,3 @@ def test_donate_dialog_content_points_to_asset_and_paypal() -> None:
     assert DONATE_QR_PATH.name == "donateqr.png"
     assert DONATE_URL == "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
     assert "Boundary Lab is free open source software." in DONATE_BLURB
-

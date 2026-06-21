@@ -13,8 +13,8 @@ from blab.ui.balloon import (
     _balloon_radar_slice,
     _contour_levels,
     _nearest_periodic_angle_index,
-    _protractor_line_specs,
     _protractor_basis,
+    _protractor_line_specs,
     _protractor_ring_radii,
 )
 

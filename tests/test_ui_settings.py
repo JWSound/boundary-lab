@@ -1,4 +1,5 @@
 from blab.ui.settings import (
+    GuiPreferences,
     balloon_angle_precision_from_points,
     balloon_sampling_points,
     live_plot_angle_samples,
@@ -7,7 +8,6 @@ from blab.ui.settings import (
     normalize_live_plot_quality,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
-    GuiPreferences,
 )
 
 

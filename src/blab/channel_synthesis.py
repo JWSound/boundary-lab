@@ -7,7 +7,6 @@ from scipy import signal
 
 from blab.config import ChannelConfig, CrossoverConfig
 
-
 REFERENCE_PRESSURE_PA = 20e-6
 
 

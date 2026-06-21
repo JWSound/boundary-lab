@@ -26,9 +26,7 @@ def test_check_python_dependency_versions_reports_missing(monkeypatch) -> None:
 
     results = check_python_dependency_versions(("not-a-package",))
 
-    assert results == (
-        StartupCheckResult(name="not-a-package", status="missing", detail="not installed"),
-    )
+    assert results == (StartupCheckResult(name="not-a-package", status="missing", detail="not installed"),)
 
 
 def test_format_startup_check_results() -> None:

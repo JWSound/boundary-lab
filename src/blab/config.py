@@ -12,7 +12,6 @@ from pathlib import Path
 
 from blab.defaults import SOLVER_OUTPUT_NPZ
 
-
 SYMMETRY_OPTIONS = {"off", "x", "xy"}
 
 
@@ -66,10 +65,10 @@ class MeshConfig:
 @dataclass
 class SimulationConfig:
     mesh_file: str
-    sound_speed: float = 343.0 # m/s
-    rho: float = 1.21 # kg/m^3
-    distance: float = 2.0 # meters
-    axial_offset: float = 0 # meters
+    sound_speed: float = 343.0  # m/s
+    rho: float = 1.21  # kg/m^3
+    distance: float = 2.0  # meters
+    axial_offset: float = 0  # meters
     step_size: float = 5
     min_angle: float = -180
     max_angle: float = 180
@@ -127,9 +126,7 @@ def load_external_config(
                 MeshConfig(
                     name=name,
                     file=str(mesh_path),
-                    scale_factor=(
-                        None if item.get("scale_factor") is None else float(item["scale_factor"])
-                    ),
+                    scale_factor=(None if item.get("scale_factor") is None else float(item["scale_factor"])),
                     translation_m=parse_translation_m(name, item.get("translation_m")),
                 )
             )
@@ -181,11 +178,7 @@ def _parse_crossover_config(raw: dict, *, crossover_type: str | None = None) -> 
         ),
         filter=str(raw.get("filter", "butterworth")).lower(),
         order=int(raw.get("order", 1)),
-        frequency_hz=(
-            None
-            if raw.get("frequency_hz") is None
-            else float(raw.get("frequency_hz"))
-        ),
+        frequency_hz=(None if raw.get("frequency_hz") is None else float(raw.get("frequency_hz"))),
     )
 
 

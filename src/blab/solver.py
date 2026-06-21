@@ -12,14 +12,17 @@ import argparse
 import multiprocessing as mp
 import os
 import time
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence, Tuple
+
 import bempp_cl.api
 import meshio
 import numpy as np
-import warnings
+from pyopencl import CompilerWarning
+
 from blab.channel_synthesis import (
     channel_drive,
     crossover_response,
@@ -35,7 +38,7 @@ from blab.config import (
 )
 from blab.defaults import EXAMPLE_CLEAN_MESH_PATH
 from blab.solvers.base import FrequencySolveTimings
-from pyopencl import CompilerWarning
+
 warnings.filterwarnings("ignore", category=CompilerWarning)
 
 bempp_cl.api.BOUNDARY_OPERATOR_DEVICE_TYPE = "cpu"
@@ -225,22 +228,20 @@ class HornBEMSolver:
         self.cfg = config
 
         self.grid, self.physical_tags, self.element_mesh_ids, self.mesh_names = self._load_meshes()
-        
+
         # Setup Spaces
         # P1: Continuous linear elements (for Pressure)
         # DP0: Discontinuous constant elements (for Velocity/Flux)
         self.p1_space = bempp_cl.api.function_space(self.grid, "P", 1)
         self.dp0_space = bempp_cl.api.function_space(self.grid, "DP", 0)
-        
+
         # Pre-compute Geometry info
         self._setup_driver_geometry()
         self._setup_polar_evaluation_points()
         self._setup_spherical_evaluation_points()
-        
+
         # Pre-compute Identity Operator (Frequency Independent)
-        self.lhs_identity = bempp_cl.api.operators.boundary.sparse.identity(
-            self.p1_space, self.p1_space, self.p1_space
-        )
+        self.lhs_identity = bempp_cl.api.operators.boundary.sparse.identity(self.p1_space, self.p1_space, self.p1_space)
         self.rhs_identity = bempp_cl.api.operators.boundary.sparse.identity(
             self.dp0_space, self.p1_space, self.p1_space
         )
@@ -280,10 +281,7 @@ class HornBEMSolver:
             element_mesh_id_parts.append(np.full(elements.shape[0], mesh_id, dtype=np.int32))
             mesh_names.append(mesh_cfg.name)
             vertex_offset += vertices.shape[0]
-            print(
-                f"Mesh '{mesh_cfg.name}' loaded with {vertices.shape[0]} vertices "
-                f"and {elements.shape[0]} triangles."
-            )
+            print(f"Mesh '{mesh_cfg.name}' loaded with {vertices.shape[0]} vertices and {elements.shape[0]} triangles.")
 
         vertices_all = np.vstack(vertices_parts)
         elements_all = np.vstack(element_parts)
@@ -299,21 +297,21 @@ class HornBEMSolver:
         vertices = vertices + np.asarray(mesh_cfg.translation_m, dtype=float)
 
         # Handle meshio cell key variations
-        if 'triangle' in mesh_data.cells_dict:
-            elements = mesh_data.cells_dict['triangle']
-            tri_key = 'triangle'
-        elif 'triangle3' in mesh_data.cells_dict:
-            elements = mesh_data.cells_dict['triangle3']
-            tri_key = 'triangle3'
+        if "triangle" in mesh_data.cells_dict:
+            elements = mesh_data.cells_dict["triangle"]
+            tri_key = "triangle"
+        elif "triangle3" in mesh_data.cells_dict:
+            elements = mesh_data.cells_dict["triangle3"]
+            tri_key = "triangle3"
         else:
             raise ValueError("No triangular elements found in mesh.")
 
         physical_tags = None
         for key in mesh_data.cell_data_dict:
-            if 'gmsh:physical' in key and tri_key in mesh_data.cell_data_dict[key]:
+            if "gmsh:physical" in key and tri_key in mesh_data.cell_data_dict[key]:
                 physical_tags = mesh_data.cell_data_dict[key][tri_key]
                 break
-        
+
         if physical_tags is None:
             raise ValueError("No physical tags found in mesh.")
 
@@ -334,7 +332,8 @@ class HornBEMSolver:
             # In DP0, DOFs map 1:1 to elements.
             driver_dofs = np.asarray(
                 [
-                    i for i in range(self.dp0_space.global_dof_count)
+                    i
+                    for i in range(self.dp0_space.global_dof_count)
                     if self.physical_tags[i] == radiator.tag and self.element_mesh_ids[i] == mesh_id
                 ],
                 dtype=int,
@@ -342,8 +341,7 @@ class HornBEMSolver:
 
             if driver_dofs.size == 0:
                 raise ValueError(
-                    f"No elements found for radiator '{radiator.name}' tag={radiator.tag}. "
-                    "Check mesh physical tags."
+                    f"No elements found for radiator '{radiator.name}' tag={radiator.tag}. Check mesh physical tags."
                 )
 
             self.radiator_geometries.append(
@@ -356,10 +354,7 @@ class HornBEMSolver:
             )
             driven_mask[driver_dofs] = True
 
-        self.enclosure_dofs = [
-            i for i in range(self.dp0_space.global_dof_count)
-            if not driven_mask[i]
-        ]
+        self.enclosure_dofs = [i for i in range(self.dp0_space.global_dof_count) if not driven_mask[i]]
 
         for radiator in self.radiator_geometries:
             cfg = radiator.config
@@ -378,22 +373,16 @@ class HornBEMSolver:
                 raise ValueError(f"Duplicate radiator name: {radiator.name}")
             names.add(radiator.name)
             if radiator.mesh is not None and radiator.mesh not in mesh_name_set:
-                raise ValueError(
-                    f"Radiator '{radiator.name}' references unknown mesh '{radiator.mesh}'."
-                )
+                raise ValueError(f"Radiator '{radiator.name}' references unknown mesh '{radiator.mesh}'.")
             if radiator.mesh is None and len(self.mesh_names) > 1:
-                raise ValueError(
-                    f"Radiator '{radiator.name}' must specify 'mesh' when multiple meshes are configured."
-                )
+                raise ValueError(f"Radiator '{radiator.name}' must specify 'mesh' when multiple meshes are configured.")
             if radiator.polarity not in (-1, 1):
                 raise ValueError(f"Radiator '{radiator.name}' polarity must be +1 or -1.")
             if not radiator.channel:
                 raise ValueError(f"Radiator '{radiator.name}' channel must not be empty.")
             channel_configs = getattr(self, "channel_configs", self._resolved_channel_configs(radiators))
             if radiator.channel not in channel_configs and self.cfg.channels:
-                raise ValueError(
-                    f"Radiator '{radiator.name}' references unknown channel '{radiator.channel}'."
-                )
+                raise ValueError(f"Radiator '{radiator.name}' references unknown channel '{radiator.channel}'.")
 
             for crossover in (radiator.hpf, radiator.lpf):
                 self._validate_crossover_config(radiator.name, crossover)
@@ -425,17 +414,13 @@ class HornBEMSolver:
     def _validate_crossover_config(radiator_name: str, crossover: CrossoverConfig) -> None:
         crossover_type = crossover.type.lower()
         if crossover_type not in ("none", "lowpass", "highpass"):
-            raise ValueError(
-                f"Radiator '{radiator_name}' crossover type must be none, lowpass, or highpass."
-            )
+            raise ValueError(f"Radiator '{radiator_name}' crossover type must be none, lowpass, or highpass.")
         if crossover_type == "none":
             return
         if crossover.frequency_hz is None or crossover.frequency_hz <= 0:
             raise ValueError(f"Radiator '{radiator_name}' crossover frequency_hz must be > 0.")
         if crossover.filter not in ("butterworth", "linkwitz_riley"):
-            raise ValueError(
-                f"Radiator '{radiator_name}' crossover filter must be butterworth or linkwitz_riley."
-            )
+            raise ValueError(f"Radiator '{radiator_name}' crossover filter must be butterworth or linkwitz_riley.")
         if crossover.order not in (1, 2, 4, 6):
             raise ValueError(f"Radiator '{radiator_name}' crossover order must be 1, 2, 4, or 6.")
         if crossover.filter == "linkwitz_riley" and crossover.order not in (2, 4, 6):
@@ -512,7 +497,7 @@ class HornBEMSolver:
         return bempp_cl.api.GridFunction(self.dp0_space, coefficients=coeffs)
 
     def _setup_polar_evaluation_points(self):
-        #Generate horizontal and vertical polar evaluation points.
+        # Generate horizontal and vertical polar evaluation points.
         step = float(self.cfg.step_size)
         if step <= 0:
             raise ValueError("step_size must be positive.")
@@ -582,11 +567,7 @@ class HornBEMSolver:
         }
 
     def solve_sweep(self) -> Tuple[list, np.ndarray]:
-        frequencies = np.logspace(
-            np.log10(self.cfg.freq_min),
-            np.log10(self.cfg.freq_max),
-            self.cfg.freq_count
-        )
+        frequencies = np.logspace(np.log10(self.cfg.freq_min), np.log10(self.cfg.freq_max), self.cfg.freq_count)
 
         worker_count = self._resolve_worker_count(len(frequencies))
         print(
@@ -609,7 +590,7 @@ class HornBEMSolver:
             results_polar.append((freq, res_h, res_v, raw_h, raw_v, sphere_spl))
             results_imp.append(res_z)
             if show_progress:
-                print(f"[{i+1}/{len(frequencies)}] {freq:.1f} Hz")
+                print(f"[{i + 1}/{len(frequencies)}] {freq:.1f} Hz")
 
         imp_matrix = np.stack(results_imp, axis=1).astype(np.float32, copy=False)
         return results_polar, imp_matrix
@@ -620,16 +601,17 @@ class HornBEMSolver:
     ) -> tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         """Solve one frequency using this already-initialized solver instance."""
         (
-            horizontal_spl,
-            vertical_spl,
-            impedance,
-            raw_horizontal_spl,
-            raw_vertical_spl,
-            sphere_spl,
-            *_channel_basis,
-        ), _timings = self._solve_single_frequency_with_timings(
-            float(frequency_hz)
-        )
+            (
+                horizontal_spl,
+                vertical_spl,
+                impedance,
+                raw_horizontal_spl,
+                raw_vertical_spl,
+                sphere_spl,
+                *_channel_basis,
+            ),
+            _timings,
+        ) = self._solve_single_frequency_with_timings(float(frequency_hz))
         return (
             float(frequency_hz),
             horizontal_spl,
@@ -659,7 +641,7 @@ class HornBEMSolver:
                 break
             result, timings = self.solve_frequency_timed(float(freq))
             if show_progress:
-                print(f"[{i+1}/{len(frequencies)}] {freq:.1f} Hz")
+                print(f"[{i + 1}/{len(frequencies)}] {freq:.1f} Hz")
             yield (*result, timings)
 
     def solve_frequency_timed(
@@ -824,20 +806,14 @@ class HornBEMSolver:
             horizontal_pressure.append(
                 self._evaluate_pressure(self.horizontal_eval_points, k, dirichlet_fun, neumann_fun)
             )
-            vertical_pressure.append(
-                self._evaluate_pressure(self.vertical_eval_points, k, dirichlet_fun, neumann_fun)
-            )
+            vertical_pressure.append(self._evaluate_pressure(self.vertical_eval_points, k, dirichlet_fun, neumann_fun))
             if self.spherical_sampling_enabled:
-                sphere_pressure.append(
-                    self._evaluate_pressure(self.sphere_eval_points, k, dirichlet_fun, neumann_fun)
-                )
+                sphere_pressure.append(self._evaluate_pressure(self.sphere_eval_points, k, dirichlet_fun, neumann_fun))
             boundary_pressure_coefficients.append(np.asarray(dirichlet_fun.coefficients, dtype=np.complex128))
             field_s += time.perf_counter() - field_start
 
         sphere_matrix = (
-            np.vstack(sphere_pressure).astype(np.complex64, copy=False)
-            if self.spherical_sampling_enabled
-            else None
+            np.vstack(sphere_pressure).astype(np.complex64, copy=False) if self.spherical_sampling_enabled else None
         )
         return (
             channel_names,
@@ -885,12 +861,8 @@ class HornBEMSolver:
         return np.sum(boundary_pressure_coefficients * weights[:, np.newaxis], axis=0)
 
     def _assemble_frequency_operators(self, k: float) -> tuple:
-        dlp = bempp_cl.api.operators.boundary.helmholtz.double_layer(
-            self.p1_space, self.p1_space, self.p1_space, k
-        )
-        slp = bempp_cl.api.operators.boundary.helmholtz.single_layer(
-            self.dp0_space, self.p1_space, self.p1_space, k
-        )
+        dlp = bempp_cl.api.operators.boundary.helmholtz.double_layer(self.p1_space, self.p1_space, self.p1_space, k)
+        slp = bempp_cl.api.operators.boundary.helmholtz.single_layer(self.dp0_space, self.p1_space, self.p1_space, k)
 
         # 3. Formulate LHS and RHS
         if self.cfg.use_burton_miller:
@@ -1055,7 +1027,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
 
     # Save Results
     solver.save_outputs(polar_results, imp_matrix)
-    
+
     print(f"Total Analysis Time: {time.time() - t_start:.2f}s")
     print("Analysis Complete.")
 

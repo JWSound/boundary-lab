@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-
 SPL_CURVE_NAMES = (
     "On Axis",
     "Listen. Wind.",
@@ -102,9 +101,7 @@ def compute_spinorama_from_planes(
         axis=1,
     )
     side = _energy_average_db(
-        np.column_stack(
-            tuple(h.at(angle) for angle in (-80, -70, -60, -50, -40, 40, 50, 60, 70, 80))
-        ),
+        np.column_stack(tuple(h.at(angle) for angle in (-80, -70, -60, -50, -40, 40, 50, 60, 70, 80))),
         axis=1,
     )
     rear = _energy_average_db(
@@ -164,11 +161,7 @@ class _PlaneSampler:
         order = np.argsort(angles_deg)
         sorted_angles = angles_deg[order]
         sorted_spl = spl_db[:, order]
-        if (
-            sorted_angles.size >= 2
-            and np.isclose(sorted_angles[0], -180.0)
-            and np.isclose(sorted_angles[-1], 180.0)
-        ):
+        if sorted_angles.size >= 2 and np.isclose(sorted_angles[0], -180.0) and np.isclose(sorted_angles[-1], 180.0):
             sorted_angles = sorted_angles[:-1]
             sorted_spl = sorted_spl[:, :-1]
             self._periodic = True

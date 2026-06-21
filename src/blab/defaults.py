@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 EXAMPLE_MESH_PATH = Path("waveguide.msh")
 EXAMPLE_CLEAN_MESH_PATH = Path("waveguide_clean.msh")
 

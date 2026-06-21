@@ -10,8 +10,8 @@ from blab.solver import HornBEMSolver
 from blab.solvers.base import (
     FrequencyResult,
     SolveMetadata,
-    SolveRequest,
     SolverCapabilities,
+    SolveRequest,
 )
 
 

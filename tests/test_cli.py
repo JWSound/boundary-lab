@@ -1,8 +1,7 @@
 import sys
 from types import SimpleNamespace
 
-from blab import cli
-from blab import plotting, postprocess, solver
+from blab import cli, plotting, postprocess, solver
 
 
 def test_cli_dispatches_subcommand_with_prefixed_prog(monkeypatch) -> None:

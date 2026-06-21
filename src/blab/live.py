@@ -88,12 +88,12 @@ class LiveSolveDataset:
 
         ordered = self.ordered_results()
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        horizontal = np.vstack(
-            [self._synthesized_complex_pressures(item)[0] for item in ordered]
-        ).astype(np.complex64, copy=False)
-        vertical = np.vstack(
-            [self._synthesized_complex_pressures(item)[1] for item in ordered]
-        ).astype(np.complex64, copy=False)
+        horizontal = np.vstack([self._synthesized_complex_pressures(item)[0] for item in ordered]).astype(
+            np.complex64, copy=False
+        )
+        vertical = np.vstack([self._synthesized_complex_pressures(item)[1] for item in ordered]).astype(
+            np.complex64, copy=False
+        )
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
 
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
@@ -177,11 +177,7 @@ class LiveSolveDataset:
         )
 
     def _synthesized_complex_pressures(self, result: FrequencyResult) -> tuple[np.ndarray, np.ndarray]:
-        if (
-            result.channel_names is None
-            or result.horizontal_pressure is None
-            or result.vertical_pressure is None
-        ):
+        if result.channel_names is None or result.horizontal_pressure is None or result.vertical_pressure is None:
             raise ValueError("Phase export requires channel-basis pressure data.")
 
         weights = self._channel_basis_weights(result)
@@ -324,7 +320,9 @@ def split_frequency_order_for_workers(frequencies: Iterable[float], worker_count
     return [freqs[index::worker_count] for index in range(worker_count) if freqs[index::worker_count].size]
 
 
-def solve_frequency_worker_process(config: SimulationConfig, frequencies, stop_event, output_queue, worker_id: int) -> None:
+def solve_frequency_worker_process(
+    config: SimulationConfig, frequencies, stop_event, output_queue, worker_id: int
+) -> None:
     try:
         t_start = time.perf_counter()
         live_solver = LiveSolver(config)

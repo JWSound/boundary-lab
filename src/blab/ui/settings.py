@@ -9,7 +9,6 @@ from PySide6.QtCore import QSettings
 
 from blab.solvers.registry import normalize_backend_id
 
-
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
 LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
@@ -80,9 +79,7 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
     return GuiPreferences(
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
-        solve_backend=normalize_backend_id(
-            settings_str(settings, "preferences/solve_backend", defaults.solve_backend)
-        ),
+        solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
         live_plot_streaming=settings_bool(
             settings,

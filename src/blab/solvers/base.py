@@ -88,18 +88,15 @@ class SolverCapabilities:
 
 class SolverSession(Protocol):
     @property
-    def metadata(self) -> SolveMetadata:
-        ...
+    def metadata(self) -> SolveMetadata: ...
 
     def solve_stream(
         self,
         *,
         stop_requested: Callable[[], bool] | None = None,
-    ) -> Iterator[FrequencyResult]:
-        ...
+    ) -> Iterator[FrequencyResult]: ...
 
-    def stop(self) -> None:
-        ...
+    def stop(self) -> None: ...
 
 
 class SolverBackend(Protocol):
@@ -107,5 +104,4 @@ class SolverBackend(Protocol):
     label: str
     capabilities: SolverCapabilities
 
-    def create_session(self, request: SolveRequest) -> SolverSession:
-        ...
+    def create_session(self, request: SolveRequest) -> SolverSession: ...

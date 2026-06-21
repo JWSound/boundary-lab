@@ -6,12 +6,11 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass
-from tempfile import TemporaryDirectory
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QMarginsF, QSizeF, QUrl
 from PySide6.QtGui import QGuiApplication, QPageLayout, QPageSize, QPdfWriter, QTextDocument
-
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = APP_ROOT / "docs"
@@ -262,11 +261,7 @@ def _math_block_as_image(match: re.Match[str], renderer: MathRenderer) -> str:
 
 def _normalize_math_expression(expression: str) -> str:
     normalized = " ".join(line.strip() for line in expression.strip().splitlines() if line.strip())
-    return (
-        normalized
-        .replace(r"\lVert", r"\Vert")
-        .replace(r"\rVert", r"\Vert")
-    )
+    return normalized.replace(r"\lVert", r"\Vert").replace(r"\rVert", r"\Vert")
 
 
 def _centered_image_tag(
@@ -283,7 +278,7 @@ def _centered_image_tag(
         f'\n\n<table width="100%" border="0" cellspacing="0" cellpadding="0">'
         f'<tr><td align="center">'
         f'<img src="{escaped_src}" alt="{escaped_alt}"{width_attr} />'
-        f'</td></tr></table>\n\n'
+        f"</td></tr></table>\n\n"
     )
 
 

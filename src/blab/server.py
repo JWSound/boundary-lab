@@ -27,7 +27,6 @@ from blab.protocol import (
     solve_request_to_job_inputs,
 )
 
-
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
 DEFAULT_ARTIFACT_ROOT = Path("runs") / "server_jobs"
 ASSET_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -227,10 +226,9 @@ class JobOrchestrator:
                     "initialized",
                     polar_angle_deg=ndarray_to_wire(dataset.polar_angle_deg),
                     radiator_names=np.asarray(dataset.radiator_names).astype(str).tolist(),
-                    sphere_metadata={
-                        key: ndarray_to_wire(value)
-                        for key, value in sphere_metadata.items()
-                    } if sphere_metadata else None,
+                    sphere_metadata={key: ndarray_to_wire(value) for key, value in sphere_metadata.items()}
+                    if sphere_metadata
+                    else None,
                 )
 
             for result in solver.solve_stream(job.frequencies_hz, stop_requested=job.cancel_event.is_set):
@@ -472,10 +470,7 @@ def _safe_asset_filename(filename: str, index: int) -> str:
 
 def _rewrite_config_mesh_paths(config: SimulationConfig, staged_by_original_path: dict[str, str]) -> SimulationConfig:
     mesh_file = staged_by_original_path.get(config.mesh_file, config.mesh_file)
-    meshes = tuple(
-        replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file))
-        for mesh in config.meshes
-    )
+    meshes = tuple(replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file)) for mesh in config.meshes)
     return replace(config, mesh_file=mesh_file, meshes=meshes)
 
 

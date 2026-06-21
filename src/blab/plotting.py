@@ -13,7 +13,6 @@ from matplotlib.colors import BoundaryNorm, ListedColormap
 from blab.defaults import FORMATTED_OUTPUT_NPZ, PLOT_OUTPUT_DIR
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
-
 PLOT_TITLE_SIZE = 11
 PLOT_LABEL_SIZE = 9
 PLOT_TICK_SIZE = 9
@@ -254,10 +253,7 @@ def _save_on_axis_plot(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     on_axis = np.asarray(
-        [
-            np.interp(0.0, angle_deg.astype(float), row.astype(float))
-            for row in horizontal_spl
-        ],
+        [np.interp(0.0, angle_deg.astype(float), row.astype(float)) for row in horizontal_spl],
         dtype=float,
     )
 

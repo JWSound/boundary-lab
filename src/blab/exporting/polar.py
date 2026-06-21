@@ -25,7 +25,9 @@ def export_polar_text_files(
     if include_phase:
         _, _, horizontal_complex, vertical_complex = dataset.as_complex_polar_export_arrays()
         reference_index = int(np.argmin(np.abs(angles)))
-        horizontal_phase = _polar_phase_deg(horizontal_complex, reference_index=reference_index, relative=relative_phase)
+        horizontal_phase = _polar_phase_deg(
+            horizontal_complex, reference_index=reference_index, relative=relative_phase
+        )
         vertical_phase = _polar_phase_deg(vertical_complex, reference_index=reference_index, relative=relative_phase)
 
     written = []

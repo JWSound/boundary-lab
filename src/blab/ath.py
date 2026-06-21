@@ -20,7 +20,6 @@ from blab.mesh_clean import (
     triangle_quality_warning,
 )
 
-
 DRIVEN_DIAPHRAGM_PHYSICAL_NAME = "SD1D1001"
 COMPLEX_RADIATOR_DRIVES_DB = {
     "SD1D1003": 0.0,
@@ -88,8 +87,7 @@ class AthProcessRunner:
         ath_companion_config = ath_exe.parent / "ath.cfg"
         if not ath_companion_config.exists():
             raise FileNotFoundError(
-                f"Ath companion config not found: {ath_companion_config}. "
-                "Ath expects ath.cfg beside ath.exe."
+                f"Ath companion config not found: {ath_companion_config}. Ath expects ath.cfg beside ath.exe."
             )
 
         run_root.mkdir(parents=True, exist_ok=True)

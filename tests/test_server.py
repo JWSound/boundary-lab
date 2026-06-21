@@ -5,8 +5,8 @@ import numpy as np
 
 from blab.config import SimulationConfig
 from blab.live import FrequencyResult
-from blab.server import JobOrchestrator
 from blab.protocol import build_mesh_assets
+from blab.server import JobOrchestrator
 
 
 class FakeSolver:

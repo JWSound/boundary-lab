@@ -11,7 +11,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_SCHEMA_VERSION = 1
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
@@ -96,10 +95,7 @@ def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
     if schema_version != PROJECT_SCHEMA_VERSION:
-        raise ValueError(
-            f"Unsupported project schema version {schema_version}. "
-            f"Expected {PROJECT_SCHEMA_VERSION}."
-        )
+        raise ValueError(f"Unsupported project schema version {schema_version}. Expected {PROJECT_SCHEMA_VERSION}.")
 
     return _normalize_project_payload(dict(payload))
 

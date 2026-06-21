@@ -1,5 +1,5 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QApplication, QTabWidget
 
 from blab.ui.dialogs import MeshDropTable
 from blab.ui.main_window import ADD_SCRIPT_TAB_LABEL, AthScriptEditor, MainWindow
-
 
 _APP = QApplication.instance() or QApplication([])
 

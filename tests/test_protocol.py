@@ -9,8 +9,8 @@ from blab.protocol import (
     simulation_config_from_dict,
     simulation_config_to_dict,
     solve_request_from_config_and_frequencies,
-    solve_request_to_job_inputs,
     solve_request_to_config_and_frequencies,
+    solve_request_to_job_inputs,
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings
 

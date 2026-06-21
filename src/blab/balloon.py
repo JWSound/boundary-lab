@@ -8,7 +8,6 @@ import numpy as np
 from scipy.interpolate import LinearNDInterpolator, griddata
 from scipy.spatial import Delaunay, cKDTree
 
-
 DEFAULT_BALLOON_GRID_THETA = 40
 DEFAULT_BALLOON_GRID_PHI = 80
 

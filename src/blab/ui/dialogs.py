@@ -34,7 +34,6 @@ from blab.solvers.registry import backend_info, backend_label_to_id, normalize_b
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
 
-
 CROSSOVER_TYPE_OPTIONS = [
     ("Off", None),
     ("Butterworth 1st", ("butterworth", 1)),
@@ -152,11 +151,7 @@ class PreferencesDialog(QDialog):
         }
         self.theme_combo.addItems(self.theme_options.keys())
         theme_label = next(
-            (
-                label
-                for label, value in self.theme_options.items()
-                if value == preferences.theme
-            ),
+            (label for label, value in self.theme_options.items() if value == preferences.theme),
             "System",
         )
         self.theme_combo.setCurrentText(theme_label)
@@ -170,11 +165,7 @@ class PreferencesDialog(QDialog):
         self.live_plot_quality_combo.addItems(self.live_plot_quality_options.keys())
         live_plot_quality = normalize_live_plot_quality(preferences.live_plot_quality)
         live_plot_quality_label = next(
-            (
-                label
-                for label, value in self.live_plot_quality_options.items()
-                if value == live_plot_quality
-            ),
+            (label for label, value in self.live_plot_quality_options.items() if value == live_plot_quality),
             "Medium",
         )
         self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
@@ -189,11 +180,7 @@ class PreferencesDialog(QDialog):
         self.solve_backend_combo.addItems(self.solve_backend_options.keys())
         current_backend = normalize_backend_id(preferences.solve_backend)
         backend_label = next(
-            (
-                label
-                for label, value in self.solve_backend_options.items()
-                if value == current_backend
-            ),
+            (label for label, value in self.solve_backend_options.items() if value == current_backend),
             "Bempp (OpenCL CPU)",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
@@ -381,9 +368,7 @@ class PreferencesDialog(QDialog):
         right_column.addWidget(
             self._section(
                 "Mesh Config",
-                (
-                    ("Stitch Tolerance", self.stitch_tolerance_spin, ""),
-                ),
+                (("Stitch Tolerance", self.stitch_tolerance_spin, ""),),
             )
         )
         right_column.addWidget(
@@ -905,6 +890,7 @@ class ChannelConfigDialog(QDialog):
             )
         return tuple(channels)
 
+
 class SourceConfigDialog(QDialog):
     def __init__(
         self,
@@ -959,7 +945,9 @@ class SourceConfigDialog(QDialog):
             channel_combo = QComboBox()
             channel_combo.addItems(self.channel_names)
             channel_combo.setCurrentText(
-                radiator.channel if radiator is not None and radiator.channel in self.channel_names else self.channel_names[0]
+                radiator.channel
+                if radiator is not None and radiator.channel in self.channel_names
+                else self.channel_names[0]
             )
             self.table.setCellWidget(row, 3, channel_combo)
             self.channel_widgets.append(channel_combo)

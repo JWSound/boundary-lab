@@ -78,9 +78,7 @@ class MeshPreview(QWidget):
 
     def load_ath_result(self, result: AthRunResult) -> None:
         self.load_mesh_configs(
-            (
-                MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),
-            ),
+            (MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),),
             driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
             surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
         )
@@ -444,8 +442,12 @@ def _preview_axis_length(points: np.ndarray) -> float:
     return max(extent * 0.56, radius * 1.12, 1.0)
 
 
-def _preview_points_with_images(points: np.ndarray, mirrored_images: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]) -> np.ndarray:
-    image_points = [image_points for _label, image_points, image_triangles, _indices in mirrored_images if image_triangles.size]
+def _preview_points_with_images(
+    points: np.ndarray, mirrored_images: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]
+) -> np.ndarray:
+    image_points = [
+        image_points for _label, image_points, image_triangles, _indices in mirrored_images if image_triangles.size
+    ]
     if not image_points:
         return points
     return np.vstack((points, *image_points))
@@ -462,10 +464,7 @@ def _mirrored_triangle_images_for_preview(
     if not transforms or triangles.size == 0:
         return []
 
-    seen = {
-        _triangle_geometry_key(points, triangle, tolerance)
-        for triangle in np.asarray(triangles, dtype=np.int64)
-    }
+    seen = {_triangle_geometry_key(points, triangle, tolerance) for triangle in np.asarray(triangles, dtype=np.int64)}
     images: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
     for label, signs in transforms:
         mirror_points = np.asarray(points, dtype=float) * np.asarray(signs, dtype=float)
@@ -505,7 +504,9 @@ def _symmetry_preview_transforms(symmetry: str) -> tuple[tuple[str, tuple[float,
     return ()
 
 
-def _triangle_geometry_key(points: np.ndarray, triangle: np.ndarray, tolerance: float) -> tuple[tuple[int, int, int], ...]:
+def _triangle_geometry_key(
+    points: np.ndarray, triangle: np.ndarray, tolerance: float
+) -> tuple[tuple[int, int, int], ...]:
     scale = 1.0 / max(float(tolerance), 1e-12)
     coords = np.rint(np.asarray(points, dtype=float)[triangle] * scale).astype(np.int64)
     return tuple(sorted(tuple(int(value) for value in coord) for coord in coords))

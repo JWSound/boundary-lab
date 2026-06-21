@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import QSize, QTimer, Qt, Slot
+from PySide6.QtCore import QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,8 +20,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSizePolicy,
     QSlider,
-    QSplitter,
     QSpinBox,
+    QSplitter,
     QStackedLayout,
     QVBoxLayout,
     QWidget,
@@ -31,7 +31,6 @@ from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.exporting import export_balloon_data
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.plots import LIVE_ISOBAR_ANGLE_SAMPLES, LIVE_ISOBAR_FREQ_SAMPLES, IsobarCanvas
-
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
 HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
@@ -65,7 +64,9 @@ class BalloonPlotWindow(QDialog):
             import vtk
             from pyvistaqt import QtInteractor
         except ImportError as exc:
-            raise RuntimeError("Install the GUI extras with pyvista and pyvistaqt to use the balloon plot viewer.") from exc
+            raise RuntimeError(
+                "Install the GUI extras with pyvista and pyvistaqt to use the balloon plot viewer."
+            ) from exc
 
         self._pv = pv
         self._vtk = vtk
@@ -134,12 +135,7 @@ class BalloonPlotWindow(QDialog):
         self.loading_label = QLabel("Rendering Balloon...")
         self.loading_label.setAlignment(Qt.AlignCenter)
         self.loading_label.setStyleSheet(
-            "QLabel {"
-            "color: white;"
-            "background: rgba(17, 19, 22, 190);"
-            "font-size: 22px;"
-            "font-weight: 600;"
-            "}"
+            "QLabel {color: white;background: rgba(17, 19, 22, 190);font-size: 22px;font-weight: 600;}"
         )
 
         viewport_stack = QStackedLayout()
@@ -153,12 +149,7 @@ class BalloonPlotWindow(QDialog):
         self.hover_label.setMinimumHeight(24)
         self.hover_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.hover_label.setStyleSheet(
-            "QLabel {"
-            "background: #111316;"
-            "color: #e8e8e8;"
-            "padding-left: 8px;"
-            "padding-right: 8px;"
-            "}"
+            "QLabel {background: #111316;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}"
         )
 
         viewport_container = QWidget()
@@ -731,8 +722,7 @@ def _circle_points_in_plane(
 ) -> np.ndarray:
     angles = np.linspace(0.0, 2.0 * np.pi, int(samples), dtype=float)
     return radius * (
-        np.cos(angles)[:, np.newaxis] * u_axis[np.newaxis, :]
-        + np.sin(angles)[:, np.newaxis] * z_axis[np.newaxis, :]
+        np.cos(angles)[:, np.newaxis] * u_axis[np.newaxis, :] + np.sin(angles)[:, np.newaxis] * z_axis[np.newaxis, :]
     )
 
 

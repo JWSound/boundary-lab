@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
+
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
@@ -24,14 +25,14 @@ class PrepConfig:
     input_polar_npz: Path = SOLVER_OUTPUT_NPZ
     output_npz: Path = FORMATTED_OUTPUT_NPZ
 
-    min_db: float = -30.0   #minimum dB for clipping SPL data
-    max_db: float = 0.0     #maximum dB for clipping SPL data
+    min_db: float = -30.0  # minimum dB for clipping SPL data
+    max_db: float = 0.0  # maximum dB for clipping SPL data
 
     angle_samples: int = 250
     freq_samples: int = 500
-    octave_smoothing: int | float | None = 24  #fractional octave smoothing for plots
-    hor_ref_angle: float = 10                  #normalization angle for horizontal plane
-    vert_ref_angle: float = 10                 #normalization angle for vertical plane
+    octave_smoothing: int | float | None = 24  # fractional octave smoothing for plots
+    hor_ref_angle: float = 10  # normalization angle for horizontal plane
+    vert_ref_angle: float = 10  # normalization angle for vertical plane
     spin_hor_ref_angle: float = 0.0
     spin_vert_ref_angle: float = 0.0
     normalize_polar: bool = True
@@ -60,15 +61,15 @@ def _load_polar_npz(file_path: Path) -> dict[str, np.ndarray]:
         angles_deg = np.asarray(data["polar_angle_deg"], dtype=float)
         horizontal = np.asarray(data["horizontal_spl_norm_db"], dtype=float)
         vertical = np.asarray(data["vertical_spl_norm_db"], dtype=float)
-        horizontal_raw = np.asarray(data["horizontal_spl_db"], dtype=float) if "horizontal_spl_db" in data.files else horizontal
+        horizontal_raw = (
+            np.asarray(data["horizontal_spl_db"], dtype=float) if "horizontal_spl_db" in data.files else horizontal
+        )
         vertical_raw = np.asarray(data["vertical_spl_db"], dtype=float) if "vertical_spl_db" in data.files else vertical
         z_freq = np.asarray(data["impedance_freq_hz"], dtype=float)
         z_real = np.asarray(data["impedance_real"], dtype=float)
         z_imag = np.asarray(data["impedance_imag"], dtype=float)
         z_names = np.asarray(
-            data["impedance_radiator_names"]
-            if "impedance_radiator_names" in data.files
-            else ["Radiator"],
+            data["impedance_radiator_names"] if "impedance_radiator_names" in data.files else ["Radiator"],
         )
 
     if horizontal.ndim != 2 or vertical.ndim != 2:

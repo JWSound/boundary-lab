@@ -26,7 +26,6 @@ import numpy as np
 
 from blab.defaults import EXAMPLE_CLEAN_MESH_PATH, EXAMPLE_MESH_PATH
 
-
 MERGE_TOL = 1e-9
 AREA_TOL = 0.0
 WRITE_BINARY = False
@@ -158,7 +157,9 @@ def _boundary_loops(triangles: np.ndarray) -> List[List[int]]:
     return loops
 
 
-def _edge_on_ignored_boundary_plane(points: np.ndarray, edge: np.ndarray, axes: tuple[str, ...], tolerance: float) -> bool:
+def _edge_on_ignored_boundary_plane(
+    points: np.ndarray, edge: np.ndarray, axes: tuple[str, ...], tolerance: float
+) -> bool:
     axis_indices = {"x": 0, "y": 1, "z": 2}
     edge_points = points[np.asarray(edge, dtype=np.int64)]
     return any(np.all(np.abs(edge_points[:, axis_indices[axis]]) <= tolerance) for axis in axes)
@@ -289,7 +290,11 @@ def _degenerate_mask(points: np.ndarray, triangles: np.ndarray, area_tol: float)
     v1 = points[triangles[:, 1]]
     v2 = points[triangles[:, 2]]
 
-    repeated_vertex = (triangles[:, 0] == triangles[:, 1]) | (triangles[:, 1] == triangles[:, 2]) | (triangles[:, 0] == triangles[:, 2])
+    repeated_vertex = (
+        (triangles[:, 0] == triangles[:, 1])
+        | (triangles[:, 1] == triangles[:, 2])
+        | (triangles[:, 0] == triangles[:, 2])
+    )
     area2 = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)  # 2 * area
     tiny_area = area2 <= (2.0 * area_tol)
     return repeated_vertex | tiny_area
@@ -451,7 +456,9 @@ def _spatial_hash_merge(points: np.ndarray, tol: float) -> np.ndarray:
     return rep
 
 
-def _remove_duplicate_faces(triangles: np.ndarray, cell_data: Dict[str, np.ndarray]) -> Tuple[np.ndarray, Dict[str, np.ndarray], int]:
+def _remove_duplicate_faces(
+    triangles: np.ndarray, cell_data: Dict[str, np.ndarray]
+) -> Tuple[np.ndarray, Dict[str, np.ndarray], int]:
     seen: Dict[Tuple[int, int, int], int] = {}
     keep_indices: List[int] = []
     removed = 0
@@ -555,8 +562,7 @@ def _path_distance(
     if not source_path or not target_path:
         return float("inf")
     distances = [
-        _closest_point_on_path(points[vertex], points, target_path, target_closed)[0]
-        for vertex in source_path
+        _closest_point_on_path(points[vertex], points, target_path, target_closed)[0] for vertex in source_path
     ]
     return float(max(distances))
 
@@ -719,10 +725,7 @@ def _split_stitched_loop_edges(
     stitch_tol: float,
     closed: bool = True,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], int, int]:
-    seam_point_by_vertex_id = {
-        int(vertex_id): seam_points[index]
-        for index, vertex_id in enumerate(seam_vertex_ids)
-    }
+    seam_point_by_vertex_id = {int(vertex_id): seam_points[index] for index, vertex_id in enumerate(seam_vertex_ids)}
     loop_vertex_to_seam: Dict[int, int] = {}
     for vertex in loop:
         distances = np.linalg.norm(seam_points - points[int(vertex)], axis=1)
@@ -731,8 +734,7 @@ def _split_stitched_loop_edges(
             raise ValueError("A boundary vertex could not be mapped onto the stitched seam.")
         loop_vertex_to_seam[int(vertex)] = int(seam_vertex_ids[seam_index])
     edge_to_seam: Dict[Tuple[int, int], List[Tuple[float, int]]] = {
-        tuple(sorted(_path_edge_vertices(loop, i, closed))): []
-        for i in range(_path_edge_count(loop, closed))
+        tuple(sorted(_path_edge_vertices(loop, i, closed))): [] for i in range(_path_edge_count(loop, closed))
     }
     for i in range(_path_edge_count(loop, closed)):
         start_vertex, end_vertex = _path_edge_vertices(loop, i, closed)
@@ -761,11 +763,9 @@ def _split_stitched_loop_edges(
         if best_edge is None or best_distance > stitch_tol:
             raise ValueError("A seam vertex could not be projected onto one of the stitched boundary loops.")
         projection_tol = max(1e-8, stitch_tol * 1e-6)
-        matching_edges = [
-            (edge_key, t)
-            for distance, edge_key, t in edge_distances
-            if distance <= projection_tol
-        ] or [(best_edge, best_t)]
+        matching_edges = [(edge_key, t) for distance, edge_key, t in edge_distances if distance <= projection_tol] or [
+            (best_edge, best_t)
+        ]
         for edge_key, t in matching_edges:
             edge_to_seam[edge_key].append((t, int(seam_vertex_ids[seam_index])))
 
@@ -802,7 +802,9 @@ def _split_stitched_loop_edges(
                 sequence.append(vertex_id)
         if len(sequence) < 2:
             raise ValueError("Stitch boundary edge does not contain enough seam vertices.")
-        replacement = [np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64) for i in range(len(sequence) - 1)]
+        replacement = [
+            np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64) for i in range(len(sequence) - 1)
+        ]
         replacement_by_triangle.setdefault(triangle_index, []).extend(replacement)
         split_edges += 1
         split_triangles += len(replacement)
@@ -812,7 +814,9 @@ def _split_stitched_loop_edges(
     for triangle_index, triangle in enumerate(triangles):
         replacements = replacement_by_triangle.get(triangle_index)
         if replacements is None:
-            remapped = np.asarray([loop_vertex_to_seam.get(int(vertex), int(vertex)) for vertex in triangle], dtype=np.int64)
+            remapped = np.asarray(
+                [loop_vertex_to_seam.get(int(vertex), int(vertex)) for vertex in triangle], dtype=np.int64
+            )
             new_triangles.append(remapped)
             source_indices.append(triangle_index)
             continue

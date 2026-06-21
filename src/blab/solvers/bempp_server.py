@@ -16,8 +16,8 @@ from blab.protocol import (
 from blab.solvers.base import (
     FrequencyResult,
     SolveMetadata,
-    SolveRequest,
     SolverCapabilities,
+    SolveRequest,
 )
 
 
@@ -104,10 +104,7 @@ class BemppServerSession:
                 self._metadata = SolveMetadata(
                     polar_angle_deg=ndarray_from_wire(event["polar_angle_deg"]),
                     radiator_names=np.asarray(event.get("radiator_names", ["Radiator"])),
-                    sphere_metadata={
-                        key: ndarray_from_wire(value)
-                        for key, value in sphere_metadata.items()
-                    },
+                    sphere_metadata={key: ndarray_from_wire(value) for key, value in sphere_metadata.items()},
                 )
                 self._emit_status("Solving on server...")
                 return

@@ -42,7 +42,7 @@ def test_help_pdf_combined_markdown_normalizes_images_and_math(tmp_path: Path) -
     assert (
         '<table width="100%" border="0" cellspacing="0" cellpadding="0"><tr><td align="center">'
         '<img src="assets/scripteditor.png" alt="Script Editor" width="200" />'
-        '</td></tr></table>'
+        "</td></tr></table>"
     ) in markdown
     assert "`k = omega / c`" in markdown
     assert "```math\nq = dp/dn\n```" in markdown
