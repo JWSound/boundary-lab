@@ -56,8 +56,9 @@ from blab.live import (
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
+from blab.solvers.http_server import server_health_supports_symmetry
 from blab.solvers.registry import backend_info
-from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
+from blab.symmetry import SymmetryValidationError, validate_reduced_mesh_configs
 from blab.ui.ath_worker import AthGenerationWorker
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import (
@@ -197,6 +198,8 @@ class MainWindow(QMainWindow):
         self.stitch_imported_meshes = False
         self.symmetry = "off"
         self.preferences = self._load_preferences()
+        self.server_health_payload: dict | None = None
+        self.server_health_url: str | None = None
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = default_scripts("")
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
@@ -1059,11 +1062,47 @@ class MainWindow(QMainWindow):
             cleaned_meshes.append(replace(mesh, cleaned_file=str(cleaned_path)))
         return tuple(cleaned_meshes)
 
+    def _server_health_matches_preferences(self, preferences: GuiPreferences | None = None) -> bool:
+        prefs = preferences or self.preferences
+        if prefs.solve_backend != "server" or self.server_health_payload is None or self.server_health_url is None:
+            return False
+        return self.server_health_url.rstrip("/") == prefs.solve_server_url.rstrip("/")
+
+    def _backend_supports_symmetry(
+        self,
+        backend_id: str,
+        *,
+        preferences: GuiPreferences | None = None,
+        server_health_payload: dict | None = None,
+    ) -> bool:
+        if backend_id != "server":
+            return backend_info(backend_id).capabilities.supports_symmetry
+        if server_health_payload is not None:
+            return server_health_supports_symmetry(server_health_payload)
+        if self._server_health_matches_preferences(preferences):
+            return server_health_supports_symmetry(self.server_health_payload)
+        return False
+
+    def _effective_symmetry_for_preferences(
+        self,
+        symmetry: str,
+        preferences: GuiPreferences,
+        *,
+        server_health_payload: dict | None = None,
+    ) -> str:
+        if symmetry == "off" or self._backend_supports_symmetry(
+            preferences.solve_backend,
+            preferences=preferences,
+            server_health_payload=server_health_payload,
+        ):
+            return symmetry
+        return "off"
+
     def _selected_backend_supports_symmetry(self) -> bool:
-        return backend_info(self.preferences.solve_backend).capabilities.supports_symmetry
+        return self._backend_supports_symmetry(self.preferences.solve_backend)
 
     def _disable_symmetry_if_backend_unsupported(self) -> bool:
-        effective_symmetry = effective_symmetry_for_backend(self.symmetry, self.preferences.solve_backend)
+        effective_symmetry = self._effective_symmetry_for_preferences(self.symmetry, self.preferences)
         if effective_symmetry == self.symmetry:
             return False
         self.symmetry = effective_symmetry
@@ -1840,8 +1879,16 @@ class MainWindow(QMainWindow):
             return
         preferences = dialog.preferences()
         dialog.deleteLater()
+        checked_server_health = None
+        if dialog.server_health_payload is not None and dialog.server_health_url == preferences.solve_server_url.rstrip("/"):
+            checked_server_health = dialog.server_health_payload
         symmetry_will_be_disabled = (
-            effective_symmetry_for_backend(self.symmetry, preferences.solve_backend) != self.symmetry
+            self._effective_symmetry_for_preferences(
+                self.symmetry,
+                preferences,
+                server_health_payload=checked_server_health,
+            )
+            != self.symmetry
         )
         requires_invalidation = symmetry_will_be_disabled or preferences_require_solve_invalidation(
             previous_preferences, preferences
@@ -1850,6 +1897,15 @@ class MainWindow(QMainWindow):
             return
 
         self.preferences = preferences
+        if checked_server_health is not None and preferences.solve_backend == "server":
+            self.server_health_payload = checked_server_health
+            self.server_health_url = preferences.solve_server_url.rstrip("/")
+        elif (
+            preferences.solve_backend != previous_preferences.solve_backend
+            or preferences.solve_server_url != previous_preferences.solve_server_url
+        ):
+            self.server_health_payload = None
+            self.server_health_url = None
         self._save_preferences()
         symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)

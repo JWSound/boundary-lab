@@ -28,7 +28,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
             is_remote=True,
         ),
         factory=lambda **kwargs: _create_bempp_server_backend(**kwargs),
-        description="Use the Boundary Lab bempp-cl solve server.",
+        description="Use a Boundary Lab HTTP solve server.",
     ),
     "beat_cuda": SolverBackendInfo(
         backend_id="beat_cuda",
@@ -37,6 +37,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
             supports_remote_assets=False,
             supports_parallel_workers=False,
             supports_symmetry=True,
+            supports_channel_resynthesis=True,
             is_remote=False,
         ),
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cuda", **kwargs),
@@ -49,6 +50,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
             supports_remote_assets=False,
             supports_parallel_workers=False,
             supports_symmetry=True,
+            supports_channel_resynthesis=True,
             is_remote=False,
         ),
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
@@ -61,6 +63,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
             supports_remote_assets=False,
             supports_parallel_workers=False,
             supports_symmetry=True,
+            supports_channel_resynthesis=True,
             is_remote=False,
         ),
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="rocm", **kwargs),
@@ -102,8 +105,11 @@ def create_backend(backend_id: str, **kwargs: Any) -> SolverBackend:
 def normalize_backend_id(backend_id: str) -> str:
     text = str(backend_id or "").strip()
     aliases = {
+        "bempp": "local",
+        "bempp_cpu": "local",
         "bempp_local": "local",
         "bempp_server": "server",
+        "http_server": "server",
         "local_bempp": "local",
         "local_bempp_cl": "local",
         "julia_local": "beat_cuda",
@@ -134,9 +140,13 @@ def _create_bempp_local_backend() -> SolverBackend:
 
 
 def _create_bempp_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:
-    from blab.solvers.bempp_server import BemppServerBackend
+    return _create_http_server_backend(server_url=server_url)
 
-    return BemppServerBackend(server_url)
+
+def _create_http_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:
+    from blab.solvers.http_server import HttpServerBackend
+
+    return HttpServerBackend(server_url)
 
 
 def _create_beat_engine_backend(

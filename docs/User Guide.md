@@ -83,7 +83,7 @@ The preferences menu contains various application-level settings for Boundary La
     3. **BEAT Engine (CPU)** - Use the Julia-based CPU solver path. Uses the local CPU BLAS/LAPACK stack and supports BEAT Engine X/XY symmetry acceleration.
     4. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
-- `Solve Server URL`: The address and port of the server if using a server-based solver backend. 
+- `Solve Server URL`: The address and port of the server if using a server-based solver backend. Use `Check Server` to query server health and update advertised feature availability, including BEAT Engine server-side symmetry support. 
 
 ## Command Strip
 The command strip is located along the bottom of the main window and includes controls to generate Ath meshes, run solves, and configure the project parameters.

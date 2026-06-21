@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
@@ -187,6 +188,10 @@ class PreferencesDialog(QDialog):
 
         self.solve_server_url_edit = QLineEdit()
         self.solve_server_url_edit.setText(preferences.solve_server_url)
+        self.server_health_payload: dict | None = None
+        self.server_health_url: str | None = None
+        self.check_server_button = QPushButton("Check Server")
+        self.check_server_button.clicked.connect(self._check_server)
 
         self.gmres_spin = QDoubleSpinBox()
         self.gmres_spin.setRange(1e-8, 1e-2)
@@ -217,7 +222,9 @@ class PreferencesDialog(QDialog):
         def update_backend_fields(label: str) -> None:
             backend_id = self.solve_backend_options.get(label, "local")
             uses_bempp = backend_id in {"local", "server"}
-            self.solve_server_url_edit.setEnabled(backend_info(backend_id).capabilities.is_remote)
+            uses_remote = backend_info(backend_id).capabilities.is_remote
+            self.solve_server_url_edit.setEnabled(uses_remote)
+            self.check_server_button.setEnabled(uses_remote)
             self.gmres_spin.setEnabled(uses_bempp)
             self.burton_miller_check.setEnabled(uses_bempp)
 
@@ -316,6 +323,11 @@ class PreferencesDialog(QDialog):
                     ("BEM Solver", self.solve_backend_combo, ""),
                     ("Solve Server URL", self.solve_server_url_edit, ""),
                     (
+                        "",
+                        self.check_server_button,
+                        "Query the configured solve server and update advertised capabilities.",
+                    ),
+                    (
                         "GMRES Tolerance",
                         self.gmres_spin,
                         "Solution accuracy for the BEMPP iterative solver. Lower values offer higher quality solves but take longer.",
@@ -388,6 +400,28 @@ class PreferencesDialog(QDialog):
         layout.addLayout(columns)
         layout.addWidget(buttons)
         self.resize(820, 420)
+
+    def _check_server(self) -> None:
+        url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
+        try:
+            payload = query_server_health(url)
+        except Exception as exc:
+            self.server_health_payload = None
+            self.server_health_url = None
+            QMessageBox.warning(self, "Check Server", f"Failed to connect to solve server:\n{exc}")
+            return
+
+        self.server_health_payload = payload
+        self.server_health_url = url.rstrip("/")
+        capabilities = payload.get("capabilities", {}) if isinstance(payload.get("capabilities", {}), dict) else {}
+        capability_lines = [
+            f"Solver: {payload.get('solver_label') or payload.get('solver') or 'Unknown'}",
+            f"Backend: {payload.get('backend') or payload.get('solver') or 'Unknown'}",
+            f"Symmetry: {'yes' if capabilities.get('supports_symmetry') else 'no'}",
+            f"Spherical sampling: {'yes' if capabilities.get('supports_spherical_sampling') else 'no'}",
+            f"Channel resynthesis: {'yes' if capabilities.get('supports_channel_resynthesis') else 'no'}",
+        ]
+        QMessageBox.information(self, "Check Server", "Solve server is reachable.\n\n" + "\n".join(capability_lines))
 
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:

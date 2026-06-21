@@ -5,6 +5,8 @@ import numpy as np
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
+from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
+from blab.solvers.http_server import HttpServerBackend, HttpServerSession, server_health_supports_symmetry
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -33,8 +35,11 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert labels["BEAT Engine (CPU)"] == "beat_cpu"
     assert labels["BEAT Engine (ROCm)"] == "beat_rocm"
     assert labels["Bempp (OpenCL CPU)"] == "local"
+    assert normalize_backend_id("bempp") == "local"
+    assert normalize_backend_id("bempp_cpu") == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
+    assert normalize_backend_id("http_server") == "server"
     assert normalize_backend_id("julia_local") == "beat_cuda"
     assert normalize_backend_id("local_julia") == "beat_cuda"
     assert normalize_backend_id("beat") == "beat_cuda"
@@ -45,6 +50,8 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("amdgpu") == "beat_rocm"
     assert JuliaLocalBackend is BeatEngineBackend
     assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
+    assert BemppServerBackend is HttpServerBackend
+    assert BemppServerSession is HttpServerSession
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
@@ -104,6 +111,12 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
     assert BeatEngineBackend(beat_engine_backend="rocm").julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+
+
+def test_server_health_supports_symmetry_reads_capability_payload() -> None:
+    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": True}}) is True
+    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": False}}) is False
+    assert server_health_supports_symmetry({}) is False
 
 
 def test_bempp_backend_rejects_symmetry() -> None:

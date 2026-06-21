@@ -6,7 +6,14 @@ import numpy as np
 from blab.config import SimulationConfig
 from blab.live import FrequencyResult
 from blab.protocol import build_mesh_assets
-from blab.server import JobOrchestrator
+from blab.server import (
+    BackendServerSolver,
+    BlabServer,
+    JobOrchestrator,
+    _build_arg_parser,
+    normalize_server_solver_id,
+)
+from blab.solvers.base import SolveMetadata
 
 
 class FakeSolver:
@@ -104,3 +111,119 @@ def test_orchestrator_stages_uploaded_mesh_assets_before_solving(tmp_path: Path)
         assert staged_path.parent == completed.artifact_dir / "assets"
     finally:
         orchestrator.shutdown()
+
+
+def test_server_parser_accepts_backend_solver_options() -> None:
+    args = _build_arg_parser().parse_args(
+        [
+            "--solver",
+            "beat_cpu",
+            "--julia-executable",
+            "julia-custom",
+            "--julia-threads",
+            "4",
+        ]
+    )
+
+    assert args.solver == "beat_cpu"
+    assert args.julia_executable == "julia-custom"
+    assert args.julia_threads == "4"
+    assert _build_arg_parser().parse_args([]).solver == "bempp_cpu"
+    assert normalize_server_solver_id("bempp_cpu") == "bempp_cpu"
+    assert normalize_server_solver_id("local") == "bempp_cpu"
+    assert normalize_server_solver_id("cuda") == "beat_cuda"
+
+    try:
+        normalize_server_solver_id("server")
+    except ValueError as exc:
+        assert "cannot use another solve server" in str(exc)
+    else:
+        raise AssertionError("server should not be accepted as a server-side backend")
+
+
+class CapturingBackend:
+    def __init__(self):
+        self.request = None
+
+    def create_session(self, request):
+        self.request = request
+        return CapturingSession(request)
+
+
+class CapturingSession:
+    def __init__(self, request):
+        self.request = request
+        self.metadata = SolveMetadata(
+            polar_angle_deg=np.array([0.0], dtype=np.float32),
+            radiator_names=np.array(["driver"]),
+        )
+
+    def solve_stream(self, *, stop_requested=None):
+        yield FrequencyResult(
+            freq_hz=float(self.request.frequencies_hz[0]),
+            horizontal_spl_norm_db=np.array([0.0], dtype=np.float32),
+            vertical_spl_norm_db=np.array([0.0], dtype=np.float32),
+            impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+            horizontal_spl_db=np.array([90.0], dtype=np.float32),
+            vertical_spl_db=np.array([90.0], dtype=np.float32),
+        )
+
+    def stop(self) -> None:
+        return None
+
+
+def test_backend_server_solver_initializes_backend_with_job_frequencies() -> None:
+    backend = CapturingBackend()
+    solver = BackendServerSolver(
+        SimulationConfig(mesh_file="mesh.msh"),
+        backend=backend,
+    )
+
+    solver.initialize(np.array([123.0], dtype=np.float32))
+
+    assert backend.request is not None
+    assert backend.request.frequencies_hz.tolist() == [123.0]
+    assert solver.polar_angle_deg.tolist() == [0.0]
+    assert solver.radiator_names.tolist() == ["driver"]
+    results = list(solver.solve_stream(np.array([456.0], dtype=np.float32)))
+    assert len(results) == 1
+    assert results[0].freq_hz == 123.0
+
+
+def test_server_health_reports_configured_solver_capabilities(tmp_path: Path) -> None:
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        artifact_root=tmp_path,
+        solver_factory=FakeSolver,
+    )
+    server = BlabServer(("127.0.0.1", 0), orchestrator, solver_id="beat_cpu")
+    try:
+        payload = server.health_payload()
+
+        assert payload["status"] == "ok"
+        assert payload["solver"] == "beat_cpu"
+        assert payload["backend"] == "beat_cpu"
+        assert payload["solver_label"] == "BEAT Engine (CPU)"
+        assert payload["capabilities"]["supports_symmetry"] is True
+    finally:
+        orchestrator.shutdown()
+        server.server_close()
+
+
+def test_server_health_reports_bempp_cpu_as_public_solver_name(tmp_path: Path) -> None:
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        artifact_root=tmp_path,
+        solver_factory=FakeSolver,
+    )
+    server = BlabServer(("127.0.0.1", 0), orchestrator, solver_id="local")
+    try:
+        payload = server.health_payload()
+
+        assert payload["solver"] == "bempp_cpu"
+        assert payload["backend"] == "local"
+        assert payload["solver_label"] == "Bempp (OpenCL CPU)"
+        assert payload["capabilities"]["supports_symmetry"] is False
+    finally:
+        orchestrator.shutdown()
+        server.server_close()

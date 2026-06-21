@@ -289,10 +289,16 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
     assert '"Solve Server URL", self.solve_server_url_edit' in solver_config_block
+    assert 'self.check_server_button = QPushButton("Check Server")' in dialog_source
+    assert '"", self.check_server_button' in solver_config_block or 'self.check_server_button,' in solver_config_block
+    assert 'self.check_server_button.setEnabled(uses_remote)' in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert 'uses_bempp = backend_id in {"local", "server"}' in dialog_source
+    assert "self.server_health_payload: dict | None = None" in main_source
+    assert "def _backend_supports_symmetry(" in main_source
+    assert "server_health_supports_symmetry" in main_source
     assert "self.gmres_spin.setEnabled(uses_bempp)" in dialog_source
     assert "self.burton_miller_check.setEnabled(uses_bempp)" in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source

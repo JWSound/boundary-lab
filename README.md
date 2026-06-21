@@ -33,7 +33,7 @@ Boundary Lab currently has 3 selectable BEM solver backends in the application p
 * Latest NVIDIA Studio/Game Ready driver recommended
 * [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
-To prepare the Julia environment from the repository root:
+To prepare the Julia environment, from the repository root run:
 
 ```bash
 julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
@@ -42,7 +42,7 @@ julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
 
 GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 
-| Total Elements | Practical VRAM Budget |
+| Total Elements | Estimated VRAM |
 |---:|---:|
 | 1,000 | ~50-100 MB |
 | 2,000 | ~200-300 MB |
@@ -60,7 +60,7 @@ GPU solving VRAM requirements scale quadratically with mesh element count. Below
 * Intel, AMD, or ARM CPU
 * [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
-To prepare the Julia environment from the repository root:
+To prepare the Julia environment, from the repository root run:
 
 ```bash
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
@@ -98,23 +98,34 @@ runs/ath_output
 ```
 
 
-## Run A Solve Server
+## Boundary Lab Server
 
 Boundary Lab can also run a local or LAN-accessible job server that accepts solve
 jobs and streams per-frequency results back as NDJSON events:
 
 ```bash
-blab server --host 127.0.0.1 --port 8765
+blab server --host 127.0.0.1 --port 8765 --solver bempp_cpu
+blab server --host 127.0.0.1 --port 8765 --solver beat_cpu --julia-threads auto
+blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
 ```
 
-To use it from the GUI application, open `Edit > Preferences`, set `Solve Backend` to
-`Server`, and set `Solve Server URL` to the server address. For another machine
-on the LAN, bind the server to that machine's LAN address or `0.0.0.0` and use
+Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
+`beat_cuda`, and `beat_rocm`. ROCm is accepted as a server selector but the ROCm
+BEAT Engine implementation is still a placeholder and will report not implemented
+until that engine path is completed. For BEAT Engine solvers, use
+`--julia-executable` and `--julia-threads` to point the server at the intended
+Julia installation and thread count.
+
+To use it from the GUI application, open `Edit > Preferences`, set `BEM Solver` to
+`Server`, and set `Solve Server URL` to the server address. Use `Check Server` to
+query `/health`; the app uses the advertised capabilities, such as mesh
+symmetry support for feature availability. For another machine on the LAN, bind
+the server to that machine's LAN address or `0.0.0.0` and use
 `http://<server-ip>:8765` in the client. The GUI uploads the solver mesh files
 with each server job, so the server does not need access to the client's local
 paths.
 
-API surface:
+Server API:
 
 - `POST /jobs` submits a solve request with `SimulationConfig` and `frequencies_hz`.
 - `GET /jobs/{job_id}` returns job status and artifact links.

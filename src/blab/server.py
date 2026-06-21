@@ -26,10 +26,65 @@ from blab.protocol import (
     ndarray_to_wire,
     solve_request_to_job_inputs,
 )
+from blab.solvers.base import SolveRequest, SolverBackend
+from blab.solvers.registry import backend_info, create_backend, normalize_backend_id
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
 DEFAULT_ARTIFACT_ROOT = Path("runs") / "server_jobs"
 ASSET_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+SERVER_SOLVER_BACKENDS = {"bempp_cpu", "beat_cpu", "beat_cuda", "beat_rocm"}
+SERVER_SOLVER_BACKEND_IDS = {
+    "bempp_cpu": "local",
+    "beat_cpu": "beat_cpu",
+    "beat_cuda": "beat_cuda",
+    "beat_rocm": "beat_rocm",
+}
+
+
+class BackendServerSolver:
+    """Server-side facade over the shared solver backend contract."""
+
+    def __init__(
+        self,
+        config: SimulationConfig,
+        *,
+        backend: SolverBackend,
+    ) -> None:
+        self.config = config
+        self.backend = backend
+        self.session = None
+
+    def initialize(self, frequencies_hz: np.ndarray) -> None:
+        self.session = self.backend.create_session(
+            SolveRequest(
+                self.config,
+                np.asarray(frequencies_hz, dtype=np.float32),
+            )
+        )
+
+    @property
+    def polar_angle_deg(self) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.polar_angle_deg
+
+    @property
+    def radiator_names(self) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.radiator_names
+
+    @property
+    def sphere_metadata(self) -> dict[str, np.ndarray] | None:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.sphere_metadata
+
+    def solve_stream(self, frequencies, *, stop_requested=None):
+        if self.session is None:
+            self.initialize(np.asarray(frequencies, dtype=np.float32))
+        yield from self.session.solve_stream(stop_requested=stop_requested)
+
 
 
 @dataclass
@@ -211,6 +266,9 @@ class JobOrchestrator:
 
         try:
             solver = self.solver_factory(job.config)
+            initialize = getattr(solver, "initialize", None)
+            if callable(initialize):
+                initialize(job.frequencies_hz)
             sphere_metadata = solver.sphere_metadata or {}
             dataset = LiveSolveDataset(
                 polar_angle_deg=np.asarray(solver.polar_angle_deg, dtype=np.float32),
@@ -320,9 +378,31 @@ class JobOrchestrator:
 
 
 class BlabServer(ThreadingHTTPServer):
-    def __init__(self, server_address, orchestrator: JobOrchestrator):
+    def __init__(self, server_address, orchestrator: JobOrchestrator, *, solver_id: str = "bempp_cpu"):
         super().__init__(server_address, BlabRequestHandler)
         self.orchestrator = orchestrator
+        self.solver_id = normalize_server_solver_id(solver_id)
+
+    def health_payload(self) -> dict[str, Any]:
+        backend_id = server_solver_backend_id(self.solver_id)
+        info = backend_info(backend_id)
+        capabilities = info.capabilities
+        return {
+            "status": "ok",
+            "solver": self.solver_id,
+            "backend": info.backend_id,
+            "solver_label": info.label,
+            "capabilities": {
+                "supports_spherical_sampling": capabilities.supports_spherical_sampling,
+                "supports_impedance": capabilities.supports_impedance,
+                "supports_burton_miller": capabilities.supports_burton_miller,
+                "supports_flat_target_normalization": capabilities.supports_flat_target_normalization,
+                "supports_channel_resynthesis": capabilities.supports_channel_resynthesis,
+                "supports_cancellation": capabilities.supports_cancellation,
+                "supports_streaming": capabilities.supports_streaming,
+                "supports_symmetry": capabilities.supports_symmetry,
+            },
+        }
 
 
 class BlabRequestHandler(BaseHTTPRequestHandler):
@@ -333,7 +413,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         parts = [part for part in parsed.path.split("/") if part]
 
         if parsed.path == "/health":
-            self._send_json({"status": "ok"})
+            self._send_json(self.server.health_payload())
             return
 
         if len(parts) == 2 and parts[0] == "jobs":
@@ -453,6 +533,21 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog, description="Run a Boundary Lab solve job server.")
     parser.add_argument("--host", default="127.0.0.1", help="Host/IP address to bind.")
     parser.add_argument("--port", type=int, default=8765, help="TCP port to bind.")
+    parser.add_argument(
+        "--solver",
+        default="bempp_cpu",
+        help="Server-side solver backend: bempp_cpu, beat_cpu, beat_cuda, or beat_rocm.",
+    )
+    parser.add_argument(
+        "--julia-executable",
+        default="julia",
+        help="Julia executable path for BEAT Engine server solvers.",
+    )
+    parser.add_argument(
+        "--julia-threads",
+        default="auto",
+        help="Julia thread count for BEAT Engine server solvers.",
+    )
     parser.add_argument("--max-running-jobs", type=int, default=1, help="Maximum concurrent solve jobs.")
     parser.add_argument(
         "--artifact-dir",
@@ -474,20 +569,69 @@ def _rewrite_config_mesh_paths(config: SimulationConfig, staged_by_original_path
     return replace(config, mesh_file=mesh_file, meshes=meshes)
 
 
+def normalize_server_solver_id(solver_id: str) -> str:
+    text = str(solver_id or "").strip().lower()
+    normalized = normalize_backend_id(text)
+    if normalized == "server":
+        raise ValueError("The solve server cannot use another solve server as its own backend.")
+    if normalized == "local":
+        return "bempp_cpu"
+    if normalized in SERVER_SOLVER_BACKENDS:
+        return normalized
+    supported = ", ".join(sorted(SERVER_SOLVER_BACKENDS))
+    raise ValueError(f"Unsupported server solver backend '{solver_id}'. Expected one of: {supported}.")
+
+
+def server_solver_backend_id(solver_id: str) -> str:
+    return SERVER_SOLVER_BACKEND_IDS[normalize_server_solver_id(solver_id)]
+
+
+def create_server_solver_factory(
+    solver_id: str,
+    *,
+    julia_executable: str = "julia",
+    julia_threads: str | int = "auto",
+):
+    normalized_solver = normalize_server_solver_id(solver_id)
+    backend = create_backend(
+        server_solver_backend_id(normalized_solver),
+        julia_executable=julia_executable,
+        julia_threads=julia_threads,
+    )
+
+    def _factory(config: SimulationConfig) -> BackendServerSolver:
+        return BackendServerSolver(config, backend=backend)
+
+    return _factory
+
+
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     args = _build_arg_parser(prog=prog).parse_args(argv)
+    solver_id = normalize_server_solver_id(args.solver)
     orchestrator = JobOrchestrator(
         max_running_jobs=args.max_running_jobs,
         artifact_root=args.artifact_dir,
+        solver_factory=create_server_solver_factory(
+            solver_id,
+            julia_executable=args.julia_executable,
+            julia_threads=args.julia_threads,
+        ),
     )
-    server = BlabServer((args.host, args.port), orchestrator)
-    print(f"Boundary Lab server listening on http://{args.host}:{args.port}")
+    server = BlabServer((args.host, args.port), orchestrator, solver_id=solver_id)
+    solver_label = backend_info(server_solver_backend_id(solver_id)).label
+    print(f"Boundary Lab server listening on http://{args.host}:{args.port} using {solver_label}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down Boundary Lab server.")
     finally:
         orchestrator.shutdown()
+        try:
+            from blab.solvers.beat_engine_backend import shutdown_beat_engine_workers
+
+            shutdown_beat_engine_workers()
+        except Exception:
+            pass
         server.server_close()
 
 
