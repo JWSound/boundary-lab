@@ -89,3 +89,11 @@ def test_preference_change_classification() -> None:
         baseline,
         GuiPreferences(theme="dark", solve_server_url="http://127.0.0.1:9999"),
     )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(live_plot_streaming=False),
+    )
+    assert not preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(live_plot_streaming=False),
+    )

@@ -2137,6 +2137,7 @@ class MainWindow(QMainWindow):
         )
 
         self.live_dataset = None
+        self._clear_plots()
         self.balloon_plot_action.setEnabled(False)
         self.solve_expected_count = int(ordered_freqs.size)
         self.solve_failed = False
@@ -2210,6 +2211,8 @@ class MainWindow(QMainWindow):
             f"Solved {self.live_dataset.solved_count}/{self.freq_count_spin.value()} "
             f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
         )
+        if not self.preferences.live_plot_streaming:
+            return
         self._refresh_plots()
 
     @Slot(str)
@@ -2240,8 +2243,12 @@ class MainWindow(QMainWindow):
             if solve_completed:
                 self.status_label.setText("Rendering final high-resolution plots...")
                 QApplication.processEvents()
-            self._refresh_plots()
-            self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
+            if self.preferences.live_plot_streaming or solve_completed:
+                self._refresh_plots()
+            self._final_isobar_plots_rendered = (
+                solve_completed
+                and bool(self._visible_isobar_plots())
+            )
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
             self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)

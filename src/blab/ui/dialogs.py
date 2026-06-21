@@ -178,6 +178,11 @@ class PreferencesDialog(QDialog):
         )
         self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
 
+        self.live_plot_streaming_check = QCheckBox("Enabled")
+        self.live_plot_streaming_check.setChecked(preferences.live_plot_streaming)
+        self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)
+        self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)
+
         self.solve_backend_combo = QComboBox()
         self.solve_backend_options = backend_label_to_id()
         self.solve_backend_combo.addItems(self.solve_backend_options.keys())
@@ -354,6 +359,7 @@ class PreferencesDialog(QDialog):
                 "Application",
                 (
                     ("Theme", self.theme_combo),
+                    ("Live Plot Streaming", self.live_plot_streaming_check),
                     ("Live Plot Quality", self.live_plot_quality_combo),
                     ("BEM Solver", self.solve_backend_combo),
                     ("Solve Server URL", self.solve_server_url_edit),
@@ -386,6 +392,7 @@ class PreferencesDialog(QDialog):
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
+            live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),

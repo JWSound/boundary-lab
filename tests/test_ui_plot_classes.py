@@ -243,13 +243,22 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"high": 500' in settings_source
     assert "def live_plot_freq_samples(" in settings_source
     assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
+    assert '"Live Plot Streaming", self.live_plot_streaming_check' in dialog_source
+    assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
+    assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert '"Balloon Sampling", self.spherical_sampling_check' in dialog_source
     assert '"Balloon Angle Precision", self.balloon_angle_precision_spin' in dialog_source
     assert '"preferences/live_plot_quality"' in settings_source
+    assert '"preferences/live_plot_streaming"' in settings_source
+    assert "live_plot_streaming: bool = True" in settings_source
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
+    start_solve = main_source[main_source.index("def start_solve"):main_source.index("    @Slot()", main_source.index("def start_solve"))]
+    assert "self.live_dataset = None\n        self._clear_plots()" in start_solve
+    assert "if not self.preferences.live_plot_streaming:" in main_source
+    assert "if self.preferences.live_plot_streaming or solve_completed:" in main_source
     assert "FINAL_ISOBAR_ANGLE_SAMPLES = 1000" in plot_source
     assert "FINAL_ISOBAR_FREQ_SAMPLES = 500" in plot_source
     assert 'LIVE_ISOBAR_SHADING = "nearest"' in plot_source
@@ -327,7 +336,8 @@ def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> 
     assert "self.capture_contours_button" not in source
     assert "self.clear_contours_button" not in source
     assert "self._final_isobar_plots_rendered = False" in source
-    assert "self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())" in source
+    assert "self._final_isobar_plots_rendered = (" in source
+    assert "solve_completed\n                and bool(self._visible_isobar_plots())" in source
     assert "self._use_final_isobar_resolution" in source
     assert "and self._final_isobar_plots_rendered" in source
     assert "capture_action.setEnabled(capture_base_enabled and visible)" in source

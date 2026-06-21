@@ -26,6 +26,7 @@ class GuiPreferences:
     theme: str = "system"
     solve_backend: str = "local"
     solve_server_url: str = "http://127.0.0.1:8765"
+    live_plot_streaming: bool = True
     live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
@@ -81,6 +82,11 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             settings_str(settings, "preferences/solve_backend", defaults.solve_backend)
         ),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
+        live_plot_streaming=settings_bool(
+            settings,
+            "preferences/live_plot_streaming",
+            defaults.live_plot_streaming,
+        ),
         live_plot_quality=normalize_live_plot_quality(
             settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
         ),
@@ -145,6 +151,7 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
+    settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
     settings.setValue("preferences/gmres_tolerance", preferences.gmres_tolerance)
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
