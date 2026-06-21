@@ -19,3 +19,23 @@ from blab.solvers.beat_engine_backend import (
     shutdown_beat_engine_workers,
     shutdown_julia_workers,
 )
+
+__all__ = [
+    "DEFAULT_BEAT_ENGINE_PROJECT",
+    "DEFAULT_BEAT_ENGINE_ROCM_PROJECT",
+    "DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT",
+    "DEFAULT_JULIA_PROJECT",
+    "DEFAULT_JULIA_SOLVER_SCRIPT",
+    "BeatEngineBackend",
+    "BeatEngineCpuBackend",
+    "BeatEngineCudaBackend",
+    "BeatEngineRocmBackend",
+    "BeatEngineSession",
+    "BeatEngineWorkerProcess",
+    "JuliaLocalBackend",
+    "JuliaLocalSession",
+    "JuliaWorkerProcess",
+    "_resolve_julia_threads",
+    "shutdown_beat_engine_workers",
+    "shutdown_julia_workers",
+]

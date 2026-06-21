@@ -253,8 +253,7 @@ class LiveSolveDataset:
             ):
                 return {}
             weights = self._channel_basis_weights(result)
-            for channel_index, channel_name_raw in enumerate(np.asarray(result.channel_names).tolist()):
-                channel_name = str(channel_name_raw)
+            for channel_index in range(np.asarray(result.channel_names).size):
                 pressure = complex_reference_pressure(
                     np.asarray(result.horizontal_pressure[channel_index]) * weights[channel_index],
                     angles,

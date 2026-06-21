@@ -26,7 +26,6 @@ from blab.protocol import (
     ndarray_to_wire,
     solve_request_to_job_inputs,
 )
-from blab.solvers.base import FrequencyResult
 
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}

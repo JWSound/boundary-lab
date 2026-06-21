@@ -101,7 +101,6 @@ from blab.ui.project_state import (
     default_scripts,
     new_script,
     replace_script,
-    script_from_payload,
     script_to_payload,
     scripts_from_payload,
     unique_script_name,

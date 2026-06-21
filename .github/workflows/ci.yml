@@ -26,8 +26,10 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[gui]"
-          python -m pip install pytest
+          python -m pip install -e ".[gui,dev]"
+
+      - name: Run Ruff
+        run: python -m ruff check .
 
       - name: Run pytest
         run: python -m pytest

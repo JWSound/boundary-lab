@@ -790,7 +790,6 @@ def _split_stitched_loop_edges(
             raise ValueError("Could not orient stitch boundary edge.")
         start, end, opposite = oriented
         start_point = points[start]
-        end_point = points[end]
         ordered = sorted(seam_items, key=lambda item: item[0])
         if np.linalg.norm(seam_point_by_vertex_id[ordered[0][1]] - start_point) > np.linalg.norm(
             seam_point_by_vertex_id[ordered[-1][1]] - start_point
