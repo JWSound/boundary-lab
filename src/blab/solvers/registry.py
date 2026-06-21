@@ -54,6 +54,18 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
         description="Run the local Boundary Element Acoustic Toolkit Engine CPU solver through the Boundary Lab subprocess adapter.",
     ),
+    "beat_rocm": SolverBackendInfo(
+        backend_id="beat_rocm",
+        label="BEAT Engine (ROCm)",
+        capabilities=SolverCapabilities(
+            supports_remote_assets=False,
+            supports_parallel_workers=False,
+            supports_symmetry=True,
+            is_remote=False,
+        ),
+        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="rocm", **kwargs),
+        description="Run the local Boundary Element Acoustic Toolkit Engine ROCm solver through the Boundary Lab subprocess adapter.",
+    ),
     "local": SolverBackendInfo(
         backend_id="local",
         label="Bempp (OpenCL CPU)",
@@ -103,6 +115,10 @@ def normalize_backend_id(backend_id: str) -> str:
         "cuda": "beat_cuda",
         "beat_cpu": "beat_cpu",
         "cpu_beat": "beat_cpu",
+        "beat_rocm": "beat_rocm",
+        "rocm": "beat_rocm",
+        "amd": "beat_rocm",
+        "amdgpu": "beat_rocm",
     }
     return aliases.get(text, text or "local")
 
@@ -136,17 +152,26 @@ def _create_beat_engine_backend(
     from blab.solvers.beat_engine_backend import (
         DEFAULT_BEAT_ENGINE_CPU_PROJECT,
         DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+        DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
         BeatEngineBackend,
     )
 
-    normalized_backend = "cpu" if beat_engine_backend == "cpu" else "cuda"
-    backend_id = "beat_cpu" if normalized_backend == "cpu" else "beat_cuda"
-    label = "BEAT Engine (CPU)" if normalized_backend == "cpu" else "BEAT Engine (CUDA)"
-    default_project = (
-        DEFAULT_BEAT_ENGINE_CPU_PROJECT
-        if normalized_backend == "cpu"
-        else DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-    )
+    normalized_backend = {
+        "cpu": "cpu",
+        "rocm": "rocm",
+        "beat_rocm": "rocm",
+    }.get(str(beat_engine_backend).strip().lower(), "cuda")
+    backend_id = f"beat_{normalized_backend}"
+    label = {
+        "cpu": "BEAT Engine (CPU)",
+        "cuda": "BEAT Engine (CUDA)",
+        "rocm": "BEAT Engine (ROCm)",
+    }[normalized_backend]
+    default_project = {
+        "cpu": DEFAULT_BEAT_ENGINE_CPU_PROJECT,
+        "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+        "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    }[normalized_backend]
     kwargs: dict[str, Any] = {
         "julia_executable": julia_executable,
         "julia_threads": julia_threads,

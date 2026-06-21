@@ -2,12 +2,14 @@
 
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
     DEFAULT_JULIA_PROJECT,
     DEFAULT_JULIA_SOLVER_SCRIPT,
     BeatEngineBackend,
     BeatEngineCpuBackend,
     BeatEngineCudaBackend,
+    BeatEngineRocmBackend,
     BeatEngineSession,
     BeatEngineWorkerProcess,
     JuliaLocalBackend,

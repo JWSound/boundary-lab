@@ -7,7 +7,9 @@ from blab.solvers.base import SolveRequest
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineBackend,
+    BeatEngineRocmBackend,
     _friendly_julia_error,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
@@ -28,6 +30,7 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert labels["Server"] == "server"
     assert labels["BEAT Engine (CUDA)"] == "beat_cuda"
     assert labels["BEAT Engine (CPU)"] == "beat_cpu"
+    assert labels["BEAT Engine (ROCm)"] == "beat_rocm"
     assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
@@ -36,14 +39,20 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("beat") == "beat_cuda"
     assert normalize_backend_id("beat_engine") == "beat_cuda"
     assert normalize_backend_id("beat_cpu") == "beat_cpu"
+    assert normalize_backend_id("beat_rocm") == "beat_rocm"
+    assert normalize_backend_id("rocm") == "beat_rocm"
+    assert normalize_backend_id("amdgpu") == "beat_rocm"
     assert JuliaLocalBackend is BeatEngineBackend
+    assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
+    assert backend_info("beat_rocm").capabilities.supports_symmetry is True
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
+    assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:
@@ -83,8 +92,17 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert beat_cpu_backend.capabilities.supports_parallel_workers is False
     assert beat_cpu_backend.capabilities.supports_symmetry is True
 
+    beat_rocm_backend = create_backend("beat_rocm")
+    assert beat_rocm_backend.backend_id == "beat_rocm"
+    assert beat_rocm_backend.julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+    assert beat_rocm_backend.beat_engine_backend == "rocm"
+    assert beat_rocm_backend.capabilities.is_remote is False
+    assert beat_rocm_backend.capabilities.supports_parallel_workers is False
+    assert beat_rocm_backend.capabilities.supports_symmetry is True
+
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
+    assert BeatEngineBackend(beat_engine_backend="rocm").julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
 
 
 def test_bempp_backend_rejects_symmetry() -> None:

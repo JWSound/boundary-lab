@@ -45,7 +45,7 @@ end
         skip_singular=false,
         singular_order=2,
         element_indices=element_indices,
-        use_cuda_regular=false,
+        backend=:cpu,
         singular_cache=singular_cache,
     )
 
@@ -105,7 +105,7 @@ end
         skip_singular=false,
         singular_order=2,
         element_indices=element_indices,
-        use_cuda_regular=false,
+        backend=:cpu,
         singular_cache=singular_cache,
         symmetry_mode=:x,
     )
@@ -130,9 +130,9 @@ end
             skip_singular=false,
             singular_order=2,
             element_indices=element_indices,
-            cuda_cache=cuda_cache,
+            device_cache=cuda_cache,
             singular_cache=singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
+            device_singular_cache=cuda_singular_cache,
             symmetry_mode=:x,
         )
 
@@ -179,7 +179,7 @@ end
         skip_singular=false,
         singular_order=2,
         element_indices=element_indices,
-        use_cuda_regular=false,
+        backend=:cpu,
         singular_cache=singular_cache,
         symmetry_mode=:xy,
     )
@@ -216,9 +216,9 @@ end
             skip_singular=false,
             singular_order=2,
             element_indices=element_indices,
-            cuda_cache=cuda_cache,
+            device_cache=cuda_cache,
             singular_cache=singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
+            device_singular_cache=cuda_singular_cache,
         )
 
         @test get(operators, :on_gpu, false)

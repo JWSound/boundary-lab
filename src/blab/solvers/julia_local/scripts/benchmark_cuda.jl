@@ -201,13 +201,13 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             skip_singular=true,
             singular_order=config.singular_order,
             element_indices=element_indices,
-            use_cuda_regular=true,
-            cuda_cache=cache,
-            return_gpu=true,
-            parallel_quadrature=true,
+            backend=:cuda,
+            device_cache=cache,
+            return_device=true,
+            accelerator_quadrature=true,
             timing=timings,
             singular_cache=singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
+            device_singular_cache=cuda_singular_cache,
         )
     end
 

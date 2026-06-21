@@ -27,6 +27,7 @@ from blab.solvers.base import FrequencyResult, SolveMetadata, SolveRequest, Solv
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
 DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
 DEFAULT_BEAT_ENGINE_CUDA_PROJECT = Path(__file__).with_name("julia_cuda")
+DEFAULT_BEAT_ENGINE_ROCM_PROJECT = Path(__file__).with_name("julia_rocm")
 DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL = "__default__"
 _WORKERS_LOCK = threading.Lock()
@@ -35,7 +36,12 @@ _WORKERS: dict[tuple[str, str, str, str], "BeatEngineWorkerProcess"] = {}
 
 BEAT_ENGINE_CUDA_BACKEND = "cuda"
 BEAT_ENGINE_CPU_BACKEND = "cpu"
-BEAT_ENGINE_BACKENDS = {BEAT_ENGINE_CUDA_BACKEND, BEAT_ENGINE_CPU_BACKEND}
+BEAT_ENGINE_ROCM_BACKEND = "rocm"
+BEAT_ENGINE_BACKENDS = {
+    BEAT_ENGINE_CUDA_BACKEND,
+    BEAT_ENGINE_CPU_BACKEND,
+    BEAT_ENGINE_ROCM_BACKEND,
+}
 
 
 class BeatEngineSession:
@@ -482,6 +488,12 @@ class BeatEngineCpuBackend(BeatEngineBackend):
     )
 
 
+class BeatEngineRocmBackend(BeatEngineBackend):
+    backend_id = "beat_rocm"
+    label = "BEAT Engine (ROCm)"
+    beat_engine_backend = BEAT_ENGINE_ROCM_BACKEND
+
+
 def _normalize_beat_engine_backend(value: object) -> str:
     text = str(value or BEAT_ENGINE_CUDA_BACKEND).strip().lower()
     aliases = {
@@ -492,6 +504,10 @@ def _normalize_beat_engine_backend(value: object) -> str:
         "local_julia": BEAT_ENGINE_CUDA_BACKEND,
         "beat_cpu": BEAT_ENGINE_CPU_BACKEND,
         "cpu": BEAT_ENGINE_CPU_BACKEND,
+        "beat_rocm": BEAT_ENGINE_ROCM_BACKEND,
+        "rocm": BEAT_ENGINE_ROCM_BACKEND,
+        "amd": BEAT_ENGINE_ROCM_BACKEND,
+        "amdgpu": BEAT_ENGINE_ROCM_BACKEND,
     }
     backend = aliases.get(text, text)
     if backend not in BEAT_ENGINE_BACKENDS:
@@ -500,11 +516,11 @@ def _normalize_beat_engine_backend(value: object) -> str:
 
 
 def _default_beat_engine_project(beat_engine_backend: str) -> Path:
-    return (
-        DEFAULT_BEAT_ENGINE_CPU_PROJECT
-        if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND
-        else DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-    )
+    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
+        return DEFAULT_BEAT_ENGINE_CPU_PROJECT
+    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND:
+        return DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+    return DEFAULT_BEAT_ENGINE_CUDA_PROJECT
 
 
 def _friendly_julia_error(
@@ -536,10 +552,22 @@ def _friendly_julia_error(
         "using cuda",
         "import cuda",
     )
+    rocm_load_markers = (
+        "amdgpu.jl could not be loaded",
+        "package amdgpu",
+        "using amdgpu",
+        "import amdgpu",
+    )
     looks_like_dependency_error = any(marker in text for marker in missing_dependency_markers)
     looks_like_julia_load_error = any(marker in text for marker in julia_load_markers)
     looks_like_cuda_error = any(marker in text for marker in cuda_load_markers)
-    if not (looks_like_dependency_error or looks_like_julia_load_error or looks_like_cuda_error):
+    looks_like_rocm_error = any(marker in text for marker in rocm_load_markers)
+    if not (
+        looks_like_dependency_error
+        or looks_like_julia_load_error
+        or looks_like_cuda_error
+        or looks_like_rocm_error
+    ):
         return message
 
     project_path = Path(julia_project)
@@ -559,6 +587,8 @@ def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | 
         return "BEAT Engine (CUDA)"
     if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
         return "BEAT Engine (CPU)"
+    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND or project_path == DEFAULT_BEAT_ENGINE_ROCM_PROJECT:
+        return "BEAT Engine (ROCm)"
     return "the selected BEAT Engine backend"
 
 

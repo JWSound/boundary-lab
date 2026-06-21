@@ -81,9 +81,12 @@ function beat_backend_from_request(request)
         "julia_local" => "cuda",
         "local_julia" => "cuda",
         "beat_cpu" => "cpu",
+        "beat_rocm" => "rocm",
+        "amd" => "rocm",
+        "amdgpu" => "rocm",
     )
     backend = get(aliases, backend, backend)
-    backend in ("cuda", "cpu") || error("Unsupported BEAT Engine backend: $(backend). Expected cuda or cpu.")
+    backend in ("cuda", "cpu", "rocm") || error("Unsupported BEAT Engine backend: $(backend). Expected cuda, cpu, or rocm.")
     return Symbol(backend)
 end
 
@@ -449,6 +452,8 @@ end
 function field_for_points(points, mesh, pressure, q_neumann, k, field_cache, beat_backend::Symbol)
     if beat_backend == :cuda
         return evaluate_galerkin_field_cuda(points, mesh, pressure, q_neumann, k, field_cache)
+    elseif beat_backend == :rocm
+        return evaluate_galerkin_field_rocm(points, mesh, pressure, q_neumann, k, field_cache)
     elseif beat_backend == :cpu
         return evaluate_galerkin_field_cpu(points, mesh, pressure, q_neumann, k, field_cache)
     end
@@ -689,17 +694,21 @@ function solve_request_impl(request)
     flat_target_reference_angle_deg = FloatType(get_value(config, "flat_target_reference_angle_deg", 0.0))
     channel_names = sort(unique([String(get_value(radiator, "channel", "main")) for radiator in radiators]))
     singular_cache = build_singular_correction_cache(mesh, singular_order)
-    cuda_cache = nothing
-    cuda_singular_cache = nothing
+    device_cache = nothing
+    device_singular_cache = nothing
     field_cache = cpu_field_cache
     regular_rule_cache = Dict{Int,Any}(base_regular_order => rule)
     identity_cache = Dict{Int,Any}(base_regular_order => (identity_p1_p1, identity_p1_dp0))
     cpu_field_cache_by_order = Dict{Int,Any}(base_regular_order => cpu_field_cache)
     if beat_backend == :cuda
         emit_event("status"; message="Initializing BEAT Engine using CUDA...")
-        cuda_cache = build_cuda_regular_assembly_cache(mesh, rule)
+        device_cache = build_cuda_regular_assembly_cache(mesh, rule)
         field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
-        cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+        device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    elseif beat_backend == :rocm
+        emit_event("status"; message="Initializing BEAT Engine using ROCm...")
+        device_cache = build_rocm_regular_assembly_cache(mesh, rule)
+        field_cache = build_rocm_field_evaluation_cache(cpu_field_cache)
     else
         emit_event("status"; message="Initializing BEAT Engine using CPU...")
     end
@@ -747,12 +756,12 @@ function solve_request_impl(request)
                 selected_rule;
                 skip_singular=false,
                 singular_order=singular_order,
-                use_cuda_regular=beat_backend == :cuda,
-                cuda_cache=cuda_cache,
-                return_gpu=beat_backend == :cuda,
-                parallel_quadrature=beat_backend == :cuda,
+                backend=beat_backend,
+                device_cache=device_cache,
+                return_device=beat_backend != :cpu,
+                accelerator_quadrature=beat_backend != :cpu,
                 singular_cache=singular_cache,
-                cuda_singular_cache=cuda_singular_cache,
+                device_singular_cache=device_singular_cache,
                 symmetry_mode=Symbol(symmetry_mode),
             )
         end
@@ -866,7 +875,7 @@ function solve_request_impl(request)
                     "message" => "Julia direct dense solve",
                     "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
-                    "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :split_atomic_balanced_multipair : :cpu_default)),
+                    "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :split_atomic_balanced_multipair : Symbol("$(beat_backend)_default"))),
                     "regular_quadrature_mode" => regular_quadrature_mode,
                     "regular_quadrature_order" => quadrature_selection.order,
                     "regular_quadrature_base_order" => base_regular_order,
