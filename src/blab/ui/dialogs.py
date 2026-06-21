@@ -324,10 +324,10 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Solver Config",
                 (
-                    ("GMRES Tolerance", self.gmres_spin),
-                    ("Burton Miller Formulation", self.burton_miller_check),
-                    ("Balloon Sampling", self.spherical_sampling_check),
-                    ("Balloon Angle Precision", self.balloon_angle_precision_spin),
+                    ("GMRES Tolerance", self.gmres_spin, ""),
+                    ("Burton Miller Formulation", self.burton_miller_check, ""),
+                    ("Balloon Sampling", self.spherical_sampling_check, ""),
+                    ("Balloon Angle Precision", self.balloon_angle_precision_spin, ""),
                 ),
             )
         )
@@ -335,16 +335,16 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Observation Config",
                 (
-                    ("Polar Angle Step", self.polar_step_spin),
-                    ("Polar Observation Distance", self.polar_distance_spin),
-                    ("Normalized Channel Correction", self.normalized_channel_correction_check),
-                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
-                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
-                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin),
-                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin),
-                    ("Polar Smoothing", self.smoothing_combo),
-                    ("SPL Min", self.spl_min_spin),
-                    ("SPL Max", self.spl_max_spin),
+                    ("Polar Angle Step", self.polar_step_spin, ""),
+                    ("Polar Observation Distance", self.polar_distance_spin, ""),
+                    ("Normalized Channel Correction", self.normalized_channel_correction_check, ""),
+                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin, ""),
+                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin, ""),
+                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin, ""),
+                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin, ""),
+                    ("Polar Smoothing", self.smoothing_combo, ""),
+                    ("SPL Min", self.spl_min_spin, ""),
+                    ("SPL Max", self.spl_max_spin, ""),
                 ),
             )
         )
@@ -354,7 +354,7 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Mesh Config",
                 (
-                    ("Stitch Tolerance", self.stitch_tolerance_spin),
+                    ("Stitch Tolerance", self.stitch_tolerance_spin, ""),
                 ),
             )
         )
@@ -362,11 +362,11 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Application",
                 (
-                    ("Theme", self.theme_combo),
-                    ("Live Plot Streaming", self.live_plot_streaming_check),
-                    ("Live Plot Quality", self.live_plot_quality_combo),
-                    ("BEM Solver", self.solve_backend_combo),
-                    ("Solve Server URL", self.solve_server_url_edit),
+                    ("Theme", self.theme_combo, ""),
+                    ("Live Plot Streaming", self.live_plot_streaming_check, ""),
+                    ("Live Plot Quality", self.live_plot_quality_combo, ""),
+                    ("BEM Solver", self.solve_backend_combo, ""),
+                    ("Solve Server URL", self.solve_server_url_edit, ""),
                 ),
             )
         )
@@ -379,10 +379,16 @@ class PreferencesDialog(QDialog):
         self.resize(820, 420)
 
     @staticmethod
-    def _section(title: str, rows: tuple[tuple[str, QWidget], ...]) -> QGroupBox:
+    def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
         group = QGroupBox(title)
         form = QFormLayout(group)
-        for label, widget in rows:
+        for row in rows:
+            label_text, widget = row[:2]
+            tooltip = row[2] if len(row) > 2 else ""
+            label = QLabel(label_text)
+            if tooltip:
+                label.setToolTip(tooltip)
+                widget.setToolTip(tooltip)
             form.addRow(label, widget)
         return group
 

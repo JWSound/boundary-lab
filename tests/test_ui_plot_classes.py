@@ -244,6 +244,9 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "def live_plot_freq_samples(" in settings_source
     assert '"Live Plot Quality", self.live_plot_quality_combo' in dialog_source
     assert '"Live Plot Streaming", self.live_plot_streaming_check' in dialog_source
+    assert '("Live Plot Streaming", self.live_plot_streaming_check, "")' in dialog_source
+    assert "label.setToolTip(tooltip)" in dialog_source
+    assert "widget.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
