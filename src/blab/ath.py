@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -37,6 +38,10 @@ ATH_CFG_MESH_CMD_KEY = "MeshCmd"
 SOLVING_SYM_RE = re.compile(r"\bSym\s*=\s*([A-Za-z]+)\b")
 
 
+class AthCancelledError(RuntimeError):
+    """Raised when an active Ath generation is cancelled by the user."""
+
+
 @dataclass(frozen=True)
 class AthRunResult:
     output_dir: Path
@@ -58,6 +63,102 @@ class AthRunResult:
         return self.reduced_cleaned_msh_path or self.msh_path
 
 
+class AthProcessRunner:
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+        self._cancel_requested = False
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
+    def run(
+        self,
+        *,
+        ath_exe: Path,
+        config_text: str,
+        run_root: Path,
+        case_name: str = "waveguide",
+        timeout_s: float | None = None,
+    ) -> AthRunResult:
+        ath_exe = ath_exe.resolve()
+        if not ath_exe.exists():
+            raise FileNotFoundError(f"Ath executable not found: {ath_exe}")
+
+        ath_companion_config = ath_exe.parent / "ath.cfg"
+        if not ath_companion_config.exists():
+            raise FileNotFoundError(
+                f"Ath companion config not found: {ath_companion_config}. "
+                "Ath expects ath.cfg beside ath.exe."
+            )
+
+        run_root.mkdir(parents=True, exist_ok=True)
+        config_path = run_root / f"{case_name}.cfg"
+        config_path.write_text(config_text, encoding="utf-8")
+        output_root = read_ath_output_root(ath_companion_config) or ath_exe.parent
+
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+        self._cancel_requested = False
+        self._process = subprocess.Popen(
+            [str(ath_exe), str(config_path)],
+            cwd=ath_exe.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=creationflags,
+        )
+        try:
+            stdout, stderr = self._process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self.stop()
+            raise
+        finally:
+            process = self._process
+            self._process = None
+
+        if self._cancel_requested:
+            raise AthCancelledError("Ath generation cancelled")
+
+        returncode = 0 if process is None else process.returncode
+        if returncode != 0:
+            message = stderr.strip() or stdout.strip()
+            raise RuntimeError(f"Ath failed with exit code {returncode}: {message}")
+
+        return discover_ath_output(
+            run_root=output_root,
+            case_name=case_name,
+            config_path=config_path,
+        )
+
+    def stop(self) -> None:
+        self._cancel_requested = True
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                completed = subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=5.0,
+                )
+                if completed.returncode == 0:
+                    return
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        process.terminate()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+
+
 def run_ath(
     *,
     ath_exe: Path,
@@ -66,38 +167,12 @@ def run_ath(
     case_name: str = "waveguide",
     timeout_s: float | None = None,
 ) -> AthRunResult:
-    ath_exe = ath_exe.resolve()
-    if not ath_exe.exists():
-        raise FileNotFoundError(f"Ath executable not found: {ath_exe}")
-
-    ath_companion_config = ath_exe.parent / "ath.cfg"
-    if not ath_companion_config.exists():
-        raise FileNotFoundError(
-            f"Ath companion config not found: {ath_companion_config}. "
-            "Ath expects ath.cfg beside ath.exe."
-        )
-
-    run_root.mkdir(parents=True, exist_ok=True)
-    config_path = run_root / f"{case_name}.cfg"
-    config_path.write_text(config_text, encoding="utf-8")
-    output_root = read_ath_output_root(ath_companion_config) or ath_exe.parent
-
-    completed = subprocess.run(
-        [str(ath_exe), str(config_path)],
-        cwd=ath_exe.parent,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
-    )
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or completed.stdout.strip()
-        raise RuntimeError(f"Ath failed with exit code {completed.returncode}: {message}")
-
-    return discover_ath_output(
-        run_root=output_root,
+    return AthProcessRunner().run(
+        ath_exe=ath_exe,
+        config_text=config_text,
+        run_root=run_root,
         case_name=case_name,
-        config_path=config_path,
+        timeout_s=timeout_s,
     )
 
 

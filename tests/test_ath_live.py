@@ -5,6 +5,7 @@ import meshio
 import numpy as np
 
 from blab.ath import (
+    AthProcessRunner,
     ath_mirror_axes_for_result,
     ath_mirror_axes_from_solving_file,
     clean_ath_mesh_output,
@@ -45,6 +46,76 @@ $EndPhysicalNames
 """.strip(),
         encoding="utf-8",
     )
+
+
+class _FakeAthProcess:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.pid = 12345
+        self.terminated = False
+        self.killed = False
+
+    def communicate(self, timeout=None):
+        return self.stdout, self.stderr
+
+    def poll(self):
+        return None if not self.terminated and not self.killed else self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def test_ath_process_runner_discovers_output_after_process_exit(tmp_path: Path, monkeypatch) -> None:
+    ath_dir = tmp_path / "ath"
+    ath_dir.mkdir()
+    ath_exe = ath_dir / "ath.exe"
+    ath_exe.write_text("", encoding="utf-8")
+    output_root = tmp_path / "output"
+    (ath_dir / "ath.cfg").write_text(f'OutputRootDir = "{output_root}"\n', encoding="utf-8")
+    mesh_dir = output_root / "case" / "ABEC_FreeStanding"
+    mesh_dir.mkdir(parents=True)
+    _write_minimal_msh(mesh_dir / "case.msh")
+
+    popen_calls = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return _FakeAthProcess()
+
+    monkeypatch.setattr("blab.ath.subprocess.Popen", fake_popen)
+
+    result = AthProcessRunner().run(
+        ath_exe=ath_exe,
+        config_text="Length = 10",
+        run_root=tmp_path / "runs",
+        case_name="case",
+    )
+
+    assert result.msh_path == mesh_dir / "case.msh"
+    assert (tmp_path / "runs" / "case.cfg").read_text(encoding="utf-8") == "Length = 10"
+    assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(tmp_path / "runs" / "case.cfg")]
+
+
+def test_ath_process_runner_stop_terminates_active_process(monkeypatch) -> None:
+    runner = AthProcessRunner()
+    process = _FakeAthProcess()
+    runner._process = process
+    monkeypatch.setattr("blab.ath.os.name", "posix")
+
+    runner.stop()
+
+    assert runner.cancel_requested
+    assert process.terminated
 
 
 def test_find_physical_tag_by_name_reads_ath_driven_group(tmp_path: Path) -> None:

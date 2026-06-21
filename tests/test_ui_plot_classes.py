@@ -396,3 +396,21 @@ def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
 
     assert "QTabBar.ButtonPosition.RightSide" in source
     assert "tabBar().RightSide" not in source
+
+
+def test_ath_generation_uses_worker_and_delayed_stop_button() -> None:
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    worker_source = Path("src/blab/ui/ath_worker.py").read_text(encoding="utf-8")
+
+    assert "from blab.ui.ath_worker import AthGenerationWorker" in main_source
+    assert "self.ath_thread: QThread | None = None" in main_source
+    assert "self.ath_worker: AthGenerationWorker | None = None" in main_source
+    assert "self.cancel_button.clicked.connect(self.cancel_current_operation)" in main_source
+    assert "self.ath_worker = AthGenerationWorker(" in main_source
+    assert "self.ath_worker.moveToThread(self.ath_thread)" in main_source
+    assert "QTimer.singleShot(3000, self._enable_ath_cancel_if_active)" in main_source
+    assert "def cancel_ath_generation(" in main_source
+    assert "self.ath_worker.stop()" in main_source
+    assert "class AthGenerationWorker(QObject)" in worker_source
+    assert "AthProcessRunner()" in worker_source
+    assert "clean_ath_mesh_output(raw_result)" in worker_source

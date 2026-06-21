@@ -38,12 +38,10 @@ from PySide6.QtWidgets import (
 from blab import __version__
 from blab.ath import (
     AthRunResult,
-    clean_ath_mesh_output,
     clean_ath_reduced_mesh_output,
     detect_ath_radiators,
     find_physical_tag_by_name,
     read_surface_physical_names,
-    run_ath,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
@@ -121,6 +119,7 @@ from blab.ui.settings import (
     preferences_require_visualization_refresh,
     save_gui_preferences,
 )
+from blab.ui.ath_worker import AthGenerationWorker
 from blab.ui.solve_worker import SolveWorker
 from blab.ui.source_channel_config import (
     apply_saved_imported_source_config,
@@ -211,6 +210,11 @@ class MainWindow(QMainWindow):
         self._project_clean_payload: dict | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
+        self.ath_thread: QThread | None = None
+        self.ath_worker: AthGenerationWorker | None = None
+        self.ath_generation_script_id: str | None = None
+        self.ath_generation_mesh_name: str | None = None
+        self.ath_generation_cancel_requested = False
         self.solve_expected_count = 0
         self.solve_failed = False
         self.solve_started_at: float | None = None
@@ -631,7 +635,7 @@ class MainWindow(QMainWindow):
     def _wire_controls(self) -> None:
         self.generate_button.clicked.connect(self.generate_geometry)
         self.solve_button.clicked.connect(self.start_solve)
-        self.cancel_button.clicked.connect(self.cancel_solve)
+        self.cancel_button.clicked.connect(self.cancel_current_operation)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
@@ -2047,45 +2051,111 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def generate_geometry(self) -> None:
+        if self.ath_worker is not None or self.solve_worker is not None:
+            return
         script = self._active_script()
         if script is None:
             QMessageBox.warning(self, "No Ath script", "Add an Ath script before generating.")
             return
         case_name = f"{script.mesh_name}_{script.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_root = ATH_OUTPUT_ROOT
-        self.solve_results_invalidated.emit("geometry_generation_started")
-        self.status_label.setText(f"Generating {script.name}...")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self._ensure_ath_runtime_config()
-            raw_result = run_ath(
-                ath_exe=self._find_ath_exe(),
-                config_text=script.config_text,
-                run_root=run_root,
-                case_name=case_name,
-            )
-            self.status_label.setText("Cleaning generated mesh...")
-            result = self._apply_saved_source_config_to_result(clean_ath_mesh_output(raw_result), script.mesh_name)
-            self.ath_results_by_script_id[script.id] = result
-            self.ath_scripts = replace_script(
-                self.ath_scripts,
-                script.id,
-                output_dir=str(result.output_dir),
-                msh_path=str(result.msh_path),
-                cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
-                config_path=str(result.config_path),
-            )
-            self.mesh_state_changed.emit("ath_mesh_generated")
-            self.status_label.setText(f"Generated and cleaned {result.output_dir}")
-            self._show_mesh_quality_warning(result)
+            ath_exe = self._find_ath_exe()
         except Exception as exc:
             self.status_label.setText("Generate failed")
             QMessageBox.critical(self, "Ath generation failed", str(exc))
-        finally:
-            QApplication.restoreOverrideCursor()
+            return
+
+        self.solve_results_invalidated.emit("geometry_generation_started")
+        self.status_label.setText(f"Generating {script.name}...")
+        self.solve_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self.mesh_config_button.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
+        self.source_config_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+        self._set_export_plot_actions_enabled(False)
+        self.export_polar_data_action.setEnabled(False)
+        self._set_contour_button_states()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        self.ath_generation_script_id = script.id
+        self.ath_generation_mesh_name = script.mesh_name
+        self.ath_generation_cancel_requested = False
+        self.ath_thread = QThread(self)
+        self.ath_worker = AthGenerationWorker(
+            ath_exe=ath_exe,
+            config_text=script.config_text,
+            run_root=run_root,
+            case_name=case_name,
+        )
+        self.ath_worker.moveToThread(self.ath_thread)
+        self.ath_thread.started.connect(self.ath_worker.run)
+        self.ath_worker.generated.connect(self._on_ath_generated)
+        self.ath_worker.status.connect(self.status_label.setText)
+        self.ath_worker.failed.connect(self._on_ath_generation_failed)
+        self.ath_worker.cancelled.connect(self._on_ath_generation_cancelled)
+        self.ath_worker.finished.connect(self._on_ath_generation_finished)
+        self.ath_worker.finished.connect(self.ath_thread.quit)
+        self.ath_worker.finished.connect(self.ath_worker.deleteLater)
+        self.ath_thread.finished.connect(self.ath_thread.deleteLater)
+        self.ath_thread.start()
+        QTimer.singleShot(3000, self._enable_ath_cancel_if_active)
+
+    @Slot()
+    def _enable_ath_cancel_if_active(self) -> None:
+        if self.ath_worker is not None and not self.ath_generation_cancel_requested:
+            self.cancel_button.setEnabled(True)
+
+    @Slot(object)
+    def _on_ath_generated(self, generated_result: AthRunResult) -> None:
+        script_id = self.ath_generation_script_id
+        mesh_name = self.ath_generation_mesh_name
+        if script_id is None or mesh_name is None:
+            return
+        result = self._apply_saved_source_config_to_result(generated_result, mesh_name)
+        self.ath_results_by_script_id[script_id] = result
+        self.ath_scripts = replace_script(
+            self.ath_scripts,
+            script_id,
+            output_dir=str(result.output_dir),
+            msh_path=str(result.msh_path),
+            cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
+            config_path=str(result.config_path),
+        )
+        self.mesh_state_changed.emit("ath_mesh_generated")
+        self.status_label.setText(f"Generated and cleaned {result.output_dir}")
+        self._show_mesh_quality_warning(result)
+
+    @Slot(str)
+    def _on_ath_generation_failed(self, message: str) -> None:
+        self.status_label.setText("Generate failed")
+        QMessageBox.critical(self, "Ath generation failed", message)
+
+    @Slot()
+    def _on_ath_generation_cancelled(self) -> None:
+        self.status_label.setText("Ath generation stopped")
+
+    @Slot()
+    def _on_ath_generation_finished(self) -> None:
+        QApplication.restoreOverrideCursor()
+        self.solve_button.setEnabled(True)
+        self.generate_button.setEnabled(True)
+        self.mesh_config_button.setEnabled(True)
+        self.channel_config_button.setEnabled(True)
+        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.cancel_button.setEnabled(False)
+        self.ath_worker = None
+        self.ath_thread = None
+        self.ath_generation_script_id = None
+        self.ath_generation_mesh_name = None
+        self.ath_generation_cancel_requested = False
 
     @Slot()
     def start_solve(self) -> None:
+        if self.ath_worker is not None:
+            return
         if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
@@ -2176,6 +2246,21 @@ class MainWindow(QMainWindow):
         self.solve_worker.finished.connect(self.solve_worker.deleteLater)
         self.solve_thread.finished.connect(self.solve_thread.deleteLater)
         self.solve_thread.start()
+
+    @Slot()
+    def cancel_current_operation(self) -> None:
+        if self.ath_worker is not None:
+            self.cancel_ath_generation()
+            return
+        self.cancel_solve()
+
+    @Slot()
+    def cancel_ath_generation(self) -> None:
+        self.ath_generation_cancel_requested = True
+        self.cancel_button.setEnabled(False)
+        if self.ath_worker is not None:
+            self.ath_worker.stop()
+            self.status_label.setText("Stop requested; ending Ath generation...")
 
     @Slot()
     def cancel_solve(self) -> None:
