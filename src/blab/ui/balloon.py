@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -162,30 +163,24 @@ class BalloonPlotWindow(QMainWindow):
         self.viewport_stack = QStackedLayout()
         self.viewport_stack.setStackingMode(QStackedLayout.StackAll)
         self.viewport_stack.addWidget(self.plotter.interactor)
-        self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")
-        self.spl_legend.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.legend_overlay = QWidget()
-        self.legend_overlay.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.legend_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        legend_layout = QVBoxLayout(self.legend_overlay)
-        legend_layout.setContentsMargins(18, 0, 18, 47)
-        legend_layout.addStretch(1)
-        legend_layout.addWidget(self.spl_legend)
-        self.viewport_stack.addWidget(self.legend_overlay)
         viewport = QWidget()
         viewport.setLayout(self.viewport_stack)
 
+        self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")
+        self.spl_legend.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
         controls_bar = QFrame()
-        controls_layout = QHBoxLayout(controls_bar)
-        controls_layout.addWidget(QLabel("Frequency"))
-        controls_layout.addWidget(self.frequency_slider)
-        controls_layout.addWidget(self.frequency_label)
-        controls_layout.addSpacing(16)
-        controls_layout.addWidget(self.protractor_toggle)
-        controls_layout.addSpacing(16)
-        controls_layout.addWidget(QLabel("Slice Angle"))
-        controls_layout.addWidget(self.protractor_angle_slider)
-        controls_layout.addWidget(self.protractor_angle_spin)
+        controls_layout = QGridLayout(controls_bar)
+        controls_layout.addWidget(QLabel("Frequency"), 0, 0)
+        controls_layout.addWidget(self.frequency_slider, 0, 1)
+        controls_layout.addWidget(self.frequency_label, 0, 2)
+        controls_layout.addWidget(self.protractor_toggle, 0, 3)
+        controls_layout.addWidget(QLabel("Slice Angle"), 1, 0)
+        controls_layout.addWidget(self.protractor_angle_slider, 1, 1)
+        controls_layout.addWidget(self.protractor_angle_spin, 1, 2)
+        controls_layout.addWidget(self.spl_legend, 0, 4, 2, 1)
+        controls_layout.setColumnStretch(1, 1)
+        controls_layout.setColumnStretch(4, 1)
 
         self.hover_label = QLabel("")
         self.hover_label.setMinimumHeight(24)
@@ -198,18 +193,25 @@ class BalloonPlotWindow(QMainWindow):
         self.workspace.setDockOptions(
             QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.AnimatedDocks
         )
-        self.workspace.setCentralWidget(viewport)
+        workspace_placeholder = QWidget()
+        workspace_placeholder.setMaximumSize(QSize(0, 0))
+        workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.workspace.setCentralWidget(workspace_placeholder)
 
+        self.balloon_dock = self._make_dock("3D Balloon Plot", viewport)
         self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)
         self.isobar_dock = self._make_dock(
             "Isobar Angle Slice",
             self.slice_plot,
             tool_actions=(self.hires_slice_action, self.save_slice_action),
         )
+        self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)
         self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)
         self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.isobar_dock)
+        self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)
         self.workspace.splitDockWidget(self.radar_dock, self.isobar_dock, Qt.Vertical)
-        self.workspace.resizeDocks([self.radar_dock, self.isobar_dock], [260, 330], Qt.Vertical)
+        self.workspace.resizeDocks([self.balloon_dock, self.radar_dock, self.isobar_dock], [605, 345, 380], Qt.Horizontal)
+        view_menu.addAction(self.balloon_dock.toggleViewAction())
         view_menu.addAction(self.radar_dock.toggleViewAction())
         view_menu.addAction(self.isobar_dock.toggleViewAction())
 
@@ -913,8 +915,8 @@ class ColorLegend(QWidget):
         self._max_db = float(max_db)
         self._orientation = str(orientation).lower()
         if self._orientation == "horizontal":
-            self.setMinimumSize(460, 76)
-            self.setMaximumHeight(82)
+            self.setMinimumSize(330, 62)
+            self.setMaximumHeight(68)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:
             self.setMinimumSize(170, 320)
@@ -927,7 +929,7 @@ class ColorLegend(QWidget):
 
     def sizeHint(self) -> QSize:
         if self._orientation == "horizontal":
-            return QSize(520, 76)
+            return QSize(380, 62)
         return QSize(170, 320)
 
     def paintEvent(self, event) -> None:
@@ -943,12 +945,13 @@ class ColorLegend(QWidget):
         painter.fillRect(self.rect(), QColor(31, 31, 31, 180))
 
         painter.setPen(QPen(QColor("white")))
-        painter.drawText(12, 6, self.width() - 24, 20, Qt.AlignLeft | Qt.AlignVCenter, SPL_SCALAR_NAME)
+        painter.drawText(12, 4, self.width() - 24, 18, Qt.AlignLeft | Qt.AlignVCenter, SPL_SCALAR_NAME)
 
-        bar_left = 132
-        bar_top = 34
-        bar_width = max(self.width() - bar_left - 22, 40)
-        bar_height = 22
+        label_edge_pad = 22
+        bar_left = label_edge_pad
+        bar_top = 28
+        bar_width = max(self.width() - 2 * label_edge_pad, 40)
+        bar_height = 18
         gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)
         for stop in np.linspace(0.0, 1.0, 48):
             gradient.setColorAt(float(stop), _turbo_color(float(stop)))
@@ -966,8 +969,9 @@ class ColorLegend(QWidget):
             painter.drawLine(x_int, bar_top + bar_height, x_int, bar_top + bar_height + 6)
             label = f"{int(value)}"
             label_width = metrics.horizontalAdvance(label)
+            label_x = int(round(np.clip(x - label_width / 2, 2, max(self.width() - label_width - 2, 2))))
             painter.drawText(
-                int(round(x - label_width / 2)),
+                label_x,
                 bar_top + bar_height + metrics.ascent() + 7,
                 label,
             )

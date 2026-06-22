@@ -466,21 +466,30 @@ def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     assert 'view_menu = menu_bar.addMenu("View")' in source
     assert "self.workspace = QMainWindow()" in source
     assert "QMainWindow.AllowNestedDocks" in source
-    assert "self.workspace.setCentralWidget(viewport)" in source
+    assert "workspace_placeholder.setMaximumSize(QSize(0, 0))" in source
+    assert "workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)" in source
+    assert "self.workspace.setCentralWidget(workspace_placeholder)" in source
     assert 'controls_bar = QFrame()' in source
     assert 'layout.addWidget(self.workspace, stretch=1)' in source
     assert 'layout.addWidget(controls_bar)' in source
-    assert 'controls_layout = QHBoxLayout(controls_bar)' in source
+    assert 'controls_layout = QGridLayout(controls_bar)' in source
     assert 'controls_bar.setStyleSheet' not in source
-    assert 'controls_layout.addWidget(QLabel("Frequency"))' in source
-    assert 'controls_layout.addWidget(self.protractor_toggle)' in source
-    assert 'controls_layout.addWidget(QLabel("Slice Angle"))' in source
+    assert 'controls_layout.addWidget(QLabel("Frequency"), 0, 0)' in source
+    assert 'controls_layout.addWidget(self.frequency_slider, 0, 1)' in source
+    assert 'controls_layout.addWidget(self.protractor_toggle, 0, 3)' in source
+    assert 'controls_layout.addWidget(QLabel("Slice Angle"), 1, 0)' in source
+    assert 'controls_layout.addWidget(self.protractor_angle_slider, 1, 1)' in source
+    assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport)' in source
     assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)' in source
     assert 'self.isobar_dock = self._make_dock(' in source
+    assert 'view_menu.addAction(self.balloon_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.radar_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.isobar_dock.toggleViewAction())' in source
+    assert 'self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)' in source
     assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)' in source
+    assert 'self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)' in source
     assert 'self.workspace.splitDockWidget(self.radar_dock, self.isobar_dock, Qt.Vertical)' in source
+    assert 'self.workspace.resizeDocks([self.balloon_dock, self.radar_dock, self.isobar_dock], [605, 345, 380], Qt.Horizontal)' in source
     assert "QSplitter" not in source
 
 
@@ -491,10 +500,9 @@ def test_balloon_window_does_not_use_rendering_overlay() -> None:
     assert "loading_label" not in source
     assert "_set_loading_visible" not in source
 
-def test_balloon_viewport_polish_removes_redundant_axes_and_pads_readouts() -> None:
+def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
-    assert "legend_layout.setContentsMargins(18, 0, 18, 47)" in source
     assert "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}" in source
     assert "self.plotter.add_axes()" not in source
     assert "self._axes_added" not in source
@@ -523,17 +531,23 @@ def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
     assert 'export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)' in source
 
 
-def test_balloon_spl_legend_is_horizontal_viewport_overlay() -> None:
+def test_balloon_spl_legend_lives_in_bottom_control_bar() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
     assert 'self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")' in source
-    assert 'self.legend_overlay = QWidget()' in source
-    assert 'legend_layout.setContentsMargins(18, 0, 18, 47)' in source
-    assert 'legend_layout.addWidget(self.spl_legend)' in source
-    assert 'legend_layout.addStretch(1)' in source
+    assert 'controls_layout.addWidget(self.spl_legend, 0, 4, 2, 1)' in source
+    assert 'controls_layout.setColumnStretch(4, 1)' in source
+    assert 'self.legend_overlay' not in source
+    assert 'legend_layout.addWidget(self.spl_legend)' not in source
     assert 'self.spl_legend.set_range(self._min_db, self._max_db)' in source
     assert 'orientation: str = "vertical"' in source
     assert 'def _paint_horizontal(self) -> None:' in source
+    assert "self.setMinimumSize(330, 62)" in source
+    assert "label_edge_pad = 22" in source
+    assert "bar_left = label_edge_pad" in source
+    assert "bar_top = 28" in source
+    assert "bar_width = max(self.width() - 2 * label_edge_pad, 40)" in source
+    assert "label_x = int(round(np.clip" in source
     assert 'gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)' in source
 
 def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
