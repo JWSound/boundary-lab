@@ -7,30 +7,40 @@ from pathlib import Path
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import QSize, Qt, QTimer, Slot
-from PySide6.QtGui import QAction, QColor, QFontMetrics, QLinearGradient, QPainter, QPen
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Slot
+from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDialog,
+    QDockWidget,
     QFileDialog,
-    QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QMenuBar,
+    QMainWindow,
     QMessageBox,
     QSizePolicy,
     QSlider,
     QSpinBox,
-    QSplitter,
     QStackedLayout,
     QVBoxLayout,
     QWidget,
 )
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
-from blab.exporting import export_balloon_data
+from blab.exporting import export_balloon_data, export_plot_png
+from blab.plotting import VisualizerConfig
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
-from blab.ui.plots import LIVE_ISOBAR_ANGLE_SAMPLES, LIVE_ISOBAR_FREQ_SAMPLES, IsobarCanvas
+from blab.ui.main_window_widgets import DockTitleBar
+from blab.ui.plots import (
+    FINAL_ISOBAR_ANGLE_SAMPLES,
+    FINAL_ISOBAR_FREQ_SAMPLES,
+    FINAL_ISOBAR_SHADING,
+    LIVE_ISOBAR_ANGLE_SAMPLES,
+    LIVE_ISOBAR_FREQ_SAMPLES,
+    LIVE_ISOBAR_SHADING,
+    IsobarCanvas,
+)
+from blab.ui.theme import APP_ROOT
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
 HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
@@ -42,9 +52,13 @@ LEGEND_TICKS_DB = (0.0, -6.0, -12.0, -18.0, -24.0, -30.0)
 PROTRACTOR_ANGLES_DEG = (30.0, 60.0, 90.0, 120.0, 150.0)
 PROTRACTOR_COLOR = "#d8dee9"
 PROTRACTOR_AXIS_COLOR = "#ffffff"
+SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
+SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"
+HIRES_RENDER_LIGHT_ICON = APP_ROOT / "assets" / "hiresrender_light.ico"
 
 
-class BalloonPlotWindow(QDialog):
+class BalloonPlotWindow(QMainWindow):
     def __init__(
         self,
         raw_balloon_data: dict[str, np.ndarray],
@@ -79,17 +93,19 @@ class BalloonPlotWindow(QDialog):
         self._balloon_mesh = None
         self._contour_actors = []
         self._guide_actors_added = False
-        self._axes_added = False
         self._protractor_actors = []
         self._protractor_radius = 1.0
         self._hover_picker = None
         self._hover_observer = None
+        self._slice_plot_high_res = False
 
-        menu_bar = QMenuBar(self)
+        menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
         export_action = QAction("Export Balloon Data", self)
         export_action.triggered.connect(self._export_balloon_data)
         file_menu.addAction(export_action)
+
+        view_menu = menu_bar.addMenu("View")
 
         self.plotter = QtInteractor(self)
         self.plotter.set_background("#111316")
@@ -128,86 +144,114 @@ class BalloonPlotWindow(QDialog):
         self.slice_plot.setMinimumSize(330, 286)
         self.slice_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
+        self.hires_slice_action = QAction("Render High Resolution", self)
+        self.hires_slice_action.setToolTip("Render high resolution plot")
+        self.hires_slice_action.setEnabled(False)
+        self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)
+
+        self.save_slice_action = QAction("Save Plot Image", self)
+        self.save_slice_action.setToolTip("Save plot image")
+        self.save_slice_action.setEnabled(False)
+        self.save_slice_action.triggered.connect(self._save_isobar_slice_image)
+        self._refresh_slice_button_icons()
+
         self.radar_plot = SliceRadarCanvas(self._min_db, self._max_db)
         self.radar_plot.setMinimumSize(220, 286)
-        self.radar_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.radar_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        self.loading_label = QLabel("Rendering Balloon...")
-        self.loading_label.setAlignment(Qt.AlignCenter)
-        self.loading_label.setStyleSheet(
-            "QLabel {color: white;background: rgba(17, 19, 22, 190);font-size: 22px;font-weight: 600;}"
-        )
-
-        viewport_stack = QStackedLayout()
-        viewport_stack.setStackingMode(QStackedLayout.StackAll)
-        viewport_stack.addWidget(self.plotter.interactor)
-        viewport_stack.addWidget(self.loading_label)
+        self.viewport_stack = QStackedLayout()
+        self.viewport_stack.setStackingMode(QStackedLayout.StackAll)
+        self.viewport_stack.addWidget(self.plotter.interactor)
+        self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")
+        self.spl_legend.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.legend_overlay = QWidget()
+        self.legend_overlay.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.legend_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        legend_layout = QVBoxLayout(self.legend_overlay)
+        legend_layout.setContentsMargins(18, 0, 18, 47)
+        legend_layout.addStretch(1)
+        legend_layout.addWidget(self.spl_legend)
+        self.viewport_stack.addWidget(self.legend_overlay)
         viewport = QWidget()
-        viewport.setLayout(viewport_stack)
+        viewport.setLayout(self.viewport_stack)
+
+        controls_bar = QFrame()
+        controls_layout = QHBoxLayout(controls_bar)
+        controls_layout.addWidget(QLabel("Frequency"))
+        controls_layout.addWidget(self.frequency_slider)
+        controls_layout.addWidget(self.frequency_label)
+        controls_layout.addSpacing(16)
+        controls_layout.addWidget(self.protractor_toggle)
+        controls_layout.addSpacing(16)
+        controls_layout.addWidget(QLabel("Slice Angle"))
+        controls_layout.addWidget(self.protractor_angle_slider)
+        controls_layout.addWidget(self.protractor_angle_spin)
 
         self.hover_label = QLabel("")
         self.hover_label.setMinimumHeight(24)
         self.hover_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.hover_label.setStyleSheet(
-            "QLabel {background: #111316;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}"
+            "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}"
         )
 
-        viewport_container = QWidget()
-        viewport_layout = QVBoxLayout(viewport_container)
-        viewport_layout.setContentsMargins(0, 0, 0, 0)
-        viewport_layout.setSpacing(0)
-        viewport_layout.addWidget(viewport, stretch=1)
-        viewport_layout.addWidget(self.hover_label)
+        self.workspace = QMainWindow()
+        self.workspace.setDockOptions(
+            QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.AnimatedDocks
+        )
+        self.workspace.setCentralWidget(viewport)
 
-        side_panel = QWidget()
-        side_panel.setStyleSheet("QWidget { background: #1f1f1f; color: white; }")
-        side_layout = QVBoxLayout(side_panel)
-        side_layout.setContentsMargins(12, 12, 12, 12)
-        frequency_layout = QHBoxLayout()
-        frequency_layout.setContentsMargins(0, 0, 0, 0)
-        frequency_layout.addWidget(self.frequency_slider, stretch=1)
-        frequency_layout.addWidget(self.frequency_label)
-        form = QFormLayout()
-        form.addRow("Frequency", frequency_layout)
-        form.addRow("", self.protractor_toggle)
-        form.addRow("Slice Angle", self.protractor_angle_slider)
-        form.addRow("", self.protractor_angle_spin)
-        side_layout.addLayout(form)
-        side_layout.addSpacing(14)
-        legend_radar_layout = QHBoxLayout()
-        legend_radar_layout.setContentsMargins(0, 0, 0, 0)
-        legend_radar_layout.setSpacing(4)
-        legend_radar_layout.addWidget(ColorLegend(self._min_db, self._max_db, side_panel))
-        legend_radar_layout.addWidget(self.radar_plot, stretch=1)
-        side_layout.addLayout(legend_radar_layout)
-        side_layout.addWidget(self.slice_plot, stretch=1)
-        side_layout.addStretch(1)
-        side_panel.setMinimumWidth(430)
+        self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)
+        self.isobar_dock = self._make_dock(
+            "Isobar Angle Slice",
+            self.slice_plot,
+            tool_actions=(self.hires_slice_action, self.save_slice_action),
+        )
+        self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)
+        self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.isobar_dock)
+        self.workspace.splitDockWidget(self.radar_dock, self.isobar_dock, Qt.Vertical)
+        self.workspace.resizeDocks([self.radar_dock, self.isobar_dock], [260, 330], Qt.Vertical)
+        view_menu.addAction(self.radar_dock.toggleViewAction())
+        view_menu.addAction(self.isobar_dock.toggleViewAction())
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(viewport_container)
-        splitter.addWidget(side_panel)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([700, 460])
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setMenuBar(menu_bar)
-        layout.addWidget(splitter)
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.addWidget(self.workspace, stretch=1)
+        layout.addWidget(controls_bar)
+        layout.addWidget(self.hover_label)
+        self.setCentralWidget(central)
 
         QTimer.singleShot(0, self._prepare_and_render_initial)
 
+    def _make_dock(
+        self,
+        title: str,
+        widget: QWidget,
+        *,
+        tool_actions: tuple[QAction, ...] = (),
+    ) -> QDockWidget:
+        dock = QDockWidget(title, self.workspace)
+        dock.setWidget(widget)
+        dock.setAllowedAreas(Qt.AllDockWidgetAreas)
+        dock.setFeatures(
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
+        )
+        dock.setTitleBarWidget(DockTitleBar(title, dock, tool_actions=tool_actions))
+        return dock
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._refresh_slice_button_icons()
+
     @Slot()
     def _prepare_and_render_initial(self) -> None:
-        self.loading_label.show()
         self._prepared = prepare_balloon_data(
             self._raw_balloon_data,
             BalloonPrepConfig(min_db=self._min_db, max_db=self._max_db),
         )
         self._min_db = float(self._prepared["min_db"])
         self._max_db = float(self._prepared["max_db"])
+        self.spl_legend.set_range(self._min_db, self._max_db)
 
         frequency_count = int(self._prepared["freq_hz"].size)
         self.frequency_slider.blockSignals(True)
@@ -218,10 +262,11 @@ class BalloonPlotWindow(QDialog):
         self.frequency_slider.setEnabled(frequency_count > 1)
         self._update_frequency_label(0)
         self._set_protractor_controls_enabled(self.protractor_toggle.isChecked())
+        self.hires_slice_action.setEnabled(frequency_count > 0)
+        self.save_slice_action.setEnabled(frequency_count > 0)
 
         self._render_frequency(0, reset_camera=True)
         self._render_isobar_slice_if_enabled()
-        self.loading_label.hide()
 
     @Slot()
     def _export_balloon_data(self) -> None:
@@ -247,6 +292,41 @@ class BalloonPlotWindow(QDialog):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Export balloon data failed", str(exc))
+
+    def _refresh_slice_button_icons(self) -> None:
+        palette = self.palette()
+        window_color = palette.color(QPalette.Window)
+        light_theme = window_color.lightness() >= 128
+        self.hires_slice_action.setIcon(QIcon(str(HIRES_RENDER_LIGHT_ICON if light_theme else HIRES_RENDER_DARK_ICON)))
+        self.save_slice_action.setIcon(QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON)))
+
+    @Slot()
+    def _render_high_resolution_isobar_slice(self) -> None:
+        self._render_isobar_slice(final_resolution=True)
+
+    @Slot()
+    def _save_isobar_slice_image(self) -> None:
+        if self._prepared is None:
+            QMessageBox.warning(self, "No plot data", "Run a solve before saving a plot image.")
+            return
+
+        path_text, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save plot image",
+            str(Path.cwd() / "balloon_isobar_slice.png"),
+            "PNG images (*.png);;All files (*)",
+        )
+        if not path_text:
+            return
+
+        output_path = Path(path_text)
+        if output_path.suffix == "":
+            output_path = output_path.with_suffix(".png")
+        try:
+            self._render_isobar_slice(final_resolution=True)
+            export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)
+        except Exception as exc:
+            QMessageBox.critical(self, "Save plot image failed", str(exc))
 
     def _prepared_balloon_data(self) -> dict[str, np.ndarray]:
         if self._prepared is None:
@@ -315,9 +395,6 @@ class BalloonPlotWindow(QDialog):
             self._guide_actors_added = True
         if self.protractor_toggle.isChecked() and not self._protractor_actors:
             self._add_protractor(self._balloon_mesh)
-        if not self._axes_added:
-            self.plotter.add_axes()
-            self._axes_added = True
         self.plotter.enable_anti_aliasing()
         if reset_camera:
             self.plotter.reset_camera()
@@ -349,8 +426,6 @@ class BalloonPlotWindow(QDialog):
     @Slot(bool)
     def _on_protractor_toggled(self, enabled: bool) -> None:
         self._set_protractor_controls_enabled(enabled)
-        self.radar_plot.setVisible(enabled)
-        self.slice_plot.setVisible(enabled)
         if enabled and self._balloon_mesh is not None:
             if not self._protractor_actors:
                 self._add_protractor(self._balloon_mesh)
@@ -360,15 +435,15 @@ class BalloonPlotWindow(QDialog):
         self.plotter.render()
 
     @Slot()
-    def _render_isobar_slice(self) -> None:
+    def _render_isobar_slice(self, *, final_resolution: bool = False) -> None:
         if self._prepared is None:
             return
         freqs_hz, angles_deg, values_db = _balloon_isobar_slice(
             self._prepared,
             float(self.protractor_angle_slider.value()),
             clip_min_db=self._min_db,
-            angle_samples=LIVE_ISOBAR_ANGLE_SAMPLES,
-            freq_samples=LIVE_ISOBAR_FREQ_SAMPLES,
+            angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES,
+            freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES,
             octave_smoothing=self._polar_smoothing,
         )
         self.slice_plot.update_plot(
@@ -377,7 +452,9 @@ class BalloonPlotWindow(QDialog):
             values_db,
             self._min_db,
             self._max_db,
+            shading=FINAL_ISOBAR_SHADING if final_resolution else LIVE_ISOBAR_SHADING,
         )
+        self._slice_plot_high_res = bool(final_resolution)
         self._render_radar_slice()
 
     @Slot()
@@ -823,18 +900,80 @@ class SliceRadarCanvas(FigureCanvas):
 
 
 class ColorLegend(QWidget):
-    def __init__(self, min_db: float, max_db: float, parent: QWidget | None = None):
+    def __init__(
+        self,
+        min_db: float,
+        max_db: float,
+        parent: QWidget | None = None,
+        *,
+        orientation: str = "vertical",
+    ):
         super().__init__(parent)
         self._min_db = float(min_db)
         self._max_db = float(max_db)
-        self.setMinimumSize(170, 320)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._orientation = str(orientation).lower()
+        if self._orientation == "horizontal":
+            self.setMinimumSize(460, 76)
+            self.setMaximumHeight(82)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        else:
+            self.setMinimumSize(170, 320)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_range(self, min_db: float, max_db: float) -> None:
+        self._min_db = float(min_db)
+        self._max_db = float(max_db)
+        self.update()
 
     def sizeHint(self) -> QSize:
+        if self._orientation == "horizontal":
+            return QSize(520, 76)
         return QSize(170, 320)
 
     def paintEvent(self, event) -> None:
         del event
+        if self._orientation == "horizontal":
+            self._paint_horizontal()
+            return
+        self._paint_vertical()
+
+    def _paint_horizontal(self) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(31, 31, 31, 180))
+
+        painter.setPen(QPen(QColor("white")))
+        painter.drawText(12, 6, self.width() - 24, 20, Qt.AlignLeft | Qt.AlignVCenter, SPL_SCALAR_NAME)
+
+        bar_left = 132
+        bar_top = 34
+        bar_width = max(self.width() - bar_left - 22, 40)
+        bar_height = 22
+        gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)
+        for stop in np.linspace(0.0, 1.0, 48):
+            gradient.setColorAt(float(stop), _turbo_color(float(stop)))
+        painter.fillRect(bar_left, bar_top, bar_width, bar_height, gradient)
+        painter.setPen(QPen(QColor("#cfcfcf")))
+        painter.drawRect(bar_left, bar_top, bar_width, bar_height)
+
+        painter.setPen(QPen(QColor("white")))
+        metrics = QFontMetrics(painter.font())
+        for value in LEGEND_TICKS_DB:
+            if value < self._min_db or value > self._max_db:
+                continue
+            x = bar_left + _legend_horizontal_fraction(value, self._min_db, self._max_db) * bar_width
+            x_int = int(round(x))
+            painter.drawLine(x_int, bar_top + bar_height, x_int, bar_top + bar_height + 6)
+            label = f"{int(value)}"
+            label_width = metrics.horizontalAdvance(label)
+            painter.drawText(
+                int(round(x - label_width / 2)),
+                bar_top + bar_height + metrics.ascent() + 7,
+                label,
+            )
+        painter.end()
+
+    def _paint_vertical(self) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#1f1f1f"))
@@ -874,6 +1013,12 @@ def _contour_levels(min_db: float, max_db: float, step_db: float) -> list[float]
     first = np.ceil(float(min_db) / step_db) * step_db
     levels = np.arange(first, float(max_db) + 0.5 * step_db, step_db, dtype=float)
     return [float(level) for level in levels if min_db < level < max_db]
+
+
+def _legend_horizontal_fraction(value_db: float, min_db: float, max_db: float) -> float:
+    if np.isclose(max_db, min_db):
+        return 0.0
+    return float((value_db - min_db) / (max_db - min_db))
 
 
 def _legend_fraction(value_db: float, min_db: float, max_db: float) -> float:
@@ -926,3 +1071,4 @@ def _offset_mesh_points(mesh, offset: float):
     points[mask] += (points[mask] / radii[mask, np.newaxis]) * float(offset)
     contour_mesh.points = points
     return contour_mesh
+

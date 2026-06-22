@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
-        self.balloon_window: QDialog | None = None
+        self.balloon_window: QWidget | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
         self._project_clean_payload: dict | None = None

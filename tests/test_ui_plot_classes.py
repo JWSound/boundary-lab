@@ -459,6 +459,83 @@ def test_balloon_contours_exclude_configured_maximum() -> None:
     assert "if min_db < level < max_db" in source
 
 
+def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "class BalloonPlotWindow(QMainWindow):" in source
+    assert 'view_menu = menu_bar.addMenu("View")' in source
+    assert "self.workspace = QMainWindow()" in source
+    assert "QMainWindow.AllowNestedDocks" in source
+    assert "self.workspace.setCentralWidget(viewport)" in source
+    assert 'controls_bar = QFrame()' in source
+    assert 'layout.addWidget(self.workspace, stretch=1)' in source
+    assert 'layout.addWidget(controls_bar)' in source
+    assert 'controls_layout = QHBoxLayout(controls_bar)' in source
+    assert 'controls_bar.setStyleSheet' not in source
+    assert 'controls_layout.addWidget(QLabel("Frequency"))' in source
+    assert 'controls_layout.addWidget(self.protractor_toggle)' in source
+    assert 'controls_layout.addWidget(QLabel("Slice Angle"))' in source
+    assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)' in source
+    assert 'self.isobar_dock = self._make_dock(' in source
+    assert 'view_menu.addAction(self.radar_dock.toggleViewAction())' in source
+    assert 'view_menu.addAction(self.isobar_dock.toggleViewAction())' in source
+    assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)' in source
+    assert 'self.workspace.splitDockWidget(self.radar_dock, self.isobar_dock, Qt.Vertical)' in source
+    assert "QSplitter" not in source
+
+
+def test_balloon_window_does_not_use_rendering_overlay() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "Rendering Balloon" not in source
+    assert "loading_label" not in source
+    assert "_set_loading_visible" not in source
+
+def test_balloon_viewport_polish_removes_redundant_axes_and_pads_readouts() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "legend_layout.setContentsMargins(18, 0, 18, 47)" in source
+    assert "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}" in source
+    assert "self.plotter.add_axes()" not in source
+    assert "self._axes_added" not in source
+
+
+def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert 'HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"' in source
+    assert 'HIRES_RENDER_LIGHT_ICON = APP_ROOT / "assets" / "hiresrender_light.ico"' in source
+    assert 'self.hires_slice_action = QAction("Render High Resolution", self)' in source
+    assert 'self.hires_slice_action.setToolTip("Render high resolution plot")' in source
+    assert 'self.save_slice_action = QAction("Save Plot Image", self)' in source
+    assert 'self.save_slice_action.setToolTip("Save plot image")' in source
+    assert 'self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)' in source
+    assert 'self.save_slice_action.triggered.connect(self._save_isobar_slice_image)' in source
+    assert 'tool_actions=(self.hires_slice_action, self.save_slice_action)' in source
+    assert 'DockTitleBar(title, dock, tool_actions=tool_actions)' in source
+    assert 'self.hires_slice_action.setIcon' in source
+    assert 'self.save_slice_action.setIcon' in source
+    assert 'def _render_isobar_slice(self, *, final_resolution: bool = False)' in source
+    assert 'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES' in source
+    assert 'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES' in source
+    assert 'shading=FINAL_ISOBAR_SHADING if final_resolution else LIVE_ISOBAR_SHADING' in source
+    assert 'self._render_isobar_slice(final_resolution=True)' in source
+    assert 'export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)' in source
+
+
+def test_balloon_spl_legend_is_horizontal_viewport_overlay() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert 'self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")' in source
+    assert 'self.legend_overlay = QWidget()' in source
+    assert 'legend_layout.setContentsMargins(18, 0, 18, 47)' in source
+    assert 'legend_layout.addWidget(self.spl_legend)' in source
+    assert 'legend_layout.addStretch(1)' in source
+    assert 'self.spl_legend.set_range(self._min_db, self._max_db)' in source
+    assert 'orientation: str = "vertical"' in source
+    assert 'def _paint_horizontal(self) -> None:' in source
+    assert 'gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)' in source
+
 def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
