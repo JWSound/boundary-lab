@@ -2623,6 +2623,7 @@ class MainWindow(QMainWindow):
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
             shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
     def _update_vertical_plot(self, dataset: dict[str, np.ndarray]) -> None:
@@ -2633,6 +2634,7 @@ class MainWindow(QMainWindow):
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
             shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
     def _update_impedance_plot(self, dataset: dict[str, np.ndarray]) -> None:

@@ -336,7 +336,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "flat_target_normalization_enabled=self.preferences.normalized_channel_correction" in main_source
     assert '"preferences/live_plot_quality"' in settings_source
     assert '"preferences/live_plot_streaming"' in settings_source
+    assert '"preferences/isobar_contour_step_db"' in settings_source
     assert "live_plot_streaming: bool = True" in settings_source
+    assert "isobar_contour_step_db: float = 3.0" in settings_source
+    assert '"Isobar Contour Step"' in dialog_source
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
     start_solve = main_source[
@@ -361,6 +364,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
         in main_source
     )
     assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
+    assert "contour_step_db=self.preferences.isobar_contour_step_db" in main_source
 
 
 def test_isobar_canvas_allows_custom_right_margin() -> None:
@@ -383,10 +387,14 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "self.axes.pcolormesh(" in isobar_block
     assert "shading=shading" in isobar_block
     assert "self._mesh_shading == shading" in isobar_block
+    assert "self._mesh_contour_step_db == contour_step_db" in isobar_block
     assert 'render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"' in isobar_block
     assert "self.axes.imshow(" in isobar_block
     assert 'interpolation="bilinear"' in isobar_block
     assert "np.log10(freqs_hz)" in isobar_block
+    assert "LinearSegmentedColormap.from_list" in isobar_block
+    assert "Normalize(vmin=clip_min_db, vmax=clip_max_db)" in isobar_block
+    assert "BoundaryNorm(boundaries, cmap.N)" in isobar_block
     assert "apply_log_image_frequency_axis" in source
     assert isobar_block.count("clear_plot_axes(self.axes)") == 1
 
@@ -406,7 +414,8 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
     assert "def capture_contours(" in isobar_block
     assert "def clear_contours(" in isobar_block
     assert "def _redraw_captured_contours(" in isobar_block
-    assert "np.arange(np.ceil(clip_min_db / 3.0) * 3.0" in isobar_block
+    assert "np.ceil(clip_min_db / contour_step_db) * contour_step_db" in isobar_block
+    assert "if contour_step_db <= 0.0" in isobar_block
     assert "levels.copy()" in isobar_block
     assert 'colors="white"' in isobar_block
     assert "linewidths=0.9" in isobar_block

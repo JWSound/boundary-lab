@@ -285,6 +285,13 @@ class PreferencesDialog(QDialog):
         self.spl_min_spin.setSuffix(" dB")
         self.spl_min_spin.setValue(preferences.spl_min_db)
 
+        self.isobar_contour_step_spin = QDoubleSpinBox()
+        self.isobar_contour_step_spin.setRange(0.0, 200.0)
+        self.isobar_contour_step_spin.setDecimals(1)
+        self.isobar_contour_step_spin.setSingleStep(0.5)
+        self.isobar_contour_step_spin.setSuffix(" dB")
+        self.isobar_contour_step_spin.setValue(preferences.isobar_contour_step_db)
+
         self.stitch_tolerance_spin = QDoubleSpinBox()
         self.stitch_tolerance_spin.setRange(0.001, 1000.0)
         self.stitch_tolerance_spin.setDecimals(3)
@@ -372,6 +379,11 @@ class PreferencesDialog(QDialog):
                     ("Polar Smoothing", self.smoothing_combo, ""),
                     ("SPL Min", self.spl_min_spin, ""),
                     ("SPL Max", self.spl_max_spin, ""),
+                    (
+                        "Isobar Contour Step",
+                        self.isobar_contour_step_spin,
+                        "Set to 0 dB for smoothly interpolated isobar colors.",
+                    ),
                 ),
             )
         )
@@ -474,6 +486,7 @@ class PreferencesDialog(QDialog):
             spin_vertical_reference_angle=float(self.spin_vertical_ref_angle_spin.value()),
             spl_max_db=spl_max,
             spl_min_db=spl_min,
+            isobar_contour_step_db=float(self.isobar_contour_step_spin.value()),
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),

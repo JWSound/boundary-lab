@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 
 from blab.plotting import VisualizerConfig
@@ -97,6 +97,7 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_clip: tuple[float, float] | None = None
         self._mesh_shading: str | None = None
         self._mesh_render_mode: str | None = None
+        self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
         self._apply_layout()
@@ -167,14 +168,26 @@ class IsobarCanvas(FigureCanvas):
     def has_captured_contours(self) -> bool:
         return self._captured_contours is not None
 
-    def _current_contour_levels(self, clip: tuple[float, float], values_db: np.ndarray) -> np.ndarray:
+    def _current_contour_levels(
+        self,
+        clip: tuple[float, float],
+        values_db: np.ndarray,
+        contour_step_db: float,
+    ) -> np.ndarray:
+        if contour_step_db <= 0.0:
+            return np.asarray([], dtype=np.float32)
         clip_min_db, clip_max_db = clip
         finite = values_db[np.isfinite(values_db)]
         if finite.size == 0:
             return np.asarray([], dtype=np.float32)
         data_min = float(np.min(finite))
         data_max = float(np.max(finite))
-        levels = np.arange(np.ceil(clip_min_db / 3.0) * 3.0, clip_max_db + 1.5, 3.0, dtype=np.float32)
+        levels = np.arange(
+            np.ceil(clip_min_db / contour_step_db) * contour_step_db,
+            clip_max_db + 0.5 * contour_step_db,
+            contour_step_db,
+            dtype=np.float32,
+        )
         return levels[(levels > clip_min_db) & (levels < clip_max_db) & (levels > data_min) & (levels < data_max)]
 
     def _redraw_captured_contours(self) -> None:
@@ -207,7 +220,11 @@ class IsobarCanvas(FigureCanvas):
             or self._mesh_angles_deg.size < 2
         ):
             return False
-        levels = self._current_contour_levels(self._mesh_clip, self._mesh_values_db)
+        levels = self._current_contour_levels(
+            self._mesh_clip,
+            self._mesh_values_db,
+            3.0 if self._mesh_contour_step_db is None else self._mesh_contour_step_db,
+        )
         if levels.size == 0:
             return False
         self._captured_contours = (
@@ -231,6 +248,7 @@ class IsobarCanvas(FigureCanvas):
         angles_deg: np.ndarray,
         clip: tuple[float, float],
         shading: str,
+        contour_step_db: float,
     ) -> bool:
         return (
             (self._mesh_artist is not None or self._image_artist is not None)
@@ -238,6 +256,7 @@ class IsobarCanvas(FigureCanvas):
             and self._mesh_angles_deg is not None
             and self._mesh_clip == clip
             and self._mesh_shading == shading
+            and self._mesh_contour_step_db == contour_step_db
             and self._mesh_render_mode is not None
             and self._mesh_freqs_hz.shape == freqs_hz.shape
             and self._mesh_angles_deg.shape == angles_deg.shape
@@ -245,15 +264,38 @@ class IsobarCanvas(FigureCanvas):
             and np.array_equal(self._mesh_angles_deg, angles_deg)
         )
 
+    def _isobar_colormap(self):
+        return LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
+
+    def _color_boundaries(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
+        if contour_step_db <= 0.0 or clip_max_db <= clip_min_db:
+            return np.asarray([], dtype=np.float32)
+        first = np.ceil(clip_min_db / contour_step_db) * contour_step_db
+        inner = np.arange(first, clip_max_db + 0.5 * contour_step_db, contour_step_db, dtype=np.float32)
+        inner = inner[(inner > clip_min_db) & (inner < clip_max_db)]
+        return np.concatenate(
+            (
+                np.asarray([clip_min_db], dtype=np.float32),
+                inner,
+                np.asarray([clip_max_db], dtype=np.float32),
+            )
+        )
+
+    def _color_mapping(self, clip_min_db: float, clip_max_db: float, contour_step_db: float):
+        cmap = self._isobar_colormap()
+        boundaries = self._color_boundaries(clip_min_db, clip_max_db, contour_step_db)
+        if boundaries.size >= 2:
+            return cmap, BoundaryNorm(boundaries, cmap.N)
+        return cmap, Normalize(vmin=clip_min_db, vmax=clip_max_db)
+
     def _image_from_values(
         self,
         clipped: np.ndarray,
         clip_min_db: float,
         clip_max_db: float,
+        contour_step_db: float,
     ) -> np.ndarray:
-        boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
-        cmap = ListedColormap(list(self.colors))
-        norm = BoundaryNorm(boundaries, cmap.N)
+        cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
         return np.asarray(cmap(norm(clipped)), dtype=np.float32)
 
     def update_plot(
@@ -265,20 +307,22 @@ class IsobarCanvas(FigureCanvas):
         clip_max_db: float,
         *,
         shading: str = LIVE_ISOBAR_SHADING,
+        contour_step_db: float = 3.0,
     ) -> None:
         freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
         angles_deg = np.asarray(angles_deg, dtype=np.float32)
         clipped = np.clip(np.asarray(values_db, dtype=np.float32), clip_min_db, clip_max_db)
         clip = (float(clip_min_db), float(clip_max_db))
         shading = str(shading or LIVE_ISOBAR_SHADING)
+        contour_step_db = max(0.0, float(contour_step_db))
         render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")
             if render_mode == "image":
                 self._x_axis_mode = "log_image"
-                image = self._image_from_values(clipped, clip_min_db, clip_max_db)
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading) and self._image_artist is not None:
+                image = self._image_from_values(clipped, clip_min_db, clip_max_db, contour_step_db)
+                if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._image_artist is not None:
                     self._image_artist.set_data(image)
                 else:
                     self._remove_mesh_artists()
@@ -301,15 +345,14 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_clip = clip
                     self._mesh_shading = shading
                     self._mesh_render_mode = render_mode
+                    self._mesh_contour_step_db = contour_step_db
             else:
                 self._x_axis_mode = "frequency"
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading) and self._mesh_artist is not None:
+                cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
+                if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._mesh_artist is not None:
                     self._mesh_artist.set_array(clipped.ravel())
                 else:
                     self._remove_mesh_artists()
-                    boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
-                    cmap = ListedColormap(list(self.colors))
-                    norm = BoundaryNorm(boundaries, cmap.N)
                     self._mesh_artist = self.axes.pcolormesh(
                         freqs_hz,
                         angles_deg,
@@ -323,6 +366,7 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_clip = clip
                     self._mesh_shading = shading
                     self._mesh_render_mode = render_mode
+                    self._mesh_contour_step_db = contour_step_db
             self._mesh_values_db = clipped.copy()
         elif freqs_hz.size == 1:
             self._remove_mesh_artists()

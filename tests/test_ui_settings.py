@@ -38,6 +38,7 @@ def test_preference_change_classification() -> None:
 
     assert baseline.spin_horizontal_reference_angle == 0.0
     assert baseline.spin_vertical_reference_angle == 0.0
+    assert baseline.isobar_contour_step_db == 3.0
 
     assert preferences_require_solve_invalidation(
         baseline,
@@ -70,6 +71,10 @@ def test_preference_change_classification() -> None:
     )
     assert preferences_require_visualization_refresh(
         baseline,
+        GuiPreferences(isobar_contour_step_db=1.5),
+    )
+    assert preferences_require_visualization_refresh(
+        baseline,
         GuiPreferences(spin_horizontal_reference_angle=15.0),
     )
     assert preferences_require_visualization_refresh(
@@ -79,6 +84,10 @@ def test_preference_change_classification() -> None:
     assert not preferences_require_solve_invalidation(
         baseline,
         GuiPreferences(polar_smoothing=24),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(isobar_contour_step_db=0.0),
     )
     assert not preferences_require_solve_invalidation(
         baseline,

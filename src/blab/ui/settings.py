@@ -39,6 +39,7 @@ class GuiPreferences:
     spin_vertical_reference_angle: float = 0.0
     spl_max_db: float = 0.0
     spl_min_db: float = -30.0
+    isobar_contour_step_db: float = 3.0
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
     balloon_angle_precision_deg: float = 2.5
@@ -64,6 +65,7 @@ VISUALIZATION_PREFERENCE_FIELDS = (
     "spin_vertical_reference_angle",
     "spl_max_db",
     "spl_min_db",
+    "isobar_contour_step_db",
 )
 
 
@@ -137,6 +139,14 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         ),
         spl_max_db=settings_float(settings, "preferences/spl_max_db", defaults.spl_max_db),
         spl_min_db=settings_float(settings, "preferences/spl_min_db", defaults.spl_min_db),
+        isobar_contour_step_db=max(
+            0.0,
+            settings_float(
+                settings,
+                "preferences/isobar_contour_step_db",
+                defaults.isobar_contour_step_db,
+            ),
+        ),
         stitch_tolerance_mm=settings_float(
             settings,
             "preferences/stitch_tolerance_mm",
@@ -187,6 +197,7 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     )
     settings.setValue("preferences/spl_max_db", preferences.spl_max_db)
     settings.setValue("preferences/spl_min_db", preferences.spl_min_db)
+    settings.setValue("preferences/isobar_contour_step_db", max(0.0, preferences.isobar_contour_step_db))
     settings.setValue("preferences/stitch_tolerance_mm", preferences.stitch_tolerance_mm)
     settings.setValue("preferences/spherical_sampling_enabled", preferences.spherical_sampling_enabled)
     settings.setValue(
