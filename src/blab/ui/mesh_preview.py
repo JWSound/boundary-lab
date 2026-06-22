@@ -24,6 +24,8 @@ except ImportError:  # pragma: no cover
 
 AXIS_LINE_WIDTH = 1.5
 AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
+PREVIEW_HOME_CAMERA_DIRECTION = np.array([-1.0, 1.0, 1.0], dtype=float) / np.sqrt(3.0)
+PREVIEW_HOME_VIEW_UP = np.array([0.0, 1.0, 0.0], dtype=float)
 RIGID_COLOR = "#cfcfcf"
 RIGID_MIRROR_COLOR = "#a9a9a9"
 RIGID_EDGE_COLOR = "#555555"
@@ -288,6 +290,8 @@ class MeshPreview(QWidget):
     def _camera_position(self):
         if self.viewer is None:
             return None
+        if not self._actor_surface_labels:
+            return None
         try:
             return self.viewer.camera_position
         except Exception:
@@ -297,10 +301,30 @@ class MeshPreview(QWidget):
         if self.viewer is None:
             return
         if camera_position is None:
-            self.viewer.reset_camera()
+            self._reset_camera_to_home()
             return
         try:
             self.viewer.camera_position = camera_position
+        except Exception:
+            self._reset_camera_to_home()
+
+    def _reset_camera_to_home(self) -> None:
+        if self.viewer is None:
+            return
+        self.viewer.reset_camera()
+        try:
+            camera = self.viewer.camera
+            focal_point = np.asarray(camera.focal_point, dtype=float)
+            distance = float(camera.distance)
+            if not np.isfinite(distance) or distance <= 0.0:
+                distance = 1.0
+            position = focal_point + PREVIEW_HOME_CAMERA_DIRECTION * distance
+            self.viewer.camera_position = (
+                tuple(float(value) for value in position),
+                tuple(float(value) for value in focal_point),
+                tuple(float(value) for value in PREVIEW_HOME_VIEW_UP),
+            )
+            self.viewer.reset_camera_clipping_range()
         except Exception:
             self.viewer.reset_camera()
 

@@ -265,16 +265,16 @@ class MainWindow(QMainWindow):
         freq_max = min(
             max(settings_int(self.settings, "solve/freq_max_hz", 20000), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ
         )
-        freq_count = min(max(settings_int(self.settings, "solve/freq_count", 41), 3), 161)
+        freq_count = min(max(settings_int(self.settings, "solve/freq_count", 41), 3), 200)
 
         self.freq_min_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_min))
         self.freq_max_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_max))
-        self.freq_count_slider = self._make_slider(3, 161, freq_count)
+        self.freq_count_slider = self._make_slider(3, 200, freq_count)
         self.freq_count_slider.setSingleStep(2)
 
         self.freq_min_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_min)
         self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
-        self.freq_count_spin = self._make_spin(3, 161, freq_count)
+        self.freq_count_spin = self._make_spin(3, 200, freq_count)
 
         self.status_label = QLabel("Ready")
         startup("Creating plot panels...")

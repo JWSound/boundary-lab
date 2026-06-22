@@ -6,6 +6,8 @@ import pytest
 pytest.importorskip("PySide6")
 
 from blab.ui.mesh_preview import (
+    PREVIEW_HOME_CAMERA_DIRECTION,
+    PREVIEW_HOME_VIEW_UP,
     _dimensions_lwh_mm,
     _mesh_stats_label,
     _mirrored_triangle_images_for_preview,
@@ -49,6 +51,24 @@ def test_preview_axis_length_scales_with_mesh_bounds() -> None:
     assert _preview_axis_length(points) > 3.0
     assert _preview_axis_length(np.empty((0, 3))) == 1.0
 
+
+def test_preview_home_camera_projects_axes_for_speaker_forward_orientation() -> None:
+    view_direction = -PREVIEW_HOME_CAMERA_DIRECTION
+    screen_right = np.cross(view_direction, PREVIEW_HOME_VIEW_UP)
+    screen_right = screen_right / np.linalg.norm(screen_right)
+    screen_up = PREVIEW_HOME_VIEW_UP - np.dot(PREVIEW_HOME_VIEW_UP, view_direction) * view_direction
+    screen_up = screen_up / np.linalg.norm(screen_up)
+
+    x_axis = np.array([1.0, 0.0, 0.0])
+    y_axis = np.array([0.0, 1.0, 0.0])
+    z_axis = np.array([0.0, 0.0, 1.0])
+
+    assert np.dot(y_axis, screen_right) == pytest.approx(0.0)
+    assert np.dot(y_axis, screen_up) > 0.0
+    assert np.dot(x_axis, screen_right) > 0.0
+    assert np.dot(x_axis, screen_up) > 0.0
+    assert np.dot(z_axis, screen_right) > 0.0
+    assert np.dot(z_axis, screen_up) < 0.0
 
 def test_mesh_stats_label_includes_mirrored_state_and_dimensions() -> None:
     assert _mesh_stats_label(1234, mirrored=True, dimensions_mm=(300, 200, 100)) == (
