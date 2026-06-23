@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 
@@ -15,6 +16,7 @@ AUDIO_FREQ_MAX_HZ = 20000
 AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
 AUDIO_AXIS_LABELS = ["20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"]
 FREQ_SLIDER_STEPS = 1000
+ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0
 LIVE_ISOBAR_ANGLE_SAMPLES = 180
 LIVE_ISOBAR_FREQ_SAMPLES = 90
 FINAL_ISOBAR_ANGLE_SAMPLES = 1000
@@ -79,18 +81,29 @@ def slider_value_to_frequency(value: int) -> int:
 
 
 class IsobarCanvas(FigureCanvas):
-    def __init__(self, title: str, *, left_margin: float = 0.14, right_margin: float = 0.98):
+    def __init__(
+        self,
+        title: str,
+        *,
+        left_margin: float = 0.14,
+        right_margin: float = 0.88,
+        show_colorbar: bool = True,
+    ):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure)
         self.title = title
         self.left_margin = float(left_margin)
         self.right_margin = float(right_margin)
+        self.show_colorbar = bool(show_colorbar)
         self.colors = VisualizerConfig.custom_colors
         self._mesh_artist = None
         self._image_artist = None
         self._line_artist = None
         self._contour_artist = None
+        self._colorbar = None
+        self._colorbar_axes = None
+        self._colorbar_mappable = None
         self._mesh_freqs_hz: np.ndarray | None = None
         self._mesh_angles_deg: np.ndarray | None = None
         self._mesh_values_db: np.ndarray | None = None
@@ -126,6 +139,7 @@ class IsobarCanvas(FigureCanvas):
         self._image_artist = None
         self._line_artist = None
         self._contour_artist = None
+        self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
         self._mesh_values_db = None
@@ -150,6 +164,22 @@ class IsobarCanvas(FigureCanvas):
     def _remove_mesh_artists(self) -> None:
         self._remove_artist("_mesh_artist")
         self._remove_artist("_image_artist")
+
+    def _remove_colorbar(self) -> None:
+        if self._colorbar is not None:
+            try:
+                self._colorbar.remove()
+            except (AttributeError, KeyError, ValueError):
+                pass
+        elif self._colorbar_axes is not None:
+            try:
+                self._colorbar_axes.remove()
+            except (AttributeError, KeyError, ValueError):
+                pass
+        self._colorbar = None
+        self._colorbar_axes = None
+        self._colorbar_mappable = None
+        self._apply_layout()
 
     def _remove_contour_artist(self) -> None:
         if self._contour_artist is None:
@@ -288,6 +318,36 @@ class IsobarCanvas(FigureCanvas):
             return cmap, BoundaryNorm(boundaries, cmap.N)
         return cmap, Normalize(vmin=clip_min_db, vmax=clip_max_db)
 
+    def _colorbar_ticks(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
+        tick_step_db = max(ISOBAR_COLORBAR_MIN_TICK_STEP_DB, contour_step_db)
+        start = np.ceil(clip_min_db / tick_step_db) * tick_step_db
+        end = np.floor(clip_max_db / tick_step_db) * tick_step_db
+        if end < start:
+            return np.asarray([clip_min_db, clip_max_db], dtype=np.float32)
+        return np.arange(start, end + 0.5 * tick_step_db, tick_step_db, dtype=np.float32)
+
+    def _update_colorbar(
+        self,
+        clip_min_db: float,
+        clip_max_db: float,
+        contour_step_db: float,
+        cmap,
+        norm,
+    ) -> None:
+        if not self.show_colorbar:
+            self._remove_colorbar()
+            return
+        self._remove_colorbar()
+        self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
+        self._colorbar_mappable.set_array([])
+        self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
+        self._colorbar = self.figure.colorbar(
+            self._colorbar_mappable,
+            cax=self._colorbar_axes,
+        )
+        self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
+        self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
+
     def _image_from_values(
         self,
         clipped: np.ndarray,
@@ -319,9 +379,11 @@ class IsobarCanvas(FigureCanvas):
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")
+            cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
+            self._update_colorbar(clip_min_db, clip_max_db, contour_step_db, cmap, norm)
             if render_mode == "image":
                 self._x_axis_mode = "log_image"
-                image = self._image_from_values(clipped, clip_min_db, clip_max_db, contour_step_db)
+                image = np.asarray(cmap(norm(clipped)), dtype=np.float32)
                 if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._image_artist is not None:
                     self._image_artist.set_data(image)
                 else:
@@ -348,7 +410,6 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_contour_step_db = contour_step_db
             else:
                 self._x_axis_mode = "frequency"
-                cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
                 if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._mesh_artist is not None:
                     self._mesh_artist.set_array(clipped.ravel())
                 else:
@@ -377,6 +438,8 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_clip = None
             self._mesh_shading = None
             self._mesh_render_mode = None
+            self._mesh_contour_step_db = None
+            self._remove_colorbar()
             x_values = np.full_like(angles_deg, float(freqs_hz[0]))
             if self._line_artist is None:
                 (self._line_artist,) = self.axes.plot(
@@ -397,8 +460,23 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_clip = None
             self._mesh_shading = None
             self._mesh_render_mode = None
+            self._mesh_contour_step_db = None
+            self._remove_colorbar()
 
-        self._configure_axes()
+        if self._colorbar is None:
+            self._configure_axes()
+        else:
+            self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+            self.axes.set_xlabel("Frequency (Hz)")
+            self.axes.set_ylabel("Angle (deg)")
+            if self._x_axis_mode == "log_image":
+                apply_log_image_frequency_axis(self.axes)
+            else:
+                apply_audio_frequency_axis(self.axes)
+            self.axes.set_ylim(-180, 180)
+            self.axes.set_yticks(np.arange(-180, 181, 45))
+            self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
+            apply_compact_plot_text(self.axes)
         self._redraw_captured_contours()
         self.draw_idle()
 

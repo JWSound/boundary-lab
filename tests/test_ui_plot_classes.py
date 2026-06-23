@@ -371,7 +371,8 @@ def test_isobar_canvas_allows_custom_right_margin() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
 
     assert "left_margin: float = 0.14" in source
-    assert "right_margin: float = 0.98" in source
+    assert "right_margin: float = 0.88" in source
+    assert "show_colorbar: bool = True" in source
     assert "left=self.left_margin" in source
     assert "right=self.right_margin" in source
 
@@ -382,6 +383,9 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
 
     assert "self._mesh_artist" in isobar_block
     assert "self._image_artist" in isobar_block
+    assert "self._colorbar" in isobar_block
+    assert "self._colorbar_axes" in isobar_block
+    assert "self.show_colorbar = bool(show_colorbar)" in isobar_block
     assert "def _mesh_matches(" in isobar_block
     assert "self._mesh_artist.set_array" in isobar_block
     assert "self.axes.pcolormesh(" in isobar_block
@@ -395,6 +399,12 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "LinearSegmentedColormap.from_list" in isobar_block
     assert "Normalize(vmin=clip_min_db, vmax=clip_max_db)" in isobar_block
     assert "BoundaryNorm(boundaries, cmap.N)" in isobar_block
+    assert "ScalarMappable(norm=norm, cmap=cmap)" in isobar_block
+    assert "self.figure.add_axes" in isobar_block
+    assert "cax=self._colorbar_axes" in isobar_block
+    assert "ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0" in source
+    assert "tick_step_db = max(ISOBAR_COLORBAR_MIN_TICK_STEP_DB, contour_step_db)" in isobar_block
+    assert "if not self.show_colorbar" in isobar_block
     assert "apply_log_image_frequency_axis" in source
     assert isobar_block.count("clear_plot_axes(self.axes)") == 1
 
@@ -490,15 +500,25 @@ def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     assert 'controls_layout.addWidget(self.protractor_angle_slider, 1, 1)' in source
     assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport)' in source
     assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)' in source
+    assert 'self.wavefront_shape_dock = self._make_dock(' in source
+    assert '"Forward Beam Shape",' in source
+    assert 'self.wavefront_shape_plot,' in source
+    assert 'tool_actions=(self.save_wavefront_shape_action,),' in source
     assert 'self.isobar_dock = self._make_dock(' in source
     assert 'view_menu.addAction(self.balloon_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.radar_dock.toggleViewAction())' in source
+    assert 'view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.isobar_dock.toggleViewAction())' in source
+    assert 'self.wavefront_shape_dock.hide()' in source
     assert 'self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)' in source
     assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)' in source
+    assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.wavefront_shape_dock)' in source
+    assert 'self.wavefront_shape_dock.visibilityChanged.connect(self._on_wavefront_shape_visibility_changed)' in source
     assert 'self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)' in source
-    assert 'self.workspace.splitDockWidget(self.radar_dock, self.isobar_dock, Qt.Vertical)' in source
-    assert 'self.workspace.resizeDocks([self.balloon_dock, self.radar_dock, self.isobar_dock], [605, 345, 380], Qt.Horizontal)' in source
+    assert 'self.workspace.splitDockWidget(self.radar_dock, self.wavefront_shape_dock, Qt.Vertical)' in source
+    assert 'self.workspace.splitDockWidget(self.wavefront_shape_dock, self.isobar_dock, Qt.Vertical)' in source
+    assert 'self.workspace.resizeDocks(' in source
+    assert '[self.balloon_dock, self.radar_dock, self.wavefront_shape_dock, self.isobar_dock]' in source
     assert "QSplitter" not in source
 
 
@@ -517,6 +537,69 @@ def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> 
     assert "self._axes_added" not in source
 
 
+def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert 'WAVEFRONT_LEVEL_DB = -6.0' in source
+    assert 'class WavefrontShapeCanvas(FigureCanvas):' in source
+    assert 'Forward Beam Shape' in source
+    assert 'Wavefront Shape' not in source
+    assert 'def _wavefront_shape_summary(' in source
+    assert 'def _fit_wavefront_shape_for_frequency(' in source
+    assert 'LinearNDInterpolator' in source
+    assert 'minimize_scalar' in source
+    assert 'self.wavefront_shape_plot.update_plot(_wavefront_shape_summary(self._prepared))' not in source
+    assert 'def _on_wavefront_shape_visibility_changed(self, visible: bool) -> None:' in source
+    assert 'def _render_wavefront_shape_plot(self) -> None:' in source
+    assert 'self._wavefront_shape_summary_cache = None' in source
+    assert 'self._wavefront_shape_summary_cache = _wavefront_shape_summary(' in source
+    assert 'raw_balloon_data=self._raw_balloon_data' in source
+    assert 'self.save_wavefront_shape_action = QAction("Save Plot Image", self)' in source
+    assert 'self.save_wavefront_shape_action.triggered.connect(self._save_wavefront_shape_image)' in source
+    assert 'self.save_wavefront_shape_action.setIcon' in source
+    assert 'tool_actions=(self.save_wavefront_shape_action,)' in source
+    assert 'def _save_wavefront_shape_image(self) -> None:' in source
+    assert 'str(Path.cwd() / "forward_beam_shape.png")' in source
+    assert 'export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)' in source
+    assert 'self._update_wavefront_shape_frequency_cursor(index)' in source
+    assert 'def _update_wavefront_shape_frequency_cursor(self, index: int) -> None:' in source
+    assert 'self.wavefront_shape_plot.set_frequency_cursor(float(self._prepared["freq_hz"][safe_index]))' in source
+    assert 'def set_frequency_cursor(self, freq_hz: float | None) -> None:' in source
+    assert 'self.axes.axvline(' in source
+    assert 'self._colorbar_axes = self.figure.add_axes([0.89, 0.22, 0.025, 0.68])' in source
+    assert 'self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)' in source
+    assert 'self._colorbar.set_label("Fit residual (%)", fontsize=8)' in source
+    assert 'self.di_axes = self.axes.twinx()' in source
+    assert 'self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=10)' in source
+    assert 'self.di_axes.set_ylim(-5.0, 50.0)' in source
+    assert 'self.di_axes.yaxis.set_label_position("right")' in source
+    assert 'self.di_axes.yaxis.tick_right()' in source
+    assert 'self.di_axes.yaxis.set_label_coords(1.17, 0.5)' in source
+    assert 'subplots_adjust(left=0.18, right=0.74' in source
+    assert 'def _plot_directivity_index(self, freqs: np.ndarray, directivity_index: np.ndarray) -> None:' in source
+    assert 'Normalize(vmin=0.0, vmax=15.0, clip=True)' in source
+    assert '"directivity_index_db": _spherical_directivity_index_db(prepared, raw_balloon_data)' in source
+    assert 'def _spherical_directivity_index_from_raw(' in source
+    assert 'def _style_colorbar(self) -> None:' in source
+    assert 'self._colorbar.ax.yaxis.label.set_color(text_color)' in source
+    assert 'self._colorbar.ax.tick_params(colors=text_color)' in source
+    assert 'self._colorbar.outline.set_edgecolor(spine_color)' in source
+    assert 'def _draw_shape_reference_markers(self) -> None:' in source
+    assert '(1.0, "D")' in source
+    assert '(2.0, "o")' in source
+    assert '(4.0, _rounded_square_marker())' in source
+    assert '(8.0, "s")' in source
+    assert 'def _rounded_square_marker() -> MplPath:' in source
+    assert 'self.axes.set_ylim(0.75, 8.5)' in source
+    assert 'transform = self.axes.get_yaxis_transform()' in source
+    assert 'marker_color = self._theme_marker_color()' in source
+    assert 'facecolors="none"' in source
+    assert 'edgecolors=marker_color' in source
+    assert 'def _theme_marker_color(self) -> str:' in source
+    assert '"#101214" if self.palette().color(QPalette.Window).lightness() >= 128 else "#f2f2f2"' in source
+    assert 'clip_on=False' in source
+
+
 def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
@@ -527,11 +610,13 @@ def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
     assert 'self.save_slice_action = QAction("Save Plot Image", self)' in source
     assert 'self.save_slice_action.setToolTip("Save plot image")' in source
     assert 'self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)' in source
+    assert 'show_colorbar=False' in source
     assert 'self.save_slice_action.triggered.connect(self._save_isobar_slice_image)' in source
     assert 'tool_actions=(self.hires_slice_action, self.save_slice_action)' in source
     assert 'DockTitleBar(title, dock, tool_actions=tool_actions)' in source
     assert 'self.hires_slice_action.setIcon' in source
     assert 'self.save_slice_action.setIcon' in source
+    assert 'self.save_wavefront_shape_action.setIcon' in source
     assert 'def _render_isobar_slice(self, *, final_resolution: bool = False)' in source
     assert 'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES' in source
     assert 'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES' in source
