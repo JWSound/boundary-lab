@@ -1053,7 +1053,7 @@ def _fit_wavefront_shape_for_frequency(
     *,
     level_db: float,
 ) -> dict[str, float] | None:
-    interpolator = _front_angle_interpolator(horizontal_deg, vertical_deg, spl_db, front_mask)
+    interpolator = _front_tangent_interpolator(horizontal_deg, vertical_deg, spl_db, front_mask)
     if interpolator is None:
         return None
 
@@ -1072,17 +1072,21 @@ def _fit_wavefront_shape_for_frequency(
 
     angles = np.asarray(contour_angles, dtype=float)
     radii = np.asarray(contour_radii, dtype=float)
-    horizontal_beamwidth = _axis_beamwidth_from_rays(interpolator, 0.0, np.pi, level_db)
-    vertical_beamwidth = _axis_beamwidth_from_rays(interpolator, 0.5 * np.pi, 1.5 * np.pi, level_db)
+    horizontal_extent = _axis_tangent_extent_from_rays(interpolator, 0.0, np.pi, level_db)
+    vertical_extent = _axis_tangent_extent_from_rays(interpolator, 0.5 * np.pi, 1.5 * np.pi, level_db)
 
-    if horizontal_beamwidth is None or vertical_beamwidth is None:
+    if horizontal_extent is None or vertical_extent is None:
         x = radii * np.cos(angles)
         y = radii * np.sin(angles)
-        horizontal_beamwidth = float(np.nanmax(x) - np.nanmin(x))
-        vertical_beamwidth = float(np.nanmax(y) - np.nanmin(y))
+        horizontal_extent = _signed_axis_extent(x)
+        vertical_extent = _signed_axis_extent(y)
+    if horizontal_extent is None or vertical_extent is None:
+        return None
 
-    a = 0.5 * float(horizontal_beamwidth)
-    b = 0.5 * float(vertical_beamwidth)
+    horizontal_positive, horizontal_negative = horizontal_extent
+    vertical_positive, vertical_negative = vertical_extent
+    a = 0.5 * float(horizontal_positive + horizontal_negative)
+    b = 0.5 * float(vertical_positive + vertical_negative)
     if not np.isfinite(a) or not np.isfinite(b) or a <= 1e-6 or b <= 1e-6:
         return None
 
@@ -1096,8 +1100,10 @@ def _fit_wavefront_shape_for_frequency(
 
     exponent = float(optimum.x)
     model = _superellipse_radius(angles, a, b, exponent)
-    residual_deg = float(np.sqrt(np.nanmean((radii - model) ** 2)))
-    residual_percent = 100.0 * residual_deg / max(float(np.nanmean([a, b])), 1e-6)
+    residual = float(np.sqrt(np.nanmean((radii - model) ** 2)))
+    residual_percent = 100.0 * residual / max(float(np.nanmean([a, b])), 1e-6)
+    horizontal_beamwidth = _tangent_extent_to_beamwidth_deg(horizontal_positive, horizontal_negative)
+    vertical_beamwidth = _tangent_extent_to_beamwidth_deg(vertical_positive, vertical_negative)
     return {
         "shape_exponent": exponent,
         "fit_residual_percent": residual_percent,
@@ -1125,18 +1131,20 @@ def _front_angle_meshes(theta_rad: np.ndarray, phi_rad: np.ndarray) -> tuple[np.
     return horizontal, vertical, front_mask
 
 
-def _front_angle_interpolator(
+def _front_tangent_interpolator(
     horizontal_deg: np.ndarray,
     vertical_deg: np.ndarray,
     spl_db: np.ndarray,
     front_mask: np.ndarray,
 ):
     values = np.asarray(spl_db, dtype=float)
-    mask = front_mask & np.isfinite(values)
+    horizontal_tangent = np.tan(np.deg2rad(horizontal_deg))
+    vertical_tangent = np.tan(np.deg2rad(vertical_deg))
+    mask = front_mask & np.isfinite(values) & np.isfinite(horizontal_tangent) & np.isfinite(vertical_tangent)
     if np.count_nonzero(mask) < 4:
         return None
 
-    points = np.column_stack((horizontal_deg[mask].ravel(), vertical_deg[mask].ravel()))
+    points = np.column_stack((horizontal_tangent[mask].ravel(), vertical_tangent[mask].ravel()))
     point_values = values[mask].ravel()
     unique_points, unique_indices = np.unique(np.round(points, decimals=6), axis=0, return_index=True)
     if unique_points.shape[0] < 4:
@@ -1147,17 +1155,39 @@ def _front_angle_interpolator(
         return None
 
 
-def _axis_beamwidth_from_rays(interpolator, positive_angle_rad: float, negative_angle_rad: float, level_db: float) -> float | None:
+def _axis_tangent_extent_from_rays(
+    interpolator,
+    positive_angle_rad: float,
+    negative_angle_rad: float,
+    level_db: float,
+) -> tuple[float, float] | None:
     positive = _level_crossing_for_ray(interpolator, positive_angle_rad, level_db)
     negative = _level_crossing_for_ray(interpolator, negative_angle_rad, level_db)
     if positive is None or negative is None:
         return None
-    return float(positive + negative)
+    return float(positive), float(negative)
+
+
+def _signed_axis_extent(values: np.ndarray) -> tuple[float, float] | None:
+    values = np.asarray(values, dtype=float)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    positive = float(np.nanmax(finite))
+    negative = float(-np.nanmin(finite))
+    if not np.isfinite(positive) or not np.isfinite(negative) or positive <= 0.0 or negative <= 0.0:
+        return None
+    return positive, negative
+
+
+def _tangent_extent_to_beamwidth_deg(positive: float, negative: float) -> float:
+    return float(np.rad2deg(np.arctan(max(float(positive), 0.0))) + np.rad2deg(np.arctan(max(float(negative), 0.0))))
 
 
 def _level_crossing_for_ray(interpolator, angle_rad: float, level_db: float) -> float | None:
     limit = _front_ray_limit(angle_rad)
-    radii = np.linspace(0.0, limit, WAVEFRONT_RAY_SAMPLES, dtype=float)
+    angular_radii = np.linspace(0.0, np.arctan(limit), WAVEFRONT_RAY_SAMPLES, dtype=float)
+    radii = np.tan(angular_radii)
     coords = np.column_stack((radii * np.cos(angle_rad), radii * np.sin(angle_rad)))
     values = np.asarray(interpolator(coords), dtype=float)
     finite = np.isfinite(values)
@@ -1184,14 +1214,15 @@ def _level_crossing_for_ray(interpolator, angle_rad: float, level_db: float) -> 
 
 
 def _front_ray_limit(angle_rad: float) -> float:
+    tangent_limit = float(np.tan(np.deg2rad(WAVEFRONT_MAX_FRONT_ANGLE_DEG)))
     cosine = abs(float(np.cos(angle_rad)))
     sine = abs(float(np.sin(angle_rad)))
     limits = []
     if cosine > 1e-6:
-        limits.append(WAVEFRONT_MAX_FRONT_ANGLE_DEG / cosine)
+        limits.append(tangent_limit / cosine)
     if sine > 1e-6:
-        limits.append(WAVEFRONT_MAX_FRONT_ANGLE_DEG / sine)
-    return float(min(limits) if limits else WAVEFRONT_MAX_FRONT_ANGLE_DEG)
+        limits.append(tangent_limit / sine)
+    return float(min(limits) if limits else tangent_limit)
 
 
 def _superellipse_radius(angle_rad: np.ndarray, horizontal_radius: float, vertical_radius: float, exponent: float) -> np.ndarray:

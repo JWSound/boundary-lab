@@ -570,7 +570,7 @@ def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
     assert 'self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)' in source
     assert 'self._colorbar.set_label("Fit residual (%)", fontsize=8)' in source
     assert 'self.di_axes = self.axes.twinx()' in source
-    assert 'self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=10)' in source
+    assert 'self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=2)' in source
     assert 'self.di_axes.set_ylim(-5.0, 50.0)' in source
     assert 'self.di_axes.yaxis.set_label_position("right")' in source
     assert 'self.di_axes.yaxis.tick_right()' in source

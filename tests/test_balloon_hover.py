@@ -104,11 +104,15 @@ def test_wavefront_shape_summary_fits_aspect_scaled_superellipse() -> None:
     phi_values = np.linspace(0.0, 2.0 * np.pi, 97, dtype=np.float32)
     theta_grid, phi_grid = np.meshgrid(theta_values, phi_values, indexing="ij")
     horizontal_deg, vertical_deg, front_mask = _front_angle_meshes(theta_grid, phi_grid)
+    horizontal_tangent = np.tan(np.deg2rad(horizontal_deg))
+    vertical_tangent = np.tan(np.deg2rad(vertical_deg))
     exponent = 4.0
-    horizontal_radius = 42.0
-    vertical_radius = 28.0
-    metric = (np.abs(horizontal_deg) / horizontal_radius) ** exponent + (
-        np.abs(vertical_deg) / vertical_radius
+    horizontal_radius_deg = 42.0
+    vertical_radius_deg = 28.0
+    horizontal_radius = np.tan(np.deg2rad(horizontal_radius_deg))
+    vertical_radius = np.tan(np.deg2rad(vertical_radius_deg))
+    metric = (np.abs(horizontal_tangent) / horizontal_radius) ** exponent + (
+        np.abs(vertical_tangent) / vertical_radius
     ) ** exponent
     spl = np.full(theta_grid.shape, -30.0, dtype=np.float32)
     spl[front_mask] = np.clip(-6.0 * metric[front_mask], -30.0, 0.0)
@@ -123,8 +127,34 @@ def test_wavefront_shape_summary_fits_aspect_scaled_superellipse() -> None:
 
     assert summary["valid"].tolist() == [True]
     np.testing.assert_allclose(summary["shape_exponent"], [exponent], atol=0.15)
-    np.testing.assert_allclose(summary["aspect_ratio"], [horizontal_radius / vertical_radius], atol=0.03)
+    np.testing.assert_allclose(summary["aspect_ratio"], [horizontal_radius_deg / vertical_radius_deg], atol=0.03)
     assert float(summary["fit_residual_percent"][0]) < 0.5
+
+
+def test_wavefront_shape_summary_keeps_wide_axisymmetric_beam_circular() -> None:
+    theta_values = np.linspace(0.0, np.pi, 80, dtype=np.float32)
+    phi_values = np.linspace(0.0, 2.0 * np.pi, 129, dtype=np.float32)
+    theta_grid, phi_grid = np.meshgrid(theta_values, phi_values, indexing="ij")
+    _, _, front_mask = _front_angle_meshes(theta_grid, phi_grid)
+    radius_deg = 78.0
+    radius_tangent = np.tan(np.deg2rad(radius_deg))
+    radial_tangent = np.tan(theta_grid)
+    metric = (radial_tangent / radius_tangent) ** 2.0
+    spl = np.full(theta_grid.shape, -30.0, dtype=np.float32)
+    spl[front_mask] = np.clip(-6.0 * metric[front_mask], -30.0, 0.0)
+    prepared = {
+        "freq_hz": np.array([329.0], dtype=np.float32),
+        "theta_grid_rad": theta_grid,
+        "phi_grid_rad": phi_grid,
+        "balloon_surface_spl": spl[np.newaxis, :, :],
+    }
+
+    summary = _wavefront_shape_summary(prepared)
+
+    assert summary["valid"].tolist() == [True]
+    np.testing.assert_allclose(summary["shape_exponent"], [2.0], atol=0.08)
+    np.testing.assert_allclose(summary["horizontal_beamwidth_deg"], [2.0 * radius_deg], atol=0.8)
+    np.testing.assert_allclose(summary["vertical_beamwidth_deg"], [2.0 * radius_deg], atol=0.8)
 
 
 def test_wavefront_shape_summary_computes_spherical_directivity_index_from_raw_samples() -> None:
