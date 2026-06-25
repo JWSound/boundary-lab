@@ -498,13 +498,14 @@ def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     assert 'controls_layout.addWidget(self.protractor_toggle, 0, 3)' in source
     assert 'controls_layout.addWidget(QLabel("Slice Angle"), 1, 0)' in source
     assert 'controls_layout.addWidget(self.protractor_angle_slider, 1, 1)' in source
-    assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport)' in source
-    assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)' in source
+    assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")' in source
+    assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")' in source
     assert 'self.wavefront_shape_dock = self._make_dock(' in source
     assert '"Forward Beam Shape",' in source
     assert 'self.wavefront_shape_plot,' in source
     assert 'tool_actions=(self.save_wavefront_shape_action,),' in source
     assert 'self.isobar_dock = self._make_dock(' in source
+    assert 'object_name="isobar_angle_slice"' in source
     assert 'view_menu.addAction(self.balloon_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.radar_dock.toggleViewAction())' in source
     assert 'view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())' in source
@@ -520,6 +521,25 @@ def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     assert 'self.workspace.resizeDocks(' in source
     assert '[self.balloon_dock, self.radar_dock, self.wavefront_shape_dock, self.isobar_dock]' in source
     assert "QSplitter" not in source
+
+
+
+def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)" in source
+    assert "self._restore_window_state()" in source
+    assert "self.settings.setValue(\"balloon_window/geometry\", self.saveGeometry())" in source
+    assert "self.settings.setValue(\"balloon_window/dock_state\", self.workspace.saveState())" in source
+    assert "self.workspace.restoreState(dock_state)" in source
+    assert "dock.setObjectName(object_name)" in source
+    assert "object_name: str" in source
+    assert "self._save_window_state()" in source
+    assert "balloon_window/frequency_index" not in source
+    assert "balloon_window/radar_slicer_enabled" not in source
+    assert "balloon_window/protractor_angle_deg" not in source
+    assert "balloon_window/camera_position" not in source
+    assert "_restore_camera_position" not in source
 
 
 def test_balloon_window_does_not_use_rendering_overlay() -> None:
@@ -557,6 +577,7 @@ def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
     assert 'self.save_wavefront_shape_action = QAction("Save Plot Image", self)' in source
     assert 'self.save_wavefront_shape_action.triggered.connect(self._save_wavefront_shape_image)' in source
     assert 'self.save_wavefront_shape_action.setIcon' in source
+    assert 'object_name="forward_beam_shape"' in source
     assert 'tool_actions=(self.save_wavefront_shape_action,)' in source
     assert 'def _save_wavefront_shape_image(self) -> None:' in source
     assert 'str(Path.cwd() / "forward_beam_shape.png")' in source

@@ -10,7 +10,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QEvent, QSize, QSettings, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -34,6 +34,7 @@ from scipy.optimize import minimize_scalar
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.exporting import export_balloon_data, export_plot_png
 from blab.plotting import VisualizerConfig
+from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.main_window_widgets import DockTitleBar
 from blab.ui.plots import (
@@ -111,6 +112,7 @@ class BalloonPlotWindow(QMainWindow):
         self._hover_observer = None
         self._slice_plot_high_res = False
         self._wavefront_shape_summary_cache = None
+        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
@@ -219,16 +221,18 @@ class BalloonPlotWindow(QMainWindow):
         workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.workspace.setCentralWidget(workspace_placeholder)
 
-        self.balloon_dock = self._make_dock("3D Balloon Plot", viewport)
-        self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot)
+        self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")
+        self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")
         self.wavefront_shape_dock = self._make_dock(
             "Forward Beam Shape",
             self.wavefront_shape_plot,
+            object_name="forward_beam_shape",
             tool_actions=(self.save_wavefront_shape_action,),
         )
         self.isobar_dock = self._make_dock(
             "Isobar Angle Slice",
             self.slice_plot,
+            object_name="isobar_angle_slice",
             tool_actions=(self.hires_slice_action, self.save_slice_action),
         )
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)
@@ -257,6 +261,7 @@ class BalloonPlotWindow(QMainWindow):
         layout.addWidget(self.hover_label)
         self.setCentralWidget(central)
 
+        self._restore_window_state()
         QTimer.singleShot(0, self._prepare_and_render_initial)
 
     def _make_dock(
@@ -264,9 +269,11 @@ class BalloonPlotWindow(QMainWindow):
         title: str,
         widget: QWidget,
         *,
+        object_name: str,
         tool_actions: tuple[QAction, ...] = (),
     ) -> QDockWidget:
         dock = QDockWidget(title, self.workspace)
+        dock.setObjectName(object_name)
         dock.setWidget(widget)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
         dock.setFeatures(
@@ -716,7 +723,22 @@ class BalloonPlotWindow(QMainWindow):
                 pass
         self._contour_actors = []
 
+    def _restore_window_state(self) -> None:
+        geometry = self.settings.value("balloon_window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+        dock_state = self.settings.value("balloon_window/dock_state")
+        if dock_state is not None:
+            self.workspace.restoreState(dock_state)
+
+    def _save_window_state(self) -> None:
+        self.settings.setValue("balloon_window/geometry", self.saveGeometry())
+        self.settings.setValue("balloon_window/dock_state", self.workspace.saveState())
+        self.settings.sync()
+
     def closeEvent(self, event) -> None:
+        self._save_window_state()
         self.plotter.close()
         super().closeEvent(event)
 
