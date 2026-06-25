@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +81,7 @@ class BalloonPlotWindow(QMainWindow):
         min_db: float,
         max_db: float,
         polar_smoothing: int | float | None = 24,
+        raw_balloon_data_provider: Callable[[], dict[str, np.ndarray] | None] | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -98,6 +101,8 @@ class BalloonPlotWindow(QMainWindow):
         self._pv = pv
         self._vtk = vtk
         self._raw_balloon_data = raw_balloon_data
+        self._raw_balloon_data_provider = raw_balloon_data_provider
+        self._raw_balloon_signature = _balloon_raw_signature(raw_balloon_data)
         self._prepared = None
         self._min_db = float(min_db)
         self._max_db = float(max_db)
@@ -286,9 +291,30 @@ class BalloonPlotWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.PaletteChange:
             self._refresh_plot_button_icons()
+        elif event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self.refresh_from_latest_results()
+
+    @Slot()
+    def refresh_from_latest_results(self) -> None:
+        if self._raw_balloon_data_provider is None:
+            return
+        raw_balloon_data = self._raw_balloon_data_provider()
+        if raw_balloon_data is None:
+            return
+        signature = _balloon_raw_signature(raw_balloon_data)
+        if signature == self._raw_balloon_signature:
+            return
+        self._raw_balloon_data = raw_balloon_data
+        self._raw_balloon_signature = signature
+        self._prepared = None
+        self._wavefront_shape_summary_cache = None
+        self._prepare_and_render(preserve_frequency=True)
 
     @Slot()
     def _prepare_and_render_initial(self) -> None:
+        self._prepare_and_render(preserve_frequency=False)
+
+    def _prepare_and_render(self, *, preserve_frequency: bool) -> None:
         self._prepared = prepare_balloon_data(
             self._raw_balloon_data,
             BalloonPrepConfig(min_db=self._min_db, max_db=self._max_db),
@@ -298,13 +324,15 @@ class BalloonPlotWindow(QMainWindow):
         self.spl_legend.set_range(self._min_db, self._max_db)
 
         frequency_count = int(self._prepared["freq_hz"].size)
+        frequency_index = self._current_frequency_index() if preserve_frequency else 0
+        frequency_index = int(np.clip(frequency_index, 0, max(frequency_count - 1, 0)))
         self.frequency_slider.blockSignals(True)
         self.frequency_slider.setRange(0, max(frequency_count - 1, 0))
         self.frequency_slider.setPageStep(max(frequency_count // 12, 1))
-        self.frequency_slider.setValue(0)
+        self.frequency_slider.setValue(frequency_index)
         self.frequency_slider.blockSignals(False)
         self.frequency_slider.setEnabled(frequency_count > 1)
-        self._update_frequency_label(0)
+        self._update_frequency_label(frequency_index)
         self._set_protractor_controls_enabled(self.protractor_toggle.isChecked())
         self.hires_slice_action.setEnabled(frequency_count > 0)
         self.save_slice_action.setEnabled(frequency_count > 0)
@@ -312,7 +340,7 @@ class BalloonPlotWindow(QMainWindow):
 
         if not self.wavefront_shape_dock.isHidden():
             self._render_wavefront_shape_plot()
-        self._render_frequency(0, reset_camera=True)
+        self._render_frequency(frequency_index, reset_camera=True)
         self._render_isobar_slice_if_enabled()
 
     @Slot()
@@ -742,6 +770,15 @@ class BalloonPlotWindow(QMainWindow):
         self.plotter.close()
         super().closeEvent(event)
 
+
+
+def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for key in ("freq_hz", "r_distance_m", "theta_polar_rad", "phi_azimuth_rad", "spl_norm"):
+        array = np.ascontiguousarray(np.asarray(raw_balloon_data.get(key), dtype=np.float32))
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.view(np.uint8))
+    return digest.hexdigest()
 
 def _format_frequency(freq_hz: float) -> str:
     if freq_hz >= 1000.0:

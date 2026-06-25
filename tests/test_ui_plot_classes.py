@@ -542,6 +542,30 @@ def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
     assert "_restore_camera_position" not in source
 
 
+
+def test_balloon_window_refreshes_from_latest_results_on_focus() -> None:
+    balloon_source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert "raw_balloon_data_provider: Callable[[], dict[str, np.ndarray] | None] | None = None" in balloon_source
+    assert "self._raw_balloon_data_provider = raw_balloon_data_provider" in balloon_source
+    assert "self._raw_balloon_signature = _balloon_raw_signature(raw_balloon_data)" in balloon_source
+    assert "elif event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():" in balloon_source
+    assert "self.refresh_from_latest_results()" in balloon_source
+    assert "def refresh_from_latest_results(self) -> None:" in balloon_source
+    assert "raw_balloon_data = self._raw_balloon_data_provider()" in balloon_source
+    assert "if signature == self._raw_balloon_signature:" in balloon_source
+    assert "self._wavefront_shape_summary_cache = None" in balloon_source
+    assert "self._prepare_and_render(preserve_frequency=True)" in balloon_source
+    assert "def _prepare_and_render_initial(self) -> None:" in balloon_source
+    assert "def _prepare_and_render(self, *, preserve_frequency: bool) -> None:" in balloon_source
+    assert "def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:" in balloon_source
+    assert "hashlib.blake2b(digest_size=16)" in balloon_source
+    assert "for key in (\"freq_hz\", \"r_distance_m\", \"theta_polar_rad\", \"phi_azimuth_rad\", \"spl_norm\")" in balloon_source
+    assert "raw_balloon_data_provider=lambda: None" in main_source
+    assert "else self.live_dataset.as_balloon_raw_bundle()" in main_source
+
+
 def test_balloon_window_does_not_use_rendering_overlay() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
