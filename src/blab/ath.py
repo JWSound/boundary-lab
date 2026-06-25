@@ -10,6 +10,7 @@ from pathlib import Path
 
 import meshio
 
+from sys import platform
 from blab.config import RadiatorConfig
 from blab.mesh_clean import (
     AREA_TOL,
@@ -82,8 +83,13 @@ def run_ath(
     config_path.write_text(config_text, encoding="utf-8")
     output_root = read_ath_output_root(ath_companion_config) or ath_exe.parent
 
+    ath_prefix = ""
+    if platform == "darwin":
+        # TODO: add check to see if wine is installed? 
+        ath_prefix = "wine"
+
     completed = subprocess.run(
-        [str(ath_exe), str(config_path)],
+        [ath_prefix, str(ath_exe), str(config_path)],
         cwd=ath_exe.parent,
         capture_output=True,
         text=True,
