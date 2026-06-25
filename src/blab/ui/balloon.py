@@ -12,7 +12,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
-from PySide6.QtCore import QEvent, QSize, QSettings, Qt, QTimer, Slot
+from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -32,11 +32,11 @@ from PySide6.QtWidgets import (
 )
 from scipy.interpolate import LinearNDInterpolator
 from scipy.optimize import minimize_scalar
+from scipy.spatial import Delaunay
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.exporting import export_balloon_data, export_plot_png
 from blab.plotting import VisualizerConfig
-from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.main_window_widgets import DockTitleBar
 from blab.ui.plots import (
@@ -51,6 +51,7 @@ from blab.ui.plots import (
     apply_compact_plot_text,
     clear_plot_axes,
 )
+from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
 from blab.ui.theme import APP_ROOT
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
@@ -67,6 +68,7 @@ WAVEFRONT_LEVEL_DB = -6.0
 WAVEFRONT_RAY_COUNT = 145
 WAVEFRONT_RAY_SAMPLES = 181
 WAVEFRONT_MAX_FRONT_ANGLE_DEG = 89.0
+_WAVEFRONT_RAY_SAMPLE_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
 SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
 SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
 HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"
@@ -771,7 +773,6 @@ class BalloonPlotWindow(QMainWindow):
         super().closeEvent(event)
 
 
-
 def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:
     digest = hashlib.blake2b(digest_size=16)
     for key in ("freq_hz", "r_distance_m", "theta_polar_rad", "phi_azimuth_rad", "spl_norm"):
@@ -779,6 +780,7 @@ def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:
         digest.update(str(array.shape).encode("ascii"))
         digest.update(array.view(np.uint8))
     return digest.hexdigest()
+
 
 def _format_frequency(freq_hz: float) -> str:
     if freq_hz >= 1000.0:
@@ -994,6 +996,47 @@ def _vtk_actor_address(actor) -> str:
     return str(id(actor))
 
 
+class _WavefrontTangentGeometry:
+    def __init__(self, horizontal_deg: np.ndarray, vertical_deg: np.ndarray, front_mask: np.ndarray):
+        horizontal_tangent = np.tan(np.deg2rad(horizontal_deg))
+        vertical_tangent = np.tan(np.deg2rad(vertical_deg))
+        self._mask = front_mask & np.isfinite(horizontal_tangent) & np.isfinite(vertical_tangent)
+        if np.count_nonzero(self._mask) < 4:
+            raise ValueError("Forward tangent geometry requires at least four samples.")
+
+        points = np.column_stack((horizontal_tangent[self._mask].ravel(), vertical_tangent[self._mask].ravel()))
+        unique_points, self._unique_indices = np.unique(np.round(points, decimals=6), axis=0, return_index=True)
+        if unique_points.shape[0] < 4:
+            raise ValueError("Forward tangent geometry requires at least four unique samples.")
+        self._triangulation = Delaunay(unique_points)
+
+    def interpolator(self, spl_db: np.ndarray):
+        values = np.asarray(spl_db, dtype=float)
+        if values.shape != self._mask.shape:
+            return None
+        point_values = values[self._mask].ravel()[self._unique_indices]
+        finite = np.isfinite(point_values)
+        if np.count_nonzero(finite) < 4:
+            return None
+        if not np.all(finite):
+            return None
+        try:
+            return LinearNDInterpolator(self._triangulation, point_values, fill_value=np.nan)
+        except Exception:
+            return None
+
+
+def _front_tangent_geometry(
+    horizontal_deg: np.ndarray,
+    vertical_deg: np.ndarray,
+    front_mask: np.ndarray,
+) -> _WavefrontTangentGeometry | None:
+    try:
+        return _WavefrontTangentGeometry(horizontal_deg, vertical_deg, front_mask)
+    except Exception:
+        return None
+
+
 def _wavefront_shape_summary(
     prepared: dict[str, np.ndarray],
     *,
@@ -1020,6 +1063,10 @@ def _wavefront_shape_summary(
         return result
 
     horizontal_deg, vertical_deg, front_mask = _front_angle_meshes(theta_grid, phi_grid)
+    geometry = _front_tangent_geometry(horizontal_deg, vertical_deg, front_mask)
+    if geometry is None:
+        return result
+
     for index in range(freqs_hz.size):
         fit = _fit_wavefront_shape_for_frequency(
             spl[index],
@@ -1027,6 +1074,7 @@ def _wavefront_shape_summary(
             vertical_deg,
             front_mask,
             level_db=float(level_db),
+            geometry=geometry,
         )
         if fit is None:
             continue
@@ -1111,26 +1159,20 @@ def _fit_wavefront_shape_for_frequency(
     front_mask: np.ndarray,
     *,
     level_db: float,
+    geometry: _WavefrontTangentGeometry | None = None,
 ) -> dict[str, float] | None:
-    interpolator = _front_tangent_interpolator(horizontal_deg, vertical_deg, spl_db, front_mask)
+    if geometry is None:
+        geometry = _front_tangent_geometry(horizontal_deg, vertical_deg, front_mask)
+    if geometry is None:
+        return None
+    interpolator = geometry.interpolator(spl_db)
     if interpolator is None:
         return None
 
-    ray_angles = np.linspace(0.0, 2.0 * np.pi, WAVEFRONT_RAY_COUNT, endpoint=False, dtype=float)
-    contour_angles: list[float] = []
-    contour_radii: list[float] = []
-    for angle in ray_angles:
-        radius = _level_crossing_for_ray(interpolator, angle, level_db)
-        if radius is None:
-            continue
-        contour_angles.append(float(angle))
-        contour_radii.append(float(radius))
-
-    if len(contour_radii) < max(24, WAVEFRONT_RAY_COUNT // 4):
+    angles, radii = _level_crossings_for_rays(interpolator, level_db)
+    if radii.size < max(24, WAVEFRONT_RAY_COUNT // 4):
         return None
 
-    angles = np.asarray(contour_angles, dtype=float)
-    radii = np.asarray(contour_radii, dtype=float)
     horizontal_extent = _axis_tangent_extent_from_rays(interpolator, 0.0, np.pi, level_db)
     vertical_extent = _axis_tangent_extent_from_rays(interpolator, 0.5 * np.pi, 1.5 * np.pi, level_db)
 
@@ -1196,22 +1238,10 @@ def _front_tangent_interpolator(
     spl_db: np.ndarray,
     front_mask: np.ndarray,
 ):
-    values = np.asarray(spl_db, dtype=float)
-    horizontal_tangent = np.tan(np.deg2rad(horizontal_deg))
-    vertical_tangent = np.tan(np.deg2rad(vertical_deg))
-    mask = front_mask & np.isfinite(values) & np.isfinite(horizontal_tangent) & np.isfinite(vertical_tangent)
-    if np.count_nonzero(mask) < 4:
+    geometry = _front_tangent_geometry(horizontal_deg, vertical_deg, front_mask)
+    if geometry is None:
         return None
-
-    points = np.column_stack((horizontal_tangent[mask].ravel(), vertical_tangent[mask].ravel()))
-    point_values = values[mask].ravel()
-    unique_points, unique_indices = np.unique(np.round(points, decimals=6), axis=0, return_index=True)
-    if unique_points.shape[0] < 4:
-        return None
-    try:
-        return LinearNDInterpolator(unique_points, point_values[unique_indices], fill_value=np.nan)
-    except Exception:
-        return None
+    return geometry.interpolator(spl_db)
 
 
 def _axis_tangent_extent_from_rays(
@@ -1284,7 +1314,47 @@ def _front_ray_limit(angle_rad: float) -> float:
     return float(min(limits) if limits else tangent_limit)
 
 
-def _superellipse_radius(angle_rad: np.ndarray, horizontal_radius: float, vertical_radius: float, exponent: float) -> np.ndarray:
+def _wavefront_ray_sample_grid() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    global _WAVEFRONT_RAY_SAMPLE_CACHE
+    if _WAVEFRONT_RAY_SAMPLE_CACHE is None:
+        ray_angles = np.linspace(0.0, 2.0 * np.pi, WAVEFRONT_RAY_COUNT, endpoint=False, dtype=float)
+        radii = np.empty((WAVEFRONT_RAY_COUNT, WAVEFRONT_RAY_SAMPLES), dtype=float)
+        coords = np.empty((WAVEFRONT_RAY_COUNT, WAVEFRONT_RAY_SAMPLES, 2), dtype=float)
+        for index, angle in enumerate(ray_angles):
+            limit = _front_ray_limit(float(angle))
+            angular_radii = np.linspace(0.0, np.arctan(limit), WAVEFRONT_RAY_SAMPLES, dtype=float)
+            ray_radii = np.tan(angular_radii)
+            radii[index] = ray_radii
+            coords[index, :, 0] = ray_radii * np.cos(angle)
+            coords[index, :, 1] = ray_radii * np.sin(angle)
+        _WAVEFRONT_RAY_SAMPLE_CACHE = ray_angles, radii, coords.reshape(-1, 2)
+    return _WAVEFRONT_RAY_SAMPLE_CACHE
+
+
+def _level_crossings_for_rays(interpolator, level_db: float) -> tuple[np.ndarray, np.ndarray]:
+    ray_angles, radii, coords = _wavefront_ray_sample_grid()
+    values = np.asarray(interpolator(coords), dtype=float).reshape(radii.shape)
+    finite = np.isfinite(values)
+    crossings = finite[:, :-1] & finite[:, 1:] & (values[:, :-1] >= level_db) & (values[:, 1:] <= level_db)
+    has_crossing = np.any(crossings, axis=1)
+    if not np.any(has_crossing):
+        return np.empty(0, dtype=float), np.empty(0, dtype=float)
+
+    rows = np.flatnonzero(has_crossing)
+    columns = np.argmax(crossings[rows], axis=1)
+    r0 = radii[rows, columns]
+    r1 = radii[rows, columns + 1]
+    v0 = values[rows, columns]
+    v1 = values[rows, columns + 1]
+    span = v1 - v0
+    fraction = np.divide(level_db - v0, span, out=np.ones_like(span), where=~np.isclose(span, 0.0))
+    crossing_radii = r0 + np.clip(fraction, 0.0, 1.0) * (r1 - r0)
+    return ray_angles[rows], crossing_radii.astype(float, copy=False)
+
+
+def _superellipse_radius(
+    angle_rad: np.ndarray, horizontal_radius: float, vertical_radius: float, exponent: float
+) -> np.ndarray:
     p = max(float(exponent), 1e-6)
     a = max(float(horizontal_radius), 1e-6)
     b = max(float(vertical_radius), 1e-6)
@@ -1375,11 +1445,8 @@ class WavefrontShapeCanvas(FigureCanvas):
         directivity_index = np.asarray(summary.get("directivity_index_db", []), dtype=float)
         shape_valid = np.asarray(summary.get("valid", np.zeros(freqs.shape, dtype=bool)), dtype=bool)
         shape_valid &= np.isfinite(freqs) & np.isfinite(exponents) & np.isfinite(residuals) & (freqs > 0.0)
-        di_valid = (
-            freqs.shape == directivity_index.shape
-            and np.isfinite(freqs)
-            & np.isfinite(directivity_index)
-            & (freqs > 0.0)
+        di_valid = freqs.shape == directivity_index.shape and np.isfinite(freqs) & np.isfinite(directivity_index) & (
+            freqs > 0.0
         )
         if not np.any(shape_valid) and not np.any(di_valid):
             self.axes.text(
@@ -1791,4 +1858,3 @@ def _offset_mesh_points(mesh, offset: float):
     points[mask] += (points[mask] / radii[mask, np.newaxis]) * float(offset)
     contour_mesh.points = points
     return contour_mesh
-
