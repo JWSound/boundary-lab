@@ -562,7 +562,8 @@ def test_balloon_window_refreshes_from_latest_results_on_focus() -> None:
     assert "def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:" in balloon_source
     assert "hashlib.blake2b(digest_size=16)" in balloon_source
     assert 'for key in ("freq_hz", "r_distance_m", "theta_polar_rad", "phi_azimuth_rad", "spl_norm")' in balloon_source
-    assert "raw_balloon_data_provider=lambda: None" in main_source
+    assert "raw_balloon_data_provider=lambda:" in main_source
+    assert "None if self.live_dataset is None" in main_source
     assert "else self.live_dataset.as_balloon_raw_bundle()" in main_source
 
 
