@@ -70,6 +70,7 @@ def test_preview_home_camera_projects_axes_for_speaker_forward_orientation() -> 
     assert np.dot(z_axis, screen_right) > 0.0
     assert np.dot(z_axis, screen_up) < 0.0
 
+
 def test_mesh_stats_label_includes_mirrored_state_and_dimensions() -> None:
     assert _mesh_stats_label(1234, mirrored=True, dimensions_mm=(300, 200, 100)) == (
         "Total elements: 1,234 (Mirrored) | 300mm x 200mm x 100mm (LWH)"

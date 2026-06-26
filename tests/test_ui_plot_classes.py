@@ -302,8 +302,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
     assert '"Solve Server URL", self.solve_server_url_edit' in solver_config_block
     assert 'self.check_server_button = QPushButton("Check Server")' in dialog_source
-    assert '"", self.check_server_button' in solver_config_block or 'self.check_server_button,' in solver_config_block
-    assert 'self.check_server_button.setEnabled(uses_remote)' in dialog_source
+    assert '"", self.check_server_button' in solver_config_block or "self.check_server_button," in solver_config_block
+    assert "self.check_server_button.setEnabled(uses_remote)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
@@ -488,40 +488,41 @@ def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     assert "workspace_placeholder.setMaximumSize(QSize(0, 0))" in source
     assert "workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)" in source
     assert "self.workspace.setCentralWidget(workspace_placeholder)" in source
-    assert 'controls_bar = QFrame()' in source
-    assert 'layout.addWidget(self.workspace, stretch=1)' in source
-    assert 'layout.addWidget(controls_bar)' in source
-    assert 'controls_layout = QGridLayout(controls_bar)' in source
-    assert 'controls_bar.setStyleSheet' not in source
+    assert "controls_bar = QFrame()" in source
+    assert "layout.addWidget(self.workspace, stretch=1)" in source
+    assert "layout.addWidget(controls_bar)" in source
+    assert "controls_layout = QGridLayout(controls_bar)" in source
+    assert "controls_bar.setStyleSheet" not in source
     assert 'controls_layout.addWidget(QLabel("Frequency"), 0, 0)' in source
-    assert 'controls_layout.addWidget(self.frequency_slider, 0, 1)' in source
-    assert 'controls_layout.addWidget(self.protractor_toggle, 0, 3)' in source
+    assert "controls_layout.addWidget(self.frequency_slider, 0, 1)" in source
+    assert "controls_layout.addWidget(self.protractor_toggle, 0, 3)" in source
     assert 'controls_layout.addWidget(QLabel("Slice Angle"), 1, 0)' in source
-    assert 'controls_layout.addWidget(self.protractor_angle_slider, 1, 1)' in source
+    assert "controls_layout.addWidget(self.protractor_angle_slider, 1, 1)" in source
     assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")' in source
-    assert 'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")' in source
-    assert 'self.wavefront_shape_dock = self._make_dock(' in source
+    assert (
+        'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")' in source
+    )
+    assert "self.wavefront_shape_dock = self._make_dock(" in source
     assert '"Forward Beam Shape",' in source
-    assert 'self.wavefront_shape_plot,' in source
-    assert 'tool_actions=(self.save_wavefront_shape_action,),' in source
-    assert 'self.isobar_dock = self._make_dock(' in source
+    assert "self.wavefront_shape_plot," in source
+    assert "tool_actions=(self.save_wavefront_shape_action,)," in source
+    assert "self.isobar_dock = self._make_dock(" in source
     assert 'object_name="isobar_angle_slice"' in source
-    assert 'view_menu.addAction(self.balloon_dock.toggleViewAction())' in source
-    assert 'view_menu.addAction(self.radar_dock.toggleViewAction())' in source
-    assert 'view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())' in source
-    assert 'view_menu.addAction(self.isobar_dock.toggleViewAction())' in source
-    assert 'self.wavefront_shape_dock.hide()' in source
-    assert 'self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)' in source
-    assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)' in source
-    assert 'self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.wavefront_shape_dock)' in source
-    assert 'self.wavefront_shape_dock.visibilityChanged.connect(self._on_wavefront_shape_visibility_changed)' in source
-    assert 'self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)' in source
-    assert 'self.workspace.splitDockWidget(self.radar_dock, self.wavefront_shape_dock, Qt.Vertical)' in source
-    assert 'self.workspace.splitDockWidget(self.wavefront_shape_dock, self.isobar_dock, Qt.Vertical)' in source
-    assert 'self.workspace.resizeDocks(' in source
-    assert '[self.balloon_dock, self.radar_dock, self.wavefront_shape_dock, self.isobar_dock]' in source
+    assert "view_menu.addAction(self.balloon_dock.toggleViewAction())" in source
+    assert "view_menu.addAction(self.radar_dock.toggleViewAction())" in source
+    assert "view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())" in source
+    assert "view_menu.addAction(self.isobar_dock.toggleViewAction())" in source
+    assert "self.wavefront_shape_dock.hide()" in source
+    assert "self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)" in source
+    assert "self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)" in source
+    assert "self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.wavefront_shape_dock)" in source
+    assert "self.wavefront_shape_dock.visibilityChanged.connect(self._on_wavefront_shape_visibility_changed)" in source
+    assert "self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)" in source
+    assert "self.workspace.splitDockWidget(self.radar_dock, self.wavefront_shape_dock, Qt.Vertical)" in source
+    assert "self.workspace.splitDockWidget(self.wavefront_shape_dock, self.isobar_dock, Qt.Vertical)" in source
+    assert "self.workspace.resizeDocks(" in source
+    assert "[self.balloon_dock, self.radar_dock, self.wavefront_shape_dock, self.isobar_dock]" in source
     assert "QSplitter" not in source
-
 
 
 def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
@@ -529,8 +530,8 @@ def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
 
     assert "self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)" in source
     assert "self._restore_window_state()" in source
-    assert "self.settings.setValue(\"balloon_window/geometry\", self.saveGeometry())" in source
-    assert "self.settings.setValue(\"balloon_window/dock_state\", self.workspace.saveState())" in source
+    assert 'self.settings.setValue("balloon_window/geometry", self.saveGeometry())' in source
+    assert 'self.settings.setValue("balloon_window/dock_state", self.workspace.saveState())' in source
     assert "self.workspace.restoreState(dock_state)" in source
     assert "dock.setObjectName(object_name)" in source
     assert "object_name: str" in source
@@ -540,7 +541,6 @@ def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
     assert "balloon_window/protractor_angle_deg" not in source
     assert "balloon_window/camera_position" not in source
     assert "_restore_camera_position" not in source
-
 
 
 def test_balloon_window_refreshes_from_latest_results_on_focus() -> None:
@@ -561,7 +561,7 @@ def test_balloon_window_refreshes_from_latest_results_on_focus() -> None:
     assert "def _prepare_and_render(self, *, preserve_frequency: bool) -> None:" in balloon_source
     assert "def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:" in balloon_source
     assert "hashlib.blake2b(digest_size=16)" in balloon_source
-    assert "for key in (\"freq_hz\", \"r_distance_m\", \"theta_polar_rad\", \"phi_azimuth_rad\", \"spl_norm\")" in balloon_source
+    assert 'for key in ("freq_hz", "r_distance_m", "theta_polar_rad", "phi_azimuth_rad", "spl_norm")' in balloon_source
     assert "raw_balloon_data_provider=lambda: None" in main_source
     assert "else self.live_dataset.as_balloon_raw_bundle()" in main_source
 
@@ -572,6 +572,7 @@ def test_balloon_window_does_not_use_rendering_overlay() -> None:
     assert "Rendering Balloon" not in source
     assert "loading_label" not in source
     assert "_set_loading_visible" not in source
+
 
 def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
@@ -584,65 +585,65 @@ def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> 
 def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
-    assert 'WAVEFRONT_LEVEL_DB = -6.0' in source
-    assert 'class WavefrontShapeCanvas(FigureCanvas):' in source
-    assert 'Forward Beam Shape' in source
-    assert 'Wavefront Shape' not in source
-    assert 'def _wavefront_shape_summary(' in source
-    assert 'def _fit_wavefront_shape_for_frequency(' in source
-    assert 'LinearNDInterpolator' in source
-    assert 'minimize_scalar' in source
-    assert 'self.wavefront_shape_plot.update_plot(_wavefront_shape_summary(self._prepared))' not in source
-    assert 'def _on_wavefront_shape_visibility_changed(self, visible: bool) -> None:' in source
-    assert 'def _render_wavefront_shape_plot(self) -> None:' in source
-    assert 'self._wavefront_shape_summary_cache = None' in source
-    assert 'self._wavefront_shape_summary_cache = _wavefront_shape_summary(' in source
-    assert 'raw_balloon_data=self._raw_balloon_data' in source
+    assert "WAVEFRONT_LEVEL_DB = -6.0" in source
+    assert "class WavefrontShapeCanvas(FigureCanvas):" in source
+    assert "Forward Beam Shape" in source
+    assert "Wavefront Shape" not in source
+    assert "def _wavefront_shape_summary(" in source
+    assert "def _fit_wavefront_shape_for_frequency(" in source
+    assert "LinearNDInterpolator" in source
+    assert "minimize_scalar" in source
+    assert "self.wavefront_shape_plot.update_plot(_wavefront_shape_summary(self._prepared))" not in source
+    assert "def _on_wavefront_shape_visibility_changed(self, visible: bool) -> None:" in source
+    assert "def _render_wavefront_shape_plot(self) -> None:" in source
+    assert "self._wavefront_shape_summary_cache = None" in source
+    assert "self._wavefront_shape_summary_cache = _wavefront_shape_summary(" in source
+    assert "raw_balloon_data=self._raw_balloon_data" in source
     assert 'self.save_wavefront_shape_action = QAction("Save Plot Image", self)' in source
-    assert 'self.save_wavefront_shape_action.triggered.connect(self._save_wavefront_shape_image)' in source
-    assert 'self.save_wavefront_shape_action.setIcon' in source
+    assert "self.save_wavefront_shape_action.triggered.connect(self._save_wavefront_shape_image)" in source
+    assert "self.save_wavefront_shape_action.setIcon" in source
     assert 'object_name="forward_beam_shape"' in source
-    assert 'tool_actions=(self.save_wavefront_shape_action,)' in source
-    assert 'def _save_wavefront_shape_image(self) -> None:' in source
+    assert "tool_actions=(self.save_wavefront_shape_action,)" in source
+    assert "def _save_wavefront_shape_image(self) -> None:" in source
     assert 'str(Path.cwd() / "forward_beam_shape.png")' in source
-    assert 'export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)' in source
-    assert 'self._update_wavefront_shape_frequency_cursor(index)' in source
-    assert 'def _update_wavefront_shape_frequency_cursor(self, index: int) -> None:' in source
+    assert "export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
+    assert "self._update_wavefront_shape_frequency_cursor(index)" in source
+    assert "def _update_wavefront_shape_frequency_cursor(self, index: int) -> None:" in source
     assert 'self.wavefront_shape_plot.set_frequency_cursor(float(self._prepared["freq_hz"][safe_index]))' in source
-    assert 'def set_frequency_cursor(self, freq_hz: float | None) -> None:' in source
-    assert 'self.axes.axvline(' in source
-    assert 'self._colorbar_axes = self.figure.add_axes([0.89, 0.22, 0.025, 0.68])' in source
-    assert 'self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)' in source
+    assert "def set_frequency_cursor(self, freq_hz: float | None) -> None:" in source
+    assert "self.axes.axvline(" in source
+    assert "self._colorbar_axes = self.figure.add_axes([0.89, 0.22, 0.025, 0.68])" in source
+    assert "self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)" in source
     assert 'self._colorbar.set_label("Fit residual (%)", fontsize=8)' in source
-    assert 'self.di_axes = self.axes.twinx()' in source
+    assert "self.di_axes = self.axes.twinx()" in source
     assert 'self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=2)' in source
-    assert 'self.di_axes.set_ylim(-5.0, 50.0)' in source
+    assert "self.di_axes.set_ylim(-5.0, 50.0)" in source
     assert 'self.di_axes.yaxis.set_label_position("right")' in source
-    assert 'self.di_axes.yaxis.tick_right()' in source
-    assert 'self.di_axes.yaxis.set_label_coords(1.17, 0.5)' in source
-    assert 'subplots_adjust(left=0.18, right=0.74' in source
-    assert 'def _plot_directivity_index(self, freqs: np.ndarray, directivity_index: np.ndarray) -> None:' in source
-    assert 'Normalize(vmin=0.0, vmax=15.0, clip=True)' in source
+    assert "self.di_axes.yaxis.tick_right()" in source
+    assert "self.di_axes.yaxis.set_label_coords(1.17, 0.5)" in source
+    assert "subplots_adjust(left=0.18, right=0.74" in source
+    assert "def _plot_directivity_index(self, freqs: np.ndarray, directivity_index: np.ndarray) -> None:" in source
+    assert "Normalize(vmin=0.0, vmax=15.0, clip=True)" in source
     assert '"directivity_index_db": _spherical_directivity_index_db(prepared, raw_balloon_data)' in source
-    assert 'def _spherical_directivity_index_from_raw(' in source
-    assert 'def _style_colorbar(self) -> None:' in source
-    assert 'self._colorbar.ax.yaxis.label.set_color(text_color)' in source
-    assert 'self._colorbar.ax.tick_params(colors=text_color)' in source
-    assert 'self._colorbar.outline.set_edgecolor(spine_color)' in source
-    assert 'def _draw_shape_reference_markers(self) -> None:' in source
+    assert "def _spherical_directivity_index_from_raw(" in source
+    assert "def _style_colorbar(self) -> None:" in source
+    assert "self._colorbar.ax.yaxis.label.set_color(text_color)" in source
+    assert "self._colorbar.ax.tick_params(colors=text_color)" in source
+    assert "self._colorbar.outline.set_edgecolor(spine_color)" in source
+    assert "def _draw_shape_reference_markers(self) -> None:" in source
     assert '(1.0, "D")' in source
     assert '(2.0, "o")' in source
-    assert '(4.0, _rounded_square_marker())' in source
+    assert "(4.0, _rounded_square_marker())" in source
     assert '(8.0, "s")' in source
-    assert 'def _rounded_square_marker() -> MplPath:' in source
-    assert 'self.axes.set_ylim(0.75, 8.5)' in source
-    assert 'transform = self.axes.get_yaxis_transform()' in source
-    assert 'marker_color = self._theme_marker_color()' in source
+    assert "def _rounded_square_marker() -> MplPath:" in source
+    assert "self.axes.set_ylim(0.75, 8.5)" in source
+    assert "transform = self.axes.get_yaxis_transform()" in source
+    assert "marker_color = self._theme_marker_color()" in source
     assert 'facecolors="none"' in source
-    assert 'edgecolors=marker_color' in source
-    assert 'def _theme_marker_color(self) -> str:' in source
+    assert "edgecolors=marker_color" in source
+    assert "def _theme_marker_color(self) -> str:" in source
     assert '"#101214" if self.palette().color(QPalette.Window).lightness() >= 128 else "#f2f2f2"' in source
-    assert 'clip_on=False' in source
+    assert "clip_on=False" in source
 
 
 def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
@@ -654,40 +655,41 @@ def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
     assert 'self.hires_slice_action.setToolTip("Render high resolution plot")' in source
     assert 'self.save_slice_action = QAction("Save Plot Image", self)' in source
     assert 'self.save_slice_action.setToolTip("Save plot image")' in source
-    assert 'self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)' in source
-    assert 'show_colorbar=False' in source
-    assert 'self.save_slice_action.triggered.connect(self._save_isobar_slice_image)' in source
-    assert 'tool_actions=(self.hires_slice_action, self.save_slice_action)' in source
-    assert 'DockTitleBar(title, dock, tool_actions=tool_actions)' in source
-    assert 'self.hires_slice_action.setIcon' in source
-    assert 'self.save_slice_action.setIcon' in source
-    assert 'self.save_wavefront_shape_action.setIcon' in source
-    assert 'def _render_isobar_slice(self, *, final_resolution: bool = False)' in source
-    assert 'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES' in source
-    assert 'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES' in source
-    assert 'shading=FINAL_ISOBAR_SHADING if final_resolution else LIVE_ISOBAR_SHADING' in source
-    assert 'self._render_isobar_slice(final_resolution=True)' in source
-    assert 'export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)' in source
+    assert "self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)" in source
+    assert "show_colorbar=False" in source
+    assert "self.save_slice_action.triggered.connect(self._save_isobar_slice_image)" in source
+    assert "tool_actions=(self.hires_slice_action, self.save_slice_action)" in source
+    assert "DockTitleBar(title, dock, tool_actions=tool_actions)" in source
+    assert "self.hires_slice_action.setIcon" in source
+    assert "self.save_slice_action.setIcon" in source
+    assert "self.save_wavefront_shape_action.setIcon" in source
+    assert "def _render_isobar_slice(self, *, final_resolution: bool = False)" in source
+    assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES" in source
+    assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES" in source
+    assert "shading=FINAL_ISOBAR_SHADING if final_resolution else LIVE_ISOBAR_SHADING" in source
+    assert "self._render_isobar_slice(final_resolution=True)" in source
+    assert "export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
 
 
 def test_balloon_spl_legend_lives_in_bottom_control_bar() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
     assert 'self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")' in source
-    assert 'controls_layout.addWidget(self.spl_legend, 0, 4, 2, 1)' in source
-    assert 'controls_layout.setColumnStretch(4, 1)' in source
-    assert 'self.legend_overlay' not in source
-    assert 'legend_layout.addWidget(self.spl_legend)' not in source
-    assert 'self.spl_legend.set_range(self._min_db, self._max_db)' in source
+    assert "controls_layout.addWidget(self.spl_legend, 0, 4, 2, 1)" in source
+    assert "controls_layout.setColumnStretch(4, 1)" in source
+    assert "self.legend_overlay" not in source
+    assert "legend_layout.addWidget(self.spl_legend)" not in source
+    assert "self.spl_legend.set_range(self._min_db, self._max_db)" in source
     assert 'orientation: str = "vertical"' in source
-    assert 'def _paint_horizontal(self) -> None:' in source
+    assert "def _paint_horizontal(self) -> None:" in source
     assert "self.setMinimumSize(330, 62)" in source
     assert "label_edge_pad = 22" in source
     assert "bar_left = label_edge_pad" in source
     assert "bar_top = 28" in source
     assert "bar_width = max(self.width() - 2 * label_edge_pad, 40)" in source
     assert "label_x = int(round(np.clip" in source
-    assert 'gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)' in source
+    assert "gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)" in source
+
 
 def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")

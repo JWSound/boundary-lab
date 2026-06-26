@@ -1904,9 +1904,9 @@ class MainWindow(QMainWindow):
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
                 polar_smoothing=self.preferences.polar_smoothing,
-                raw_balloon_data_provider=lambda: None
-                if self.live_dataset is None
-                else self.live_dataset.as_balloon_raw_bundle(),
+                raw_balloon_data_provider=lambda: (
+                    None if self.live_dataset is None else self.live_dataset.as_balloon_raw_bundle()
+                ),
                 parent=self,
             )
             self.balloon_window.show()
@@ -1923,7 +1923,9 @@ class MainWindow(QMainWindow):
         preferences = dialog.preferences()
         dialog.deleteLater()
         checked_server_health = None
-        if dialog.server_health_payload is not None and dialog.server_health_url == preferences.solve_server_url.rstrip("/"):
+        if dialog.server_health_payload is not None and dialog.server_health_url == preferences.solve_server_url.rstrip(
+            "/"
+        ):
             checked_server_health = dialog.server_health_payload
         symmetry_will_be_disabled = (
             self._effective_symmetry_for_preferences(

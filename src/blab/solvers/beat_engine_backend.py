@@ -454,6 +454,7 @@ class BeatEngineWorkerProcess:
         if self._status_callback is not None:
             self._status_callback(message)
 
+
 class BeatEngineBackend:
     backend_id = "beat_cuda"
     label = "BEAT Engine (CUDA)"
@@ -509,7 +510,6 @@ class BeatEngineBackend:
             beat_engine_backend=self.beat_engine_backend,
         )
 
-
     def warm_up(
         self,
         mode: str = "worker",
@@ -542,6 +542,7 @@ class BeatEngineBackend:
                 )
                 session = self.create_session(request)
                 list(session.solve_stream())
+
 
 class BeatEngineCudaBackend(BeatEngineBackend):
     backend_id = "beat_cuda"
@@ -635,6 +636,7 @@ def _warmup_simulation_config(mesh_path: Path) -> SimulationConfig:
         flat_target_normalization_enabled=False,
         spherical_sampling_enabled=False,
     )
+
 
 def _normalize_beat_engine_backend(value: object) -> str:
     text = str(value or BEAT_ENGINE_CUDA_BACKEND).strip().lower()

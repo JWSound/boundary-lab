@@ -12,6 +12,7 @@ from blab.ui.settings import normalize_theme
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 
+
 def apply_application_theme(theme: object) -> None:
     app = QApplication.instance()
     if app is None:

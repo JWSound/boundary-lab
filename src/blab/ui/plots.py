@@ -384,7 +384,10 @@ class IsobarCanvas(FigureCanvas):
             if render_mode == "image":
                 self._x_axis_mode = "log_image"
                 image = np.asarray(cmap(norm(clipped)), dtype=np.float32)
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._image_artist is not None:
+                if (
+                    self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db)
+                    and self._image_artist is not None
+                ):
                     self._image_artist.set_data(image)
                 else:
                     self._remove_mesh_artists()
@@ -410,7 +413,10 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_contour_step_db = contour_step_db
             else:
                 self._x_axis_mode = "frequency"
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db) and self._mesh_artist is not None:
+                if (
+                    self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db)
+                    and self._mesh_artist is not None
+                ):
                     self._mesh_artist.set_array(clipped.ravel())
                 else:
                     self._remove_mesh_artists()

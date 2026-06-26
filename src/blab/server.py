@@ -93,6 +93,7 @@ class BackendServerSolver:
             self.initialize(np.asarray(frequencies, dtype=np.float32))
         yield from self.session.solve_stream(stop_requested=stop_requested)
 
+
 @dataclass
 class JobRecord:
     job_id: str
@@ -520,6 +521,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
 
         LOGGER.info("POST /jobs accepted job_id=%s client=%s", job.job_id, self.client_address[0])
         self._send_json(job.snapshot(), status=HTTPStatus.ACCEPTED)
+
     def _handle_get_job(self, job_id: str) -> None:
         job = self.server.orchestrator.get(job_id)
         if job is None:
@@ -563,7 +565,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
             return
 
         data = job.result_npz.read_bytes()
-        LOGGER.info('serving result artifact job_id=%s bytes=%s', job_id, len(data))
+        LOGGER.info("serving result artifact job_id=%s bytes=%s", job_id, len(data))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
@@ -706,6 +708,7 @@ def _warm_server_solver(solver_factory, mode: str) -> None:
     started = time.monotonic()
     warm_up(mode, status_callback=lambda message: LOGGER.info("solver warm-up status message=%s", message))
     LOGGER.info("solver warm-up completed mode=%s elapsed_s=%.3f", mode, time.monotonic() - started)
+
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     args = _build_arg_parser(prog=prog).parse_args(argv)
