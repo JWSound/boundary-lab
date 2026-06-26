@@ -1904,9 +1904,9 @@ class MainWindow(QMainWindow):
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
                 polar_smoothing=self.preferences.polar_smoothing,
-                raw_balloon_data_provider=lambda: (
-                    None if self.live_dataset is None else self.live_dataset.as_balloon_raw_bundle()
-                ),
+                raw_balloon_data_provider=lambda: None
+                if self.live_dataset is None
+                else self.live_dataset.as_balloon_raw_bundle(),
                 parent=self,
             )
             self.balloon_window.show()
