@@ -5,8 +5,6 @@ import numpy as np
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
-from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
-from blab.solvers.http_server import HttpServerBackend, HttpServerSession, server_health_supports_symmetry
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -18,6 +16,8 @@ from blab.solvers.beat_engine_backend import (
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
 )
+from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
+from blab.solvers.http_server import HttpServerBackend, HttpServerSession, server_health_supports_symmetry
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,

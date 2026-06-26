@@ -11,7 +11,6 @@ from pathlib import Path
 
 import meshio
 
-from sys import platform
 from blab.config import RadiatorConfig
 from blab.mesh_clean import (
     AREA_TOL,

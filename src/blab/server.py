@@ -27,7 +27,7 @@ from blab.protocol import (
     ndarray_to_wire,
     solve_request_to_job_inputs,
 )
-from blab.solvers.base import SolveRequest, SolverBackend
+from blab.solvers.base import SolverBackend, SolveRequest
 from blab.solvers.registry import backend_info, create_backend, normalize_backend_id
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
