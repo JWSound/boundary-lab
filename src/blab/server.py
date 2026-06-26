@@ -618,6 +618,17 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default="auto",
         help="Julia thread count for BEAT Engine server solvers.",
     )
+    parser.add_argument(
+        "--julia-sysimage",
+        default=None,
+        help="Optional Julia sysimage path for BEAT Engine server solvers.",
+    )
+    parser.add_argument(
+        "--warm-solver",
+        choices=("off", "worker", "tiny"),
+        default="off",
+        help="Warm BEAT Engine at startup: off, worker process only, or a tiny one-frequency solve.",
+    )
     parser.add_argument("--max-running-jobs", type=int, default=1, help="Maximum concurrent solve jobs.")
     parser.add_argument(
         "--log-level",
@@ -666,19 +677,35 @@ def create_server_solver_factory(
     *,
     julia_executable: str = "julia",
     julia_threads: str | int = "auto",
+    julia_sysimage: str | Path | None = None,
 ):
     normalized_solver = normalize_server_solver_id(solver_id)
     backend = create_backend(
         server_solver_backend_id(normalized_solver),
         julia_executable=julia_executable,
         julia_threads=julia_threads,
+        julia_sysimage=julia_sysimage,
     )
 
     def _factory(config: SimulationConfig) -> BackendServerSolver:
         return BackendServerSolver(config, backend=backend)
 
+    _factory.backend = backend  # type: ignore[attr-defined]
     return _factory
 
+
+def _warm_server_solver(solver_factory, mode: str) -> None:
+    if mode == "off":
+        return
+    backend = getattr(solver_factory, "backend", None)
+    warm_up = getattr(backend, "warm_up", None)
+    if not callable(warm_up):
+        LOGGER.info("solver warm-up skipped mode=%s reason=backend does not support warm-up", mode)
+        return
+    LOGGER.info("solver warm-up starting mode=%s", mode)
+    started = time.monotonic()
+    warm_up(mode, status_callback=lambda message: LOGGER.info("solver warm-up status message=%s", message))
+    LOGGER.info("solver warm-up completed mode=%s elapsed_s=%.3f", mode, time.monotonic() - started)
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     args = _build_arg_parser(prog=prog).parse_args(argv)
@@ -694,9 +721,11 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
             solver_id,
             julia_executable=args.julia_executable,
             julia_threads=args.julia_threads,
+            julia_sysimage=args.julia_sysimage,
         ),
     )
     server = BlabServer((args.host, args.port), orchestrator, solver_id=solver_id)
+    _warm_server_solver(orchestrator.solver_factory, args.warm_solver)
     solver_label = backend_info(server_solver_backend_id(solver_id)).label
     LOGGER.info(
         "Boundary Lab server listening url=http://%s:%s solver=%s label=%s max_running_jobs=%s artifact_dir=%s",

@@ -124,6 +124,10 @@ def test_server_parser_accepts_backend_solver_options() -> None:
             "4",
             "--log-level",
             "DEBUG",
+            "--warm-solver",
+            "tiny",
+            "--julia-sysimage",
+            "blab-beat-cuda.so",
         ]
     )
 
@@ -131,6 +135,8 @@ def test_server_parser_accepts_backend_solver_options() -> None:
     assert args.julia_executable == "julia-custom"
     assert args.julia_threads == "4"
     assert args.log_level == "DEBUG"
+    assert args.warm_solver == "tiny"
+    assert args.julia_sysimage == "blab-beat-cuda.so"
     assert _build_arg_parser().parse_args([]).solver == "bempp_cpu"
     assert normalize_server_solver_id("bempp_cpu") == "bempp_cpu"
     assert normalize_server_solver_id("local") == "bempp_cpu"

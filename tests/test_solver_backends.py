@@ -14,6 +14,7 @@ from blab.solvers.beat_engine_backend import (
     BeatEngineBackend,
     BeatEngineRocmBackend,
     _friendly_julia_error,
+    _julia_worker_command,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
 )
@@ -274,6 +275,70 @@ Stacktrace:
     assert "Pkg.instantiate()" in friendly
     assert "Julia reported:" in friendly
     assert "Package CUDA not found" in friendly
+
+
+def test_julia_worker_command_accepts_sysimage(tmp_path) -> None:
+    solver_script = tmp_path / "solver.jl"
+    project = tmp_path / "julia_cuda"
+    sysimage = tmp_path / "blab-beat-cuda.so"
+
+    command = _julia_worker_command(
+        "julia",
+        solver_script,
+        julia_project=project,
+        julia_sysimage=sysimage,
+    )
+
+    assert command == [
+        "julia",
+        f"--sysimage={sysimage}",
+        f"--project={project}",
+        "--startup-file=no",
+        str(solver_script),
+        "--worker",
+    ]
+
+
+def test_julia_backend_worker_warm_up_starts_persistent_worker(tmp_path) -> None:
+    starts_path = tmp_path / "warmup_starts.txt"
+    fake_solver = tmp_path / "fake_warmup_worker.py"
+    fake_solver.write_text(
+        f"""
+import json
+import pathlib
+import sys
+
+starts_path = pathlib.Path({str(starts_path)!r})
+starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
+starts_path.write_text(str(starts + 1), encoding="utf-8")
+
+if "--worker" not in sys.argv:
+    raise SystemExit("expected --worker")
+
+print(json.dumps({{"type": "ready", "pid": 123, "protocol": "test"}}), flush=True)
+for _line in sys.stdin:
+    pass
+""".strip(),
+        encoding="utf-8",
+    )
+
+    try:
+        backend = BeatEngineBackend(
+            julia_executable=sys.executable,
+            solver_script=str(fake_solver),
+            julia_project=None,
+            persistent_worker=True,
+        )
+        statuses = []
+
+        backend.warm_up("worker", status_callback=statuses.append)
+        backend.warm_up("worker", status_callback=statuses.append)
+
+        assert starts_path.read_text(encoding="utf-8") == "1"
+        assert any("Warm BEAT Engine worker ready" in status for status in statuses)
+        assert any("Reusing warm BEAT Engine worker" in status for status in statuses)
+    finally:
+        shutdown_beat_engine_workers()
 
 
 def test_julia_backend_reuses_persistent_worker(tmp_path) -> None:
