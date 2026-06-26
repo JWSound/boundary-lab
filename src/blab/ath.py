@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -35,10 +36,23 @@ DEFAULT_CLEAN_SUFFIX = "_clean"
 ATH_CFG_OUTPUT_ROOT_KEY = "OutputRootDir"
 ATH_CFG_MESH_CMD_KEY = "MeshCmd"
 SOLVING_SYM_RE = re.compile(r"\bSym\s*=\s*([A-Za-z]+)\b")
+WINE_PLATFORMS = {"linux", "darwin"}
 
 
 class AthCancelledError(RuntimeError):
     """Raised when an active Ath generation is cancelled by the user."""
+
+
+def _ath_process_command(ath_exe: Path, config_path: Path) -> list[str]:
+    if sys.platform not in WINE_PLATFORMS:
+        return [str(ath_exe), str(config_path)]
+
+    wine_exe = shutil.which("wine")
+    if wine_exe is None:
+        raise RuntimeError(
+            "Ath.exe execution on Linux/macOS requires Wine, but no 'wine' executable was found on PATH."
+        )
+    return [wine_exe, str(ath_exe), str(config_path)]
 
 
 @dataclass(frozen=True)
@@ -101,7 +115,7 @@ class AthProcessRunner:
 
         self._cancel_requested = False
         self._process = subprocess.Popen(
-            [str(ath_exe), str(config_path)],
+            _ath_process_command(ath_exe, config_path),
             cwd=ath_exe.parent,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

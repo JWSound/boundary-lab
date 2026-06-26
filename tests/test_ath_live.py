@@ -3,6 +3,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
+import pytest
 
 from blab.ath import (
     AthProcessRunner,
@@ -105,6 +106,62 @@ def test_ath_process_runner_discovers_output_after_process_exit(tmp_path: Path, 
     assert (tmp_path / "runs" / "case.cfg").read_text(encoding="utf-8") == "Length = 10"
     assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(tmp_path / "runs" / "case.cfg")]
 
+
+@pytest.mark.parametrize("platform_name", ("linux", "darwin"))
+def test_ath_process_runner_uses_wine_for_ath_exe_on_linux_or_macos(
+    tmp_path: Path, monkeypatch, platform_name: str
+) -> None:
+    ath_dir = tmp_path / "ath"
+    ath_dir.mkdir()
+    ath_exe = ath_dir / "ath.exe"
+    ath_exe.write_text("", encoding="utf-8")
+    output_root = tmp_path / "output"
+    (ath_dir / "ath.cfg").write_text(f'OutputRootDir = "{output_root}"\n', encoding="utf-8")
+    mesh_dir = output_root / "case" / "ABEC_FreeStanding"
+    mesh_dir.mkdir(parents=True)
+    _write_minimal_msh(mesh_dir / "case.msh")
+
+    popen_calls = []
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return _FakeAthProcess()
+
+    monkeypatch.setattr("blab.ath.sys.platform", platform_name)
+    monkeypatch.setattr("blab.ath.shutil.which", lambda name: "/usr/bin/wine" if name == "wine" else None)
+    monkeypatch.setattr("blab.ath.subprocess.Popen", fake_popen)
+
+    AthProcessRunner().run(
+        ath_exe=ath_exe,
+        config_text="Length = 10",
+        run_root=tmp_path / "runs",
+        case_name="case",
+    )
+
+    assert popen_calls[0][0][0] == [
+        "/usr/bin/wine",
+        str(ath_exe.resolve()),
+        str(tmp_path / "runs" / "case.cfg"),
+    ]
+
+
+def test_ath_process_runner_reports_missing_wine_on_linux(tmp_path: Path, monkeypatch) -> None:
+    ath_dir = tmp_path / "ath"
+    ath_dir.mkdir()
+    ath_exe = ath_dir / "ath.exe"
+    ath_exe.write_text("", encoding="utf-8")
+    (ath_dir / "ath.cfg").write_text('OutputRootDir = "output"\n', encoding="utf-8")
+
+    monkeypatch.setattr("blab.ath.sys.platform", "linux")
+    monkeypatch.setattr("blab.ath.shutil.which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="requires Wine"):
+        AthProcessRunner().run(
+            ath_exe=ath_exe,
+            config_text="Length = 10",
+            run_root=tmp_path / "runs",
+            case_name="case",
+        )
 
 def test_ath_process_runner_stop_terminates_active_process(monkeypatch) -> None:
     runner = AthProcessRunner()
