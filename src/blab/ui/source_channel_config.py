@@ -11,7 +11,6 @@ from PySide6.QtCore import QSettings
 from blab.ath import AthRunResult, read_surface_physical_names
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 
-
 SOURCE_CONFIG_SETTINGS_KEY = "source/config_by_name"
 CHANNEL_CONFIG_SETTINGS_KEY = "channel/config_by_name"
 
@@ -142,7 +141,9 @@ def apply_saved_source_config_to_result(
 
     existing_by_tag = {radiator.tag: radiator for radiator in result.radiators}
     radiators = []
-    for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
+    for surface_name, (mesh_name, tag) in sorted(
+        surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])
+    ):
         saved = config_by_name.get(surface_name)
         if isinstance(saved, dict):
             if not bool(saved.get("driven", False)):
@@ -183,7 +184,9 @@ def apply_saved_imported_source_config(
 ) -> tuple[RadiatorConfig, ...]:
     existing_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in existing_radiators}
     radiators = []
-    for surface_name, (mesh_name, tag) in sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])):
+    for surface_name, (mesh_name, tag) in sorted(
+        surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])
+    ):
         if mesh_name in generated_mesh_names:
             continue
         saved = config_by_name.get(surface_name)

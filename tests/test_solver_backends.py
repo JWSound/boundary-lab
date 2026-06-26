@@ -1,18 +1,23 @@
-import numpy as np
 import os
 import sys
 
+import numpy as np
+
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
-from blab.solvers.afterburner_backend import AfterburnerBackend, shutdown_afterburner_workers
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineBackend,
+    BeatEngineRocmBackend,
     _friendly_julia_error,
+    _julia_worker_command,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
 )
+from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
+from blab.solvers.http_server import HttpServerBackend, HttpServerSession, server_health_supports_symmetry
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
@@ -29,24 +34,34 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert labels["Server"] == "server"
     assert labels["BEAT Engine (CUDA)"] == "beat_cuda"
     assert labels["BEAT Engine (CPU)"] == "beat_cpu"
+    assert labels["BEAT Engine (ROCm)"] == "beat_rocm"
     assert labels["Bempp (OpenCL CPU)"] == "local"
+    assert normalize_backend_id("bempp") == "local"
+    assert normalize_backend_id("bempp_cpu") == "local"
     assert normalize_backend_id("bempp_local") == "local"
     assert normalize_backend_id("bempp_server") == "server"
+    assert normalize_backend_id("http_server") == "server"
     assert normalize_backend_id("julia_local") == "beat_cuda"
     assert normalize_backend_id("local_julia") == "beat_cuda"
     assert normalize_backend_id("beat") == "beat_cuda"
     assert normalize_backend_id("beat_engine") == "beat_cuda"
-    assert normalize_backend_id("afterburner") == "beat_cuda"
     assert normalize_backend_id("beat_cpu") == "beat_cpu"
+    assert normalize_backend_id("beat_rocm") == "beat_rocm"
+    assert normalize_backend_id("rocm") == "beat_rocm"
+    assert normalize_backend_id("amdgpu") == "beat_rocm"
     assert JuliaLocalBackend is BeatEngineBackend
-    assert AfterburnerBackend is BeatEngineBackend
+    assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
+    assert BemppServerBackend is HttpServerBackend
+    assert BemppServerSession is HttpServerSession
     assert backend_info("server").capabilities.is_remote is True
     assert backend_info("server").capabilities.supports_symmetry is False
     assert backend_info("local").capabilities.supports_symmetry is False
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
+    assert backend_info("beat_rocm").capabilities.supports_symmetry is True
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
+    assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:
@@ -86,8 +101,23 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert beat_cpu_backend.capabilities.supports_parallel_workers is False
     assert beat_cpu_backend.capabilities.supports_symmetry is True
 
+    beat_rocm_backend = create_backend("beat_rocm")
+    assert beat_rocm_backend.backend_id == "beat_rocm"
+    assert beat_rocm_backend.julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+    assert beat_rocm_backend.beat_engine_backend == "rocm"
+    assert beat_rocm_backend.capabilities.is_remote is False
+    assert beat_rocm_backend.capabilities.supports_parallel_workers is False
+    assert beat_rocm_backend.capabilities.supports_symmetry is True
+
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
+    assert BeatEngineBackend(beat_engine_backend="rocm").julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+
+
+def test_server_health_supports_symmetry_reads_capability_payload() -> None:
+    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": True}}) is True
+    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": False}}) is False
+    assert server_health_supports_symmetry({}) is False
 
 
 def test_bempp_backend_rejects_symmetry() -> None:
@@ -245,6 +275,70 @@ Stacktrace:
     assert "Pkg.instantiate()" in friendly
     assert "Julia reported:" in friendly
     assert "Package CUDA not found" in friendly
+
+
+def test_julia_worker_command_accepts_sysimage(tmp_path) -> None:
+    solver_script = tmp_path / "solver.jl"
+    project = tmp_path / "julia_cuda"
+    sysimage = tmp_path / "blab-beat-cuda.so"
+
+    command = _julia_worker_command(
+        "julia",
+        solver_script,
+        julia_project=project,
+        julia_sysimage=sysimage,
+    )
+
+    assert command == [
+        "julia",
+        f"--sysimage={sysimage}",
+        f"--project={project}",
+        "--startup-file=no",
+        str(solver_script),
+        "--worker",
+    ]
+
+
+def test_julia_backend_worker_warm_up_starts_persistent_worker(tmp_path) -> None:
+    starts_path = tmp_path / "warmup_starts.txt"
+    fake_solver = tmp_path / "fake_warmup_worker.py"
+    fake_solver.write_text(
+        f"""
+import json
+import pathlib
+import sys
+
+starts_path = pathlib.Path({str(starts_path)!r})
+starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
+starts_path.write_text(str(starts + 1), encoding="utf-8")
+
+if "--worker" not in sys.argv:
+    raise SystemExit("expected --worker")
+
+print(json.dumps({{"type": "ready", "pid": 123, "protocol": "test"}}), flush=True)
+for _line in sys.stdin:
+    pass
+""".strip(),
+        encoding="utf-8",
+    )
+
+    try:
+        backend = BeatEngineBackend(
+            julia_executable=sys.executable,
+            solver_script=str(fake_solver),
+            julia_project=None,
+            persistent_worker=True,
+        )
+        statuses = []
+
+        backend.warm_up("worker", status_callback=statuses.append)
+        backend.warm_up("worker", status_callback=statuses.append)
+
+        assert starts_path.read_text(encoding="utf-8") == "1"
+        assert any("Warm BEAT Engine worker ready" in status for status in statuses)
+        assert any("Reusing warm BEAT Engine worker" in status for status in statuses)
+    finally:
+        shutdown_beat_engine_workers()
 
 
 def test_julia_backend_reuses_persistent_worker(tmp_path) -> None:

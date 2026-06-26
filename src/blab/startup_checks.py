@@ -6,7 +6,6 @@ import importlib.metadata
 from dataclasses import dataclass
 from typing import Literal
 
-
 DEPENDENCY_NAMES = (
     "bempp-cl",
     "matplotlib",

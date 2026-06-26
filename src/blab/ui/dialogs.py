@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,10 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
-
 
 CROSSOVER_TYPE_OPTIONS = [
     ("Off", None),
@@ -47,6 +47,7 @@ CROSSOVER_TYPE_OPTIONS = [
 ]
 APP_ROOT = Path(__file__).resolve().parents[3]
 DONATE_QR_PATH = APP_ROOT / "assets" / "donateqr.png"
+INFO_ICON_PATH = APP_ROOT / "assets" / "info-16.ico"
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
 DONATE_BLURB = (
     "Boundary Lab is free open source software. If you've found the tool helpful for your workflows and want "
@@ -151,11 +152,7 @@ class PreferencesDialog(QDialog):
         }
         self.theme_combo.addItems(self.theme_options.keys())
         theme_label = next(
-            (
-                label
-                for label, value in self.theme_options.items()
-                if value == preferences.theme
-            ),
+            (label for label, value in self.theme_options.items() if value == preferences.theme),
             "System",
         )
         self.theme_combo.setCurrentText(theme_label)
@@ -169,40 +166,32 @@ class PreferencesDialog(QDialog):
         self.live_plot_quality_combo.addItems(self.live_plot_quality_options.keys())
         live_plot_quality = normalize_live_plot_quality(preferences.live_plot_quality)
         live_plot_quality_label = next(
-            (
-                label
-                for label, value in self.live_plot_quality_options.items()
-                if value == live_plot_quality
-            ),
+            (label for label, value in self.live_plot_quality_options.items() if value == live_plot_quality),
             "Medium",
         )
         self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
+
+        self.live_plot_streaming_check = QCheckBox("Enabled")
+        self.live_plot_streaming_check.setChecked(preferences.live_plot_streaming)
+        self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)
+        self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)
 
         self.solve_backend_combo = QComboBox()
         self.solve_backend_options = backend_label_to_id()
         self.solve_backend_combo.addItems(self.solve_backend_options.keys())
         current_backend = normalize_backend_id(preferences.solve_backend)
         backend_label = next(
-            (
-                label
-                for label, value in self.solve_backend_options.items()
-                if value == current_backend
-            ),
+            (label for label, value in self.solve_backend_options.items() if value == current_backend),
             "Bempp (OpenCL CPU)",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
 
         self.solve_server_url_edit = QLineEdit()
         self.solve_server_url_edit.setText(preferences.solve_server_url)
-        self.solve_server_url_edit.setEnabled(backend_info(current_backend).capabilities.is_remote)
-
-        def update_backend_fields(label: str) -> None:
-            backend_id = self.solve_backend_options.get(label, "local")
-            self.solve_server_url_edit.setEnabled(backend_info(backend_id).capabilities.is_remote)
-
-        self.solve_backend_combo.currentTextChanged.connect(
-            update_backend_fields
-        )
+        self.server_health_payload: dict | None = None
+        self.server_health_url: str | None = None
+        self.check_server_button = QPushButton("Check Server")
+        self.check_server_button.clicked.connect(self._check_server)
 
         self.gmres_spin = QDoubleSpinBox()
         self.gmres_spin.setRange(1e-8, 1e-2)
@@ -224,12 +213,23 @@ class PreferencesDialog(QDialog):
         self.polar_distance_spin.setSuffix(" m")
         self.polar_distance_spin.setValue(preferences.polar_observation_distance_m)
 
+        self.normalized_channel_correction_check = QCheckBox("Enabled")
+        self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
+
         self.burton_miller_check = QCheckBox("Enabled")
         self.burton_miller_check.setChecked(preferences.use_burton_miller)
 
-        self.worker_count_spin = QSpinBox()
-        self.worker_count_spin.setRange(1, 64)
-        self.worker_count_spin.setValue(preferences.worker_count)
+        def update_backend_fields(label: str) -> None:
+            backend_id = self.solve_backend_options.get(label, "local")
+            uses_bempp = backend_id in {"local", "server"}
+            uses_remote = backend_info(backend_id).capabilities.is_remote
+            self.solve_server_url_edit.setEnabled(uses_remote)
+            self.check_server_button.setEnabled(uses_remote)
+            self.gmres_spin.setEnabled(uses_bempp)
+            self.burton_miller_check.setEnabled(uses_bempp)
+
+        update_backend_fields(backend_label)
+        self.solve_backend_combo.currentTextChanged.connect(update_backend_fields)
 
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
@@ -285,6 +285,13 @@ class PreferencesDialog(QDialog):
         self.spl_min_spin.setSuffix(" dB")
         self.spl_min_spin.setValue(preferences.spl_min_db)
 
+        self.isobar_contour_step_spin = QDoubleSpinBox()
+        self.isobar_contour_step_spin.setRange(0.0, 200.0)
+        self.isobar_contour_step_spin.setDecimals(1)
+        self.isobar_contour_step_spin.setSingleStep(0.5)
+        self.isobar_contour_step_spin.setSuffix(" dB")
+        self.isobar_contour_step_spin.setValue(preferences.isobar_contour_step_db)
+
         self.stitch_tolerance_spin = QDoubleSpinBox()
         self.stitch_tolerance_spin.setRange(0.001, 1000.0)
         self.stitch_tolerance_spin.setDecimals(3)
@@ -320,11 +327,33 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Solver Config",
                 (
-                    ("GMRES Tolerance", self.gmres_spin),
-                    ("Burton Miller Formulation", self.burton_miller_check),
-                    ("Worker Count", self.worker_count_spin),
-                    ("Balloon Sampling", self.spherical_sampling_check),
-                    ("Balloon Angle Precision", self.balloon_angle_precision_spin),
+                    ("BEM Solver", self.solve_backend_combo, ""),
+                    ("Solve Server URL", self.solve_server_url_edit, ""),
+                    (
+                        "",
+                        self.check_server_button,
+                        "Query the configured solve server and update advertised capabilities.",
+                    ),
+                    (
+                        "GMRES Tolerance",
+                        self.gmres_spin,
+                        "Solution accuracy for the BEMPP iterative solver. Lower values offer higher quality solves but take longer.",
+                    ),
+                    (
+                        "Burton Miller Formulation",
+                        self.burton_miller_check,
+                        "Enable to resolve fictitious interior resonances when using BEMPP solver. Always enabled for BEAT Engine.",
+                    ),
+                    (
+                        "Balloon Sampling",
+                        self.spherical_sampling_check,
+                        "Gather spherical observation data for 3d ballon viewer",
+                    ),
+                    (
+                        "Balloon Angle Precision",
+                        self.balloon_angle_precision_spin,
+                        "Resolution of spherical sampling. 2.5 degrees = ~6,000 points.",
+                    ),
                 ),
             )
         )
@@ -332,15 +361,29 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Observation Config",
                 (
-                    ("Polar Angle Step", self.polar_step_spin),
-                    ("Polar Observation Distance", self.polar_distance_spin),
-                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin),
-                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin),
-                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin),
-                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin),
-                    ("Polar Smoothing", self.smoothing_combo),
-                    ("SPL Min", self.spl_min_spin),
-                    ("SPL Max", self.spl_max_spin),
+                    (
+                        "Polar Angle Step",
+                        self.polar_step_spin,
+                        "Angular resolution for horizontal/vertical polars - spin plot requires a minimum of 10 degrees",
+                    ),
+                    ("Polar Observation Distance", self.polar_distance_spin, ""),
+                    (
+                        "Normalized Channel Correction",
+                        self.normalized_channel_correction_check,
+                        "Applies a per-channel reference-axis magnitude correction before channel gain, delay, and crossover filters.",
+                    ),
+                    ("Horizontal Normalization Angle", self.horizontal_norm_angle_spin, ""),
+                    ("Vertical Normalization Angle", self.vertical_norm_angle_spin, ""),
+                    ("Spin Horizontal Ref Angle", self.spin_horizontal_ref_angle_spin, ""),
+                    ("Spin Vertical Ref Angle", self.spin_vertical_ref_angle_spin, ""),
+                    ("Polar Smoothing", self.smoothing_combo, ""),
+                    ("SPL Min", self.spl_min_spin, ""),
+                    ("SPL Max", self.spl_max_spin, ""),
+                    (
+                        "Isobar Contour Step",
+                        self.isobar_contour_step_spin,
+                        "Set to 0 dB for smoothly interpolated isobar colors.",
+                    ),
                 ),
             )
         )
@@ -349,19 +392,16 @@ class PreferencesDialog(QDialog):
         right_column.addWidget(
             self._section(
                 "Mesh Config",
-                (
-                    ("Stitch Tolerance", self.stitch_tolerance_spin),
-                ),
+                (("Stitch Tolerance", self.stitch_tolerance_spin, ""),),
             )
         )
         right_column.addWidget(
             self._section(
                 "Application",
                 (
-                    ("Theme", self.theme_combo),
-                    ("Live Plot Quality", self.live_plot_quality_combo),
-                    ("Solve Backend", self.solve_backend_combo),
-                    ("Solve Server URL", self.solve_server_url_edit),
+                    ("Theme", self.theme_combo, ""),
+                    ("Live Plot Streaming", self.live_plot_streaming_check, ""),
+                    ("Live Plot Quality", self.live_plot_quality_combo, ""),
                 ),
             )
         )
@@ -373,11 +413,52 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(820, 420)
 
+    def _check_server(self) -> None:
+        url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
+        try:
+            payload = query_server_health(url)
+        except Exception as exc:
+            self.server_health_payload = None
+            self.server_health_url = None
+            QMessageBox.warning(self, "Check Server", f"Failed to connect to solve server:\n{exc}")
+            return
+
+        self.server_health_payload = payload
+        self.server_health_url = url.rstrip("/")
+        capabilities = payload.get("capabilities", {}) if isinstance(payload.get("capabilities", {}), dict) else {}
+        capability_lines = [
+            f"Solver: {payload.get('solver_label') or payload.get('solver') or 'Unknown'}",
+            f"Backend: {payload.get('backend') or payload.get('solver') or 'Unknown'}",
+            f"Symmetry: {'yes' if capabilities.get('supports_symmetry') else 'no'}",
+            f"Spherical sampling: {'yes' if capabilities.get('supports_spherical_sampling') else 'no'}",
+            f"Channel resynthesis: {'yes' if capabilities.get('supports_channel_resynthesis') else 'no'}",
+        ]
+        QMessageBox.information(self, "Check Server", "Solve server is reachable.\n\n" + "\n".join(capability_lines))
+
     @staticmethod
-    def _section(title: str, rows: tuple[tuple[str, QWidget], ...]) -> QGroupBox:
+    def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
         group = QGroupBox(title)
         form = QFormLayout(group)
-        for label, widget in rows:
+        info_icon = QIcon(str(INFO_ICON_PATH))
+        for row in rows:
+            label_text, widget = row[:2]
+            tooltip = row[2] if len(row) > 2 else ""
+            label = QLabel(label_text)
+            if tooltip:
+                label.setToolTip(tooltip)
+                widget.setToolTip(tooltip)
+                label_row = QWidget()
+                label_layout = QHBoxLayout(label_row)
+                label_layout.setContentsMargins(0, 0, 0, 0)
+                label_layout.setSpacing(4)
+                icon_label = QLabel()
+                icon_label.setPixmap(info_icon.pixmap(16, 16))
+                icon_label.setToolTip(tooltip)
+                label_layout.addWidget(icon_label)
+                label_layout.addWidget(label)
+                label_layout.addStretch(1)
+                form.addRow(label_row, widget)
+                continue
             form.addRow(label, widget)
         return group
 
@@ -391,12 +472,13 @@ class PreferencesDialog(QDialog):
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
+            live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
+            normalized_channel_correction=bool(self.normalized_channel_correction_check.isChecked()),
             use_burton_miller=bool(self.burton_miller_check.isChecked()),
-            worker_count=int(self.worker_count_spin.value()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),
@@ -404,6 +486,7 @@ class PreferencesDialog(QDialog):
             spin_vertical_reference_angle=float(self.spin_vertical_ref_angle_spin.value()),
             spl_max_db=spl_max,
             spl_min_db=spl_min,
+            isobar_contour_step_db=float(self.isobar_contour_step_spin.value()),
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),
@@ -854,6 +937,7 @@ class ChannelConfigDialog(QDialog):
             )
         return tuple(channels)
 
+
 class SourceConfigDialog(QDialog):
     def __init__(
         self,
@@ -908,7 +992,9 @@ class SourceConfigDialog(QDialog):
             channel_combo = QComboBox()
             channel_combo.addItems(self.channel_names)
             channel_combo.setCurrentText(
-                radiator.channel if radiator is not None and radiator.channel in self.channel_names else self.channel_names[0]
+                radiator.channel
+                if radiator is not None and radiator.channel in self.channel_names
+                else self.channel_names[0]
             )
             self.table.setCellWidget(row, 3, channel_combo)
             self.channel_widgets.append(channel_combo)

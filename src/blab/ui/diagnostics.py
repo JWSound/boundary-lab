@@ -128,7 +128,7 @@ def _system_ram_text() -> str:
         status = MemoryStatusEx()
         status.dwLength = ctypes.sizeof(MemoryStatusEx)
         if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return f"{status.ullTotalPhys / (1024 ** 3):.1f} GiB"
+            return f"{status.ullTotalPhys / (1024**3):.1f} GiB"
     except Exception:
         return "unknown"
 

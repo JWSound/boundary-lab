@@ -1,4 +1,5 @@
 from blab.ui.settings import (
+    GuiPreferences,
     balloon_angle_precision_from_points,
     balloon_sampling_points,
     live_plot_angle_samples,
@@ -7,7 +8,6 @@ from blab.ui.settings import (
     normalize_live_plot_quality,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
-    GuiPreferences,
 )
 
 
@@ -38,6 +38,7 @@ def test_preference_change_classification() -> None:
 
     assert baseline.spin_horizontal_reference_angle == 0.0
     assert baseline.spin_vertical_reference_angle == 0.0
+    assert baseline.isobar_contour_step_db == 3.0
 
     assert preferences_require_solve_invalidation(
         baseline,
@@ -50,6 +51,10 @@ def test_preference_change_classification() -> None:
     assert preferences_require_solve_invalidation(
         baseline,
         GuiPreferences(polar_observation_distance_m=3.5),
+    )
+    assert preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(normalized_channel_correction=False),
     )
     assert not preferences_require_visualization_refresh(
         baseline,
@@ -66,6 +71,10 @@ def test_preference_change_classification() -> None:
     )
     assert preferences_require_visualization_refresh(
         baseline,
+        GuiPreferences(isobar_contour_step_db=1.5),
+    )
+    assert preferences_require_visualization_refresh(
+        baseline,
         GuiPreferences(spin_horizontal_reference_angle=15.0),
     )
     assert preferences_require_visualization_refresh(
@@ -78,14 +87,26 @@ def test_preference_change_classification() -> None:
     )
     assert not preferences_require_solve_invalidation(
         baseline,
+        GuiPreferences(isobar_contour_step_db=0.0),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
         GuiPreferences(spin_horizontal_reference_angle=15.0),
     )
 
     assert not preferences_require_solve_invalidation(
         baseline,
-        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+        GuiPreferences(theme="dark", solve_server_url="http://127.0.0.1:9999"),
     )
     assert not preferences_require_visualization_refresh(
         baseline,
-        GuiPreferences(theme="dark", worker_count=4, solve_server_url="http://127.0.0.1:9999"),
+        GuiPreferences(theme="dark", solve_server_url="http://127.0.0.1:9999"),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(live_plot_streaming=False),
+    )
+    assert not preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(live_plot_streaming=False),
     )

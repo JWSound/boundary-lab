@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import re
 import threading
 import time
@@ -26,12 +27,71 @@ from blab.protocol import (
     ndarray_to_wire,
     solve_request_to_job_inputs,
 )
-from blab.solvers.base import FrequencyResult
-
+from blab.solvers.base import SolverBackend, SolveRequest
+from blab.solvers.registry import backend_info, create_backend, normalize_backend_id
 
 TERMINAL_STATES = {"completed", "cancelled", "failed"}
 DEFAULT_ARTIFACT_ROOT = Path("runs") / "server_jobs"
 ASSET_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+SERVER_SOLVER_BACKENDS = {"bempp_cpu", "beat_cpu", "beat_cuda", "beat_rocm"}
+SERVER_SOLVER_BACKEND_IDS = {
+    "bempp_cpu": "local",
+    "beat_cpu": "beat_cpu",
+    "beat_cuda": "beat_cuda",
+    "beat_rocm": "beat_rocm",
+}
+LOGGER = logging.getLogger("blab.server")
+
+
+class BackendServerSolver:
+    """Server-side facade over the shared solver backend contract."""
+
+    def __init__(
+        self,
+        config: SimulationConfig,
+        *,
+        backend: SolverBackend,
+        status_callback=None,
+    ) -> None:
+        self.config = config
+        self.backend = backend
+        self.status_callback = status_callback
+        self.session = None
+
+    def set_status_callback(self, status_callback) -> None:
+        self.status_callback = status_callback
+
+    def initialize(self, frequencies_hz: np.ndarray) -> None:
+        self.session = self.backend.create_session(
+            SolveRequest(
+                self.config,
+                np.asarray(frequencies_hz, dtype=np.float32),
+                status_callback=self.status_callback,
+            )
+        )
+
+    @property
+    def polar_angle_deg(self) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.polar_angle_deg
+
+    @property
+    def radiator_names(self) -> np.ndarray:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.radiator_names
+
+    @property
+    def sphere_metadata(self) -> dict[str, np.ndarray] | None:
+        if self.session is None:
+            raise RuntimeError("Server solver has not initialized.")
+        return self.session.metadata.sphere_metadata
+
+    def solve_stream(self, frequencies, *, stop_requested=None):
+        if self.session is None:
+            self.initialize(np.asarray(frequencies, dtype=np.float32))
+        yield from self.session.solve_stream(stop_requested=stop_requested)
 
 
 @dataclass
@@ -112,6 +172,15 @@ class JobOrchestrator:
 
         job_id = uuid.uuid4().hex
         artifact_dir = self.artifact_root / job_id
+        LOGGER.info(
+            "job received job_id=%s frequencies=%s first_hz=%s last_hz=%s assets=%s artifact_dir=%s",
+            job_id,
+            frequencies.size,
+            float(frequencies[0]),
+            float(frequencies[-1]),
+            0 if assets is None else len(assets),
+            artifact_dir,
+        )
         if assets:
             config = self._stage_assets(config, assets, artifact_dir / "assets")
         job = JobRecord(
@@ -135,6 +204,7 @@ class JobOrchestrator:
         asset_dir.mkdir(parents=True, exist_ok=True)
         staged_by_original_path: dict[str, str] = {}
         used_names: set[str] = set()
+        total_bytes = 0
 
         for index, asset in enumerate(assets):
             if not isinstance(asset, dict):
@@ -158,8 +228,10 @@ class JobOrchestrator:
 
             staged_path = asset_dir / filename
             staged_path.write_bytes(data)
+            total_bytes += len(data)
             staged_by_original_path[original_path] = str(staged_path)
 
+        LOGGER.info("staged uploaded assets count=%s bytes=%s directory=%s", len(assets), total_bytes, asset_dir)
         return _rewrite_config_mesh_paths(config, staged_by_original_path)
 
     def get(self, job_id: str) -> JobRecord | None:
@@ -171,6 +243,7 @@ class JobOrchestrator:
             job = self._jobs.get(job_id)
             if job is None:
                 return False
+            LOGGER.info("job cancel requested job_id=%s status=%s", job_id, job.status)
             job.cancel_event.set()
             if job.status == "queued":
                 job.status = "cancelled"
@@ -206,13 +279,24 @@ class JobOrchestrator:
                 job.status = "cancelled"
                 job.finished_at = time.time()
                 self._add_event_locked(job, "cancelled")
+                LOGGER.info("job cancelled before start job_id=%s", job_id)
                 return
             job.status = "running"
             job.started_at = time.time()
             self._add_event_locked(job, "started")
+            LOGGER.info("job started job_id=%s frequencies=%s", job_id, job.total_count)
 
         try:
             solver = self.solver_factory(job.config)
+            set_status_callback = getattr(solver, "set_status_callback", None)
+            if callable(set_status_callback):
+                set_status_callback(
+                    lambda message: LOGGER.info("job solver status job_id=%s message=%s", job_id, message)
+                )
+            initialize = getattr(solver, "initialize", None)
+            if callable(initialize):
+                LOGGER.info("job initializing solver job_id=%s", job_id)
+                initialize(job.frequencies_hz)
             sphere_metadata = solver.sphere_metadata or {}
             dataset = LiveSolveDataset(
                 polar_angle_deg=np.asarray(solver.polar_angle_deg, dtype=np.float32),
@@ -228,10 +312,16 @@ class JobOrchestrator:
                     "initialized",
                     polar_angle_deg=ndarray_to_wire(dataset.polar_angle_deg),
                     radiator_names=np.asarray(dataset.radiator_names).astype(str).tolist(),
-                    sphere_metadata={
-                        key: ndarray_to_wire(value)
-                        for key, value in sphere_metadata.items()
-                    } if sphere_metadata else None,
+                    sphere_metadata={key: ndarray_to_wire(value) for key, value in sphere_metadata.items()}
+                    if sphere_metadata
+                    else None,
+                )
+                LOGGER.info(
+                    "job initialized job_id=%s angles=%s radiators=%s spherical=%s",
+                    job_id,
+                    dataset.polar_angle_deg.size,
+                    dataset.radiator_names.size,
+                    bool(sphere_metadata),
                 )
 
             for result in solver.solve_stream(job.frequencies_hz, stop_requested=job.cancel_event.is_set):
@@ -247,12 +337,20 @@ class JobOrchestrator:
                         solved_count=job.solved_count,
                         total_count=job.total_count,
                     )
+                    LOGGER.info(
+                        "job result job_id=%s solved=%s/%s freq_hz=%s",
+                        job_id,
+                        job.solved_count,
+                        job.total_count,
+                        float(result.freq_hz),
+                    )
 
             with self._condition:
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
                     job.finished_at = time.time()
                     self._add_event_locked(job, "cancelled", solved_count=job.solved_count)
+                    LOGGER.info("job cancelled job_id=%s solved=%s/%s", job_id, job.solved_count, job.total_count)
                     return
 
             artifact = self._write_result_artifact(job)
@@ -266,12 +364,22 @@ class JobOrchestrator:
                     solved_count=job.solved_count,
                     artifact=f"/jobs/{job.job_id}/artifacts/result.npz",
                 )
+                elapsed_s = 0.0 if job.started_at is None else job.finished_at - job.started_at
+                LOGGER.info(
+                    "job completed job_id=%s solved=%s/%s elapsed_s=%.3f artifact=%s",
+                    job_id,
+                    job.solved_count,
+                    job.total_count,
+                    elapsed_s,
+                    artifact,
+                )
         except Exception as exc:
             with self._condition:
                 job.status = "failed"
                 job.error = str(exc)
                 job.finished_at = time.time()
                 self._add_event_locked(job, "failed", error=job.error)
+            LOGGER.exception("job failed job_id=%s solved=%s/%s", job_id, job.solved_count, job.total_count)
 
     def _write_result_artifact(self, job: JobRecord) -> Path | None:
         dataset = job.dataset
@@ -323,9 +431,31 @@ class JobOrchestrator:
 
 
 class BlabServer(ThreadingHTTPServer):
-    def __init__(self, server_address, orchestrator: JobOrchestrator):
+    def __init__(self, server_address, orchestrator: JobOrchestrator, *, solver_id: str = "bempp_cpu"):
         super().__init__(server_address, BlabRequestHandler)
         self.orchestrator = orchestrator
+        self.solver_id = normalize_server_solver_id(solver_id)
+
+    def health_payload(self) -> dict[str, Any]:
+        backend_id = server_solver_backend_id(self.solver_id)
+        info = backend_info(backend_id)
+        capabilities = info.capabilities
+        return {
+            "status": "ok",
+            "solver": self.solver_id,
+            "backend": info.backend_id,
+            "solver_label": info.label,
+            "capabilities": {
+                "supports_spherical_sampling": capabilities.supports_spherical_sampling,
+                "supports_impedance": capabilities.supports_impedance,
+                "supports_burton_miller": capabilities.supports_burton_miller,
+                "supports_flat_target_normalization": capabilities.supports_flat_target_normalization,
+                "supports_channel_resynthesis": capabilities.supports_channel_resynthesis,
+                "supports_cancellation": capabilities.supports_cancellation,
+                "supports_streaming": capabilities.supports_streaming,
+                "supports_symmetry": capabilities.supports_symmetry,
+            },
+        }
 
 
 class BlabRequestHandler(BaseHTTPRequestHandler):
@@ -336,7 +466,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         parts = [part for part in parsed.path.split("/") if part]
 
         if parsed.path == "/health":
-            self._send_json({"status": "ok"})
+            self._send_json(self.server.health_payload())
             return
 
         if len(parts) == 2 and parts[0] == "jobs":
@@ -377,6 +507,11 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_create_job(self) -> None:
         try:
+            LOGGER.info(
+                "POST /jobs received client=%s content_length=%s",
+                self.client_address[0],
+                self.headers.get("Content-Length", "0"),
+            )
             payload = self._read_json()
             config, frequencies, assets = solve_request_to_job_inputs(payload)
             job = self.server.orchestrator.submit(config, frequencies, assets)
@@ -384,6 +519,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
+        LOGGER.info("POST /jobs accepted job_id=%s client=%s", job.job_id, self.client_address[0])
         self._send_json(job.snapshot(), status=HTTPStatus.ACCEPTED)
 
     def _handle_get_job(self, job_id: str) -> None:
@@ -403,16 +539,21 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
 
+        LOGGER.info("job event stream opened job_id=%s client=%s since=%s", job_id, self.client_address[0], start_index)
         next_index = max(0, start_index)
-        while True:
-            events, terminal = self.server.orchestrator.events_since(job_id, next_index)
-            for event in events:
-                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-                self.wfile.flush()
-                next_index = event["index"] + 1
-            if terminal:
-                return
-            self.server.orchestrator.wait_for_event(job_id, next_index)
+        try:
+            while True:
+                events, terminal = self.server.orchestrator.events_since(job_id, next_index)
+                for event in events:
+                    self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                    self.wfile.flush()
+                    next_index = event["index"] + 1
+                if terminal:
+                    LOGGER.info("job event stream completed job_id=%s events_sent_through=%s", job_id, next_index - 1)
+                    return
+                self.server.orchestrator.wait_for_event(job_id, next_index)
+        except (BrokenPipeError, ConnectionResetError):
+            LOGGER.warning("job event stream disconnected job_id=%s events_sent_through=%s", job_id, next_index - 1)
 
     def _handle_result_artifact(self, job_id: str) -> None:
         job = self.server.orchestrator.get(job_id)
@@ -424,6 +565,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
             return
 
         data = job.result_npz.read_bytes()
+        LOGGER.info("serving result artifact job_id=%s bytes=%s", job_id, len(data))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
@@ -449,6 +591,13 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
+        LOGGER.warning(
+            "request failed status=%s message=%s path=%s client=%s",
+            status.value,
+            message,
+            self.path,
+            self.client_address[0],
+        )
         self._send_json({"error": message}, status=status)
 
 
@@ -456,7 +605,38 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog, description="Run a Boundary Lab solve job server.")
     parser.add_argument("--host", default="127.0.0.1", help="Host/IP address to bind.")
     parser.add_argument("--port", type=int, default=8765, help="TCP port to bind.")
+    parser.add_argument(
+        "--solver",
+        default="bempp_cpu",
+        help="Server-side solver backend: bempp_cpu, beat_cpu, beat_cuda, or beat_rocm.",
+    )
+    parser.add_argument(
+        "--julia-executable",
+        default="julia",
+        help="Julia executable path for BEAT Engine server solvers.",
+    )
+    parser.add_argument(
+        "--julia-threads",
+        default="auto",
+        help="Julia thread count for BEAT Engine server solvers.",
+    )
+    parser.add_argument(
+        "--julia-sysimage",
+        default=None,
+        help="Optional Julia sysimage path for BEAT Engine server solvers.",
+    )
+    parser.add_argument(
+        "--warm-solver",
+        choices=("off", "worker", "tiny"),
+        default="off",
+        help="Warm BEAT Engine at startup: off, worker process only, or a tiny one-frequency solve.",
+    )
     parser.add_argument("--max-running-jobs", type=int, default=1, help="Maximum concurrent solve jobs.")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Server log level: DEBUG, INFO, WARNING, ERROR, or CRITICAL.",
+    )
     parser.add_argument(
         "--artifact-dir",
         type=Path,
@@ -473,27 +653,104 @@ def _safe_asset_filename(filename: str, index: int) -> str:
 
 def _rewrite_config_mesh_paths(config: SimulationConfig, staged_by_original_path: dict[str, str]) -> SimulationConfig:
     mesh_file = staged_by_original_path.get(config.mesh_file, config.mesh_file)
-    meshes = tuple(
-        replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file))
-        for mesh in config.meshes
-    )
+    meshes = tuple(replace(mesh, file=staged_by_original_path.get(mesh.file, mesh.file)) for mesh in config.meshes)
     return replace(config, mesh_file=mesh_file, meshes=meshes)
+
+
+def normalize_server_solver_id(solver_id: str) -> str:
+    text = str(solver_id or "").strip().lower()
+    normalized = normalize_backend_id(text)
+    if normalized == "server":
+        raise ValueError("The solve server cannot use another solve server as its own backend.")
+    if normalized == "local":
+        return "bempp_cpu"
+    if normalized in SERVER_SOLVER_BACKENDS:
+        return normalized
+    supported = ", ".join(sorted(SERVER_SOLVER_BACKENDS))
+    raise ValueError(f"Unsupported server solver backend '{solver_id}'. Expected one of: {supported}.")
+
+
+def server_solver_backend_id(solver_id: str) -> str:
+    return SERVER_SOLVER_BACKEND_IDS[normalize_server_solver_id(solver_id)]
+
+
+def create_server_solver_factory(
+    solver_id: str,
+    *,
+    julia_executable: str = "julia",
+    julia_threads: str | int = "auto",
+    julia_sysimage: str | Path | None = None,
+):
+    normalized_solver = normalize_server_solver_id(solver_id)
+    backend = create_backend(
+        server_solver_backend_id(normalized_solver),
+        julia_executable=julia_executable,
+        julia_threads=julia_threads,
+        julia_sysimage=julia_sysimage,
+    )
+
+    def _factory(config: SimulationConfig) -> BackendServerSolver:
+        return BackendServerSolver(config, backend=backend)
+
+    _factory.backend = backend  # type: ignore[attr-defined]
+    return _factory
+
+
+def _warm_server_solver(solver_factory, mode: str) -> None:
+    if mode == "off":
+        return
+    backend = getattr(solver_factory, "backend", None)
+    warm_up = getattr(backend, "warm_up", None)
+    if not callable(warm_up):
+        LOGGER.info("solver warm-up skipped mode=%s reason=backend does not support warm-up", mode)
+        return
+    LOGGER.info("solver warm-up starting mode=%s", mode)
+    started = time.monotonic()
+    warm_up(mode, status_callback=lambda message: LOGGER.info("solver warm-up status message=%s", message))
+    LOGGER.info("solver warm-up completed mode=%s elapsed_s=%.3f", mode, time.monotonic() - started)
 
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     args = _build_arg_parser(prog=prog).parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    solver_id = normalize_server_solver_id(args.solver)
     orchestrator = JobOrchestrator(
         max_running_jobs=args.max_running_jobs,
         artifact_root=args.artifact_dir,
+        solver_factory=create_server_solver_factory(
+            solver_id,
+            julia_executable=args.julia_executable,
+            julia_threads=args.julia_threads,
+            julia_sysimage=args.julia_sysimage,
+        ),
     )
-    server = BlabServer((args.host, args.port), orchestrator)
-    print(f"Boundary Lab server listening on http://{args.host}:{args.port}")
+    server = BlabServer((args.host, args.port), orchestrator, solver_id=solver_id)
+    _warm_server_solver(orchestrator.solver_factory, args.warm_solver)
+    solver_label = backend_info(server_solver_backend_id(solver_id)).label
+    LOGGER.info(
+        "Boundary Lab server listening url=http://%s:%s solver=%s label=%s max_running_jobs=%s artifact_dir=%s",
+        args.host,
+        args.port,
+        solver_id,
+        solver_label,
+        args.max_running_jobs,
+        args.artifact_dir,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down Boundary Lab server.")
+        LOGGER.info("Shutting down Boundary Lab server.")
     finally:
         orchestrator.shutdown()
+        try:
+            from blab.solvers.beat_engine_backend import shutdown_beat_engine_workers
+
+            shutdown_beat_engine_workers()
+        except Exception:
+            pass
         server.server_close()
 
 

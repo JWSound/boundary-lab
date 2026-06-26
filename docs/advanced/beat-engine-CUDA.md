@@ -60,7 +60,7 @@ The multipair path uses two regular assembly launches:
 
 This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel. The subgroup mapping keeps the 16-thread-per-pair granularity that works well for the current order-4 regular triangle rule while avoiding the old one-pair-per-block launch shape.
 
-The multipair balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path. The previous one-pair-per-block balanced path remains available as `:split_atomic_balanced` for profiling and A/B comparison.
+The multipair balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
 
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 

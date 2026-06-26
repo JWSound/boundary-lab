@@ -223,7 +223,7 @@ function assemble_cpu_operators(mesh, p1_space, dp0_space, rule, k, singular_ord
             singular_order=singular_order,
             element_indices=element_indices,
             threaded=threaded,
-            use_cuda_regular=false,
+            backend=:cpu,
             timing=timings,
             singular_cache=singular_cache,
             symmetry_mode=symmetry_mode,

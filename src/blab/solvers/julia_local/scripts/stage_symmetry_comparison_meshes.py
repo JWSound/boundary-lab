@@ -6,7 +6,6 @@ import meshio
 
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
 
-
 ROOT = Path(__file__).resolve().parents[1]
 TEST_MESHES = ROOT / "test_meshes"
 STAGED = TEST_MESHES / "staged_symmetry"

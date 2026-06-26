@@ -19,10 +19,7 @@ def _missing_gui_dependency_message(exc: ImportError) -> str:
             "pyopencl is installed incorrectly or is missing its compiled _cl extension. "
             "Reinstall it with: python -m pip install --force-reinstall --no-cache-dir pyopencl"
         )
-    return (
-        f"{missing} is required for the GUI. Reinstall the GUI extra with: "
-        'python -m pip install -e ".[gui]"'
-    )
+    return f'{missing} is required for the GUI. Reinstall the GUI extra with: python -m pip install -e ".[gui]"'
 
 
 try:
@@ -31,8 +28,7 @@ try:
     from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 except ImportError as exc:  # pragma: no cover - exercised only by manual GUI launch
     raise SystemExit(
-        "PySide6 is required for the GUI. Install the GUI extra with: "
-        'python -m pip install -e ".[gui]"'
+        'PySide6 is required for the GUI. Install the GUI extra with: python -m pip install -e ".[gui]"'
     ) from exc
 
 

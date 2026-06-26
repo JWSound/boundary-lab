@@ -59,7 +59,6 @@ The preferences menu contains various application-level settings for Boundary La
 ### Solver Config
 - `GMRES Tolerance`: sets the threshold for how accurate the BEM solution needs to be at each frequency being solved. Lower values (moving the 1 to the right) increase solve times but may produce more accurate results. High values (moving the 1 to the left) decrease solve accuracy but also decrease solve times.
 - `Burton Miller Formulation`: enable/disable the Burton-Miller formulation to prevent the exterior Helmholtz boundary integral equation from becoming unreliable at certain frequencies due to fictitious cavity resonances. Not always required but turning this feature on can reduce polar irregularities with certain meshes- especially ones having enclosed volumes. Turning this feature off can typically decrease solve times by 30-40%.
-- `Worker Count`: Experimental - allocate CPU worker threads to the solver. The default value is 1, but changing this may either increase or decrease solve times depending on your hardware and mesh complexity.
 - `Balloon Sampling`: Enable or disable spherical sampling needed to generate balloon plots. This feature generates a 2 meter diameter grid of sampling points around the origin according to a Fibonacci spherical sampling sequence to approximate equal point spacing. Enabling/disabling this feature typically has a minimal (<3%) impact on performance.
 - `Balloon Angle Precision`: Drives the number of points generated for the spherical balloon plot sampler. More points produce more detailed balloon plots, but slightly increase run times. The default value of 2.5 degrees produces 6,500 points in a sphere around the origin to sample from.
 
@@ -78,13 +77,13 @@ The preferences menu contains various application-level settings for Boundary La
 
 ### Application
 - `Theme`: Boundary Lab visual UI theme.
-- `Solve Backend`: Set the solver backend to either use a built-in application solver, or a server-based backend.
+- `BEM Solver`: Set the solver backend to either use a built-in application solver, or a server-based backend.
     1. **Server** - Use whatever solver is configured on the remote server via the HTTP streaming API.
     2. **BEAT Engine (CUDA)** - Use the Julia-based CUDA solver. BEAT Engine is short for Boundary Element Acoustic Toolkit Engine. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
     3. **BEAT Engine (CPU)** - Use the Julia-based CPU solver path. Uses the local CPU BLAS/LAPACK stack and supports BEAT Engine X/XY symmetry acceleration.
     4. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
-- `Solve Server URL`: The address and port of the server if using a server-based solver backend. 
+- `Solve Server URL`: The address and port of the server if using a server-based solver backend. Boundary Lab silently checks this URL on startup when `BEM Solver` is already set to `Server`; use `Check Server` to query server health manually and update advertised feature availability, including BEAT Engine server-side symmetry support. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for server setup and API details. 
 
 ## Command Strip
 The command strip is located along the bottom of the main window and includes controls to generate Ath meshes, run solves, and configure the project parameters.
@@ -163,6 +162,7 @@ The viewer comprises:
 - rotatable polar protractor with 30 degree angle spokes and 6 dB rings
 - radar directivity plot for the current frequency and protractor angle
 - isobar slice rendering for the current polar protractor angle
+- An experimental forward beam shape plot
 
 The balloon viewer uses the frequencies that completed before the solve ended.
 

@@ -9,6 +9,8 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+.tox/
+.nox/
 
 # Virtual environments
 .venv/
@@ -29,6 +31,9 @@ dist/
 *.swo
 .DS_Store
 Thumbs.db
+*.log
+*.tmp
+*.bak
 
 # Local scratch/example projects
 testprojectignore/
@@ -45,7 +50,12 @@ pressure_data_formatted.npz
 horizontal_isobar.png
 vertical_isobar.png
 acoustic_impedance.png
+on_axis_frequency_response.png
+spinorama.png
 *_clean.msh
 
 # Julia solver benchmark/profiling outputs
 src/blab/solvers/julia_local/results/
+src/blab/solvers/julia_local/runs/
+src/blab/solvers/julia_local/test_meshes/staged_symmetry/
+LocalPreferences.toml

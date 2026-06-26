@@ -9,7 +9,6 @@ from PySide6.QtCore import QSettings
 
 from blab.solvers.registry import normalize_backend_id
 
-
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
 LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
@@ -26,12 +25,13 @@ class GuiPreferences:
     theme: str = "system"
     solve_backend: str = "local"
     solve_server_url: str = "http://127.0.0.1:8765"
+    live_plot_streaming: bool = True
     live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
+    normalized_channel_correction: bool = True
     use_burton_miller: bool = True
-    worker_count: int = 1
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
@@ -39,6 +39,7 @@ class GuiPreferences:
     spin_vertical_reference_angle: float = 0.0
     spl_max_db: float = 0.0
     spl_min_db: float = -30.0
+    isobar_contour_step_db: float = 3.0
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
     balloon_angle_precision_deg: float = 2.5
@@ -49,6 +50,7 @@ SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "gmres_tolerance",
     "polar_angle_step_deg",
     "polar_observation_distance_m",
+    "normalized_channel_correction",
     "use_burton_miller",
     "stitch_tolerance_mm",
     "spherical_sampling_enabled",
@@ -63,6 +65,7 @@ VISUALIZATION_PREFERENCE_FIELDS = (
     "spin_vertical_reference_angle",
     "spl_max_db",
     "spl_min_db",
+    "isobar_contour_step_db",
 )
 
 
@@ -78,10 +81,13 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
     return GuiPreferences(
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
-        solve_backend=normalize_backend_id(
-            settings_str(settings, "preferences/solve_backend", defaults.solve_backend)
-        ),
+        solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
+        live_plot_streaming=settings_bool(
+            settings,
+            "preferences/live_plot_streaming",
+            defaults.live_plot_streaming,
+        ),
         live_plot_quality=normalize_live_plot_quality(
             settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
         ),
@@ -96,12 +102,16 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             "preferences/polar_observation_distance_m",
             defaults.polar_observation_distance_m,
         ),
+        normalized_channel_correction=settings_bool(
+            settings,
+            "preferences/normalized_channel_correction",
+            defaults.normalized_channel_correction,
+        ),
         use_burton_miller=settings_bool(
             settings,
             "preferences/use_burton_miller",
             defaults.use_burton_miller,
         ),
-        worker_count=settings_int(settings, "preferences/worker_count", defaults.worker_count),
         polar_smoothing=settings_optional_int(
             settings,
             "preferences/polar_smoothing",
@@ -129,6 +139,14 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         ),
         spl_max_db=settings_float(settings, "preferences/spl_max_db", defaults.spl_max_db),
         spl_min_db=settings_float(settings, "preferences/spl_min_db", defaults.spl_min_db),
+        isobar_contour_step_db=max(
+            0.0,
+            settings_float(
+                settings,
+                "preferences/isobar_contour_step_db",
+                defaults.isobar_contour_step_db,
+            ),
+        ),
         stitch_tolerance_mm=settings_float(
             settings,
             "preferences/stitch_tolerance_mm",
@@ -147,6 +165,7 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
+    settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
     settings.setValue("preferences/gmres_tolerance", preferences.gmres_tolerance)
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
@@ -154,8 +173,11 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
         "preferences/polar_observation_distance_m",
         preferences.polar_observation_distance_m,
     )
+    settings.setValue(
+        "preferences/normalized_channel_correction",
+        preferences.normalized_channel_correction,
+    )
     settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
-    settings.setValue("preferences/worker_count", preferences.worker_count)
     settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)
     settings.setValue(
         "preferences/horizontal_normalization_angle",
@@ -175,6 +197,7 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     )
     settings.setValue("preferences/spl_max_db", preferences.spl_max_db)
     settings.setValue("preferences/spl_min_db", preferences.spl_min_db)
+    settings.setValue("preferences/isobar_contour_step_db", max(0.0, preferences.isobar_contour_step_db))
     settings.setValue("preferences/stitch_tolerance_mm", preferences.stitch_tolerance_mm)
     settings.setValue("preferences/spherical_sampling_enabled", preferences.spherical_sampling_enabled)
     settings.setValue(

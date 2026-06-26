@@ -1,5 +1,6 @@
-import numpy as np
 from types import SimpleNamespace
+
+import numpy as np
 
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.solver import (

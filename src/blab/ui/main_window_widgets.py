@@ -26,11 +26,7 @@ class PlotEntry:
 
 def format_frequency_solve_timings(result: FrequencyResult) -> str:
     timings = result.timings
-    return (
-        f"Assembly {timings.assembly_s:.2f}s | "
-        f"Solve {timings.solve_s:.2f}s | "
-        f"Field {timings.field_s:.2f}s"
-    )
+    return f"Assembly {timings.assembly_s:.2f}s | Solve {timings.solve_s:.2f}s | Field {timings.field_s:.2f}s"
 
 
 class AthScriptEditor(QPlainTextEdit):

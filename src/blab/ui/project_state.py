@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_SCRIPT_NAME = "ath"
 DEFAULT_MESH_SCALE_FACTOR = 0.001
 

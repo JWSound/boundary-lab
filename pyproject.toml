@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boundary-lab"
-version = "0.2.4"
+version = "0.3.1"
 description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff>=0.15,<0.16",
+]
 gui = [
   "PySide6",
   "pyvista",
@@ -34,3 +38,22 @@ packages = ["src/blab"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests", "scripts"]
+force-exclude = true
+extend-exclude = [
+  "ath/",
+  "gmsh/",
+  "runs/",
+  "references/",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/benchmark_gui_pipeline.py" = ["E402"]

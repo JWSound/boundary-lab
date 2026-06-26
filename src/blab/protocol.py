@@ -12,7 +12,6 @@ import numpy as np
 from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 
-
 PROTOCOL_VERSION = 2
 
 
@@ -260,11 +259,7 @@ def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
         horizontal_spl_db=ndarray_from_wire(raw.get("horizontal_spl_db")),
         vertical_spl_db=ndarray_from_wire(raw.get("vertical_spl_db")),
         sphere_spl_norm_db=ndarray_from_wire(raw.get("sphere_spl_norm_db")),
-        channel_names=(
-            None
-            if raw.get("channel_names") is None
-            else np.asarray(raw.get("channel_names"))
-        ),
+        channel_names=(None if raw.get("channel_names") is None else np.asarray(raw.get("channel_names"))),
         horizontal_pressure=complex_ndarray_from_wire(raw.get("horizontal_pressure")),
         vertical_pressure=complex_ndarray_from_wire(raw.get("vertical_pressure")),
         sphere_pressure=complex_ndarray_from_wire(raw.get("sphere_pressure")),

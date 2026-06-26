@@ -13,18 +13,9 @@ function assemble_regular_galerkin_operators_cuda_regular(
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
-    profile_regular_kernel::Bool=false,
-    regular_probe_pair_limit::Int=1_000_000,
-    regular_kernel_threads_override::Union{Nothing,Int}=nothing,
-    regular_assembly_mode::Symbol=:split_atomic_balanced_multipair,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
-    if regular_kernel_threads_override !== nothing
-        regular_kernel_threads_override > 0 || error("regular_kernel_threads_override must be positive.")
-        ispow2(regular_kernel_threads_override) || error("regular_kernel_threads_override must be a power of two for the current reduction kernels.")
-    end
-    regular_assembly_mode in (:split_atomic_balanced, :split_atomic_balanced_multipair, :split_atomic_slp_hyp_separate) || error("Unsupported regular CUDA assembly mode: $(regular_assembly_mode).")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
     return_gpu || error("BEAT Engine is CUDA-only; CPU operator materialization has been removed.")
 
@@ -35,17 +26,15 @@ function assemble_regular_galerkin_operators_cuda_regular(
     rule_count = cache === nothing ? length(rule.points) : cache.rule_count
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
-    kernel_mode = string(regular_assembly_mode)
-    kernel_threads = regular_kernel_threads_override === nothing ? _regular_quadrature_threads(rule_count) : regular_kernel_threads_override
-    regular_pairs_per_block = regular_assembly_mode == :split_atomic_balanced_multipair ? 8 : 1
+    kernel_mode = "split_atomic_balanced_multipair"
+    kernel_threads = _regular_quadrature_threads(rule_count)
+    regular_pairs_per_block = 8
     kernel_blocks = cld(total_pairs, regular_pairs_per_block)
     kernel_shmem = kernel_threads * regular_pairs_per_block * 24 * sizeof(T)
-    probe_pair_count = regular_probe_pair_limit <= 0 ? total_pairs : min(total_pairs, regular_probe_pair_limit)
 
     if cache === nothing
         face_vertices, normals, areas, faces, curls = _cuda_geometry_arrays(mesh)
         rule_points, rule_weights = _cuda_rule_arrays(rule)
-        color_indices, color_offsets, color_count = _regular_face_color_arrays(mesh, indices)
 
         _cuda_timed_stage!(timing, "regular_operator_geometry_transfer") do
             d_face_vertices = CuArray(face_vertices)
@@ -57,8 +46,6 @@ function assemble_regular_galerkin_operators_cuda_regular(
             d_rule_weights = CuArray(rule_weights)
             d_test_indices = CuArray(Int32.(indices))
             d_trial_indices = CuArray(Int32.(indices))
-            d_color_indices = CuArray(color_indices)
-            d_color_offsets = CuArray(color_offsets)
             CUDA.synchronize()
             nothing
         end
@@ -73,9 +60,6 @@ function assemble_regular_galerkin_operators_cuda_regular(
         d_rule_weights = cache.rule_weights
         d_test_indices = cache.test_indices
         d_trial_indices = cache.trial_indices
-        d_color_indices = cache.color_indices
-        d_color_offsets = cache.color_offsets
-        color_count = cache.color_count
     end
 
     slp_re = slp_im = adj_re = adj_im = dlp_re = dlp_im = hyp_re = hyp_im = nothing
@@ -92,98 +76,8 @@ function assemble_regular_galerkin_operators_cuda_regular(
         nothing
     end
 
-    if profile_regular_kernel
-        _profile_regular_thread_sweep!(
-            timing,
-            T,
-            p1_dof_count,
-            dp0_dof_count,
-            d_face_vertices,
-            d_normals,
-            d_areas,
-            d_faces,
-            d_curls,
-            d_test_indices,
-            d_trial_indices,
-            d_rule_points,
-            d_rule_weights,
-            k,
-            face_count,
-            rule_count,
-            total_pairs,
-        )
-        _profile_regular_quadrature_probes!(
-            timing,
-            d_face_vertices,
-            d_normals,
-            d_areas,
-            d_faces,
-            d_curls,
-            d_test_indices,
-            d_trial_indices,
-            d_rule_points,
-            d_rule_weights,
-            k,
-            face_count,
-            rule_count,
-            probe_pair_count,
-            kernel_threads,
-        )
-        _profile_regular_slp_adjoint_colored!(
-            timing,
-            T,
-            p1_dof_count,
-            dp0_dof_count,
-            d_face_vertices,
-            d_normals,
-            d_areas,
-            d_faces,
-            d_color_indices,
-            d_color_offsets,
-            d_trial_indices,
-            d_rule_points,
-            d_rule_weights,
-            k,
-            face_count,
-            rule_count,
-            color_count,
-            kernel_threads,
-            regular_probe_pair_limit,
-        )
-        _profile_regular_split_atomic!(
-            timing,
-            T,
-            p1_dof_count,
-            dp0_dof_count,
-            d_face_vertices,
-            d_normals,
-            d_areas,
-            d_faces,
-            d_curls,
-            d_test_indices,
-            d_trial_indices,
-            d_rule_points,
-            d_rule_weights,
-            k,
-            face_count,
-            rule_count,
-            probe_pair_count,
-            kernel_threads,
-        )
-    else
-        timing !== nothing && begin
-            timing["regular_operator_probe_green_kernel"] = 0.0
-            timing["regular_operator_probe_all_terms_kernel"] = 0.0
-        end
-        _zero_extended_regular_profile_timings!(timing)
-    end
-
     _cuda_timed_stage!(timing, "regular_operator_kernel") do
-        launch_regular_kernel! =
-            regular_assembly_mode == :split_atomic_balanced_multipair ? _launch_regular_split_balanced_multipair_atomic_kernel! :
-            regular_assembly_mode == :split_atomic_slp_hyp_separate ? _launch_regular_split_slp_hyp_separate_atomic_kernel! :
-            _launch_regular_split_balanced_atomic_kernel!
-        launch_regular_kernel!(
+        _launch_regular_split_balanced_multipair_atomic_kernel!(
             slp_re,
             slp_im,
             dlp_re,
@@ -343,9 +237,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
         regular_kernel_shared_memory_bytes=kernel_shmem,
         regular_kernel_qpair_count=rule_count * rule_count,
         regular_kernel_total_pairs=total_pairs,
-        regular_probe_pair_count=probe_pair_count,
         regular_kernel_mode=kernel_mode,
-        regular_assembly_mode=regular_assembly_mode,
-        regular_color_count=color_count,
+        regular_assembly_mode=:split_atomic_balanced_multipair,
     )
 end

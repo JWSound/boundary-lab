@@ -1,0 +1,7 @@
+include(joinpath(@__DIR__, "BeatEngineRocmCommon.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmRegular.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmRegularKernels.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmField.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmSingular.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmOperators.jl"))
+include(joinpath(@__DIR__, "BeatEngineRocmAssembly.jl"))

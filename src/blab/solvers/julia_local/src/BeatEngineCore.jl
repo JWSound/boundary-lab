@@ -9,6 +9,13 @@ catch
     nothing
 end
 
+const AMDGPU_MODULE = try
+    @eval import AMDGPU
+    AMDGPU
+catch
+    nothing
+end
+
 export BoundaryMesh,
     DP0Space,
     P1Space,
@@ -17,10 +24,13 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    build_rocm_regular_assembly_cache,
+    build_rocm_field_evaluation_cache,
     build_field_evaluation_cache,
     build_singular_correction_cache,
     assemble_regular_galerkin_operators_cpu,
     assemble_regular_galerkin_operators_cuda_regular,
+    assemble_regular_galerkin_operators_rocm_regular,
     assemble_regular_galerkin_operators,
     adjacency_info,
     build_dp0_space,
@@ -29,6 +39,7 @@ export BoundaryMesh,
     elements_are_adjacent,
     evaluate_galerkin_field_cpu,
     evaluate_galerkin_field_cuda,
+    evaluate_galerkin_field_rocm,
     fibonacci_sphere,
     helmholtz_adjoint_double_layer_kernel,
     helmholtz_double_layer_kernel,
@@ -56,6 +67,11 @@ export BoundaryMesh,
 function cuda_module()
     CUDA_MODULE === nothing && error("CUDA solve requested, but CUDA.jl could not be loaded.")
     return CUDA_MODULE
+end
+
+function amdgpu_module()
+    AMDGPU_MODULE === nothing && error("ROCm solve requested, but AMDGPU.jl could not be loaded.")
+    return AMDGPU_MODULE
 end
 
 struct BoundaryMesh{T<:AbstractFloat}
@@ -809,20 +825,16 @@ function assemble_regular_galerkin_operators(
     singular_order::Int=2,
     element_indices=eachindex(mesh.faces),
     threaded::Bool=true,
-    use_cuda_regular::Bool=true,
-    cuda_cache=nothing,
-    return_gpu::Bool=true,
-    parallel_quadrature::Bool=true,
+    backend::Symbol=:cuda,
+    device_cache=nothing,
+    return_device::Bool=true,
+    accelerator_quadrature::Bool=true,
     timing=nothing,
     singular_cache=nothing,
-    cuda_singular_cache=nothing,
-    profile_regular_kernel::Bool=false,
-    regular_probe_pair_limit::Int=1_000_000,
-    regular_kernel_threads_override::Union{Nothing,Int}=nothing,
-    regular_assembly_mode::Symbol=:split_atomic_balanced_multipair,
+    device_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
-    if !use_cuda_regular
+    if backend == :cpu
         return assemble_regular_galerkin_operators_cpu(
             mesh,
             p1_space,
@@ -839,29 +851,49 @@ function assemble_regular_galerkin_operators(
         )
     end
 
-    parallel_quadrature || error("Balanced CUDA regular assembly requires parallel quadrature.")
-    regular_assembly_mode in (:split_atomic_balanced, :split_atomic_balanced_multipair, :split_atomic_slp_hyp_separate) || error("Unsupported CUDA regular assembly mode: $(regular_assembly_mode).")
-    return assemble_regular_galerkin_operators_cuda_regular(
-        mesh,
-        p1_space,
-        dp0_space,
-        k,
-        rule;
-        skip_singular=skip_singular,
-        singular_order=singular_order,
-        element_indices=element_indices,
-        cache=cuda_cache,
-        return_gpu=return_gpu,
-        parallel_quadrature=true,
-        timing=timing,
-        singular_cache=singular_cache,
-        cuda_singular_cache=cuda_singular_cache,
-        profile_regular_kernel=profile_regular_kernel,
-        regular_probe_pair_limit=regular_probe_pair_limit,
-        regular_kernel_threads_override=regular_kernel_threads_override,
-        regular_assembly_mode=regular_assembly_mode,
-        symmetry_mode=symmetry_mode,
-    )
+    if backend == :cuda
+        accelerator_quadrature || error("Balanced CUDA regular assembly requires accelerator_quadrature=true.")
+        return assemble_regular_galerkin_operators_cuda_regular(
+            mesh,
+            p1_space,
+            dp0_space,
+            k,
+            rule;
+            skip_singular=skip_singular,
+            singular_order=singular_order,
+            element_indices=element_indices,
+            cache=device_cache,
+            return_gpu=return_device,
+            parallel_quadrature=true,
+            timing=timing,
+            singular_cache=singular_cache,
+            cuda_singular_cache=device_singular_cache,
+            symmetry_mode=symmetry_mode,
+        )
+    end
+
+    if backend == :rocm
+        accelerator_quadrature || error("ROCm regular assembly requires accelerator_quadrature=true.")
+        return assemble_regular_galerkin_operators_rocm_regular(
+            mesh,
+            p1_space,
+            dp0_space,
+            k,
+            rule;
+            skip_singular=skip_singular,
+            singular_order=singular_order,
+            element_indices=element_indices,
+            cache=device_cache,
+            return_device=return_device,
+            accelerator_quadrature=true,
+            timing=timing,
+            singular_cache=singular_cache,
+            rocm_singular_cache=device_singular_cache,
+            symmetry_mode=symmetry_mode,
+        )
+    end
+
+    error("Unsupported BEAT Engine assembly backend: $(backend). Expected :cpu, :cuda, or :rocm.")
 end
 
 function build_cuda_regular_assembly_cache(args...; kwargs...)
@@ -878,6 +910,22 @@ end
 
 function evaluate_galerkin_field_cuda(args...; kwargs...)
     error("CUDA field evaluation requested, but CUDA.jl is not loaded.")
+end
+
+function build_rocm_regular_assembly_cache(args...; kwargs...)
+    error("ROCm regular-pair assembly cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function assemble_regular_galerkin_operators_rocm_regular(args...; kwargs...)
+    error("ROCm regular-pair assembly requested, but AMDGPU.jl is not loaded.")
+end
+
+function build_rocm_field_evaluation_cache(args...; kwargs...)
+    error("ROCm field-evaluation cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function evaluate_galerkin_field_rocm(args...; kwargs...)
+    error("ROCm field evaluation requested, but AMDGPU.jl is not loaded.")
 end
 
 release_operator_storage!(operators) = nothing
@@ -953,6 +1001,10 @@ include(joinpath(@__DIR__, "BeatEngineCpu.jl"))
 
 if CUDA_MODULE !== nothing
     include(joinpath(@__DIR__, "BeatEngineCuda.jl"))
+end
+
+if AMDGPU_MODULE !== nothing
+    include(joinpath(@__DIR__, "BeatEngineRocm.jl"))
 end
 
 end

@@ -17,15 +17,16 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 
 ## Base Requirements
 
-- Windows 10/11 64-bit
+- Windows 10/11 64-bit / Linux / MacOS
 - Python 3.11 or newer
+- Wine is required if using Ath to generate meshes
 
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware, but typically GPU-based solving is the fastest option if available.
+Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -33,7 +34,7 @@ Boundary Lab currently has 3 selectable BEM solver backends in the application p
 * Latest NVIDIA Studio/Game Ready driver recommended
 * [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
-To prepare the Julia environment from the repository root:
+To prepare the Julia environment, from the repository root run:
 
 ```bash
 julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
@@ -42,7 +43,7 @@ julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
 
 GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 
-| Total Elements | Practical VRAM Budget |
+| Total Elements | Estimated VRAM |
 |---:|---:|
 | 1,000 | ~50-100 MB |
 | 2,000 | ~200-300 MB |
@@ -60,7 +61,7 @@ GPU solving VRAM requirements scale quadratically with mesh element count. Below
 * Intel, AMD, or ARM CPU
 * [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
-To prepare the Julia environment from the repository root:
+To prepare the Julia environment, from the repository root run:
 
 ```bash
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
@@ -98,33 +99,41 @@ runs/ath_output
 ```
 
 
-## Run A Solve Server
+## Boundary Lab Server
 
 Boundary Lab can also run a local or LAN-accessible job server that accepts solve
 jobs and streams per-frequency results back as NDJSON events:
 
 ```bash
-blab server --host 127.0.0.1 --port 8765
+blab server --host 127.0.0.1 --port 8765 --solver bempp_cpu
+blab server --host 127.0.0.1 --port 8765 --solver beat_cpu --julia-threads auto
+blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
 ```
 
-To use it from the GUI application, open `Edit > Preferences`, set `Solve Backend` to
-`Server`, and set `Solve Server URL` to the server address. For another machine
-on the LAN, bind the server to that machine's LAN address or `0.0.0.0` and use
+Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
+`beat_cuda`, and `beat_rocm`. ROCm is accepted as a server selector but the ROCm
+BEAT Engine implementation is still a placeholder and will report not implemented
+until that engine path is completed. For BEAT Engine solvers, use
+`--julia-executable` and `--julia-threads` to point the server at the intended
+Julia installation and thread count.
+
+To use it from the GUI application, open `Edit > Preferences`, set `BEM Solver` to
+`Server`, and set `Solve Server URL` to the server address. Use `Check Server` to
+query `/health`; the app uses the advertised capabilities, such as mesh
+symmetry support for feature availability. For another machine on the LAN, bind
+the server to that machine's LAN address or `0.0.0.0` and use
 `http://<server-ip>:8765` in the client. The GUI uploads the solver mesh files
 with each server job, so the server does not need access to the client's local
 paths.
 
-API surface:
-
-- `POST /jobs` submits a solve request with `SimulationConfig` and `frequencies_hz`.
-- `GET /jobs/{job_id}` returns job status and artifact links.
-- `GET /jobs/{job_id}/events?since=0` streams job events as newline-delimited JSON.
-- `POST /jobs/{job_id}/cancel` requests cancellation.
-- `GET /jobs/{job_id}/artifacts/result.npz` downloads the completed result bundle.
+For Docker image deployment with the BEAT Engine CUDA solver, see
+[Docker](docs/Docker.md).
 
 ## Documentation
 
 - [User Guide](docs/User%20Guide.md)
+- [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
+- [CUDA Server Docker Image](docs/Docker.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)

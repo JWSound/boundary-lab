@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
-
 
 AUDIO_FREQ_MIN_HZ = 20
 AUDIO_FREQ_MAX_HZ = 20000
 AUDIO_AXIS_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
 AUDIO_AXIS_LABELS = ["20", "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k"]
 FREQ_SLIDER_STEPS = 1000
+ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0
 LIVE_ISOBAR_ANGLE_SAMPLES = 180
 LIVE_ISOBAR_FREQ_SAMPLES = 90
 FINAL_ISOBAR_ANGLE_SAMPLES = 1000
@@ -67,39 +68,49 @@ def clear_plot_axes(axes) -> None:
 
 def frequency_to_slider_value(freq_hz: int | float) -> int:
     clamped = min(max(float(freq_hz), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-    fraction = (
-        np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)
-    ) / (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
+    fraction = (np.log10(clamped) - np.log10(AUDIO_FREQ_MIN_HZ)) / (
+        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
+    )
     return int(round(fraction * FREQ_SLIDER_STEPS))
 
 
 def slider_value_to_frequency(value: int) -> int:
     fraction = float(value) / FREQ_SLIDER_STEPS
-    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (
-        np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ)
-    )
+    log_freq = np.log10(AUDIO_FREQ_MIN_HZ) + fraction * (np.log10(AUDIO_FREQ_MAX_HZ) - np.log10(AUDIO_FREQ_MIN_HZ))
     return int(round(10.0**log_freq))
 
 
 class IsobarCanvas(FigureCanvas):
-    def __init__(self, title: str, *, left_margin: float = 0.14, right_margin: float = 0.98):
+    def __init__(
+        self,
+        title: str,
+        *,
+        left_margin: float = 0.14,
+        right_margin: float = 0.88,
+        show_colorbar: bool = True,
+    ):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure)
         self.title = title
         self.left_margin = float(left_margin)
         self.right_margin = float(right_margin)
+        self.show_colorbar = bool(show_colorbar)
         self.colors = VisualizerConfig.custom_colors
         self._mesh_artist = None
         self._image_artist = None
         self._line_artist = None
         self._contour_artist = None
+        self._colorbar = None
+        self._colorbar_axes = None
+        self._colorbar_mappable = None
         self._mesh_freqs_hz: np.ndarray | None = None
         self._mesh_angles_deg: np.ndarray | None = None
         self._mesh_values_db: np.ndarray | None = None
         self._mesh_clip: tuple[float, float] | None = None
         self._mesh_shading: str | None = None
         self._mesh_render_mode: str | None = None
+        self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
         self._apply_layout()
@@ -128,6 +139,7 @@ class IsobarCanvas(FigureCanvas):
         self._image_artist = None
         self._line_artist = None
         self._contour_artist = None
+        self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
         self._mesh_values_db = None
@@ -153,6 +165,22 @@ class IsobarCanvas(FigureCanvas):
         self._remove_artist("_mesh_artist")
         self._remove_artist("_image_artist")
 
+    def _remove_colorbar(self) -> None:
+        if self._colorbar is not None:
+            try:
+                self._colorbar.remove()
+            except (AttributeError, KeyError, ValueError):
+                pass
+        elif self._colorbar_axes is not None:
+            try:
+                self._colorbar_axes.remove()
+            except (AttributeError, KeyError, ValueError):
+                pass
+        self._colorbar = None
+        self._colorbar_axes = None
+        self._colorbar_mappable = None
+        self._apply_layout()
+
     def _remove_contour_artist(self) -> None:
         if self._contour_artist is None:
             return
@@ -170,20 +198,27 @@ class IsobarCanvas(FigureCanvas):
     def has_captured_contours(self) -> bool:
         return self._captured_contours is not None
 
-    def _current_contour_levels(self, clip: tuple[float, float], values_db: np.ndarray) -> np.ndarray:
+    def _current_contour_levels(
+        self,
+        clip: tuple[float, float],
+        values_db: np.ndarray,
+        contour_step_db: float,
+    ) -> np.ndarray:
+        if contour_step_db <= 0.0:
+            return np.asarray([], dtype=np.float32)
         clip_min_db, clip_max_db = clip
         finite = values_db[np.isfinite(values_db)]
         if finite.size == 0:
             return np.asarray([], dtype=np.float32)
         data_min = float(np.min(finite))
         data_max = float(np.max(finite))
-        levels = np.arange(np.ceil(clip_min_db / 3.0) * 3.0, clip_max_db + 1.5, 3.0, dtype=np.float32)
-        return levels[
-            (levels > clip_min_db)
-            & (levels < clip_max_db)
-            & (levels > data_min)
-            & (levels < data_max)
-        ]
+        levels = np.arange(
+            np.ceil(clip_min_db / contour_step_db) * contour_step_db,
+            clip_max_db + 0.5 * contour_step_db,
+            contour_step_db,
+            dtype=np.float32,
+        )
+        return levels[(levels > clip_min_db) & (levels < clip_max_db) & (levels > data_min) & (levels < data_max)]
 
     def _redraw_captured_contours(self) -> None:
         self._remove_contour_artist()
@@ -215,7 +250,11 @@ class IsobarCanvas(FigureCanvas):
             or self._mesh_angles_deg.size < 2
         ):
             return False
-        levels = self._current_contour_levels(self._mesh_clip, self._mesh_values_db)
+        levels = self._current_contour_levels(
+            self._mesh_clip,
+            self._mesh_values_db,
+            3.0 if self._mesh_contour_step_db is None else self._mesh_contour_step_db,
+        )
         if levels.size == 0:
             return False
         self._captured_contours = (
@@ -239,6 +278,7 @@ class IsobarCanvas(FigureCanvas):
         angles_deg: np.ndarray,
         clip: tuple[float, float],
         shading: str,
+        contour_step_db: float,
     ) -> bool:
         return (
             (self._mesh_artist is not None or self._image_artist is not None)
@@ -246,6 +286,7 @@ class IsobarCanvas(FigureCanvas):
             and self._mesh_angles_deg is not None
             and self._mesh_clip == clip
             and self._mesh_shading == shading
+            and self._mesh_contour_step_db == contour_step_db
             and self._mesh_render_mode is not None
             and self._mesh_freqs_hz.shape == freqs_hz.shape
             and self._mesh_angles_deg.shape == angles_deg.shape
@@ -253,15 +294,68 @@ class IsobarCanvas(FigureCanvas):
             and np.array_equal(self._mesh_angles_deg, angles_deg)
         )
 
+    def _isobar_colormap(self):
+        return LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
+
+    def _color_boundaries(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
+        if contour_step_db <= 0.0 or clip_max_db <= clip_min_db:
+            return np.asarray([], dtype=np.float32)
+        first = np.ceil(clip_min_db / contour_step_db) * contour_step_db
+        inner = np.arange(first, clip_max_db + 0.5 * contour_step_db, contour_step_db, dtype=np.float32)
+        inner = inner[(inner > clip_min_db) & (inner < clip_max_db)]
+        return np.concatenate(
+            (
+                np.asarray([clip_min_db], dtype=np.float32),
+                inner,
+                np.asarray([clip_max_db], dtype=np.float32),
+            )
+        )
+
+    def _color_mapping(self, clip_min_db: float, clip_max_db: float, contour_step_db: float):
+        cmap = self._isobar_colormap()
+        boundaries = self._color_boundaries(clip_min_db, clip_max_db, contour_step_db)
+        if boundaries.size >= 2:
+            return cmap, BoundaryNorm(boundaries, cmap.N)
+        return cmap, Normalize(vmin=clip_min_db, vmax=clip_max_db)
+
+    def _colorbar_ticks(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
+        tick_step_db = max(ISOBAR_COLORBAR_MIN_TICK_STEP_DB, contour_step_db)
+        start = np.ceil(clip_min_db / tick_step_db) * tick_step_db
+        end = np.floor(clip_max_db / tick_step_db) * tick_step_db
+        if end < start:
+            return np.asarray([clip_min_db, clip_max_db], dtype=np.float32)
+        return np.arange(start, end + 0.5 * tick_step_db, tick_step_db, dtype=np.float32)
+
+    def _update_colorbar(
+        self,
+        clip_min_db: float,
+        clip_max_db: float,
+        contour_step_db: float,
+        cmap,
+        norm,
+    ) -> None:
+        if not self.show_colorbar:
+            self._remove_colorbar()
+            return
+        self._remove_colorbar()
+        self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
+        self._colorbar_mappable.set_array([])
+        self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
+        self._colorbar = self.figure.colorbar(
+            self._colorbar_mappable,
+            cax=self._colorbar_axes,
+        )
+        self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
+        self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
+
     def _image_from_values(
         self,
         clipped: np.ndarray,
         clip_min_db: float,
         clip_max_db: float,
+        contour_step_db: float,
     ) -> np.ndarray:
-        boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
-        cmap = ListedColormap(list(self.colors))
-        norm = BoundaryNorm(boundaries, cmap.N)
+        cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
         return np.asarray(cmap(norm(clipped)), dtype=np.float32)
 
     def update_plot(
@@ -273,20 +367,27 @@ class IsobarCanvas(FigureCanvas):
         clip_max_db: float,
         *,
         shading: str = LIVE_ISOBAR_SHADING,
+        contour_step_db: float = 3.0,
     ) -> None:
         freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
         angles_deg = np.asarray(angles_deg, dtype=np.float32)
         clipped = np.clip(np.asarray(values_db, dtype=np.float32), clip_min_db, clip_max_db)
         clip = (float(clip_min_db), float(clip_max_db))
         shading = str(shading or LIVE_ISOBAR_SHADING)
+        contour_step_db = max(0.0, float(contour_step_db))
         render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")
+            cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
+            self._update_colorbar(clip_min_db, clip_max_db, contour_step_db, cmap, norm)
             if render_mode == "image":
                 self._x_axis_mode = "log_image"
-                image = self._image_from_values(clipped, clip_min_db, clip_max_db)
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading) and self._image_artist is not None:
+                image = np.asarray(cmap(norm(clipped)), dtype=np.float32)
+                if (
+                    self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db)
+                    and self._image_artist is not None
+                ):
                     self._image_artist.set_data(image)
                 else:
                     self._remove_mesh_artists()
@@ -309,15 +410,16 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_clip = clip
                     self._mesh_shading = shading
                     self._mesh_render_mode = render_mode
+                    self._mesh_contour_step_db = contour_step_db
             else:
                 self._x_axis_mode = "frequency"
-                if self._mesh_matches(freqs_hz, angles_deg, clip, shading) and self._mesh_artist is not None:
+                if (
+                    self._mesh_matches(freqs_hz, angles_deg, clip, shading, contour_step_db)
+                    and self._mesh_artist is not None
+                ):
                     self._mesh_artist.set_array(clipped.ravel())
                 else:
                     self._remove_mesh_artists()
-                    boundaries = np.linspace(clip_min_db, clip_max_db, len(self.colors) + 1)
-                    cmap = ListedColormap(list(self.colors))
-                    norm = BoundaryNorm(boundaries, cmap.N)
                     self._mesh_artist = self.axes.pcolormesh(
                         freqs_hz,
                         angles_deg,
@@ -331,6 +433,7 @@ class IsobarCanvas(FigureCanvas):
                     self._mesh_clip = clip
                     self._mesh_shading = shading
                     self._mesh_render_mode = render_mode
+                    self._mesh_contour_step_db = contour_step_db
             self._mesh_values_db = clipped.copy()
         elif freqs_hz.size == 1:
             self._remove_mesh_artists()
@@ -341,6 +444,8 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_clip = None
             self._mesh_shading = None
             self._mesh_render_mode = None
+            self._mesh_contour_step_db = None
+            self._remove_colorbar()
             x_values = np.full_like(angles_deg, float(freqs_hz[0]))
             if self._line_artist is None:
                 (self._line_artist,) = self.axes.plot(
@@ -361,8 +466,23 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_clip = None
             self._mesh_shading = None
             self._mesh_render_mode = None
+            self._mesh_contour_step_db = None
+            self._remove_colorbar()
 
-        self._configure_axes()
+        if self._colorbar is None:
+            self._configure_axes()
+        else:
+            self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+            self.axes.set_xlabel("Frequency (Hz)")
+            self.axes.set_ylabel("Angle (deg)")
+            if self._x_axis_mode == "log_image":
+                apply_log_image_frequency_axis(self.axes)
+            else:
+                apply_audio_frequency_axis(self.axes)
+            self.axes.set_ylim(-180, 180)
+            self.axes.set_yticks(np.arange(-180, 181, 45))
+            self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
+            apply_compact_plot_text(self.axes)
         self._redraw_captured_contours()
         self.draw_idle()
 

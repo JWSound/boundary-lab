@@ -1,5 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 import meshio
 import numpy as np
@@ -10,7 +9,7 @@ pytest.importorskip("PySide6")
 from blab.ath import AthRunResult
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.main_window import MainWindow, STITCHED_MESH_NAME, STITCH_FAILURE_MESSAGE
+from blab.ui.main_window import STITCH_FAILURE_MESSAGE, STITCHED_MESH_NAME, MainWindow
 from blab.ui.project_state import AthScriptState
 
 
@@ -94,9 +93,7 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     window.status_label = StatusStub()
     window._has_solver_meshes = lambda: True
     window._solver_mesh_configs = lambda: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
-    window._stitch_candidate_mesh_configs = lambda: (
-        MeshConfig(name="ath", file=str(mesh_path), scale_factor=0.001),
-    )
+    window._stitch_candidate_mesh_configs = lambda: (MeshConfig(name="ath", file=str(mesh_path), scale_factor=0.001),)
     window._all_radiators = lambda: ()
 
     window._refresh_mesh_preview()
@@ -164,9 +161,7 @@ def test_solver_channels_include_radiator_default_channel_when_missing() -> None
 def test_channel_dialog_channels_include_existing_radiator_channels() -> None:
     window = MainWindow.__new__(MainWindow)
     window._channel_configs = lambda: (ChannelConfig(name="HF", polarity=-1),)
-    window._all_radiators = lambda: (
-        RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),
-    )
+    window._all_radiators = lambda: (RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),)
 
     channels = window._channel_configs_for_current_radiators()
 
@@ -192,7 +187,7 @@ def test_discard_channel_config_dialog_deletes_stale_dialog() -> None:
 
 def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    open_channel_config = source[source.index("def open_channel_config"):source.index("def _set_panel_visible")]
+    open_channel_config = source[source.index("def open_channel_config") : source.index("def _set_panel_visible")]
 
     assert 'self.channel_config_button = QPushButton("Channel Config")' in source
     assert "controls_layout.addWidget(self.mesh_config_button)" in source
@@ -200,7 +195,7 @@ def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
     assert "controls_layout.addWidget(self.source_config_button)" in source
     assert "self.channel_config_button.clicked.connect(self.open_channel_config)" in source
     assert '("channel_config", "Channel Config Panel")' not in source
-    assert 'ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)' in open_channel_config
+    assert "ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)" in open_channel_config
     assert "dialog.show()" in open_channel_config
     assert "dialog.activateWindow()" in open_channel_config
     assert "_make_panel_dock" not in open_channel_config

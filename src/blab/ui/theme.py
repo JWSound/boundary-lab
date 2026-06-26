@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
 from blab.ui.settings import normalize_theme
+
+APP_ROOT = Path(__file__).resolve().parents[3]
 
 
 def apply_application_theme(theme: object) -> None:
@@ -101,6 +105,9 @@ def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QCol
     disabled = QColor(text_color)
     disabled.setAlpha(150)
     disabled_css = f"rgba({disabled.red()}, {disabled.green()}, {disabled.blue()}, {disabled.alpha()})"
+    arrow_variant = "light" if text_color.lightness() > 128 else "dark"
+    spin_arrow_up = (APP_ROOT / "assets" / f"spin_arrow_up_{arrow_variant}.svg").as_posix()
+    spin_arrow_down = (APP_ROOT / "assets" / f"spin_arrow_down_{arrow_variant}.svg").as_posix()
 
     return f"""
         QWidget {{
@@ -121,6 +128,32 @@ def _theme_stylesheet(text_color: QColor, window_color: QColor, base_color: QCol
             border: 1px solid {border};
             selection-background-color: {selected};
             selection-color: {selected_text};
+        }}
+        QSpinBox, QDoubleSpinBox {{
+            padding-right: 20px;
+        }}
+        QSpinBox::up-button, QDoubleSpinBox::up-button {{
+            subcontrol-origin: border;
+            subcontrol-position: top right;
+            width: 18px;
+            border-left: 1px solid {border};
+            border-bottom: 1px solid {border};
+        }}
+        QSpinBox::down-button, QDoubleSpinBox::down-button {{
+            subcontrol-origin: border;
+            subcontrol-position: bottom right;
+            width: 18px;
+            border-left: 1px solid {border};
+        }}
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+            image: url("{spin_arrow_up}");
+            width: 8px;
+            height: 8px;
+        }}
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+            image: url("{spin_arrow_down}");
+            width: 8px;
+            height: 8px;
         }}
         QHeaderView::section {{
             background-color: {window};

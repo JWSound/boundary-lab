@@ -39,10 +39,6 @@ Base.@kwdef mutable struct BenchmarkConfig
     profile::String = "none"
     output::String = joinpath(@__DIR__, "..", "results", "benchmark_cuda_sample.json")
     return_gpu::Bool = true
-    profile_regular_kernel::Bool = false
-    regular_probe_pair_limit::Int = 1_000_000
-    regular_kernel_threads::Union{Nothing,Int} = nothing
-    regular_assembly_mode::Symbol = :split_atomic_balanced_multipair
     verbose::Bool = false
 end
 
@@ -65,10 +61,6 @@ function print_usage()
       --skip-field                   Do not evaluate the radiated field.
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
       --json PATH                    Write JSON results. Default: results/benchmark_cuda_sample.json
-      --profile-regular-kernel       Run extra CUDA regular-kernel probe launches for diagnostics.
-      --regular-probe-pair-limit N   Max element pairs for lightweight probe kernels. 0 means full mesh.
-      --regular-kernel-threads N     Override CUDA regular pair assembly threads per block.
-      --regular-assembly-mode MODE   multipair|balanced|slp_hyp_split regular split kernel grouping. Default: multipair.
       --verbose                      Print every timing bucket in the console summary.
       --help                         Print this message.
     """)
@@ -112,27 +104,6 @@ function parse_args(args)
             i += 1; config.profile = lowercase(args[i])
         elseif arg == "--json"
             i += 1; config.output = args[i]
-        elseif arg == "--profile-regular-kernel"
-            config.profile_regular_kernel = true
-        elseif arg == "--regular-probe-pair-limit"
-            i += 1; config.regular_probe_pair_limit = parse(Int, args[i])
-        elseif arg == "--regular-kernel-threads"
-            i += 1
-            config.regular_kernel_threads = parse(Int, args[i])
-            config.regular_kernel_threads > 0 || error("--regular-kernel-threads must be positive.")
-            ispow2(config.regular_kernel_threads) || error("--regular-kernel-threads must be a power of two for the current reduction kernels.")
-        elseif arg == "--regular-assembly-mode"
-            i += 1
-            mode = lowercase(args[i])
-            if mode == "balanced" || mode == "split_atomic_balanced"
-                config.regular_assembly_mode = :split_atomic_balanced
-            elseif mode == "multipair" || mode == "split_atomic_balanced_multipair"
-                config.regular_assembly_mode = :split_atomic_balanced_multipair
-            elseif mode == "slp_hyp_split" || mode == "split_atomic_slp_hyp_separate"
-                config.regular_assembly_mode = :split_atomic_slp_hyp_separate
-            else
-                error("--regular-assembly-mode must be balanced, multipair, or slp_hyp_split.")
-            end
         elseif arg == "--verbose"
             config.verbose = true
         else
@@ -230,45 +201,21 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             skip_singular=true,
             singular_order=config.singular_order,
             element_indices=element_indices,
-            use_cuda_regular=true,
-            cuda_cache=cache,
-            return_gpu=true,
-            parallel_quadrature=true,
+            backend=:cuda,
+            device_cache=cache,
+            return_device=true,
+            accelerator_quadrature=true,
             timing=timings,
             singular_cache=singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
-            profile_regular_kernel=config.profile_regular_kernel,
-            regular_probe_pair_limit=config.regular_probe_pair_limit,
-            regular_kernel_threads_override=config.regular_kernel_threads,
-            regular_assembly_mode=config.regular_assembly_mode,
+            device_singular_cache=cuda_singular_cache,
         )
     end
-    regular_probe_keys = [
-        "regular_operator_thread_sweep_32",
-        "regular_operator_thread_sweep_64",
-        "regular_operator_thread_sweep_128",
-        "regular_operator_probe_green_kernel",
-        "regular_operator_probe_all_terms_kernel",
-        "regular_operator_probe_slp_kernel",
-        "regular_operator_probe_adjoint_kernel",
-        "regular_operator_probe_dlp_kernel",
-        "regular_operator_probe_hypersingular_kernel",
-        "regular_operator_probe_slp_adjoint_colored_kernel",
-        "regular_operator_probe_split_slp_adjoint_atomic_kernel",
-        "regular_operator_probe_split_dlp_hyp_atomic_kernel",
-        "regular_operator_probe_split_slp_hyp_atomic_kernel",
-        "regular_operator_probe_split_dlp_adjoint_atomic_kernel",
-    ]
-    regular_probe_total = sum(get(timings, key, 0.0) for key in regular_probe_keys)
-    timings["regular_operator_profile_probe_total"] = regular_probe_total
-    timings["regular_operator_assembly_without_probes"] = timings["regular_operator_assembly"] - regular_probe_total
 
     singular_pairs = timed_stage!(timings, "singular_corrections") do
         add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k, config.singular_order, element_indices, singular_cache, cuda_singular_cache, cache)
     end
 
     timings["operator_total_assembly"] = timings["regular_operator_assembly"] + timings["singular_corrections"]
-    timings["operator_total_assembly_without_probes"] = timings["regular_operator_assembly_without_probes"] + timings["singular_corrections"]
     skipped_pairs = max(get(operators, :skipped_pairs, 0) - singular_pairs, 0)
     return merge(operators, (singular_pairs=singular_pairs, skipped_pairs=skipped_pairs))
 end
@@ -400,12 +347,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "regular_kernel_shared_memory_bytes" => get(operators, :regular_kernel_shared_memory_bytes, nothing),
         "regular_kernel_qpair_count" => get(operators, :regular_kernel_qpair_count, nothing),
         "regular_kernel_total_pairs" => get(operators, :regular_kernel_total_pairs, nothing),
-        "regular_probe_pair_count" => get(operators, :regular_probe_pair_count, nothing),
         "regular_kernel_mode" => get(operators, :regular_kernel_mode, nothing),
         "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :split_atomic_balanced_multipair)),
-        "regular_color_count" => get(operators, :regular_color_count, nothing),
-        "profile_regular_kernel" => config.profile_regular_kernel,
-        "regular_probe_pair_limit" => config.regular_probe_pair_limit,
         "pressure_norm" => pressure === nothing ? nothing : Float64(norm(pressure)),
         "field_norm" => field_norm,
         "timings_seconds" => timings,
@@ -506,13 +449,8 @@ function print_summary(payload)
     key_stages = [
         "total_seconds",
         "operator_total_assembly",
-        "operator_total_assembly_without_probes",
         "regular_operator_assembly",
-        "regular_operator_assembly_without_probes",
         "regular_operator_kernel",
-        "regular_operator_profile_probe_total",
-        "regular_operator_probe_split_atomic_total",
-        "regular_operator_probe_split_balanced_atomic_total",
         "singular_corrections",
         "singular_correction_compute_scatter",
         "solve_total",
@@ -550,10 +488,6 @@ function benchmark_payload(config::BenchmarkConfig)
         "skip_solve" => config.skip_solve,
         "skip_field" => config.skip_field,
         "profile" => config.profile,
-        "profile_regular_kernel" => config.profile_regular_kernel,
-        "regular_probe_pair_limit" => config.regular_probe_pair_limit,
-        "regular_kernel_threads" => config.regular_kernel_threads,
-        "regular_assembly_mode" => string(config.regular_assembly_mode),
         "verbose" => config.verbose,
     )
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -38,12 +38,10 @@ from PySide6.QtWidgets import (
 from blab import __version__
 from blab.ath import (
     AthRunResult,
-    clean_ath_mesh_output,
     clean_ath_reduced_mesh_output,
     detect_ath_radiators,
     find_physical_tag_by_name,
     read_surface_physical_names,
-    run_ath,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
@@ -58,8 +56,10 @@ from blab.live import (
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
 from blab.plotting import VisualizerConfig
 from blab.postprocess import PrepConfig
+from blab.solvers.http_server import server_health_supports_symmetry
 from blab.solvers.registry import backend_info
-from blab.symmetry import SymmetryValidationError, effective_symmetry_for_backend, validate_reduced_mesh_configs
+from blab.symmetry import SymmetryValidationError, validate_reduced_mesh_configs
+from blab.ui.ath_worker import AthGenerationWorker
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import (
     ChannelConfigDialog,
@@ -68,6 +68,12 @@ from blab.ui.dialogs import (
     MeshDialogEntry,
     PreferencesDialog,
     SourceConfigDialog,
+)
+from blab.ui.main_window_widgets import (
+    AthScriptEditor,
+    DockTitleBar,
+    PlotEntry,
+    format_frequency_solve_timings,
 )
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
@@ -84,6 +90,12 @@ from blab.ui.plots import (
     frequency_to_slider_value,
     slider_value_to_frequency,
 )
+from blab.ui.project_history import (
+    clear_recent_projects,
+    load_recent_project_paths,
+    remember_recent_project,
+    remove_recent_project,
+)
 from blab.ui.project_io import (
     PROJECT_DEFAULT_NAME,
     PROJECT_FILE_FILTER,
@@ -92,22 +104,16 @@ from blab.ui.project_io import (
     read_project_file,
     write_project_file,
 )
-from blab.ui.project_history import (
-    clear_recent_projects,
-    load_recent_project_paths,
-    remember_recent_project,
-    remove_recent_project,
-)
 from blab.ui.project_state import (
     AthScriptState,
     default_scripts,
     new_script,
     replace_script,
-    script_from_payload,
     script_to_payload,
     scripts_from_payload,
     unique_script_name,
 )
+from blab.ui.server_health_worker import ServerHealthCheckWorker
 from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
@@ -115,11 +121,11 @@ from blab.ui.settings import (
     balloon_sampling_points,
     live_plot_angle_samples,
     live_plot_freq_samples,
-    settings_int,
     load_gui_preferences,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
     save_gui_preferences,
+    settings_int,
 )
 from blab.ui.solve_worker import SolveWorker
 from blab.ui.source_channel_config import (
@@ -135,14 +141,7 @@ from blab.ui.source_channel_config import (
     save_source_config,
     save_source_config_by_name,
 )
-from blab.ui.main_window_widgets import (
-    AthScriptEditor,
-    DockTitleBar,
-    PlotEntry,
-    format_frequency_solve_timings,
-)
 from blab.ui.theme import apply_application_theme
-
 
 ATH_MESH_NAME = "ath"
 STITCHED_MESH_NAME = "stitched"
@@ -187,6 +186,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, startup_status: Callable[[str], None] | None = None):
         super().__init__()
+
         def startup(stage: str) -> None:
             if startup_status is not None:
                 startup_status(stage)
@@ -199,18 +199,27 @@ class MainWindow(QMainWindow):
         self.stitch_imported_meshes = False
         self.symmetry = "off"
         self.preferences = self._load_preferences()
+        self.server_health_payload: dict | None = None
+        self.server_health_url: str | None = None
+        self.server_health_thread: QThread | None = None
+        self.server_health_worker: ServerHealthCheckWorker | None = None
         self._apply_theme()
         self.ath_scripts: tuple[AthScriptState, ...] = default_scripts("")
         self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
-        self.balloon_window: QDialog | None = None
+        self.balloon_window: QWidget | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
         self._project_clean_payload: dict | None = None
         self.solve_thread: QThread | None = None
         self.solve_worker: SolveWorker | None = None
+        self.ath_thread: QThread | None = None
+        self.ath_worker: AthGenerationWorker | None = None
+        self.ath_generation_script_id: str | None = None
+        self.ath_generation_mesh_name: str | None = None
+        self.ath_generation_cancel_requested = False
         self.solve_expected_count = 0
         self.solve_failed = False
         self.solve_started_at: float | None = None
@@ -253,17 +262,19 @@ class MainWindow(QMainWindow):
         self.source_config_button.setEnabled(self._has_solver_meshes())
 
         freq_min = min(max(settings_int(self.settings, "solve/freq_min_hz", 200), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-        freq_max = min(max(settings_int(self.settings, "solve/freq_max_hz", 20000), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
-        freq_count = min(max(settings_int(self.settings, "solve/freq_count", 41), 3), 161)
+        freq_max = min(
+            max(settings_int(self.settings, "solve/freq_max_hz", 20000), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ
+        )
+        freq_count = min(max(settings_int(self.settings, "solve/freq_count", 41), 3), 200)
 
         self.freq_min_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_min))
         self.freq_max_slider = self._make_slider(0, FREQ_SLIDER_STEPS, frequency_to_slider_value(freq_max))
-        self.freq_count_slider = self._make_slider(3, 161, freq_count)
+        self.freq_count_slider = self._make_slider(3, 200, freq_count)
         self.freq_count_slider.setSingleStep(2)
 
         self.freq_min_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_min)
         self.freq_max_spin = self._make_spin(AUDIO_FREQ_MIN_HZ, AUDIO_FREQ_MAX_HZ, freq_max)
-        self.freq_count_spin = self._make_spin(3, 161, freq_count)
+        self.freq_count_spin = self._make_spin(3, 200, freq_count)
 
         self.status_label = QLabel("Ready")
         startup("Creating plot panels...")
@@ -327,6 +338,7 @@ class MainWindow(QMainWindow):
         self._restore_window_state()
         startup("Starting new project...")
         self.new_project()
+        QTimer.singleShot(0, self._check_configured_server_health_on_startup)
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)
@@ -526,9 +538,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(widget)
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
         dock.setFeatures(
-            QDockWidget.DockWidgetMovable
-            | QDockWidget.DockWidgetFloatable
-            | QDockWidget.DockWidgetClosable
+            QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         )
         dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))
         return dock
@@ -547,9 +557,7 @@ class MainWindow(QMainWindow):
 
         self.workspace = QMainWindow()
         self.workspace.setDockOptions(
-            QMainWindow.AllowNestedDocks
-            | QMainWindow.AllowTabbedDocks
-            | QMainWindow.AnimatedDocks
+            QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.AnimatedDocks
         )
         self.editor_dock = self._make_panel_dock("ath_editor_dock", "Ath Editor", self.editor_container)
         self.preview_dock = self._make_panel_dock("mesh_preview_dock", "Mesh Preview", self.preview)
@@ -599,7 +607,9 @@ class MainWindow(QMainWindow):
             action = self.plot_view_actions.get(entry.plot_id)
             if action is not None:
                 action.toggled.connect(lambda checked, plot_id=entry.plot_id: self._set_plot_visible(plot_id, checked))
-                dock.visibilityChanged.connect(lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id))
+                dock.visibilityChanged.connect(
+                    lambda _visible, plot_id=entry.plot_id: self._sync_plot_view_action(plot_id)
+                )
 
         controls = QFrame()
         controls_layout = QHBoxLayout(controls)
@@ -631,7 +641,7 @@ class MainWindow(QMainWindow):
     def _wire_controls(self) -> None:
         self.generate_button.clicked.connect(self.generate_geometry)
         self.solve_button.clicked.connect(self.start_solve)
-        self.cancel_button.clicked.connect(self.cancel_solve)
+        self.cancel_button.clicked.connect(self.cancel_current_operation)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
         self.source_config_button.clicked.connect(self.open_source_config)
@@ -709,7 +719,9 @@ class MainWindow(QMainWindow):
             editor = AthScriptEditor()
             editor.setFont(QFont("Consolas", 10))
             editor.setPlainText(script.config_text)
-            editor.textChanged.connect(lambda script_id=script.id, editor=editor: self._update_script_text(script_id, editor))
+            editor.textChanged.connect(
+                lambda script_id=script.id, editor=editor: self._update_script_text(script_id, editor)
+            )
             editor.configDropped.connect(
                 lambda path, script_id=script.id: self._import_config_path(Path(path), script_id=script_id)
             )
@@ -781,7 +793,9 @@ class MainWindow(QMainWindow):
         script = self.ath_scripts[index]
         self.ath_scripts = tuple(item for item in self.ath_scripts if item.id != script.id)
         self.ath_results_by_script_id.pop(script.id, None)
-        self.active_ath_script_id = self.ath_scripts[min(index, len(self.ath_scripts) - 1)].id if self.ath_scripts else None
+        self.active_ath_script_id = (
+            self.ath_scripts[min(index, len(self.ath_scripts) - 1)].id if self.ath_scripts else None
+        )
         self._rebuild_ath_script_tabs()
         self.mesh_state_changed.emit("ath_script_removed")
         self.solve_results_invalidated.emit("ath_script_removed")
@@ -943,7 +957,9 @@ class MainWindow(QMainWindow):
         cleaned_file = (
             None
             if mesh.cleaned_file is None
-            else str(Path(mesh.cleaned_file).resolve()) if absolute_paths else mesh.cleaned_file
+            else str(Path(mesh.cleaned_file).resolve())
+            if absolute_paths
+            else mesh.cleaned_file
         )
         return {
             "name": mesh.name,
@@ -991,14 +1007,10 @@ class MainWindow(QMainWindow):
         generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
         for script, result in tuple(self._enabled_ath_results()):
             updated = [
-                replace(radiator, mesh=script.mesh_name)
-                for radiator in radiators
-                if radiator.mesh == script.mesh_name
+                replace(radiator, mesh=script.mesh_name) for radiator in radiators if radiator.mesh == script.mesh_name
             ]
             self.ath_results_by_script_id[script.id] = replace(result, radiators=tuple(updated))
-        self.imported_radiators = tuple(
-            radiator for radiator in radiators if radiator.mesh not in generated_mesh_names
-        )
+        self.imported_radiators = tuple(radiator for radiator in radiators if radiator.mesh not in generated_mesh_names)
 
     def _mesh_entries_from_payload(self, payload: object) -> tuple[MeshDialogEntry, ...]:
         if not isinstance(payload, list):
@@ -1040,10 +1052,7 @@ class MainWindow(QMainWindow):
                 raise FileNotFoundError(f"Imported mesh not found: {source_path}")
 
             cleaned_path = Path(mesh.cleaned_file) if mesh.cleaned_file else self._cleaned_imported_mesh_path(mesh)
-            if (
-                not cleaned_path.exists()
-                or source_path.stat().st_mtime > cleaned_path.stat().st_mtime
-            ):
+            if not cleaned_path.exists() or source_path.stat().st_mtime > cleaned_path.stat().st_mtime:
                 cleaned_path.parent.mkdir(parents=True, exist_ok=True)
                 clean_mesh_file(
                     str(source_path),
@@ -1057,15 +1066,87 @@ class MainWindow(QMainWindow):
             cleaned_meshes.append(replace(mesh, cleaned_file=str(cleaned_path)))
         return tuple(cleaned_meshes)
 
+    def _server_health_matches_preferences(self, preferences: GuiPreferences | None = None) -> bool:
+        prefs = preferences or self.preferences
+        if prefs.solve_backend != "server" or self.server_health_payload is None or self.server_health_url is None:
+            return False
+        return self.server_health_url.rstrip("/") == prefs.solve_server_url.rstrip("/")
+
+    def _backend_supports_symmetry(
+        self,
+        backend_id: str,
+        *,
+        preferences: GuiPreferences | None = None,
+        server_health_payload: dict | None = None,
+    ) -> bool:
+        if backend_id != "server":
+            return backend_info(backend_id).capabilities.supports_symmetry
+        if server_health_payload is not None:
+            return server_health_supports_symmetry(server_health_payload)
+        if self._server_health_matches_preferences(preferences):
+            return server_health_supports_symmetry(self.server_health_payload)
+        return False
+
+    def _effective_symmetry_for_preferences(
+        self,
+        symmetry: str,
+        preferences: GuiPreferences,
+        *,
+        server_health_payload: dict | None = None,
+    ) -> str:
+        if symmetry == "off" or self._backend_supports_symmetry(
+            preferences.solve_backend,
+            preferences=preferences,
+            server_health_payload=server_health_payload,
+        ):
+            return symmetry
+        return "off"
+
     def _selected_backend_supports_symmetry(self) -> bool:
-        return backend_info(self.preferences.solve_backend).capabilities.supports_symmetry
+        return self._backend_supports_symmetry(self.preferences.solve_backend)
 
     def _disable_symmetry_if_backend_unsupported(self) -> bool:
-        effective_symmetry = effective_symmetry_for_backend(self.symmetry, self.preferences.solve_backend)
+        effective_symmetry = self._effective_symmetry_for_preferences(self.symmetry, self.preferences)
         if effective_symmetry == self.symmetry:
             return False
         self.symmetry = effective_symmetry
         return True
+
+    @Slot()
+    def _check_configured_server_health_on_startup(self) -> None:
+        if self.preferences.solve_backend != "server" or self.server_health_thread is not None:
+            return
+        worker = ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)
+        thread = QThread(self)
+        self.server_health_thread = thread
+        self.server_health_worker = worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._on_startup_server_health_succeeded)
+        worker.failed.connect(lambda _message: None)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_startup_server_health_finished)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    @Slot(str, object)
+    def _on_startup_server_health_succeeded(self, server_url: str, payload: dict) -> None:
+        if self.preferences.solve_backend != "server":
+            return
+        normalized_url = server_url.rstrip("/")
+        if normalized_url != self.preferences.solve_server_url.rstrip("/"):
+            return
+        previously_supported = self._selected_backend_supports_symmetry()
+        self.server_health_payload = payload
+        self.server_health_url = normalized_url
+        if self._selected_backend_supports_symmetry() != previously_supported:
+            self.mesh_state_changed.emit("server_health_checked")
+
+    @Slot()
+    def _on_startup_server_health_finished(self) -> None:
+        self.server_health_thread = None
+        self.server_health_worker = None
 
     def _imported_mesh_needs_reload(self, mesh: MeshDialogEntry) -> bool:
         if not mesh.enabled:
@@ -1269,8 +1350,7 @@ class MainWindow(QMainWindow):
 
         for mesh_index, mesh_cfg in enumerate(self._stitch_candidate_mesh_configs()):
             names_by_tag = {
-                tag: surface_name
-                for surface_name, tag in read_surface_physical_names(Path(mesh_cfg.file)).items()
+                tag: surface_name for surface_name, tag in read_surface_physical_names(Path(mesh_cfg.file)).items()
             }
             for old_tag in self._used_surface_tags_for_mesh(mesh_cfg):
                 surface_name = names_by_tag.get(old_tag, f"mesh{mesh_index + 1}_surface_{old_tag}")
@@ -1364,8 +1444,7 @@ class MainWindow(QMainWindow):
                 self.preview.clear()
                 return
             surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file))
-                for mesh_cfg in mesh_configs
+                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
             }
             self.preview.load_mesh_configs(
                 mesh_configs,
@@ -1389,8 +1468,7 @@ class MainWindow(QMainWindow):
                 self.preview.clear()
                 return
             surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file))
-                for mesh_cfg in mesh_configs
+                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
             }
             self.preview.load_mesh_configs(
                 mesh_configs,
@@ -1405,7 +1483,9 @@ class MainWindow(QMainWindow):
     def _load_source_config_by_name(self) -> dict[str, dict]:
         return load_source_config_by_name(self.settings)
 
-    def _save_source_config(self, surface_tags: dict[str, tuple[str, int]], radiators: tuple[RadiatorConfig, ...]) -> None:
+    def _save_source_config(
+        self, surface_tags: dict[str, tuple[str, int]], radiators: tuple[RadiatorConfig, ...]
+    ) -> None:
         save_source_config(self.settings, surface_tags, radiators)
 
     def _load_channel_config_by_name(self) -> dict[str, dict]:
@@ -1511,7 +1591,11 @@ class MainWindow(QMainWindow):
     def _import_config_path(self, path: Path, *, script_id: str | None = None) -> None:
         try:
             config_text = path.read_text(encoding="utf-8")
-            script = next((item for item in self.ath_scripts if item.id == script_id), None) if script_id else self._active_script()
+            script = (
+                next((item for item in self.ath_scripts if item.id == script_id), None)
+                if script_id
+                else self._active_script()
+            )
             if script is None:
                 script = new_script(unique_script_name(path.stem, self.ath_scripts), config_text)
                 self.ath_scripts = (*self.ath_scripts, script)
@@ -1684,14 +1768,18 @@ class MainWindow(QMainWindow):
             fallback_config_text=str(payload.get("ath_config_text", "")),
         )
         active_id = payload.get("active_ath_script_id")
-        self.active_ath_script_id = active_id if any(script.id == active_id for script in self.ath_scripts) else (
-            self.ath_scripts[0].id if self.ath_scripts else None
+        self.active_ath_script_id = (
+            active_id
+            if any(script.id == active_id for script in self.ath_scripts)
+            else (self.ath_scripts[0].id if self.ath_scripts else None)
         )
         self.ath_results_by_script_id = {}
         for script in self.ath_scripts:
             result = self._result_from_script_state(script)
             if result is not None:
-                self.ath_results_by_script_id[script.id] = self._apply_saved_source_config_to_result(result, script.mesh_name)
+                self.ath_results_by_script_id[script.id] = self._apply_saved_source_config_to_result(
+                    result, script.mesh_name
+                )
         self._rebuild_ath_script_tabs()
         self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
         self.stitch_imported_meshes = bool(payload.get("stitch_imported_meshes", False))
@@ -1816,6 +1904,9 @@ class MainWindow(QMainWindow):
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
                 polar_smoothing=self.preferences.polar_smoothing,
+                raw_balloon_data_provider=lambda: (
+                    None if self.live_dataset is None else self.live_dataset.as_balloon_raw_bundle()
+                ),
                 parent=self,
             )
             self.balloon_window.show()
@@ -1831,15 +1922,35 @@ class MainWindow(QMainWindow):
             return
         preferences = dialog.preferences()
         dialog.deleteLater()
-        symmetry_will_be_disabled = effective_symmetry_for_backend(self.symmetry, preferences.solve_backend) != self.symmetry
-        requires_invalidation = (
-            symmetry_will_be_disabled
-            or preferences_require_solve_invalidation(previous_preferences, preferences)
+        checked_server_health = None
+        if dialog.server_health_payload is not None and dialog.server_health_url == preferences.solve_server_url.rstrip(
+            "/"
+        ):
+            checked_server_health = dialog.server_health_payload
+        symmetry_will_be_disabled = (
+            self._effective_symmetry_for_preferences(
+                self.symmetry,
+                preferences,
+                server_health_payload=checked_server_health,
+            )
+            != self.symmetry
+        )
+        requires_invalidation = symmetry_will_be_disabled or preferences_require_solve_invalidation(
+            previous_preferences, preferences
         )
         if requires_invalidation and not self._confirm_clear_solved_data():
             return
 
         self.preferences = preferences
+        if checked_server_health is not None and preferences.solve_backend == "server":
+            self.server_health_payload = checked_server_health
+            self.server_health_url = preferences.solve_server_url.rstrip("/")
+        elif (
+            preferences.solve_backend != previous_preferences.solve_backend
+            or preferences.solve_server_url != previous_preferences.solve_server_url
+        ):
+            self.server_health_payload = None
+            self.server_health_url = None
         self._save_preferences()
         symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)
@@ -1965,15 +2076,11 @@ class MainWindow(QMainWindow):
         channels = tuple(channels)
         channel_config_changed = channels != self._channel_configs()
         previous_radiator_assignments = tuple(
-            (radiator.mesh, radiator.tag, radiator.channel)
-            for radiator in self._all_radiators()
+            (radiator.mesh, radiator.tag, radiator.channel) for radiator in self._all_radiators()
         )
         valid_names = {channel.name for channel in channels}
         fallback = channels[0].name
-        radiator_assignments_changed = any(
-            radiator.channel not in valid_names
-            for radiator in self._all_radiators()
-        )
+        radiator_assignments_changed = any(radiator.channel not in valid_names for radiator in self._all_radiators())
         can_resynthesize = (
             not radiator_assignments_changed
             and self.live_dataset is not None
@@ -1999,8 +2106,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         current_radiator_assignments = tuple(
-            (radiator.mesh, radiator.tag, radiator.channel)
-            for radiator in self._all_radiators()
+            (radiator.mesh, radiator.tag, radiator.channel) for radiator in self._all_radiators()
         )
         radiator_assignments_changed = current_radiator_assignments != previous_radiator_assignments
         self.source_config_changed.emit("channel_config_changed")
@@ -2029,7 +2135,9 @@ class MainWindow(QMainWindow):
             self._show_stitch_or_generic_error("Source config failed", exc)
             return
 
-        dialog = SourceConfigDialog(surface_tags, self._all_radiators(), self._channel_configs_for_current_radiators(), self)
+        dialog = SourceConfigDialog(
+            surface_tags, self._all_radiators(), self._channel_configs_for_current_radiators(), self
+        )
         if dialog.exec() != QDialog.Accepted:
             return
 
@@ -2047,51 +2155,119 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def generate_geometry(self) -> None:
+        if self.ath_worker is not None or self.solve_worker is not None:
+            return
         script = self._active_script()
         if script is None:
             QMessageBox.warning(self, "No Ath script", "Add an Ath script before generating.")
             return
         case_name = f"{script.mesh_name}_{script.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_root = ATH_OUTPUT_ROOT
-        self.solve_results_invalidated.emit("geometry_generation_started")
-        self.status_label.setText(f"Generating {script.name}...")
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self._ensure_ath_runtime_config()
-            raw_result = run_ath(
-                ath_exe=self._find_ath_exe(),
-                config_text=script.config_text,
-                run_root=run_root,
-                case_name=case_name,
-            )
-            self.status_label.setText("Cleaning generated mesh...")
-            result = self._apply_saved_source_config_to_result(clean_ath_mesh_output(raw_result), script.mesh_name)
-            self.ath_results_by_script_id[script.id] = result
-            self.ath_scripts = replace_script(
-                self.ath_scripts,
-                script.id,
-                output_dir=str(result.output_dir),
-                msh_path=str(result.msh_path),
-                cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
-                config_path=str(result.config_path),
-            )
-            self.mesh_state_changed.emit("ath_mesh_generated")
-            self.status_label.setText(f"Generated and cleaned {result.output_dir}")
-            self._show_mesh_quality_warning(result)
+            ath_exe = self._find_ath_exe()
         except Exception as exc:
             self.status_label.setText("Generate failed")
             QMessageBox.critical(self, "Ath generation failed", str(exc))
-        finally:
-            QApplication.restoreOverrideCursor()
+            return
+
+        self.solve_results_invalidated.emit("geometry_generation_started")
+        self.status_label.setText(f"Generating {script.name}...")
+        self.solve_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self.mesh_config_button.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
+        self.source_config_button.setEnabled(False)
+        self.cancel_button.setEnabled(False)
+        self._set_export_plot_actions_enabled(False)
+        self.export_polar_data_action.setEnabled(False)
+        self._set_contour_button_states()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        self.ath_generation_script_id = script.id
+        self.ath_generation_mesh_name = script.mesh_name
+        self.ath_generation_cancel_requested = False
+        self.ath_thread = QThread(self)
+        self.ath_worker = AthGenerationWorker(
+            ath_exe=ath_exe,
+            config_text=script.config_text,
+            run_root=run_root,
+            case_name=case_name,
+        )
+        self.ath_worker.moveToThread(self.ath_thread)
+        self.ath_thread.started.connect(self.ath_worker.run)
+        self.ath_worker.generated.connect(self._on_ath_generated)
+        self.ath_worker.status.connect(self.status_label.setText)
+        self.ath_worker.failed.connect(self._on_ath_generation_failed)
+        self.ath_worker.cancelled.connect(self._on_ath_generation_cancelled)
+        self.ath_worker.finished.connect(self._on_ath_generation_finished)
+        self.ath_worker.finished.connect(self.ath_thread.quit)
+        self.ath_worker.finished.connect(self.ath_worker.deleteLater)
+        self.ath_thread.finished.connect(self.ath_thread.deleteLater)
+        self.ath_thread.start()
+        QTimer.singleShot(3000, self._enable_ath_cancel_if_active)
+
+    @Slot()
+    def _enable_ath_cancel_if_active(self) -> None:
+        if self.ath_worker is not None and not self.ath_generation_cancel_requested:
+            self.cancel_button.setEnabled(True)
+
+    @Slot(object)
+    def _on_ath_generated(self, generated_result: AthRunResult) -> None:
+        script_id = self.ath_generation_script_id
+        mesh_name = self.ath_generation_mesh_name
+        if script_id is None or mesh_name is None:
+            return
+        result = self._apply_saved_source_config_to_result(generated_result, mesh_name)
+        self.ath_results_by_script_id[script_id] = result
+        self.ath_scripts = replace_script(
+            self.ath_scripts,
+            script_id,
+            output_dir=str(result.output_dir),
+            msh_path=str(result.msh_path),
+            cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
+            config_path=str(result.config_path),
+        )
+        self.mesh_state_changed.emit("ath_mesh_generated")
+        self.status_label.setText(f"Generated and cleaned {result.output_dir}")
+        self._show_mesh_quality_warning(result)
+
+    @Slot(str)
+    def _on_ath_generation_failed(self, message: str) -> None:
+        self.status_label.setText("Generate failed")
+        QMessageBox.critical(self, "Ath generation failed", message)
+
+    @Slot()
+    def _on_ath_generation_cancelled(self) -> None:
+        self.status_label.setText("Ath generation stopped")
+
+    @Slot()
+    def _on_ath_generation_finished(self) -> None:
+        QApplication.restoreOverrideCursor()
+        self.solve_button.setEnabled(True)
+        self.generate_button.setEnabled(True)
+        self.mesh_config_button.setEnabled(True)
+        self.channel_config_button.setEnabled(True)
+        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.cancel_button.setEnabled(False)
+        self.ath_worker = None
+        self.ath_thread = None
+        self.ath_generation_script_id = None
+        self.ath_generation_mesh_name = None
+        self.ath_generation_cancel_requested = False
 
     @Slot()
     def start_solve(self) -> None:
+        if self.ath_worker is not None:
+            return
         if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
         radiators = self._all_radiators()
         if not radiators:
-            QMessageBox.warning(self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven.")
+            QMessageBox.warning(
+                self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven."
+            )
             return
         if self._disable_symmetry_if_backend_unsupported():
             self.mesh_state_changed.emit("symmetry_disabled_for_backend")
@@ -2129,7 +2305,8 @@ class MainWindow(QMainWindow):
             step_size=self.preferences.polar_angle_step_deg,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,
-            workers=self.preferences.worker_count,
+            workers=1,
+            flat_target_normalization_enabled=self.preferences.normalized_channel_correction,
             flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
@@ -2137,6 +2314,7 @@ class MainWindow(QMainWindow):
         )
 
         self.live_dataset = None
+        self._clear_plots()
         self.balloon_plot_action.setEnabled(False)
         self.solve_expected_count = int(ordered_freqs.size)
         self.solve_failed = False
@@ -2159,7 +2337,7 @@ class MainWindow(QMainWindow):
         self.solve_worker = SolveWorker(
             config,
             ordered_freqs,
-            worker_count=self.preferences.worker_count,
+            worker_count=1,
             backend_id=self.preferences.solve_backend,
             server_url=self.preferences.solve_server_url,
         )
@@ -2174,6 +2352,21 @@ class MainWindow(QMainWindow):
         self.solve_worker.finished.connect(self.solve_worker.deleteLater)
         self.solve_thread.finished.connect(self.solve_thread.deleteLater)
         self.solve_thread.start()
+
+    @Slot()
+    def cancel_current_operation(self) -> None:
+        if self.ath_worker is not None:
+            self.cancel_ath_generation()
+            return
+        self.cancel_solve()
+
+    @Slot()
+    def cancel_ath_generation(self) -> None:
+        self.ath_generation_cancel_requested = True
+        self.cancel_button.setEnabled(False)
+        if self.ath_worker is not None:
+            self.ath_worker.stop()
+            self.status_label.setText("Stop requested; ending Ath generation...")
 
     @Slot()
     def cancel_solve(self) -> None:
@@ -2194,6 +2387,7 @@ class MainWindow(QMainWindow):
             polar_angle_deg=np.asarray(angles, dtype=np.float32),
             radiator_names=np.asarray(radiator_names),
             channel_configs=self._channel_configs(),
+            flat_target_normalization_enabled=self.preferences.normalized_channel_correction,
             flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
@@ -2210,6 +2404,8 @@ class MainWindow(QMainWindow):
             f"Solved {self.live_dataset.solved_count}/{self.freq_count_spin.value()} "
             f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
         )
+        if not self.preferences.live_plot_streaming:
+            return
         self._refresh_plots()
 
     @Slot(str)
@@ -2240,7 +2436,8 @@ class MainWindow(QMainWindow):
             if solve_completed:
                 self.status_label.setText("Rendering final high-resolution plots...")
                 QApplication.processEvents()
-            self._refresh_plots()
+            if self.preferences.live_plot_streaming or solve_completed:
+                self._refresh_plots()
             self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
@@ -2248,9 +2445,7 @@ class MainWindow(QMainWindow):
             self._set_contour_button_states()
             elapsed_text = "" if elapsed_s is None else f" in {elapsed_s:.1f} s"
             if self.solve_cancel_requested:
-                self.status_label.setText(
-                    f"Solve stopped: {self.live_dataset.solved_count} frequencies{elapsed_text}"
-                )
+                self.status_label.setText(f"Solve stopped: {self.live_dataset.solved_count} frequencies{elapsed_text}")
                 self.solve_cancel_requested = False
                 self.solve_worker = None
                 self.solve_thread = None
@@ -2264,9 +2459,7 @@ class MainWindow(QMainWindow):
                 self.solve_worker = None
                 self.solve_thread = None
                 return
-            self.status_label.setText(
-                f"Solve complete: {solved_count} frequencies{elapsed_text}"
-            )
+            self.status_label.setText(f"Solve complete: {solved_count} frequencies{elapsed_text}")
         elif self.solve_cancel_requested:
             self.status_label.setText("Solve stopped")
         self.solve_cancel_requested = False
@@ -2330,9 +2523,7 @@ class MainWindow(QMainWindow):
 
     def _set_contour_button_states(self) -> None:
         capture_base_enabled = bool(
-            self.live_dataset is not None
-            and self._use_final_isobar_resolution
-            and self._final_isobar_plots_rendered
+            self.live_dataset is not None and self._use_final_isobar_resolution and self._final_isobar_plots_rendered
         )
         for plot_id, plot in (
             ("horizontal_isobar", self.horizontal_plot),
@@ -2437,6 +2628,7 @@ class MainWindow(QMainWindow):
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
             shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
     def _update_vertical_plot(self, dataset: dict[str, np.ndarray]) -> None:
@@ -2447,6 +2639,7 @@ class MainWindow(QMainWindow):
             float(dataset["clip_min_db"]),
             float(dataset["clip_max_db"]),
             shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
     def _update_impedance_plot(self, dataset: dict[str, np.ndarray]) -> None:

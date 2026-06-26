@@ -55,10 +55,13 @@ def test_prepare_visualization_data_preserves_multiradiator_impedance(tmp_path: 
         assert data["impedance_imag"].shape == (2, 3)
         assert data["impedance_radiator_names"].tolist() == ["HF", "LF"]
         assert data["horizontal_isobar_db"].shape == (5, 5)
-        assert np.allclose(data["horizontal_spl_db"], horizontal := np.array(
-            [[68.0, 80.0, 68.0], [70.0, 80.0, 70.0], [72.0, 80.0, 72.0]],
-            dtype=np.float32,
-        ))
+        assert np.allclose(
+            data["horizontal_spl_db"],
+            np.array(
+                [[68.0, 80.0, 68.0], [70.0, 80.0, 70.0], [72.0, 80.0, 72.0]],
+                dtype=np.float32,
+            ),
+        )
 
 
 def test_generate_plots_writes_expected_pngs(tmp_path: Path) -> None:
