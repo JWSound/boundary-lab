@@ -125,10 +125,14 @@ the server to that machine's LAN address or `0.0.0.0` and use
 with each server job, so the server does not need access to the client's local
 paths.
 
+For Docker image deployment with the BEAT Engine CUDA solver, see
+[Docker](docs/Docker.md).
+
 ## Documentation
 
 - [User Guide](docs/User%20Guide.md)
 - [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
+- [RunPod CUDA Server](docs/RunPod%20CUDA%20Server.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
