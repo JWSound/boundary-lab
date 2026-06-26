@@ -14,4 +14,5 @@ exec blab server \
     --julia-executable "${BLAB_JULIA_EXECUTABLE}" \
     --julia-threads "${BLAB_JULIA_THREADS}" \
     --max-running-jobs "${BLAB_MAX_RUNNING_JOBS}" \
+    --log-level "${BLAB_LOG_LEVEL}" \
     --artifact-dir "${BLAB_ARTIFACT_DIR}"

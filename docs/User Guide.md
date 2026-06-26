@@ -162,6 +162,7 @@ The viewer comprises:
 - rotatable polar protractor with 30 degree angle spokes and 6 dB rings
 - radar directivity plot for the current frequency and protractor angle
 - isobar slice rendering for the current polar protractor angle
+- An experimental forward beam shape plot
 
 The balloon viewer uses the frequencies that completed before the solve ended.
 

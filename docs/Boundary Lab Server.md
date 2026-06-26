@@ -103,6 +103,7 @@ blab server --artifact-dir runs/my_server_jobs --solver beat_cpu
 
 - Keep `--max-running-jobs 1` unless you have intentionally tested concurrent jobs for the selected backend and hardware.
 - BEAT Engine CUDA jobs should usually be run one at a time per GPU.
+- Use `--log-level INFO` for normal pod logs, or `--log-level DEBUG` when diagnosing request and job flow.
 - The GUI uploads mesh assets with every server job, so the server can run on another machine without shared filesystem paths.
 - If a BEAT Engine server fails during startup, check that the matching Julia environment has been instantiated.
 

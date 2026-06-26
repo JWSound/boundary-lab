@@ -14,6 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
     BLAB_JULIA_EXECUTABLE=/opt/juliaup/bin/julia \
     BLAB_JULIA_THREADS=auto \
     BLAB_MAX_RUNNING_JOBS=1 \
+    BLAB_LOG_LEVEL=INFO \
     BLAB_ARTIFACT_DIR=/data/server_jobs
 
 RUN apt-get update \

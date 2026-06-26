@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import logging
 import re
 import threading
 import time
@@ -39,6 +40,7 @@ SERVER_SOLVER_BACKEND_IDS = {
     "beat_cuda": "beat_cuda",
     "beat_rocm": "beat_rocm",
 }
+LOGGER = logging.getLogger("blab.server")
 
 
 class BackendServerSolver:
@@ -49,16 +51,22 @@ class BackendServerSolver:
         config: SimulationConfig,
         *,
         backend: SolverBackend,
+        status_callback=None,
     ) -> None:
         self.config = config
         self.backend = backend
+        self.status_callback = status_callback
         self.session = None
+
+    def set_status_callback(self, status_callback) -> None:
+        self.status_callback = status_callback
 
     def initialize(self, frequencies_hz: np.ndarray) -> None:
         self.session = self.backend.create_session(
             SolveRequest(
                 self.config,
                 np.asarray(frequencies_hz, dtype=np.float32),
+                status_callback=self.status_callback,
             )
         )
 
@@ -84,8 +92,6 @@ class BackendServerSolver:
         if self.session is None:
             self.initialize(np.asarray(frequencies, dtype=np.float32))
         yield from self.session.solve_stream(stop_requested=stop_requested)
-
-
 
 @dataclass
 class JobRecord:
@@ -165,6 +171,15 @@ class JobOrchestrator:
 
         job_id = uuid.uuid4().hex
         artifact_dir = self.artifact_root / job_id
+        LOGGER.info(
+            "job received job_id=%s frequencies=%s first_hz=%s last_hz=%s assets=%s artifact_dir=%s",
+            job_id,
+            frequencies.size,
+            float(frequencies[0]),
+            float(frequencies[-1]),
+            0 if assets is None else len(assets),
+            artifact_dir,
+        )
         if assets:
             config = self._stage_assets(config, assets, artifact_dir / "assets")
         job = JobRecord(
@@ -188,6 +203,7 @@ class JobOrchestrator:
         asset_dir.mkdir(parents=True, exist_ok=True)
         staged_by_original_path: dict[str, str] = {}
         used_names: set[str] = set()
+        total_bytes = 0
 
         for index, asset in enumerate(assets):
             if not isinstance(asset, dict):
@@ -211,8 +227,10 @@ class JobOrchestrator:
 
             staged_path = asset_dir / filename
             staged_path.write_bytes(data)
+            total_bytes += len(data)
             staged_by_original_path[original_path] = str(staged_path)
 
+        LOGGER.info("staged uploaded assets count=%s bytes=%s directory=%s", len(assets), total_bytes, asset_dir)
         return _rewrite_config_mesh_paths(config, staged_by_original_path)
 
     def get(self, job_id: str) -> JobRecord | None:
@@ -224,6 +242,7 @@ class JobOrchestrator:
             job = self._jobs.get(job_id)
             if job is None:
                 return False
+            LOGGER.info("job cancel requested job_id=%s status=%s", job_id, job.status)
             job.cancel_event.set()
             if job.status == "queued":
                 job.status = "cancelled"
@@ -259,15 +278,23 @@ class JobOrchestrator:
                 job.status = "cancelled"
                 job.finished_at = time.time()
                 self._add_event_locked(job, "cancelled")
+                LOGGER.info("job cancelled before start job_id=%s", job_id)
                 return
             job.status = "running"
             job.started_at = time.time()
             self._add_event_locked(job, "started")
+            LOGGER.info("job started job_id=%s frequencies=%s", job_id, job.total_count)
 
         try:
             solver = self.solver_factory(job.config)
+            set_status_callback = getattr(solver, "set_status_callback", None)
+            if callable(set_status_callback):
+                set_status_callback(
+                    lambda message: LOGGER.info("job solver status job_id=%s message=%s", job_id, message)
+                )
             initialize = getattr(solver, "initialize", None)
             if callable(initialize):
+                LOGGER.info("job initializing solver job_id=%s", job_id)
                 initialize(job.frequencies_hz)
             sphere_metadata = solver.sphere_metadata or {}
             dataset = LiveSolveDataset(
@@ -288,6 +315,13 @@ class JobOrchestrator:
                     if sphere_metadata
                     else None,
                 )
+                LOGGER.info(
+                    "job initialized job_id=%s angles=%s radiators=%s spherical=%s",
+                    job_id,
+                    dataset.polar_angle_deg.size,
+                    dataset.radiator_names.size,
+                    bool(sphere_metadata),
+                )
 
             for result in solver.solve_stream(job.frequencies_hz, stop_requested=job.cancel_event.is_set):
                 if job.cancel_event.is_set():
@@ -302,12 +336,20 @@ class JobOrchestrator:
                         solved_count=job.solved_count,
                         total_count=job.total_count,
                     )
+                    LOGGER.info(
+                        "job result job_id=%s solved=%s/%s freq_hz=%s",
+                        job_id,
+                        job.solved_count,
+                        job.total_count,
+                        float(result.freq_hz),
+                    )
 
             with self._condition:
                 if job.cancel_event.is_set():
                     job.status = "cancelled"
                     job.finished_at = time.time()
                     self._add_event_locked(job, "cancelled", solved_count=job.solved_count)
+                    LOGGER.info("job cancelled job_id=%s solved=%s/%s", job_id, job.solved_count, job.total_count)
                     return
 
             artifact = self._write_result_artifact(job)
@@ -321,12 +363,22 @@ class JobOrchestrator:
                     solved_count=job.solved_count,
                     artifact=f"/jobs/{job.job_id}/artifacts/result.npz",
                 )
+                elapsed_s = 0.0 if job.started_at is None else job.finished_at - job.started_at
+                LOGGER.info(
+                    "job completed job_id=%s solved=%s/%s elapsed_s=%.3f artifact=%s",
+                    job_id,
+                    job.solved_count,
+                    job.total_count,
+                    elapsed_s,
+                    artifact,
+                )
         except Exception as exc:
             with self._condition:
                 job.status = "failed"
                 job.error = str(exc)
                 job.finished_at = time.time()
                 self._add_event_locked(job, "failed", error=job.error)
+            LOGGER.exception("job failed job_id=%s solved=%s/%s", job_id, job.solved_count, job.total_count)
 
     def _write_result_artifact(self, job: JobRecord) -> Path | None:
         dataset = job.dataset
@@ -454,6 +506,11 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_create_job(self) -> None:
         try:
+            LOGGER.info(
+                "POST /jobs received client=%s content_length=%s",
+                self.client_address[0],
+                self.headers.get("Content-Length", "0"),
+            )
             payload = self._read_json()
             config, frequencies, assets = solve_request_to_job_inputs(payload)
             job = self.server.orchestrator.submit(config, frequencies, assets)
@@ -461,8 +518,8 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
+        LOGGER.info("POST /jobs accepted job_id=%s client=%s", job.job_id, self.client_address[0])
         self._send_json(job.snapshot(), status=HTTPStatus.ACCEPTED)
-
     def _handle_get_job(self, job_id: str) -> None:
         job = self.server.orchestrator.get(job_id)
         if job is None:
@@ -480,16 +537,21 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
 
+        LOGGER.info("job event stream opened job_id=%s client=%s since=%s", job_id, self.client_address[0], start_index)
         next_index = max(0, start_index)
-        while True:
-            events, terminal = self.server.orchestrator.events_since(job_id, next_index)
-            for event in events:
-                self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
-                self.wfile.flush()
-                next_index = event["index"] + 1
-            if terminal:
-                return
-            self.server.orchestrator.wait_for_event(job_id, next_index)
+        try:
+            while True:
+                events, terminal = self.server.orchestrator.events_since(job_id, next_index)
+                for event in events:
+                    self.wfile.write(json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n")
+                    self.wfile.flush()
+                    next_index = event["index"] + 1
+                if terminal:
+                    LOGGER.info("job event stream completed job_id=%s events_sent_through=%s", job_id, next_index - 1)
+                    return
+                self.server.orchestrator.wait_for_event(job_id, next_index)
+        except (BrokenPipeError, ConnectionResetError):
+            LOGGER.warning("job event stream disconnected job_id=%s events_sent_through=%s", job_id, next_index - 1)
 
     def _handle_result_artifact(self, job_id: str) -> None:
         job = self.server.orchestrator.get(job_id)
@@ -501,6 +563,7 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
             return
 
         data = job.result_npz.read_bytes()
+        LOGGER.info('serving result artifact job_id=%s bytes=%s', job_id, len(data))
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
@@ -526,6 +589,13 @@ class BlabRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
+        LOGGER.warning(
+            "request failed status=%s message=%s path=%s client=%s",
+            status.value,
+            message,
+            self.path,
+            self.client_address[0],
+        )
         self._send_json({"error": message}, status=status)
 
 
@@ -549,6 +619,11 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Julia thread count for BEAT Engine server solvers.",
     )
     parser.add_argument("--max-running-jobs", type=int, default=1, help="Maximum concurrent solve jobs.")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Server log level: DEBUG, INFO, WARNING, ERROR, or CRITICAL.",
+    )
     parser.add_argument(
         "--artifact-dir",
         type=Path,
@@ -607,6 +682,10 @@ def create_server_solver_factory(
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     args = _build_arg_parser(prog=prog).parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, str(args.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     solver_id = normalize_server_solver_id(args.solver)
     orchestrator = JobOrchestrator(
         max_running_jobs=args.max_running_jobs,
@@ -619,11 +698,19 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     )
     server = BlabServer((args.host, args.port), orchestrator, solver_id=solver_id)
     solver_label = backend_info(server_solver_backend_id(solver_id)).label
-    print(f"Boundary Lab server listening on http://{args.host}:{args.port} using {solver_label}")
+    LOGGER.info(
+        "Boundary Lab server listening url=http://%s:%s solver=%s label=%s max_running_jobs=%s artifact_dir=%s",
+        args.host,
+        args.port,
+        solver_id,
+        solver_label,
+        args.max_running_jobs,
+        args.artifact_dir,
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down Boundary Lab server.")
+        LOGGER.info("Shutting down Boundary Lab server.")
     finally:
         orchestrator.shutdown()
         try:

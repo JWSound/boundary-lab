@@ -17,15 +17,16 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 
 ## Base Requirements
 
-- Windows 10/11 64-bit
+- Windows 10/11 64-bit / Linux / MacOS
 - Python 3.11 or newer
+- Wine is required if using Ath to generate meshes
 
 
 While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware, but typically GPU-based solving is the fastest option if available.
+Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -132,7 +133,7 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 
 - [User Guide](docs/User%20Guide.md)
 - [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
-- [RunPod CUDA Server](docs/RunPod%20CUDA%20Server.md)
+- [CUDA Server Docker Image](docs/Docker.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)

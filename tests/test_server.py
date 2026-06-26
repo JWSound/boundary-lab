@@ -122,12 +122,15 @@ def test_server_parser_accepts_backend_solver_options() -> None:
             "julia-custom",
             "--julia-threads",
             "4",
+            "--log-level",
+            "DEBUG",
         ]
     )
 
     assert args.solver == "beat_cpu"
     assert args.julia_executable == "julia-custom"
     assert args.julia_threads == "4"
+    assert args.log_level == "DEBUG"
     assert _build_arg_parser().parse_args([]).solver == "bempp_cpu"
     assert normalize_server_solver_id("bempp_cpu") == "bempp_cpu"
     assert normalize_server_solver_id("local") == "bempp_cpu"
