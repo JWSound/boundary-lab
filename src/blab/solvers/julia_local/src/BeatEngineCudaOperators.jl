@@ -75,8 +75,8 @@ function _launch_regular_split_balanced_multipair_atomic_kernel!(
     rule_count::Int,
     total_pairs::Int,
     threads_per_pair::Int,
+    pairs_per_block::Int,
 ) where {T<:AbstractFloat}
-    pairs_per_block = 8
     block_threads = threads_per_pair * pairs_per_block
     blocks = cld(total_pairs, pairs_per_block)
     shmem = block_threads * 24 * sizeof(T)

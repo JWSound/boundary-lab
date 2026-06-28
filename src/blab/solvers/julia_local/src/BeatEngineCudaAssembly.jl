@@ -14,10 +14,16 @@ function assemble_regular_galerkin_operators_cuda_regular(
     singular_cache=nothing,
     cuda_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
+    regular_threads_per_pair::Int=1,
+    regular_pairs_per_block::Int=128,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
     parallel_quadrature || error("Balanced CUDA regular assembly requires parallel_quadrature=true.")
     return_gpu || error("BEAT Engine is CUDA-only; CPU operator materialization has been removed.")
+    regular_threads_per_pair > 0 || error("regular_threads_per_pair must be positive.")
+    regular_pairs_per_block > 0 || error("regular_pairs_per_block must be positive.")
+    ispow2(regular_threads_per_pair) || error("regular_threads_per_pair must be a power of two for subgroup reduction.")
+    regular_threads_per_pair * regular_pairs_per_block <= 1024 || error("regular_threads_per_pair * regular_pairs_per_block must not exceed 1024 CUDA threads per block.")
 
     indices = cache === nothing ? collect(element_indices) : cache.element_indices
     face_count = cache === nothing ? length(mesh.faces) : cache.face_count
@@ -27,8 +33,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
     total_pairs = length(indices) * length(indices)
     symmetry_images = symmetry_image_transforms(symmetry_mode)
     kernel_mode = "split_atomic_balanced_multipair"
-    kernel_threads = _regular_quadrature_threads(rule_count)
-    regular_pairs_per_block = 8
+    kernel_threads = regular_threads_per_pair
     kernel_blocks = cld(total_pairs, regular_pairs_per_block)
     kernel_shmem = kernel_threads * regular_pairs_per_block * 24 * sizeof(T)
 
@@ -101,6 +106,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
             rule_count,
             total_pairs,
             kernel_threads,
+            regular_pairs_per_block,
         )
         for transform in symmetry_images
             _launch_regular_symmetry_image_kernel!(
@@ -237,6 +243,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
         regular_kernel_shared_memory_bytes=kernel_shmem,
         regular_kernel_qpair_count=rule_count * rule_count,
         regular_kernel_total_pairs=total_pairs,
+        regular_kernel_pairs_per_block=regular_pairs_per_block,
         regular_kernel_mode=kernel_mode,
         regular_assembly_mode=:split_atomic_balanced_multipair,
     )

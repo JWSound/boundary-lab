@@ -833,6 +833,8 @@ function assemble_regular_galerkin_operators(
     singular_cache=nothing,
     device_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
+    regular_threads_per_pair::Int=1,
+    regular_pairs_per_block::Int=128,
 ) where {T<:AbstractFloat}
     if backend == :cpu
         return assemble_regular_galerkin_operators_cpu(
@@ -869,6 +871,8 @@ function assemble_regular_galerkin_operators(
             singular_cache=singular_cache,
             cuda_singular_cache=device_singular_cache,
             symmetry_mode=symmetry_mode,
+            regular_threads_per_pair=regular_threads_per_pair,
+            regular_pairs_per_block=regular_pairs_per_block,
         )
     end
 

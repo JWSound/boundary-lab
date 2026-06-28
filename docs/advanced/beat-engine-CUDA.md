@@ -47,7 +47,9 @@ Symmetry image-singular pairs use the same compact correction idea, with reflect
 
 The CUDA backend has a regular assembly split kernel, one singular correction block kernel, and two field-evaluation kernels.
 
-Regular assembly uses the multipair balanced split path by default. Each regular test/trial element pair still gets a fixed thread subgroup, but a CUDA block now carries multiple independent element pairs. The production layout uses 16 threads per element pair and 8 element pairs per CUDA block, for 128 threads per block. Per-thread partial sums are reduced inside each pair subgroup in dynamic shared memory:
+Regular assembly uses the multipair balanced split path by default. A CUDA block carries multiple independent regular test/trial element pairs. The layout uses 1 thread per element pair and 128 element pairs per CUDA block for the current order-4 regular triangle rule. This keeps the block size at 128 threads while avoiding subgroup reduction overhead for only 36 quadrature-point pairs per element pair.
+
+The same kernels still support larger fixed thread subgroups for benchmarking. When `threads_per_pair > 1`, per-thread partial sums are reduced inside each pair subgroup in dynamic shared memory:
 
 ```julia
 scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
@@ -58,7 +60,7 @@ The multipair path uses two regular assembly launches:
 - `_cuda_regular_quadrature_slp_hyp_kernel!` computes single-layer and hypersingular contributions.
 - `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double-layer and adjoint double-layer contributions.
 
-This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel. The subgroup mapping keeps the 16-thread-per-pair granularity that works well for the current order-4 regular triangle rule while avoiding the old one-pair-per-block launch shape.
+This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel.
 
 The multipair balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
 
@@ -126,18 +128,18 @@ CUDA's regular assembly cache is built from `mesh + rule`, so future CUDA wavele
 
 ## Performance Notes
 
-CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The multipair balanced split regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU and batching 8 regular pairs per CUDA block.
+CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The multipair balanced split regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU and batching many regular pairs per CUDA block.
 
 Temporary allocation, dense GPU memory footprint, and atomic accumulation cost are important practical limits. CUDA memory use scales with dense P1/DP0 matrix dimensions, so symmetry is especially useful on large meshes.
 
-`scripts/benchmark_cuda.jl` exposes the regular assembly mode for local comparison:
+`scripts/benchmark_cuda.jl` exposes regular assembly launch geometry for local comparison:
 
 ```powershell
-julia scripts\benchmark_cuda.jl --regular-assembly-mode multipair
-julia scripts\benchmark_cuda.jl --regular-assembly-mode balanced
+julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetitions 5 --regular-threads-per-pair 1 --regular-pairs-per-block 128
+julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetitions 5 --regular-threads-per-pair 16 --regular-pairs-per-block 8
 ```
 
-The production application path uses multipair by default. The helper scripts `scripts/profile_ncu_regular_multipair.ps1` and `scripts/profile_ncu_regular_balanced.ps1` run comparable Nsight Compute captures for the two regular split modes.
+Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight Compute can profile the measured regular kernels with a kernel filter such as `regex:.*regular_quadrature.*`; on Windows, detailed counters require NVIDIA performance-counter permission to avoid `ERR_NVGPUCTRPERM`.
 
 ## Important Files
 
