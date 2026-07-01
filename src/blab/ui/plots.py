@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from matplotlib.backend_bases import MouseButton
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
@@ -32,6 +33,11 @@ GRID_LINE_ALPHA = 0.6
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
+ISOBAR_CROSSHAIR_COLOR = '#101214'
+ISOBAR_CROSSHAIR_LABEL_FACE = '#f8fbff'
+ISOBAR_CROSSHAIR_LABEL_EDGE = '#2868ff'
+ISOBAR_CROSSHAIR_DB_FACE = '#101214'
+ISOBAR_CROSSHAIR_DB_EDGE = '#f8fbff'
 
 
 def apply_audio_frequency_axis(axes) -> None:
@@ -80,6 +86,32 @@ def slider_value_to_frequency(value: int) -> int:
     return int(round(10.0**log_freq))
 
 
+def _format_isobar_crosshair_frequency(freq_hz: float) -> str:
+    if freq_hz >= 1000.0:
+        return f'{freq_hz / 1000.0:.2f}'.rstrip('0').rstrip('.') + ' kHz'
+    return f'{freq_hz:.0f} Hz'
+
+
+def _grid_bracket(values: np.ndarray, target: float) -> tuple[int, int, float]:
+    axis = np.asarray(values, dtype=float)
+    if axis.size <= 1:
+        return 0, 0, 0.0
+    if axis[0] > axis[-1]:
+        mirrored_left, mirrored_right, fraction = _grid_bracket(axis[::-1], target)
+        last = axis.size - 1
+        return last - mirrored_left, last - mirrored_right, fraction
+    if target <= axis[0]:
+        return 0, 0, 0.0
+    if target >= axis[-1]:
+        last = axis.size - 1
+        return last, last, 0.0
+    right = int(np.searchsorted(axis, target, side='right'))
+    left = max(0, right - 1)
+    span = axis[right] - axis[left]
+    fraction = 0.0 if np.isclose(span, 0.0) else float((target - axis[left]) / span)
+    return left, right, float(np.clip(fraction, 0.0, 1.0))
+
+
 class IsobarCanvas(FigureCanvas):
     def __init__(
         self,
@@ -113,7 +145,17 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._crosshair_visible = False
+        self._crosshair_dragging = False
+        self._crosshair_freq_hz: float | None = None
+        self._crosshair_angle_deg: float | None = None
+        self._crosshair_vline = None
+        self._crosshair_hline = None
+        self._crosshair_freq_label = None
+        self._crosshair_angle_label = None
+        self._crosshair_db_label = None
         self._apply_layout()
+        self._connect_crosshair_events()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
@@ -139,6 +181,11 @@ class IsobarCanvas(FigureCanvas):
         self._image_artist = None
         self._line_artist = None
         self._contour_artist = None
+        self._crosshair_vline = None
+        self._crosshair_hline = None
+        self._crosshair_freq_label = None
+        self._crosshair_angle_label = None
+        self._crosshair_db_label = None
         self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
@@ -149,7 +196,222 @@ class IsobarCanvas(FigureCanvas):
         self._x_axis_mode = "frequency"
         self._configure_axes()
         self._redraw_captured_contours()
+        self._redraw_crosshair()
         self.draw_idle()
+
+    def _connect_crosshair_events(self) -> None:
+        self.mpl_connect('button_press_event', self._on_crosshair_button_press)
+        self.mpl_connect('button_release_event', self._on_crosshair_button_release)
+        self.mpl_connect('motion_notify_event', self._on_crosshair_motion)
+
+    def _has_crosshair_data(self) -> bool:
+        return (
+            self._mesh_freqs_hz is not None
+            and self._mesh_angles_deg is not None
+            and self._mesh_values_db is not None
+            and self._mesh_freqs_hz.size > 0
+            and self._mesh_angles_deg.size > 0
+        )
+
+    def _on_crosshair_button_press(self, event) -> None:
+        if event.inaxes is not self.axes or event.button != MouseButton.LEFT:
+            return
+        if getattr(event, 'dblclick', False):
+            self._hide_crosshair()
+            return
+        if not self._has_crosshair_data():
+            return
+        self._crosshair_dragging = True
+        self._set_crosshair_from_event(event)
+
+    def _on_crosshair_button_release(self, event) -> None:
+        del event
+        self._crosshair_dragging = False
+
+    def _on_crosshair_motion(self, event) -> None:
+        if not self._crosshair_dragging or event.inaxes is not self.axes:
+            return
+        self._set_crosshair_from_event(event)
+
+    def _set_crosshair_from_event(self, event) -> None:
+        if event.xdata is None or event.ydata is None:
+            return
+        freq_hz = self._axis_x_to_frequency(float(event.xdata))
+        angle_deg = float(event.ydata)
+        self._set_crosshair_position(freq_hz, angle_deg)
+
+    def _axis_x_to_frequency(self, x_value: float) -> float:
+        if self._x_axis_mode == 'log_image':
+            return float(10.0**x_value)
+        return float(x_value)
+
+    def _frequency_to_axis_x(self, freq_hz: float) -> float:
+        freq = max(float(freq_hz), np.finfo(float).tiny)
+        if self._x_axis_mode == 'log_image':
+            return float(np.log10(freq))
+        return freq
+
+    def _clamp_crosshair_position(self, freq_hz: float, angle_deg: float) -> tuple[float, float]:
+        if self._mesh_freqs_hz is None or self._mesh_angles_deg is None:
+            return float(freq_hz), float(angle_deg)
+        freq_min = float(np.nanmin(self._mesh_freqs_hz))
+        freq_max = float(np.nanmax(self._mesh_freqs_hz))
+        angle_min = float(np.nanmin(self._mesh_angles_deg))
+        angle_max = float(np.nanmax(self._mesh_angles_deg))
+        return (
+            float(np.clip(freq_hz, freq_min, freq_max)),
+            float(np.clip(angle_deg, angle_min, angle_max)),
+        )
+
+    def _set_crosshair_position(self, freq_hz: float, angle_deg: float) -> None:
+        if not self._has_crosshair_data():
+            return
+        self._crosshair_freq_hz, self._crosshair_angle_deg = self._clamp_crosshair_position(freq_hz, angle_deg)
+        self._crosshair_visible = True
+        self._redraw_crosshair()
+        self.draw_idle()
+
+    def _hide_crosshair(self) -> None:
+        self._crosshair_visible = False
+        self._crosshair_dragging = False
+        self._set_crosshair_artist_visibility(False)
+        self.draw_idle()
+
+    def _set_crosshair_artist_visibility(self, visible: bool) -> None:
+        for artist in (
+            self._crosshair_vline,
+            self._crosshair_hline,
+            self._crosshair_freq_label,
+            self._crosshair_angle_label,
+            self._crosshair_db_label,
+        ):
+            if artist is not None:
+                artist.set_visible(visible)
+
+    def _ensure_crosshair_artists(self) -> None:
+        if self._crosshair_vline is None:
+            self._crosshair_vline = self.axes.axvline(
+                AUDIO_FREQ_MIN_HZ,
+                color=ISOBAR_CROSSHAIR_COLOR,
+                linewidth=0.9,
+                alpha=0.9,
+                zorder=9,
+                visible=False,
+            )
+        if self._crosshair_hline is None:
+            self._crosshair_hline = self.axes.axhline(
+                0.0,
+                color=ISOBAR_CROSSHAIR_COLOR,
+                linewidth=0.9,
+                alpha=0.9,
+                zorder=9,
+                visible=False,
+            )
+        if self._crosshair_freq_label is None:
+            self._crosshair_freq_label = self.axes.text(
+                AUDIO_FREQ_MIN_HZ,
+                -0.075,
+                '',
+                transform=self.axes.get_xaxis_transform(),
+                ha='center',
+                va='top',
+                color=ISOBAR_CROSSHAIR_LABEL_EDGE,
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    'boxstyle': 'square,pad=0.12',
+                    'facecolor': ISOBAR_CROSSHAIR_LABEL_FACE,
+                    'edgecolor': ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    'linewidth': 0.8,
+                },
+                clip_on=False,
+                zorder=10,
+                visible=False,
+            )
+        if self._crosshair_angle_label is None:
+            self._crosshair_angle_label = self.axes.text(
+                -0.01,
+                0.0,
+                '',
+                transform=self.axes.get_yaxis_transform(),
+                ha='right',
+                va='center',
+                color=ISOBAR_CROSSHAIR_LABEL_EDGE,
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    'boxstyle': 'square,pad=0.12',
+                    'facecolor': ISOBAR_CROSSHAIR_LABEL_FACE,
+                    'edgecolor': ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    'linewidth': 0.8,
+                },
+                clip_on=False,
+                zorder=10,
+                visible=False,
+            )
+        if self._crosshair_db_label is None:
+            self._crosshair_db_label = self.axes.annotate(
+                '',
+                xy=(AUDIO_FREQ_MIN_HZ, 0.0),
+                xytext=(8, 8),
+                textcoords='offset points',
+                ha='left',
+                va='bottom',
+                color='#ffffff',
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    'boxstyle': 'round,pad=0.18',
+                    'facecolor': ISOBAR_CROSSHAIR_DB_FACE,
+                    'edgecolor': ISOBAR_CROSSHAIR_DB_EDGE,
+                    'linewidth': 0.7,
+                    'alpha': 0.88,
+                },
+                zorder=10,
+                visible=False,
+            )
+
+    def _redraw_crosshair(self) -> None:
+        if not self._crosshair_visible or self._crosshair_freq_hz is None or self._crosshair_angle_deg is None:
+            self._set_crosshair_artist_visibility(False)
+            return
+        if not self._has_crosshair_data():
+            self._set_crosshair_artist_visibility(False)
+            return
+        self._crosshair_freq_hz, self._crosshair_angle_deg = self._clamp_crosshair_position(
+            self._crosshair_freq_hz,
+            self._crosshair_angle_deg,
+        )
+        axis_x = self._frequency_to_axis_x(self._crosshair_freq_hz)
+        db_value = self._crosshair_value_db(self._crosshair_freq_hz, self._crosshair_angle_deg)
+        self._ensure_crosshair_artists()
+        self._crosshair_vline.set_xdata([axis_x, axis_x])
+        self._crosshair_hline.set_ydata([self._crosshair_angle_deg, self._crosshair_angle_deg])
+        self._crosshair_freq_label.set_position((axis_x, -0.075))
+        self._crosshair_freq_label.set_text(_format_isobar_crosshair_frequency(self._crosshair_freq_hz))
+        self._crosshair_angle_label.set_position((-0.01, self._crosshair_angle_deg))
+        self._crosshair_angle_label.set_text(f'{int(round(self._crosshair_angle_deg)):+d} deg')
+        self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)
+        self._crosshair_db_label.set_text('' if db_value is None else f'{db_value:.1f} dB')
+        self._set_crosshair_artist_visibility(True)
+
+    def _crosshair_value_db(self, freq_hz: float, angle_deg: float) -> float | None:
+        if not self._has_crosshair_data():
+            return None
+        freqs = np.asarray(self._mesh_freqs_hz, dtype=float)
+        angles = np.asarray(self._mesh_angles_deg, dtype=float)
+        values = np.asarray(self._mesh_values_db, dtype=float)
+        if values.shape != (angles.size, freqs.size):
+            return None
+        log_freqs = np.log10(np.maximum(freqs, np.finfo(float).tiny))
+        log_freq = float(np.log10(max(float(freq_hz), np.finfo(float).tiny)))
+        angle_left, angle_right, angle_fraction = _grid_bracket(angles, float(angle_deg))
+        freq_left, freq_right, freq_fraction = _grid_bracket(log_freqs, log_freq)
+        top_left = values[angle_left, freq_left]
+        top_right = values[angle_left, freq_right]
+        bottom_left = values[angle_right, freq_left]
+        bottom_right = values[angle_right, freq_right]
+        top = top_left + freq_fraction * (top_right - top_left)
+        bottom = bottom_left + freq_fraction * (bottom_right - bottom_left)
+        interpolated = top + angle_fraction * (bottom - top)
+        return float(interpolated) if np.isfinite(interpolated) else None
 
     def _remove_artist(self, name: str) -> None:
         artist = getattr(self, name)
@@ -484,6 +746,8 @@ class IsobarCanvas(FigureCanvas):
             self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
             apply_compact_plot_text(self.axes)
         self._redraw_captured_contours()
+        if self._crosshair_visible:
+            self._redraw_crosshair()
         self.draw_idle()
 
 

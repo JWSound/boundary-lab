@@ -4,6 +4,8 @@
 
 Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It uses Ath to generate loudspeaker surface meshes, runs BEM solves, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application.
 
+### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
+
 ## Features
 
 - [Ath4](https://at-horns.eu/) `.cfg` editor with one-click geometry generation
@@ -11,7 +13,7 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 - Multi-mesh and multi-radiator BEM solves
 - Source controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and impedance plots
-- dB/phase exporting into .txt files
+- Polar magnitude/phase exporting into .txt files
 - 3D balloon plot viewer with spherical sampling
 - Project save/load with readable `.blab.json` files
 
