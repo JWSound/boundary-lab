@@ -37,7 +37,6 @@ ISOBAR_CROSSHAIR_COLOR = '#101214'
 ISOBAR_CROSSHAIR_LABEL_FACE = '#f8fbff'
 ISOBAR_CROSSHAIR_LABEL_EDGE = '#2868ff'
 ISOBAR_CROSSHAIR_DB_FACE = '#101214'
-ISOBAR_CROSSHAIR_DB_EDGE = '#f8fbff'
 
 
 def apply_audio_frequency_axis(axes) -> None:
@@ -154,6 +153,7 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_freq_label = None
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
+        self._crosshair_background = None
         self._apply_layout()
         self._connect_crosshair_events()
         self._draw_empty()
@@ -186,6 +186,7 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_freq_label = None
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
+        self._crosshair_background = None
         self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
@@ -203,6 +204,44 @@ class IsobarCanvas(FigureCanvas):
         self.mpl_connect('button_press_event', self._on_crosshair_button_press)
         self.mpl_connect('button_release_event', self._on_crosshair_button_release)
         self.mpl_connect('motion_notify_event', self._on_crosshair_motion)
+        self.mpl_connect('draw_event', self._on_crosshair_draw)
+
+    def _on_crosshair_draw(self, event) -> None:
+        if event.canvas is not self:
+            return
+        try:
+            self._crosshair_background = self.copy_from_bbox(self.figure.bbox)
+        except Exception:
+            self._crosshair_background = None
+        if self._crosshair_visible:
+            self._draw_crosshair_overlay()
+
+    def _crosshair_artists(self) -> tuple[object, ...]:
+        return (
+            self._crosshair_vline,
+            self._crosshair_hline,
+            self._crosshair_freq_label,
+            self._crosshair_angle_label,
+            self._crosshair_db_label,
+        )
+
+    def _invalidate_crosshair_background(self) -> None:
+        self._crosshair_background = None
+
+    def _draw_crosshair_overlay(self) -> bool:
+        if self._crosshair_background is None:
+            return False
+        try:
+            self.restore_region(self._crosshair_background)
+            for artist in self._crosshair_artists():
+                if artist is not None and artist.get_visible():
+                    self.axes.draw_artist(artist)
+            self.blit(self.figure.bbox)
+            self.flush_events()
+            return True
+        except Exception:
+            self._crosshair_background = None
+            return False
 
     def _has_crosshair_data(self) -> bool:
         return (
@@ -269,13 +308,15 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_freq_hz, self._crosshair_angle_deg = self._clamp_crosshair_position(freq_hz, angle_deg)
         self._crosshair_visible = True
         self._redraw_crosshair()
-        self.draw_idle()
+        if not self._draw_crosshair_overlay():
+            self.draw_idle()
 
     def _hide_crosshair(self) -> None:
         self._crosshair_visible = False
         self._crosshair_dragging = False
         self._set_crosshair_artist_visibility(False)
-        self.draw_idle()
+        if not self._draw_crosshair_overlay():
+            self.draw_idle()
 
     def _set_crosshair_artist_visibility(self, visible: bool) -> None:
         for artist in (
@@ -360,13 +401,17 @@ class IsobarCanvas(FigureCanvas):
                 bbox={
                     'boxstyle': 'round,pad=0.18',
                     'facecolor': ISOBAR_CROSSHAIR_DB_FACE,
-                    'edgecolor': ISOBAR_CROSSHAIR_DB_EDGE,
-                    'linewidth': 0.7,
-                    'alpha': 0.88,
+                    'edgecolor': 'none',
+                    'linewidth': 0.0,
+                    'alpha': 0.75,
                 },
                 zorder=10,
                 visible=False,
             )
+
+        for artist in self._crosshair_artists():
+            if artist is not None:
+                artist.set_animated(True)
 
     def _redraw_crosshair(self) -> None:
         if not self._crosshair_visible or self._crosshair_freq_hz is None or self._crosshair_angle_deg is None:
@@ -526,12 +571,14 @@ class IsobarCanvas(FigureCanvas):
             levels.copy(),
         )
         self._redraw_captured_contours()
+        self._invalidate_crosshair_background()
         self.draw_idle()
         return True
 
     def clear_contours(self) -> None:
         self._captured_contours = None
         self._remove_contour_artist()
+        self._invalidate_crosshair_background()
         self.draw_idle()
 
     def _mesh_matches(
@@ -638,6 +685,7 @@ class IsobarCanvas(FigureCanvas):
         shading = str(shading or LIVE_ISOBAR_SHADING)
         contour_step_db = max(0.0, float(contour_step_db))
         render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"
+        self._invalidate_crosshair_background()
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")

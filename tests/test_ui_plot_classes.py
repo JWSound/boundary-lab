@@ -461,6 +461,12 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
     assert 'self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)' in isobar_block
     assert 'if self._crosshair_visible:' in isobar_block
     assert 'self._redraw_crosshair()' in isobar_block
+    assert "draw_event" in isobar_block
+    assert "self.copy_from_bbox(self.figure.bbox)" in isobar_block
+    assert "self.restore_region(self._crosshair_background)" in isobar_block
+    assert "self.axes.draw_artist(artist)" in isobar_block
+    assert "self.blit(self.figure.bbox)" in isobar_block
+    assert "artist.set_animated(True)" in isobar_block
     assert '_grid_bracket(log_freqs, log_freq)' in isobar_block
 
 

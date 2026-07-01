@@ -1,6 +1,6 @@
 # CUDA Server Docker Image
 
-Boundary Lab's BEAT Engine CUDA solve server can be packaged as a GPU container. Future support for CPU and AMD ROCm Docker images is planned.
+Boundary Lab's BEAT Engine CUDA solve server can be packaged as a GPU container. Future support for AMD ROCm Docker images is planned.
 
 ## Build
 
