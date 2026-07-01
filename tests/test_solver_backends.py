@@ -335,8 +335,8 @@ for _line in sys.stdin:
         backend.warm_up("worker", status_callback=statuses.append)
 
         assert starts_path.read_text(encoding="utf-8") == "1"
-        assert any("Warm BEAT Engine worker ready" in status for status in statuses)
-        assert any("Reusing warm BEAT Engine worker" in status for status in statuses)
+        assert any("Initializing BEAT Engine" in status for status in statuses)
+        assert any("BEAT Engine ready" in status for status in statuses)
     finally:
         shutdown_beat_engine_workers()
 

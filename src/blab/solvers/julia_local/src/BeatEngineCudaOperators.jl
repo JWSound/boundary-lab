@@ -51,7 +51,7 @@ _cuda_timed_stage!(thunk, timing, name::String) = _cuda_timed_stage!(timing, nam
 
 _regular_quadrature_threads(rule_count::Int) = 16
 
-function _launch_regular_split_balanced_multipair_atomic_kernel!(
+function _launch_regular_serial_pair_batched_kernel!(
     slp_re,
     slp_im,
     dlp_re,
@@ -74,13 +74,10 @@ function _launch_regular_split_balanced_multipair_atomic_kernel!(
     face_count::Int,
     rule_count::Int,
     total_pairs::Int,
-    threads_per_pair::Int,
-    pairs_per_block::Int,
 ) where {T<:AbstractFloat}
-    block_threads = threads_per_pair * pairs_per_block
-    blocks = cld(total_pairs, pairs_per_block)
-    shmem = block_threads * 24 * sizeof(T)
-    CUDA.@cuda threads=block_threads blocks=blocks shmem=shmem _cuda_regular_quadrature_slp_hyp_kernel!(
+    threads = 128
+    blocks = cld(total_pairs, threads)
+    CUDA.@cuda threads=threads blocks=blocks _cuda_regular_quadrature_slp_hyp_kernel!(
         slp_re,
         slp_im,
         hyp_re,
@@ -99,10 +96,9 @@ function _launch_regular_split_balanced_multipair_atomic_kernel!(
         face_count,
         rule_count,
         total_pairs,
-        pairs_per_block,
     )
 
-    CUDA.@cuda threads=block_threads blocks=blocks shmem=shmem _cuda_regular_quadrature_dlp_adjoint_kernel!(
+    CUDA.@cuda threads=threads blocks=blocks _cuda_regular_quadrature_dlp_adjoint_kernel!(
         dlp_re,
         dlp_im,
         adj_re,
@@ -120,7 +116,6 @@ function _launch_regular_split_balanced_multipair_atomic_kernel!(
         face_count,
         rule_count,
         total_pairs,
-        pairs_per_block,
     )
     return nothing
 end

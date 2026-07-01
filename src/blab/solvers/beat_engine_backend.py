@@ -149,10 +149,7 @@ class BeatEngineSession:
         request_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
 
         if self.persistent_worker:
-            self._emit_status(
-                f"Preparing warm BEAT Engine worker: backend={self.beat_engine_backend}, "
-                f"project={self.julia_project}, threads={_resolve_julia_threads(self.julia_threads)}"
-            )
+            self._emit_status("Initializing BEAT Engine")
             self._worker = _get_julia_worker(
                 julia_executable=self.julia_executable,
                 solver_script=self.solver_script,
@@ -162,10 +159,7 @@ class BeatEngineSession:
             )
             self._events = self._worker.submit(request_path, status_callback=self._emit_status)
         else:
-            self._emit_status(
-                f"Starting BEAT Engine process: backend={self.beat_engine_backend}, "
-                f"project={self.julia_project}, threads={_resolve_julia_threads(self.julia_threads)}"
-            )
+            self._emit_status("Initializing BEAT Engine")
             try:
                 self._process = subprocess.Popen(
                     _julia_command(
@@ -310,7 +304,7 @@ class BeatEngineWorkerProcess:
             process = self._process
             if process is None or process.stdin is None:
                 raise RuntimeError("Warm BEAT Engine solver did not provide stdin.")
-            self._emit_status(f"Submitting request to warm BEAT Engine worker: {request_path}")
+            self._emit_status("Submitting solve request")
             process.stdin.write(json.dumps({"request": str(request_path)}, separators=(",", ":")) + "\n")
             process.stdin.flush()
             return self._iter_events_for_submission()
@@ -346,7 +340,7 @@ class BeatEngineWorkerProcess:
 
     def _ensure_started(self) -> None:
         if self._process is not None and self._process.poll() is None:
-            self._emit_status("Reusing warm BEAT Engine worker.")
+            self._emit_status("BEAT Engine ready")
             return
 
         self._stderr_lines.clear()
@@ -356,11 +350,7 @@ class BeatEngineWorkerProcess:
             julia_project=self.julia_project,
             julia_sysimage=self.julia_sysimage,
         )
-        self._emit_status(
-            "Starting warm BEAT Engine worker: "
-            f"command={_format_command_for_status(command)}, cwd={self.solver_script.parent}, "
-            f"threads={_resolve_julia_threads(self.julia_threads)}"
-        )
+        self._emit_status("Initializing BEAT Engine")
         try:
             self._process = subprocess.Popen(
                 command,
@@ -382,10 +372,7 @@ class BeatEngineWorkerProcess:
         for event in self._read_events():
             event_type = str(event.get("type", ""))
             if event_type == "ready":
-                self._emit_status(
-                    f"Warm BEAT Engine worker ready: pid={event.get('pid', 'unknown')}, "
-                    f"protocol={event.get('protocol', 'unknown')}"
-                )
+                self._emit_status("BEAT Engine ready")
                 return
             if event_type == "failed":
                 raise RuntimeError(
@@ -439,7 +426,7 @@ class BeatEngineWorkerProcess:
             text = line.strip()
             if text:
                 self._stderr_lines.append(text)
-                self._emit_status(f"Julia stderr: {text}")
+                self._emit_status(text)
 
     def _process_error(self, fallback: str) -> str:
         detail = "\n".join(self._stderr_lines[-10:])
@@ -796,9 +783,6 @@ def _julia_command(
     command.extend([str(solver_script), "--request", str(request_path)])
     return command
 
-
-def _format_command_for_status(command: list[str]) -> str:
-    return " ".join(str(part) for part in command)
 
 
 def _julia_worker_command(

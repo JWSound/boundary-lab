@@ -875,7 +875,7 @@ function solve_request_impl(request)
                     "message" => "Julia direct dense solve",
                     "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
-                    "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :split_atomic_balanced_multipair : Symbol("$(beat_backend)_default"))),
+                    "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :serial_pair_batched : Symbol("$(beat_backend)_default"))),
                     "regular_quadrature_mode" => regular_quadrature_mode,
                     "regular_quadrature_order" => quadrature_selection.order,
                     "regular_quadrature_base_order" => base_regular_order,

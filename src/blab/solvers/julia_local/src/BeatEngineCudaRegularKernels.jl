@@ -16,16 +16,9 @@ function _cuda_regular_quadrature_slp_hyp_kernel!(
     p1_dof_count,
     face_count,
     rule_count,
-    total_pairs,
-    pairs_per_block,
+    total_pairs
 )
-    linear_thread = threadIdx().x - 1
-    threads_per_pair = div(blockDim().x, pairs_per_block)
-    pair_group = div(linear_thread, threads_per_pair) + 1
-    tid = (linear_thread % threads_per_pair) + 1
-    scratch_tid = threadIdx().x
-    group_base = scratch_tid - tid
-    pair = (blockIdx().x - 1) * pairs_per_block + pair_group
+    pair = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     pair > total_pairs && return nothing
 
     index_count = length(test_indices)
@@ -97,10 +90,7 @@ function _cuda_regular_quadrature_slp_hyp_kernel!(
     jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
     four_pi = typeof(k)(12.566370614359172)
     qpair_count = rule_count * rule_count
-    qpair = tid
-    accumulator_count = 24
-    scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
-
+    qpair = 1
     slp1_re = zero(k); slp2_re = zero(k); slp3_re = zero(k)
     slp1_im = zero(k); slp2_im = zero(k); slp3_im = zero(k)
     hyp11_re = zero(k); hyp12_re = zero(k); hyp13_re = zero(k)
@@ -186,76 +176,35 @@ function _cuda_regular_quadrature_slp_hyp_kernel!(
             hyp33_im += h33 * weighted_im
         end
 
-        qpair += threads_per_pair
+        qpair += 1
     end
 
-    stride = blockDim().x
-    scratch[scratch_tid + 0 * stride] = slp1_re
-    scratch[scratch_tid + 1 * stride] = slp2_re
-    scratch[scratch_tid + 2 * stride] = slp3_re
-    scratch[scratch_tid + 3 * stride] = slp1_im
-    scratch[scratch_tid + 4 * stride] = slp2_im
-    scratch[scratch_tid + 5 * stride] = slp3_im
-    scratch[scratch_tid + 6 * stride] = hyp11_re
-    scratch[scratch_tid + 7 * stride] = hyp12_re
-    scratch[scratch_tid + 8 * stride] = hyp13_re
-    scratch[scratch_tid + 9 * stride] = hyp21_re
-    scratch[scratch_tid + 10 * stride] = hyp22_re
-    scratch[scratch_tid + 11 * stride] = hyp23_re
-    scratch[scratch_tid + 12 * stride] = hyp31_re
-    scratch[scratch_tid + 13 * stride] = hyp32_re
-    scratch[scratch_tid + 14 * stride] = hyp33_re
-    scratch[scratch_tid + 15 * stride] = hyp11_im
-    scratch[scratch_tid + 16 * stride] = hyp12_im
-    scratch[scratch_tid + 17 * stride] = hyp13_im
-    scratch[scratch_tid + 18 * stride] = hyp21_im
-    scratch[scratch_tid + 19 * stride] = hyp22_im
-    scratch[scratch_tid + 20 * stride] = hyp23_im
-    scratch[scratch_tid + 21 * stride] = hyp31_im
-    scratch[scratch_tid + 22 * stride] = hyp32_im
-    scratch[scratch_tid + 23 * stride] = hyp33_im
-    sync_threads()
+    slp_col = trial_index
+    _cuda_atomic_add!(slp_re, t1 + (slp_col - 1) * p1_dof_count, slp1_re)
+    _cuda_atomic_add!(slp_re, t2 + (slp_col - 1) * p1_dof_count, slp2_re)
+    _cuda_atomic_add!(slp_re, t3 + (slp_col - 1) * p1_dof_count, slp3_re)
+    _cuda_atomic_add!(slp_im, t1 + (slp_col - 1) * p1_dof_count, slp1_im)
+    _cuda_atomic_add!(slp_im, t2 + (slp_col - 1) * p1_dof_count, slp2_im)
+    _cuda_atomic_add!(slp_im, t3 + (slp_col - 1) * p1_dof_count, slp3_im)
 
-    offset = threads_per_pair >>> 1
-    while offset > 0
-        if tid <= offset
-            for slot in 0:23
-                scratch[scratch_tid + slot * stride] += scratch[scratch_tid + offset + slot * stride]
-            end
-        end
-        sync_threads()
-        offset >>>= 1
-    end
-
-    if tid == 1
-        slp_col = trial_index
-        _cuda_atomic_add!(slp_re, t1 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 0 * stride])
-        _cuda_atomic_add!(slp_re, t2 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 1 * stride])
-        _cuda_atomic_add!(slp_re, t3 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 2 * stride])
-        _cuda_atomic_add!(slp_im, t1 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 3 * stride])
-        _cuda_atomic_add!(slp_im, t2 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 4 * stride])
-        _cuda_atomic_add!(slp_im, t3 + (slp_col - 1) * p1_dof_count, scratch[group_base + 1 + 5 * stride])
-
-        _cuda_atomic_add!(hyp_re, t1 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 6 * stride])
-        _cuda_atomic_add!(hyp_re, t1 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 7 * stride])
-        _cuda_atomic_add!(hyp_re, t1 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 8 * stride])
-        _cuda_atomic_add!(hyp_re, t2 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 9 * stride])
-        _cuda_atomic_add!(hyp_re, t2 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 10 * stride])
-        _cuda_atomic_add!(hyp_re, t2 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 11 * stride])
-        _cuda_atomic_add!(hyp_re, t3 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 12 * stride])
-        _cuda_atomic_add!(hyp_re, t3 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 13 * stride])
-        _cuda_atomic_add!(hyp_re, t3 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 14 * stride])
-        _cuda_atomic_add!(hyp_im, t1 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 15 * stride])
-        _cuda_atomic_add!(hyp_im, t1 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 16 * stride])
-        _cuda_atomic_add!(hyp_im, t1 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 17 * stride])
-        _cuda_atomic_add!(hyp_im, t2 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 18 * stride])
-        _cuda_atomic_add!(hyp_im, t2 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 19 * stride])
-        _cuda_atomic_add!(hyp_im, t2 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 20 * stride])
-        _cuda_atomic_add!(hyp_im, t3 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 21 * stride])
-        _cuda_atomic_add!(hyp_im, t3 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 22 * stride])
-        _cuda_atomic_add!(hyp_im, t3 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 23 * stride])
-    end
-
+    _cuda_atomic_add!(hyp_re, t1 + (r1 - 1) * p1_dof_count, hyp11_re)
+    _cuda_atomic_add!(hyp_re, t1 + (r2 - 1) * p1_dof_count, hyp12_re)
+    _cuda_atomic_add!(hyp_re, t1 + (r3 - 1) * p1_dof_count, hyp13_re)
+    _cuda_atomic_add!(hyp_re, t2 + (r1 - 1) * p1_dof_count, hyp21_re)
+    _cuda_atomic_add!(hyp_re, t2 + (r2 - 1) * p1_dof_count, hyp22_re)
+    _cuda_atomic_add!(hyp_re, t2 + (r3 - 1) * p1_dof_count, hyp23_re)
+    _cuda_atomic_add!(hyp_re, t3 + (r1 - 1) * p1_dof_count, hyp31_re)
+    _cuda_atomic_add!(hyp_re, t3 + (r2 - 1) * p1_dof_count, hyp32_re)
+    _cuda_atomic_add!(hyp_re, t3 + (r3 - 1) * p1_dof_count, hyp33_re)
+    _cuda_atomic_add!(hyp_im, t1 + (r1 - 1) * p1_dof_count, hyp11_im)
+    _cuda_atomic_add!(hyp_im, t1 + (r2 - 1) * p1_dof_count, hyp12_im)
+    _cuda_atomic_add!(hyp_im, t1 + (r3 - 1) * p1_dof_count, hyp13_im)
+    _cuda_atomic_add!(hyp_im, t2 + (r1 - 1) * p1_dof_count, hyp21_im)
+    _cuda_atomic_add!(hyp_im, t2 + (r2 - 1) * p1_dof_count, hyp22_im)
+    _cuda_atomic_add!(hyp_im, t2 + (r3 - 1) * p1_dof_count, hyp23_im)
+    _cuda_atomic_add!(hyp_im, t3 + (r1 - 1) * p1_dof_count, hyp31_im)
+    _cuda_atomic_add!(hyp_im, t3 + (r2 - 1) * p1_dof_count, hyp32_im)
+    _cuda_atomic_add!(hyp_im, t3 + (r3 - 1) * p1_dof_count, hyp33_im)
     return nothing
 end
 
@@ -276,16 +225,9 @@ function _cuda_regular_quadrature_dlp_adjoint_kernel!(
     p1_dof_count,
     face_count,
     rule_count,
-    total_pairs,
-    pairs_per_block,
+    total_pairs
 )
-    linear_thread = threadIdx().x - 1
-    threads_per_pair = div(blockDim().x, pairs_per_block)
-    pair_group = div(linear_thread, threads_per_pair) + 1
-    tid = (linear_thread % threads_per_pair) + 1
-    scratch_tid = threadIdx().x
-    group_base = scratch_tid - tid
-    pair = (blockIdx().x - 1) * pairs_per_block + pair_group
+    pair = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     pair > total_pairs && return nothing
 
     index_count = length(test_indices)
@@ -336,10 +278,7 @@ function _cuda_regular_quadrature_dlp_adjoint_kernel!(
     jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
     four_pi = typeof(k)(12.566370614359172)
     qpair_count = rule_count * rule_count
-    qpair = tid
-    accumulator_count = 24
-    scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
-
+    qpair = 1
     dlp11_re = zero(k); dlp12_re = zero(k); dlp13_re = zero(k)
     dlp21_re = zero(k); dlp22_re = zero(k); dlp23_re = zero(k)
     dlp31_re = zero(k); dlp32_re = zero(k); dlp33_re = zero(k)
@@ -424,76 +363,34 @@ function _cuda_regular_quadrature_dlp_adjoint_kernel!(
             adj3_im += tv3 * adj_value_im
         end
 
-        qpair += threads_per_pair
+        qpair += 1
     end
 
-    stride = blockDim().x
-    scratch[scratch_tid + 0 * stride] = dlp11_re
-    scratch[scratch_tid + 1 * stride] = dlp12_re
-    scratch[scratch_tid + 2 * stride] = dlp13_re
-    scratch[scratch_tid + 3 * stride] = dlp21_re
-    scratch[scratch_tid + 4 * stride] = dlp22_re
-    scratch[scratch_tid + 5 * stride] = dlp23_re
-    scratch[scratch_tid + 6 * stride] = dlp31_re
-    scratch[scratch_tid + 7 * stride] = dlp32_re
-    scratch[scratch_tid + 8 * stride] = dlp33_re
-    scratch[scratch_tid + 9 * stride] = dlp11_im
-    scratch[scratch_tid + 10 * stride] = dlp12_im
-    scratch[scratch_tid + 11 * stride] = dlp13_im
-    scratch[scratch_tid + 12 * stride] = dlp21_im
-    scratch[scratch_tid + 13 * stride] = dlp22_im
-    scratch[scratch_tid + 14 * stride] = dlp23_im
-    scratch[scratch_tid + 15 * stride] = dlp31_im
-    scratch[scratch_tid + 16 * stride] = dlp32_im
-    scratch[scratch_tid + 17 * stride] = dlp33_im
-    scratch[scratch_tid + 18 * stride] = adj1_re
-    scratch[scratch_tid + 19 * stride] = adj2_re
-    scratch[scratch_tid + 20 * stride] = adj3_re
-    scratch[scratch_tid + 21 * stride] = adj1_im
-    scratch[scratch_tid + 22 * stride] = adj2_im
-    scratch[scratch_tid + 23 * stride] = adj3_im
-    sync_threads()
+    _cuda_atomic_add!(dlp_re, t1 + (r1 - 1) * p1_dof_count, dlp11_re)
+    _cuda_atomic_add!(dlp_re, t1 + (r2 - 1) * p1_dof_count, dlp12_re)
+    _cuda_atomic_add!(dlp_re, t1 + (r3 - 1) * p1_dof_count, dlp13_re)
+    _cuda_atomic_add!(dlp_re, t2 + (r1 - 1) * p1_dof_count, dlp21_re)
+    _cuda_atomic_add!(dlp_re, t2 + (r2 - 1) * p1_dof_count, dlp22_re)
+    _cuda_atomic_add!(dlp_re, t2 + (r3 - 1) * p1_dof_count, dlp23_re)
+    _cuda_atomic_add!(dlp_re, t3 + (r1 - 1) * p1_dof_count, dlp31_re)
+    _cuda_atomic_add!(dlp_re, t3 + (r2 - 1) * p1_dof_count, dlp32_re)
+    _cuda_atomic_add!(dlp_re, t3 + (r3 - 1) * p1_dof_count, dlp33_re)
+    _cuda_atomic_add!(dlp_im, t1 + (r1 - 1) * p1_dof_count, dlp11_im)
+    _cuda_atomic_add!(dlp_im, t1 + (r2 - 1) * p1_dof_count, dlp12_im)
+    _cuda_atomic_add!(dlp_im, t1 + (r3 - 1) * p1_dof_count, dlp13_im)
+    _cuda_atomic_add!(dlp_im, t2 + (r1 - 1) * p1_dof_count, dlp21_im)
+    _cuda_atomic_add!(dlp_im, t2 + (r2 - 1) * p1_dof_count, dlp22_im)
+    _cuda_atomic_add!(dlp_im, t2 + (r3 - 1) * p1_dof_count, dlp23_im)
+    _cuda_atomic_add!(dlp_im, t3 + (r1 - 1) * p1_dof_count, dlp31_im)
+    _cuda_atomic_add!(dlp_im, t3 + (r2 - 1) * p1_dof_count, dlp32_im)
+    _cuda_atomic_add!(dlp_im, t3 + (r3 - 1) * p1_dof_count, dlp33_im)
 
-    offset = threads_per_pair >>> 1
-    while offset > 0
-        if tid <= offset
-            for slot in 0:23
-                scratch[scratch_tid + slot * stride] += scratch[scratch_tid + offset + slot * stride]
-            end
-        end
-        sync_threads()
-        offset >>>= 1
-    end
-
-    if tid == 1
-        _cuda_atomic_add!(dlp_re, t1 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 0 * stride])
-        _cuda_atomic_add!(dlp_re, t1 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 1 * stride])
-        _cuda_atomic_add!(dlp_re, t1 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 2 * stride])
-        _cuda_atomic_add!(dlp_re, t2 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 3 * stride])
-        _cuda_atomic_add!(dlp_re, t2 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 4 * stride])
-        _cuda_atomic_add!(dlp_re, t2 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 5 * stride])
-        _cuda_atomic_add!(dlp_re, t3 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 6 * stride])
-        _cuda_atomic_add!(dlp_re, t3 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 7 * stride])
-        _cuda_atomic_add!(dlp_re, t3 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 8 * stride])
-        _cuda_atomic_add!(dlp_im, t1 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 9 * stride])
-        _cuda_atomic_add!(dlp_im, t1 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 10 * stride])
-        _cuda_atomic_add!(dlp_im, t1 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 11 * stride])
-        _cuda_atomic_add!(dlp_im, t2 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 12 * stride])
-        _cuda_atomic_add!(dlp_im, t2 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 13 * stride])
-        _cuda_atomic_add!(dlp_im, t2 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 14 * stride])
-        _cuda_atomic_add!(dlp_im, t3 + (r1 - 1) * p1_dof_count, scratch[group_base + 1 + 15 * stride])
-        _cuda_atomic_add!(dlp_im, t3 + (r2 - 1) * p1_dof_count, scratch[group_base + 1 + 16 * stride])
-        _cuda_atomic_add!(dlp_im, t3 + (r3 - 1) * p1_dof_count, scratch[group_base + 1 + 17 * stride])
-
-        adj_col = trial_index
-        _cuda_atomic_add!(adj_re, t1 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 18 * stride])
-        _cuda_atomic_add!(adj_re, t2 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 19 * stride])
-        _cuda_atomic_add!(adj_re, t3 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 20 * stride])
-        _cuda_atomic_add!(adj_im, t1 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 21 * stride])
-        _cuda_atomic_add!(adj_im, t2 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 22 * stride])
-        _cuda_atomic_add!(adj_im, t3 + (adj_col - 1) * p1_dof_count, scratch[group_base + 1 + 23 * stride])
-    end
-
+    adj_col = trial_index
+    _cuda_atomic_add!(adj_re, t1 + (adj_col - 1) * p1_dof_count, adj1_re)
+    _cuda_atomic_add!(adj_re, t2 + (adj_col - 1) * p1_dof_count, adj2_re)
+    _cuda_atomic_add!(adj_re, t3 + (adj_col - 1) * p1_dof_count, adj3_re)
+    _cuda_atomic_add!(adj_im, t1 + (adj_col - 1) * p1_dof_count, adj1_im)
+    _cuda_atomic_add!(adj_im, t2 + (adj_col - 1) * p1_dof_count, adj2_im)
+    _cuda_atomic_add!(adj_im, t3 + (adj_col - 1) * p1_dof_count, adj3_im)
     return nothing
 end
-

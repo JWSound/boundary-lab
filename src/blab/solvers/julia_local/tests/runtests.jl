@@ -222,8 +222,8 @@ end
         )
 
         @test get(operators, :on_gpu, false)
-        @test operators.regular_assembly_mode == :split_atomic_balanced_multipair
-        @test operators.regular_kernel_mode == "split_atomic_balanced_multipair"
+        @test operators.regular_assembly_mode == :serial_pair_batched
+        @test operators.regular_kernel_mode == "serial_pair_batched"
         @test operators.regular_pairs > 0
         @test operators.singular_pairs == singular_cache.pair_count
 

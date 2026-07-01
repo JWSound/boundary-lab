@@ -47,22 +47,16 @@ Symmetry image-singular pairs use the same compact correction idea, with reflect
 
 The CUDA backend has a regular assembly split kernel, one singular correction block kernel, and two field-evaluation kernels.
 
-Regular assembly uses the multipair balanced split path by default. A CUDA block carries multiple independent regular test/trial element pairs. The layout uses 1 thread per element pair and 128 element pairs per CUDA block for the current order-4 regular triangle rule. This keeps the block size at 128 threads while avoiding subgroup reduction overhead for only 36 quadrature-point pairs per element pair.
+Regular assembly uses a serial pair batched split path. A CUDA block carries 128 independent regular test/trial element pairs, with one CUDA thread responsible for the full quadrature loop for one pair. For the current order-4 regular triangle rule, each thread evaluates the 36 quadrature-point pairs for its element pair directly in registers and then atomically scatters the resulting element-block entries.
 
-The same kernels still support larger fixed thread subgroups for benchmarking. When `threads_per_pair > 1`, per-thread partial sums are reduced inside each pair subgroup in dynamic shared memory:
-
-```julia
-scratch = CUDA.@cuDynamicSharedMem(typeof(k), blockDim().x * accumulator_count)
-```
-
-The multipair path uses two regular assembly launches:
+The regular path uses two regular assembly launches:
 
 - `_cuda_regular_quadrature_slp_hyp_kernel!` computes single-layer and hypersingular contributions.
 - `_cuda_regular_quadrature_dlp_adjoint_kernel!` computes double-layer and adjoint double-layer contributions.
 
 This grouping keeps both launches at 24 accumulator slots, which reduces register/shared-memory pressure compared to a fused all-operator kernel.
 
-The multipair balanced split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
+The serial pair batched split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
 
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 
@@ -85,7 +79,7 @@ $$
 A = A_{\mathrm{re}} + i A_{\mathrm{im}}.
 $$
 
-This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The multipair balanced split regular assembly path preserves this property: it atomically accumulates into the same dense buffers through two balanced operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
+This avoids a slow serial scatter stage and lets regular-pair assembly remain massively parallel. The serial pair batched regular assembly path preserves this property: it atomically accumulates into the same dense buffers through two balanced operator-family kernels instead of one all-operator kernel. The tradeoff is that floating-point atomic accumulation is order-dependent, so tiny run-to-run differences can occur at the last few bits.
 
 ## GPU Dense Solve
 
@@ -128,15 +122,14 @@ CUDA's regular assembly cache is built from `mesh + rule`, so future CUDA wavele
 
 ## Performance Notes
 
-CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The multipair balanced split regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU and batching many regular pairs per CUDA block.
+CUDA accelerates regular-pair assembly, singular Duffy corrections, the dense solve, and field evaluation. The remaining dominant cost in CUDA solves is usually regular-pair assembly for the dense operators, followed by the dense solve for larger P1 systems. The serial pair batched regular assembly mode reduces regular-kernel pressure by assembling SLP/hypersingular and DLP/adjoint in separate launches while keeping dense operators resident on the GPU and batching 128 regular pairs per CUDA block.
 
 Temporary allocation, dense GPU memory footprint, and atomic accumulation cost are important practical limits. CUDA memory use scales with dense P1/DP0 matrix dimensions, so symmetry is especially useful on large meshes.
 
-`scripts/benchmark_cuda.jl` exposes regular assembly launch geometry for local comparison:
+`scripts/benchmark_cuda.jl` measures the serial pair batched regular assembly path:
 
 ```powershell
-julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetitions 5 --regular-threads-per-pair 1 --regular-pairs-per-block 128
-julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetitions 5 --regular-threads-per-pair 16 --regular-pairs-per-block 8
+julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetitions 5
 ```
 
 Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight Compute can profile the measured regular kernels with a kernel filter such as `regex:.*regular_quadrature.*`; on Windows, detailed counters require NVIDIA performance-counter permission to avoid `ERR_NVGPUCTRPERM`.

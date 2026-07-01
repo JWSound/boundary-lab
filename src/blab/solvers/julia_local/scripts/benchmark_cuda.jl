@@ -40,8 +40,6 @@ Base.@kwdef mutable struct BenchmarkConfig
     output::String = joinpath(@__DIR__, "..", "results", "benchmark_cuda_sample.json")
     return_gpu::Bool = true
     verbose::Bool = false
-    regular_threads_per_pair::Int = 1
-    regular_pairs_per_block::Int = 128
 end
 
 function print_usage()
@@ -61,8 +59,6 @@ function print_usage()
       --warmups N                    Warmup repetitions. Default: 1
       --skip-solve                   Do not build/solve the Burton-Miller system.
       --skip-field                   Do not evaluate the radiated field.
-      --regular-threads-per-pair N   CUDA subgroup threads per element pair. Default: 1
-      --regular-pairs-per-block N    Element pairs carried by each CUDA block. Default: 128
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
       --json PATH                    Write JSON results. Default: results/benchmark_cuda_sample.json
       --verbose                      Print every timing bucket in the console summary.
@@ -104,10 +100,6 @@ function parse_args(args)
             config.skip_solve = true
         elseif arg == "--skip-field"
             config.skip_field = true
-        elseif arg == "--regular-threads-per-pair"
-            i += 1; config.regular_threads_per_pair = parse(Int, args[i])
-        elseif arg == "--regular-pairs-per-block"
-            i += 1; config.regular_pairs_per_block = parse(Int, args[i])
         elseif arg == "--profile"
             i += 1; config.profile = lowercase(args[i])
         elseif arg == "--json"
@@ -216,8 +208,6 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             timing=timings,
             singular_cache=singular_cache,
             device_singular_cache=cuda_singular_cache,
-            regular_threads_per_pair=config.regular_threads_per_pair,
-            regular_pairs_per_block=config.regular_pairs_per_block,
         )
     end
 
@@ -357,9 +347,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "regular_kernel_shared_memory_bytes" => get(operators, :regular_kernel_shared_memory_bytes, nothing),
         "regular_kernel_qpair_count" => get(operators, :regular_kernel_qpair_count, nothing),
         "regular_kernel_total_pairs" => get(operators, :regular_kernel_total_pairs, nothing),
-        "regular_kernel_pairs_per_block" => get(operators, :regular_kernel_pairs_per_block, nothing),
         "regular_kernel_mode" => get(operators, :regular_kernel_mode, nothing),
-        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :split_atomic_balanced_multipair)),
+        "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, :serial_pair_batched)),
         "pressure_norm" => pressure === nothing ? nothing : Float64(norm(pressure)),
         "field_norm" => field_norm,
         "timings_seconds" => timings,
@@ -500,8 +489,6 @@ function benchmark_payload(config::BenchmarkConfig)
         "skip_field" => config.skip_field,
         "profile" => config.profile,
         "verbose" => config.verbose,
-        "regular_threads_per_pair" => config.regular_threads_per_pair,
-        "regular_pairs_per_block" => config.regular_pairs_per_block,
     )
 
     for i in 1:config.warmups
