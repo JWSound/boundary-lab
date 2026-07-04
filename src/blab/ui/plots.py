@@ -33,10 +33,10 @@ GRID_LINE_ALPHA = 0.6
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
-ISOBAR_CROSSHAIR_COLOR = '#101214'
-ISOBAR_CROSSHAIR_LABEL_FACE = '#f8fbff'
-ISOBAR_CROSSHAIR_LABEL_EDGE = '#2868ff'
-ISOBAR_CROSSHAIR_DB_FACE = '#101214'
+ISOBAR_CROSSHAIR_COLOR = "#101214"
+ISOBAR_CROSSHAIR_LABEL_FACE = "#f8fbff"
+ISOBAR_CROSSHAIR_LABEL_EDGE = "#2868ff"
+ISOBAR_CROSSHAIR_DB_FACE = "#101214"
 
 
 def apply_audio_frequency_axis(axes) -> None:
@@ -87,8 +87,8 @@ def slider_value_to_frequency(value: int) -> int:
 
 def _format_isobar_crosshair_frequency(freq_hz: float) -> str:
     if freq_hz >= 1000.0:
-        return f'{freq_hz / 1000.0:.2f}'.rstrip('0').rstrip('.') + ' kHz'
-    return f'{freq_hz:.0f} Hz'
+        return f"{freq_hz / 1000.0:.2f}".rstrip("0").rstrip(".") + " kHz"
+    return f"{freq_hz:.0f} Hz"
 
 
 def _grid_bracket(values: np.ndarray, target: float) -> tuple[int, int, float]:
@@ -104,7 +104,7 @@ def _grid_bracket(values: np.ndarray, target: float) -> tuple[int, int, float]:
     if target >= axis[-1]:
         last = axis.size - 1
         return last, last, 0.0
-    right = int(np.searchsorted(axis, target, side='right'))
+    right = int(np.searchsorted(axis, target, side="right"))
     left = max(0, right - 1)
     span = axis[right] - axis[left]
     fraction = 0.0 if np.isclose(span, 0.0) else float((target - axis[left]) / span)
@@ -201,10 +201,10 @@ class IsobarCanvas(FigureCanvas):
         self.draw_idle()
 
     def _connect_crosshair_events(self) -> None:
-        self.mpl_connect('button_press_event', self._on_crosshair_button_press)
-        self.mpl_connect('button_release_event', self._on_crosshair_button_release)
-        self.mpl_connect('motion_notify_event', self._on_crosshair_motion)
-        self.mpl_connect('draw_event', self._on_crosshair_draw)
+        self.mpl_connect("button_press_event", self._on_crosshair_button_press)
+        self.mpl_connect("button_release_event", self._on_crosshair_button_release)
+        self.mpl_connect("motion_notify_event", self._on_crosshair_motion)
+        self.mpl_connect("draw_event", self._on_crosshair_draw)
 
     def _on_crosshair_draw(self, event) -> None:
         if event.canvas is not self:
@@ -255,7 +255,7 @@ class IsobarCanvas(FigureCanvas):
     def _on_crosshair_button_press(self, event) -> None:
         if event.inaxes is not self.axes or event.button != MouseButton.LEFT:
             return
-        if getattr(event, 'dblclick', False):
+        if getattr(event, "dblclick", False):
             self._hide_crosshair()
             return
         if not self._has_crosshair_data():
@@ -280,13 +280,13 @@ class IsobarCanvas(FigureCanvas):
         self._set_crosshair_position(freq_hz, angle_deg)
 
     def _axis_x_to_frequency(self, x_value: float) -> float:
-        if self._x_axis_mode == 'log_image':
+        if self._x_axis_mode == "log_image":
             return float(10.0**x_value)
         return float(x_value)
 
     def _frequency_to_axis_x(self, freq_hz: float) -> float:
         freq = max(float(freq_hz), np.finfo(float).tiny)
-        if self._x_axis_mode == 'log_image':
+        if self._x_axis_mode == "log_image":
             return float(np.log10(freq))
         return freq
 
@@ -352,17 +352,17 @@ class IsobarCanvas(FigureCanvas):
             self._crosshair_freq_label = self.axes.text(
                 AUDIO_FREQ_MIN_HZ,
                 -0.075,
-                '',
+                "",
                 transform=self.axes.get_xaxis_transform(),
-                ha='center',
-                va='top',
+                ha="center",
+                va="top",
                 color=ISOBAR_CROSSHAIR_LABEL_EDGE,
                 fontsize=PLOT_TICK_SIZE,
                 bbox={
-                    'boxstyle': 'square,pad=0.12',
-                    'facecolor': ISOBAR_CROSSHAIR_LABEL_FACE,
-                    'edgecolor': ISOBAR_CROSSHAIR_LABEL_EDGE,
-                    'linewidth': 0.8,
+                    "boxstyle": "square,pad=0.12",
+                    "facecolor": ISOBAR_CROSSHAIR_LABEL_FACE,
+                    "edgecolor": ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    "linewidth": 0.8,
                 },
                 clip_on=False,
                 zorder=10,
@@ -372,17 +372,17 @@ class IsobarCanvas(FigureCanvas):
             self._crosshair_angle_label = self.axes.text(
                 -0.01,
                 0.0,
-                '',
+                "",
                 transform=self.axes.get_yaxis_transform(),
-                ha='right',
-                va='center',
+                ha="right",
+                va="center",
                 color=ISOBAR_CROSSHAIR_LABEL_EDGE,
                 fontsize=PLOT_TICK_SIZE,
                 bbox={
-                    'boxstyle': 'square,pad=0.12',
-                    'facecolor': ISOBAR_CROSSHAIR_LABEL_FACE,
-                    'edgecolor': ISOBAR_CROSSHAIR_LABEL_EDGE,
-                    'linewidth': 0.8,
+                    "boxstyle": "square,pad=0.12",
+                    "facecolor": ISOBAR_CROSSHAIR_LABEL_FACE,
+                    "edgecolor": ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    "linewidth": 0.8,
                 },
                 clip_on=False,
                 zorder=10,
@@ -390,20 +390,20 @@ class IsobarCanvas(FigureCanvas):
             )
         if self._crosshair_db_label is None:
             self._crosshair_db_label = self.axes.annotate(
-                '',
+                "",
                 xy=(AUDIO_FREQ_MIN_HZ, 0.0),
                 xytext=(8, 8),
-                textcoords='offset points',
-                ha='left',
-                va='bottom',
-                color='#ffffff',
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
+                color="#ffffff",
                 fontsize=PLOT_TICK_SIZE,
                 bbox={
-                    'boxstyle': 'round,pad=0.18',
-                    'facecolor': ISOBAR_CROSSHAIR_DB_FACE,
-                    'edgecolor': 'none',
-                    'linewidth': 0.0,
-                    'alpha': 0.75,
+                    "boxstyle": "round,pad=0.18",
+                    "facecolor": ISOBAR_CROSSHAIR_DB_FACE,
+                    "edgecolor": "none",
+                    "linewidth": 0.0,
+                    "alpha": 0.75,
                 },
                 zorder=10,
                 visible=False,
@@ -432,9 +432,9 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_freq_label.set_position((axis_x, -0.075))
         self._crosshair_freq_label.set_text(_format_isobar_crosshair_frequency(self._crosshair_freq_hz))
         self._crosshair_angle_label.set_position((-0.01, self._crosshair_angle_deg))
-        self._crosshair_angle_label.set_text(f'{int(round(self._crosshair_angle_deg)):+d} deg')
+        self._crosshair_angle_label.set_text(f"{int(round(self._crosshair_angle_deg)):+d} deg")
         self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)
-        self._crosshair_db_label.set_text('' if db_value is None else f'{db_value:.1f} dB')
+        self._crosshair_db_label.set_text("" if db_value is None else f"{db_value:.1f} dB")
         self._set_crosshair_artist_visibility(True)
 
     def _crosshair_value_db(self, freq_hz: float, angle_deg: float) -> float | None:

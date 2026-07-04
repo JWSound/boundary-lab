@@ -784,7 +784,6 @@ def _julia_command(
     return command
 
 
-
 def _julia_worker_command(
     julia_executable: str,
     solver_script: Path,

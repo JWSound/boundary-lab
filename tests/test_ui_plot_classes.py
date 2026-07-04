@@ -438,36 +438,36 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
 
 
 def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
-    source = Path('src/blab/ui/plots.py').read_text(encoding='utf-8')
-    isobar_block = source[source.index('class IsobarCanvas') : source.index('class ImpedanceCanvas')]
+    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
 
-    assert 'from matplotlib.backend_bases import MouseButton' in source
-    assert 'self._crosshair_visible = False' in isobar_block
-    assert 'self._connect_crosshair_events()' in isobar_block
-    assert 'button_press_event' in isobar_block
-    assert 'motion_notify_event' in isobar_block
-    assert 'button_release_event' in isobar_block
-    assert 'event.button != MouseButton.LEFT' in isobar_block
-    assert "getattr(event, 'dblclick', False)" in isobar_block
-    assert 'self._hide_crosshair()' in isobar_block
-    assert 'self.axes.axvline(' in isobar_block
-    assert 'self.axes.axhline(' in isobar_block
-    assert 'self.axes.get_xaxis_transform()' in isobar_block
-    assert 'self.axes.get_yaxis_transform()' in isobar_block
-    assert 'self.axes.annotate(' in isobar_block
-    assert '_format_isobar_crosshair_frequency' in source
-    assert "f'{int(round(self._crosshair_angle_deg)):+d} deg'" in isobar_block
-    assert "f'{db_value:.1f} dB'" in isobar_block
-    assert 'self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)' in isobar_block
-    assert 'if self._crosshair_visible:' in isobar_block
-    assert 'self._redraw_crosshair()' in isobar_block
+    assert "from matplotlib.backend_bases import MouseButton" in source
+    assert "self._crosshair_visible = False" in isobar_block
+    assert "self._connect_crosshair_events()" in isobar_block
+    assert "button_press_event" in isobar_block
+    assert "motion_notify_event" in isobar_block
+    assert "button_release_event" in isobar_block
+    assert "event.button != MouseButton.LEFT" in isobar_block
+    assert 'getattr(event, "dblclick", False)' in isobar_block
+    assert "self._hide_crosshair()" in isobar_block
+    assert "self.axes.axvline(" in isobar_block
+    assert "self.axes.axhline(" in isobar_block
+    assert "self.axes.get_xaxis_transform()" in isobar_block
+    assert "self.axes.get_yaxis_transform()" in isobar_block
+    assert "self.axes.annotate(" in isobar_block
+    assert "_format_isobar_crosshair_frequency" in source
+    assert 'f"{int(round(self._crosshair_angle_deg)):+d} deg"' in isobar_block
+    assert 'f"{db_value:.1f} dB"' in isobar_block
+    assert "self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)" in isobar_block
+    assert "if self._crosshair_visible:" in isobar_block
+    assert "self._redraw_crosshair()" in isobar_block
     assert "draw_event" in isobar_block
     assert "self.copy_from_bbox(self.figure.bbox)" in isobar_block
     assert "self.restore_region(self._crosshair_background)" in isobar_block
     assert "self.axes.draw_artist(artist)" in isobar_block
     assert "self.blit(self.figure.bbox)" in isobar_block
     assert "artist.set_animated(True)" in isobar_block
-    assert '_grid_bracket(log_freqs, log_freq)' in isobar_block
+    assert "_grid_bracket(log_freqs, log_freq)" in isobar_block
 
 
 def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
