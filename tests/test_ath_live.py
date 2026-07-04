@@ -163,6 +163,7 @@ def test_ath_process_runner_reports_missing_wine_on_linux(tmp_path: Path, monkey
             case_name="case",
         )
 
+
 def test_ath_process_runner_stop_terminates_active_process(monkeypatch) -> None:
     runner = AthProcessRunner()
     process = _FakeAthProcess()
