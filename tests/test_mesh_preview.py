@@ -5,9 +5,11 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blab.config import MeshConfig
 from blab.ui.mesh_preview import (
     PREVIEW_HOME_CAMERA_DIRECTION,
     PREVIEW_HOME_VIEW_UP,
+    MeshPreview,
     _dimensions_lwh_mm,
     _mesh_stats_label,
     _mirrored_triangle_images_for_preview,
@@ -37,6 +39,42 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
     assert "self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
     assert "self.total_elements_label.setMinimumWidth(0)" in source
     assert "self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
+
+
+def test_load_mesh_configs_requests_render_after_preview_update() -> None:
+    calls = []
+
+    class ViewerStub:
+        def clear(self) -> None:
+            calls.append("clear")
+
+        def render(self) -> None:
+            calls.append("render")
+
+        def update(self) -> None:
+            calls.append("update")
+
+    class LabelStub:
+        def setText(self, text: str) -> None:
+            calls.append(f"label:{text}")
+
+    preview = MeshPreview.__new__(MeshPreview)
+    preview.viewer = ViewerStub()
+    preview._actor_surface_labels = {}
+    preview.hover_label = LabelStub()
+    preview.total_elements_label = LabelStub()
+    preview._camera_position = lambda: None
+    preview._add_msh_mesh = lambda _mesh_cfg, **_kwargs: (
+        3,
+        np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [0.0, 0.2, 0.3]]),
+    )
+    preview._add_orientation_guides = lambda _points: None
+    preview._restore_camera_or_reset = lambda _camera_position: None
+
+    preview.load_mesh_configs((MeshConfig(name="ath", file="unused.msh"),))
+
+    assert "render" in calls
+    assert "update" in calls
 
 
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:

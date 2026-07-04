@@ -107,6 +107,47 @@ def test_apply_saved_imported_source_config_ignores_generated_meshes() -> None:
     )
 
 
+def test_apply_saved_imported_source_config_defaults_abec_driven_surface() -> None:
+    radiators = apply_saved_imported_source_config(
+        surface_tags={
+            "waveguide:Rigid": ("waveguide", 1),
+            "waveguide:SD1D1001": ("waveguide", 2),
+        },
+        generated_mesh_names={"ath"},
+        existing_radiators=(),
+        config_by_name={},
+    )
+
+    assert radiators == (
+        RadiatorConfig(
+            name="waveguide:SD1D1001",
+            mesh="waveguide",
+            tag=2,
+            channel="main",
+        ),
+    )
+
+
+def test_apply_saved_imported_source_config_defaults_complex_abec_surfaces() -> None:
+    radiators = apply_saved_imported_source_config(
+        surface_tags={
+            "driver:SD1D1001": ("driver", 11),
+            "driver:SD1D1002": ("driver", 12),
+            "driver:SD1D1003": ("driver", 13),
+            "driver:Rigid": ("driver", 14),
+        },
+        generated_mesh_names=set(),
+        existing_radiators=(),
+        config_by_name={},
+    )
+
+    assert [(radiator.name, radiator.mesh, radiator.tag, radiator.level_db) for radiator in radiators] == [
+        ("driver:SD1D1001", "driver", 11, -12.0),
+        ("driver:SD1D1002", "driver", 12, -2.5),
+        ("driver:SD1D1003", "driver", 13, 0.0),
+    ]
+
+
 def test_channels_for_solver_radiators_adds_missing_channel_names() -> None:
     channels = channels_for_solver_radiators(
         (ChannelConfig(name="LF"),),

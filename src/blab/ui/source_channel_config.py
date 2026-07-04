@@ -8,7 +8,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from blab.ath import AthRunResult, read_surface_physical_names
+from blab.ath import (
+    COMPLEX_RADIATOR_DRIVES_DB,
+    DRIVEN_DIAPHRAGM_PHYSICAL_NAME,
+    AthRunResult,
+    read_surface_physical_names,
+)
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 
 SOURCE_CONFIG_SETTINGS_KEY = "source/config_by_name"
@@ -183,6 +188,10 @@ def apply_saved_imported_source_config(
     config_by_name: dict[str, dict],
 ) -> tuple[RadiatorConfig, ...]:
     existing_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in existing_radiators}
+    default_radiators_by_name = _default_imported_radiators_by_surface_name(
+        surface_tags=surface_tags,
+        generated_mesh_names=generated_mesh_names,
+    )
     radiators = []
     for surface_name, (mesh_name, tag) in sorted(
         surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])
@@ -205,7 +214,48 @@ def apply_saved_imported_source_config(
             )
         elif existing is not None:
             radiators.append(existing)
+        elif surface_name in default_radiators_by_name:
+            radiators.append(default_radiators_by_name[surface_name])
     return tuple(radiators)
+
+
+def _default_imported_radiators_by_surface_name(
+    *,
+    surface_tags: dict[str, tuple[str, int]],
+    generated_mesh_names: set[str],
+) -> dict[str, RadiatorConfig]:
+    by_mesh: dict[str, dict[str, tuple[str, int]]] = {}
+    for surface_name, (mesh_name, tag) in surface_tags.items():
+        if mesh_name in generated_mesh_names:
+            continue
+        label = surface_name.rsplit(":", maxsplit=1)[-1]
+        by_mesh.setdefault(mesh_name, {})[label] = (surface_name, tag)
+
+    defaults = {}
+    for mesh_name, labels in by_mesh.items():
+        if set(COMPLEX_RADIATOR_DRIVES_DB).issubset(labels):
+            for physical_name, level_db in COMPLEX_RADIATOR_DRIVES_DB.items():
+                surface_name, tag = labels[physical_name]
+                defaults[surface_name] = RadiatorConfig(
+                    name=surface_name,
+                    mesh=mesh_name,
+                    tag=tag,
+                    level_db=level_db,
+                )
+            continue
+
+        surface = labels.get(DRIVEN_DIAPHRAGM_PHYSICAL_NAME)
+        if surface is None:
+            continue
+        surface_name, tag = surface
+        defaults[surface_name] = RadiatorConfig(
+            name=surface_name,
+            mesh=mesh_name,
+            tag=tag,
+            channel="main",
+        )
+
+    return defaults
 
 
 def _load_config_by_name(settings: QSettings, key: str) -> dict[str, dict]:

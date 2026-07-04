@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -36,11 +38,98 @@ DEFAULT_CLEAN_SUFFIX = "_clean"
 ATH_CFG_OUTPUT_ROOT_KEY = "OutputRootDir"
 ATH_CFG_MESH_CMD_KEY = "MeshCmd"
 SOLVING_SYM_RE = re.compile(r"\bSym\s*=\s*([A-Za-z]+)\b")
+MESH_QUADRANTS_RE = re.compile(r"^\s*Mesh\.Quadrants\s*=\s*([^;#\n]*)", re.IGNORECASE | re.MULTILINE)
+# ``Mesh.Quadrants`` names the covered quadrants of a symmetric model; the value
+# maps to the mirror axes needed to reconstruct the full model. Quarter meshes
+# (quadrant 1) mirror across X and Y, half meshes across a single axis, and full
+# meshes (1234) need no mirroring. Mirrors the HornLab mesher's own quadrant map.
+QUADRANTS_MIRROR_AXES = {"1": "xy", "12": "y", "14": "x", "1234": ""}
 WINE_PLATFORMS = {"linux", "darwin"}
 
 
 class AthCancelledError(RuntimeError):
     """Raised when an active Ath generation is cancelled by the user."""
+
+
+class HornlabWaveguideGenerationError(RuntimeError):
+    """Raised when the optional HornLab waveguide mesher fallback cannot generate a mesh."""
+
+
+class HornlabMesherRunner:
+    """Small cancellable subprocess wrapper for the optional HornLab mesher."""
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+        self._cancel_requested = False
+
+    def run(self, config_path: Path, msh_path: Path, *, timeout_s: float | None = None) -> None:
+        self._cancel_requested = False
+        self._process = subprocess.Popen(
+            [sys.executable, "-c", _HORNLAB_MESHER_BUILD_SCRIPT, str(config_path), str(msh_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = self._process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self.stop()
+            raise
+        finally:
+            process = self._process
+            self._process = None
+
+        if self._cancel_requested:
+            raise AthCancelledError("HornLab mesh generation cancelled")
+
+        returncode = 0 if process is None else process.returncode
+        if returncode == 0:
+            return
+
+        completed = subprocess.CompletedProcess(
+            [sys.executable, "-c", _HORNLAB_MESHER_BUILD_SCRIPT, str(config_path), str(msh_path)],
+            returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        details = _subprocess_failure_details(completed)
+        if _hornlab_mesher_missing(stderr):
+            raise HornlabWaveguideGenerationError(
+                "HornLab waveguide mesher is not installed. Install hornlab-waveguide-mesher "
+                "or install Wine so Boundary Lab can run Ath.exe."
+            )
+        raise RuntimeError(details)
+
+    def stop(self) -> None:
+        self._cancel_requested = True
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+
+
+_HORNLAB_MESHER_BUILD_SCRIPT = """
+import sys
+from pathlib import Path
+
+from hornlab_mesher import build_from_config, load_config
+
+config = load_config(Path(sys.argv[1]))
+# Boundary Lab treats every Ath-family mesh as millimetres (matching real
+# Ath/ABEC output), so request millimetre output rather than the mesher's
+# default metres. The solver then applies ATH_MESH_SCALE_FACTOR uniformly.
+mesh_section = config.get("mesh")
+if not isinstance(mesh_section, dict):
+    mesh_section = {}
+    config["mesh"] = mesh_section
+mesh_section["scale_to_metres"] = False
+build_from_config(config, Path(sys.argv[2]))
+""".strip()
 
 
 def _ath_process_command(ath_exe: Path, config_path: Path) -> list[str]:
@@ -188,6 +277,186 @@ def run_ath(
     )
 
 
+def _hornlab_mesher_missing(details: str) -> bool:
+    return "ModuleNotFoundError" in details and (
+        "No module named 'hornlab_mesher'" in details or 'No module named "hornlab_mesher"' in details
+    )
+
+
+def _subprocess_failure_details(completed: subprocess.CompletedProcess[str]) -> str:
+    output = completed.stderr.strip() or completed.stdout.strip()
+    if not output:
+        return f"process exited with code {completed.returncode}"
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else output
+
+
+def hornlab_symmetry_axes_from_config(config_text: str) -> str:
+    """Return the mirror axes ("", "x", "y", or "xy") implied by ``Mesh.Quadrants``.
+
+    The HornLab mesher emits a reduced model when ``Mesh.Quadrants`` selects fewer
+    than all four quadrants. Boundary Lab reconstructs the full model by mirroring,
+    so this maps the quadrant coverage onto the axes that need mirroring.
+    """
+    match = MESH_QUADRANTS_RE.search(config_text)
+    if match is None:
+        return ""
+    digits = "".join(sorted({char for char in match.group(1) if char in "1234"}))
+    return QUADRANTS_MIRROR_AXES.get(digits, "")
+
+
+def _write_hornlab_solving_file(mesh_dir: Path, symmetry_axes: str) -> None:
+    """Record the mesh's mirror symmetry so mesh cleaning reconstructs the full model.
+
+    Real Ath drops a ``solving.txt`` next to the mesh declaring ``Sym=<axes>``;
+    :func:`clean_ath_mesh_output` reads it to mirror the reduced mesh back to the
+    full model. The HornLab mesher does not, so emit an equivalent file here.
+    """
+    if not symmetry_axes:
+        return
+    solving_path = mesh_dir / "solving.txt"
+    solving_path.write_text(
+        f"Control_Solver\n  Abscissa=log; Dim=3D; Sym={symmetry_axes}\n",
+        encoding="utf-8",
+    )
+
+
+def _build_hornlab_waveguide_mesh(
+    config_path: Path,
+    msh_path: Path,
+    *,
+    runner: HornlabMesherRunner | None = None,
+    timeout_s: float | None = None,
+) -> None:
+    (runner or HornlabMesherRunner()).run(config_path, msh_path, timeout_s=timeout_s)
+
+
+_MESHER_UNSUPPORTED_RE = re.compile(r"^\s*Throat\.Ext\.Length\s*=\s*([^;#\n]+)", re.IGNORECASE | re.MULTILINE)
+
+
+def _mesher_unsupported_reason(config_text: str) -> str | None:
+    """Return a reason when the HornLab mesher would silently mis-mesh ``config_text``.
+
+    ``Throat.Ext.Length`` (a throat extension tube) is the one Ath feature the mesher
+    gets geometrically wrong without raising: Ath prepends the tube and keeps the main
+    horn ``Length`` and mouth radius, but the mesher subtracts the extension from
+    ``Length``, shrinking the horn (16-32% mouth-radius error). Guarding here forces the
+    Ath fallback. ``Throat.Ext.Angle`` alone is fine.
+    """
+    match = _MESHER_UNSUPPORTED_RE.search(config_text)
+    if match is None:
+        return None
+    value = match.group(1).strip()
+    if not value:
+        return None
+    try:
+        if float(value) == 0.0:
+            return None
+    except ValueError:
+        pass  # a non-numeric (expression) extension length -- assume non-zero
+    return "Throat.Ext.Length (throat extension tube) is not meshed correctly by the HornLab mesher; using Ath instead."
+
+
+def run_hornlab_waveguide(
+    *,
+    config_text: str,
+    run_root: Path,
+    case_name: str = "waveguide",
+    runner: HornlabMesherRunner | None = None,
+    timeout_s: float | None = None,
+) -> AthRunResult:
+    """Generate an Ath-compatible mesh with the optional HornLab waveguide mesher."""
+    reason = _mesher_unsupported_reason(config_text)
+    if reason is not None:
+        raise HornlabWaveguideGenerationError(reason)
+    run_root = Path(run_root)
+    output_dir = run_root / case_name
+    mesh_dir = output_dir / "ABEC_FreeStanding"
+    config_path = run_root / f"{case_name}.cfg"
+    msh_path = mesh_dir / f"{case_name}.msh"
+    run_root.mkdir(parents=True, exist_ok=True)
+    mesh_dir.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(config_text, encoding="utf-8")
+
+    try:
+        _build_hornlab_waveguide_mesh(config_path, msh_path, runner=runner, timeout_s=timeout_s)
+    except AthCancelledError:
+        raise
+    except HornlabWaveguideGenerationError:
+        raise
+    except Exception as exc:
+        raise HornlabWaveguideGenerationError(
+            "HornLab waveguide mesher fallback failed. It currently supports OSSE/R-OSSE "
+            "waveguide configs with ABEC-compatible physical tags; unsupported Ath geometry "
+            f"still requires Wine/Ath. Details: {exc}"
+        ) from exc
+
+    _write_hornlab_solving_file(mesh_dir, hornlab_symmetry_axes_from_config(config_text))
+
+    # The mesher was asked for millimetre output (see the build script above),
+    # matching real Ath/ABEC, so discover_ath_output's millimetre scale applies.
+    return discover_ath_output(
+        run_root=run_root,
+        case_name=case_name,
+        config_path=config_path,
+    )
+
+
+def generate_waveguide_mesh(
+    *,
+    ath_exe: Path,
+    config_text: str,
+    run_root: Path,
+    case_name: str = "waveguide",
+    runner: AthProcessRunner | None = None,
+    mesher_runner: HornlabMesherRunner | None = None,
+    timeout_s: float | None = None,
+    on_status: Callable[[str], None] | None = None,
+) -> AthRunResult:
+    """Generate a waveguide mesh, preferring the native HornLab mesher.
+
+    The HornLab waveguide mesher is the fast path: it is native Python (no Wine, no
+    Rosetta, no gmsh.exe subprocess) and covers OSSE/R-OSSE-style waveguides. When it
+    cannot handle a geometry -- or is not installed -- it raises
+    :class:`HornlabWaveguideGenerationError`, and we fall back to the full Ath toolchain
+    (Ath.exe, via Wine on macOS/Linux), which supports every Ath geometry but is slower
+    and needs Wine off Windows.
+    """
+
+    def _status(message: str) -> None:
+        if on_status is not None:
+            on_status(message)
+
+    try:
+        _status("Generating mesh (HornLab waveguide mesher)...")
+        return run_hornlab_waveguide(
+            config_text=config_text,
+            run_root=run_root,
+            case_name=case_name,
+            runner=mesher_runner,
+            timeout_s=timeout_s,
+        )
+    except AthCancelledError:
+        raise
+    except HornlabWaveguideGenerationError as mesher_exc:
+        _status("HornLab mesher unavailable for this geometry; running Ath...")
+        runner = runner or AthProcessRunner()
+        try:
+            return runner.run(
+                ath_exe=ath_exe,
+                config_text=config_text,
+                run_root=run_root,
+                case_name=case_name,
+                timeout_s=timeout_s,
+            )
+        except AthCancelledError:
+            raise
+        except (RuntimeError, FileNotFoundError) as ath_exc:
+            raise RuntimeError(
+                f"HornLab mesher could not generate this geometry ({mesher_exc}); Ath fallback also failed: {ath_exc}"
+            ) from ath_exc
+
+
 def read_ath_output_root(ath_cfg_path: Path) -> Path | None:
     with ath_cfg_path.open("r", encoding="utf-8", errors="replace") as cfg_file:
         for raw_line in cfg_file:
@@ -238,9 +507,53 @@ def write_ath_output_root(ath_cfg_path: Path, output_root: Path) -> Path:
     return output_root
 
 
+def _space_free_stage_bases() -> list[Path]:
+    """Candidate space-free base directories for staging a gmsh symlink."""
+    bases = [Path.home() / ".cache" / "blab", Path(tempfile.gettempdir()) / "blab"]
+    return [base for base in bases if " " not in str(base)]
+
+
+def _stage_gmsh_without_spaces(gmsh_exe: Path) -> Path:
+    """Return a gmsh executable path with no spaces in it.
+
+    Ath runs its ``MeshCmd`` through ``cmd`` (native or Wine's), which splits the
+    command on spaces, and Ath's config parser strips quotes -- so a space anywhere in
+    the gmsh path cannot be escaped and meshing fails. This bites on macOS whenever the
+    project lives under a directory such as "boundary lab". When the resolved path has a
+    space, expose the gmsh directory at a space-free symlink and return the executable
+    inside it; otherwise return the path unchanged.
+    """
+    if " " not in str(gmsh_exe):
+        return gmsh_exe
+    gmsh_dir = gmsh_exe.parent
+    for base in _space_free_stage_bases():
+        link_dir = base / "gmsh"
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            if link_dir.is_symlink():
+                if Path(os.readlink(link_dir)) != gmsh_dir:
+                    link_dir.unlink()
+                    link_dir.symlink_to(gmsh_dir, target_is_directory=True)
+            elif link_dir.exists():
+                continue  # don't clobber a real directory squatting the path
+            else:
+                link_dir.symlink_to(gmsh_dir, target_is_directory=True)
+            staged = link_dir / gmsh_exe.name
+            if staged.exists() and " " not in str(staged):
+                return staged
+        except OSError:
+            continue
+    return gmsh_exe
+
+
 def write_ath_gmsh_path(ath_cfg_path: Path, gmsh_exe_path: Path) -> Path:
-    """Ensure ath.cfg points Ath's MeshCmd at an absolute Gmsh executable."""
-    gmsh_exe_path = gmsh_exe_path.resolve()
+    """Point ath.cfg's MeshCmd at an absolute, space-free Gmsh executable.
+
+    Ath cannot handle a space in the gmsh path (see
+    :func:`_stage_gmsh_without_spaces`), so when the bundled gmsh lives under a spaced
+    directory we point MeshCmd at a space-free symlink instead.
+    """
+    gmsh_exe_path = _stage_gmsh_without_spaces(gmsh_exe_path.resolve())
     _write_ath_cfg_value(ath_cfg_path, ATH_CFG_MESH_CMD_KEY, f"{gmsh_exe_path} %f -")
     return gmsh_exe_path
 
@@ -328,7 +641,30 @@ def read_surface_physical_names(msh_path: Path) -> dict[str, int]:
             name = name_text.strip().strip('"')
             surface_names[name] = int(tag_text)
 
-    return surface_names
+    return surface_names or _read_surface_physical_names_from_meshio(msh_path)
+
+
+def _read_surface_physical_names_from_meshio(msh_path: Path) -> dict[str, int]:
+    mesh = meshio.read(msh_path)
+    names_by_tag = {}
+    for name, value in mesh.field_data.items():
+        try:
+            tag = int(value[0])
+            dimension = int(value[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if dimension == 2:
+            names_by_tag[tag] = str(name)
+
+    surface_tags = set()
+    for tri_key in ("triangle", "triangle3"):
+        if tri_key not in mesh.cells_dict:
+            continue
+        for data_name, by_cell_type in mesh.cell_data_dict.items():
+            if data_name == "gmsh:physical" and tri_key in by_cell_type:
+                surface_tags.update(int(tag) for tag in by_cell_type[tri_key])
+
+    return {names_by_tag.get(tag, f"Tag {tag}"): tag for tag in sorted(surface_tags)}
 
 
 def detect_ath_radiators(msh_path: Path) -> tuple[RadiatorConfig, ...]:

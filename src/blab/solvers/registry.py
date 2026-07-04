@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable
 
 from blab.solvers.base import SolverBackend, SolverCapabilities
@@ -16,6 +17,32 @@ class SolverBackendInfo:
     factory: Callable[..., SolverBackend] | None = None
     available: bool = True
     description: str = ""
+
+
+@lru_cache(maxsize=1)
+def _hornlab_metal_probe() -> tuple[bool, SolverCapabilities]:
+    """Probe the optional Metal backend once, returning ``(available, capabilities)``.
+
+    Cached so registry construction instantiates the backend a single time rather
+    than once per accessor. When unavailable, the capabilities are a placeholder
+    (``available`` is False, so the flags are never consulted) instead of a
+    hand-maintained mirror of the adapter that would silently drift.
+    """
+    try:
+        from hornlab_metal_bem.boundary_lab import create_backend as create_hornlab_backend
+
+        backend = create_hornlab_backend()
+        return bool(backend.supports()), backend.capabilities
+    except Exception:
+        return False, SolverCapabilities()
+
+
+def _hornlab_metal_capabilities() -> SolverCapabilities:
+    return _hornlab_metal_probe()[1]
+
+
+def _hornlab_metal_available() -> bool:
+    return _hornlab_metal_probe()[0]
 
 
 _BACKENDS: dict[str, SolverBackendInfo] = {
@@ -80,6 +107,14 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         factory=lambda **_kwargs: _create_bempp_local_backend(),
         description="Run the bundled bempp-cl OpenCL CPU solver in the GUI process.",
     ),
+    "hornlab_metal": SolverBackendInfo(
+        backend_id="hornlab_metal",
+        label="HornLab Metal BEM",
+        capabilities=_hornlab_metal_capabilities(),
+        factory=lambda **kwargs: _create_hornlab_metal_backend(**kwargs),
+        available=_hornlab_metal_available(),
+        description="Run the optional HornLab Apple Metal solver backend on Apple Silicon macOS.",
+    ),
 }
 
 
@@ -125,6 +160,10 @@ def normalize_backend_id(backend_id: str) -> str:
         "rocm": "beat_rocm",
         "amd": "beat_rocm",
         "amdgpu": "beat_rocm",
+        "hornlab": "hornlab_metal",
+        "hornlab_metal": "hornlab_metal",
+        "metal": "hornlab_metal",
+        "apple_metal": "hornlab_metal",
     }
     return aliases.get(text, text or "local")
 
@@ -141,6 +180,12 @@ def _create_bempp_local_backend() -> SolverBackend:
 
 def _create_bempp_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:
     return _create_http_server_backend(server_url=server_url)
+
+
+def _create_hornlab_metal_backend(**_kwargs: Any) -> SolverBackend:
+    from hornlab_metal_bem.boundary_lab import create_backend as create_hornlab_backend
+
+    return create_hornlab_backend()
 
 
 def _create_http_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:

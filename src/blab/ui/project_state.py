@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_SCRIPT_NAME = "ath"
-DEFAULT_MESH_SCALE_FACTOR = 0.001
+# Ath-family meshes (real Ath/ABEC output and the HornLab mesher in millimetre
+# mode) are millimetres; the solver converts to metres by this factor.
+DEFAULT_ATH_MESH_SCALE_FACTOR = 0.001
 
 
 @dataclass(frozen=True)
@@ -17,7 +19,7 @@ class AthScriptState:
     name: str
     config_text: str
     mesh_enabled: bool = True
-    mesh_scale_factor: float = DEFAULT_MESH_SCALE_FACTOR
+    mesh_scale_factor: float = DEFAULT_ATH_MESH_SCALE_FACTOR
     mesh_translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     output_dir: str | None = None
     msh_path: str | None = None
@@ -59,7 +61,7 @@ def script_to_payload(script: AthScriptState, *, absolute_paths: bool = False) -
         "name": script.name,
         "config_text": script.config_text,
         "mesh_enabled": bool(script.mesh_enabled),
-        "mesh_scale_factor": float(script.mesh_scale_factor),
+        "mesh_scale_factor": normalize_ath_mesh_scale(script.mesh_scale_factor),
         "mesh_translation_mm": [int(round(value)) for value in script.mesh_translation_mm],
         "output_dir": _path_payload(script.output_dir, absolute_paths),
         "msh_path": _path_payload(script.msh_path, absolute_paths),
@@ -81,7 +83,7 @@ def script_from_payload(payload: object) -> AthScriptState | None:
         name=name,
         config_text=str(payload.get("config_text", "")),
         mesh_enabled=bool(payload.get("mesh_enabled", True)),
-        mesh_scale_factor=_positive_float(payload.get("mesh_scale_factor"), DEFAULT_MESH_SCALE_FACTOR),
+        mesh_scale_factor=normalize_ath_mesh_scale(payload.get("mesh_scale_factor")),
         mesh_translation_mm=tuple(float(int(round(float(value)))) for value in translation),
         output_dir=_optional_path_text(payload.get("output_dir")),
         msh_path=_optional_path_text(payload.get("msh_path")),
@@ -119,9 +121,6 @@ def _optional_path_text(value: object) -> str | None:
     return text or None
 
 
-def _positive_float(value: object, default: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0.0 else default
+def normalize_ath_mesh_scale(_value: object) -> float:
+    """Ath-generated meshes are always in millimetres; legacy/custom factors are ignored."""
+    return DEFAULT_ATH_MESH_SCALE_FACTOR

@@ -57,6 +57,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
         spherical_sampling_enabled=True,
         spherical_sampling_points=32,
         symmetry="xy",
+        native_check_open_edges=False,
     )
 
     restored = simulation_config_from_dict(simulation_config_to_dict(config))
@@ -71,6 +72,14 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     assert restored.channels[0].lpf.frequency_hz == 20000.0
     assert restored.spherical_sampling_enabled is True
     assert restored.symmetry == "xy"
+    assert restored.native_check_open_edges is False
+
+
+def test_simulation_config_defaults_open_edge_check_on_for_old_payloads() -> None:
+    # A payload from before the field existed must restore to the strict default.
+    payload = simulation_config_to_dict(SimulationConfig(mesh_file="m.msh"))
+    del payload["native_check_open_edges"]
+    assert simulation_config_from_dict(payload).native_check_open_edges is True
 
 
 def test_frequency_result_round_trips_through_wire_dict() -> None:

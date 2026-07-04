@@ -40,11 +40,13 @@ from blab.ath import (
     AthRunResult,
     clean_ath_reduced_mesh_output,
     detect_ath_radiators,
+    discover_ath_output,
     find_physical_tag_by_name,
     read_surface_physical_names,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
+from blab.ath_config import AthSolveSettings, native_check_open_edges_for_ath_config, parse_ath_solve_settings
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.exporting import export_plot_png, export_polar_text_files
 from blab.live import (
@@ -69,6 +71,7 @@ from blab.ui.dialogs import (
     PreferencesDialog,
     SourceConfigDialog,
 )
+from blab.ui.drag_drop import local_drop_paths
 from blab.ui.main_window_widgets import (
     AthScriptEditor,
     DockTitleBar,
@@ -108,6 +111,7 @@ from blab.ui.project_state import (
     AthScriptState,
     default_scripts,
     new_script,
+    normalize_ath_mesh_scale,
     replace_script,
     script_to_payload,
     scripts_from_payload,
@@ -165,16 +169,37 @@ CLEAR_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "clearcontours_dark.ico"
 CLEAR_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "clearcontours_light.ico"
 ADD_SCRIPT_TAB_LABEL = "+"
 DEFAULT_DOCK_STATE_B64 = (
-    "AAAA/wAAAAD9AAAAAQAAAAAAAAduAAADdvwCAAAAAfwAAAAAAAADdgAAAG4A/////AEAAAAG+wAAAB4AYQB0AGgAXwBl"
-    "AGQAaQB0AG8AcgBfAGQAbwBjAGsBAAAAAAAAAdsAAACFAP////wAAAHfAAADRQAAAGoA/////AIAAAAC+wAAACIAbQBl"
-    "AHMAaABfAHAAcgBlAHYAaQBlAHcAXwBkAG8AYwBrAQAAAAAAAAN2AAAANAD////7AAAAHABzAHAAaQBuAG8AcgBhAG0A"
-    "YQBfAGQAbwBjAGsIAAAB4AAAAZYAAAAiAP////sAAAAUAHAAbABvAHQAcwBfAGQAbwBjAGsBAAAE9QAAAnkAAAAAAAAA"
-    "APwAAAUoAAACRgAAAHsA/////AIAAAAC+wAAACwAaABvAHIAaQB6AG8AbgB0AGEAbABfAGkAcwBvAGIAYQByAF8AZABv"
-    "AGMAawEAAAAAAAABugAAACIA////+wAAACgAdgBlAHIAdABpAGMAYQBsAF8AaQBzAG8AYgBhAHIAXwBkAG8AYwBrAQAA"
-    "Ab4AAAG4AAAAIgD////7AAAALgBhAGMAbwB1AHMAdABpAGMAXwBpAG0AcABlAGQAYQBuAGMAZQBfAGQAbwBjAGsAAAAA"
-    "AP////8AAACNAP////sAAAA+AG8AbgBfAGEAeABpAHMAXwBmAHIAZQBxAHUAZQBuAGMAeQBfAHIAZQBzAHAAbwBuAHMA"
-    "ZQBfAGQAbwBjAGsIAAAF/AAAAXIAAAC6AP///wAAAAAAAAN2AAAABAAAAAQAAAAIAAAACPwAAAAA"
+    "AAAA/wAAAAD9AAAAAQAAAAAAAAXAAAAAAPwCAAAAAfwAAAAA/////wAAADAA/////AEAAAAD+wAAAB4AYQB0AGgAXwBl"
+    "AGQAaQB0AG8AcgBfAGQAbwBjAGsBAAAAAAAAAaQAAAAyAP////sAAAAiAG0AZQBzAGgAXwBwAHIAZQB2AGkAZQB3AF8A"
+    "ZABvAGMAawEAAAAAAAACCAAAADIA/////AAAAAAAAAIIAAAAewD////6AAAABAEAAAAF+wAAACwAaABvAHIAaQB6AG8A"
+    "bgB0AGEAbABfAGkAcwBvAGIAYQByAF8AZABvAGMAawEAAAAA/////wAAADIA////+wAAACgAdgBlAHIAdABpAGMAYQBs"
+    "AF8AaQBzAG8AYgBhAHIAXwBkAG8AYwBrAQAAAAD/////AAAAMgD////7AAAALgBhAGMAbwB1AHMAdABpAGMAXwBpAG0A"
+    "cABlAGQAYQBuAGMAZQBfAGQAbwBjAGsBAAAAAP////8AAAAyAP////sAAAA+AG8AbgBfAGEAeABpAHMAXwBmAHIAZQBx"
+    "AHUAZQBuAGMAeQBfAHIAZQBzAHAAbwBuAHMAZQBfAGQAbwBjAGsBAAAAAP////8AAAAyAP////sAAAAcAHMAcABpAG4A"
+    "bwByAGEAbQBhAF8AZABvAGMAawEAAAAA/////wAAADIA////AAAAAAAAAAAAAAAEAAAABAAAAAgAAAAI/AAAAAA="
 )
+OBSOLETE_DOCK_OBJECT_NAMES = ("plots_dock",)
+
+
+def _dock_state_bytes(dock_state: QByteArray | bytes | bytearray) -> bytes:
+    if isinstance(dock_state, bytes):
+        return dock_state
+    if isinstance(dock_state, bytearray):
+        return bytes(dock_state)
+    return bytes(dock_state)
+
+
+def _dock_state_contains_object_name(dock_state: QByteArray | bytes | bytearray, object_name: str) -> bool:
+    raw = _dock_state_bytes(dock_state)
+    return (
+        object_name.encode("utf-8") in raw
+        or object_name.encode("utf-16-be") in raw
+        or object_name.encode("utf-16-le") in raw
+    )
+
+
+def _dock_state_has_obsolete_object_names(dock_state: QByteArray | bytes | bytearray) -> bool:
+    return any(_dock_state_contains_object_name(dock_state, name) for name in OBSOLETE_DOCK_OBJECT_NAMES)
 
 
 class MainWindow(QMainWindow):
@@ -193,6 +218,7 @@ class MainWindow(QMainWindow):
 
         startup("Loading saved settings...")
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.setAcceptDrops(True)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.imported_meshes: tuple[MeshDialogEntry, ...] = ()
@@ -227,6 +253,7 @@ class MainWindow(QMainWindow):
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
         self._last_imported_mesh_focus_check_at = 0.0
+        self._last_mesh_preview_error: str | None = None
         self._plot_dpi_screen = None
         self._plot_dpi_window_handle = None
         self._plot_dpi_refresh_pending = False
@@ -348,6 +375,30 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)
         self._connect_plot_dpi_signals()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._msh_drop_paths(event):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._msh_drop_paths(event):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt override
+        paths = self._msh_drop_paths(event)
+        if not paths:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        self._import_mesh_paths(paths)
+
+    @staticmethod
+    def _msh_drop_paths(event) -> list[Path]:
+        return [path for path in local_drop_paths(event) if path.suffix.lower() == ".msh"]
 
     def _connect_plot_dpi_signals(self) -> None:
         window = self.windowHandle()
@@ -758,6 +809,10 @@ class MainWindow(QMainWindow):
             return
         if 0 <= index < len(self.ath_scripts):
             self.active_ath_script_id = self.ath_scripts[index].id
+            # Reflect the selected tab's solve settings in the controls, but do not
+            # persist them to the global preferences — navigating tabs must not
+            # overwrite the user's saved normalization angles / polar step / distance.
+            self._apply_ath_solve_settings_to_controls(self._active_ath_solve_settings(), persist=False)
 
     @Slot()
     def add_ath_script(self) -> None:
@@ -852,6 +907,63 @@ class MainWindow(QMainWindow):
         self.settings.setValue("solve/freq_max_hz", int(self.freq_max_spin.value()))
         self.settings.setValue("solve/freq_count", int(self.freq_count_spin.value()))
 
+    def _active_ath_solve_settings(self) -> AthSolveSettings:
+        script = self._active_script()
+        return parse_ath_solve_settings("" if script is None else script.config_text)
+
+    def _solver_ath_solve_settings(self) -> AthSolveSettings:
+        active_settings = self._active_ath_solve_settings()
+        if self._has_ath_solve_metadata(active_settings):
+            return active_settings
+
+        for script, _result in self._enabled_ath_results():
+            settings = parse_ath_solve_settings(script.config_text)
+            if self._has_ath_solve_metadata(settings):
+                return settings
+        return active_settings
+
+    @staticmethod
+    def _has_ath_solve_metadata(settings: AthSolveSettings) -> bool:
+        return any(
+            value is not None
+            for value in (
+                settings.freq_min_hz,
+                settings.freq_max_hz,
+                settings.freq_count,
+                settings.polar_min_angle_deg,
+                settings.polar_max_angle_deg,
+                settings.polar_step_deg,
+                settings.polar_distance_m,
+                settings.horizontal_norm_angle_deg,
+                settings.vertical_norm_angle_deg,
+            )
+        )
+
+    def _apply_ath_solve_settings_to_controls(self, solve_settings: AthSolveSettings, *, persist: bool = True) -> None:
+        if solve_settings.freq_min_hz is not None:
+            self.freq_min_spin.setValue(self._spin_clamped_int(self.freq_min_spin, solve_settings.freq_min_hz))
+        if solve_settings.freq_max_hz is not None:
+            self.freq_max_spin.setValue(self._spin_clamped_int(self.freq_max_spin, solve_settings.freq_max_hz))
+        if solve_settings.freq_count is not None:
+            self.freq_count_spin.setValue(self._spin_clamped_int(self.freq_count_spin, solve_settings.freq_count))
+
+        preference_updates = {}
+        if solve_settings.polar_step_deg is not None:
+            preference_updates["polar_angle_step_deg"] = float(solve_settings.polar_step_deg)
+        if solve_settings.polar_distance_m is not None:
+            preference_updates["polar_observation_distance_m"] = float(solve_settings.polar_distance_m)
+        if solve_settings.horizontal_norm_angle_deg is not None:
+            preference_updates["horizontal_normalization_angle"] = float(solve_settings.horizontal_norm_angle_deg)
+        if solve_settings.vertical_norm_angle_deg is not None:
+            preference_updates["vertical_normalization_angle"] = float(solve_settings.vertical_norm_angle_deg)
+        if preference_updates and persist:
+            self.preferences = replace(self.preferences, **preference_updates)
+            self._save_preferences()
+
+    @staticmethod
+    def _spin_clamped_int(spin: QSpinBox, value: float) -> int:
+        return min(max(int(round(value)), int(spin.minimum())), int(spin.maximum()))
+
     def _restore_window_state(self) -> None:
         geometry = self.settings.value("window/geometry")
         if geometry is not None:
@@ -861,7 +973,10 @@ class MainWindow(QMainWindow):
         if dock_state is None:
             dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
-            self.workspace.restoreState(dock_state)
+            if _dock_state_has_obsolete_object_names(dock_state):
+                self.settings.remove("window/dock_state")
+            elif not self.workspace.restoreState(dock_state):
+                self.settings.remove("window/dock_state")
         for dock_id in ("editor", "preview"):
             self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:
@@ -922,7 +1037,7 @@ class MainWindow(QMainWindow):
                 MeshDialogEntry(
                     name=script.mesh_name,
                     source_file=str(result.solver_msh_path),
-                    scale_factor=float(script.mesh_scale_factor),
+                    scale_factor=normalize_ath_mesh_scale(script.mesh_scale_factor),
                     translation_mm=script.mesh_translation_mm,
                     enabled=script.mesh_enabled,
                     locked=True,
@@ -942,12 +1057,76 @@ class MainWindow(QMainWindow):
                     script.id,
                     mesh_enabled=bool(mesh.enabled),
                     mesh_translation_mm=mesh.translation_mm,
-                    mesh_scale_factor=float(mesh.scale_factor),
+                    mesh_scale_factor=normalize_ath_mesh_scale(mesh.scale_factor),
                 )
             else:
                 imported_meshes.append(replace(mesh, locked=False))
         self.ath_scripts = scripts
         self.imported_meshes = tuple(imported_meshes)
+
+    def _clear_generated_result_for_script(self, script_id: str, reason: str) -> None:
+        self.ath_results_by_script_id.pop(script_id, None)
+        self.ath_scripts = replace_script(
+            self.ath_scripts,
+            script_id,
+            output_dir=None,
+            msh_path=None,
+            cleaned_msh_path=None,
+            config_path=None,
+        )
+        self.mesh_state_changed.emit(reason)
+
+    def _unique_imported_mesh_name(self, base_name: str) -> str:
+        sanitized = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in base_name).strip("_")
+        name = sanitized or "mesh"
+        used = {script.mesh_name for script in self.ath_scripts}
+        used.update(mesh.name for mesh in self.imported_meshes)
+        used.add(STITCHED_MESH_NAME)
+        if name not in used:
+            return name
+
+        suffix = 2
+        while f"{name}_{suffix}" in used:
+            suffix += 1
+        return f"{name}_{suffix}"
+
+    def _import_mesh_paths(self, paths: list[Path]) -> None:
+        if not paths:
+            return
+        if not self._confirm_clear_solved_data():
+            return
+
+        previous_meshes = self.imported_meshes
+        new_meshes = []
+        reserved_names = set()
+        for path in paths:
+            mesh_name = self._unique_imported_mesh_name(path.stem)
+            while mesh_name in reserved_names:
+                mesh_name = self._unique_imported_mesh_name(f"{mesh_name}_2")
+            reserved_names.add(mesh_name)
+            new_meshes.append(
+                MeshDialogEntry(
+                    name=mesh_name,
+                    source_file=str(path),
+                    enabled=True,
+                )
+            )
+        new_meshes = tuple(new_meshes)
+        try:
+            self.status_label.setText("Cleaning imported meshes...")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self.imported_meshes = (*self.imported_meshes, *new_meshes)
+            self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            self._refresh_imported_source_config()
+            self.mesh_state_changed.emit("mesh_files_imported")
+            self.solve_results_invalidated.emit("mesh_files_imported")
+            self.status_label.setText(f"Imported {len(new_meshes)} mesh file{'s' if len(new_meshes) != 1 else ''}")
+        except Exception as exc:
+            self.imported_meshes = previous_meshes
+            self.status_label.setText("Mesh import failed")
+            QMessageBox.critical(self, "Mesh import failed", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _project_imported_meshes_payload(self) -> list[dict]:
         return [self._mesh_entry_to_payload(mesh, absolute_paths=True) for mesh in self.imported_meshes]
@@ -979,6 +1158,26 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return DEFAULT_MESH_SCALE_FACTOR
         return scale_factor if scale_factor > 0.0 else DEFAULT_MESH_SCALE_FACTOR
+
+    @staticmethod
+    def _primary_solver_mesh_scale(mesh_configs: tuple[MeshConfig, ...]) -> float:
+        """Scale factor to advertise on ``SimulationConfig`` for the solved mesh.
+
+        Boundary Lab's own solver scales each mesh by its per-mesh
+        ``MeshConfig.scale_factor``, but ``SimulationConfig.mesh_file`` only points
+        at the primary mesh, and backends that consume that single file (e.g. the
+        HornLab Metal backend) read the top-level ``scale_factor``. Keep the two in
+        sync so a metre-scale mesh (per-mesh scale 1.0) is not re-scaled as if it
+        were millimetres.
+        """
+        if not mesh_configs or mesh_configs[0].scale_factor is None:
+            return DEFAULT_MESH_SCALE_FACTOR
+        return float(mesh_configs[0].scale_factor)
+
+    def _native_check_open_edges_for_solver(self) -> bool:
+        if self.symmetry == "off":
+            return True
+        return all(native_check_open_edges_for_ath_config(script.config_text) for script, _result in self._enabled_ath_results())
 
     def _script_for_mesh_name(self, mesh_name: str) -> AthScriptState | None:
         return next((script for script in self.ath_scripts if script.mesh_name == mesh_name), None)
@@ -1179,6 +1378,7 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             self.status_label.setText(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            self._refresh_imported_source_config()
             self.mesh_state_changed.emit("imported_mesh_files_reloaded")
             self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             names = ", ".join(updated_names)
@@ -1285,7 +1485,7 @@ class MainWindow(QMainWindow):
                 MeshConfig(
                     name=script.mesh_name,
                     file=str(solver_result.solver_msh_path_for_symmetry(symmetry)),
-                    scale_factor=float(script.mesh_scale_factor),
+                    scale_factor=normalize_ath_mesh_scale(script.mesh_scale_factor),
                     translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
                 )
             )
@@ -1437,11 +1637,13 @@ class MainWindow(QMainWindow):
     def _refresh_mesh_preview(self) -> None:
         if not self._has_solver_meshes():
             self.preview.clear()
+            self._last_mesh_preview_error = None
             return
         try:
             mesh_configs = self._solver_mesh_configs()
             if not mesh_configs:
                 self.preview.clear()
+                self._last_mesh_preview_error = None
                 return
             surface_tags_by_mesh = {
                 mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
@@ -1455,17 +1657,20 @@ class MainWindow(QMainWindow):
                 surface_tags_by_mesh=surface_tags_by_mesh,
                 symmetry=self.symmetry,
             )
+            self._last_mesh_preview_error = None
         except Exception as exc:
             if str(exc) == STITCH_FAILURE_MESSAGE and self.stitch_imported_meshes:
                 self._refresh_unstitched_mesh_preview_after_stitch_failure()
                 return
             self.preview.clear()
+            self._set_mesh_preview_error(exc)
 
     def _refresh_unstitched_mesh_preview_after_stitch_failure(self) -> None:
         try:
             mesh_configs = self._stitch_candidate_mesh_configs()
             if not mesh_configs:
                 self.preview.clear()
+                self._last_mesh_preview_error = None
                 return
             surface_tags_by_mesh = {
                 mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
@@ -1476,9 +1681,17 @@ class MainWindow(QMainWindow):
                 surface_tags_by_mesh=surface_tags_by_mesh,
                 symmetry=self.symmetry,
             )
+            self._last_mesh_preview_error = None
             self.status_label.setText("Mesh preview showing unstitched meshes; stitching failed")
-        except Exception:
+        except Exception as exc:
             self.preview.clear()
+            self._set_mesh_preview_error(exc)
+
+    def _set_mesh_preview_error(self, exc: Exception) -> None:
+        message = str(exc) or type(exc).__name__
+        self._last_mesh_preview_error = message
+        if hasattr(self, "status_label"):
+            self.status_label.setText(f"Mesh preview failed: {message}")
 
     def _load_source_config_by_name(self) -> dict[str, dict]:
         return load_source_config_by_name(self.settings)
@@ -1527,6 +1740,9 @@ class MainWindow(QMainWindow):
             config_by_name=self._load_source_config_by_name(),
         )
 
+    def _refresh_imported_source_config(self) -> None:
+        self._apply_saved_imported_source_config(self._surface_tags_for_meshes())
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override
         if not self._confirm_unsaved_project_changes("close"):
             event.ignore()
@@ -1570,8 +1786,6 @@ class MainWindow(QMainWindow):
     def _ensure_ath_runtime_config(self) -> None:
         ath_exe = self._find_ath_exe()
         ath_cfg = ath_exe.parent / "ath.cfg"
-        if not ath_cfg.exists():
-            return
         write_ath_output_root(ath_cfg, ATH_OUTPUT_ROOT)
         write_ath_gmsh_path(ath_cfg, GMSH_BUNDLE_EXE)
 
@@ -1597,15 +1811,72 @@ class MainWindow(QMainWindow):
                 else self._active_script()
             )
             if script is None:
-                script = new_script(unique_script_name(path.stem, self.ath_scripts), config_text)
+                script = replace(new_script(unique_script_name(path.stem, self.ath_scripts), config_text), config_path=str(path))
                 self.ath_scripts = (*self.ath_scripts, script)
-                self.active_ath_script_id = script.id
             else:
-                self.ath_scripts = replace_script(self.ath_scripts, script.id, config_text=config_text)
+                self.ath_scripts = replace_script(
+                    self.ath_scripts,
+                    script.id,
+                    config_text=config_text,
+                    output_dir=None,
+                    msh_path=None,
+                    cleaned_msh_path=None,
+                    config_path=str(path),
+                )
+            self.active_ath_script_id = script.id
+            if hasattr(self, "ath_results_by_script_id"):
+                self.ath_results_by_script_id.pop(script.id, None)
+                imported_result = self._discover_imported_ath_output(path)
+                if imported_result is not None:
+                    result = self._apply_saved_source_config_to_result(imported_result, script.mesh_name)
+                    self.ath_results_by_script_id[script.id] = result
+                    self.ath_scripts = replace_script(
+                        self.ath_scripts,
+                        script.id,
+                        output_dir=str(result.output_dir),
+                        msh_path=str(result.msh_path),
+                        cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
+                        config_path=str(result.config_path),
+                    )
+            self._apply_ath_solve_settings_to_controls(parse_ath_solve_settings(config_text))
             self._rebuild_ath_script_tabs()
             self.status_label.setText(f"Imported {path}")
+            if hasattr(self, "mesh_state_changed") and script.id in getattr(self, "ath_results_by_script_id", {}):
+                self.mesh_state_changed.emit("ath_config_imported_with_existing_mesh")
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
+
+    def _discover_imported_ath_output(self, path: Path) -> AthRunResult | None:
+        for run_root, case_name in self._imported_ath_output_candidates(path):
+            try:
+                return discover_ath_output(
+                    run_root=run_root,
+                    case_name=case_name,
+                    config_path=path,
+                )
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _imported_ath_output_candidates(path: Path) -> tuple[tuple[Path, str], ...]:
+        path = path.resolve()
+        candidates: list[tuple[Path, str]] = []
+
+        if path.name.lower() == "config.txt":
+            candidates.append((path.parent.parent, path.parent.name))
+        if path.parent.name == path.stem:
+            candidates.append((path.parent.parent, path.parent.name))
+        candidates.append((path.parent, path.stem))
+
+        unique: list[tuple[Path, str]] = []
+        seen: set[tuple[Path, str]] = set()
+        for run_root, case_name in candidates:
+            key = (run_root, case_name)
+            if key not in seen:
+                unique.append(key)
+                seen.add(key)
+        return tuple(unique)
 
     @Slot()
     def new_project(self) -> None:
@@ -1781,6 +2052,7 @@ class MainWindow(QMainWindow):
                     result, script.mesh_name
                 )
         self._rebuild_ath_script_tabs()
+        self._apply_ath_solve_settings_to_controls(self._active_ath_solve_settings())
         self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
         self.stitch_imported_meshes = bool(payload.get("stitch_imported_meshes", False))
         self.symmetry = str(payload.get("symmetry", "off")).strip().lower()
@@ -2023,6 +2295,7 @@ class MainWindow(QMainWindow):
             if symmetry_enabled:
                 self.symmetry = symmetry
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            self._refresh_imported_source_config()
             self.mesh_state_changed.emit("mesh_config_changed")
             self.solve_results_invalidated.emit("mesh_config_changed")
             self.status_label.setText(
@@ -2172,6 +2445,7 @@ class MainWindow(QMainWindow):
             return
 
         self.solve_results_invalidated.emit("geometry_generation_started")
+        self._clear_generated_result_for_script(script.id, "geometry_generation_started")
         self.status_label.setText(f"Generating {script.name}...")
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
@@ -2229,7 +2503,12 @@ class MainWindow(QMainWindow):
             config_path=str(result.config_path),
         )
         self.mesh_state_changed.emit("ath_mesh_generated")
-        self.status_label.setText(f"Generated and cleaned {result.output_dir}")
+        if self._last_mesh_preview_error:
+            self.status_label.setText(
+                f"Generated and cleaned {result.output_dir}; mesh preview failed: {self._last_mesh_preview_error}"
+            )
+        else:
+            self.status_label.setText(f"Generated and cleaned {result.output_dir}")
         self._show_mesh_quality_warning(result)
 
     @Slot(str)
@@ -2263,18 +2542,19 @@ class MainWindow(QMainWindow):
         if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
-        radiators = self._all_radiators()
-        if not radiators:
-            QMessageBox.warning(
-                self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven."
-            )
-            return
         if self._disable_symmetry_if_backend_unsupported():
             self.mesh_state_changed.emit("symmetry_disabled_for_backend")
 
         try:
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            self._refresh_imported_source_config()
             mesh_configs = self._solver_mesh_configs()
+            radiators = self._all_radiators()
+            if not radiators:
+                QMessageBox.warning(
+                    self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven."
+                )
+                return
             radiators = self._radiators_for_solver_meshes(mesh_configs, radiators)
         except Exception as exc:
             self._show_stitch_or_generic_error("Imported mesh preparation failed", exc)
@@ -2285,11 +2565,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Symmetry validation failed", str(exc))
             return
 
+        ath_solve_settings = self._solver_ath_solve_settings()
+        self._apply_ath_solve_settings_to_controls(ath_solve_settings)
         freq_min = float(min(self.freq_min_spin.value(), self.freq_max_spin.value()))
         freq_max = float(max(self.freq_min_spin.value(), self.freq_max_spin.value()))
         freq_count = int(self.freq_count_spin.value())
         freqs = build_log_frequencies(freq_min, freq_max, freq_count)
         ordered_freqs = order_frequencies_for_live_plotting(freqs)
+        min_angle = -180.0 if ath_solve_settings.polar_min_angle_deg is None else ath_solve_settings.polar_min_angle_deg
+        max_angle = 180.0 if ath_solve_settings.polar_max_angle_deg is None else ath_solve_settings.polar_max_angle_deg
+        step_size = (
+            self.preferences.polar_angle_step_deg
+            if ath_solve_settings.polar_step_deg is None
+            else ath_solve_settings.polar_step_deg
+        )
 
         channels = self._channels_for_solver_radiators(radiators)
         config = SimulationConfig(
@@ -2301,8 +2590,11 @@ class MainWindow(QMainWindow):
             meshes=mesh_configs,
             radiators=radiators,
             channels=channels,
+            scale_factor=self._primary_solver_mesh_scale(mesh_configs),
             distance=self.preferences.polar_observation_distance_m,
-            step_size=self.preferences.polar_angle_step_deg,
+            step_size=step_size,
+            min_angle=min_angle,
+            max_angle=max_angle,
             use_burton_miller=self.preferences.use_burton_miller,
             gmres_tolerance=self.preferences.gmres_tolerance,
             workers=1,
@@ -2311,6 +2603,7 @@ class MainWindow(QMainWindow):
             spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
             spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
             symmetry=self.symmetry,
+            native_check_open_edges=self._native_check_open_edges_for_solver(),
         )
 
         self.live_dataset = None

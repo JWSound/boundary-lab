@@ -1,4 +1,7 @@
 import json
+import os
+import threading
+import time
 from pathlib import Path
 
 import meshio
@@ -6,7 +9,10 @@ import numpy as np
 import pytest
 
 from blab.ath import (
+    AthCancelledError,
     AthProcessRunner,
+    HornlabMesherRunner,
+    HornlabWaveguideGenerationError,
     ath_mirror_axes_for_result,
     ath_mirror_axes_from_solving_file,
     clean_ath_mesh_output,
@@ -14,8 +20,10 @@ from blab.ath import (
     detect_ath_radiators,
     discover_ath_output,
     find_physical_tag_by_name,
+    generate_waveguide_mesh,
     read_ath_output_root,
     read_surface_physical_names,
+    run_hornlab_waveguide,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
@@ -32,10 +40,7 @@ from blab.live import (
 from blab.mesh_clean import triangle_quality_warning
 from blab.postprocess import PrepConfig
 
-
-def _write_minimal_msh(path: Path) -> None:
-    path.write_text(
-        """
+MINIMAL_MSH_TEXT = """
 $MeshFormat
 2.2 0 8
 $EndMeshFormat
@@ -44,9 +49,53 @@ $PhysicalNames
 2 1 "Rigid"
 2 2 "SD1D1001"
 $EndPhysicalNames
-""".strip(),
+""".strip()
+
+
+def _write_minimal_msh(path: Path) -> None:
+    path.write_text(MINIMAL_MSH_TEXT, encoding="utf-8")
+
+
+def _install_fake_hornlab_mesher(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    build_body: str | None = None,
+    expected_config: str = "Length = 10",
+) -> None:
+    package_root = tmp_path / "fake_hornlab_mesher"
+    package_dir = package_root / "hornlab_mesher"
+    package_dir.mkdir(parents=True)
+    if build_body is None:
+        build_body = f"    output_path.write_text({MINIMAL_MSH_TEXT!r}, encoding='utf-8')\n"
+
+    (package_dir / "__init__.py").write_text(
+        f"""
+from pathlib import Path
+
+
+def load_config(config_path):
+    if Path(config_path).read_text(encoding="utf-8") != {expected_config!r}:
+        raise AssertionError("unexpected config text")
+    return {{"formula": "OSSE"}}
+
+
+def build_from_config(config, output_path):
+    if config.get("formula") != "OSSE":
+        raise AssertionError("unexpected config")
+    if config.get("mesh", {{}}).get("scale_to_metres") is not False:
+        raise AssertionError("Boundary Lab must request millimetre output")
+    output_path = Path(output_path)
+{build_body}
+""".lstrip(),
         encoding="utf-8",
     )
+
+    current_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = str(package_root)
+    if current_pythonpath:
+        pythonpath = f"{package_root}{os.pathsep}{current_pythonpath}"
+    monkeypatch.setenv("PYTHONPATH", pythonpath)
 
 
 class _FakeAthProcess:
@@ -93,6 +142,7 @@ def test_ath_process_runner_discovers_output_after_process_exit(tmp_path: Path, 
         popen_calls.append((args, kwargs))
         return _FakeAthProcess()
 
+    monkeypatch.setattr("blab.ath.sys.platform", "win32")
     monkeypatch.setattr("blab.ath.subprocess.Popen", fake_popen)
 
     result = AthProcessRunner().run(
@@ -105,6 +155,148 @@ def test_ath_process_runner_discovers_output_after_process_exit(tmp_path: Path, 
     assert result.msh_path == mesh_dir / "case.msh"
     assert (tmp_path / "runs" / "case.cfg").read_text(encoding="utf-8") == "Length = 10"
     assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(tmp_path / "runs" / "case.cfg")]
+
+
+def test_hornlab_waveguide_runner_writes_ath_compatible_result(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(tmp_path, monkeypatch)
+
+    result = run_hornlab_waveguide(
+        config_text="Length = 10",
+        run_root=tmp_path / "runs",
+        case_name="case",
+    )
+
+    assert result.output_dir == tmp_path / "runs" / "case"
+    assert result.msh_path == tmp_path / "runs" / "case" / "ABEC_FreeStanding" / "case.msh"
+    assert result.config_path == tmp_path / "runs" / "case.cfg"
+    assert result.driven_tag == 2
+    assert [(r.name, r.tag, r.level_db) for r in result.radiators] == [("throat", 2, 0.0)]
+
+
+@pytest.mark.parametrize(
+    ("quadrants", "expected_sym"),
+    (("1", "xy"), ("14", "x"), ("12", "y"), ("1234", ""), (None, "")),
+)
+def test_hornlab_symmetry_axes_from_config(quadrants: str | None, expected_sym: str) -> None:
+    from blab.ath import hornlab_symmetry_axes_from_config
+
+    config_text = "Length = 40\n" if quadrants is None else f"Mesh.Quadrants = {quadrants}\nLength = 40\n"
+    assert hornlab_symmetry_axes_from_config(config_text) == expected_sym
+
+
+def test_hornlab_waveguide_runner_writes_solving_file_for_reduced_quadrants(tmp_path: Path, monkeypatch) -> None:
+    config_text = "Mesh.Quadrants = 1"
+    _install_fake_hornlab_mesher(tmp_path, monkeypatch, expected_config=config_text)
+
+    result = run_hornlab_waveguide(config_text=config_text, run_root=tmp_path / "runs", case_name="case")
+
+    solving_path = result.msh_path.parent / "solving.txt"
+    assert solving_path.exists()
+    assert ath_mirror_axes_from_solving_file(solving_path) == ("x", "y")
+    # The written file must be the one mesh cleaning discovers for mirroring.
+    assert ath_mirror_axes_for_result(result) == ("x", "y")
+
+
+def test_hornlab_waveguide_runner_omits_solving_file_for_full_model(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(tmp_path, monkeypatch)
+
+    result = run_hornlab_waveguide(config_text="Length = 10", run_root=tmp_path / "runs", case_name="case")
+
+    assert not (result.msh_path.parent / "solving.txt").exists()
+    assert ath_mirror_axes_for_result(result) == ()
+
+
+def test_hornlab_waveguide_runner_is_safe_from_worker_threads(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(
+        tmp_path,
+        monkeypatch,
+        build_body=(
+            "    import signal\n"
+            "    signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
+            f"    output_path.write_text({MINIMAL_MSH_TEXT!r}, encoding='utf-8')\n"
+        ),
+    )
+
+    result_holder = {}
+
+    def run_in_thread() -> None:
+        try:
+            result_holder["result"] = run_hornlab_waveguide(
+                config_text="Length = 10",
+                run_root=tmp_path / "runs",
+                case_name="case",
+            )
+        except Exception as exc:
+            result_holder["error"] = exc
+
+    thread = threading.Thread(target=run_in_thread)
+    thread.start()
+    thread.join(timeout=10.0)
+
+    assert not thread.is_alive()
+    if "error" in result_holder:
+        raise result_holder["error"]
+
+    result = result_holder["result"]
+    assert result.msh_path == tmp_path / "runs" / "case" / "ABEC_FreeStanding" / "case.msh"
+    assert result.driven_tag == 2
+
+
+def test_hornlab_waveguide_runner_can_be_cancelled(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(
+        tmp_path,
+        monkeypatch,
+        build_body=(
+            "    import time\n"
+            "    time.sleep(30)\n"
+        ),
+    )
+    runner = HornlabMesherRunner()
+    result_holder = {}
+
+    def run_in_thread() -> None:
+        try:
+            result_holder["result"] = run_hornlab_waveguide(
+                config_text="Length = 10",
+                run_root=tmp_path / "runs",
+                case_name="case",
+                runner=runner,
+            )
+        except Exception as exc:
+            result_holder["error"] = exc
+
+    thread = threading.Thread(target=run_in_thread)
+    thread.start()
+    deadline = time.monotonic() + 5.0
+    while runner._process is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert runner._process is not None
+
+    runner.stop()
+    thread.join(timeout=10.0)
+
+    assert not thread.is_alive()
+    assert isinstance(result_holder.get("error"), AthCancelledError)
+
+
+def test_hornlab_waveguide_runner_reports_missing_optional_package(tmp_path: Path, monkeypatch) -> None:
+    class FakeProcess:
+        returncode = 1
+
+        def communicate(self, timeout=None):
+            return "", "ModuleNotFoundError: No module named 'hornlab_mesher'\n"
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr("blab.ath.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+
+    with pytest.raises(HornlabWaveguideGenerationError, match="not installed"):
+        run_hornlab_waveguide(
+            config_text="Length = 10",
+            run_root=tmp_path / "runs",
+            case_name="case",
+        )
 
 
 @pytest.mark.parametrize("platform_name", ("linux", "darwin"))
@@ -163,6 +355,7 @@ def test_ath_process_runner_reports_missing_wine_on_linux(tmp_path: Path, monkey
             case_name="case",
         )
 
+
 def test_ath_process_runner_stop_terminates_active_process(monkeypatch) -> None:
     runner = AthProcessRunner()
     process = _FakeAthProcess()
@@ -200,6 +393,30 @@ $EndPhysicalNames
     )
 
     assert read_surface_physical_names(msh_path) == {"SD1D1001": 2}
+
+
+def test_read_surface_physical_names_falls_back_to_triangle_tags(tmp_path: Path) -> None:
+    msh_path = tmp_path / "unnamed_tags.msh"
+    msh_path.write_text(
+        """
+$MeshFormat
+2.2 0 8
+$EndMeshFormat
+$Nodes
+3
+1 0 0 0
+2 1 0 0
+3 0 1 0
+$EndNodes
+$Elements
+1
+1 2 2 7 0 1 2 3
+$EndElements
+""".strip(),
+        encoding="utf-8",
+    )
+
+    assert read_surface_physical_names(msh_path) == {"Tag 7": 7}
 
 
 def test_discover_ath_output_finds_msh_and_driven_tag(tmp_path: Path) -> None:
@@ -826,3 +1043,128 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
     assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
         "1000.000000\t0.000\t-90.000",
     ]
+
+
+class _RecordingRunner:
+    """Stand-in for AthProcessRunner that records whether the Ath fallback ran."""
+
+    def __init__(self, *, result=None, exc=None):
+        self._result = result
+        self._exc = exc
+        self.calls: list[dict] = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        if self._exc is not None:
+            raise self._exc
+        return self._result
+
+
+def test_generate_waveguide_prefers_hornlab_mesher(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(tmp_path, monkeypatch)
+    runner = _RecordingRunner(exc=AssertionError("Ath must not run when the mesher succeeds"))
+    statuses: list[str] = []
+
+    result = generate_waveguide_mesh(
+        ath_exe=tmp_path / "ath" / "ath.exe",
+        config_text="Length = 10",
+        run_root=tmp_path / "runs",
+        case_name="case",
+        runner=runner,
+        on_status=statuses.append,
+    )
+
+    assert runner.calls == []  # the mesher handled it; Ath was never invoked
+    assert result.msh_path == tmp_path / "runs" / "case" / "ABEC_FreeStanding" / "case.msh"
+    assert any("HornLab" in status for status in statuses)
+
+
+def test_generate_waveguide_falls_back_to_ath_when_mesher_unsupported(tmp_path: Path, monkeypatch) -> None:
+    _install_fake_hornlab_mesher(
+        tmp_path,
+        monkeypatch,
+        build_body="    raise RuntimeError('unsupported geometry')\n",
+    )
+    sentinel = object()
+    runner = _RecordingRunner(result=sentinel)
+
+    result = generate_waveguide_mesh(
+        ath_exe=tmp_path / "ath" / "ath.exe",
+        config_text="Length = 10",
+        run_root=tmp_path / "runs",
+        case_name="case",
+        runner=runner,
+    )
+
+    assert len(runner.calls) == 1  # fell back to Ath exactly once
+    assert runner.calls[0]["ath_exe"] == tmp_path / "ath" / "ath.exe"
+    assert result is sentinel
+
+
+def test_write_ath_gmsh_path_stages_spaced_gmsh(tmp_path: Path, monkeypatch) -> None:
+    gmsh_dir = tmp_path / "boundary lab" / "gmsh-win"
+    gmsh_dir.mkdir(parents=True)
+    gmsh_exe = gmsh_dir / "gmsh.exe"
+    gmsh_exe.write_text("", encoding="utf-8")
+
+    stage = tmp_path / "cache"
+    monkeypatch.setattr("blab.ath._space_free_stage_bases", lambda: [stage])
+
+    ath_cfg = tmp_path / "ath.cfg"
+    ath_cfg.write_text("", encoding="utf-8")
+
+    staged = write_ath_gmsh_path(ath_cfg, gmsh_exe)
+
+    assert " " not in str(staged)
+    assert staged.resolve() == gmsh_exe.resolve()  # symlink resolves to the real exe
+    assert f'MeshCmd = "{staged} %f -"' in ath_cfg.read_text(encoding="utf-8")
+
+
+def test_write_ath_gmsh_path_keeps_space_free_gmsh(tmp_path: Path) -> None:
+    gmsh_exe = tmp_path / "gmsh-win" / "gmsh.exe"
+    gmsh_exe.parent.mkdir(parents=True)
+    gmsh_exe.write_text("", encoding="utf-8")
+
+    ath_cfg = tmp_path / "ath.cfg"
+    ath_cfg.write_text("", encoding="utf-8")
+
+    result = write_ath_gmsh_path(ath_cfg, gmsh_exe)
+
+    assert result == gmsh_exe.resolve()
+    assert f'MeshCmd = "{gmsh_exe.resolve()} %f -"' in ath_cfg.read_text(encoding="utf-8")
+
+
+def test_mesher_unsupported_reason_flags_throat_extension() -> None:
+    from blab.ath import _mesher_unsupported_reason
+
+    assert _mesher_unsupported_reason("Throat.Ext.Length = 15\nLength = 100") is not None
+    assert _mesher_unsupported_reason("Throat.Ext.Length = 15 ; mm\n") is not None
+    assert _mesher_unsupported_reason("Throat.Ext.Length = 0\n") is None
+    assert _mesher_unsupported_reason("Throat.Ext.Length =\n") is None
+    assert _mesher_unsupported_reason("Throat.Ext.Angle = 10\nLength = 100") is None
+    assert _mesher_unsupported_reason("Length = 100\n") is None
+
+
+def test_run_hornlab_waveguide_rejects_throat_extension(tmp_path: Path) -> None:
+    with pytest.raises(HornlabWaveguideGenerationError, match="Throat.Ext.Length"):
+        run_hornlab_waveguide(
+            config_text="Throat.Ext.Length = 15\nLength = 100",
+            run_root=tmp_path / "runs",
+            case_name="case",
+        )
+
+
+def test_generate_waveguide_falls_back_to_ath_for_throat_extension(tmp_path: Path) -> None:
+    sentinel = object()
+    runner = _RecordingRunner(result=sentinel)
+
+    result = generate_waveguide_mesh(
+        ath_exe=tmp_path / "ath" / "ath.exe",
+        config_text="Throat.Ext.Length = 15\nLength = 100",
+        run_root=tmp_path / "runs",
+        case_name="case",
+        runner=runner,
+    )
+
+    assert len(runner.calls) == 1  # throat extension routes to Ath, not the mesher
+    assert result is sentinel

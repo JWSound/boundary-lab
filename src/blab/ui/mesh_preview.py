@@ -9,7 +9,6 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from blab.ath import AthRunResult, read_surface_physical_names
 from blab.config import MeshConfig
 
 try:  # pragma: no cover - optional visual dependency
@@ -77,13 +76,7 @@ class MeshPreview(QWidget):
         self._actor_surface_labels = {}
         self.hover_label.setText("")
         self._set_total_element_count(0)
-
-    def load_ath_result(self, result: AthRunResult) -> None:
-        self.load_mesh_configs(
-            (MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),),
-            driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
-            surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
-        )
+        self._request_render()
 
     def load_msh(
         self,
@@ -122,6 +115,7 @@ class MeshPreview(QWidget):
             )
             self._add_orientation_guides(display_points)
             self._restore_camera_or_reset(camera_position)
+            self._request_render()
             return
 
         names_by_tag = {tag: name for name, tag in (surface_tags or {}).items()}
@@ -149,6 +143,7 @@ class MeshPreview(QWidget):
 
         self._add_orientation_guides(display_points)
         self._restore_camera_or_reset(camera_position)
+        self._request_render()
 
     def load_mesh_configs(
         self,
@@ -187,6 +182,7 @@ class MeshPreview(QWidget):
         if preview_points:
             self._add_orientation_guides(display_points)
         self._restore_camera_or_reset(camera_position)
+        self._request_render()
 
     def _add_msh_mesh(
         self,
@@ -327,6 +323,19 @@ class MeshPreview(QWidget):
             self.viewer.reset_camera_clipping_range()
         except Exception:
             self.viewer.reset_camera()
+
+    def _request_render(self) -> None:
+        if self.viewer is None:
+            return
+        render = getattr(self.viewer, "render", None)
+        if callable(render):
+            try:
+                render()
+            except Exception:
+                pass
+        update = getattr(self.viewer, "update", None)
+        if callable(update):
+            update()
 
     def _add_orientation_guides(self, points: np.ndarray) -> None:
         if self.viewer is None or pv is None:

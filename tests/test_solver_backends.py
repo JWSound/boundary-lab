@@ -49,6 +49,8 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("beat_rocm") == "beat_rocm"
     assert normalize_backend_id("rocm") == "beat_rocm"
     assert normalize_backend_id("amdgpu") == "beat_rocm"
+    assert normalize_backend_id("metal") == "hornlab_metal"
+    assert normalize_backend_id("hornlab") == "hornlab_metal"
     assert JuliaLocalBackend is BeatEngineBackend
     assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
     assert BemppServerBackend is HttpServerBackend
@@ -59,6 +61,7 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
     assert backend_info("beat_rocm").capabilities.supports_symmetry is True
+    assert backend_info("hornlab_metal").label == "HornLab Metal BEM"
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
@@ -112,6 +115,12 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
     assert BeatEngineBackend(beat_engine_backend="rocm").julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+
+    if backend_info("hornlab_metal").available:
+        hornlab_backend = create_backend("hornlab_metal", server_url="http://ignored.example")
+        assert hornlab_backend.backend_id == "hornlab_metal"
+        assert hornlab_backend.capabilities.supports_symmetry is True
+        assert hornlab_backend.capabilities.is_remote is False
 
 
 def test_server_health_supports_symmetry_reads_capability_payload() -> None:

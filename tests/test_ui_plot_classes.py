@@ -399,6 +399,9 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "LinearSegmentedColormap.from_list" in isobar_block
     assert "Normalize(vmin=clip_min_db, vmax=clip_max_db)" in isobar_block
     assert "BoundaryNorm(boundaries, cmap.N)" in isobar_block
+    assert "data_span_db = 0.0 if finite.size == 0 else float(np.max(finite) - np.min(finite))" in isobar_block
+    assert "discrete_colors = contour_step_db <= 0.0 or data_span_db >= 2.0 * contour_step_db" in isobar_block
+    assert "discrete=discrete_colors" in isobar_block
     assert "ScalarMappable(norm=norm, cmap=cmap)" in isobar_block
     assert "self.figure.add_axes" in isobar_block
     assert "cax=self._colorbar_axes" in isobar_block

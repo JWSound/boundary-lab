@@ -59,3 +59,7 @@ src/blab/solvers/julia_local/results/
 src/blab/solvers/julia_local/runs/
 src/blab/solvers/julia_local/test_meshes/staged_symmetry/
 LocalPreferences.toml
+
+# Machine-local Ath runtime config (per-machine OutputRootDir/MeshCmd paths; the
+# app regenerates it, so it must not be committed).
+ath/ath.cfg

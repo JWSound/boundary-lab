@@ -8,7 +8,7 @@ wire/API serialization stays in ``blab.protocol``.
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 PROJECT_SCHEMA_VERSION = 1
@@ -154,7 +154,7 @@ def _resolve_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[
         if not text:
             continue
         path = Path(text)
-        if path.is_absolute():
+        if path.is_absolute() or PureWindowsPath(text).drive:
             continue
         payload[field] = str((base_dir / path).resolve())
 
