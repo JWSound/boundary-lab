@@ -22,6 +22,7 @@ const GIT_COMMIT_CACHE = Ref{Any}(:unset)
 Base.@kwdef mutable struct BenchmarkConfig
     mesh::String = joinpath(@__DIR__, "..", "test_meshes", "sample_detailed.msh")
     frequency::Float64 = 1000.0
+    frequencies::Vector{Float64} = Float64[]
     precision_name::String = "Float32"
     quadrature_order::Int = 4
     singular_order::Int = 4
@@ -48,8 +49,9 @@ function print_usage()
       julia scripts/benchmark_cuda.jl [options]
 
     Options:
-      --mesh PATH                    Mesh path. Default: test_meshes/sample.msh
+      --mesh PATH                    Mesh path. Default: test_meshes/sample_detailed.msh
       --freq HZ                      Frequency in Hz. Default: 1000
+      --frequencies CSV              Comma-separated frequency sweep in Hz. Overrides --freq.
       --precision Float32|Float64    Numeric precision. Default: Float32
       --quadrature-order N           Regular quadrature order. Default: 4
       --singular-order N             Singular quadrature order. Default: 4
@@ -78,6 +80,8 @@ function parse_args(args)
             i += 1; config.mesh = args[i]
         elseif arg == "--freq"
             i += 1; config.frequency = parse(Float64, args[i])
+        elseif arg == "--frequencies"
+            i += 1; config.frequencies = parse_frequency_list(args[i])
         elseif arg == "--precision"
             i += 1; config.precision_name = args[i]
         elseif arg == "--quadrature-order"
@@ -120,6 +124,17 @@ function precision_type(name::String)
     error("Unsupported precision: $name")
 end
 
+function parse_frequency_list(value::String)
+    frequencies = Float64[]
+    for item in split(value, ",")
+        stripped = strip(item)
+        isempty(stripped) && continue
+        push!(frequencies, parse(Float64, stripped))
+    end
+    isempty(frequencies) && error("--frequencies must contain at least one frequency.")
+    return frequencies
+end
+
 function cuda_available()
     CUDA_MODULE === nothing && return false
     try
@@ -158,6 +173,19 @@ function timed_stage!(timings::Dict{String,Float64}, name::String, thunk)
 end
 
 timed_stage!(thunk, timings::Dict{String,Float64}, name::String) = timed_stage!(timings, name, thunk)
+
+timed_cuda_stage!(thunk, timings::Dict{String,Float64}, name::String, cuda) = timed_cuda_stage!(timings, name, cuda, thunk)
+
+function timed_cuda_stage!(timings::Dict{String,Float64}, name::String, cuda, thunk)
+    value = nothing
+    cuda.synchronize()
+    elapsed = @elapsed begin
+        value = thunk()
+        cuda.synchronize()
+    end
+    timings[name] = elapsed
+    return value
+end
 
 function throat_rhs(mesh, config::BenchmarkConfig, ::Type{T}) where {T<:AbstractFloat}
     ComplexType = Complex{T}
@@ -220,6 +248,50 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
     return merge(operators, (singular_pairs=singular_pairs, skipped_pairs=skipped_pairs))
 end
 
+function solve_burton_miller_neumann_cuda_timed!(timings, operators, identity_cache, q_neumann, k::T) where {T<:AbstractFloat}
+    get(operators, :on_gpu, false) || error("CUDA timed solve requires GPU-resident operators.")
+    cuda = CUDA_MODULE
+    cuda !== nothing && cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
+
+    coupling = Complex{T}(0, 1) / k
+    d_q_neumann = d_lhs = d_rhs_operator = d_rhs = d_pressure = nothing
+    pressure = nothing
+
+    try
+        d_q_neumann = timed_cuda_stage!(timings, "solve_rhs_transfer", cuda) do
+            cuda.CuArray(q_neumann)
+        end
+        d_lhs = timed_cuda_stage!(timings, "solve_lhs_build", cuda) do
+            Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
+        end
+        d_rhs_operator = timed_cuda_stage!(timings, "solve_rhs_operator_build", cuda) do
+            -operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0)
+        end
+        d_rhs = timed_cuda_stage!(timings, "solve_rhs_matvec", cuda) do
+            d_rhs_operator * d_q_neumann
+        end
+        d_pressure = timed_cuda_stage!(timings, "linear_solve", cuda) do
+            d_lhs \ d_rhs
+        end
+        pressure = timed_cuda_stage!(timings, "solve_result_transfer_to_cpu", cuda) do
+            Complex{T}.(Array(d_pressure))
+        end
+    finally
+        for item in (d_q_neumann, d_rhs_operator, d_lhs, d_rhs, d_pressure)
+            item === nothing && continue
+            cuda.unsafe_free!(item)
+        end
+    end
+
+    timings["lhs_rhs_build"] = sum(get(timings, key, 0.0) for key in (
+        "solve_rhs_transfer",
+        "solve_lhs_build",
+        "solve_rhs_operator_build",
+        "solve_rhs_matvec",
+    ))
+    timings["solve_total"] = timings["lhs_rhs_build"] + timings["linear_solve"] + get(timings, "solve_result_transfer_to_cpu", 0.0)
+    return pressure
+end
 function run_workload(config::BenchmarkConfig; measured::Bool=true)
     T = precision_type(config.precision_name)
     timings = Dict{String,Float64}()
@@ -239,11 +311,17 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     end
 
     rule = triangle_rule(T, config.quadrature_order)
-    cpu_field_cache = timed_stage!(timings, "field_cache_build_cpu") do
-        build_field_evaluation_cache(mesh, rule)
-    end
-    field_cache = timed_stage!(timings, "field_cache_build_gpu") do
-        build_cuda_field_evaluation_cache(cpu_field_cache)
+    field_cache = nothing
+    if config.skip_field || config.eval_points == 0
+        timings["field_cache_build_cpu"] = 0.0
+        timings["field_cache_build_gpu"] = 0.0
+    else
+        cpu_field_cache = timed_stage!(timings, "field_cache_build_cpu") do
+            build_field_evaluation_cache(mesh, rule)
+        end
+        field_cache = timed_stage!(timings, "field_cache_build_gpu") do
+            build_cuda_field_evaluation_cache(cpu_field_cache)
+        end
     end
     element_count = config.subset_faces > 0 ? min(config.subset_faces, length(mesh.faces)) : length(mesh.faces)
     element_indices = 1:element_count
@@ -265,6 +343,15 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
     end
 
+    cuda_solve_identity_cache = nothing
+    if config.skip_solve
+        timings["solve_identity_cache_build"] = 0.0
+    else
+        cuda_solve_identity_cache = timed_stage!(timings, "solve_identity_cache_build") do
+            build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)
+        end
+    end
+
     cache = timed_stage!(timings, "cuda_cache_build") do
         build_cuda_regular_assembly_cache(mesh, rule; element_indices=element_indices)
     end
@@ -279,13 +366,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         timings["linear_solve"] = 0.0
         timings["solve_total"] = 0.0
     else
-        pressure = timed_stage!(timings, "solve_total") do
-            solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
-        end
-        timings["lhs_rhs_build"] = 0.0
-        timings["linear_solve"] = timings["solve_total"]
+        pressure = solve_burton_miller_neumann_cuda_timed!(timings, operators, cuda_solve_identity_cache, q_neumann, k)
     end
-
     field_norm = nothing
     if config.skip_field || config.eval_points == 0 || pressure === nothing
         timings["field_evaluation"] = 0.0
@@ -303,6 +385,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "identity_assembly_p1_p1",
         "identity_assembly_p1_dp0",
         "cuda_cache_build",
+        "solve_identity_cache_build",
         "field_cache_build_cpu",
         "field_cache_build_gpu",
         "singular_correction_cache_build",
@@ -314,6 +397,9 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     ]
     total = sum(get(timings, key, 0.0) for key in total_stage_keys)
     release_operator_storage!(operators)
+    if cuda_solve_identity_cache !== nothing
+        release_cuda_burton_miller_identity_cache!(cuda_solve_identity_cache)
+    end
     metadata = Dict{String,Any}(
         "timestamp" => string(now()),
         "git_commit" => git_commit(),
@@ -364,19 +450,22 @@ function summarize_runs(runs)
         values_for_key = [run["timings_seconds"][key] for run in runs]
         summary[key] = Dict(
             "min" => minimum(values_for_key),
+            "mean" => mean(values_for_key),
             "median" => median(values_for_key),
             "max" => maximum(values_for_key),
+            "std" => length(values_for_key) > 1 ? std(values_for_key) : 0.0,
         )
     end
     totals = [run["total_seconds"] for run in runs]
     summary["total_seconds"] = Dict(
         "min" => minimum(totals),
+        "mean" => mean(totals),
         "median" => median(totals),
         "max" => maximum(totals),
+        "std" => length(totals) > 1 ? std(totals) : 0.0,
     )
     return summary
 end
-
 json_escape(s::AbstractString) = replace(replace(replace(replace(s, "\\" => "\\\\"), "\"" => "\\\""), "\n" => "\\n"), "\r" => "\\r")
 
 function json_value(io::IO, value)
@@ -424,12 +513,13 @@ end
 
 function print_summary(payload)
     config = payload["config"]
-    base = payload["runs"][1]
+    frequency_results = get(payload, "frequency_results", Any[Dict("frequency_hz" => config["frequency_hz"], "runs" => payload["runs"], "summary_seconds" => payload["summary_seconds"])])
+    base = frequency_results[1]["runs"][1]
     println(@sprintf(
-        "Benchmark: %s | %s | %.1f Hz | %d/%d faces | q%d/s%d | eval %d",
+        "Benchmark: %s | %s | %d frequencies | %d/%d faces | q%d/s%d | eval %d",
         config["backend"],
         config["precision"],
-        config["frequency_hz"],
+        length(frequency_results),
         base["element_count"],
         base["mesh_faces"],
         config["quadrature_order"],
@@ -445,38 +535,46 @@ function print_summary(payload)
         string(base["skipped_pairs"]),
     ))
 
-    summary = payload["summary_seconds"]
     key_stages = [
-        "total_seconds",
+        "solve_total",
+        "linear_solve",
+        "lhs_rhs_build",
+        "solve_identity_cache_build",
+        "solve_lhs_build",
+        "solve_rhs_operator_build",
+        "solve_rhs_matvec",
+        "solve_result_transfer_to_cpu",
         "operator_total_assembly",
         "regular_operator_assembly",
         "regular_operator_kernel",
         "singular_corrections",
-        "singular_correction_compute_scatter",
-        "solve_total",
         "field_evaluation",
     ]
 
-    println("Stage medians:")
-    for key in key_stages
-        haskey(summary, key) || continue
-        println(@sprintf("  %-36s %.6f s", key, summary[key]["median"]))
-    end
+    for result in frequency_results
+        summary = result["summary_seconds"]
+        println(@sprintf("Frequency %.1f Hz stage means:", result["frequency_hz"]))
+        for key in key_stages
+            haskey(summary, key) || continue
+            println(@sprintf("  %-36s %.6f s", key, summary[key]["mean"]))
+        end
 
-    if get(config, "verbose", false)
-        println("Detailed medians:")
-        for key in sort(collect(keys(summary)))
-            key in key_stages && continue
-            println(@sprintf("  %-36s %.6f s", key, summary[key]["median"]))
+        if get(config, "verbose", false)
+            println("Detailed means:")
+            for key in sort(collect(keys(summary)))
+                key in key_stages && continue
+                println(@sprintf("  %-36s %.6f s", key, summary[key]["mean"]))
+            end
         end
     end
 end
-
 function benchmark_payload(config::BenchmarkConfig)
     T = precision_type(config.precision_name)
+    frequencies = isempty(config.frequencies) ? [config.frequency] : copy(config.frequencies)
     normalized_config = Dict{String,Any}(
         "mesh" => abspath(config.mesh),
-        "frequency_hz" => config.frequency,
+        "frequency_hz" => frequencies[1],
+        "frequencies_hz" => frequencies,
         "precision" => string(T),
         "backend" => "cuda",
         "quadrature_order" => config.quadrature_order,
@@ -491,38 +589,55 @@ function benchmark_payload(config::BenchmarkConfig)
         "verbose" => config.verbose,
     )
 
-    for i in 1:config.warmups
-        println(@sprintf("Warmup %d/%d", i, config.warmups))
-        run_workload(config; measured=false)
-        GC.gc()
-    end
+    all_runs = Dict{String,Any}[]
+    frequency_results = Dict{String,Any}[]
+    original_frequency = config.frequency
+    try
+        for frequency in frequencies
+            config.frequency = frequency
+            println(@sprintf("Frequency %.1f Hz", frequency))
+            for i in 1:config.warmups
+                println(@sprintf("Warmup %d/%d", i, config.warmups))
+                run_workload(config; measured=false)
+                GC.gc()
+            end
 
-    runs = Dict{String,Any}[]
-    for i in 1:config.repetitions
-        println(@sprintf("Measured run %d/%d", i, config.repetitions))
-        if config.profile == "cpu" && i == 1
-            Profile.clear()
-            result = Profile.@profile run_workload(config)
-            push!(runs, result)
-            Profile.print(format=:flat, sortedby=:count, maxdepth=20)
-        elseif config.profile == "allocs" && i == 1
-            bytes = @allocated result = run_workload(config)
-            result["allocated_bytes_outer"] = bytes
-            push!(runs, result)
-            println(@sprintf("Outer allocated bytes: %d", bytes))
-        else
-            push!(runs, run_workload(config))
+            runs = Dict{String,Any}[]
+            for i in 1:config.repetitions
+                println(@sprintf("Measured run %d/%d", i, config.repetitions))
+                if config.profile == "cpu" && i == 1
+                    Profile.clear()
+                    result = Profile.@profile run_workload(config)
+                    push!(runs, result)
+                    Profile.print(format=:flat, sortedby=:count, maxdepth=20)
+                elseif config.profile == "allocs" && i == 1
+                    bytes = @allocated result = run_workload(config)
+                    result["allocated_bytes_outer"] = bytes
+                    push!(runs, result)
+                    println(@sprintf("Outer allocated bytes: %d", bytes))
+                else
+                    push!(runs, run_workload(config))
+                end
+                GC.gc()
+            end
+            append!(all_runs, runs)
+            push!(frequency_results, Dict{String,Any}(
+                "frequency_hz" => frequency,
+                "runs" => runs,
+                "summary_seconds" => summarize_runs(runs),
+            ))
         end
-        GC.gc()
+    finally
+        config.frequency = original_frequency
     end
 
     return Dict{String,Any}(
         "config" => normalized_config,
-        "runs" => runs,
-        "summary_seconds" => summarize_runs(runs),
+        "runs" => all_runs,
+        "frequency_results" => frequency_results,
+        "summary_seconds" => summarize_runs(all_runs),
     )
 end
-
 function main(args=ARGS)
     config = parse_args(args)
     payload = benchmark_payload(config)
