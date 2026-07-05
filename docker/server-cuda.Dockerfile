@@ -53,6 +53,7 @@ RUN mkdir -p /opt/julia-depot /data/server_jobs \
     && if [ -f /app/blab-beat-cuda.so ]; then chmod a+rX /app/blab-beat-cuda.so; fi
 
 RUN cp /app/docker/server-cuda-entrypoint.sh /usr/local/bin/blab-server-cuda \
+    && sed -i 's/\r$//' /usr/local/bin/blab-server-cuda \
     && chmod +x /usr/local/bin/blab-server-cuda
 
 VOLUME ["/data"]
