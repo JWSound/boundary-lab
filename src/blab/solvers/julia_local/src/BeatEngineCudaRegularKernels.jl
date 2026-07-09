@@ -87,7 +87,17 @@ function _cuda_regular_quadrature_slp_hyp_kernel!(
     rc32 = curls[trial_index + 7 * face_count]
     rc33 = curls[trial_index + 8 * face_count]
 
+    curl_dot11 = tc11 * rc11 + tc12 * rc12 + tc13 * rc13
+    curl_dot12 = tc11 * rc21 + tc12 * rc22 + tc13 * rc23
+    curl_dot13 = tc11 * rc31 + tc12 * rc32 + tc13 * rc33
+    curl_dot21 = tc21 * rc11 + tc22 * rc12 + tc23 * rc13
+    curl_dot22 = tc21 * rc21 + tc22 * rc22 + tc23 * rc23
+    curl_dot23 = tc21 * rc31 + tc22 * rc32 + tc23 * rc33
+    curl_dot31 = tc31 * rc11 + tc32 * rc12 + tc33 * rc13
+    curl_dot32 = tc31 * rc21 + tc32 * rc22 + tc33 * rc23
+    curl_dot33 = tc31 * rc31 + tc32 * rc32 + tc33 * rc33
     jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
+    k2_normal = k * k * normal_product
     four_pi = typeof(k)(12.566370614359172)
     qpair_count = rule_count * rule_count
     qpair = 1
@@ -146,15 +156,15 @@ function _cuda_regular_quadrature_slp_hyp_kernel!(
             slp2_im += tv2 * weighted_im
             slp3_im += tv3 * weighted_im
 
-            h11 = (tc11 * rc11 + tc12 * rc12 + tc13 * rc13) - k * k * tv1 * rv1 * normal_product
-            h12 = (tc11 * rc21 + tc12 * rc22 + tc13 * rc23) - k * k * tv1 * rv2 * normal_product
-            h13 = (tc11 * rc31 + tc12 * rc32 + tc13 * rc33) - k * k * tv1 * rv3 * normal_product
-            h21 = (tc21 * rc11 + tc22 * rc12 + tc23 * rc13) - k * k * tv2 * rv1 * normal_product
-            h22 = (tc21 * rc21 + tc22 * rc22 + tc23 * rc23) - k * k * tv2 * rv2 * normal_product
-            h23 = (tc21 * rc31 + tc22 * rc32 + tc23 * rc33) - k * k * tv2 * rv3 * normal_product
-            h31 = (tc31 * rc11 + tc32 * rc12 + tc33 * rc13) - k * k * tv3 * rv1 * normal_product
-            h32 = (tc31 * rc21 + tc32 * rc22 + tc33 * rc23) - k * k * tv3 * rv2 * normal_product
-            h33 = (tc31 * rc31 + tc32 * rc32 + tc33 * rc33) - k * k * tv3 * rv3 * normal_product
+            h11 = curl_dot11 - k2_normal * tv1 * rv1
+            h12 = curl_dot12 - k2_normal * tv1 * rv2
+            h13 = curl_dot13 - k2_normal * tv1 * rv3
+            h21 = curl_dot21 - k2_normal * tv2 * rv1
+            h22 = curl_dot22 - k2_normal * tv2 * rv2
+            h23 = curl_dot23 - k2_normal * tv2 * rv3
+            h31 = curl_dot31 - k2_normal * tv3 * rv1
+            h32 = curl_dot32 - k2_normal * tv3 * rv2
+            h33 = curl_dot33 - k2_normal * tv3 * rv3
 
             hyp11_re += h11 * weighted_re
             hyp12_re += h12 * weighted_re
