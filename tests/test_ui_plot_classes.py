@@ -470,6 +470,24 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
     assert "_grid_bracket(log_freqs, log_freq)" in isobar_block
 
 
+def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None:
+    plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    isobar_block = plot_source[plot_source.index("class IsobarCanvas") : plot_source.index("class ImpedanceCanvas")]
+
+    assert "self._comparison_plot" in isobar_block
+    assert "def set_comparison_plot(" in isobar_block
+    assert "def clear_comparison_plot(" in isobar_block
+    assert "event.button != MouseButton.RIGHT" in isobar_block
+    assert 'f"{self.title} - Previous Solve"' in isobar_block
+    assert "self._apply_plot_state(self._comparison_plot)" in isobar_block
+    assert "self._apply_plot_state(restore_plot)" in isobar_block
+    assert "self._last_completed_isobar_dataset" in main_source
+    assert "def _snapshot_isobar_dataset(" in main_source
+    assert "self._apply_last_completed_isobar_comparison()" in main_source
+    assert 'if reason in {"new_project", "project_loaded"}:' in main_source
+
+
 def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
