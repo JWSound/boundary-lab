@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
+        self._last_completed_isobar_dataset: dict[str, np.ndarray] | None = None
         self.balloon_window: QWidget | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
@@ -686,8 +687,10 @@ class MainWindow(QMainWindow):
         self.source_config_button.setEnabled(self._has_solver_meshes())
 
     @Slot(str)
-    def _on_solve_results_invalidated(self, _reason: str) -> None:
+    def _on_solve_results_invalidated(self, reason: str) -> None:
         self._clear_plots()
+        if reason in {"new_project", "project_loaded"}:
+            self._clear_isobar_comparison_history()
 
     def _has_solved_data(self) -> bool:
         return bool(self.live_dataset is not None and self.live_dataset.solved_count > 0)
@@ -2315,6 +2318,7 @@ class MainWindow(QMainWindow):
 
         self.live_dataset = None
         self._clear_plots()
+        self._apply_last_completed_isobar_comparison()
         self.balloon_plot_action.setEnabled(False)
         self.solve_expected_count = int(ordered_freqs.size)
         self.solve_failed = False
@@ -2436,8 +2440,17 @@ class MainWindow(QMainWindow):
             if solve_completed:
                 self.status_label.setText("Rendering final high-resolution plots...")
                 QApplication.processEvents()
+            refreshed_dataset = None
             if self.preferences.live_plot_streaming or solve_completed:
-                self._refresh_plots()
+                refreshed_dataset = self._refresh_plots()
+            if solve_completed:
+                if refreshed_dataset is None:
+                    refreshed_dataset = self._prepared_live_plot_dataset(
+                        angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES,
+                        freq_samples=FINAL_ISOBAR_FREQ_SAMPLES,
+                    )
+                if refreshed_dataset is not None:
+                    self._last_completed_isobar_dataset = self._snapshot_isobar_dataset(refreshed_dataset)
             self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
@@ -2479,6 +2492,53 @@ class MainWindow(QMainWindow):
         self.export_polar_data_action.setEnabled(False)
         self.balloon_plot_action.setEnabled(False)
         self._set_contour_button_states()
+
+    def _snapshot_isobar_dataset(self, dataset: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return {
+            key: np.asarray(dataset[key]).copy()
+            for key in (
+                "isobar_freq_hz",
+                "isobar_angle_deg",
+                "horizontal_isobar_db",
+                "vertical_isobar_db",
+                "clip_min_db",
+                "clip_max_db",
+            )
+        }
+
+    def _apply_last_completed_isobar_comparison(self) -> None:
+        dataset = self._last_completed_isobar_dataset
+        if dataset is None:
+            self.horizontal_plot.clear_comparison_plot()
+            self.vertical_plot.clear_comparison_plot()
+            return
+        clip_min_db = float(dataset["clip_min_db"])
+        clip_max_db = float(dataset["clip_max_db"])
+        options = {
+            "shading": FINAL_ISOBAR_SHADING,
+            "contour_step_db": self.preferences.isobar_contour_step_db,
+        }
+        self.horizontal_plot.set_comparison_plot(
+            dataset["isobar_freq_hz"],
+            dataset["isobar_angle_deg"],
+            dataset["horizontal_isobar_db"],
+            clip_min_db,
+            clip_max_db,
+            **options,
+        )
+        self.vertical_plot.set_comparison_plot(
+            dataset["isobar_freq_hz"],
+            dataset["isobar_angle_deg"],
+            dataset["vertical_isobar_db"],
+            clip_min_db,
+            clip_max_db,
+            **options,
+        )
+
+    def _clear_isobar_comparison_history(self) -> None:
+        self._last_completed_isobar_dataset = None
+        self.horizontal_plot.clear_comparison_plot()
+        self.vertical_plot.clear_comparison_plot()
 
     def _set_plot_visible(self, plot_id: str, visible: bool) -> None:
         for entry in self.plot_entries:
@@ -2597,14 +2657,14 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def _refresh_plots(self) -> None:
+    def _refresh_plots(self) -> dict[str, np.ndarray] | None:
         visible_entries = [
             entry
             for entry in self.plot_entries
             if (dock := self.plot_docks.get(entry.plot_id)) is not None and not dock.isHidden()
         ]
         if not visible_entries:
-            return
+            return None
 
         dataset = self._prepared_live_plot_dataset(
             angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES
@@ -2615,10 +2675,11 @@ class MainWindow(QMainWindow):
             else live_plot_freq_samples(self.preferences.live_plot_quality),
         )
         if dataset is None:
-            return
+            return None
 
         for entry in visible_entries:
             entry.update(dataset)
+        return dataset
 
     def _update_horizontal_plot(self, dataset: dict[str, np.ndarray]) -> None:
         self.horizontal_plot.update_plot(

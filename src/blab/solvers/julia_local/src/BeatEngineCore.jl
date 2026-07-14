@@ -24,6 +24,8 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    build_cuda_burton_miller_identity_cache,
+    release_cuda_burton_miller_identity_cache!,
     build_rocm_regular_assembly_cache,
     build_rocm_field_evaluation_cache,
     build_field_evaluation_cache,
@@ -98,6 +100,10 @@ end
 struct DP0Space
     local_to_global::Vector{Int}
     global_dof_count::Int
+end
+struct CudaBurtonMillerIdentityCache{A,B}
+    identity_p1_p1::A
+    identity_p1_dp0::B
 end
 
 struct TriangleRule{T<:AbstractFloat}
@@ -908,6 +914,16 @@ function build_cuda_field_evaluation_cache(args...; kwargs...)
     error("CUDA field-evaluation cache requested, but CUDA.jl is not loaded.")
 end
 
+function build_cuda_burton_miller_identity_cache(args...; kwargs...)
+    error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
+end
+
+function release_cuda_burton_miller_identity_cache!(cache::CudaBurtonMillerIdentityCache)
+    cuda = cuda_module()
+    cuda.unsafe_free!(cache.identity_p1_p1)
+    cuda.unsafe_free!(cache.identity_p1_dp0)
+    return nothing
+end
 function evaluate_galerkin_field_cuda(args...; kwargs...)
     error("CUDA field evaluation requested, but CUDA.jl is not loaded.")
 end
@@ -930,31 +946,50 @@ end
 
 release_operator_storage!(operators) = nothing
 
-function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
+function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, ::Type{T}) where {T<:AbstractFloat}
+    cuda = cuda_module()
+    cuda.functional() || error("CUDA Burton-Miller identity cache requested, but CUDA.functional() is false.")
+    return CudaBurtonMillerIdentityCache(
+        cuda.CuArray(Complex{T}.(identity_p1_p1)),
+        cuda.CuArray(Complex{T}.(identity_p1_dp0)),
+    )
+end
+
+function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMillerIdentityCache, q_neumann, k::T) where {T<:AbstractFloat}
+    get(operators, :on_gpu, false) || error("Cached CUDA solve requires GPU-resident operators.")
+    cuda = cuda_module()
+    cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     coupling = Complex{T}(0, 1) / k
+    d_q_neumann = d_lhs = d_rhs = d_pressure = nothing
+    pressure = nothing
+    try
+        d_q_neumann = cuda.CuArray(q_neumann)
+        d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
+        d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0)) * d_q_neumann
+        d_pressure = d_lhs \ d_rhs
+        pressure = Complex{T}.(Array(d_pressure))
+    finally
+        for item in (d_q_neumann, d_lhs, d_rhs, d_pressure)
+            item === nothing && continue
+            cuda.unsafe_free!(item)
+        end
+    end
+    return pressure
+end
+
+function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k::T) where {T<:AbstractFloat}
     operators_on_gpu = get(operators, :on_gpu, false)
     if !operators_on_gpu
         return solve_burton_miller_neumann_cpu(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
     end
-    cuda = cuda_module()
-    cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
-    d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
-    d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
-    d_q_neumann = cuda.CuArray(q_neumann)
-    d_lhs = Complex{T}(0.5) .* d_identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
-    d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* d_identity_p1_dp0)) * d_q_neumann
-    cuda.unsafe_free!(d_identity_p1_p1)
-    cuda.unsafe_free!(d_identity_p1_dp0)
-    cuda.unsafe_free!(d_q_neumann)
 
-    d_pressure = d_lhs \ d_rhs
-    pressure = Complex{T}.(Array(d_pressure))
-    cuda.unsafe_free!(d_lhs)
-    cuda.unsafe_free!(d_rhs)
-    cuda.unsafe_free!(d_pressure)
-    return pressure
+    identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)
+    try
+        return solve_burton_miller_neumann(operators, identity_cache, q_neumann, k)
+    finally
+        release_cuda_burton_miller_identity_cache!(identity_cache)
+    end
 end
-
 function build_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::TriangleRule{T}; symmetry_mode::Symbol=:off) where {T<:AbstractFloat}
     transforms = symmetry_transforms(symmetry_mode; include_identity=true)
     source_count = length(mesh.faces) * length(rule.points) * length(transforms)

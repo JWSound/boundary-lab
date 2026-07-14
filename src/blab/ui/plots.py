@@ -144,6 +144,25 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
+        self._comparison_plot: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            float,
+            float,
+            str,
+            float,
+        ] | None = None
+        self._comparison_restore_plot: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            float,
+            float,
+            str,
+            float,
+        ] | None = None
+        self._comparison_active = False
         self._crosshair_visible = False
         self._crosshair_dragging = False
         self._crosshair_freq_hz: float | None = None
@@ -156,6 +175,7 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_background = None
         self._apply_layout()
         self._connect_crosshair_events()
+        self._connect_comparison_events()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
@@ -187,6 +207,8 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
         self._crosshair_background = None
+        self._comparison_active = False
+        self._comparison_restore_plot = None
         self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
@@ -205,6 +227,97 @@ class IsobarCanvas(FigureCanvas):
         self.mpl_connect("button_release_event", self._on_crosshair_button_release)
         self.mpl_connect("motion_notify_event", self._on_crosshair_motion)
         self.mpl_connect("draw_event", self._on_crosshair_draw)
+
+    def _connect_comparison_events(self) -> None:
+        self.mpl_connect("button_press_event", self._on_comparison_button_press)
+        self.mpl_connect("button_release_event", self._on_comparison_button_release)
+
+    def set_comparison_plot(
+        self,
+        freqs_hz: np.ndarray,
+        angles_deg: np.ndarray,
+        values_db: np.ndarray,
+        clip_min_db: float,
+        clip_max_db: float,
+        *,
+        shading: str = FINAL_ISOBAR_SHADING,
+        contour_step_db: float = 3.0,
+    ) -> None:
+        self._comparison_plot = (
+            np.asarray(freqs_hz, dtype=np.float32).copy(),
+            np.asarray(angles_deg, dtype=np.float32).copy(),
+            np.asarray(values_db, dtype=np.float32).copy(),
+            float(clip_min_db),
+            float(clip_max_db),
+            str(shading or FINAL_ISOBAR_SHADING),
+            max(0.0, float(contour_step_db)),
+        )
+        self.setToolTip("Hold the right mouse button over the plot to view the previous completed solve.")
+
+    def clear_comparison_plot(self) -> None:
+        self._comparison_plot = None
+        self._comparison_restore_plot = None
+        self._comparison_active = False
+        self.setToolTip("")
+
+    def _current_plot_state(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, str, float] | None:
+        if (
+            self._mesh_freqs_hz is None
+            or self._mesh_angles_deg is None
+            or self._mesh_values_db is None
+            or self._mesh_clip is None
+            or self._mesh_shading is None
+        ):
+            return None
+        return (
+            self._mesh_freqs_hz.copy(),
+            self._mesh_angles_deg.copy(),
+            self._mesh_values_db.copy(),
+            self._mesh_clip[0],
+            self._mesh_clip[1],
+            self._mesh_shading,
+            3.0 if self._mesh_contour_step_db is None else self._mesh_contour_step_db,
+        )
+
+    def _apply_plot_state(
+        self,
+        state: tuple[np.ndarray, np.ndarray, np.ndarray, float, float, str, float],
+    ) -> None:
+        freqs_hz, angles_deg, values_db, clip_min_db, clip_max_db, shading, contour_step_db = state
+        self.update_plot(
+            freqs_hz,
+            angles_deg,
+            values_db,
+            clip_min_db,
+            clip_max_db,
+            shading=shading,
+            contour_step_db=contour_step_db,
+        )
+
+    def _on_comparison_button_press(self, event) -> None:
+        if event.inaxes is not self.axes or event.button != MouseButton.RIGHT:
+            return
+        if self._comparison_active or self._comparison_plot is None:
+            return
+        current_plot = self._current_plot_state()
+        if current_plot is None:
+            return
+        self._comparison_restore_plot = current_plot
+        self._comparison_active = True
+        self._apply_plot_state(self._comparison_plot)
+        self.axes.set_title(f"{self.title} - Previous Solve", pad=PLOT_TITLE_PAD)
+        self.draw_idle()
+
+    def _on_comparison_button_release(self, event) -> None:
+        if event.button != MouseButton.RIGHT or not self._comparison_active:
+            return
+        restore_plot = self._comparison_restore_plot
+        self._comparison_restore_plot = None
+        self._comparison_active = False
+        if restore_plot is not None:
+            self._apply_plot_state(restore_plot)
 
     def _on_crosshair_draw(self, event) -> None:
         if event.canvas is not self:

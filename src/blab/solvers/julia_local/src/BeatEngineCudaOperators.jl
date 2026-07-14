@@ -77,7 +77,11 @@ function _launch_regular_serial_pair_batched_kernel!(
 ) where {T<:AbstractFloat}
     threads = 128
     blocks = cld(total_pairs, threads)
-    CUDA.@cuda threads=threads blocks=blocks _cuda_regular_quadrature_slp_hyp_kernel!(
+    # The q4 split kernels naturally compile to about 100 registers/thread. On CC 7.5,
+    # capping at 80 admits six resident blocks (75% theoretical occupancy); the
+    # resulting spills remain L2-resident and benchmark faster than the 72/84/88
+    # register variants on sample_detailed.msh.
+    CUDA.@cuda threads=threads blocks=blocks maxregs=80 _cuda_regular_quadrature_slp_hyp_kernel!(
         slp_re,
         slp_im,
         hyp_re,
@@ -98,7 +102,7 @@ function _launch_regular_serial_pair_batched_kernel!(
         total_pairs,
     )
 
-    CUDA.@cuda threads=threads blocks=blocks _cuda_regular_quadrature_dlp_adjoint_kernel!(
+    CUDA.@cuda threads=threads blocks=blocks maxregs=80 _cuda_regular_quadrature_dlp_adjoint_kernel!(
         dlp_re,
         dlp_im,
         adj_re,

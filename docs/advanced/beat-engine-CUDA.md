@@ -58,6 +58,8 @@ This grouping keeps both launches at 24 accumulator slots, which reduces registe
 
 The serial pair batched split kernels atomically scatter real and imaginary element-block entries into dense operator buffers. Singular adjacent/coincident pairs are skipped during regular assembly and handled afterward by the Duffy correction path.
 
+The split regular launches use an 80-register compiler cap. On the reference RTX 2080 Ti this raises achieved occupancy from about 49% to 73% while keeping compiler spill traffic predominantly L2-resident. The cap was selected by comparing unrestricted, 88, 84, 80, and 72-register variants on `sample_detailed.msh`; lower caps lost performance to spill traffic.
+
 `_cuda_duffy_blocks_kernel!` maps GPU threads over cached adjacent/coincident element pairs. Each thread computes the compact singular correction block for one or more pairs using the cached remapped Duffy rule. `_cuda_singular_scatter_kernel!` then atomically scatters those compact blocks into dense GPU correction buffers.
 
 `_cuda_weighted_field_sources_kernel!` maps GPU threads over cached source quadrature points and builds weighted pressure and Neumann source strengths. `_cuda_field_eval_kernel!` maps one CUDA block to one observation point and reduces source contributions in dynamic shared memory.

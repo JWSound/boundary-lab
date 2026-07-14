@@ -229,9 +229,11 @@ end
 
         identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1, dp0, rule, :p1, :p1)
         identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1, dp0, rule, :p1, :dp0)
+        identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, Float32)
         q_neumann = zeros(ComplexF32, length(mesh.faces))
         q_neumann[1] = ComplexF32(0, 1)
-        pressure = solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+        pressure = solve_burton_miller_neumann(operators, identity_cache, q_neumann, k)
+        release_cuda_burton_miller_identity_cache!(identity_cache)
 
         @test length(pressure) == p1.global_dof_count
         @test all(isfinite, real.(pressure))
