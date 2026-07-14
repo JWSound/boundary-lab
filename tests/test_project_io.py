@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -130,3 +131,41 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
 def test_project_migration_rejects_non_integer_schema() -> None:
     with pytest.raises(ValueError, match="schema_version must be an integer"):
         migrate_project_payload({"schema_version": "future"})
+
+
+def test_schema_v1_migrates_without_application_preference_override() -> None:
+    migrated = migrate_project_payload({"schema_version": 1, "ath_config_text": "legacy"})
+
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert "project_preferences" not in migrated
+
+
+def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
+    payload = build_project_payload(
+        ath_config_text="",
+        ath_mesh={},
+        imported_meshes=[],
+        source_config_by_name={},
+        project_preferences={
+            "freq_min_hz": 80,
+            "solve_backend": "bempp",
+            "gmres_tolerance": 1e-8,
+            "use_burton_miller": False,
+        },
+    )
+
+    saved_preferences = payload["project_preferences"]
+    assert saved_preferences["freq_min_hz"] == 80
+    assert "solve_backend" not in saved_preferences
+    assert "gmres_tolerance" not in saved_preferences
+    assert "use_burton_miller" not in saved_preferences
+
+
+def test_shipped_examples_do_not_request_preference_overrides() -> None:
+    example_paths = sorted(Path("examples").glob("**/*.blab.json"))
+
+    assert example_paths
+    for example_path in example_paths:
+        payload = json.loads(example_path.read_text(encoding="utf-8"))
+        assert payload["schema_version"] == PROJECT_SCHEMA_VERSION
+        assert "project_preferences" not in payload

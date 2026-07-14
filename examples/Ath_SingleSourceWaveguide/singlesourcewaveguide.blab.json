@@ -30,7 +30,7 @@
     }
   },
   "imported_meshes": [],
-  "schema_version": 1,
+  "schema_version": 2,
   "source_config_by_name": {
     "ath:SD1D1001": {
       "channel": "main",

@@ -2,12 +2,14 @@ from blab.ui.settings import (
     GuiPreferences,
     balloon_angle_precision_from_points,
     balloon_sampling_points,
+    gui_preferences_with_project_preferences,
     live_plot_angle_samples,
     live_plot_freq_samples,
     normalize_balloon_angle_precision_deg,
     normalize_live_plot_quality,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
+    project_preferences_from_gui,
 )
 
 
@@ -110,3 +112,38 @@ def test_preference_change_classification() -> None:
         baseline,
         GuiPreferences(live_plot_streaming=False),
     )
+
+
+def test_applying_project_preferences_preserves_solver_and_application_choices() -> None:
+    current = GuiPreferences(
+        theme="dark",
+        solve_backend="server",
+        solve_server_url="http://solver.example:8765",
+        live_plot_streaming=False,
+        live_plot_quality="high",
+        gmres_tolerance=1e-7,
+        use_burton_miller=False,
+    )
+    project = project_preferences_from_gui(
+        GuiPreferences(
+            polar_angle_step_deg=5.0,
+            normalized_channel_correction=False,
+            spherical_sampling_enabled=True,
+        ),
+        freq_min_hz=80,
+        freq_max_hz=16000,
+        freq_count=61,
+    )
+
+    applied = gui_preferences_with_project_preferences(current, project)
+
+    assert applied.polar_angle_step_deg == 5.0
+    assert applied.normalized_channel_correction is False
+    assert applied.spherical_sampling_enabled is True
+    assert applied.solve_backend == "server"
+    assert applied.solve_server_url == "http://solver.example:8765"
+    assert applied.gmres_tolerance == 1e-7
+    assert applied.use_burton_miller is False
+    assert applied.theme == "dark"
+    assert applied.live_plot_streaming is False
+    assert applied.live_plot_quality == "high"

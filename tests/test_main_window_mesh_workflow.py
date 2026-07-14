@@ -6,11 +6,12 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+import blab.ui.main_window as main_window_module
 from blab.ath import AthRunResult
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window import STITCH_FAILURE_MESSAGE, STITCHED_MESH_NAME, MainWindow
-from blab.ui.project_state import AthScriptState
+from blab.ui.project_state import AthScriptState, ProjectPreferencesState
 
 
 def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
@@ -235,3 +236,29 @@ def test_project_dirty_state_ignores_generated_ath_mesh_paths() -> None:
     payload["ath_scripts"][0]["mesh_scale_factor"] = 0.002
 
     assert window._has_unsaved_project_changes()
+
+
+def test_project_preference_prompt_only_appears_for_differences(monkeypatch) -> None:
+    current = ProjectPreferencesState()
+    window = MainWindow.__new__(MainWindow)
+    window._current_project_preferences = lambda: current
+    questions = []
+
+    class MessageBoxStub:
+        Yes = 1
+        No = 2
+
+        @staticmethod
+        def question(*args):
+            questions.append(args)
+            return MessageBoxStub.Yes
+
+    monkeypatch.setattr(main_window_module, "QMessageBox", MessageBoxStub)
+
+    assert window._confirm_apply_project_preferences(None) is False
+    assert window._confirm_apply_project_preferences(current) is False
+    assert questions == []
+
+    different = ProjectPreferencesState(horizontal_normalization_angle=15.0)
+    assert window._confirm_apply_project_preferences(different) is True
+    assert "unique application preferences" in questions[0][2]

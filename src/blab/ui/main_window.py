@@ -106,7 +106,10 @@ from blab.ui.project_io import (
 )
 from blab.ui.project_state import (
     AthScriptState,
-    default_scripts,
+    ImportedMeshState,
+    ProjectDocument,
+    ProjectPreferencesState,
+    new_project_document,
     new_script,
     replace_script,
     script_to_payload,
@@ -119,11 +122,13 @@ from blab.ui.settings import (
     SETTINGS_ORG,
     GuiPreferences,
     balloon_sampling_points,
+    gui_preferences_with_project_preferences,
     live_plot_angle_samples,
     live_plot_freq_samples,
     load_gui_preferences,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
+    project_preferences_from_gui,
     save_gui_preferences,
     settings_int,
 )
@@ -131,15 +136,10 @@ from blab.ui.solve_worker import SolveWorker
 from blab.ui.source_channel_config import (
     apply_saved_imported_source_config,
     apply_saved_source_config_to_result,
-    channel_configs,
+    channel_config_payload,
+    channel_configs_from_payload,
     channels_for_solver_radiators,
-    clear_source_channel_configs,
-    load_channel_config_by_name,
-    load_source_config_by_name,
-    save_channel_config,
-    save_channel_config_by_name,
-    save_source_config,
-    save_source_config_by_name,
+    source_config_payload,
 )
 from blab.ui.theme import apply_application_theme
 
@@ -184,6 +184,73 @@ class MainWindow(QMainWindow):
     solve_results_invalidated = Signal(str)
     visualization_settings_changed = Signal(str)
 
+    def _project_document(self) -> ProjectDocument:
+        project = getattr(self, "project", None)
+        if project is None:
+            project = new_project_document()
+            self.project = project
+        return project
+
+    @property
+    def ath_scripts(self) -> tuple[AthScriptState, ...]:
+        return self._project_document().ath_scripts
+
+    @ath_scripts.setter
+    def ath_scripts(self, value: tuple[AthScriptState, ...]) -> None:
+        self._project_document().ath_scripts = tuple(value)
+
+    @property
+    def active_ath_script_id(self) -> str | None:
+        return self._project_document().active_ath_script_id
+
+    @active_ath_script_id.setter
+    def active_ath_script_id(self, value: str | None) -> None:
+        self._project_document().active_ath_script_id = value
+
+    @property
+    def imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
+        return tuple(
+            MeshDialogEntry(
+                name=mesh.name,
+                source_file=mesh.source_file,
+                cleaned_file=mesh.cleaned_file,
+                scale_factor=mesh.scale_factor,
+                translation_mm=mesh.translation_mm,
+                enabled=mesh.enabled,
+            )
+            for mesh in self._project_document().imported_meshes
+        )
+
+    @imported_meshes.setter
+    def imported_meshes(self, value: tuple[MeshDialogEntry, ...]) -> None:
+        self._project_document().imported_meshes = tuple(
+            ImportedMeshState(
+                name=mesh.name,
+                source_file=mesh.source_file,
+                cleaned_file=mesh.cleaned_file,
+                scale_factor=mesh.scale_factor,
+                translation_mm=mesh.translation_mm,
+                enabled=mesh.enabled,
+            )
+            for mesh in value
+        )
+
+    @property
+    def stitch_imported_meshes(self) -> bool:
+        return self._project_document().stitch_imported_meshes
+
+    @stitch_imported_meshes.setter
+    def stitch_imported_meshes(self, value: bool) -> None:
+        self._project_document().stitch_imported_meshes = bool(value)
+
+    @property
+    def symmetry(self) -> str:
+        return self._project_document().symmetry
+
+    @symmetry.setter
+    def symmetry(self, value: str) -> None:
+        self._project_document().symmetry = value
+
     def __init__(self, startup_status: Callable[[str], None] | None = None):
         super().__init__()
 
@@ -195,17 +262,13 @@ class MainWindow(QMainWindow):
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
-        self.imported_meshes: tuple[MeshDialogEntry, ...] = ()
-        self.stitch_imported_meshes = False
-        self.symmetry = "off"
         self.preferences = self._load_preferences()
+        self.project: ProjectDocument = new_project_document()
         self.server_health_payload: dict | None = None
         self.server_health_url: str | None = None
         self.server_health_thread: QThread | None = None
         self.server_health_worker: ServerHealthCheckWorker | None = None
         self._apply_theme()
-        self.ath_scripts: tuple[AthScriptState, ...] = default_scripts("")
-        self.active_ath_script_id: str | None = self.ath_scripts[0].id if self.ath_scripts else None
         self.ath_results_by_script_id: dict[str, AthRunResult] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
@@ -854,6 +917,8 @@ class MainWindow(QMainWindow):
         self.settings.setValue("solve/freq_min_hz", int(self.freq_min_spin.value()))
         self.settings.setValue("solve/freq_max_hz", int(self.freq_max_spin.value()))
         self.settings.setValue("solve/freq_count", int(self.freq_count_spin.value()))
+        if hasattr(self, "project"):
+            self.project.project_preferences = self._current_project_preferences()
 
     def _restore_window_state(self) -> None:
         geometry = self.settings.value("window/geometry")
@@ -1484,21 +1549,25 @@ class MainWindow(QMainWindow):
             self.preview.clear()
 
     def _load_source_config_by_name(self) -> dict[str, dict]:
-        return load_source_config_by_name(self.settings)
+        return self.project.source_config_by_name
 
     def _save_source_config(
         self, surface_tags: dict[str, tuple[str, int]], radiators: tuple[RadiatorConfig, ...]
     ) -> None:
-        save_source_config(self.settings, surface_tags, radiators)
+        self.project.source_config_by_name = source_config_payload(
+            surface_tags,
+            radiators,
+            existing=self.project.source_config_by_name,
+        )
 
     def _load_channel_config_by_name(self) -> dict[str, dict]:
-        return load_channel_config_by_name(self.settings)
+        return self.project.channel_config_by_name
 
     def _save_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
-        save_channel_config(self.settings, channels)
+        self.project.channel_config_by_name = channel_config_payload(channels)
 
     def _channel_configs(self) -> tuple[ChannelConfig, ...]:
-        return channel_configs(self.settings)
+        return channel_configs_from_payload(self.project.channel_config_by_name)
 
     def _channels_for_solver_radiators(
         self,
@@ -1616,15 +1685,10 @@ class MainWindow(QMainWindow):
             return
         self._discard_channel_config_dialog()
         self.project_path = None
-        self.ath_scripts = default_scripts("")
-        self.active_ath_script_id = self.ath_scripts[0].id if self.ath_scripts else None
+        self.project = new_project_document(project_preferences=self._current_project_preferences())
         self.ath_results_by_script_id = {}
         self._rebuild_ath_script_tabs()
-        self.imported_meshes = ()
         self.imported_radiators = ()
-        self.stitch_imported_meshes = False
-        self.symmetry = "off"
-        clear_source_channel_configs(self.settings)
         self.project_state_changed.emit("new_project")
         self.solve_results_invalidated.emit("new_project")
         self._mark_project_clean()
@@ -1689,6 +1753,9 @@ class MainWindow(QMainWindow):
     def _load_project_from_path(self, path: Path) -> None:
         try:
             payload = read_project_file(path)
+            project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
+            if self._confirm_apply_project_preferences(project_preferences):
+                self._apply_project_preferences(project_preferences)
             self._apply_project_payload(payload)
             self.project_path = path
             self._remember_recent_project(path)
@@ -1699,6 +1766,8 @@ class MainWindow(QMainWindow):
 
     def _project_payload(self) -> dict:
         active_script = self._active_script()
+        project_preferences = self._current_project_preferences()
+        self.project.project_preferences = project_preferences
         return build_project_payload(
             ath_config_text="" if active_script is None else active_script.config_text,
             ath_mesh=self._ath_mesh_payload(absolute_paths=True),
@@ -1709,7 +1778,52 @@ class MainWindow(QMainWindow):
             ath_scripts=[script_to_payload(script, absolute_paths=True) for script in self.ath_scripts],
             active_ath_script_id=self.active_ath_script_id,
             channel_config_by_name=self._load_channel_config_by_name(),
+            project_preferences=project_preferences.to_payload(),
         )
+
+    def _current_project_preferences(self) -> ProjectPreferencesState:
+        return project_preferences_from_gui(
+            self.preferences,
+            freq_min_hz=int(self.freq_min_spin.value()),
+            freq_max_hz=int(self.freq_max_spin.value()),
+            freq_count=int(self.freq_count_spin.value()),
+        )
+
+    def _confirm_apply_project_preferences(self, project_preferences: ProjectPreferencesState | None) -> bool:
+        if project_preferences is None or project_preferences == self._current_project_preferences():
+            return False
+        return (
+            QMessageBox.question(
+                self,
+                "Project Preferences",
+                "This project file contains unique application preferences. Would you like to apply them?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            == QMessageBox.Yes
+        )
+
+    def _apply_project_preferences(self, project_preferences: ProjectPreferencesState) -> None:
+        self.preferences = gui_preferences_with_project_preferences(self.preferences, project_preferences)
+        controls = (
+            self.freq_min_spin,
+            self.freq_max_spin,
+            self.freq_count_spin,
+            self.freq_min_slider,
+            self.freq_max_slider,
+            self.freq_count_slider,
+        )
+        blockers = [QSignalBlocker(control) for control in controls]
+        self.freq_min_spin.setValue(project_preferences.freq_min_hz)
+        self.freq_max_spin.setValue(project_preferences.freq_max_hz)
+        self.freq_count_spin.setValue(project_preferences.freq_count)
+        self.freq_min_slider.setValue(frequency_to_slider_value(project_preferences.freq_min_hz))
+        self.freq_max_slider.setValue(frequency_to_slider_value(project_preferences.freq_max_hz))
+        self.freq_count_slider.setValue(project_preferences.freq_count)
+        del blockers
+        self._save_preferences()
+        self._save_frequency_settings()
+        self.project.project_preferences = self._current_project_preferences()
 
     def _canonical_project_payload(self) -> dict:
         payload = json.loads(json.dumps(self._project_payload(), sort_keys=True))
@@ -1760,21 +1874,43 @@ class MainWindow(QMainWindow):
         source_config = payload.get("source_config_by_name", {})
         if not isinstance(source_config, dict):
             source_config = {}
-        save_source_config_by_name(self.settings, source_config)
         channel_config = payload.get("channel_config_by_name", {})
         if not isinstance(channel_config, dict):
             channel_config = {}
-        save_channel_config_by_name(self.settings, channel_config)
 
-        self.ath_scripts = scripts_from_payload(
+        scripts = scripts_from_payload(
             payload.get("ath_scripts"),
             fallback_config_text=str(payload.get("ath_config_text", "")),
         )
         active_id = payload.get("active_ath_script_id")
-        self.active_ath_script_id = (
+        active_id = (
             active_id
-            if any(script.id == active_id for script in self.ath_scripts)
-            else (self.ath_scripts[0].id if self.ath_scripts else None)
+            if any(script.id == active_id for script in scripts)
+            else (scripts[0].id if scripts else None)
+        )
+        symmetry = str(payload.get("symmetry", "off")).strip().lower()
+        if symmetry not in {"off", "x", "xy"}:
+            symmetry = "off"
+        imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
+        self.project = ProjectDocument(
+            ath_scripts=scripts,
+            active_ath_script_id=active_id,
+            imported_meshes=tuple(
+                ImportedMeshState(
+                    name=mesh.name,
+                    source_file=mesh.source_file,
+                    cleaned_file=mesh.cleaned_file,
+                    scale_factor=mesh.scale_factor,
+                    translation_mm=mesh.translation_mm,
+                    enabled=mesh.enabled,
+                )
+                for mesh in imported_meshes
+            ),
+            stitch_imported_meshes=bool(payload.get("stitch_imported_meshes", False)),
+            symmetry=symmetry,
+            source_config_by_name=source_config,
+            channel_config_by_name=channel_config,
+            project_preferences=self._current_project_preferences(),
         )
         self.ath_results_by_script_id = {}
         for script in self.ath_scripts:
@@ -1784,11 +1920,6 @@ class MainWindow(QMainWindow):
                     result, script.mesh_name
                 )
         self._rebuild_ath_script_tabs()
-        self.imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
-        self.stitch_imported_meshes = bool(payload.get("stitch_imported_meshes", False))
-        self.symmetry = str(payload.get("symmetry", "off")).strip().lower()
-        if self.symmetry not in {"off", "x", "xy"}:
-            self.symmetry = "off"
         self._disable_symmetry_if_backend_unsupported()
         self.imported_radiators = ()
         try:
@@ -1955,6 +2086,7 @@ class MainWindow(QMainWindow):
             self.server_health_payload = None
             self.server_health_url = None
         self._save_preferences()
+        self.project.project_preferences = self._current_project_preferences()
         symmetry_disabled = self._disable_symmetry_if_backend_unsupported()
         QTimer.singleShot(0, self._apply_theme)
         self.mesh_state_changed.emit("preferences_changed")

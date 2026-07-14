@@ -11,7 +11,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-PROJECT_SCHEMA_VERSION = 1
+from blab.ui.project_state import ProjectPreferencesState
+
+PROJECT_SCHEMA_VERSION = 2
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -25,6 +27,7 @@ PROJECT_PAYLOAD_KEYS = (
     "symmetry",
     "source_config_by_name",
     "channel_config_by_name",
+    "project_preferences",
 )
 
 
@@ -94,8 +97,10 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
-    if schema_version != PROJECT_SCHEMA_VERSION:
-        raise ValueError(f"Unsupported project schema version {schema_version}. Expected {PROJECT_SCHEMA_VERSION}.")
+    if schema_version not in {1, PROJECT_SCHEMA_VERSION}:
+        raise ValueError(
+            f"Unsupported project schema version {schema_version}. Expected 1 or {PROJECT_SCHEMA_VERSION}."
+        )
 
     return _normalize_project_payload(dict(payload))
 
@@ -111,7 +116,7 @@ def _schema_version(payload: dict[str, Any]) -> int:
 
 
 def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+    normalized = {
         "schema_version": PROJECT_SCHEMA_VERSION,
         "ath_config_text": str(payload.get("ath_config_text", "")),
         "ath_scripts": _list_or_empty(payload.get("ath_scripts")),
@@ -123,6 +128,11 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
         "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
     }
+    if payload.get("project_preferences") is not None:
+        preferences = ProjectPreferencesState.from_payload(payload["project_preferences"])
+        if preferences is not None:
+            normalized["project_preferences"] = preferences.to_payload()
+    return normalized
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
@@ -170,8 +180,9 @@ def build_project_payload(
     ath_scripts: list[dict[str, Any]] | None = None,
     active_ath_script_id: str | None = None,
     channel_config_by_name: dict[str, Any] | None = None,
+    project_preferences: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": PROJECT_SCHEMA_VERSION,
         "ath_config_text": ath_config_text,
         "ath_scripts": ath_scripts or [],
@@ -183,3 +194,8 @@ def build_project_payload(
         "source_config_by_name": source_config_by_name,
         "channel_config_by_name": channel_config_by_name or {},
     }
+    if project_preferences is not None:
+        normalized_preferences = ProjectPreferencesState.from_payload(project_preferences)
+        if normalized_preferences is not None:
+            payload["project_preferences"] = normalized_preferences.to_payload()
+    return payload

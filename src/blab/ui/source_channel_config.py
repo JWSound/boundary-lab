@@ -30,8 +30,22 @@ def save_source_config(
     surface_tags: dict[str, tuple[str, int]],
     radiators: tuple[RadiatorConfig, ...],
 ) -> None:
+    config_by_name = source_config_payload(
+        surface_tags,
+        radiators,
+        existing=load_source_config_by_name(settings),
+    )
+    save_source_config_by_name(settings, config_by_name)
+
+
+def source_config_payload(
+    surface_tags: dict[str, tuple[str, int]],
+    radiators: tuple[RadiatorConfig, ...],
+    *,
+    existing: dict[str, dict] | None = None,
+) -> dict[str, dict]:
     radiators_by_name = {radiator.name: radiator for radiator in radiators}
-    config_by_name = load_source_config_by_name(settings)
+    config_by_name = dict(existing or {})
     for surface_name in surface_tags:
         radiator = radiators_by_name.get(surface_name)
         config_by_name[surface_name] = {
@@ -39,7 +53,7 @@ def save_source_config(
             "channel": "main" if radiator is None else radiator.channel,
             "velocity_offset_db": 0.0 if radiator is None else float(radiator.velocity_offset_db),
         }
-    save_source_config_by_name(settings, config_by_name)
+    return config_by_name
 
 
 def save_source_config_by_name(settings: QSettings, config_by_name: dict) -> None:
@@ -51,7 +65,11 @@ def load_channel_config_by_name(settings: QSettings) -> dict[str, dict]:
 
 
 def save_channel_config(settings: QSettings, channels: tuple[ChannelConfig, ...]) -> None:
-    payload = {
+    save_channel_config_by_name(settings, channel_config_payload(channels))
+
+
+def channel_config_payload(channels: tuple[ChannelConfig, ...]) -> dict[str, dict]:
+    return {
         channel.name: {
             "level_db": float(channel.level_db),
             "polarity": int(channel.polarity),
@@ -61,7 +79,6 @@ def save_channel_config(settings: QSettings, channels: tuple[ChannelConfig, ...]
         }
         for channel in channels
     }
-    save_channel_config_by_name(settings, payload)
 
 
 def save_channel_config_by_name(settings: QSettings, config_by_name: dict) -> None:
@@ -69,7 +86,11 @@ def save_channel_config_by_name(settings: QSettings, config_by_name: dict) -> No
 
 
 def channel_configs(settings: QSettings) -> tuple[ChannelConfig, ...]:
-    raw = load_channel_config_by_name(settings)
+    return channel_configs_from_payload(load_channel_config_by_name(settings))
+
+
+def channel_configs_from_payload(raw: object) -> tuple[ChannelConfig, ...]:
+    raw = raw if isinstance(raw, dict) else {}
     if not raw:
         return (ChannelConfig(name="main"),)
     channels = []
