@@ -93,7 +93,9 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     window.preview = PreviewStub()
     window.status_label = StatusStub()
     window._has_solver_meshes = lambda: True
-    window._solver_mesh_configs = lambda: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
+    window._prepare_mesh_assembly = lambda _radiators: (_ for _ in ()).throw(
+        RuntimeError(STITCH_FAILURE_MESSAGE)
+    )
     window._stitch_candidate_mesh_configs = lambda: (MeshConfig(name="ath", file=str(mesh_path), scale_factor=0.001),)
     window._all_radiators = lambda: ()
 

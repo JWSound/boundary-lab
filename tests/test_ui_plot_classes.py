@@ -256,6 +256,7 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     config_source = Path("src/blab/config.py").read_text(encoding="utf-8")
+    assembler_source = Path("src/blab/ui/simulation_assembler.py").read_text(encoding="utf-8")
     start_solve = main_source[
         main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
     ]
@@ -265,7 +266,7 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     assert "worker_count:" not in settings_source
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
-    assert "workers=1" in start_solve
+    assert "workers=1" in assembler_source
     assert "worker_count=1" in start_solve
     assert "workers: int = 1" in config_source
 
@@ -473,6 +474,7 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
 def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    state_source = Path("src/blab/ui/application_state.py").read_text(encoding="utf-8")
     isobar_block = plot_source[plot_source.index("class IsobarCanvas") : plot_source.index("class ImpedanceCanvas")]
 
     assert "self._comparison_plot" in isobar_block
@@ -485,7 +487,8 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "self._last_completed_isobar_dataset" in main_source
     assert "def _snapshot_isobar_dataset(" in main_source
     assert "self._apply_last_completed_isobar_comparison()" in main_source
-    assert 'if reason in {"new_project", "project_loaded"}:' in main_source
+    assert "SolveInvalidationReason.NEW_PROJECT" in state_source
+    assert "clear_comparison_history=True" in state_source
 
 
 def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
@@ -753,16 +756,17 @@ def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
 def test_ath_generation_uses_worker_and_delayed_stop_button() -> None:
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     worker_source = Path("src/blab/ui/ath_worker.py").read_text(encoding="utf-8")
+    controller_source = Path("src/blab/ui/operation_controllers.py").read_text(encoding="utf-8")
 
-    assert "from blab.ui.ath_worker import AthGenerationWorker" in main_source
-    assert "self.ath_thread: QThread | None = None" in main_source
-    assert "self.ath_worker: AthGenerationWorker | None = None" in main_source
+    assert "GeometryController" in main_source
+    assert "GeometryRequest(" in main_source
     assert "self.cancel_button.clicked.connect(self.cancel_current_operation)" in main_source
-    assert "self.ath_worker = AthGenerationWorker(" in main_source
-    assert "self.ath_worker.moveToThread(self.ath_thread)" in main_source
     assert "QTimer.singleShot(3000, self._enable_ath_cancel_if_active)" in main_source
     assert "def cancel_ath_generation(" in main_source
-    assert "self.ath_worker.stop()" in main_source
+    assert "self.geometry_controller.cancel()" in main_source
+    assert "self._worker: AthGenerationWorker | None = None" in controller_source
+    assert "worker.moveToThread(thread)" in controller_source
+    assert "self._worker.stop()" in controller_source
     assert "class AthGenerationWorker(QObject)" in worker_source
     assert "AthProcessRunner()" in worker_source
     assert "clean_ath_mesh_output(raw_result)" in worker_source
