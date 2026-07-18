@@ -86,7 +86,7 @@ class GeometryController(QObject):
         worker.cancelled.connect(self._on_cancelled)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(self._on_finished)
+        thread.finished.connect(self._on_finished)
         thread.finished.connect(thread.deleteLater)
         thread.start()
         return True
@@ -179,7 +179,7 @@ class SolveController(QObject):
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(self._on_finished)
+        thread.finished.connect(self._on_finished)
         thread.finished.connect(thread.deleteLater)
         thread.start()
         return True

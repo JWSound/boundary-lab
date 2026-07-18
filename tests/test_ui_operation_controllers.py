@@ -52,6 +52,12 @@ def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -
             server_url="http://127.0.0.1:8765",
         )
     )
+    thread = controller._thread
+    assert thread is not None
+    thread_state_at_completion = []
+    controller.finished.connect(
+        lambda _completion: thread_state_at_completion.append((thread.isRunning(), thread.isFinished()))
+    )
     deadline = time.monotonic() + 2.0
     while not completions and time.monotonic() < deadline:
         app.processEvents()
@@ -63,4 +69,5 @@ def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -
     assert results == ["frequency-result"]
     assert completions[0].phase == OperationPhase.COMPLETED
     assert completions[0].completed is True
+    assert thread_state_at_completion == [(False, True)]
     assert controller.active is False

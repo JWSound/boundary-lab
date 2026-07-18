@@ -2448,7 +2448,6 @@ class MainWindow(QMainWindow):
             self._use_final_isobar_resolution = solve_completed
             if solve_completed:
                 self.status_label.setText("Rendering final high-resolution plots...")
-                QApplication.processEvents()
             refreshed_dataset = None
             if self.preferences.live_plot_streaming or solve_completed:
                 refreshed_dataset = self._refresh_plots()
