@@ -6,11 +6,14 @@ import pytest
 pytest.importorskip("PySide6")
 
 from blab.ui.mesh_preview import (
+    AXIS_LABELS,
     PREVIEW_HOME_CAMERA_DIRECTION,
     PREVIEW_HOME_VIEW_UP,
+    PREVIEW_HOME_ZOOM,
     _dimensions_lwh_mm,
     _mesh_stats_label,
     _mirrored_triangle_images_for_preview,
+    _preview_axis_label_points,
     _preview_axis_length,
     _preview_points_with_images,
     _surface_hover_label,
@@ -37,6 +40,25 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
     assert "self.hover_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)" in source
     assert "self.total_elements_label.setMinimumWidth(0)" in source
     assert "self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
+
+
+def test_preview_background_tracks_the_application_theme() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert "self._refresh_viewer_theme()" in source
+    assert "viewer.set_background(themed_content_background(self.palette()))" in source
+    assert "QEvent.Type.PaletteChange" in source
+
+
+def test_driven_source_elements_use_high_contrast_blue() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert 'DRIVEN_COLOR = "#3292bf"' in source
+    assert 'DRIVEN_COLOR = "#395865"' not in source
+    assert 'DRIVEN_MIRROR_COLOR = "#236787"' in source
+    assert 'DRIVEN_MIRROR_COLOR = "#2f4751"' not in source
+    assert "color=DRIVEN_COLOR if is_driven else RIGID_COLOR" in source
+    assert "color=DRIVEN_MIRROR_COLOR if is_driven else RIGID_MIRROR_COLOR" in source
 
 
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:
@@ -69,6 +91,35 @@ def test_preview_home_camera_projects_axes_for_speaker_forward_orientation() -> 
     assert np.dot(x_axis, screen_up) > 0.0
     assert np.dot(z_axis, screen_right) > 0.0
     assert np.dot(z_axis, screen_up) < 0.0
+
+
+def test_preview_home_camera_uses_a_tighter_default_zoom() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert PREVIEW_HOME_ZOOM == 1.2
+    assert "camera.zoom(PREVIEW_HOME_ZOOM)" in source
+
+
+def test_preview_orientation_guides_match_balloon_axis_labels() -> None:
+    label_points = _preview_axis_label_points(10.0)
+
+    assert AXIS_LABELS == ("Horizontal", "Vertical", "On Axis")
+    np.testing.assert_allclose(
+        label_points,
+        np.array(
+            [
+                [10.6, 0.0, 0.0],
+                [0.0, 10.6, 0.0],
+                [0.0, 0.0, 11.6],
+            ]
+        ),
+    )
+
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+    assert "self.viewer.add_point_labels(" in source
+    assert "list(AXIS_LABELS)" in source
+    assert 'text_color="white"' in source
+    assert "always_visible=True" in source
 
 
 def test_mesh_stats_label_includes_mirrored_state_and_dimensions() -> None:

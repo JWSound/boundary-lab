@@ -303,7 +303,7 @@ def _degenerate_mask(points: np.ndarray, triangles: np.ndarray, area_tol: float)
 def triangle_quality_warning(
     mesh: meshio.Mesh,
     *,
-    altitude_edge_ratio_tol: float = 1e-3,
+    altitude_edge_ratio_tol: float = 2e-3,
 ) -> MeshQualityWarning:
     """Return a lightweight warning summary for triangles that are numerically too thin."""
     _tri_key, triangles = _find_triangle_block(mesh)

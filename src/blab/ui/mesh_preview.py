@@ -6,11 +6,12 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from blab.ath import AthRunResult, read_surface_physical_names
 from blab.config import MeshConfig
+from blab.ui.theme import themed_content_background
 
 try:  # pragma: no cover - optional visual dependency
     import pyvista as pv
@@ -24,14 +25,16 @@ except ImportError:  # pragma: no cover
 
 AXIS_LINE_WIDTH = 1.5
 AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
+AXIS_LABELS = ("Horizontal", "Vertical", "On Axis")
 PREVIEW_HOME_CAMERA_DIRECTION = np.array([-1.0, 1.0, 1.0], dtype=float) / np.sqrt(3.0)
 PREVIEW_HOME_VIEW_UP = np.array([0.0, 1.0, 0.0], dtype=float)
+PREVIEW_HOME_ZOOM = 1.2
 RIGID_COLOR = "#cfcfcf"
 RIGID_MIRROR_COLOR = "#a9a9a9"
 RIGID_EDGE_COLOR = "#555555"
 RIGID_MIRROR_EDGE_COLOR = "#4a4a4a"
-DRIVEN_COLOR = "#395865"
-DRIVEN_MIRROR_COLOR = "#2f4751"
+DRIVEN_COLOR = "#3292bf"
+DRIVEN_MIRROR_COLOR = "#236787"
 DRIVEN_EDGE_COLOR = "#20343c"
 DRIVEN_MIRROR_EDGE_COLOR = "#1b2c33"
 
@@ -67,8 +70,18 @@ class MeshPreview(QWidget):
         status_row.addWidget(self.hover_label, 1)
         status_row.addWidget(self.total_elements_label)
         layout.addLayout(status_row)
-        self.viewer.set_background("white")
+        self._refresh_viewer_theme()
         self._install_hover_picker()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._refresh_viewer_theme()
+
+    def _refresh_viewer_theme(self) -> None:
+        viewer = getattr(self, "viewer", None)
+        if viewer is not None:
+            viewer.set_background(themed_content_background(self.palette()))
 
     def clear(self) -> None:
         if self.viewer is None:
@@ -134,9 +147,9 @@ class MeshPreview(QWidget):
             is_driven = int(tag) in (driven_tags or set())
             actor = self.viewer.add_mesh(
                 _triangles_to_polydata(mesh.points, tag_triangles),
-                color="#395865" if is_driven else "#cfcfcf",
+                color=DRIVEN_COLOR if is_driven else RIGID_COLOR,
                 show_edges=True,
-                edge_color="#20343c" if is_driven else "#555555",
+                edge_color=DRIVEN_EDGE_COLOR if is_driven else RIGID_EDGE_COLOR,
                 smooth_shading=False,
             )
             surface_name = names_by_tag.get(int(tag), f"Tag {int(tag)}")
@@ -324,6 +337,7 @@ class MeshPreview(QWidget):
                 tuple(float(value) for value in focal_point),
                 tuple(float(value) for value in PREVIEW_HOME_VIEW_UP),
             )
+            camera.zoom(PREVIEW_HOME_ZOOM)
             self.viewer.reset_camera_clipping_range()
         except Exception:
             self.viewer.reset_camera()
@@ -346,6 +360,17 @@ class MeshPreview(QWidget):
                 render_lines_as_tubes=True,
                 pickable=False,
             )
+
+        self.viewer.add_point_labels(
+            _preview_axis_label_points(length),
+            list(AXIS_LABELS),
+            font_size=14,
+            text_color="white",
+            point_color="white",
+            point_size=0,
+            shape_opacity=0.35,
+            always_visible=True,
+        )
 
     def _install_hover_picker(self) -> None:
         if self.viewer is None or vtk is None:
@@ -464,6 +489,17 @@ def _preview_axis_length(points: np.ndarray) -> float:
     extent = float(np.linalg.norm(max_bounds - min_bounds))
     radius = float(np.nanmax(np.linalg.norm(finite_points, axis=1)))
     return max(extent * 0.56, radius * 1.12, 1.0)
+
+
+def _preview_axis_label_points(length: float) -> np.ndarray:
+    return np.array(
+        [
+            [length * 1.06, 0.0, 0.0],
+            [0.0, length * 1.06, 0.0],
+            [0.0, 0.0, length * 1.16],
+        ],
+        dtype=float,
+    )
 
 
 def _preview_points_with_images(

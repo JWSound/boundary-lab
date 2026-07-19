@@ -256,6 +256,7 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     config_source = Path("src/blab/config.py").read_text(encoding="utf-8")
+    assembler_source = Path("src/blab/ui/simulation_assembler.py").read_text(encoding="utf-8")
     start_solve = main_source[
         main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
     ]
@@ -265,7 +266,7 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     assert "worker_count:" not in settings_source
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
-    assert "workers=1" in start_solve
+    assert "workers=1" in assembler_source
     assert "worker_count=1" in start_solve
     assert "workers: int = 1" in config_source
 
@@ -307,7 +308,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
-    assert 'uses_bempp = backend_id in {"local", "server"}' in dialog_source
+    assert 'uses_bempp = backend_id in {"local", "server"}' not in dialog_source
     assert "self.server_health_payload: dict | None = None" in main_source
     assert "self.server_health_thread: QThread | None = None" in main_source
     assert "QTimer.singleShot(0, self._check_configured_server_health_on_startup)" in main_source
@@ -318,8 +319,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)" in main_source
     assert "worker.failed.connect(lambda _message: None)" in main_source
     assert 'self.mesh_state_changed.emit("server_health_checked")' in main_source
-    assert "self.gmres_spin.setEnabled(uses_bempp)" in dialog_source
-    assert "self.burton_miller_check.setEnabled(uses_bempp)" in dialog_source
+    assert "GMRES Tolerance" not in dialog_source
+    assert "Burton Miller Formulation" not in dialog_source
+    assert "self.gmres_spin" not in dialog_source
+    assert "self.burton_miller_check" not in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
     assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
     assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
@@ -353,6 +356,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert 'LIVE_ISOBAR_SHADING = "nearest"' in plot_source
     assert 'FINAL_ISOBAR_SHADING = "gouraud"' in plot_source
     assert "self._use_final_isobar_resolution = solve_completed" in main_source
+    solve_finished = main_source[main_source.index("def _on_solve_finished") : main_source.index("def _clear_plots")]
+    assert "QApplication.processEvents()" not in solve_finished
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
     assert (
@@ -473,6 +478,7 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
 def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None:
     plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    state_source = Path("src/blab/ui/application_state.py").read_text(encoding="utf-8")
     isobar_block = plot_source[plot_source.index("class IsobarCanvas") : plot_source.index("class ImpedanceCanvas")]
 
     assert "self._comparison_plot" in isobar_block
@@ -485,7 +491,8 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "self._last_completed_isobar_dataset" in main_source
     assert "def _snapshot_isobar_dataset(" in main_source
     assert "self._apply_last_completed_isobar_comparison()" in main_source
-    assert 'if reason in {"new_project", "project_loaded"}:' in main_source
+    assert "SolveInvalidationReason.NEW_PROJECT" in state_source
+    assert "clear_comparison_history=True" in state_source
 
 
 def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
@@ -629,7 +636,10 @@ def test_balloon_window_does_not_use_rendering_overlay() -> None:
 def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
-    assert "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}" in source
+    assert "self._refresh_3d_view_theme()" in source
+    assert "self.plotter.set_background(themed_content_background(self.palette()))" in source
+    assert "self._refresh_hover_label_theme()" in source
+    assert "text = self.palette().color(QPalette.Text).name()" in source
     assert "self.plotter.add_axes()" not in source
     assert "self._axes_added" not in source
 
@@ -753,16 +763,17 @@ def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
 def test_ath_generation_uses_worker_and_delayed_stop_button() -> None:
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     worker_source = Path("src/blab/ui/ath_worker.py").read_text(encoding="utf-8")
+    controller_source = Path("src/blab/ui/operation_controllers.py").read_text(encoding="utf-8")
 
-    assert "from blab.ui.ath_worker import AthGenerationWorker" in main_source
-    assert "self.ath_thread: QThread | None = None" in main_source
-    assert "self.ath_worker: AthGenerationWorker | None = None" in main_source
+    assert "GeometryController" in main_source
+    assert "GeometryRequest(" in main_source
     assert "self.cancel_button.clicked.connect(self.cancel_current_operation)" in main_source
-    assert "self.ath_worker = AthGenerationWorker(" in main_source
-    assert "self.ath_worker.moveToThread(self.ath_thread)" in main_source
     assert "QTimer.singleShot(3000, self._enable_ath_cancel_if_active)" in main_source
     assert "def cancel_ath_generation(" in main_source
-    assert "self.ath_worker.stop()" in main_source
+    assert "self.geometry_controller.cancel()" in main_source
+    assert "self._worker: AthGenerationWorker | None = None" in controller_source
+    assert "worker.moveToThread(thread)" in controller_source
+    assert "self._worker.stop()" in controller_source
     assert "class AthGenerationWorker(QObject)" in worker_source
     assert "AthProcessRunner()" in worker_source
     assert "clean_ath_mesh_output(raw_result)" in worker_source

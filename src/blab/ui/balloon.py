@@ -52,7 +52,7 @@ from blab.ui.plots import (
     clear_plot_axes,
 )
 from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
-from blab.ui.theme import APP_ROOT
+from blab.ui.theme import APP_ROOT, themed_content_background
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
 HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
@@ -130,7 +130,7 @@ class BalloonPlotWindow(QMainWindow):
         view_menu = menu_bar.addMenu("View")
 
         self.plotter = QtInteractor(self)
-        self.plotter.set_background("#111316")
+        self._refresh_3d_view_theme()
         self._install_hover_picker()
 
         self.frequency_slider = QSlider(Qt.Horizontal)
@@ -215,9 +215,7 @@ class BalloonPlotWindow(QMainWindow):
         self.hover_label = QLabel("")
         self.hover_label.setMinimumHeight(24)
         self.hover_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.hover_label.setStyleSheet(
-            "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}"
-        )
+        self._refresh_hover_label_theme()
 
         self.workspace = QMainWindow()
         self.workspace.setDockOptions(
@@ -293,8 +291,23 @@ class BalloonPlotWindow(QMainWindow):
         super().changeEvent(event)
         if event.type() == QEvent.Type.PaletteChange:
             self._refresh_plot_button_icons()
+            self._refresh_3d_view_theme()
+            self._refresh_hover_label_theme()
         elif event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self.refresh_from_latest_results()
+
+    def _refresh_3d_view_theme(self) -> None:
+        if hasattr(self, "plotter"):
+            self.plotter.set_background(themed_content_background(self.palette()))
+
+    def _refresh_hover_label_theme(self) -> None:
+        if not hasattr(self, "hover_label"):
+            return
+        background = themed_content_background(self.palette())
+        text = self.palette().color(QPalette.Text).name()
+        self.hover_label.setStyleSheet(
+            f"QLabel {{background: {background};color: {text};padding-left: 8px;padding-right: 8px;}}"
+        )
 
     @Slot()
     def refresh_from_latest_results(self) -> None:

@@ -439,7 +439,7 @@ def test_triangle_quality_warning_detects_float32_singular_sliver() -> None:
     assert warning.sliver_triangles == 1
     assert warning.float32_singular_triangles == 1
     assert warning.worst_triangle_index == 1
-    assert warning.worst_altitude_edge_ratio < 1e-3
+    assert warning.worst_altitude_edge_ratio < 2e-3
 
 
 def test_clean_ath_mesh_output_reports_sliver_warning(tmp_path: Path) -> None:

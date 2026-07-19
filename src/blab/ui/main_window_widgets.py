@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QDockWidget, QHBoxLayout, QLabel, QPlainTextEdit, QToolButton, QWidget
 
 from blab.live import FrequencyResult
 from blab.ui.drag_drop import local_drop_paths
+from blab.ui.result_projection import VisualizationProjection
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class PlotEntry:
     title: str
     default_filename: str
     widget: QWidget
-    update: Callable[[dict[str, np.ndarray]], None]
+    update: Callable[[VisualizationProjection], None]
 
 
 def format_frequency_solve_timings(result: FrequencyResult) -> str:
@@ -34,6 +34,7 @@ class AthScriptEditor(QPlainTextEdit):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setObjectName("athScriptEditor")
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event) -> None:

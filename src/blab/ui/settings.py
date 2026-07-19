@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PySide6.QtCore import QSettings
 
 from blab.solvers.registry import normalize_backend_id
+from blab.ui.project_state import ProjectPreferencesState
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
@@ -77,6 +78,59 @@ def preferences_require_visualization_refresh(previous: GuiPreferences, current:
     return _preferences_changed(previous, current, VISUALIZATION_PREFERENCE_FIELDS)
 
 
+def project_preferences_from_gui(
+    preferences: GuiPreferences,
+    *,
+    freq_min_hz: int,
+    freq_max_hz: int,
+    freq_count: int,
+) -> ProjectPreferencesState:
+    """Capture reproducibility-relevant settings without solver preferences."""
+    return ProjectPreferencesState(
+        freq_min_hz=int(min(freq_min_hz, freq_max_hz)),
+        freq_max_hz=int(max(freq_min_hz, freq_max_hz)),
+        freq_count=int(freq_count),
+        polar_angle_step_deg=preferences.polar_angle_step_deg,
+        polar_observation_distance_m=preferences.polar_observation_distance_m,
+        normalized_channel_correction=preferences.normalized_channel_correction,
+        polar_smoothing=preferences.polar_smoothing,
+        horizontal_normalization_angle=preferences.horizontal_normalization_angle,
+        vertical_normalization_angle=preferences.vertical_normalization_angle,
+        spin_horizontal_reference_angle=preferences.spin_horizontal_reference_angle,
+        spin_vertical_reference_angle=preferences.spin_vertical_reference_angle,
+        spl_max_db=preferences.spl_max_db,
+        spl_min_db=preferences.spl_min_db,
+        isobar_contour_step_db=preferences.isobar_contour_step_db,
+        stitch_tolerance_mm=preferences.stitch_tolerance_mm,
+        spherical_sampling_enabled=preferences.spherical_sampling_enabled,
+        balloon_angle_precision_deg=preferences.balloon_angle_precision_deg,
+    )
+
+
+def gui_preferences_with_project_preferences(
+    current: GuiPreferences,
+    project: ProjectPreferencesState,
+) -> GuiPreferences:
+    """Apply project-scoped fields while preserving application/solver choices."""
+    return replace(
+        current,
+        polar_angle_step_deg=project.polar_angle_step_deg,
+        polar_observation_distance_m=project.polar_observation_distance_m,
+        normalized_channel_correction=project.normalized_channel_correction,
+        polar_smoothing=project.polar_smoothing,
+        horizontal_normalization_angle=project.horizontal_normalization_angle,
+        vertical_normalization_angle=project.vertical_normalization_angle,
+        spin_horizontal_reference_angle=project.spin_horizontal_reference_angle,
+        spin_vertical_reference_angle=project.spin_vertical_reference_angle,
+        spl_max_db=project.spl_max_db,
+        spl_min_db=project.spl_min_db,
+        isobar_contour_step_db=project.isobar_contour_step_db,
+        stitch_tolerance_mm=project.stitch_tolerance_mm,
+        spherical_sampling_enabled=project.spherical_sampling_enabled,
+        balloon_angle_precision_deg=project.balloon_angle_precision_deg,
+    )
+
+
 def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
     return GuiPreferences(
@@ -91,7 +145,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         live_plot_quality=normalize_live_plot_quality(
             settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
         ),
-        gmres_tolerance=settings_float(settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
         polar_angle_step_deg=settings_float(
             settings,
             "preferences/polar_angle_step_deg",
@@ -106,11 +159,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             settings,
             "preferences/normalized_channel_correction",
             defaults.normalized_channel_correction,
-        ),
-        use_burton_miller=settings_bool(
-            settings,
-            "preferences/use_burton_miller",
-            defaults.use_burton_miller,
         ),
         polar_smoothing=settings_optional_int(
             settings,
@@ -167,7 +215,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
     settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
-    settings.setValue("preferences/gmres_tolerance", preferences.gmres_tolerance)
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
     settings.setValue(
         "preferences/polar_observation_distance_m",
@@ -177,7 +224,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
         "preferences/normalized_channel_correction",
         preferences.normalized_channel_correction,
     )
-    settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
     settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)
     settings.setValue(
         "preferences/horizontal_normalization_angle",

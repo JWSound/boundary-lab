@@ -1,11 +1,14 @@
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.ui.source_channel_config import (
     apply_saved_imported_source_config,
+    channel_config_payload,
     channel_configs,
+    channel_configs_from_payload,
     channels_for_solver_radiators,
     load_source_config_by_name,
     save_channel_config,
     save_source_config,
+    source_config_payload,
 )
 
 
@@ -117,3 +120,15 @@ def test_channels_for_solver_radiators_adds_missing_channel_names() -> None:
     )
 
     assert channels == (ChannelConfig(name="LF"), ChannelConfig(name="HF"))
+
+
+def test_pure_payload_helpers_do_not_require_qsettings() -> None:
+    channels = (ChannelConfig(name="main", level_db=-2.0),)
+    source_payload = source_config_payload(
+        {"woofer": ("cabinet", 7)},
+        (RadiatorConfig(name="woofer", mesh="cabinet", tag=7),),
+    )
+    channel_payload = channel_config_payload(channels)
+
+    assert source_payload["woofer"]["driven"] is True
+    assert channel_configs_from_payload(channel_payload) == channels
