@@ -145,7 +145,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         live_plot_quality=normalize_live_plot_quality(
             settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
         ),
-        gmres_tolerance=settings_float(settings, "preferences/gmres_tolerance", defaults.gmres_tolerance),
         polar_angle_step_deg=settings_float(
             settings,
             "preferences/polar_angle_step_deg",
@@ -160,11 +159,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             settings,
             "preferences/normalized_channel_correction",
             defaults.normalized_channel_correction,
-        ),
-        use_burton_miller=settings_bool(
-            settings,
-            "preferences/use_burton_miller",
-            defaults.use_burton_miller,
         ),
         polar_smoothing=settings_optional_int(
             settings,
@@ -221,7 +215,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
     settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
-    settings.setValue("preferences/gmres_tolerance", preferences.gmres_tolerance)
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
     settings.setValue(
         "preferences/polar_observation_distance_m",
@@ -231,7 +224,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
         "preferences/normalized_channel_correction",
         preferences.normalized_channel_correction,
     )
-    settings.setValue("preferences/use_burton_miller", preferences.use_burton_miller)
     settings.setValue("preferences/polar_smoothing", preferences.polar_smoothing)
     settings.setValue(
         "preferences/horizontal_normalization_angle",

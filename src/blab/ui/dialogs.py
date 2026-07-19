@@ -193,12 +193,6 @@ class PreferencesDialog(QDialog):
         self.check_server_button = QPushButton("Check Server")
         self.check_server_button.clicked.connect(self._check_server)
 
-        self.gmres_spin = QDoubleSpinBox()
-        self.gmres_spin.setRange(1e-8, 1e-2)
-        self.gmres_spin.setDecimals(8)
-        self.gmres_spin.setSingleStep(1e-4)
-        self.gmres_spin.setValue(preferences.gmres_tolerance)
-
         self.polar_step_spin = QDoubleSpinBox()
         self.polar_step_spin.setRange(0.5, 90.0)
         self.polar_step_spin.setDecimals(1)
@@ -216,17 +210,11 @@ class PreferencesDialog(QDialog):
         self.normalized_channel_correction_check = QCheckBox("Enabled")
         self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
 
-        self.burton_miller_check = QCheckBox("Enabled")
-        self.burton_miller_check.setChecked(preferences.use_burton_miller)
-
         def update_backend_fields(label: str) -> None:
             backend_id = self.solve_backend_options.get(label, "local")
-            uses_bempp = backend_id in {"local", "server"}
             uses_remote = backend_info(backend_id).capabilities.is_remote
             self.solve_server_url_edit.setEnabled(uses_remote)
             self.check_server_button.setEnabled(uses_remote)
-            self.gmres_spin.setEnabled(uses_bempp)
-            self.burton_miller_check.setEnabled(uses_bempp)
 
         update_backend_fields(backend_label)
         self.solve_backend_combo.currentTextChanged.connect(update_backend_fields)
@@ -333,16 +321,6 @@ class PreferencesDialog(QDialog):
                         "",
                         self.check_server_button,
                         "Query the configured solve server and update advertised capabilities.",
-                    ),
-                    (
-                        "GMRES Tolerance",
-                        self.gmres_spin,
-                        "Solution accuracy for the BEMPP iterative solver. Lower values offer higher quality solves but take longer.",
-                    ),
-                    (
-                        "Burton Miller Formulation",
-                        self.burton_miller_check,
-                        "Enable to resolve fictitious interior resonances when using BEMPP solver. Always enabled for BEAT Engine.",
                     ),
                     (
                         "Balloon Sampling",
@@ -474,11 +452,9 @@ class PreferencesDialog(QDialog):
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
-            gmres_tolerance=float(self.gmres_spin.value()),
             polar_angle_step_deg=float(self.polar_step_spin.value()),
             polar_observation_distance_m=float(self.polar_distance_spin.value()),
             normalized_channel_correction=bool(self.normalized_channel_correction_check.isChecked()),
-            use_burton_miller=bool(self.burton_miller_check.isChecked()),
             polar_smoothing=self.smoothing_options[self.smoothing_combo.currentText()],
             horizontal_normalization_angle=float(self.horizontal_norm_angle_spin.value()),
             vertical_normalization_angle=float(self.vertical_norm_angle_spin.value()),

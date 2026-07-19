@@ -5,12 +5,28 @@ from blab.ui.settings import (
     gui_preferences_with_project_preferences,
     live_plot_angle_samples,
     live_plot_freq_samples,
+    load_gui_preferences,
     normalize_balloon_angle_precision_deg,
     normalize_live_plot_quality,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
     project_preferences_from_gui,
+    save_gui_preferences,
 )
+
+
+class MemorySettings:
+    def __init__(self, values: dict[str, object] | None = None):
+        self.values = dict(values or {})
+
+    def contains(self, key: str) -> bool:
+        return key in self.values
+
+    def value(self, key: str, default: object = None) -> object:
+        return self.values.get(key, default)
+
+    def setValue(self, key: str, value: object) -> None:
+        self.values[key] = value
 
 
 def test_live_plot_quality_sample_mapping() -> None:
@@ -33,6 +49,28 @@ def test_balloon_angle_precision_point_conversion() -> None:
     assert balloon_sampling_points(2.5) == 6600
     assert balloon_sampling_points(1.0) == 41253
     assert round(balloon_angle_precision_from_points(6000), 1) == 2.6
+
+
+def test_hidden_solver_preferences_always_use_backend_defaults() -> None:
+    settings = MemorySettings(
+        {
+            "preferences/gmres_tolerance": 1e-8,
+            "preferences/use_burton_miller": False,
+        }
+    )
+
+    preferences = load_gui_preferences(settings)
+
+    assert preferences.gmres_tolerance == 0.001
+    assert preferences.use_burton_miller is True
+
+    saved = MemorySettings()
+    save_gui_preferences(
+        saved,
+        GuiPreferences(gmres_tolerance=1e-8, use_burton_miller=False),
+    )
+    assert "preferences/gmres_tolerance" not in saved.values
+    assert "preferences/use_burton_miller" not in saved.values
 
 
 def test_preference_change_classification() -> None:

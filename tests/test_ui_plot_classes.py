@@ -308,7 +308,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
-    assert 'uses_bempp = backend_id in {"local", "server"}' in dialog_source
+    assert 'uses_bempp = backend_id in {"local", "server"}' not in dialog_source
     assert "self.server_health_payload: dict | None = None" in main_source
     assert "self.server_health_thread: QThread | None = None" in main_source
     assert "QTimer.singleShot(0, self._check_configured_server_health_on_startup)" in main_source
@@ -319,8 +319,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)" in main_source
     assert "worker.failed.connect(lambda _message: None)" in main_source
     assert 'self.mesh_state_changed.emit("server_health_checked")' in main_source
-    assert "self.gmres_spin.setEnabled(uses_bempp)" in dialog_source
-    assert "self.burton_miller_check.setEnabled(uses_bempp)" in dialog_source
+    assert "GMRES Tolerance" not in dialog_source
+    assert "Burton Miller Formulation" not in dialog_source
+    assert "self.gmres_spin" not in dialog_source
+    assert "self.burton_miller_check" not in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
     assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
     assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
