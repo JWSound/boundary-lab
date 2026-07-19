@@ -25,8 +25,10 @@ except ImportError:  # pragma: no cover
 
 AXIS_LINE_WIDTH = 1.5
 AXIS_COLORS = ("#e25d5d", "#5da8e2", "#f2d15f")
+AXIS_LABELS = ("Horizontal", "Vertical", "On Axis")
 PREVIEW_HOME_CAMERA_DIRECTION = np.array([-1.0, 1.0, 1.0], dtype=float) / np.sqrt(3.0)
 PREVIEW_HOME_VIEW_UP = np.array([0.0, 1.0, 0.0], dtype=float)
+PREVIEW_HOME_ZOOM = 1.2
 RIGID_COLOR = "#cfcfcf"
 RIGID_MIRROR_COLOR = "#a9a9a9"
 RIGID_EDGE_COLOR = "#555555"
@@ -335,6 +337,7 @@ class MeshPreview(QWidget):
                 tuple(float(value) for value in focal_point),
                 tuple(float(value) for value in PREVIEW_HOME_VIEW_UP),
             )
+            camera.zoom(PREVIEW_HOME_ZOOM)
             self.viewer.reset_camera_clipping_range()
         except Exception:
             self.viewer.reset_camera()
@@ -357,6 +360,17 @@ class MeshPreview(QWidget):
                 render_lines_as_tubes=True,
                 pickable=False,
             )
+
+        self.viewer.add_point_labels(
+            _preview_axis_label_points(length),
+            list(AXIS_LABELS),
+            font_size=14,
+            text_color="white",
+            point_color="white",
+            point_size=0,
+            shape_opacity=0.35,
+            always_visible=True,
+        )
 
     def _install_hover_picker(self) -> None:
         if self.viewer is None or vtk is None:
@@ -475,6 +489,17 @@ def _preview_axis_length(points: np.ndarray) -> float:
     extent = float(np.linalg.norm(max_bounds - min_bounds))
     radius = float(np.nanmax(np.linalg.norm(finite_points, axis=1)))
     return max(extent * 0.56, radius * 1.12, 1.0)
+
+
+def _preview_axis_label_points(length: float) -> np.ndarray:
+    return np.array(
+        [
+            [length * 1.06, 0.0, 0.0],
+            [0.0, length * 1.06, 0.0],
+            [0.0, 0.0, length * 1.16],
+        ],
+        dtype=float,
+    )
 
 
 def _preview_points_with_images(
