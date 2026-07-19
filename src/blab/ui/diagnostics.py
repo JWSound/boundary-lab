@@ -204,10 +204,7 @@ def _without_sensitive_fields(value: Any) -> Any:
 
 def _redact_sensitive_values(value: Any, sensitive_values: tuple[str, ...]) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _redact_sensitive_values(item, sensitive_values)
-            for key, item in value.items()
-        }
+        return {str(key): _redact_sensitive_values(item, sensitive_values) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_redact_sensitive_values(item, sensitive_values) for item in value]
     if isinstance(value, str):

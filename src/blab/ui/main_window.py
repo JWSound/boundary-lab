@@ -1137,7 +1137,9 @@ class MainWindow(QMainWindow):
             for mesh in meshes
         )
         cleaned = self._mesh_service().clean_imported_meshes(states)
-        return tuple(replace(mesh, cleaned_file=state.cleaned_file) for mesh, state in zip(meshes, cleaned, strict=True))
+        return tuple(
+            replace(mesh, cleaned_file=state.cleaned_file) for mesh, state in zip(meshes, cleaned, strict=True)
+        )
 
     def _mesh_service(self) -> MeshAssemblyService:
         service = getattr(self, "mesh_assembly_service", None)
@@ -1805,9 +1807,7 @@ class MainWindow(QMainWindow):
         )
         active_id = payload.get("active_ath_script_id")
         active_id = (
-            active_id
-            if any(script.id == active_id for script in scripts)
-            else (scripts[0].id if scripts else None)
+            active_id if any(script.id == active_id for script in scripts) else (scripts[0].id if scripts else None)
         )
         symmetry = str(payload.get("symmetry", "off")).strip().lower()
         if symmetry not in {"off", "x", "xy"}:
@@ -2065,11 +2065,13 @@ class MainWindow(QMainWindow):
         if completion is not None:
             solve_details = operations["solve"]
             assert isinstance(solve_details, dict)
-            solve_details.update({
-                "solved frequencies": completion.solved_count,
-                "requested frequencies": completion.expected_count,
-                "elapsed seconds": round(completion.elapsed_s, 3),
-            })
+            solve_details.update(
+                {
+                    "solved frequencies": completion.solved_count,
+                    "requested frequencies": completion.expected_count,
+                    "elapsed seconds": round(completion.elapsed_s, 3),
+                }
+            )
 
         enabled_generated_meshes = sum(
             1 for script in self.ath_scripts if script.mesh_enabled and script.id in self.ath_results_by_script_id
@@ -2430,9 +2432,7 @@ class MainWindow(QMainWindow):
                     normalized_channel_correction=self.preferences.normalized_channel_correction,
                     horizontal_normalization_angle_deg=self.preferences.horizontal_normalization_angle,
                     spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
-                    spherical_sampling_points=balloon_sampling_points(
-                        self.preferences.balloon_angle_precision_deg
-                    ),
+                    spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
                     symmetry=self.symmetry,
                 ),
             )
@@ -2725,7 +2725,7 @@ class MainWindow(QMainWindow):
                 spin_vertical_reference_angle_deg=self.preferences.spin_vertical_reference_angle,
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
-            )
+            ),
         )
 
     def _refresh_plots(self) -> VisualizationProjection | None:

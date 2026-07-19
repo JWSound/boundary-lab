@@ -94,9 +94,7 @@ class MeshAssemblyService:
         else:
             mesh_configs = candidates
             resolved_radiators = radiators
-        surface_tags_by_mesh = {
-            mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs
-        }
+        surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
         return PreparedMeshAssembly(
             imported_meshes=cleaned_imported,
             source_mesh_configs=candidates,
@@ -108,9 +106,7 @@ class MeshAssemblyService:
     def cleaned_imported_mesh_path(self, mesh: ImportedMeshState) -> Path:
         source_path = Path(mesh.source_file)
         source_hash = hashlib.sha1(str(source_path.resolve()).encode("utf-8")).hexdigest()[:10]
-        safe_name = "".join(
-            char if char.isalnum() or char in ("_", "-") else "_" for char in mesh.name
-        ).strip("_")
+        safe_name = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in mesh.name).strip("_")
         return self.output_root / f"{safe_name or 'mesh'}_{source_hash}_clean.msh"
 
     def radiators_for_stitched_mesh(
@@ -193,10 +189,11 @@ class MeshAssemblyService:
     @staticmethod
     def mesh_for_stitching(mesh_config: MeshConfig) -> meshio.Mesh:
         mesh = meshio.read(mesh_config.file)
-        scale_factor = DEFAULT_MESH_SCALE_FACTOR if mesh_config.scale_factor is None else float(mesh_config.scale_factor)
-        points_m = (
-            np.asarray(mesh.points, dtype=float) * scale_factor
-            + np.asarray(mesh_config.translation_m, dtype=float)
+        scale_factor = (
+            DEFAULT_MESH_SCALE_FACTOR if mesh_config.scale_factor is None else float(mesh_config.scale_factor)
+        )
+        points_m = np.asarray(mesh.points, dtype=float) * scale_factor + np.asarray(
+            mesh_config.translation_m, dtype=float
         )
         return meshio.Mesh(
             points=points_m / DEFAULT_MESH_SCALE_FACTOR,
@@ -223,9 +220,7 @@ class MeshAssemblyService:
         used_surface_tags: set[int] = set()
         next_surface_tag = 1
         for mesh_index, mesh_config in enumerate(mesh_configs):
-            names_by_tag = {
-                tag: name for name, tag in read_surface_physical_names(Path(mesh_config.file)).items()
-            }
+            names_by_tag = {tag: name for name, tag in read_surface_physical_names(Path(mesh_config.file)).items()}
             for old_tag in self.used_surface_tags(mesh_config):
                 surface_name = names_by_tag.get(old_tag, f"mesh{mesh_index + 1}_surface_{old_tag}")
                 stitched_name = self.unique_surface_name(surface_name, used_surface_names, mesh_index)

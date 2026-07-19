@@ -121,9 +121,7 @@ def _theme_stylesheet(
     text = text_color.name()
     window = window_color.name()
     base = base_color.name()
-    editor_background = (
-        DARK_THEME_CONTENT_BACKGROUND_COLOR if window_color.lightness() < 128 else base_color.name()
-    )
+    editor_background = DARK_THEME_CONTENT_BACKGROUND_COLOR if window_color.lightness() < 128 else base_color.name()
     border = QColor(85, 85, 85).name() if text_color.lightness() > 128 else QColor(190, 190, 190).name()
     selected = QColor(61, 126, 154).name() if text_color.lightness() > 128 else QColor(0, 120, 215).name()
     selected_text = QColor(255, 255, 255).name()

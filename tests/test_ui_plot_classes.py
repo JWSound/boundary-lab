@@ -356,9 +356,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert 'LIVE_ISOBAR_SHADING = "nearest"' in plot_source
     assert 'FINAL_ISOBAR_SHADING = "gouraud"' in plot_source
     assert "self._use_final_isobar_resolution = solve_completed" in main_source
-    solve_finished = main_source[
-        main_source.index("def _on_solve_finished") : main_source.index("def _clear_plots")
-    ]
+    solve_finished = main_source[main_source.index("def _on_solve_finished") : main_source.index("def _clear_plots")]
     assert "QApplication.processEvents()" not in solve_finished
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source

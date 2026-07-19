@@ -144,24 +144,30 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
-        self._comparison_plot: tuple[
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-            float,
-            float,
-            str,
-            float,
-        ] | None = None
-        self._comparison_restore_plot: tuple[
-            np.ndarray,
-            np.ndarray,
-            np.ndarray,
-            float,
-            float,
-            str,
-            float,
-        ] | None = None
+        self._comparison_plot: (
+            tuple[
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                float,
+                float,
+                str,
+                float,
+            ]
+            | None
+        ) = None
+        self._comparison_restore_plot: (
+            tuple[
+                np.ndarray,
+                np.ndarray,
+                np.ndarray,
+                float,
+                float,
+                str,
+                float,
+            ]
+            | None
+        ) = None
         self._comparison_active = False
         self._crosshair_visible = False
         self._crosshair_dragging = False
