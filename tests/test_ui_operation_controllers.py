@@ -10,7 +10,7 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 import blab.ui.operation_controllers as controller_module
 from blab.config import SimulationConfig
 from blab.ui.application_state import OperationPhase
-from blab.ui.operation_controllers import SolveController, SolveRequest
+from blab.ui.operation_controllers import GeometryController, SolveController, SolveRequest
 
 
 class _SolveWorkerStub(QObject):
@@ -70,4 +70,21 @@ def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -
     assert completions[0].phase == OperationPhase.COMPLETED
     assert completions[0].completed is True
     assert thread_state_at_completion == [(False, True)]
+    assert controller.last_completion == completions[0]
+    assert controller.last_error is None
     assert controller.active is False
+
+
+def test_controllers_preserve_latest_failure_for_diagnostics() -> None:
+    app = QCoreApplication.instance() or QCoreApplication([])
+    geometry_controller = GeometryController()
+    solve_controller = SolveController()
+
+    geometry_controller._on_failed("geometry failed")
+    solve_controller._on_failed("solve failed")
+
+    assert geometry_controller.last_error == "geometry failed"
+    assert app is not None
+    assert geometry_controller.state.phase == OperationPhase.FAILED
+    assert solve_controller.last_error == "solve failed"
+    assert solve_controller.state.phase == OperationPhase.FAILED

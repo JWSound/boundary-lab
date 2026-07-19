@@ -8,6 +8,7 @@ from typing import Literal
 
 DEPENDENCY_NAMES = (
     "bempp-cl",
+    "gmsh",
     "matplotlib",
     "meshio",
     "numpy",

@@ -2019,8 +2019,101 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_diagnostics(self) -> None:
-        dialog = DiagnosticsDialog(self.preferences, self)
+        dialog = DiagnosticsDialog(
+            self.preferences,
+            self,
+            context_provider=self._diagnostic_context,
+        )
         dialog.exec()
+
+    def _diagnostic_context(self) -> dict[str, object]:
+        backend = backend_info(self.preferences.solve_backend)
+        backend_details: dict[str, object] = {
+            "id": backend.backend_id,
+            "label": backend.label,
+            "remote": backend.capabilities.is_remote,
+            "supports symmetry": backend.capabilities.supports_symmetry,
+            "supports spherical sampling": backend.capabilities.supports_spherical_sampling,
+            "supports channel resynthesis": backend.capabilities.supports_channel_resynthesis,
+        }
+        if backend.capabilities.is_remote:
+            backend_details["server health"] = (
+                "reachable (cached)" if self._server_health_matches_preferences() else "not confirmed"
+            )
+            if self._server_health_matches_preferences() and self.server_health_payload is not None:
+                backend_details["server solver"] = (
+                    self.server_health_payload.get("solver_label")
+                    or self.server_health_payload.get("solver")
+                    or "unknown"
+                )
+
+        geometry_state = self.geometry_controller.state
+        solve_state = self.solve_controller.state
+        operations: dict[str, object] = {
+            "geometry": {
+                "phase": geometry_state.phase.value,
+                "message": geometry_state.message or "none",
+                "last error": self.geometry_controller.last_error or "none",
+            },
+            "solve": {
+                "phase": solve_state.phase.value,
+                "message": solve_state.message or "none",
+                "last error": self.solve_controller.last_error or "none",
+            },
+        }
+        completion = self.solve_controller.last_completion
+        if completion is not None:
+            solve_details = operations["solve"]
+            assert isinstance(solve_details, dict)
+            solve_details.update({
+                "solved frequencies": completion.solved_count,
+                "requested frequencies": completion.expected_count,
+                "elapsed seconds": round(completion.elapsed_s, 3),
+            })
+
+        enabled_generated_meshes = sum(
+            1 for script in self.ath_scripts if script.mesh_enabled and script.id in self.ath_results_by_script_id
+        )
+        enabled_imported_meshes = sum(1 for mesh in self.imported_meshes if mesh.enabled)
+        result_details: dict[str, object] = {
+            "solved frequencies": 0 if self.live_dataset is None else self.live_dataset.solved_count,
+        }
+        context: dict[str, object] = {
+            "backend": backend_details,
+            "project": {
+                "file": self.project_path.name if self.project_path is not None else "unsaved",
+                "modified": self._has_unsaved_project_changes(),
+                "ath scripts": len(self.ath_scripts),
+                "enabled meshes": enabled_generated_meshes + enabled_imported_meshes,
+                "imported meshes": len(self.imported_meshes),
+                "radiators": len(self._all_radiators()),
+                "channels": len(self._channel_configs()),
+                "symmetry": self.symmetry,
+                "stitch imported meshes": self.stitch_imported_meshes,
+                "frequency minimum Hz": int(self.freq_min_spin.value()),
+                "frequency maximum Hz": int(self.freq_max_spin.value()),
+                "frequency count": int(self.freq_count_spin.value()),
+            },
+            "operations": operations,
+            "results": result_details,
+        }
+
+        if self.live_dataset is not None and self.live_dataset.results:
+            latest_frequency = next(reversed(self.live_dataset.results))
+            latest_result = self.live_dataset.results[latest_frequency]
+            result_details.update(
+                {
+                    "latest frequency Hz": round(float(latest_result.freq_hz), 3),
+                    "latest assembly seconds": round(float(latest_result.timings.assembly_s), 3),
+                    "latest solve seconds": round(float(latest_result.timings.solve_s), 3),
+                    "latest field seconds": round(float(latest_result.timings.field_s), 3),
+                }
+            )
+            if latest_result.diagnostics is not None:
+                result_details["latest convergence info"] = latest_result.diagnostics.convergence_info
+                result_details["latest solver message"] = latest_result.diagnostics.message or "none"
+
+        return context
 
     @Slot()
     def open_donate(self) -> None:

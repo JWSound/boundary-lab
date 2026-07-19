@@ -57,6 +57,7 @@ class GeometryController(QObject):
         self._worker: AthGenerationWorker | None = None
         self._failed = False
         self._cancelled = False
+        self.last_error: str | None = None
 
     @property
     def active(self) -> bool:
@@ -68,6 +69,7 @@ class GeometryController(QObject):
         self._request = request
         self._failed = False
         self._cancelled = False
+        self.last_error = None
         self._set_state(OperationPhase.RUNNING, "Generating geometry")
         thread = QThread(self)
         worker = AthGenerationWorker(
@@ -81,7 +83,7 @@ class GeometryController(QObject):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.generated.connect(self._on_generated)
-        worker.status.connect(self.status)
+        worker.status.connect(self._on_status)
         worker.failed.connect(self._on_failed)
         worker.cancelled.connect(self._on_cancelled)
         worker.finished.connect(thread.quit)
@@ -104,8 +106,14 @@ class GeometryController(QObject):
             self.completed.emit(GeometryCompleted(self._request, result))
 
     @Slot(str)
+    def _on_status(self, message: str) -> None:
+        self._set_state(self.state.phase, message)
+        self.status.emit(message)
+
+    @Slot(str)
     def _on_failed(self, message: str) -> None:
         self._failed = True
+        self.last_error = message
         self._set_state(OperationPhase.FAILED, message)
         self.failed.emit(message)
 
@@ -147,6 +155,8 @@ class SolveController(QObject):
         self._solved_count = 0
         self._failed = False
         self._cancelled = False
+        self.last_error: str | None = None
+        self.last_completion: SolveCompletion | None = None
 
     @property
     def active(self) -> bool:
@@ -159,6 +169,8 @@ class SolveController(QObject):
         self._solved_count = 0
         self._failed = False
         self._cancelled = False
+        self.last_error = None
+        self.last_completion = None
         self._started_at = time.perf_counter()
         self._set_state(OperationPhase.RUNNING, "Initializing solver")
         thread = QThread(self)
@@ -175,7 +187,7 @@ class SolveController(QObject):
         thread.started.connect(worker.run)
         worker.initialized.connect(self.initialized)
         worker.result_ready.connect(self._on_result)
-        worker.status.connect(self.status)
+        worker.status.connect(self._on_status)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -198,8 +210,14 @@ class SolveController(QObject):
         self.result_ready.emit(result)
 
     @Slot(str)
+    def _on_status(self, message: str) -> None:
+        self._set_state(self.state.phase, message)
+        self.status.emit(message)
+
+    @Slot(str)
     def _on_failed(self, message: str) -> None:
         self._failed = True
+        self.last_error = message
         self._set_state(OperationPhase.FAILED, message)
         self.failed.emit(message)
 
@@ -219,6 +237,7 @@ class SolveController(QObject):
             expected_count=self._expected_count,
             elapsed_s=elapsed_s,
         )
+        self.last_completion = completion
         self._worker = None
         self._thread = None
         self._started_at = None
