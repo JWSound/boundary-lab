@@ -638,7 +638,10 @@ def test_balloon_window_does_not_use_rendering_overlay() -> None:
 def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 
-    assert "QLabel {background: #2d2d30;color: #e8e8e8;padding-left: 8px;padding-right: 8px;}" in source
+    assert "self._refresh_3d_view_theme()" in source
+    assert "self.plotter.set_background(themed_content_background(self.palette()))" in source
+    assert "self._refresh_hover_label_theme()" in source
+    assert "text = self.palette().color(QPalette.Text).name()" in source
     assert "self.plotter.add_axes()" not in source
     assert "self._axes_added" not in source
 

@@ -39,6 +39,25 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
     assert "self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)" in source
 
 
+def test_preview_background_tracks_the_application_theme() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert "self._refresh_viewer_theme()" in source
+    assert "viewer.set_background(themed_content_background(self.palette()))" in source
+    assert "QEvent.Type.PaletteChange" in source
+
+
+def test_driven_source_elements_use_high_contrast_blue() -> None:
+    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+
+    assert 'DRIVEN_COLOR = "#3292bf"' in source
+    assert 'DRIVEN_COLOR = "#395865"' not in source
+    assert 'DRIVEN_MIRROR_COLOR = "#236787"' in source
+    assert 'DRIVEN_MIRROR_COLOR = "#2f4751"' not in source
+    assert "color=DRIVEN_COLOR if is_driven else RIGID_COLOR" in source
+    assert "color=DRIVEN_MIRROR_COLOR if is_driven else RIGID_MIRROR_COLOR" in source
+
+
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:
     points = np.array(
         [

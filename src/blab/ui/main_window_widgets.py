@@ -34,6 +34,7 @@ class AthScriptEditor(QPlainTextEdit):
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setObjectName("athScriptEditor")
         self.setAcceptDrops(True)
 
     def dragEnterEvent(self, event) -> None:
