@@ -2312,7 +2312,7 @@ class MainWindow(QMainWindow):
         if script is None:
             QMessageBox.warning(self, "No Ath script", "Add an Ath script before generating.")
             return
-        case_name = f"{script.mesh_name}_{script.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        case_name = f"{script.mesh_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{script.id}"
         run_root = ATH_OUTPUT_ROOT
         try:
             self._ensure_ath_runtime_config()
