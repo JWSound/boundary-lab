@@ -2,7 +2,7 @@
 
 The main window is divided into 3 panes in the default view:
 
-- Ath script editor on the left
+- Waveguide design editor on the left
 - 3D viewport in the middle
 - Directivity plots on the right
 
@@ -12,12 +12,12 @@ Each panel can be resized, moved, or dragged out of the main window. If a panel 
 
 The command strip along the bottom of the window contains geometry generation, solve controls, mesh/source/channel configuration, and frequency range settings.
 
-## Ath Script Editor
-The Ath script editor contains a text editor for defining Ath shapes. Existing Ath .cfg files can be imported/exported into this editor using `File` > `Import/Export .cfg`.
+## Waveguide Design Editor
+The waveguide design panel contains the editor supplied by the design's geometry-generator provider. The bundled Ath provider uses a text editor for Ath `.cfg` input. Existing Ath files can be imported or exported using the File menu.
 
 <img src="../assets/scripteditor.png" alt="Script Editor" width="300">
 
-Ath scripts can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a script, double click its tab. Multi-script workflows can be useful for complex multiway designs (see /examples/MultiAth+Mesh_3WayIntegrated), or worflows where you might be comparing outputs on the same script with different values by copy/pasting it into multiple script tabs and enabling/disabling them in the `Mesh Config` window.
+Waveguide designs can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a design, double click its tab. Multiple designs can be combined in complex multiway projects or used to compare variations by enabling and disabling their generated meshes in `Mesh Config`.
 
 ## 3D Viewport
 
@@ -39,12 +39,12 @@ Plots are displayed when selected from the `view` menu. Results are streamed in 
 - `Save Project`: saves the current project to the active `.blab.json` file.
 - `Save Project As`: chooses a new `.blab.json` path.
 - `Load Project`: loads editor text, mesh config, and source config.
-- `Import .cfg`: imports only Ath config text into the editor.
-- `Export .cfg`: exports only the editor contents.
+- `Import Waveguide Design`: imports a source file supported by the active design provider. The bundled Ath provider accepts `.cfg` files.
+- `Export Waveguide Design`: exports the active provider's editable source.
 - `Export Plot`: exports generated plot panels as PNG files.
 - `Export Polar Data`: exports solved horizontal and vertical polar text files. Channel-basis solves export frequency, normalized SPL, and relative phase.
 
-Project files do not store solved results or global preferences.
+Project files do not store solved results or solver-backend preferences. Reproducibility-related application preferences may be stored and are offered for application when a project is opened.
 
 ### View Menu
 
@@ -86,18 +86,18 @@ The preferences menu contains various application-level settings for Boundary La
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. Boundary Lab silently checks this URL on startup when `BEM Solver` is already set to `Server`; use `Check Server` to query server health manually and update advertised feature availability, including BEAT Engine server-side symmetry support. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for server setup and API details. 
 
 ## Command Strip
-The command strip is located along the bottom of the main window and includes controls to generate Ath meshes, run solves, and configure the project parameters.
+The command strip is located along the bottom of the main window and includes controls to generate geometry, run solves, and configure the project parameters.
 
 <img src="../assets/commandstrip.png" alt="Command strip" width="800">
 
 ### Generate
 
-Click `Generate` to run `ath/ath.exe` against the editor text. Boundary Lab writes the temporary `.cfg`, lets Ath generate geometry, cleans the generated mesh, and loads it into the preview.
+Click `Generate` to run the active waveguide design through its geometry provider. With the bundled Ath provider, Boundary Lab writes a temporary `.cfg`, runs `ath/ath.exe`, cleans the generated mesh, and loads it into the preview.
 
 Ath outputs are written under:
 
 ```text
-runs/ath_output
+runs/generated_geometry
 ```
 
 ### Solve
@@ -109,11 +109,11 @@ Note - the first time solve after opening Boundary Lab will typically take longe
 Click `Solve` to start the BEM sweep. Enabled plots update in realtime as each frequency completes. Click `Stop` to stop after the current in-flight frequency finishes; completed frequencies remain available for plotting/export.
 
 ### Mesh Config
-`Mesh Config` lists the generated Ath meshes and any imported `.msh` files.
+`Mesh Config` lists meshes produced by waveguide designs and any imported `.msh` files.
 
 <img src="../assets/meshconfig.png" alt="mesh config" width="500">
 
-If you've generated any Ath meshes, they will be visible as the top rows in the mesh config window.
+Generated meshes are visible as locked-name rows at the top of the mesh config window.
 
 Imported `.msh` rows can be enabled/disabled, renamed, removed, scaled, and translated.
 

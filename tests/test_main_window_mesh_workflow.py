@@ -7,11 +7,12 @@ import pytest
 pytest.importorskip("PySide6")
 
 import blab.ui.main_window as main_window_module
-from blab.ath import AthRunResult
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
+from blab.generators.ath import ath_source
+from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window import STITCH_FAILURE_MESSAGE, STITCHED_MESH_NAME, MainWindow
-from blab.ui.project_state import AthScriptState, ProjectPreferencesState
+from blab.ui.project_state import ProjectPreferencesState
 
 
 def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
@@ -31,7 +32,7 @@ def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
     meshio.write(path, mesh, file_format="gmsh22", binary=False)
 
 
-def test_xy_stitch_candidates_use_reduced_ath_mesh_before_stitching(tmp_path: Path) -> None:
+def test_xy_stitch_candidates_use_reduced_generated_mesh_before_stitching(tmp_path: Path) -> None:
     raw_msh = tmp_path / "ath_case.msh"
     expanded_clean_msh = tmp_path / "ath_case_clean.msh"
     imported_clean_msh = tmp_path / "external_clean.msh"
@@ -39,20 +40,26 @@ def test_xy_stitch_candidates_use_reduced_ath_mesh_before_stitching(tmp_path: Pa
     _write_triangle_mesh(expanded_clean_msh)
     _write_triangle_mesh(imported_clean_msh, tag=3)
 
-    script = AthScriptState(id="script1", name="ath", config_text="")
-    result = AthRunResult(
+    document = GeneratorDocument(
+        id="design1",
+        name="waveguide",
+        provider_id="ath",
+        provider_schema_version=1,
+        source=ath_source(""),
+    )
+    result = GeneratedGeometry(
+        provider_id="ath",
         output_dir=tmp_path,
-        msh_path=raw_msh,
-        config_path=tmp_path / "ath_case.cfg",
-        driven_tag=2,
+        mesh_path=raw_msh,
+        source_path=tmp_path / "ath_case.cfg",
         radiators=(),
-        cleaned_msh_path=expanded_clean_msh,
+        cleaned_mesh_path=expanded_clean_msh,
     )
 
     window = MainWindow.__new__(MainWindow)
     window.symmetry = "xy"
-    window.ath_scripts = (script,)
-    window.ath_results_by_script_id = {script.id: result}
+    window.generator_documents = (document,)
+    window.generated_geometry_by_document_id = {document.id: result}
     window.imported_meshes = (
         MeshDialogEntry(
             name="external",
@@ -64,7 +71,7 @@ def test_xy_stitch_candidates_use_reduced_ath_mesh_before_stitching(tmp_path: Pa
     configs = window._stitch_candidate_mesh_configs()
     reduced_msh = tmp_path / "ath_case_clean_reduced.msh"
 
-    assert [config.name for config in configs] == ["ath", "external"]
+    assert [config.name for config in configs] == ["waveguide", "external"]
     assert configs[0].file == str(reduced_msh)
     assert reduced_msh.exists()
     assert configs[1].file == str(imported_clean_msh)
@@ -111,20 +118,26 @@ def test_stitched_solver_radiators_reference_stitched_mesh(tmp_path: Path) -> No
     _write_triangle_mesh(ath_msh, tag=2)
     _write_triangle_mesh(imported_msh, tag=2)
 
-    script = AthScriptState(id="script1", name="ath", config_text="")
-    result = AthRunResult(
+    document = GeneratorDocument(
+        id="design1",
+        name="waveguide",
+        provider_id="ath",
+        provider_schema_version=1,
+        source=ath_source(""),
+    )
+    result = GeneratedGeometry(
+        provider_id="ath",
         output_dir=tmp_path,
-        msh_path=ath_msh,
-        config_path=tmp_path / "ath_case.cfg",
-        driven_tag=2,
-        radiators=(RadiatorConfig(name="ath:SD1D1001", mesh="ath", tag=2),),
-        cleaned_msh_path=ath_msh,
+        mesh_path=ath_msh,
+        source_path=tmp_path / "ath_case.cfg",
+        radiators=(RadiatorConfig(name="waveguide:SD1D1001", mesh="waveguide", tag=2),),
+        cleaned_mesh_path=ath_msh,
     )
 
     window = MainWindow.__new__(MainWindow)
     window.symmetry = "off"
-    window.ath_scripts = (script,)
-    window.ath_results_by_script_id = {script.id: result}
+    window.generator_documents = (document,)
+    window.generated_geometry_by_document_id = {document.id: result}
     window.imported_radiators = ()
     window.imported_meshes = (
         MeshDialogEntry(
@@ -203,16 +216,14 @@ def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
     assert "addDockWidget" not in open_channel_config
 
 
-def test_project_dirty_state_ignores_generated_ath_mesh_paths() -> None:
+def test_project_dirty_state_ignores_generated_geometry_artifacts() -> None:
     payload = {
-        "ath_scripts": [
+        "generator_documents": [
             {
-                "id": "script1",
-                "config_text": "",
-                "output_dir": "",
-                "msh_path": "",
-                "cleaned_msh_path": "",
-                "config_path": "",
+                "id": "design1",
+                "source": {"format": "ath_cfg", "text": ""},
+                "mesh_scale_factor": 0.001,
+                "artifact": None,
             }
         ]
     }
@@ -226,14 +237,16 @@ def test_project_dirty_state_ignores_generated_ath_mesh_paths() -> None:
 
     assert not window._has_unsaved_project_changes()
 
-    payload["ath_scripts"][0]["output_dir"] = "runs/ath_output/example"
-    payload["ath_scripts"][0]["msh_path"] = "runs/ath_output/example/example.msh"
-    payload["ath_scripts"][0]["cleaned_msh_path"] = "runs/ath_output/example/example_clean.msh"
-    payload["ath_scripts"][0]["config_path"] = "runs/ath_output/example.cfg"
+    payload["generator_documents"][0]["artifact"] = {
+        "output_dir": "runs/ath_output/example",
+        "mesh_path": "runs/ath_output/example/example.msh",
+        "cleaned_mesh_path": "runs/ath_output/example/example_clean.msh",
+        "source_path": "runs/ath_output/example.cfg",
+    }
 
     assert not window._has_unsaved_project_changes()
 
-    payload["ath_scripts"][0]["mesh_scale_factor"] = 0.002
+    payload["generator_documents"][0]["mesh_scale_factor"] = 0.002
 
     assert window._has_unsaved_project_changes()
 

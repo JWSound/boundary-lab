@@ -10,7 +10,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication, QTabWidget
 
 from blab.ui.dialogs import MeshDropTable
-from blab.ui.main_window import ADD_SCRIPT_TAB_LABEL, AthScriptEditor, MainWindow
+from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, AthScriptEditor, MainWindow
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -50,15 +50,15 @@ def test_mesh_drop_table_filters_msh_paths(tmp_path: Path) -> None:
     assert MeshDropTable._msh_drop_paths(_DropEvent([cfg_path])) == []
 
 
-def test_empty_script_tabs_keep_add_drop_target() -> None:
+def test_empty_design_tabs_keep_add_drop_target() -> None:
     window = MainWindow.__new__(MainWindow)
     window.editor_tabs = QTabWidget()
-    window.ath_scripts = ()
-    window.active_ath_script_id = None
+    window.generator_documents = ()
+    window.active_generator_document_id = None
 
-    window._rebuild_ath_script_tabs()
+    window._rebuild_generator_document_tabs()
 
     assert window.editor_tabs.count() == 1
-    assert window.editor_tabs.tabText(0) == ADD_SCRIPT_TAB_LABEL
+    assert window.editor_tabs.tabText(0) == ADD_DESIGN_TAB_LABEL
     assert isinstance(window.editor_tabs.widget(0), AthScriptEditor)
     assert window.editor_tabs.widget(0).isReadOnly()

@@ -184,7 +184,7 @@ def test_application_startup_invokes_new_project_reset() -> None:
     assert 'startup("Starting new project...")' in init_block
     assert "self.new_project()" in init_block
     assert "self._project_clean_payload: dict | None = None" in init_block
-    assert "_load_initial_ath_scripts" not in source
+    assert "_load_initial_generator_documents" not in source
     assert "_load_imported_meshes" not in source
     assert "mesh/imported_meshes" not in source
     assert "mesh/ath_mesh" not in source
@@ -192,7 +192,7 @@ def test_application_startup_invokes_new_project_reset() -> None:
 
 def test_unsaved_project_changes_guard_close_new_and_open() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    close_block = source[source.index("def closeEvent") : source.index("def _result_from_script_state")]
+    close_block = source[source.index("def closeEvent") : source.index("def _result_from_generator_document")]
     new_block = source[source.index("def new_project") : source.index("def save_project")]
     save_block = source[source.index("def save_project") : source.index("def load_project")]
     load_block = source[source.index("def load_project") : source.index("def _project_payload")]
@@ -753,27 +753,26 @@ def test_balloon_spl_legend_lives_in_bottom_control_bar() -> None:
     assert "gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)" in source
 
 
-def test_ath_tab_add_button_uses_qtabbar_button_position_enum() -> None:
+def test_generator_tab_add_button_uses_qtabbar_button_position_enum() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
     assert "QTabBar.ButtonPosition.RightSide" in source
     assert "tabBar().RightSide" not in source
 
 
-def test_ath_generation_uses_worker_and_delayed_stop_button() -> None:
+def test_geometry_generation_uses_registry_worker_and_delayed_stop_button() -> None:
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    worker_source = Path("src/blab/ui/ath_worker.py").read_text(encoding="utf-8")
+    worker_source = Path("src/blab/ui/generator_worker.py").read_text(encoding="utf-8")
     controller_source = Path("src/blab/ui/operation_controllers.py").read_text(encoding="utf-8")
 
     assert "GeometryController" in main_source
-    assert "GeometryRequest(" in main_source
+    assert "GenerationRequest(" in main_source
     assert "self.cancel_button.clicked.connect(self.cancel_current_operation)" in main_source
-    assert "QTimer.singleShot(3000, self._enable_ath_cancel_if_active)" in main_source
-    assert "def cancel_ath_generation(" in main_source
+    assert "QTimer.singleShot(3000, self._enable_geometry_cancel_if_active)" in main_source
+    assert "def cancel_geometry_generation(" in main_source
     assert "self.geometry_controller.cancel()" in main_source
-    assert "self._worker: AthGenerationWorker | None = None" in controller_source
+    assert "self._worker: GeneratorWorker | None = None" in controller_source
     assert "worker.moveToThread(thread)" in controller_source
     assert "self._worker.stop()" in controller_source
-    assert "class AthGenerationWorker(QObject)" in worker_source
-    assert "AthProcessRunner()" in worker_source
-    assert "clean_ath_mesh_output(raw_result)" in worker_source
+    assert "class GeneratorWorker(QObject)" in worker_source
+    assert "create_generator(self.request.provider_id" in worker_source

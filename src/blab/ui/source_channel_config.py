@@ -8,8 +8,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 
-from blab.ath import AthRunResult, read_surface_physical_names
+from blab.ath import read_surface_physical_names
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.generators.base import GeneratedGeometry
 
 SOURCE_CONFIG_SETTINGS_KEY = "source/config_by_name"
 CHANNEL_CONFIG_SETTINGS_KEY = "channel/config_by_name"
@@ -146,16 +147,16 @@ def saved_crossover(raw: object, *, crossover_type: str) -> CrossoverConfig:
 
 
 def apply_saved_source_config_to_result(
-    result: AthRunResult | None,
+    result: GeneratedGeometry | None,
     mesh_name: str,
     config_by_name: dict[str, dict],
-) -> AthRunResult | None:
+) -> GeneratedGeometry | None:
     if result is None:
         return None
     try:
         surface_tags = {
             f"{mesh_name}:{surface_name}": (mesh_name, tag)
-            for surface_name, tag in read_surface_physical_names(Path(result.solver_msh_path)).items()
+            for surface_name, tag in read_surface_physical_names(Path(result.solver_mesh_path)).items()
         }
     except Exception:
         return result

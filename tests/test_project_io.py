@@ -20,14 +20,17 @@ def test_project_path_gets_default_suffix() -> None:
 
 def test_project_file_round_trip(tmp_path) -> None:
     payload = build_project_payload(
-        ath_config_text="Ath config text",
-        ath_mesh={
-            "name": "ath",
-            "source_file": "C:/meshes/ath.msh",
-            "cleaned_file": None,
-            "translation_mm": [1, 2, 3],
-            "enabled": True,
-        },
+        generator_documents=[
+            {
+                "id": "design1",
+                "name": "waveguide",
+                "provider_id": "ath",
+                "provider_schema_version": 1,
+                "source": {"format": "ath_cfg", "text": "Ath config text"},
+                "artifact": None,
+            }
+        ],
+        active_generator_document_id="design1",
         imported_meshes=[
             {
                 "name": "enclosure",
@@ -90,10 +93,6 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
         json.dumps(
             {
                 "schema_version": PROJECT_SCHEMA_VERSION,
-                "ath_mesh": {
-                    "source_file": "ath/source.msh",
-                    "cleaned_file": "ath/cleaned.msh",
-                },
                 "imported_meshes": [
                     {
                         "name": "cabinet",
@@ -101,14 +100,19 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
                         "cleaned_file": None,
                     }
                 ],
-                "ath_scripts": [
+                "generator_documents": [
                     {
                         "id": "abc",
-                        "name": "ath",
-                        "output_dir": "runs/case",
-                        "msh_path": "runs/case/case.msh",
-                        "cleaned_msh_path": "",
-                        "config_path": "runs/case/config.txt",
+                        "name": "waveguide",
+                        "provider_id": "ath",
+                        "provider_schema_version": 1,
+                        "source": {"format": "ath_cfg", "text": ""},
+                        "artifact": {
+                            "output_dir": "runs/case",
+                            "mesh_path": "runs/case/case.msh",
+                            "cleaned_mesh_path": "",
+                            "source_path": "runs/case/config.txt",
+                        },
                     }
                 ],
             }
@@ -118,14 +122,13 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
 
     loaded = read_project_file(project_path)
 
-    assert loaded["ath_mesh"]["source_file"] == str((project_dir / "ath/source.msh").resolve())
-    assert loaded["ath_mesh"]["cleaned_file"] == str((project_dir / "ath/cleaned.msh").resolve())
     assert loaded["imported_meshes"][0]["source_file"] == str((project_dir / "meshes/cabinet.msh").resolve())
     assert loaded["imported_meshes"][0]["cleaned_file"] is None
-    assert loaded["ath_scripts"][0]["output_dir"] == str((project_dir / "runs/case").resolve())
-    assert loaded["ath_scripts"][0]["msh_path"] == str((project_dir / "runs/case/case.msh").resolve())
-    assert loaded["ath_scripts"][0]["cleaned_msh_path"] == ""
-    assert loaded["ath_scripts"][0]["config_path"] == str((project_dir / "runs/case/config.txt").resolve())
+    artifact = loaded["generator_documents"][0]["artifact"]
+    assert artifact["output_dir"] == str((project_dir / "runs/case").resolve())
+    assert artifact["mesh_path"] == str((project_dir / "runs/case/case.msh").resolve())
+    assert artifact["cleaned_mesh_path"] == ""
+    assert artifact["source_path"] == str((project_dir / "runs/case/config.txt").resolve())
 
 
 def test_project_migration_rejects_non_integer_schema() -> None:
@@ -137,13 +140,35 @@ def test_schema_v1_migrates_without_application_preference_override() -> None:
     migrated = migrate_project_payload({"schema_version": 1, "ath_config_text": "legacy"})
 
     assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert migrated["generator_documents"][0]["provider_id"] == "ath"
+    assert migrated["generator_documents"][0]["source"] == {"format": "ath_cfg", "text": "legacy"}
     assert "project_preferences" not in migrated
+
+
+def test_schema_v2_migrates_every_ath_script_to_generator_document() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 2,
+            "active_ath_script_id": "second",
+            "ath_scripts": [
+                {"id": "first", "name": "hf", "config_text": "first config"},
+                {"id": "second", "name": "lf", "config_text": "second config"},
+            ],
+        }
+    )
+
+    assert migrated["active_generator_document_id"] == "second"
+    assert [document["provider_id"] for document in migrated["generator_documents"]] == ["ath", "ath"]
+    assert [document["source"]["text"] for document in migrated["generator_documents"]] == [
+        "first config",
+        "second config",
+    ]
 
 
 def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     payload = build_project_payload(
-        ath_config_text="",
-        ath_mesh={},
+        generator_documents=[],
+        active_generator_document_id=None,
         imported_meshes=[],
         source_config_by_name={},
         project_preferences={

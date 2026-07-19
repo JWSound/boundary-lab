@@ -1,4 +1,4 @@
-"""PyVista mesh preview widget for Ath-generated and imported meshes."""
+"""PyVista preview widget for generated and imported meshes."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import numpy as np
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from blab.ath import AthRunResult, read_surface_physical_names
+from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
+from blab.generators.base import GeneratedGeometry
 from blab.ui.theme import themed_content_background
 
 try:  # pragma: no cover - optional visual dependency
@@ -91,11 +92,11 @@ class MeshPreview(QWidget):
         self.hover_label.setText("")
         self._set_total_element_count(0)
 
-    def load_ath_result(self, result: AthRunResult) -> None:
+    def load_generated_geometry(self, result: GeneratedGeometry) -> None:
         self.load_mesh_configs(
-            (MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),),
-            driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
-            surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
+            (MeshConfig(name="waveguide", file=str(result.solver_mesh_path), scale_factor=0.001),),
+            driven_surfaces={("waveguide", radiator.tag) for radiator in result.radiators},
+            surface_tags_by_mesh={"waveguide": read_surface_physical_names(result.solver_mesh_path)},
         )
 
     def load_msh(

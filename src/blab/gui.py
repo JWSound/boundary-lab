@@ -1,4 +1,4 @@
-"""Desktop GUI entrypoint for Ath4 waveguide generation and live BEM solving."""
+"""Desktop GUI entrypoint for waveguide generation and live BEM solving."""
 
 from __future__ import annotations
 

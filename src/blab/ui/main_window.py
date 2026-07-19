@@ -35,16 +35,16 @@ from PySide6.QtWidgets import (
 
 from blab import __version__
 from blab.ath import (
-    AthRunResult,
-    clean_ath_reduced_mesh_output,
-    detect_ath_radiators,
-    find_physical_tag_by_name,
     read_surface_physical_names,
     write_ath_gmsh_path,
     write_ath_output_root,
 )
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.exporting import export_plot_png, export_polar_text_files
+from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
+from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest, GeneratorDocument
+from blab.generators.postprocess import ensure_reduced_geometry
+from blab.generators.registry import create_generator, generator_info
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -76,9 +76,7 @@ from blab.ui.mesh_assembly import (
     PreparedMeshAssembly,
 )
 from blab.ui.operation_controllers import (
-    GeometryCompleted,
     GeometryController,
-    GeometryRequest,
     SolveController,
     SolveRequest,
 )
@@ -112,16 +110,16 @@ from blab.ui.project_io import (
     write_project_file,
 )
 from blab.ui.project_state import (
-    AthScriptState,
     ImportedMeshState,
     ProjectDocument,
     ProjectPreferencesState,
+    generator_document_to_payload,
+    generator_documents_from_payload,
+    generator_mesh_name,
+    new_generator_document,
     new_project_document,
-    new_script,
-    replace_script,
-    script_to_payload,
-    scripts_from_payload,
-    unique_script_name,
+    replace_generator_document,
+    unique_generator_name,
 )
 from blab.ui.result_projection import (
     IsobarProjection,
@@ -156,13 +154,12 @@ from blab.ui.source_channel_config import (
 )
 from blab.ui.theme import apply_application_theme
 
-ATH_MESH_NAME = "ath"
 DEFAULT_MESH_SCALE_FACTOR = 0.001
 
 
 APP_ROOT = Path(__file__).resolve().parents[3]
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
-ATH_OUTPUT_ROOT = APP_ROOT / "runs" / "ath_output"
+GENERATED_GEOMETRY_ROOT = APP_ROOT / "runs" / "generated_geometry"
 GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
@@ -171,7 +168,7 @@ CAPTURE_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "capturecontours_dark.ico"
 CAPTURE_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "capturecontours_light.ico"
 CLEAR_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "clearcontours_dark.ico"
 CLEAR_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "clearcontours_light.ico"
-ADD_SCRIPT_TAB_LABEL = "+"
+ADD_DESIGN_TAB_LABEL = "+"
 DEFAULT_DOCK_STATE_B64 = (
     "AAAA/wAAAAD9AAAAAQAAAAAAAAduAAADdvwCAAAAAfwAAAAAAAADdgAAAG4A/////AEAAAAG+wAAAB4AYQB0AGgAXwBl"
     "AGQAaQB0AG8AcgBfAGQAbwBjAGsBAAAAAAAAAdsAAACFAP////wAAAHfAAADRQAAAGoA/////AIAAAAC+wAAACIAbQBl"
@@ -200,20 +197,20 @@ class MainWindow(QMainWindow):
         return project
 
     @property
-    def ath_scripts(self) -> tuple[AthScriptState, ...]:
-        return self._project_document().ath_scripts
+    def generator_documents(self) -> tuple[GeneratorDocument, ...]:
+        return self._project_document().generator_documents
 
-    @ath_scripts.setter
-    def ath_scripts(self, value: tuple[AthScriptState, ...]) -> None:
-        self._project_document().ath_scripts = tuple(value)
+    @generator_documents.setter
+    def generator_documents(self, value: tuple[GeneratorDocument, ...]) -> None:
+        self._project_document().generator_documents = tuple(value)
 
     @property
-    def active_ath_script_id(self) -> str | None:
-        return self._project_document().active_ath_script_id
+    def active_generator_document_id(self) -> str | None:
+        return self._project_document().active_generator_document_id
 
-    @active_ath_script_id.setter
-    def active_ath_script_id(self, value: str | None) -> None:
-        self._project_document().active_ath_script_id = value
+    @active_generator_document_id.setter
+    def active_generator_document_id(self, value: str | None) -> None:
+        self._project_document().active_generator_document_id = value
 
     @property
     def imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
@@ -282,7 +279,7 @@ class MainWindow(QMainWindow):
         self.server_health_thread: QThread | None = None
         self.server_health_worker: ServerHealthCheckWorker | None = None
         self._apply_theme()
-        self.ath_results_by_script_id: dict[str, AthRunResult] = {}
+        self.generated_geometry_by_document_id: dict[str, GeneratedGeometry] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
         self._last_completed_isobar_dataset: IsobarProjection | None = None
@@ -296,16 +293,13 @@ class MainWindow(QMainWindow):
         self._plot_dpi_screen = None
         self._plot_dpi_window_handle = None
         self._plot_dpi_refresh_pending = False
-        startup("Preparing Ath runtime config...")
-        self._ensure_ath_runtime_config()
-
-        startup("Building script editor...")
+        startup("Building design editor...")
         self.editor_tabs = QTabWidget()
         self.editor_tabs.setTabsClosable(True)
-        self.editor_tabs.currentChanged.connect(self._on_active_ath_tab_changed)
-        self.editor_tabs.tabCloseRequested.connect(self._remove_ath_script_at)
+        self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
+        self.editor_tabs.tabCloseRequested.connect(self._remove_generator_document_at)
         self.editor_tabs.tabBar().installEventFilter(self)
-        self._rebuild_ath_script_tabs()
+        self._rebuild_generator_document_tabs()
 
         startup("Creating mesh preview...")
         from blab.ui.mesh_preview import MeshPreview
@@ -478,14 +472,14 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
         if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonRelease:
             index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
-            if index == len(self.ath_scripts):
-                self.add_ath_script()
+            if index == len(self.generator_documents):
+                self.add_generator_document()
                 return True
         if watched is self.editor_tabs.tabBar() and event.type() == QEvent.Type.MouseButtonDblClick:
             index = self.editor_tabs.tabBar().tabAt(event.position().toPoint())
-            if 0 <= index < len(self.ath_scripts):
+            if 0 <= index < len(self.generator_documents):
                 self.editor_tabs.setCurrentIndex(index)
-                self.rename_active_ath_script()
+                self.rename_active_generator_document()
                 return True
         return super().eventFilter(watched, event)
 
@@ -515,11 +509,11 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        import_action = QAction("Import .cfg", self)
+        import_action = QAction("Import Waveguide Design...", self)
         import_action.triggered.connect(self.import_config)
         file_menu.addAction(import_action)
 
-        export_cfg_action = QAction("Export .cfg", self)
+        export_cfg_action = QAction("Export Waveguide Design...", self)
         export_cfg_action.triggered.connect(self.export_config)
         file_menu.addAction(export_cfg_action)
 
@@ -557,7 +551,7 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.balloon_plot_action)
         view_menu.addSeparator()
         for dock_id, title in (
-            ("editor", "Ath Editor Panel"),
+            ("editor", "Waveguide Design Panel"),
             ("preview", "Mesh Preview Panel"),
         ):
             action = QAction(title, self)
@@ -626,7 +620,11 @@ class MainWindow(QMainWindow):
         self.workspace.setDockOptions(
             QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.AnimatedDocks
         )
-        self.editor_dock = self._make_panel_dock("ath_editor_dock", "Ath Editor", self.editor_container)
+        self.editor_dock = self._make_panel_dock(
+            "ath_editor_dock",
+            "Waveguide Design",
+            self.editor_container,
+        )
         self.preview_dock = self._make_panel_dock("mesh_preview_dock", "Mesh Preview", self.preview)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
@@ -739,11 +737,11 @@ class MainWindow(QMainWindow):
         self.visualization_settings_changed.connect(self._on_visualization_settings_changed)
 
     def _connect_operation_controllers(self) -> None:
-        self.geometry_controller.completed.connect(self._on_ath_generated)
+        self.geometry_controller.completed.connect(self._on_geometry_generated)
         self.geometry_controller.status.connect(self.status_label.setText)
-        self.geometry_controller.failed.connect(self._on_ath_generation_failed)
-        self.geometry_controller.cancelled.connect(self._on_ath_generation_cancelled)
-        self.geometry_controller.finished.connect(self._on_ath_generation_finished)
+        self.geometry_controller.failed.connect(self._on_geometry_generation_failed)
+        self.geometry_controller.cancelled.connect(self._on_geometry_generation_cancelled)
+        self.geometry_controller.finished.connect(self._on_geometry_generation_finished)
         self.solve_controller.initialized.connect(self._on_solver_initialized)
         self.solve_controller.result_ready.connect(self._on_frequency_result)
         self.solve_controller.status.connect(self.status_label.setText)
@@ -795,93 +793,112 @@ class MainWindow(QMainWindow):
     def _on_visualization_settings_changed(self, _reason: str) -> None:
         self._refresh_plots()
 
-    def _rebuild_ath_script_tabs(self) -> None:
+    def _rebuild_generator_document_tabs(self) -> None:
         self.editor_tabs.blockSignals(True)
         self.editor_tabs.clear()
-        for script in self.ath_scripts:
+        for document in self.generator_documents:
             editor = AthScriptEditor()
             editor.setFont(QFont("Consolas", 10))
-            editor.setPlainText(script.config_text)
-            editor.textChanged.connect(
-                lambda script_id=script.id, editor=editor: self._update_script_text(script_id, editor)
-            )
-            editor.configDropped.connect(
-                lambda path, script_id=script.id: self._import_config_path(Path(path), script_id=script_id)
-            )
-            self.editor_tabs.addTab(editor, script.name)
+            if document.provider_id == ATH_PROVIDER_ID:
+                editor.setPlainText(ath_source_text(document))
+                editor.textChanged.connect(
+                    lambda document_id=document.id, editor=editor: self._update_generator_source_text(
+                        document_id, editor
+                    )
+                )
+                editor.configDropped.connect(
+                    lambda path, document_id=document.id: self._import_config_path(Path(path), document_id=document_id)
+                )
+            else:
+                editor.setPlainText(json.dumps(document.source, indent=2, sort_keys=True))
+                editor.setReadOnly(True)
+            self.editor_tabs.addTab(editor, document.name)
         add_tab = AthScriptEditor()
         add_tab.setReadOnly(True)
         add_tab.configDropped.connect(lambda path: self._import_config_path(Path(path)))
-        add_index = self.editor_tabs.addTab(add_tab, ADD_SCRIPT_TAB_LABEL)
+        add_index = self.editor_tabs.addTab(add_tab, ADD_DESIGN_TAB_LABEL)
         self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
-        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add Ath script")
-        active_index = self._active_script_index()
+        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add waveguide design")
+        active_index = self._active_generator_document_index()
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
         self.editor_tabs.blockSignals(False)
 
-    def _active_script_index(self) -> int:
-        for index, script in enumerate(self.ath_scripts):
-            if script.id == self.active_ath_script_id:
+    def _active_generator_document_index(self) -> int:
+        for index, document in enumerate(self.generator_documents):
+            if document.id == self.active_generator_document_id:
                 return index
-        return 0 if self.ath_scripts else -1
+        return 0 if self.generator_documents else -1
 
-    def _active_script(self) -> AthScriptState | None:
-        if not self.ath_scripts:
+    def _active_generator_document(self) -> GeneratorDocument | None:
+        if not self.generator_documents:
             return None
-        index = self._active_script_index()
-        return self.ath_scripts[index] if index >= 0 else None
+        index = self._active_generator_document_index()
+        return self.generator_documents[index] if index >= 0 else None
 
-    def _update_script_text(self, script_id: str, editor: QPlainTextEdit) -> None:
-        self.ath_scripts = replace_script(self.ath_scripts, script_id, config_text=editor.toPlainText())
+    def _update_generator_source_text(self, document_id: str, editor: QPlainTextEdit) -> None:
+        self.generator_documents = tuple(
+            with_ath_source_text(document, editor.toPlainText()) if document.id == document_id else document
+            for document in self.generator_documents
+        )
 
-    def _on_active_ath_tab_changed(self, index: int) -> None:
-        if index == len(self.ath_scripts):
-            self.add_ath_script()
+    def _on_active_generator_tab_changed(self, index: int) -> None:
+        if index == len(self.generator_documents):
+            self.add_generator_document()
             return
-        if 0 <= index < len(self.ath_scripts):
-            self.active_ath_script_id = self.ath_scripts[index].id
+        if 0 <= index < len(self.generator_documents):
+            self.active_generator_document_id = self.generator_documents[index].id
 
     @Slot()
-    def add_ath_script(self) -> None:
-        name = unique_script_name("ath", self.ath_scripts)
-        script = new_script(name, "")
-        self.ath_scripts = (*self.ath_scripts, script)
-        self.active_ath_script_id = script.id
-        self._rebuild_ath_script_tabs()
+    def add_generator_document(self) -> None:
+        name = unique_generator_name("waveguide", self.generator_documents)
+        document = new_generator_document(name, "")
+        self.generator_documents = (*self.generator_documents, document)
+        self.active_generator_document_id = document.id
+        self._rebuild_generator_document_tabs()
 
     @Slot()
-    def rename_active_ath_script(self) -> None:
-        script = self._active_script()
-        if script is None:
+    def rename_active_generator_document(self) -> None:
+        document = self._active_generator_document()
+        if document is None:
             return
-        name, accepted = QInputDialog.getText(self, "Rename Ath Script", "Script name:", text=script.name)
+        name, accepted = QInputDialog.getText(
+            self,
+            "Rename Waveguide Design",
+            "Design name:",
+            text=document.name,
+        )
         if not accepted:
             return
         name = name.strip()
         if not name:
             return
-        self.ath_scripts = replace_script(
-            self.ath_scripts,
-            script.id,
-            name=unique_script_name(name, tuple(s for s in self.ath_scripts if s.id != script.id)),
+        self.generator_documents = replace_generator_document(
+            self.generator_documents,
+            document.id,
+            name=unique_generator_name(
+                name,
+                tuple(item for item in self.generator_documents if item.id != document.id),
+            ),
         )
-        self._rebuild_ath_script_tabs()
-        self.mesh_state_changed.emit("ath_script_renamed")
-        self.solve_results_invalidated.emit("ath_script_renamed")
+        self._rebuild_generator_document_tabs()
+        self.mesh_state_changed.emit("generator_document_renamed")
+        self.solve_results_invalidated.emit("generator_document_renamed")
 
-    def _remove_ath_script_at(self, index: int) -> None:
-        if not (0 <= index < len(self.ath_scripts)):
+    def _remove_generator_document_at(self, index: int) -> None:
+        if not (0 <= index < len(self.generator_documents)):
             return
-        script = self.ath_scripts[index]
-        self.ath_scripts = tuple(item for item in self.ath_scripts if item.id != script.id)
-        self.ath_results_by_script_id.pop(script.id, None)
-        self.active_ath_script_id = (
-            self.ath_scripts[min(index, len(self.ath_scripts) - 1)].id if self.ath_scripts else None
+        document = self.generator_documents[index]
+        self.generator_documents = tuple(item for item in self.generator_documents if item.id != document.id)
+        self.generated_geometry_by_document_id.pop(document.id, None)
+        self.active_generator_document_id = (
+            self.generator_documents[min(index, len(self.generator_documents) - 1)].id
+            if self.generator_documents
+            else None
         )
-        self._rebuild_ath_script_tabs()
-        self.mesh_state_changed.emit("ath_script_removed")
-        self.solve_results_invalidated.emit("ath_script_removed")
+        self._rebuild_generator_document_tabs()
+        self.mesh_state_changed.emit("generator_document_removed")
+        self.solve_results_invalidated.emit("generator_document_removed")
 
     def _sync_frequency_spin_from_slider(self, spin: QSpinBox, slider_value: int) -> None:
         with QSignalBlocker(spin):
@@ -994,22 +1011,19 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(lambda _checked=False: self._clear_recent_projects())
         self.open_recent_menu.addAction(clear_action)
 
-    def _ath_mesh_payload(self, *, absolute_paths: bool) -> dict:
-        return {}
-
     def _mesh_config_dialog_entries(self) -> tuple[MeshDialogEntry, ...]:
         entries = []
-        for script in self.ath_scripts:
-            result = self.ath_results_by_script_id.get(script.id)
+        for document in self.generator_documents:
+            result = self.generated_geometry_by_document_id.get(document.id)
             if result is None:
                 continue
             entries.append(
                 MeshDialogEntry(
-                    name=script.mesh_name,
-                    source_file=str(result.solver_msh_path),
-                    scale_factor=float(script.mesh_scale_factor),
-                    translation_mm=script.mesh_translation_mm,
-                    enabled=script.mesh_enabled,
+                    name=generator_mesh_name(document),
+                    source_file=str(result.solver_mesh_path),
+                    scale_factor=float(document.mesh_scale_factor),
+                    translation_mm=document.mesh_translation_mm,
+                    enabled=document.mesh_enabled,
                     locked=True,
                 )
             )
@@ -1018,20 +1032,20 @@ class MainWindow(QMainWindow):
 
     def _apply_mesh_config_dialog_entries(self, meshes: tuple[MeshDialogEntry, ...]) -> None:
         imported_meshes = []
-        scripts = self.ath_scripts
+        documents = self.generator_documents
         for mesh in meshes:
-            script = self._script_for_mesh_name(mesh.name)
-            if script is not None:
-                scripts = replace_script(
-                    scripts,
-                    script.id,
+            document = self._generator_document_for_mesh_name(mesh.name)
+            if document is not None:
+                documents = replace_generator_document(
+                    documents,
+                    document.id,
                     mesh_enabled=bool(mesh.enabled),
                     mesh_translation_mm=mesh.translation_mm,
                     mesh_scale_factor=float(mesh.scale_factor),
                 )
             else:
                 imported_meshes.append(replace(mesh, locked=False))
-        self.ath_scripts = scripts
+        self.generator_documents = documents
         self.imported_meshes = tuple(imported_meshes)
 
     def _project_imported_meshes_payload(self) -> list[dict]:
@@ -1065,36 +1079,39 @@ class MainWindow(QMainWindow):
             return DEFAULT_MESH_SCALE_FACTOR
         return scale_factor if scale_factor > 0.0 else DEFAULT_MESH_SCALE_FACTOR
 
-    def _script_for_mesh_name(self, mesh_name: str) -> AthScriptState | None:
-        return next((script for script in self.ath_scripts if script.mesh_name == mesh_name), None)
+    def _generator_document_for_mesh_name(self, mesh_name: str) -> GeneratorDocument | None:
+        return next(
+            (document for document in self.generator_documents if generator_mesh_name(document) == mesh_name),
+            None,
+        )
 
     def _has_solver_meshes(self) -> bool:
-        return bool(self._enabled_ath_results()) or bool(self._active_imported_meshes())
+        return bool(self._enabled_generated_geometry()) or bool(self._active_imported_meshes())
 
-    def _enabled_ath_results(self) -> tuple[tuple[AthScriptState, AthRunResult], ...]:
+    def _enabled_generated_geometry(self) -> tuple[tuple[GeneratorDocument, GeneratedGeometry], ...]:
         pairs = []
-        for script in self.ath_scripts:
-            if not script.mesh_enabled:
+        for document in self.generator_documents:
+            if not document.mesh_enabled:
                 continue
-            result = self.ath_results_by_script_id.get(script.id)
+            result = self.generated_geometry_by_document_id.get(document.id)
             if result is not None:
-                pairs.append((script, result))
+                pairs.append((document, result))
         return tuple(pairs)
 
     def _all_radiators(self) -> tuple[RadiatorConfig, ...]:
         radiators = []
-        for script, result in self._enabled_ath_results():
-            radiators.extend(replace(radiator, mesh=script.mesh_name) for radiator in result.radiators)
+        for document, result in self._enabled_generated_geometry():
+            mesh_name = generator_mesh_name(document)
+            radiators.extend(replace(radiator, mesh=mesh_name) for radiator in result.radiators)
         radiators.extend(self.imported_radiators)
         return tuple(radiators)
 
     def _apply_radiators_to_results(self, radiators: tuple[RadiatorConfig, ...]) -> None:
-        generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
-        for script, result in tuple(self._enabled_ath_results()):
-            updated = [
-                replace(radiator, mesh=script.mesh_name) for radiator in radiators if radiator.mesh == script.mesh_name
-            ]
-            self.ath_results_by_script_id[script.id] = replace(result, radiators=tuple(updated))
+        generated_mesh_names = {generator_mesh_name(document) for document in self.generator_documents}
+        for document, result in tuple(self._enabled_generated_geometry()):
+            mesh_name = generator_mesh_name(document)
+            updated = [replace(radiator, mesh=mesh_name) for radiator in radiators if radiator.mesh == mesh_name]
+            self.generated_geometry_by_document_id[document.id] = replace(result, radiators=tuple(updated))
         self.imported_radiators = tuple(radiator for radiator in radiators if radiator.mesh not in generated_mesh_names)
 
     def _mesh_entries_from_payload(self, payload: object) -> tuple[MeshDialogEntry, ...]:
@@ -1107,7 +1124,8 @@ class MainWindow(QMainWindow):
                 continue
             source_file = str(item.get("source_file", "")).strip()
             name = str(item.get("name", "")).strip()
-            if not source_file or not name or name == ATH_MESH_NAME:
+            generated_mesh_names = {generator_mesh_name(document) for document in self.generator_documents}
+            if not source_file or not name or name in generated_mesh_names:
                 continue
             translation = item.get("translation_mm", [0.0, 0.0, 0.0])
             if not isinstance(translation, list) or len(translation) != 3:
@@ -1276,7 +1294,7 @@ class MainWindow(QMainWindow):
         )
 
     def _stitch_candidate_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        return (*self._ath_solver_mesh_configs_for_symmetry(self.symmetry), *self._imported_solver_mesh_configs())
+        return (*self._generated_solver_mesh_configs_for_symmetry(self.symmetry), *self._imported_solver_mesh_configs())
 
     def _should_use_stitched_mesh(self) -> bool:
         return self.stitch_imported_meshes and len(self._stitch_candidate_mesh_configs()) > 1
@@ -1303,36 +1321,39 @@ class MainWindow(QMainWindow):
     def _active_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         return tuple(mesh for mesh in self.imported_meshes if mesh.enabled)
 
-    def _ath_result_for_solver_symmetry(
+    def _generated_geometry_for_solver_symmetry(
         self,
-        script: AthScriptState,
-        result: AthRunResult,
+        document: GeneratorDocument,
+        result: GeneratedGeometry,
         symmetry: str,
-    ) -> AthRunResult:
+    ) -> GeneratedGeometry:
         if symmetry == "off":
             return result
-        if result.reduced_cleaned_msh_path is not None and result.reduced_cleaned_msh_path.exists():
-            return result
-        updated = clean_ath_reduced_mesh_output(result)
-        self.ath_results_by_script_id[script.id] = updated
+        updated = ensure_reduced_geometry(result)
+        self.generated_geometry_by_document_id[document.id] = updated
+        self.generator_documents = replace_generator_document(
+            self.generator_documents,
+            document.id,
+            artifact=updated.to_reference(),
+        )
         return updated
 
-    def _ath_solver_mesh_configs_for_symmetry(self, symmetry: str) -> tuple[MeshConfig, ...]:
+    def _generated_solver_mesh_configs_for_symmetry(self, symmetry: str) -> tuple[MeshConfig, ...]:
         configs = []
-        for script, result in self._enabled_ath_results():
-            solver_result = self._ath_result_for_solver_symmetry(script, result, symmetry)
+        for document, result in self._enabled_generated_geometry():
+            solver_result = self._generated_geometry_for_solver_symmetry(document, result, symmetry)
             configs.append(
                 MeshConfig(
-                    name=script.mesh_name,
-                    file=str(solver_result.solver_msh_path_for_symmetry(symmetry)),
-                    scale_factor=float(script.mesh_scale_factor),
-                    translation_m=tuple(value / 1000.0 for value in script.mesh_translation_mm),
+                    name=generator_mesh_name(document),
+                    file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    scale_factor=float(document.mesh_scale_factor),
+                    translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
                 )
             )
         return tuple(configs)
 
-    def _ath_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
-        return self._ath_solver_mesh_configs_for_symmetry(self.symmetry)
+    def _generated_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
+        return self._generated_solver_mesh_configs_for_symmetry(self.symmetry)
 
     def _imported_solver_mesh_configs(self) -> tuple[MeshConfig, ...]:
         configs = []
@@ -1361,7 +1382,7 @@ class MainWindow(QMainWindow):
         radiators: tuple[RadiatorConfig, ...],
     ) -> PreparedMeshAssembly:
         assembly = self._mesh_service().prepare(
-            generated_mesh_configs=self._ath_solver_mesh_configs(),
+            generated_mesh_configs=self._generated_solver_mesh_configs(),
             imported_meshes=self._project_document().imported_meshes,
             radiators=radiators,
             stitch_imported_meshes=self.stitch_imported_meshes,
@@ -1407,7 +1428,7 @@ class MainWindow(QMainWindow):
             message.setDetailedText(str(exc.__cause__))
         message.exec()
 
-    def _show_mesh_quality_warning(self, result: AthRunResult) -> None:
+    def _show_mesh_quality_warning(self, result: GeneratedGeometry) -> None:
         warning = result.quality_warning
         if warning is None or not warning.has_warnings:
             return
@@ -1422,7 +1443,7 @@ class MainWindow(QMainWindow):
                 f"Float32-singular triangles: {warning.float32_singular_triangles}\n"
                 f"Worst triangle: {warning.worst_triangle_index}\n"
                 f"Worst altitude/edge ratio: {warning.worst_altitude_edge_ratio:.3g}\n\n"
-                "Try increasing mesh resolution around sharp transitions or adjusting the Ath geometry "
+                "Try increasing mesh resolution around sharp transitions or adjusting the geometry "
                 "to avoid long, needle-like triangles."
             ),
         )
@@ -1507,14 +1528,15 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.deleteLater()
 
-    def _apply_saved_source_config_to_result(self, result: AthRunResult | None, mesh_name: str) -> AthRunResult | None:
+    def _apply_saved_source_config_to_result(
+        self,
+        result: GeneratedGeometry | None,
+        mesh_name: str,
+    ) -> GeneratedGeometry | None:
         return apply_saved_source_config_to_result(result, mesh_name, self._load_source_config_by_name())
 
-    def _apply_saved_source_config(self, result: AthRunResult | None) -> AthRunResult | None:
-        return self._apply_saved_source_config_to_result(result, ATH_MESH_NAME)
-
     def _apply_saved_imported_source_config(self, surface_tags: dict[str, tuple[str, int]]) -> None:
-        generated_mesh_names = {script.mesh_name for script in self.ath_scripts}
+        generated_mesh_names = {generator_mesh_name(document) for document in self.generator_documents}
         self.imported_radiators = apply_saved_imported_source_config(
             surface_tags=surface_tags,
             generated_mesh_names=generated_mesh_names,
@@ -1531,24 +1553,9 @@ class MainWindow(QMainWindow):
         self._save_window_state()
         super().closeEvent(event)
 
-    def _result_from_script_state(self, script: AthScriptState) -> AthRunResult | None:
-        if not script.output_dir or not script.msh_path:
-            return None
-        msh_path = Path(script.msh_path)
-        if not msh_path.exists():
-            return None
-        cleaned_path = Path(script.cleaned_msh_path) if script.cleaned_msh_path else None
-        solver_path = cleaned_path if cleaned_path is not None and cleaned_path.exists() else msh_path
+    def _result_from_generator_document(self, document: GeneratorDocument) -> GeneratedGeometry | None:
         try:
-            driven_tag = find_physical_tag_by_name(solver_path, "SD1D1001")
-            return AthRunResult(
-                output_dir=Path(script.output_dir),
-                msh_path=msh_path,
-                config_path=Path(script.config_path) if script.config_path else Path(script.output_dir) / "config.txt",
-                driven_tag=driven_tag,
-                radiators=detect_ath_radiators(solver_path),
-                cleaned_msh_path=cleaned_path if cleaned_path is not None and cleaned_path.exists() else None,
-            )
+            return create_generator(document.provider_id).restore(document)
         except Exception:
             return None
 
@@ -1567,14 +1574,14 @@ class MainWindow(QMainWindow):
         ath_cfg = ath_exe.parent / "ath.cfg"
         if not ath_cfg.exists():
             return
-        write_ath_output_root(ath_cfg, ATH_OUTPUT_ROOT)
+        write_ath_output_root(ath_cfg, GENERATED_GEOMETRY_ROOT)
         write_ath_gmsh_path(ath_cfg, GMSH_BUNDLE_EXE)
 
     @Slot()
     def import_config(self) -> None:
         path_text, _ = QFileDialog.getOpenFileName(
             self,
-            "Import Ath config",
+            "Import Waveguide Design",
             str(Path.cwd()),
             "Ath config files (*.cfg);;All files (*)",
         )
@@ -1583,21 +1590,27 @@ class MainWindow(QMainWindow):
 
         self._import_config_path(Path(path_text))
 
-    def _import_config_path(self, path: Path, *, script_id: str | None = None) -> None:
+    def _import_config_path(self, path: Path, *, document_id: str | None = None) -> None:
         try:
             config_text = path.read_text(encoding="utf-8")
-            script = (
-                next((item for item in self.ath_scripts if item.id == script_id), None)
-                if script_id
-                else self._active_script()
+            document = (
+                next((item for item in self.generator_documents if item.id == document_id), None)
+                if document_id
+                else self._active_generator_document()
             )
-            if script is None:
-                script = new_script(unique_script_name(path.stem, self.ath_scripts), config_text)
-                self.ath_scripts = (*self.ath_scripts, script)
-                self.active_ath_script_id = script.id
+            if document is None:
+                document = new_generator_document(
+                    unique_generator_name(path.stem, self.generator_documents),
+                    config_text,
+                )
+                self.generator_documents = (*self.generator_documents, document)
+                self.active_generator_document_id = document.id
             else:
-                self.ath_scripts = replace_script(self.ath_scripts, script.id, config_text=config_text)
-            self._rebuild_ath_script_tabs()
+                self.generator_documents = tuple(
+                    with_ath_source_text(item, config_text) if item.id == document.id else item
+                    for item in self.generator_documents
+                )
+            self._rebuild_generator_document_tabs()
             self.status_label.setText(f"Imported {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Import failed", str(exc))
@@ -1609,8 +1622,8 @@ class MainWindow(QMainWindow):
         self._discard_channel_config_dialog()
         self.project_path = None
         self.project = new_project_document(project_preferences=self._current_project_preferences())
-        self.ath_results_by_script_id = {}
-        self._rebuild_ath_script_tabs()
+        self.generated_geometry_by_document_id = {}
+        self._rebuild_generator_document_tabs()
         self.imported_radiators = ()
         self.project_state_changed.emit("new_project")
         self.solve_results_invalidated.emit("new_project")
@@ -1688,18 +1701,17 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Open project failed", str(exc))
 
     def _project_payload(self) -> dict:
-        active_script = self._active_script()
         project_preferences = self._current_project_preferences()
         self.project.project_preferences = project_preferences
         return build_project_payload(
-            ath_config_text="" if active_script is None else active_script.config_text,
-            ath_mesh=self._ath_mesh_payload(absolute_paths=True),
+            generator_documents=[
+                generator_document_to_payload(document, absolute_paths=True) for document in self.generator_documents
+            ],
+            active_generator_document_id=self.active_generator_document_id,
             imported_meshes=self._project_imported_meshes_payload(),
             stitch_imported_meshes=self.stitch_imported_meshes,
             symmetry=self.symmetry,
             source_config_by_name=self._load_source_config_by_name(),
-            ath_scripts=[script_to_payload(script, absolute_paths=True) for script in self.ath_scripts],
-            active_ath_script_id=self.active_ath_script_id,
             channel_config_by_name=self._load_channel_config_by_name(),
             project_preferences=project_preferences.to_payload(),
         )
@@ -1750,11 +1762,10 @@ class MainWindow(QMainWindow):
 
     def _canonical_project_payload(self) -> dict:
         payload = json.loads(json.dumps(self._project_payload(), sort_keys=True))
-        for script in payload.get("ath_scripts", []):
-            if not isinstance(script, dict):
+        for document in payload.get("generator_documents", []):
+            if not isinstance(document, dict):
                 continue
-            for field in ("output_dir", "msh_path", "cleaned_msh_path", "config_path"):
-                script.pop(field, None)
+            document.pop("artifact", None)
         return payload
 
     def _mark_project_clean(self) -> None:
@@ -1801,21 +1812,20 @@ class MainWindow(QMainWindow):
         if not isinstance(channel_config, dict):
             channel_config = {}
 
-        scripts = scripts_from_payload(
-            payload.get("ath_scripts"),
-            fallback_config_text=str(payload.get("ath_config_text", "")),
-        )
-        active_id = payload.get("active_ath_script_id")
+        documents = generator_documents_from_payload(payload.get("generator_documents"))
+        active_id = payload.get("active_generator_document_id")
         active_id = (
-            active_id if any(script.id == active_id for script in scripts) else (scripts[0].id if scripts else None)
+            active_id
+            if any(document.id == active_id for document in documents)
+            else (documents[0].id if documents else None)
         )
         symmetry = str(payload.get("symmetry", "off")).strip().lower()
         if symmetry not in {"off", "x", "xy"}:
             symmetry = "off"
         imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
         self.project = ProjectDocument(
-            ath_scripts=scripts,
-            active_ath_script_id=active_id,
+            generator_documents=documents,
+            active_generator_document_id=active_id,
             imported_meshes=tuple(
                 ImportedMeshState(
                     name=mesh.name,
@@ -1833,14 +1843,15 @@ class MainWindow(QMainWindow):
             channel_config_by_name=channel_config,
             project_preferences=self._current_project_preferences(),
         )
-        self.ath_results_by_script_id = {}
-        for script in self.ath_scripts:
-            result = self._result_from_script_state(script)
+        self.generated_geometry_by_document_id = {}
+        for document in self.generator_documents:
+            result = self._result_from_generator_document(document)
             if result is not None:
-                self.ath_results_by_script_id[script.id] = self._apply_saved_source_config_to_result(
-                    result, script.mesh_name
+                self.generated_geometry_by_document_id[document.id] = self._apply_saved_source_config_to_result(
+                    result,
+                    generator_mesh_name(document),
                 )
-        self._rebuild_ath_script_tabs()
+        self._rebuild_generator_document_tabs()
         self._disable_symmetry_if_backend_unsupported()
         self.imported_radiators = ()
         try:
@@ -1855,7 +1866,7 @@ class MainWindow(QMainWindow):
     def export_config(self) -> None:
         path_text, _ = QFileDialog.getSaveFileName(
             self,
-            "Export Ath config",
+            "Export Waveguide Design",
             str(Path.cwd() / "waveguide.cfg"),
             "Ath config files (*.cfg);;All files (*)",
         )
@@ -1867,8 +1878,8 @@ class MainWindow(QMainWindow):
             path = path.with_suffix(".cfg")
 
         try:
-            script = self._active_script()
-            path.write_text("" if script is None else script.config_text, encoding="utf-8")
+            document = self._active_generator_document()
+            path.write_text("" if document is None else ath_source_text(document), encoding="utf-8")
             self.status_label.setText(f"Exported {path}")
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -2074,7 +2085,9 @@ class MainWindow(QMainWindow):
             )
 
         enabled_generated_meshes = sum(
-            1 for script in self.ath_scripts if script.mesh_enabled and script.id in self.ath_results_by_script_id
+            1
+            for script in self.generator_documents
+            if script.mesh_enabled and script.id in self.generated_geometry_by_document_id
         )
         enabled_imported_meshes = sum(1 for mesh in self.imported_meshes if mesh.enabled)
         result_details: dict[str, object] = {
@@ -2085,7 +2098,7 @@ class MainWindow(QMainWindow):
             "project": {
                 "file": self.project_path.name if self.project_path is not None else "unsaved",
                 "modified": self._has_unsaved_project_changes(),
-                "ath scripts": len(self.ath_scripts),
+                "waveguide designs": len(self.generator_documents),
                 "enabled meshes": enabled_generated_meshes + enabled_imported_meshes,
                 "imported meshes": len(self.imported_meshes),
                 "radiators": len(self._all_radiators()),
@@ -2244,8 +2257,8 @@ class MainWindow(QMainWindow):
             return
 
         self._save_channel_config(channels)
-        for script_id, result in tuple(self.ath_results_by_script_id.items()):
-            self.ath_results_by_script_id[script_id] = replace(
+        for document_id, result in tuple(self.generated_geometry_by_document_id.items()):
+            self.generated_geometry_by_document_id[document_id] = replace(
                 result,
                 radiators=tuple(
                     radiator if radiator.channel in valid_names else replace(radiator, channel=fallback)
@@ -2308,22 +2321,26 @@ class MainWindow(QMainWindow):
     def generate_geometry(self) -> None:
         if self.geometry_controller.active or self.solve_controller.active:
             return
-        script = self._active_script()
-        if script is None:
-            QMessageBox.warning(self, "No Ath script", "Add an Ath script before generating.")
+        document = self._active_generator_document()
+        if document is None:
+            QMessageBox.warning(self, "No waveguide design", "Add a waveguide design before generating.")
             return
-        case_name = f"{script.mesh_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{script.id}"
-        run_root = ATH_OUTPUT_ROOT
+        mesh_name = generator_mesh_name(document)
+        case_name = f"{mesh_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{document.id}"
+        run_root = GENERATED_GEOMETRY_ROOT
+        provider_options = {}
         try:
-            self._ensure_ath_runtime_config()
-            ath_exe = self._find_ath_exe()
+            provider = generator_info(document.provider_id)
+            if document.provider_id == ATH_PROVIDER_ID:
+                self._ensure_ath_runtime_config()
+                provider_options["ath_exe"] = str(self._find_ath_exe())
         except Exception as exc:
             self.status_label.setText("Generate failed")
-            QMessageBox.critical(self, "Ath generation failed", str(exc))
+            QMessageBox.critical(self, "Geometry generation failed", str(exc))
             return
 
         self.solve_results_invalidated.emit("geometry_generation_started")
-        self.status_label.setText(f"Generating {script.name}...")
+        self.status_label.setText(f"Generating {document.name} with {provider.label}...")
         self.solve_button.setEnabled(False)
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
@@ -2336,51 +2353,50 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
         self.geometry_controller.start(
-            GeometryRequest(
-                ath_exe=ath_exe,
-                config_text=script.config_text,
+            GenerationRequest(
+                provider_id=document.provider_id,
+                document_id=document.id,
+                mesh_name=mesh_name,
+                source=document.source,
                 run_root=run_root,
                 case_name=case_name,
-                script_id=script.id,
-                mesh_name=script.mesh_name,
+                provider_options=provider_options,
             )
         )
-        QTimer.singleShot(3000, self._enable_ath_cancel_if_active)
+        QTimer.singleShot(3000, self._enable_geometry_cancel_if_active)
 
     @Slot()
-    def _enable_ath_cancel_if_active(self) -> None:
+    def _enable_geometry_cancel_if_active(self) -> None:
         if self.geometry_controller.state.phase == OperationPhase.RUNNING:
             self.cancel_button.setEnabled(True)
 
     @Slot(object)
-    def _on_ath_generated(self, completed: GeometryCompleted) -> None:
-        script_id = completed.request.script_id
+    def _on_geometry_generated(self, completed: GenerationCompleted) -> None:
+        document_id = completed.request.document_id
         mesh_name = completed.request.mesh_name
         result = self._apply_saved_source_config_to_result(completed.result, mesh_name)
-        self.ath_results_by_script_id[script_id] = result
-        self.ath_scripts = replace_script(
-            self.ath_scripts,
-            script_id,
-            output_dir=str(result.output_dir),
-            msh_path=str(result.msh_path),
-            cleaned_msh_path=None if result.cleaned_msh_path is None else str(result.cleaned_msh_path),
-            config_path=str(result.config_path),
+        assert result is not None
+        self.generated_geometry_by_document_id[document_id] = result
+        self.generator_documents = replace_generator_document(
+            self.generator_documents,
+            document_id,
+            artifact=result.to_reference(),
         )
-        self.mesh_state_changed.emit("ath_mesh_generated")
+        self.mesh_state_changed.emit("geometry_generated")
         self.status_label.setText(f"Generated and cleaned {result.output_dir}")
         self._show_mesh_quality_warning(result)
 
     @Slot(str)
-    def _on_ath_generation_failed(self, message: str) -> None:
+    def _on_geometry_generation_failed(self, message: str) -> None:
         self.status_label.setText("Generate failed")
-        QMessageBox.critical(self, "Ath generation failed", message)
+        QMessageBox.critical(self, "Geometry generation failed", message)
 
     @Slot()
-    def _on_ath_generation_cancelled(self) -> None:
-        self.status_label.setText("Ath generation stopped")
+    def _on_geometry_generation_cancelled(self) -> None:
+        self.status_label.setText("Geometry generation stopped")
 
     @Slot()
-    def _on_ath_generation_finished(self) -> None:
+    def _on_geometry_generation_finished(self) -> None:
         QApplication.restoreOverrideCursor()
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
@@ -2471,16 +2487,16 @@ class MainWindow(QMainWindow):
     @Slot()
     def cancel_current_operation(self) -> None:
         if self.geometry_controller.active:
-            self.cancel_ath_generation()
+            self.cancel_geometry_generation()
             return
         self.cancel_solve()
 
     @Slot()
-    def cancel_ath_generation(self) -> None:
+    def cancel_geometry_generation(self) -> None:
         self.cancel_button.setEnabled(False)
         if self.geometry_controller.active:
             self.geometry_controller.cancel()
-            self.status_label.setText("Stop requested; ending Ath generation...")
+            self.status_label.setText("Stop requested; ending geometry generation...")
 
     @Slot()
     def cancel_solve(self) -> None:

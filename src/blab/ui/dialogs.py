@@ -667,7 +667,7 @@ class MeshConfigDialog(QDialog):
     def _remove_selected_meshes(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
         for row in rows:
-            if self.name_items[row].text().strip() == "ath":
+            if not bool(self.name_items[row].flags() & Qt.ItemIsEditable):
                 continue
             self.table.removeRow(row)
             del self.enabled_widgets[row]
@@ -682,11 +682,11 @@ class MeshConfigDialog(QDialog):
         sanitized = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in base_name).strip("_")
         name = sanitized or "mesh"
         used = {item.text().strip() for item in self.name_items}
-        if name not in used and name != "ath":
+        if name not in used:
             return name
 
         suffix = 2
-        while f"{name}_{suffix}" in used or f"{name}_{suffix}" == "ath":
+        while f"{name}_{suffix}" in used:
             suffix += 1
         return f"{name}_{suffix}"
 
@@ -697,13 +697,7 @@ class MeshConfigDialog(QDialog):
             name = self.name_items[row].text().strip()
             if not name:
                 raise ValueError("Each imported mesh must have a name.")
-            is_ath_row = name == "ath"
-            if is_ath_row and row != 0:
-                raise ValueError("'ath' is reserved for the default Ath mesh.")
-            if name == "ath" and row == 0:
-                pass
-            elif name == "ath":
-                raise ValueError("'ath' is reserved for the default Ath mesh.")
+            is_generated_row = not bool(self.name_items[row].flags() & Qt.ItemIsEditable)
             if ":" in name:
                 raise ValueError("Mesh names cannot contain ':'.")
             if name in seen_names:
@@ -722,7 +716,7 @@ class MeshConfigDialog(QDialog):
                         float(int(self.z_widgets[row].value())),
                     ),
                     enabled=bool(self.enabled_widgets[row].isChecked()),
-                    locked=is_ath_row,
+                    locked=is_generated_row,
                 )
             )
         return tuple(meshes)

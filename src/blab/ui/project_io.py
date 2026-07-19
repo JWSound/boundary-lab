@@ -13,15 +13,13 @@ from typing import Any
 
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 3
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
     "schema_version",
-    "ath_config_text",
-    "ath_scripts",
-    "active_ath_script_id",
-    "ath_mesh",
+    "generator_documents",
+    "active_generator_document_id",
     "imported_meshes",
     "stitch_imported_meshes",
     "symmetry",
@@ -63,10 +61,6 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
     resolved = dict(payload)
     base_path = Path(base_dir)
 
-    ath_mesh = _dict_or_empty(resolved.get("ath_mesh")).copy()
-    _resolve_path_fields(ath_mesh, base_path, ("source_file", "cleaned_file"))
-    resolved["ath_mesh"] = ath_mesh
-
     imported_meshes = []
     for item in _list_or_empty(resolved.get("imported_meshes")):
         if not isinstance(item, dict):
@@ -77,19 +71,21 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
         imported_meshes.append(mesh)
     resolved["imported_meshes"] = imported_meshes
 
-    ath_scripts = []
-    for item in _list_or_empty(resolved.get("ath_scripts")):
+    generator_documents = []
+    for item in _list_or_empty(resolved.get("generator_documents")):
         if not isinstance(item, dict):
-            ath_scripts.append(item)
+            generator_documents.append(item)
             continue
-        script = item.copy()
+        document = item.copy()
+        artifact = _dict_or_empty(document.get("artifact")).copy()
         _resolve_path_fields(
-            script,
+            artifact,
             base_path,
-            ("output_dir", "msh_path", "cleaned_msh_path", "config_path"),
+            ("output_dir", "mesh_path", "cleaned_mesh_path", "reduced_cleaned_mesh_path", "source_path"),
         )
-        ath_scripts.append(script)
-    resolved["ath_scripts"] = ath_scripts
+        document["artifact"] = artifact or None
+        generator_documents.append(document)
+    resolved["generator_documents"] = generator_documents
 
     return resolved
 
@@ -97,12 +93,14 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
-    if schema_version not in {1, PROJECT_SCHEMA_VERSION}:
+    if schema_version not in {1, 2, PROJECT_SCHEMA_VERSION}:
         raise ValueError(
-            f"Unsupported project schema version {schema_version}. Expected 1 or {PROJECT_SCHEMA_VERSION}."
+            f"Unsupported project schema version {schema_version}. Expected 1, 2, or {PROJECT_SCHEMA_VERSION}."
         )
-
-    return _normalize_project_payload(dict(payload))
+    migrated = dict(payload)
+    if schema_version in {1, 2}:
+        migrated = _migrate_ath_documents(migrated)
+    return _normalize_project_payload(migrated)
 
 
 def _schema_version(payload: dict[str, Any]) -> int:
@@ -118,10 +116,8 @@ def _schema_version(payload: dict[str, Any]) -> int:
 def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = {
         "schema_version": PROJECT_SCHEMA_VERSION,
-        "ath_config_text": str(payload.get("ath_config_text", "")),
-        "ath_scripts": _list_or_empty(payload.get("ath_scripts")),
-        "active_ath_script_id": _optional_str(payload.get("active_ath_script_id")),
-        "ath_mesh": _dict_or_empty(payload.get("ath_mesh")),
+        "generator_documents": _list_or_empty(payload.get("generator_documents")),
+        "active_generator_document_id": _optional_str(payload.get("active_generator_document_id")),
         "imported_meshes": _list_or_empty(payload.get("imported_meshes")),
         "stitch_imported_meshes": bool(payload.get("stitch_imported_meshes", False)),
         "symmetry": _normalize_symmetry(payload.get("symmetry", "off")),
@@ -133,6 +129,61 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if preferences is not None:
             normalized["project_preferences"] = preferences.to_payload()
     return normalized
+
+
+def _migrate_ath_documents(payload: dict[str, Any]) -> dict[str, Any]:
+    legacy_scripts = _list_or_empty(payload.get("ath_scripts"))
+    if not legacy_scripts:
+        legacy_scripts = [
+            {
+                "id": "legacy-ath",
+                "name": "waveguide",
+                "config_text": str(payload.get("ath_config_text", "")),
+            }
+        ]
+
+    legacy_mesh = _dict_or_empty(payload.get("ath_mesh"))
+    documents = []
+    for index, item in enumerate(legacy_scripts):
+        if not isinstance(item, dict):
+            continue
+        mesh_path = _optional_str(item.get("msh_path"))
+        cleaned_mesh_path = _optional_str(item.get("cleaned_msh_path"))
+        output_dir = _optional_str(item.get("output_dir"))
+        if index == 0 and mesh_path is None:
+            mesh_path = _optional_str(legacy_mesh.get("source_file"))
+            cleaned_mesh_path = cleaned_mesh_path or _optional_str(legacy_mesh.get("cleaned_file"))
+            if output_dir is None and mesh_path is not None:
+                output_dir = str(Path(mesh_path).parent)
+        artifact = None
+        if mesh_path is not None and output_dir is not None:
+            artifact = {
+                "output_dir": output_dir,
+                "mesh_path": mesh_path,
+                "cleaned_mesh_path": cleaned_mesh_path,
+                "reduced_cleaned_mesh_path": None,
+                "source_path": _optional_str(item.get("config_path")),
+            }
+        documents.append(
+            {
+                "id": _optional_str(item.get("id")) or f"legacy-ath-{index + 1}",
+                "name": _optional_str(item.get("name")) or "waveguide",
+                "provider_id": "ath",
+                "provider_schema_version": 1,
+                "source": {"format": "ath_cfg", "text": str(item.get("config_text", ""))},
+                "mesh_enabled": bool(item.get("mesh_enabled", True)),
+                "mesh_scale_factor": item.get("mesh_scale_factor", 0.001),
+                "mesh_translation_mm": item.get("mesh_translation_mm", [0, 0, 0]),
+                "artifact": artifact,
+            }
+        )
+
+    migrated = dict(payload)
+    migrated["schema_version"] = PROJECT_SCHEMA_VERSION
+    migrated["generator_documents"] = documents
+    active_id = _optional_str(payload.get("active_ath_script_id"))
+    migrated["active_generator_document_id"] = active_id or (documents[0]["id"] if documents else None)
+    return migrated
 
 
 def _dict_or_empty(value: Any) -> dict[str, Any]:
@@ -171,23 +222,19 @@ def _resolve_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[
 
 def build_project_payload(
     *,
-    ath_config_text: str,
-    ath_mesh: dict[str, Any],
+    generator_documents: list[dict[str, Any]],
+    active_generator_document_id: str | None,
     imported_meshes: list[dict[str, Any]],
     source_config_by_name: dict[str, Any],
     stitch_imported_meshes: bool = False,
     symmetry: str = "off",
-    ath_scripts: list[dict[str, Any]] | None = None,
-    active_ath_script_id: str | None = None,
     channel_config_by_name: dict[str, Any] | None = None,
     project_preferences: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": PROJECT_SCHEMA_VERSION,
-        "ath_config_text": ath_config_text,
-        "ath_scripts": ath_scripts or [],
-        "active_ath_script_id": active_ath_script_id,
-        "ath_mesh": ath_mesh,
+        "generator_documents": generator_documents,
+        "active_generator_document_id": active_generator_document_id,
         "imported_meshes": imported_meshes,
         "stitch_imported_meshes": bool(stitch_imported_meshes),
         "symmetry": _normalize_symmetry(symmetry),

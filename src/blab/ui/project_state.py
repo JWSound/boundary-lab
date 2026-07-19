@@ -8,8 +8,12 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SCRIPT_NAME = "ath"
+from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+
+DEFAULT_DESIGN_NAME = "waveguide"
 DEFAULT_MESH_SCALE_FACTOR = 0.001
+DEFAULT_GENERATOR_PROVIDER_ID = "ath"
+DEFAULT_GENERATOR_PROVIDER_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -114,8 +118,8 @@ class ImportedMeshState:
 class ProjectDocument:
     """Canonical in-memory owner of project-local editable state."""
 
-    ath_scripts: tuple[AthScriptState, ...]
-    active_ath_script_id: str | None
+    generator_documents: tuple[GeneratorDocument, ...]
+    active_generator_document_id: str | None
     imported_meshes: tuple[ImportedMeshState, ...] = ()
     stitch_imported_meshes: bool = False
     symmetry: str = "off"
@@ -124,30 +128,31 @@ class ProjectDocument:
     project_preferences: ProjectPreferencesState | None = None
 
 
-@dataclass(frozen=True)
-class AthScriptState:
-    id: str
-    name: str
-    config_text: str
-    mesh_enabled: bool = True
-    mesh_scale_factor: float = DEFAULT_MESH_SCALE_FACTOR
-    mesh_translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    output_dir: str | None = None
-    msh_path: str | None = None
-    cleaned_msh_path: str | None = None
-    config_path: str | None = None
+def new_generator_document(
+    name: str,
+    source_text: str = "",
+    *,
+    provider_id: str = DEFAULT_GENERATOR_PROVIDER_ID,
+    provider_schema_version: int = DEFAULT_GENERATOR_PROVIDER_SCHEMA_VERSION,
+    source: dict[str, Any] | None = None,
+) -> GeneratorDocument:
+    if source is None:
+        source = (
+            {"format": "ath_cfg", "text": str(source_text)}
+            if provider_id == DEFAULT_GENERATOR_PROVIDER_ID
+            else {"format": "structured", "values": {}}
+        )
+    return GeneratorDocument(
+        id=uuid.uuid4().hex[:12],
+        name=name,
+        provider_id=provider_id,
+        provider_schema_version=max(int(provider_schema_version), 1),
+        source=dict(source),
+    )
 
-    @property
-    def mesh_name(self) -> str:
-        return sanitized_name(self.name)
 
-
-def new_script(name: str, config_text: str = "") -> AthScriptState:
-    return AthScriptState(id=uuid.uuid4().hex[:12], name=name, config_text=config_text)
-
-
-def default_scripts(config_text: str = "") -> tuple[AthScriptState, ...]:
-    return (new_script(DEFAULT_SCRIPT_NAME, config_text),)
+def default_generator_documents(config_text: str = "") -> tuple[GeneratorDocument, ...]:
+    return (new_generator_document(DEFAULT_DESIGN_NAME, config_text),)
 
 
 def new_project_document(
@@ -155,22 +160,26 @@ def new_project_document(
     *,
     project_preferences: ProjectPreferencesState | None = None,
 ) -> ProjectDocument:
-    scripts = default_scripts(config_text)
+    documents = default_generator_documents(config_text)
     return ProjectDocument(
-        ath_scripts=scripts,
-        active_ath_script_id=scripts[0].id if scripts else None,
+        generator_documents=documents,
+        active_generator_document_id=documents[0].id if documents else None,
         project_preferences=project_preferences,
     )
 
 
 def sanitized_name(name: str) -> str:
     sanitized = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in name).strip("_")
-    return sanitized or DEFAULT_SCRIPT_NAME
+    return sanitized or DEFAULT_DESIGN_NAME
 
 
-def unique_script_name(base_name: str, scripts: tuple[AthScriptState, ...]) -> str:
+def generator_mesh_name(document: GeneratorDocument) -> str:
+    return sanitized_name(document.name)
+
+
+def unique_generator_name(base_name: str, documents: tuple[GeneratorDocument, ...]) -> str:
     base = sanitized_name(base_name)
-    used = {script.name for script in scripts}
+    used = {document.name for document in documents}
     if base not in used:
         return base
     suffix = 2
@@ -179,57 +188,107 @@ def unique_script_name(base_name: str, scripts: tuple[AthScriptState, ...]) -> s
     return f"{base}_{suffix}"
 
 
-def script_to_payload(script: AthScriptState, *, absolute_paths: bool = False) -> dict[str, Any]:
+def generator_document_to_payload(
+    document: GeneratorDocument,
+    *,
+    absolute_paths: bool = False,
+) -> dict[str, Any]:
     return {
-        "id": script.id,
-        "name": script.name,
-        "config_text": script.config_text,
-        "mesh_enabled": bool(script.mesh_enabled),
-        "mesh_scale_factor": float(script.mesh_scale_factor),
-        "mesh_translation_mm": [int(round(value)) for value in script.mesh_translation_mm],
-        "output_dir": _path_payload(script.output_dir, absolute_paths),
-        "msh_path": _path_payload(script.msh_path, absolute_paths),
-        "cleaned_msh_path": _path_payload(script.cleaned_msh_path, absolute_paths),
-        "config_path": _path_payload(script.config_path, absolute_paths),
+        "id": document.id,
+        "name": document.name,
+        "provider_id": document.provider_id,
+        "provider_schema_version": int(document.provider_schema_version),
+        "source": document.source,
+        "mesh_enabled": bool(document.mesh_enabled),
+        "mesh_scale_factor": float(document.mesh_scale_factor),
+        "mesh_translation_mm": [int(round(value)) for value in document.mesh_translation_mm],
+        "artifact": _artifact_to_payload(document.artifact, absolute_paths=absolute_paths),
     }
 
 
-def script_from_payload(payload: object) -> AthScriptState | None:
+def generator_document_from_payload(payload: object) -> GeneratorDocument | None:
     if not isinstance(payload, dict):
         return None
-    script_id = str(payload.get("id", "")).strip() or uuid.uuid4().hex[:12]
-    name = str(payload.get("name", DEFAULT_SCRIPT_NAME)).strip() or DEFAULT_SCRIPT_NAME
+    document_id = str(payload.get("id", "")).strip() or uuid.uuid4().hex[:12]
+    name = str(payload.get("name", DEFAULT_DESIGN_NAME)).strip() or DEFAULT_DESIGN_NAME
+    provider_id = (
+        str(payload.get("provider_id", DEFAULT_GENERATOR_PROVIDER_ID)).strip() or DEFAULT_GENERATOR_PROVIDER_ID
+    )
+    try:
+        provider_schema_version = int(payload.get("provider_schema_version", 1))
+    except (TypeError, ValueError):
+        provider_schema_version = 1
+    source = payload.get("source")
+    if not isinstance(source, dict):
+        source = {"format": "ath_cfg", "text": str(payload.get("config_text", ""))}
     translation = payload.get("mesh_translation_mm", [0.0, 0.0, 0.0])
     if not isinstance(translation, list) or len(translation) != 3:
         translation = [0.0, 0.0, 0.0]
-    return AthScriptState(
-        id=script_id,
+    return GeneratorDocument(
+        id=document_id,
         name=name,
-        config_text=str(payload.get("config_text", "")),
+        provider_id=provider_id,
+        provider_schema_version=max(provider_schema_version, 1),
+        source=dict(source),
         mesh_enabled=bool(payload.get("mesh_enabled", True)),
         mesh_scale_factor=_positive_float(payload.get("mesh_scale_factor"), DEFAULT_MESH_SCALE_FACTOR),
         mesh_translation_mm=tuple(float(int(round(float(value)))) for value in translation),
-        output_dir=_optional_path_text(payload.get("output_dir")),
-        msh_path=_optional_path_text(payload.get("msh_path")),
-        cleaned_msh_path=_optional_path_text(payload.get("cleaned_msh_path")),
-        config_path=_optional_path_text(payload.get("config_path")),
+        artifact=_artifact_from_payload(payload.get("artifact")),
     )
 
 
-def scripts_from_payload(payload: object, *, fallback_config_text: str = "") -> tuple[AthScriptState, ...]:
+def generator_documents_from_payload(
+    payload: object,
+    *,
+    fallback_config_text: str = "",
+) -> tuple[GeneratorDocument, ...]:
     if isinstance(payload, list):
-        scripts = tuple(script for item in payload if (script := script_from_payload(item)) is not None)
-        if scripts:
-            return scripts
-    return default_scripts(fallback_config_text)
+        documents = tuple(
+            document for item in payload if (document := generator_document_from_payload(item)) is not None
+        )
+        if documents:
+            return documents
+    return default_generator_documents(fallback_config_text)
 
 
-def replace_script(
-    scripts: tuple[AthScriptState, ...],
-    script_id: str,
+def replace_generator_document(
+    documents: tuple[GeneratorDocument, ...],
+    document_id: str,
     **changes,
-) -> tuple[AthScriptState, ...]:
-    return tuple(replace(script, **changes) if script.id == script_id else script for script in scripts)
+) -> tuple[GeneratorDocument, ...]:
+    return tuple(replace(document, **changes) if document.id == document_id else document for document in documents)
+
+
+def _artifact_to_payload(
+    artifact: GeneratedGeometryReference | None,
+    *,
+    absolute_paths: bool,
+) -> dict[str, Any] | None:
+    if artifact is None:
+        return None
+    return {
+        "output_dir": _path_payload(artifact.output_dir, absolute_paths),
+        "mesh_path": _path_payload(artifact.mesh_path, absolute_paths),
+        "cleaned_mesh_path": _path_payload(artifact.cleaned_mesh_path, absolute_paths),
+        "reduced_cleaned_mesh_path": _path_payload(artifact.reduced_cleaned_mesh_path, absolute_paths),
+        "source_path": _path_payload(artifact.source_path, absolute_paths),
+    }
+
+
+def _artifact_from_payload(payload: object) -> GeneratedGeometryReference | None:
+    if not isinstance(payload, dict):
+        return None
+    output_dir = _optional_path_text(payload.get("output_dir"))
+    mesh_path = _optional_path_text(payload.get("mesh_path"))
+    if output_dir is None or mesh_path is None:
+        return None
+    return GeneratedGeometryReference(
+        output_dir=output_dir,
+        mesh_path=mesh_path,
+        cleaned_mesh_path=_optional_path_text(payload.get("cleaned_mesh_path")),
+        reduced_cleaned_mesh_path=_optional_path_text(payload.get("reduced_cleaned_mesh_path")),
+        source_path=_optional_path_text(payload.get("source_path")),
+    )
 
 
 def _path_payload(path_text: str | None, absolute_paths: bool) -> str | None:
