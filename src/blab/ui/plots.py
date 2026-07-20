@@ -128,6 +128,7 @@ class IsobarCanvas(FigureCanvas):
         self.right_margin = float(right_margin)
         self.show_colorbar = bool(show_colorbar)
         self.colors = VisualizerConfig.custom_colors
+        self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
         self._mesh_artist = None
         self._image_artist = None
         self._line_artist = None
@@ -135,6 +136,7 @@ class IsobarCanvas(FigureCanvas):
         self._colorbar = None
         self._colorbar_axes = None
         self._colorbar_mappable = None
+        self._colorbar_state: tuple[float, float, float] | None = None
         self._mesh_freqs_hz: np.ndarray | None = None
         self._mesh_angles_deg: np.ndarray | None = None
         self._mesh_values_db: np.ndarray | None = None
@@ -143,6 +145,7 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_render_mode: str | None = None
         self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
+        self._axis_configuration_mode: str | None = None
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
         self._comparison_plot: (
             tuple[
@@ -200,6 +203,7 @@ class IsobarCanvas(FigureCanvas):
         self.axes.set_yticks(np.arange(-180, 181, 45))
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+        self._axis_configuration_mode = self._x_axis_mode
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
@@ -592,6 +596,10 @@ class IsobarCanvas(FigureCanvas):
         self._remove_artist("_image_artist")
 
     def _remove_colorbar(self) -> None:
+        if self._colorbar is None and self._colorbar_axes is None:
+            self._colorbar_mappable = None
+            self._colorbar_state = None
+            return
         if self._colorbar is not None:
             try:
                 self._colorbar.remove()
@@ -605,6 +613,7 @@ class IsobarCanvas(FigureCanvas):
         self._colorbar = None
         self._colorbar_axes = None
         self._colorbar_mappable = None
+        self._colorbar_state = None
         self._apply_layout()
 
     def _remove_contour_artist(self) -> None:
@@ -723,7 +732,7 @@ class IsobarCanvas(FigureCanvas):
         )
 
     def _isobar_colormap(self):
-        return LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
+        return self._colormap
 
     def _color_boundaries(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
         if contour_step_db <= 0.0 or clip_max_db <= clip_min_db:
@@ -763,18 +772,27 @@ class IsobarCanvas(FigureCanvas):
         norm,
     ) -> None:
         if not self.show_colorbar:
-            self._remove_colorbar()
+            if self._colorbar is not None or self._colorbar_axes is not None:
+                self._remove_colorbar()
             return
-        self._remove_colorbar()
-        self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
-        self._colorbar_mappable.set_array([])
-        self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
-        self._colorbar = self.figure.colorbar(
-            self._colorbar_mappable,
-            cax=self._colorbar_axes,
-        )
+        state = (float(clip_min_db), float(clip_max_db), float(contour_step_db))
+        if self._colorbar is not None and self._colorbar_mappable is not None:
+            if self._colorbar_state == state:
+                return
+            self._colorbar_mappable.set_cmap(cmap)
+            self._colorbar_mappable.set_norm(norm)
+            self._colorbar.update_normal(self._colorbar_mappable)
+        else:
+            self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
+            self._colorbar_mappable.set_array([])
+            self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
+            self._colorbar = self.figure.colorbar(
+                self._colorbar_mappable,
+                cax=self._colorbar_axes,
+            )
         self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
         self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
+        self._colorbar_state = state
 
     def _image_from_values(
         self,
@@ -898,21 +916,9 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_contour_step_db = None
             self._remove_colorbar()
 
-        if self._colorbar is None:
+        if self._axis_configuration_mode != self._x_axis_mode:
             self._configure_axes()
-        else:
-            self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
-            self.axes.set_xlabel("Frequency (Hz)")
-            self.axes.set_ylabel("Angle (deg)")
-            if self._x_axis_mode == "log_image":
-                apply_log_image_frequency_axis(self.axes)
-            else:
-                apply_audio_frequency_axis(self.axes)
-            self.axes.set_ylim(-180, 180)
-            self.axes.set_yticks(np.arange(-180, 181, 45))
-            self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-            apply_compact_plot_text(self.axes)
-        self._redraw_captured_contours()
+            self._redraw_captured_contours()
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
@@ -920,19 +926,27 @@ class IsobarCanvas(FigureCanvas):
 
 class ImpedanceCanvas(FigureCanvas):
     def __init__(self):
-        self.figure = Figure(figsize=(6.5, 3.0), dpi=100, tight_layout=True)
+        self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
+        self._lines: list[object] = []
+        self._series_labels: tuple[str, ...] = ()
         super().__init__(self.figure)
+        self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
         self._draw_empty()
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _configure_axes(self) -> None:
         self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+
+    def _draw_empty(self) -> None:
+        clear_plot_axes(self.axes)
+        self._lines = []
+        self._series_labels = ()
+        self._configure_axes()
         self.draw_idle()
 
     def update_plot(
@@ -942,42 +956,66 @@ class ImpedanceCanvas(FigureCanvas):
         impedance_real: np.ndarray,
         impedance_imag: np.ndarray,
     ) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-
+        freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
+        radiator_names = np.asarray(radiator_names)
+        impedance_real = np.asarray(impedance_real, dtype=np.float32)
+        impedance_imag = np.asarray(impedance_imag, dtype=np.float32)
         if impedance_real.ndim == 1:
             impedance_real = impedance_real[np.newaxis, :]
             impedance_imag = impedance_imag[np.newaxis, :]
 
+        labels: list[str] = []
         for index in range(impedance_real.shape[0]):
             name = str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
-            self.axes.plot(freqs_hz, impedance_real[index], linewidth=1.5, label=f"{name} Z real")
-            self.axes.plot(freqs_hz, impedance_imag[index], linewidth=1.5, linestyle="--", label=f"{name} Z imag")
+            labels.extend((f"{name} Z real", f"{name} Z imag"))
+        series_labels = tuple(labels)
+        if series_labels != self._series_labels:
+            for line in self._lines:
+                line.remove()
+            self._lines = []
+            for index in range(impedance_real.shape[0]):
+                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=series_labels[index * 2])
+                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=series_labels[index * 2 + 1])
+                self._lines.extend((real_line, imag_line))
+            legend = self.axes.get_legend()
+            if legend is not None:
+                legend.remove()
+            if self._lines:
+                self.axes.legend(loc="best")
+            self._series_labels = series_labels
 
-        self.axes.legend(loc="best")
+        for index in range(impedance_real.shape[0]):
+            self._lines[index * 2].set_data(freqs_hz, impedance_real[index])
+            self._lines[index * 2 + 1].set_data(freqs_hz, impedance_imag[index])
+        self.axes.relim()
+        self.axes.autoscale_view(scalex=False, scaley=True)
         apply_compact_plot_text(self.axes)
         self.draw_idle()
 
 
 class OnAxisResponseCanvas(FigureCanvas):
     def __init__(self):
-        self.figure = Figure(figsize=(6.5, 3.0), dpi=100, tight_layout=True)
+        self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
+        self._lines: list[object] = []
+        self._series_labels: tuple[str, ...] = ()
         super().__init__(self.figure)
+        self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
         self._draw_empty()
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _configure_axes(self) -> None:
         self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+
+    def _draw_empty(self) -> None:
+        clear_plot_axes(self.axes)
+        self._lines = []
+        self._series_labels = ()
+        self._configure_axes()
         self.draw_idle()
 
     def update_plot(
@@ -988,13 +1026,9 @@ class OnAxisResponseCanvas(FigureCanvas):
         channel_names: np.ndarray | None = None,
         channel_on_axis_spl_db: np.ndarray | None = None,
     ) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("SPL (dB)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-
+        freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
+        angles_deg = np.asarray(angles_deg, dtype=np.float32)
+        horizontal_spl_db = np.asarray(horizontal_spl_db, dtype=np.float32)
         if freqs_hz.size:
             on_axis = np.asarray(
                 [
@@ -1007,21 +1041,32 @@ class OnAxisResponseCanvas(FigureCanvas):
                 ],
                 dtype=float,
             )
-            self.axes.plot(freqs_hz, on_axis, linewidth=2.0, color="#1f77b4", label="Sum")
+            series: list[tuple[str, np.ndarray]] = [("Sum", on_axis)]
             if channel_names is not None and channel_on_axis_spl_db is not None:
                 names = np.asarray(channel_names)
                 channel_curves = np.asarray(channel_on_axis_spl_db, dtype=float)
                 for index, name in enumerate(names):
                     if index >= channel_curves.shape[0]:
                         continue
-                    self.axes.plot(
-                        freqs_hz,
-                        channel_curves[index],
-                        linewidth=1.1,
-                        linestyle="--",
-                        alpha=0.85,
-                        label=str(name),
-                    )
+                    series.append((str(name), channel_curves[index]))
+            labels = tuple(name for name, _values in series)
+            if labels != self._series_labels:
+                for line in self._lines:
+                    line.remove()
+                self._lines = []
+                for index, label in enumerate(labels):
+                    if index == 0:
+                        (line,) = self.axes.plot([], [], linewidth=2.0, color="#1f77b4", label=label)
+                    else:
+                        (line,) = self.axes.plot([], [], linewidth=1.1, linestyle="--", alpha=0.85, label=label)
+                    self._lines.append(line)
+                legend = self.axes.get_legend()
+                if legend is not None:
+                    legend.remove()
+                self.axes.legend(loc="best")
+                self._series_labels = labels
+            for line, (_label, values) in zip(self._lines, series, strict=True):
+                line.set_data(freqs_hz, values)
             finite = on_axis[np.isfinite(on_axis)]
             if channel_on_axis_spl_db is not None:
                 channel_finite = np.asarray(channel_on_axis_spl_db, dtype=float)
@@ -1031,7 +1076,6 @@ class OnAxisResponseCanvas(FigureCanvas):
             if finite.size:
                 ymax = float(np.ceil(np.max(finite) / 5.0) * 5.0)
                 self.axes.set_ylim(ymax - ON_AXIS_DB_SPAN, ymax)
-            self.axes.legend(loc="best")
 
         apply_compact_plot_text(self.axes)
         self.draw_idle()
@@ -1042,6 +1086,9 @@ class SpinoramaCanvas(FigureCanvas):
         self.figure = Figure(figsize=(6.5, 3.9), dpi=100)
         self.axes = self.figure.add_subplot(111)
         self.di_axes = self.axes.twinx()
+        self._spl_lines: dict[str, object] = {}
+        self._di_lines: dict[str, object] = {}
+        self._series_labels: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
         super().__init__(self.figure)
         self._apply_layout()
         self._draw_empty()
@@ -1054,6 +1101,9 @@ class SpinoramaCanvas(FigureCanvas):
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
         clear_plot_axes(self.di_axes)
+        self._spl_lines = {}
+        self._di_lines = {}
+        self._series_labels = ((), ())
         self._apply_layout()
         # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -1086,16 +1136,6 @@ class SpinoramaCanvas(FigureCanvas):
         self.update_curves(curves)
 
     def update_curves(self, curves: SpinoramaCurves) -> None:
-        clear_plot_axes(self.axes)
-        clear_plot_axes(self.di_axes)
-        self._apply_layout()
-        # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("SPL (dB)")
-        self.di_axes.set_ylabel("DI (dB)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-
         colors = {
             "On Axis": "#1f77b4",
             "Listen. Wind.": "#2ca02c",
@@ -1105,33 +1145,50 @@ class SpinoramaCanvas(FigureCanvas):
             "ERDI": "#8c564b",
             "SPDI": "#17becf",
         }
-        for name, values in curves.spl_curves():
-            self.axes.plot(curves.freq_hz, values, linewidth=1.5, label=name, color=colors.get(name))
-
-        for name, values in curves.di_curves():
-            self.di_axes.plot(
-                curves.freq_hz,
-                values,
-                linewidth=1.2,
-                linestyle="--",
-                label=name,
-                color=colors.get(name),
+        spl_curves = curves.spl_curves()
+        di_curves = curves.di_curves()
+        labels = (tuple(name for name, _values in spl_curves), tuple(name for name, _values in di_curves))
+        if labels != self._series_labels:
+            for line in (*self._spl_lines.values(), *self._di_lines.values()):
+                line.remove()
+            self._spl_lines = {
+                name: self.axes.plot([], [], linewidth=1.5, label=name, color=colors.get(name))[0]
+                for name, _values in spl_curves
+            }
+            self._di_lines = {
+                name: self.di_axes.plot(
+                    [],
+                    [],
+                    linewidth=1.2,
+                    linestyle="--",
+                    label=name,
+                    color=colors.get(name),
+                )[0]
+                for name, _values in di_curves
+            }
+            legend = self.axes.get_legend()
+            if legend is not None:
+                legend.remove()
+            lines = [*self._spl_lines.values(), *self._di_lines.values()]
+            self.axes.legend(
+                lines,
+                [*labels[0], *labels[1]],
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.2),
+                ncols=4,
+                borderaxespad=0.0,
+                frameon=False,
             )
+            self._series_labels = labels
+
+        for name, values in spl_curves:
+            self._spl_lines[name].set_data(curves.freq_hz, values)
+        for name, values in di_curves:
+            self._di_lines[name].set_data(curves.freq_hz, values)
 
         self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
         self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
 
-        lines, labels = self.axes.get_legend_handles_labels()
-        di_lines, di_labels = self.di_axes.get_legend_handles_labels()
-        self.axes.legend(
-            lines + di_lines,
-            labels + di_labels,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.2),
-            ncols=4,
-            borderaxespad=0.0,
-            frameon=False,
-        )
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
         self.draw_idle()

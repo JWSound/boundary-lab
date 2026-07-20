@@ -155,6 +155,7 @@ from blab.ui.source_channel_config import (
 from blab.ui.theme import apply_application_theme
 
 DEFAULT_MESH_SCALE_FACTOR = 0.001
+LIVE_PLOT_REFRESH_INTERVAL_MS = 250
 
 
 APP_ROOT = Path(__file__).resolve().parents[3]
@@ -293,6 +294,11 @@ class MainWindow(QMainWindow):
         self._plot_dpi_screen = None
         self._plot_dpi_window_handle = None
         self._plot_dpi_refresh_pending = False
+        self._live_plot_refresh_dirty = False
+        self._live_plot_refresh_timer = QTimer(self)
+        self._live_plot_refresh_timer.setSingleShot(True)
+        self._live_plot_refresh_timer.setInterval(LIVE_PLOT_REFRESH_INTERVAL_MS)
+        self._live_plot_refresh_timer.timeout.connect(self._flush_live_plot_refresh)
         startup("Building design editor...")
         self.editor_tabs = QTabWidget()
         self.editor_tabs.setTabsClosable(True)
@@ -2535,7 +2541,23 @@ class MainWindow(QMainWindow):
         )
         if not self.preferences.live_plot_streaming:
             return
-        self._refresh_plots()
+        self._request_live_plot_refresh()
+
+    def _request_live_plot_refresh(self) -> None:
+        self._live_plot_refresh_dirty = True
+        if not self._live_plot_refresh_timer.isActive():
+            self._live_plot_refresh_timer.start()
+
+    @Slot()
+    def _flush_live_plot_refresh(self) -> None:
+        if not self._live_plot_refresh_dirty:
+            return
+        self._live_plot_refresh_dirty = False
+        self._refresh_plots(active_only=True)
+
+    def _cancel_live_plot_refresh(self) -> None:
+        self._live_plot_refresh_dirty = False
+        self._live_plot_refresh_timer.stop()
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:
@@ -2544,6 +2566,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_solve_finished(self, completion: SolveCompletion) -> None:
+        self._cancel_live_plot_refresh()
         self.solve_button.setEnabled(True)
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
@@ -2586,6 +2609,7 @@ class MainWindow(QMainWindow):
         self._set_contour_button_states()
 
     def _clear_plots(self) -> None:
+        self._cancel_live_plot_refresh()
         self.live_dataset = None
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
@@ -2639,7 +2663,11 @@ class MainWindow(QMainWindow):
             if dock is not None and dock.isVisible() != visible:
                 dock.setVisible(visible)
             if visible:
-                self._refresh_plots()
+                if self.solve_controller.active:
+                    if self.preferences.live_plot_streaming:
+                        self._request_live_plot_refresh()
+                else:
+                    self._refresh_plots()
                 if self._use_final_isobar_resolution and plot_id in {"horizontal_isobar", "vertical_isobar"}:
                     self._final_isobar_plots_rendered = True
             self._set_contour_button_states()
@@ -2653,7 +2681,11 @@ class MainWindow(QMainWindow):
         with QSignalBlocker(action):
             action.setChecked(not dock.isHidden())
         if not dock.isHidden():
-            self._refresh_plots()
+            if self.solve_controller.active:
+                if self.preferences.live_plot_streaming:
+                    self._request_live_plot_refresh()
+            else:
+                self._refresh_plots()
             if self._use_final_isobar_resolution and plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 self._final_isobar_plots_rendered = True
         self._set_contour_button_states()
@@ -2744,11 +2776,19 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def _refresh_plots(self) -> VisualizationProjection | None:
+    def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:
+        dock = self.plot_docks.get(entry.plot_id)
+        if dock is None or dock.isHidden():
+            return False
+        return not entry.widget.visibleRegion().isEmpty()
+
+    def _refresh_plots(self, *, active_only: bool = False) -> VisualizationProjection | None:
         visible_entries = [
             entry
             for entry in self.plot_entries
-            if (dock := self.plot_docks.get(entry.plot_id)) is not None and not dock.isHidden()
+            if (dock := self.plot_docks.get(entry.plot_id)) is not None
+            and not dock.isHidden()
+            and (not active_only or self._plot_entry_is_actively_visible(entry))
         ]
         if not visible_entries:
             return None

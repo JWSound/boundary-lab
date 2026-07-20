@@ -116,15 +116,42 @@ def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
     assert "self._refresh_plot_export_icons()" in source
 
 
-def test_live_plot_refresh_is_immediate_and_visibility_aware() -> None:
+def test_live_plot_refresh_is_coalesced_and_active_tab_aware() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
 
-    assert "_request_plot_refresh" not in source
-    assert "_plot_refresh_timer" not in source
+    assert "LIVE_PLOT_REFRESH_INTERVAL_MS = 250" in source
+    assert "self._live_plot_refresh_timer = QTimer(self)" in source
+    assert "self._live_plot_refresh_timer.setSingleShot(True)" in source
+    assert "self._live_plot_refresh_timer.timeout.connect(self._flush_live_plot_refresh)" in source
+    assert "self._request_live_plot_refresh()" in source
+    assert "self._refresh_plots(active_only=True)" in source
     assert "self.plot_docks.get(entry.plot_id)" in source
     assert "not dock.isHidden()" in source
+    assert "not entry.widget.visibleRegion().isEmpty()" in source
     assert "for entry in visible_entries:" in source
-    assert "self._refresh_plots()" in source
+    assert "self._cancel_live_plot_refresh()" in source
+
+
+def test_streaming_plot_canvases_reuse_artists_and_layout() -> None:
+    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    impedance_block = source[source.index("class ImpedanceCanvas") : source.index("class OnAxisResponseCanvas")]
+    on_axis_block = source[source.index("class OnAxisResponseCanvas") : source.index("class SpinoramaCanvas")]
+    spinorama_block = source[source.index("class SpinoramaCanvas") :]
+
+    assert "tight_layout=True" not in impedance_block
+    assert "tight_layout=True" not in on_axis_block
+    assert "self._lines" in impedance_block
+    assert "self._lines" in on_axis_block
+    assert ".set_data(" in impedance_block
+    assert ".set_data(" in on_axis_block
+    assert impedance_block.count("clear_plot_axes(self.axes)") == 1
+    assert on_axis_block.count("clear_plot_axes(self.axes)") == 1
+    assert "self._spl_lines" in spinorama_block
+    assert "self._di_lines" in spinorama_block
+    assert "self._spl_lines[name].set_data" in spinorama_block
+    assert "self._di_lines[name].set_data" in spinorama_block
+    assert spinorama_block.count("clear_plot_axes(self.axes)") == 1
+    assert spinorama_block.count("clear_plot_axes(self.di_axes)") == 1
 
 
 def test_channel_config_changes_apply_only_on_apply_button() -> None:
