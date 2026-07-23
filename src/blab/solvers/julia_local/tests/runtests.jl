@@ -27,6 +27,17 @@ cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
     @test singular_cache.pair_count > 0
 end
 
+@testset "cpu BLAS thread policy" begin
+    @test beat_cpu_blas_thread_count(441; available_threads=16) == 1
+    @test beat_cpu_blas_thread_count(1390; available_threads=16) == 4
+    @test beat_cpu_blas_thread_count(3502; available_threads=16) == 8
+    @test beat_cpu_blas_thread_count(5000; available_threads=16) == 16
+    @test beat_cpu_blas_thread_count(3502; available_threads=4) == 4
+    @test beat_cpu_blas_thread_count(441; available_threads=16, override="3") == 3
+    @test_throws ErrorException beat_cpu_blas_thread_count(441; available_threads=16, override="invalid")
+    @test_throws ErrorException beat_cpu_blas_thread_count(441; available_threads=16, override="0")
+end
+
 @testset "cpu production pipeline" begin
     mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
     p1 = build_p1_space(mesh)
@@ -35,6 +46,16 @@ end
     k = Float32(2pi * 1000.0 / 343.0)
     element_indices = 1:min(16, length(mesh.faces))
     singular_cache = build_singular_correction_cache(mesh, 2, element_indices)
+    off_cache = build_beat_cpu_assembly_cache(
+        mesh,
+        p1,
+        dp0,
+        rule;
+        singular_order=2,
+        element_indices=element_indices,
+        symmetry_mode=:off,
+    )
+    @test isempty(off_cache.image_transforms)
 
     operators = assemble_regular_galerkin_operators(
         mesh,
@@ -183,6 +204,29 @@ end
         singular_cache=singular_cache,
         symmetry_mode=:xy,
     )
+    cpu_cache = build_beat_cpu_assembly_cache(
+        mesh,
+        p1,
+        dp0,
+        rule;
+        singular_order=2,
+        element_indices=element_indices,
+        symmetry_mode=:xy,
+    )
+    cached_operators = assemble_regular_galerkin_operators(
+        mesh,
+        p1,
+        dp0,
+        k,
+        rule;
+        skip_singular=false,
+        singular_order=2,
+        element_indices=element_indices,
+        backend=:cpu,
+        singular_cache=singular_cache,
+        cpu_cache=cpu_cache,
+        symmetry_mode=:xy,
+    )
 
     @test !get(operators, :on_gpu, true)
     @test operators.regular_pairs > 2 * length(element_indices) * length(element_indices)
@@ -191,6 +235,10 @@ end
     @test sum(abs2, operators.single_layer) > 0
     @test all(isfinite, real.(operators.hypersingular))
     @test all(isfinite, imag.(operators.hypersingular))
+    @test cached_operators.single_layer ≈ operators.single_layer
+    @test cached_operators.double_layer ≈ operators.double_layer
+    @test cached_operators.adjoint_double_layer ≈ operators.adjoint_double_layer
+    @test cached_operators.hypersingular ≈ operators.hypersingular
 end
 
 @testset "cuda production pipeline" begin

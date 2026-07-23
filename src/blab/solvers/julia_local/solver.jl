@@ -685,6 +685,12 @@ function solve_request_impl(request)
     validate_radiator_elements(mesh, element_mesh_ids, radiators)
     p1_space = build_p1_space(mesh)
     dp0_space = build_dp0_space(mesh)
+    cpu_blas_threads = if beat_backend == :cpu
+        configure_beat_cpu_blas_threads!(p1_space.global_dof_count)
+    else
+        BLAS.set_num_threads(Threads.nthreads())
+        BLAS.get_num_threads()
+    end
     base_regular_order = Int(get_value(config, "quadrature_order", 4))
     regular_quadrature_mode = regular_quadrature_mode_from_config(config, beat_backend)
     rule = triangle_rule(FloatType, base_regular_order)
@@ -705,6 +711,7 @@ function solve_request_impl(request)
     regular_rule_cache = Dict{Int,Any}(base_regular_order => rule)
     identity_cache = Dict{Int,Any}(base_regular_order => (identity_p1_p1, identity_p1_dp0))
     cpu_field_cache_by_order = Dict{Int,Any}(base_regular_order => cpu_field_cache)
+    cpu_assembly_cache_by_order = Dict{Int,Any}()
     if beat_backend == :cuda
         emit_event("status"; message="Initializing BEAT Engine using CUDA...")
         device_cache = build_cuda_regular_assembly_cache(mesh, rule)
@@ -716,7 +723,14 @@ function solve_request_impl(request)
         device_cache = build_rocm_regular_assembly_cache(mesh, rule)
         field_cache = build_rocm_field_evaluation_cache(cpu_field_cache)
     else
-        emit_event("status"; message="Initializing BEAT Engine using CPU...")
+        emit_event(
+            "status";
+            message=@sprintf(
+                "Initializing BEAT Engine using CPU with %d BLAS thread%s...",
+                cpu_blas_threads,
+                cpu_blas_threads == 1 ? "" : "s",
+            ),
+        )
     end
 
     try
@@ -740,6 +754,7 @@ function solve_request_impl(request)
         selected_identity_p1_p1 = identity_p1_p1
         selected_identity_p1_dp0 = identity_p1_dp0
         selected_field_cache = field_cache
+        selected_cpu_assembly_cache = nothing
         if beat_backend == :cpu
             selected_identity = get!(identity_cache, quadrature_selection.order) do
                 (
@@ -751,6 +766,16 @@ function solve_request_impl(request)
             selected_identity_p1_dp0 = selected_identity[2]
             selected_field_cache = get!(cpu_field_cache_by_order, quadrature_selection.order) do
                 build_field_evaluation_cache(mesh, selected_rule; symmetry_mode=Symbol(symmetry_mode))
+            end
+            selected_cpu_assembly_cache = get!(cpu_assembly_cache_by_order, quadrature_selection.order) do
+                build_beat_cpu_assembly_cache(
+                    mesh,
+                    p1_space,
+                    dp0_space,
+                    selected_rule;
+                    singular_order=singular_order,
+                    symmetry_mode=Symbol(symmetry_mode),
+                )
             end
         end
 
@@ -768,6 +793,7 @@ function solve_request_impl(request)
                 return_device=beat_backend != :cpu,
                 accelerator_quadrature=beat_backend != :cpu,
                 singular_cache=singular_cache,
+                cpu_cache=selected_cpu_assembly_cache,
                 device_singular_cache=device_singular_cache,
                 symmetry_mode=Symbol(symmetry_mode),
             )
@@ -884,6 +910,7 @@ function solve_request_impl(request)
                     "backend" => String(beat_backend),
                     "symmetry" => symmetry_mode,
                     "regular_assembly_mode" => string(get(operators, :regular_assembly_mode, beat_backend == :cuda ? :serial_pair_batched : Symbol("$(beat_backend)_default"))),
+                    "blas_threads" => cpu_blas_threads,
                     "regular_quadrature_mode" => regular_quadrature_mode,
                     "regular_quadrature_order" => quadrature_selection.order,
                     "regular_quadrature_base_order" => base_regular_order,

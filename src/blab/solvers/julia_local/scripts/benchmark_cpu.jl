@@ -33,6 +33,7 @@ Base.@kwdef mutable struct CpuBenchmarkConfig
     skip_solve::Bool = false
     skip_field::Bool = false
     threaded_assembly::Bool = true
+    use_cpu_cache::Bool = false
     profile::String = "none"
     output::String = joinpath(@__DIR__, "..", "results", "benchmark_cpu_sample.json")
     verbose::Bool = false
@@ -59,13 +60,14 @@ function print_usage()
       --subset-faces N               Use first N faces. Default: 128. 0 means full mesh.
       --symmetry off|x|xy            Symmetry mode. Default: off
       --repetitions N                Measured repetitions. Default: 1
-      --warmups N                    Warmup repetitions. Default: 1
+      --warmups N                    Warmup repetitions (1-3). Default: 1
       --blas-threads N               BLAS thread count. Default: 1.
       --scale FACTOR                 Mesh scale factor. Default: 0.001
       --tag-throat N                 Physical tag used for Neumann throat RHS. Default: 2
       --skip-solve                   Do not build/solve the Burton-Miller system.
       --skip-field                   Do not evaluate the radiated field.
       --serial-assembly              Disable colored threaded CPU operator assembly.
+      --cpu-cache                    Prebuild and reuse the production CPU assembly cache.
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
       --json PATH                    Write JSON results. Default: results/benchmark_cpu_sample.json
       --verbose                      Print every timing bucket in the console summary.
@@ -121,6 +123,8 @@ function parse_args(args)
             config.skip_field = true
         elseif arg == "--serial-assembly"
             config.threaded_assembly = false
+        elseif arg == "--cpu-cache"
+            config.use_cpu_cache = true
         elseif arg == "--profile"
             i += 1; config.profile = lowercase(args[i])
         elseif arg == "--json"
@@ -136,6 +140,8 @@ function parse_args(args)
     config.wavelength_mesh_stat in ("median", "p75", "p90", "max") || error("Unsupported wavelength mesh stat: $(config.wavelength_mesh_stat)")
     config.wavelength_kh_q1_max >= 0.0 || error("--wavelength-kh-q1-max must be non-negative.")
     config.wavelength_kh_q2_max > config.wavelength_kh_q1_max || error("--wavelength-kh-q2-max must be greater than --wavelength-kh-q1-max.")
+    1 <= config.warmups <= 3 || error("--warmups must be between 1 and 3.")
+    config.repetitions >= 1 || error("--repetitions must be at least 1.")
     return config
 end
 
@@ -267,6 +273,23 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
     singular_cache = timed_stage!(timings, "singular_correction_cache_build") do
         build_singular_correction_cache(mesh, config.singular_order, element_indices)
     end
+    cpu_cache = if config.use_cpu_cache
+        timed_stage!(timings, "cpu_assembly_cache_build") do
+            build_beat_cpu_assembly_cache(
+                mesh,
+                p1_space,
+                dp0_space,
+                rule;
+                singular_order=config.singular_order,
+                element_indices=element_indices,
+                threaded=config.threaded_assembly,
+                symmetry_mode=symmetry_mode,
+            )
+        end
+    else
+        timings["cpu_assembly_cache_build"] = 0.0
+        nothing
+    end
 
     identity_p1_p1 = timed_stage!(timings, "identity_assembly_p1_p1") do
         assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=symmetry_mode)
@@ -299,13 +322,18 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
             threaded=config.threaded_assembly,
             timing=timings,
             singular_cache=singular_cache,
+            cpu_cache=cpu_cache,
             symmetry_mode=symmetry_mode,
         )
     end
     timings["regular_operator_assembly"] = get(timings, "regular_operator_cpu_scatter", 0.0)
     timings["singular_corrections"] = get(timings, "singular_corrections_cpu_scatter", 0.0)
-    timings["operator_allocation_overhead"] = max(
-        timings["operator_total_assembly"] - timings["regular_operator_assembly"] - timings["singular_corrections"],
+    timings["image_singular_corrections"] = get(timings, "image_singular_corrections_cpu_scatter", 0.0)
+    timings["operator_unattributed_overhead"] = max(
+        timings["operator_total_assembly"] -
+        timings["regular_operator_assembly"] -
+        timings["singular_corrections"] -
+        timings["image_singular_corrections"],
         0.0,
     )
 
@@ -338,6 +366,7 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
         "identity_assembly_p1_dp0",
         "field_cache_build_cpu",
         "singular_correction_cache_build",
+        "cpu_assembly_cache_build",
         "operator_total_assembly",
         "solve_total",
         "field_evaluation",
@@ -348,6 +377,10 @@ function run_workload(config::CpuBenchmarkConfig; measured::Bool=true)
         "timestamp" => string(now()),
         "git_commit" => git_commit(),
         "julia_version" => string(VERSION),
+        "cpu_name" => Sys.CPU_NAME,
+        "cpu_threads" => Sys.CPU_THREADS,
+        "total_memory_bytes" => Sys.total_memory(),
+        "blas_config" => string(BLAS.get_config()),
         "threads" => Threads.nthreads(),
         "blas_threads" => BLAS.get_num_threads(),
         "mesh" => abspath(config.mesh),
@@ -487,7 +520,8 @@ function print_summary(payload)
         "operator_total_assembly",
         "regular_operator_assembly",
         "singular_corrections",
-        "operator_allocation_overhead",
+        "image_singular_corrections",
+        "operator_unattributed_overhead",
         "lhs_rhs_build",
         "linear_solve",
         "solve_total",
@@ -532,6 +566,7 @@ function benchmark_payload(config::CpuBenchmarkConfig)
         "skip_solve" => config.skip_solve,
         "skip_field" => config.skip_field,
         "threaded_assembly" => config.threaded_assembly,
+        "use_cpu_cache" => config.use_cpu_cache,
         "profile" => config.profile,
         "regular_assembly_mode" => config.threaded_assembly ? "cpu_colored_threads" : "cpu_serial",
         "verbose" => config.verbose,
@@ -550,7 +585,7 @@ function benchmark_payload(config::CpuBenchmarkConfig)
             Profile.clear()
             result = Profile.@profile run_workload(config)
             push!(runs, result)
-            Profile.print(format=:flat, sortedby=:count, maxdepth=20)
+            Profile.print(format=:flat, sortedby=:count, maxdepth=20, mincount=5, groupby=:thread)
         elseif config.profile == "allocs" && i == 1
             bytes = @allocated result = run_workload(config)
             result["allocated_bytes_outer"] = bytes
