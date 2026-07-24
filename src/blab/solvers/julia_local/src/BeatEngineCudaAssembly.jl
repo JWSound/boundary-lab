@@ -13,6 +13,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
     timing=nothing,
     singular_cache=nothing,
     cuda_singular_cache=nothing,
+    cuda_image_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
@@ -201,6 +202,7 @@ function assemble_regular_galerkin_operators_cuda_regular(
                 indices,
                 symmetry_mode;
                 cuda_regular_cache=cache,
+                cuda_image_singular_cache=cuda_image_singular_cache,
                 timing=timing,
             )
         end

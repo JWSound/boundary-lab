@@ -12,15 +12,20 @@ class ServerHealthCheckWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, server_url: str, *, timeout_s: float = 5.0):
+    def __init__(self, server_url: str, *, access_token: str = "", timeout_s: float = 5.0):
         super().__init__()
         self.server_url = (server_url or "http://127.0.0.1:8765").rstrip("/")
+        self.access_token = str(access_token or "").strip()
         self.timeout_s = timeout_s
 
     @Slot()
     def run(self) -> None:
         try:
-            payload = query_server_health(self.server_url, timeout_s=self.timeout_s)
+            payload = query_server_health(
+                self.server_url,
+                access_token=self.access_token,
+                timeout_s=self.timeout_s,
+            )
         except Exception as exc:
             self.failed.emit(str(exc))
         else:

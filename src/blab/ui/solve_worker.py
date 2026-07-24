@@ -31,6 +31,7 @@ class SolveWorker(QObject):
         worker_count: int = 1,
         backend_id: str = "local",
         server_url: str = "http://127.0.0.1:8765",
+        server_access_token: str = "",
     ):
         super().__init__()
         self.config = config
@@ -38,6 +39,7 @@ class SolveWorker(QObject):
         self.worker_count = worker_count
         self.backend_id = backend_id
         self.server_url = server_url
+        self.server_access_token = str(server_access_token or "").strip()
         self._stop = False
         self._stop_event = None
         self._session = None
@@ -53,6 +55,7 @@ class SolveWorker(QObject):
             backend = create_backend(
                 self.backend_id,
                 server_url=self.server_url,
+                server_access_token=self.server_access_token,
             )
             session = backend.create_session(
                 SolveRequest(

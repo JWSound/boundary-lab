@@ -274,12 +274,25 @@ end
         @test operators.regular_kernel_mode == "serial_pair_batched"
         @test operators.regular_pairs > 0
         @test operators.singular_pairs == singular_cache.pair_count
+        @test BeatEngineCore._cuda_use_matrix_free_burton_miller_rhs(operators)
 
         identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1, dp0, rule, :p1, :p1)
         identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1, dp0, rule, :p1, :dp0)
         identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, Float32)
         q_neumann = zeros(ComplexF32, length(mesh.faces))
         q_neumann[1] = ComplexF32(0, 1)
+        d_q_neumann = CUDA_MODULE.CuArray(q_neumann)
+        coupling = ComplexF32(0, 1) / k
+        d_expected_rhs = (
+            -operators.single_layer .-
+            coupling .* (operators.adjoint_double_layer .+ ComplexF32(0.5) .* identity_cache.identity_p1_dp0)
+        ) * d_q_neumann
+        d_matrix_free_rhs = BeatEngineCore._cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
+        @test Array(d_matrix_free_rhs) ≈ Array(d_expected_rhs) rtol=2f-5
+        CUDA_MODULE.unsafe_free!(d_q_neumann)
+        CUDA_MODULE.unsafe_free!(d_expected_rhs)
+        CUDA_MODULE.unsafe_free!(d_matrix_free_rhs)
+
         pressure = solve_burton_miller_neumann(operators, identity_cache, q_neumann, k)
         release_cuda_burton_miller_identity_cache!(identity_cache)
 
@@ -295,5 +308,48 @@ end
         @test all(isfinite, imag.(field))
 
         release_operator_storage!(operators)
+
+        symmetry_mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample_quarter.msh"), Float32(0.001))
+        symmetry_p1 = build_p1_space(symmetry_mesh)
+        symmetry_dp0 = build_dp0_space(symmetry_mesh)
+        symmetry_indices = eachindex(symmetry_mesh.faces)
+        symmetry_singular_cache = build_singular_correction_cache(symmetry_mesh, 2, symmetry_indices)
+        symmetry_cuda_cache = build_cuda_regular_assembly_cache(symmetry_mesh, rule; element_indices=symmetry_indices)
+        symmetry_cuda_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(
+            symmetry_singular_cache,
+            symmetry_p1,
+            symmetry_dp0,
+        )
+        image_cache = build_cuda_image_singular_correction_cache(
+            symmetry_mesh,
+            symmetry_p1,
+            symmetry_dp0,
+            2,
+            symmetry_indices,
+            :xy,
+        )
+        image_timing = Dict{String,Float64}()
+        symmetry_operators = assemble_regular_galerkin_operators(
+            symmetry_mesh,
+            symmetry_p1,
+            symmetry_dp0,
+            k,
+            rule;
+            skip_singular=false,
+            singular_order=2,
+            element_indices=symmetry_indices,
+            device_cache=symmetry_cuda_cache,
+            singular_cache=symmetry_singular_cache,
+            device_singular_cache=symmetry_cuda_singular_cache,
+            device_image_singular_cache=image_cache,
+            symmetry_mode=:xy,
+            timing=image_timing,
+        )
+        @test image_cache.pair_count > 0
+        @test symmetry_operators.image_singular_pairs == image_cache.pair_count
+        @test image_timing["image_singular_correction_cuda_cache_build"] == 0.0
+        @test !BeatEngineCore._cuda_use_matrix_free_burton_miller_rhs(symmetry_operators)
+        release_operator_storage!(symmetry_operators)
+        release_cuda_image_singular_correction_cache!(image_cache)
     end
 end

@@ -274,7 +274,8 @@ def test_server_health_worker_runs_query_with_timeout() -> None:
     assert "class ServerHealthCheckWorker(QObject)" in worker_source
     assert "succeeded = Signal(str, object)" in worker_source
     assert "failed = Signal(str)" in worker_source
-    assert "query_server_health(self.server_url, timeout_s=self.timeout_s)" in worker_source
+    assert "access_token=self.access_token" in worker_source
+    assert "timeout_s=self.timeout_s" in worker_source
     assert "self.finished.emit()" in worker_source
 
 
@@ -330,6 +331,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
     assert '"Solve Server URL", self.solve_server_url_edit' in solver_config_block
     assert 'self.check_server_button = QPushButton("Check Server")' in dialog_source
+    assert 'self.generate_server_access_token_button = QPushButton("Generate")' in dialog_source
+    assert 'self.copy_server_access_token_button = QPushButton("Copy")' in dialog_source
+    assert '"Server access token",' in solver_config_block
+    assert "self.server_access_token_row.setEnabled(uses_remote)" in dialog_source
     assert '"", self.check_server_button' in solver_config_block or "self.check_server_button," in solver_config_block
     assert "self.check_server_button.setEnabled(uses_remote)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
@@ -343,7 +348,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "server_health_supports_symmetry" in main_source
     assert "def _check_configured_server_health_on_startup" in main_source
     assert 'self.preferences.solve_backend != "server"' in main_source
-    assert "ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)" in main_source
+    assert "ServerHealthCheckWorker(" in main_source
+    assert "access_token=load_server_access_token(self.preferences.solve_server_url)" in main_source
     assert "worker.failed.connect(lambda _message: None)" in main_source
     assert 'self.mesh_state_changed.emit("server_health_checked")' in main_source
     assert "GMRES Tolerance" not in dialog_source

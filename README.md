@@ -128,7 +128,13 @@ the server to that machine's LAN address or `0.0.0.0` and use
 with each server job, so the server does not need access to the client's local
 paths.
 
-For Docker image deployment with the BEAT Engine CUDA solver, see
+Server authentication is optional. Set `BLAB_AUTH_TOKEN` on an
+internet-reachable server and configure the same token in Preferences; Boundary
+Lab stores it in the operating system credential vault and sends it as an HTTPS
+bearer token. Unauthenticated HTTP remains available for localhost and trusted
+private networks.
+
+For authenticated Docker and Runpod deployment with the BEAT Engine CUDA solver, see
 [Docker](docs/Docker.md).
 
 ## Documentation

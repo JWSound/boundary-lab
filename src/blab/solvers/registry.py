@@ -139,14 +139,24 @@ def _create_bempp_local_backend() -> SolverBackend:
     return BemppLocalBackend()
 
 
-def _create_bempp_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:
-    return _create_http_server_backend(server_url=server_url)
+def _create_bempp_server_backend(
+    *,
+    server_url: str = "http://127.0.0.1:8765",
+    server_access_token: str = "",
+    **_kwargs: Any,
+) -> SolverBackend:
+    return _create_http_server_backend(server_url=server_url, server_access_token=server_access_token)
 
 
-def _create_http_server_backend(*, server_url: str = "http://127.0.0.1:8765", **_kwargs: Any) -> SolverBackend:
+def _create_http_server_backend(
+    *,
+    server_url: str = "http://127.0.0.1:8765",
+    server_access_token: str = "",
+    **_kwargs: Any,
+) -> SolverBackend:
     from blab.solvers.http_server import HttpServerBackend
 
-    return HttpServerBackend(server_url)
+    return HttpServerBackend(server_url, server_access_token)
 
 
 def _create_beat_engine_backend(

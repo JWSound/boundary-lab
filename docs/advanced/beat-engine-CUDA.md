@@ -31,7 +31,7 @@ The regular-pair kernel skips adjacent pairs. Singular and near-singular correct
 
 ## CUDA Singular Corrections
 
-A Duffy block kernel computes compact per-pair correction blocks directly on device. A CUDA scatter kernel atomically accumulates those compact blocks into dense correction buffers before adding them to the resident operators. The Duffy kernel reuses the regular assembly geometry cache, so the per-frequency singular correction path does not transfer dense CPU correction matrices.
+A Duffy block kernel computes compact per-pair correction blocks directly on device. A CUDA scatter kernel atomically accumulates those compact blocks into dense correction buffers before adding them to the resident operators. The Duffy kernel reuses the regular assembly geometry cache, so the per-frequency singular correction path does not transfer dense CPU correction matrices. Symmetry image-singular topology is also mirrored to a device cache once during job initialization and reused across the frequency sweep.
 
 The CUDA singular correction cache stores:
 
@@ -95,7 +95,11 @@ $$
 b = \left(-S - \eta(D^{*} + \frac{1}{2}I_{P1,DP0})\right)q.
 $$
 
-It then calls Julia's dense linear solve:
+For systems above 768 P1 unknowns, the RHS is evaluated matrix-free with three
+accumulating GPU matrix-vector products, avoiding a dense combined
+RHS-operator temporary. Smaller systems retain the single-GEMV materialized
+path because it benchmarks faster. The solver then calls Julia's dense linear
+solve:
 
 ```julia
 d_pressure = d_lhs \ d_rhs

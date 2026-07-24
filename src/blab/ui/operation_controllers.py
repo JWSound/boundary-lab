@@ -21,6 +21,7 @@ class SolveRequest:
     ordered_frequencies: np.ndarray
     backend_id: str
     server_url: str
+    server_access_token: str = ""
     worker_count: int = 1
 
 
@@ -158,6 +159,7 @@ class SolveController(QObject):
             worker_count=request.worker_count,
             backend_id=request.backend_id,
             server_url=request.server_url,
+            server_access_token=request.server_access_token,
         )
         self._thread = thread
         self._worker = worker

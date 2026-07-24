@@ -24,6 +24,7 @@ dev = [
   "ruff>=0.15,<0.16",
 ]
 gui = [
+  "keyring>=25",
   "PySide6",
   "pyvista",
   "pyvistaqt",

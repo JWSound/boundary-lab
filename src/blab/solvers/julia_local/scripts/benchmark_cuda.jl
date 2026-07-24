@@ -17,6 +17,29 @@ catch
     nothing
 end
 
+function install_windows_cudacore_pipe_workaround!()
+    Sys.iswindows() || return
+    CUDA_MODULE === nothing && return
+    Core.eval(CUDA_MODULE.CUDACore, quote
+        function run_and_collect(cmd)
+            log_path = tempname(cleanup=false)
+            try
+                return open(log_path, "w+") do io
+                    proc = run(pipeline(ignorestatus(cmd); stdout=io, stderr=io), wait=true)
+                    seekstart(io)
+                    log = strip(read(io, String))
+                    return proc, log
+                end
+            finally
+                rm(log_path; force=true)
+            end
+        end
+    end)
+    return
+end
+
+install_windows_cudacore_pipe_workaround!()
+
 const GIT_COMMIT_CACHE = Ref{Any}(:unset)
 
 Base.@kwdef mutable struct BenchmarkConfig
@@ -28,6 +51,7 @@ Base.@kwdef mutable struct BenchmarkConfig
     singular_order::Int = 4
     eval_points::Int = 0
     subset_faces::Int = 0
+    symmetry::String = "off"
     repetitions::Int = 1
     warmups::Int = 1
     scale_factor::Float64 = 0.001
@@ -57,8 +81,9 @@ function print_usage()
       --singular-order N             Singular quadrature order. Default: 4
       --eval-points N                Field evaluation point count. Default: 0
       --subset-faces N               Use first N faces for assembly experiments. 0 means full mesh.
+      --symmetry off|x|xy            Symmetry mode. Default: off
       --repetitions N                Measured repetitions. Default: 1
-      --warmups N                    Warmup repetitions. Default: 1
+      --warmups N                    Warmup repetitions (1-3). Default: 1
       --skip-solve                   Do not build/solve the Burton-Miller system.
       --skip-field                   Do not evaluate the radiated field.
       --profile none|cpu|allocs      Print CPU or allocation profile for one measured run.
@@ -92,6 +117,8 @@ function parse_args(args)
             i += 1; config.eval_points = parse(Int, args[i])
         elseif arg == "--subset-faces"
             i += 1; config.subset_faces = parse(Int, args[i])
+        elseif arg == "--symmetry"
+            i += 1; config.symmetry = lowercase(strip(args[i]))
         elseif arg == "--repetitions"
             i += 1; config.repetitions = parse(Int, args[i])
         elseif arg == "--warmups"
@@ -196,28 +223,7 @@ function throat_rhs(mesh, config::BenchmarkConfig, ::Type{T}) where {T<:Abstract
     return q_neumann, throat_indices
 end
 
-function add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k::T, singular_order::Int, element_indices, singular_cache, cuda_singular_cache, cuda_regular_cache) where {T<:AbstractFloat}
-    singular_pairs = timed_stage!(timings, "singular_correction_compute_scatter") do
-        BeatEngineCore.add_singular_corrections_cuda_compact!(
-            operators,
-            mesh,
-            p1_space,
-            dp0_space,
-            k,
-            singular_order,
-            element_indices,
-            singular_cache,
-            cuda_singular_cache=cuda_singular_cache,
-            cuda_regular_cache=cuda_regular_cache,
-            timing=timings,
-        )
-    end
-    timings["singular_correction_alloc"] = get(timings, "singular_correction_gpu_alloc", 0.0)
-    timings["singular_correction_transfer_to_gpu"] = get(timings, "singular_correction_compact_transfer", 0.0)
-    return singular_pairs
-end
-
-function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config::BenchmarkConfig, element_indices, cache, singular_cache, cuda_singular_cache)
+function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config::BenchmarkConfig, element_indices, cache, singular_cache, cuda_singular_cache, cuda_image_singular_cache, symmetry_mode)
     operators = nothing
     operators = timed_stage!(timings, "regular_operator_assembly") do
         assemble_regular_galerkin_operators(
@@ -226,7 +232,7 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             dp0_space,
             k,
             rule;
-            skip_singular=true,
+            skip_singular=false,
             singular_order=config.singular_order,
             element_indices=element_indices,
             backend=:cuda,
@@ -236,16 +242,20 @@ function assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, 
             timing=timings,
             singular_cache=singular_cache,
             device_singular_cache=cuda_singular_cache,
+            device_image_singular_cache=cuda_image_singular_cache,
+            symmetry_mode=symmetry_mode,
         )
     end
 
-    singular_pairs = timed_stage!(timings, "singular_corrections") do
-        add_singular_corrections_gpu!(timings, operators, mesh, p1_space, dp0_space, k, config.singular_order, element_indices, singular_cache, cuda_singular_cache, cache)
-    end
-
-    timings["operator_total_assembly"] = timings["regular_operator_assembly"] + timings["singular_corrections"]
-    skipped_pairs = max(get(operators, :skipped_pairs, 0) - singular_pairs, 0)
-    return merge(operators, (singular_pairs=singular_pairs, skipped_pairs=skipped_pairs))
+    timings["singular_corrections"] = sum(get(timings, key, 0.0) for key in (
+        "singular_correction_gpu_alloc",
+        "singular_correction_block_compute",
+        "singular_correction_gpu_scatter",
+        "singular_correction_gpu_add",
+        "regular_operator_image_singular_corrections",
+    ))
+    timings["operator_total_assembly"] = timings["regular_operator_assembly"]
+    return operators
 end
 
 function solve_burton_miller_neumann_cuda_timed!(timings, operators, identity_cache, q_neumann, k::T) where {T<:AbstractFloat}
@@ -264,11 +274,20 @@ function solve_burton_miller_neumann_cuda_timed!(timings, operators, identity_ca
         d_lhs = timed_cuda_stage!(timings, "solve_lhs_build", cuda) do
             Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
         end
-        d_rhs_operator = timed_cuda_stage!(timings, "solve_rhs_operator_build", cuda) do
-            -operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0)
-        end
-        d_rhs = timed_cuda_stage!(timings, "solve_rhs_matvec", cuda) do
-            d_rhs_operator * d_q_neumann
+        if BeatEngineCore._cuda_use_matrix_free_burton_miller_rhs(operators)
+            timings["solve_rhs_operator_build"] = 0.0
+            d_rhs = timed_cuda_stage!(timings, "solve_rhs_matvec", cuda) do
+                BeatEngineCore._cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
+            end
+        else
+            d_rhs_operator = timed_cuda_stage!(timings, "solve_rhs_operator_build", cuda) do
+                -operators.single_layer .- coupling .* (
+                    operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0
+                )
+            end
+            d_rhs = timed_cuda_stage!(timings, "solve_rhs_matvec", cuda) do
+                d_rhs_operator * d_q_neumann
+            end
         end
         d_pressure = timed_cuda_stage!(timings, "linear_solve", cuda) do
             d_lhs \ d_rhs
@@ -277,7 +296,7 @@ function solve_burton_miller_neumann_cuda_timed!(timings, operators, identity_ca
             Complex{T}.(Array(d_pressure))
         end
     finally
-        for item in (d_q_neumann, d_rhs_operator, d_lhs, d_rhs, d_pressure)
+        for item in (d_q_neumann, d_lhs, d_rhs_operator, d_rhs, d_pressure)
             item === nothing && continue
             cuda.unsafe_free!(item)
         end
@@ -302,6 +321,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     mesh = timed_stage!(timings, "mesh_load") do
         load_gmsh22_with_tags(config.mesh, T(config.scale_factor))
     end
+    symmetry_mode = Symbol(config.symmetry)
+    validate_symmetry_fundamental_domain!(mesh, symmetry_mode)
     p1_space = nothing
     dp0_space = nothing
     timed_stage!(timings, "space_build") do
@@ -317,7 +338,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         timings["field_cache_build_gpu"] = 0.0
     else
         cpu_field_cache = timed_stage!(timings, "field_cache_build_cpu") do
-            build_field_evaluation_cache(mesh, rule)
+            build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode)
         end
         field_cache = timed_stage!(timings, "field_cache_build_gpu") do
             build_cuda_field_evaluation_cache(cpu_field_cache)
@@ -335,12 +356,27 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     cuda_singular_cache = timed_stage!(timings, "singular_correction_cuda_cache_build_request") do
         BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
     end
+    cuda_image_singular_cache = if symmetry_mode == :off
+        timings["image_singular_correction_cuda_cache_build_request"] = 0.0
+        nothing
+    else
+        timed_stage!(timings, "image_singular_correction_cuda_cache_build_request") do
+            build_cuda_image_singular_correction_cache(
+                mesh,
+                p1_space,
+                dp0_space,
+                config.singular_order,
+                element_indices,
+                symmetry_mode,
+            )
+        end
+    end
 
     identity_p1_p1 = timed_stage!(timings, "identity_assembly_p1_p1") do
-        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
+        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=symmetry_mode)
     end
     identity_p1_dp0 = timed_stage!(timings, "identity_assembly_p1_dp0") do
-        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
+        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0; symmetry_mode=symmetry_mode)
     end
 
     cuda_solve_identity_cache = nothing
@@ -357,7 +393,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     end
 
     k = T(2pi * config.frequency / config.sound_speed)
-    operators = assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config, element_indices, cache, singular_cache, cuda_singular_cache)
+    operators = assemble_operators_timed!(timings, mesh, p1_space, dp0_space, k, rule, config, element_indices, cache, singular_cache, cuda_singular_cache, cuda_image_singular_cache, symmetry_mode)
 
     q_neumann, throat_indices = throat_rhs(mesh, config, T)
     pressure = nothing
@@ -390,8 +426,8 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "field_cache_build_gpu",
         "singular_correction_cache_build",
         "singular_correction_cuda_cache_build_request",
+        "image_singular_correction_cuda_cache_build_request",
         "regular_operator_assembly",
-        "singular_corrections",
         "solve_total",
         "field_evaluation",
     ]
@@ -399,6 +435,9 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
     release_operator_storage!(operators)
     if cuda_solve_identity_cache !== nothing
         release_cuda_burton_miller_identity_cache!(cuda_solve_identity_cache)
+    end
+    if cuda_image_singular_cache !== nothing
+        release_cuda_image_singular_correction_cache!(cuda_image_singular_cache)
     end
     metadata = Dict{String,Any}(
         "timestamp" => string(now()),
@@ -415,6 +454,7 @@ function run_workload(config::BenchmarkConfig; measured::Bool=true)
         "dp0_dofs" => dp0_space.global_dof_count,
         "element_count" => element_count,
         "subset_run" => subset_run,
+        "symmetry" => config.symmetry,
         "frequency_hz" => config.frequency,
         "precision" => config.precision_name,
         "backend" => "cuda",
@@ -581,6 +621,7 @@ function benchmark_payload(config::BenchmarkConfig)
         "singular_order" => config.singular_order,
         "eval_points" => config.eval_points,
         "subset_faces" => config.subset_faces,
+        "symmetry" => config.symmetry,
         "repetitions" => config.repetitions,
         "warmups" => config.warmups,
         "skip_solve" => config.skip_solve,

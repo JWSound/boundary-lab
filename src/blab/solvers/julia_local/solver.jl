@@ -706,6 +706,7 @@ function solve_request_impl(request)
     singular_cache = build_singular_correction_cache(mesh, singular_order)
     device_cache = nothing
     device_singular_cache = nothing
+    device_image_singular_cache = nothing
     cuda_solve_identity_cache = nothing
     field_cache = cpu_field_cache
     regular_rule_cache = Dict{Int,Any}(base_regular_order => rule)
@@ -717,6 +718,16 @@ function solve_request_impl(request)
         device_cache = build_cuda_regular_assembly_cache(mesh, rule)
         field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
         device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+        if Symbol(symmetry_mode) != :off
+            device_image_singular_cache = build_cuda_image_singular_correction_cache(
+                mesh,
+                p1_space,
+                dp0_space,
+                singular_order,
+                eachindex(mesh.faces),
+                Symbol(symmetry_mode),
+            )
+        end
         cuda_solve_identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, FloatType)
     elseif beat_backend == :rocm
         emit_event("status"; message="Initializing BEAT Engine using ROCm...")
@@ -795,6 +806,7 @@ function solve_request_impl(request)
                 singular_cache=singular_cache,
                 cpu_cache=selected_cpu_assembly_cache,
                 device_singular_cache=device_singular_cache,
+                device_image_singular_cache=device_image_singular_cache,
                 symmetry_mode=Symbol(symmetry_mode),
             )
         end
@@ -927,6 +939,9 @@ function solve_request_impl(request)
     finally
         if cuda_solve_identity_cache !== nothing
             release_cuda_burton_miller_identity_cache!(cuda_solve_identity_cache)
+        end
+        if device_image_singular_cache !== nothing
+            release_cuda_image_singular_correction_cache!(device_image_singular_cache)
         end
     end
 

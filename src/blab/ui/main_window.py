@@ -127,6 +127,7 @@ from blab.ui.result_projection import (
     ResultProjectionService,
     VisualizationProjection,
 )
+from blab.ui.server_credentials import load_server_access_token
 from blab.ui.server_health_worker import ServerHealthCheckWorker
 from blab.ui.settings import (
     SETTINGS_APP,
@@ -1222,7 +1223,11 @@ class MainWindow(QMainWindow):
     def _check_configured_server_health_on_startup(self) -> None:
         if self.preferences.solve_backend != "server" or self.server_health_thread is not None:
             return
-        worker = ServerHealthCheckWorker(self.preferences.solve_server_url, timeout_s=5.0)
+        worker = ServerHealthCheckWorker(
+            self.preferences.solve_server_url,
+            access_token=load_server_access_token(self.preferences.solve_server_url),
+            timeout_s=5.0,
+        )
         thread = QThread(self)
         self.server_health_thread = thread
         self.server_health_worker = worker
@@ -1993,10 +1998,11 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.Accepted:
             return
         preferences = dialog.preferences()
-        dialog.deleteLater()
         checked_server_health = None
-        if dialog.server_health_payload is not None and dialog.server_health_url == preferences.solve_server_url.rstrip(
-            "/"
+        if (
+            dialog.server_health_payload is not None
+            and dialog.server_health_url == preferences.solve_server_url.rstrip("/")
+            and dialog.server_health_access_token == dialog.server_access_token_edit.text().strip()
         ):
             checked_server_health = dialog.server_health_payload
         symmetry_will_be_disabled = (
@@ -2011,8 +2017,12 @@ class MainWindow(QMainWindow):
             previous_preferences, preferences
         )
         if requires_invalidation and not self._confirm_clear_solved_data():
+            dialog.deleteLater()
             return
 
+        access_token = dialog.server_access_token_edit.text().strip()
+        credential_persisted = dialog.persist_server_access_token()
+        dialog.deleteLater()
         self.preferences = preferences
         if checked_server_health is not None and preferences.solve_backend == "server":
             self.server_health_payload = checked_server_health
@@ -2033,6 +2043,13 @@ class MainWindow(QMainWindow):
         elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
             self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
+        if access_token and not credential_persisted:
+            QMessageBox.warning(
+                self,
+                "Server access token",
+                "The operating system credential vault is unavailable. "
+                "The server access token will work for this session but could not be saved.",
+            )
 
     @Slot()
     def open_diagnostics(self) -> None:
@@ -2487,6 +2504,7 @@ class MainWindow(QMainWindow):
                 worker_count=1,
                 backend_id=self.preferences.solve_backend,
                 server_url=self.preferences.solve_server_url,
+                server_access_token=load_server_access_token(self.preferences.solve_server_url),
             )
         )
 

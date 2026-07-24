@@ -20,6 +20,34 @@ blab server --host 0.0.0.0 --port 8765 --solver beat_cuda
 
 Then use `http://<server-ip>:8765` as the GUI's Solve Server URL.
 
+## Optional Authentication
+
+Authentication is opt-in. If `BLAB_AUTH_TOKEN` is unset or empty, the server
+continues to accept unauthenticated requests for localhost and trusted private
+network use.
+
+To protect a server, set a high-entropy token in the environment before
+starting it:
+
+```bash
+export BLAB_AUTH_TOKEN="paste-generated-token-here"
+blab server --host 0.0.0.0 --port 8765 --solver beat_cuda
+```
+
+When a token is configured, every API endpoint, including `/health`, requires
+an `Authorization: Bearer ...` header. The server never logs the token.
+
+In Boundary Lab, select `BEM Solver: Server` in Preferences, click `Generate`
+beside `Server access token`, and use `Copy` to place the generated token in
+your deployment's secret store. The token is saved by server URL in the
+operating system credential vault. If no compatible credential vault is
+available, Boundary Lab retains it only for the current application session
+and displays a warning.
+
+Bearer tokens must be used with HTTPS except for loopback addresses. Boundary
+Lab refuses to send a configured token over remote plain HTTP. An
+unauthenticated server can still use plain HTTP on a trusted private network.
+
 ## Solver Selectors
 
 Supported `--solver` values:
@@ -46,7 +74,7 @@ In the Boundary Lab GUI:
 4. Click `Check Server`.
 5. Confirm the server info dialog, then accept Preferences.
 
-`Check Server` calls `GET /health` and updates the application's view of server-advertised capabilities. This matters for features such as BEAT Engine server-side X/XY symmetry. If Boundary Lab starts with `BEM Solver` already set to `Server`, it also runs a silent startup `GET /health` probe with a 5 second timeout. Failed startup probes do not interrupt application launch; the GUI simply falls back to the conservative unavailable state until a later successful check.
+`Check Server` calls `GET /health` with the configured access token and updates the application's view of server-advertised capabilities. This matters for features such as BEAT Engine server-side X/XY symmetry. If Boundary Lab starts with `BEM Solver` already set to `Server`, it also runs a silent startup `GET /health` probe with a 5 second timeout. Failed startup probes do not interrupt application launch; the GUI simply falls back to the conservative unavailable state until a later successful check.
 
 ## Symmetry Support
 
@@ -85,6 +113,11 @@ completed
 
 Failures are emitted as `failed` events with an error message. Cancellation is cooperative and may wait for the current in-flight frequency solve to finish.
 
+Each event-stream response is intentionally limited to 25 seconds by default.
+The client reconnects with the last received event index, so long solves remain
+compatible with HTTPS proxies that cap connection duration without duplicating
+results.
+
 ## Artifacts
 
 Completed jobs write a compressed `result.npz` under the configured artifact directory. By default this is:
@@ -99,9 +132,31 @@ Override it with:
 blab server --artifact-dir runs/my_server_jobs --solver beat_cpu
 ```
 
+Terminal job state and artifacts are retained for 24 hours by default. Expired
+jobs are purged during subsequent health checks or job submissions. Set
+`--job-retention-hours 0` to retain them indefinitely.
+
+## Resource Limits
+
+Servers apply these defaults:
+
+| Limit | Default | Option |
+|---|---:|---|
+| JSON request body | 20 MiB | `--max-request-mb` |
+| Decoded uploaded assets per job | 14 MiB | `--max-asset-mb` |
+| Frequencies per job | 1000 | `--max-frequencies` |
+| Waiting jobs | 4 | `--max-queued-jobs` |
+| Terminal job retention | 24 hours | `--job-retention-hours` |
+| Event response window | 25 seconds | `--event-stream-window-seconds` |
+
+The 14 MiB decoded-asset limit leaves space for base64 expansion and request
+metadata inside the 20 MiB request ceiling. These limits are configurable for
+unusually large meshes.
+
 ## Operational Notes
 
 - Keep `--max-running-jobs 1` unless you have intentionally tested concurrent jobs for the selected backend and hardware.
+- A server listening on a non-loopback address without `BLAB_AUTH_TOKEN` logs a warning but continues to start.
 - BEAT Engine CUDA jobs should usually be run one at a time per GPU.
 - Use `--log-level INFO` for normal pod logs, or `--log-level DEBUG` when diagnosing request and job flow.
 - The GUI uploads mesh assets with every server job, so the server can run on another machine without shared filesystem paths.

@@ -16,6 +16,12 @@ args=(
     --julia-threads "${BLAB_JULIA_THREADS}"
     --warm-solver "${BLAB_WARM_SOLVER}"
     --max-running-jobs "${BLAB_MAX_RUNNING_JOBS}"
+    --max-queued-jobs "${BLAB_MAX_QUEUED_JOBS}"
+    --max-request-mb "${BLAB_MAX_REQUEST_MB}"
+    --max-asset-mb "${BLAB_MAX_ASSET_MB}"
+    --max-frequencies "${BLAB_MAX_FREQUENCIES}"
+    --job-retention-hours "${BLAB_JOB_RETENTION_HOURS}"
+    --event-stream-window-seconds "${BLAB_EVENT_STREAM_WINDOW_SECONDS}"
     --log-level "${BLAB_LOG_LEVEL}"
     --artifact-dir "${BLAB_ARTIFACT_DIR}"
 )

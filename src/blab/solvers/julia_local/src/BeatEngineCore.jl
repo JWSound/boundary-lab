@@ -24,7 +24,9 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
     build_rocm_regular_assembly_cache,
     build_rocm_field_evaluation_cache,
@@ -842,6 +844,7 @@ function assemble_regular_galerkin_operators(
     singular_cache=nothing,
     cpu_cache=nothing,
     device_singular_cache=nothing,
+    device_image_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if backend == :cpu
@@ -879,6 +882,7 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             cuda_singular_cache=device_singular_cache,
+            cuda_image_singular_cache=device_image_singular_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -960,21 +964,38 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
     )
 end
 
+function _cuda_burton_miller_rhs(operators, identity_cache::CudaBurtonMillerIdentityCache, d_q_neumann, coupling::Complex{T}) where {T<:AbstractFloat}
+    d_rhs = similar(d_q_neumann, size(operators.single_layer, 1))
+    mul!(d_rhs, operators.single_layer, d_q_neumann, -one(Complex{T}), zero(Complex{T}))
+    mul!(d_rhs, operators.adjoint_double_layer, d_q_neumann, -coupling, one(Complex{T}))
+    mul!(d_rhs, identity_cache.identity_p1_dp0, d_q_neumann, -T(0.5) * coupling, one(Complex{T}))
+    return d_rhs
+end
+
+_cuda_use_matrix_free_burton_miller_rhs(operators) = size(operators.single_layer, 1) > 768
+
 function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMillerIdentityCache, q_neumann, k::T) where {T<:AbstractFloat}
     get(operators, :on_gpu, false) || error("Cached CUDA solve requires GPU-resident operators.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     coupling = Complex{T}(0, 1) / k
-    d_q_neumann = d_lhs = d_rhs = d_pressure = nothing
+    d_q_neumann = d_lhs = d_rhs_operator = d_rhs = d_pressure = nothing
     pressure = nothing
     try
         d_q_neumann = cuda.CuArray(q_neumann)
         d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
-        d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0)) * d_q_neumann
+        if _cuda_use_matrix_free_burton_miller_rhs(operators)
+            d_rhs = _cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
+        else
+            d_rhs_operator = -operators.single_layer .- coupling .* (
+                operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0
+            )
+            d_rhs = d_rhs_operator * d_q_neumann
+        end
         d_pressure = d_lhs \ d_rhs
         pressure = Complex{T}.(Array(d_pressure))
     finally
-        for item in (d_q_neumann, d_lhs, d_rhs, d_pressure)
+        for item in (d_q_neumann, d_lhs, d_rhs_operator, d_rhs, d_pressure)
             item === nothing && continue
             cuda.unsafe_free!(item)
         end
