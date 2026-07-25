@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+from blab import __version__
 from blab.protocol import (
     frequency_result_from_dict,
     ndarray_from_wire,
@@ -252,9 +253,10 @@ class HttpServerBackend:
 
 
 def _authorization_headers(access_token: str) -> dict[str, str]:
-    if not access_token:
-        return {}
-    return {"Authorization": f"Bearer {access_token}"}
+    headers = {"User-Agent": f"BoundaryLab/{__version__}"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    return headers
 
 
 def _validate_token_transport(server_url: str, access_token: str) -> None:

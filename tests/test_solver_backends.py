@@ -20,6 +20,7 @@ from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
 from blab.solvers.http_server import (
     HttpServerBackend,
     HttpServerSession,
+    _authorization_headers,
     query_server_health,
     server_health_supports_symmetry,
 )
@@ -134,6 +135,20 @@ def test_server_token_is_not_sent_over_remote_plain_http() -> None:
         assert "Refusing to send" in str(exc)
     else:
         raise AssertionError("client should reject bearer tokens over remote plain HTTP")
+
+
+def test_server_requests_use_application_user_agent() -> None:
+    headers = _authorization_headers("secret")
+
+    assert headers["User-Agent"].startswith("BoundaryLab/")
+    assert headers["Authorization"] == "Bearer secret"
+
+
+def test_server_requests_use_application_user_agent_without_authentication() -> None:
+    headers = _authorization_headers("")
+
+    assert headers["User-Agent"].startswith("BoundaryLab/")
+    assert "Authorization" not in headers
 
 
 def test_bempp_backend_rejects_symmetry() -> None:
