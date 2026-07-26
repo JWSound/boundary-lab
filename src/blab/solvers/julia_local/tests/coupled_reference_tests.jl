@@ -75,6 +75,15 @@ end
     @test all(isfinite, imag.(solution.pressure))
 end
 
+@testset "single-precision P1 FEM assembly" begin
+    fem_mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), Float32(0.001))
+    stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    @test eltype(stiffness) == Float32
+    @test eltype(mass) == Float32
+    @test all(isfinite, nonzeros(stiffness))
+    @test all(isfinite, nonzeros(mass))
+end
+
 @testset "sealed unit-cube modes" begin
     cube = structured_unit_cube(4)
     modes = sealed_cavity_modes(cube, 343.0; count=4)
@@ -134,6 +143,41 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
         @test solution.pressure_continuity_error < 1e-8
         @test solution.flux_conservation_error < 1e-10
         @test solution.all_bem_replay_error < 1e-8
+
+        fem_mesh32 = load_gmsh41_volume(
+            joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"),
+            Float32(0.001),
+        )
+        bem_mesh32 = load_gmsh22_with_tags(
+            joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"),
+            Float32(0.001),
+        )
+        interface_map32 = build_conforming_interface_map(
+            fem_mesh32,
+            bem_mesh32,
+            physical_tag(fem_mesh32, 2, "Interface"),
+            2,
+        )
+        solution32 = solve_coupled_reference(
+            fem_mesh32,
+            bem_mesh32,
+            interface_map32,
+            Float32(500.0),
+            Float32(343.0),
+            Float32(1.21),
+            physical_tag(fem_mesh32, 2, "Radiator");
+            quadrature_order=COUPLED_QUADRATURE_ORDER,
+            singular_order=COUPLED_SINGULAR_ORDER,
+        )
+        relative_error(reference, candidate) = norm(
+            ComplexF64.(candidate) .- ComplexF64.(reference),
+        ) / norm(ComplexF64.(reference))
+        @test relative_error(solution.fem_pressure, solution32.fem_pressure) < 1e-4
+        @test relative_error(solution.bem_pressure, solution32.bem_pressure) < 1e-4
+        @test relative_error(solution.interface_flux, solution32.interface_flux) < 1e-4
+        @test solution32.relative_residual < 1e-3
+        @test solution32.pressure_continuity_error < 1e-5
+        @test solution32.flux_conservation_error < 1e-5
     end
 else
     @info "Set BLAB_RUN_COUPLED_REFERENCE=1 to run the full dense FEM-BEM fixture validation."

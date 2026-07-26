@@ -128,6 +128,7 @@ class ProjectDocument:
     channel_config_by_name: dict[str, dict] = field(default_factory=dict)
     project_preferences: ProjectPreferencesState | None = None
     physical_system: PhysicalSystem | None = None
+    component_channel_by_id: dict[str, str] = field(default_factory=dict)
 
 
 def new_generator_document(

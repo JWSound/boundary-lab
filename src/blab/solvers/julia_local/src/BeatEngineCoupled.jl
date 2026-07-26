@@ -15,6 +15,8 @@ export VolumeMesh,
     solve_prescribed_velocity_interior,
     build_conforming_interface_map,
     assemble_interface_operators,
+    prepare_coupled_reference_cache,
+    release_coupled_reference_cache!,
     build_coupled_reference_system,
     solve_coupled_reference_system,
     solve_coupled_reference
@@ -116,8 +118,11 @@ function assemble_p1_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
             ),
         )
         determinant = det(jacobian)
+        edge_scale = maximum(abs, jacobian)
+        determinant_tolerance = eps(T) * edge_scale^3
+        abs(determinant) > determinant_tolerance ||
+            error("FEM volume mesh contains a numerically degenerate tetrahedron.")
         volume = abs(determinant) / T(6)
-        volume > eps(T) || error("FEM volume mesh contains a degenerate tetrahedron.")
         gradients = inv(transpose(jacobian)) * reference_gradients
         local_stiffness = volume .* (transpose(gradients) * gradients)
         local_mass = (volume / T(20)) .* reference_mass
@@ -346,6 +351,174 @@ function assemble_interface_operators(
     return InterfaceOperators{T}(fem_load, bem_flux, fem_trace, bem_trace)
 end
 
+function prepare_coupled_reference_cache(
+    fem_mesh::VolumeMesh{T},
+    bem_mesh::BoundaryMesh{T},
+    interface_map::ConformingInterfaceMap;
+    quadrature_order::Int=2,
+    singular_order::Int=2,
+    bem_backend::Symbol=:cpu,
+) where {T<:AbstractFloat}
+    bem_backend in (:cpu, :cuda) ||
+        error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
+    stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    interface_operators = assemble_interface_operators(fem_mesh, bem_mesh, interface_map)
+    p1 = build_p1_space(bem_mesh)
+    dp0 = build_dp0_space(bem_mesh)
+    rule = triangle_rule(T, quadrature_order)
+    singular_cache = build_singular_correction_cache(bem_mesh, singular_order)
+    cpu_assembly_cache = bem_backend == :cpu ? build_beat_cpu_assembly_cache(
+        bem_mesh,
+        p1,
+        dp0,
+        rule;
+        singular_order=singular_order,
+    ) : nothing
+    device_cache = bem_backend == :cuda ? build_cuda_regular_assembly_cache(bem_mesh, rule) : nothing
+    device_singular_cache = bem_backend == :cuda ? BeatEngineCore.build_cuda_singular_correction_cache(
+        singular_cache,
+        p1,
+        dp0,
+    ) : nothing
+    cpu_field_cache = build_field_evaluation_cache(bem_mesh, rule)
+    field_cache = bem_backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
+    return (
+        bem_backend=bem_backend,
+        stiffness=stiffness,
+        mass=mass,
+        interface_operators=interface_operators,
+        p1=p1,
+        dp0=dp0,
+        rule=rule,
+        cpu_assembly_cache=cpu_assembly_cache,
+        device_cache=device_cache,
+        device_singular_cache=device_singular_cache,
+        singular_cache=singular_cache,
+        identity_p1_p1=assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :p1),
+        identity_p1_dp0=assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :dp0),
+        field_cache=field_cache,
+    )
+end
+
+function _unsafe_free_cuda_fields!(value, fields)
+    isnothing(value) && return nothing
+    cuda = BeatEngineCore.cuda_module()
+    for field in fields
+        cuda.unsafe_free!(getproperty(value, field))
+    end
+    return nothing
+end
+
+function release_coupled_reference_cache!(cache)
+    cache.bem_backend == :cuda || return nothing
+    _unsafe_free_cuda_fields!(
+        cache.device_cache,
+        (
+            :face_vertices,
+            :normals,
+            :areas,
+            :faces,
+            :curls,
+            :rule_points,
+            :rule_weights,
+            :test_indices,
+            :trial_indices,
+        ),
+    )
+    _unsafe_free_cuda_fields!(
+        cache.device_singular_cache,
+        (
+            :test_indices,
+            :trial_indices,
+            :rule_indices,
+            :jac_scales,
+            :normal_products,
+            :p1_rows,
+            :p1_cols,
+            :dp0_cols,
+            :rule_offsets,
+            :rule_test_points,
+            :rule_trial_points,
+            :rule_weights,
+        ),
+    )
+    _unsafe_free_cuda_fields!(
+        cache.field_cache,
+        (
+            :source_points,
+            :source_normals,
+            :source_weights,
+            :source_faces,
+            :source_elements,
+            :basis_values,
+        ),
+    )
+    return nothing
+end
+
+function _cuda_coupled_bem_blocks(
+    operators,
+    identity_p1_p1,
+    identity_p1_dp0,
+    bem_flux,
+    wavenumber::T;
+    validation_diagnostics::Bool,
+) where {T<:AbstractFloat}
+    cuda = BeatEngineCore.cuda_module()
+    coupling = Complex{T}(0, 1) / wavenumber
+    d_identity_p1_p1 = d_identity_p1_dp0 = d_bem_flux = nothing
+    d_lhs = d_interface_block = d_interface_temp = d_rhs_operator = nothing
+    try
+        d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
+        d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
+        d_bem_flux = cuda.CuArray(Complex{T}.(Matrix(bem_flux)))
+        d_lhs = (
+            Complex{T}(0.5) .* d_identity_p1_p1 .-
+            operators.double_layer .+
+            coupling .* operators.hypersingular
+        )
+        d_interface_block = similar(
+            operators.single_layer,
+            Complex{T},
+            size(operators.single_layer, 1),
+            size(d_bem_flux, 2),
+        )
+        d_interface_temp = similar(d_interface_block)
+        mul!(d_interface_block, operators.single_layer, d_bem_flux)
+        mul!(d_interface_temp, operators.adjoint_double_layer, d_bem_flux)
+        d_interface_block .+= coupling .* d_interface_temp
+        mul!(d_interface_temp, d_identity_p1_dp0, d_bem_flux)
+        d_interface_block .+= Complex{T}(0.5) * coupling .* d_interface_temp
+        if validation_diagnostics
+            d_rhs_operator = (
+                -operators.single_layer .-
+                coupling .* (
+                    operators.adjoint_double_layer .+
+                    Complex{T}(0.5) .* d_identity_p1_dp0
+                )
+            )
+        end
+        cuda.synchronize()
+        return (
+            bem_lhs=Complex{T}.(Array(d_lhs)),
+            bem_rhs_operator=isnothing(d_rhs_operator) ? nothing : Complex{T}.(Array(d_rhs_operator)),
+            bem_interface_block=Complex{T}.(Array(d_interface_block)),
+        )
+    finally
+        for value in (
+            d_identity_p1_p1,
+            d_identity_p1_dp0,
+            d_bem_flux,
+            d_lhs,
+            d_interface_block,
+            d_interface_temp,
+            d_rhs_operator,
+        )
+            isnothing(value) || cuda.unsafe_free!(value)
+        end
+    end
+end
+
 function build_coupled_reference_system(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
@@ -355,37 +528,77 @@ function build_coupled_reference_system(
     density::T;
     quadrature_order::Int=2,
     singular_order::Int=2,
+    cache=nothing,
+    validation_diagnostics::Bool=true,
+    bem_backend::Symbol=:cpu,
 ) where {T<:AbstractFloat}
-    stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    fem_stage_started = time_ns()
+    prepared = isnothing(cache) ? prepare_coupled_reference_cache(
+        fem_mesh,
+        bem_mesh,
+        interface_map;
+        quadrature_order=quadrature_order,
+        singular_order=singular_order,
+        bem_backend=bem_backend,
+    ) : cache
+    prepared.bem_backend == bem_backend ||
+        error("Coupled reference cache backend does not match requested BEM backend.")
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
-    fem_system = Complex{T}.(stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(mass)
-    interface_operators = assemble_interface_operators(fem_mesh, bem_mesh, interface_map)
+    fem_system = Complex{T}.(prepared.stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(prepared.mass)
+    interface_operators = prepared.interface_operators
+    fem_system_s = (time_ns() - fem_stage_started) / 1.0e9
 
-    p1 = build_p1_space(bem_mesh)
-    dp0 = build_dp0_space(bem_mesh)
-    rule = triangle_rule(T, quadrature_order)
-    singular_cache = build_singular_correction_cache(bem_mesh, singular_order)
+    bem_operator_started = time_ns()
     operators = assemble_regular_galerkin_operators(
         bem_mesh,
-        p1,
-        dp0,
+        prepared.p1,
+        prepared.dp0,
         wavenumber,
-        rule;
+        prepared.rule;
         skip_singular=false,
         singular_order=singular_order,
-        backend=:cpu,
-        singular_cache=singular_cache,
+        backend=bem_backend,
+        singular_cache=prepared.singular_cache,
+        cpu_cache=prepared.cpu_assembly_cache,
+        device_cache=prepared.device_cache,
+        return_device=bem_backend == :cuda,
+        accelerator_quadrature=bem_backend == :cuda,
+        device_singular_cache=prepared.device_singular_cache,
     )
-    identity_p1_p1 = assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :p1)
-    identity_p1_dp0 = assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :dp0)
-    bem_lhs, bem_rhs_operator = burton_miller_neumann_matrices(
-        operators,
-        identity_p1_p1,
-        identity_p1_dp0,
-        wavenumber,
-    )
+    bem_operator_s = (time_ns() - bem_operator_started) / 1.0e9
+    bem_matrix_started = time_ns()
+    bem_blocks = if bem_backend == :cuda
+        try
+            _cuda_coupled_bem_blocks(
+                operators,
+                prepared.identity_p1_p1,
+                prepared.identity_p1_dp0,
+                interface_operators.bem_flux,
+                wavenumber;
+                validation_diagnostics=validation_diagnostics,
+            )
+        finally
+            release_operator_storage!(operators)
+        end
+    else
+        bem_lhs, bem_rhs_operator = burton_miller_neumann_matrices(
+            operators,
+            prepared.identity_p1_p1,
+            prepared.identity_p1_dp0,
+            wavenumber,
+        )
+        (
+            bem_lhs=bem_lhs,
+            bem_rhs_operator=bem_rhs_operator,
+            bem_interface_block=-(bem_rhs_operator * Complex{T}.(interface_operators.bem_flux)),
+        )
+    end
+    bem_lhs = bem_blocks.bem_lhs
+    bem_rhs_operator = bem_blocks.bem_rhs_operator
+    bem_matrix_s = (time_ns() - bem_matrix_started) / 1.0e9
 
+    block_assembly_started = time_ns()
     fem_count = length(fem_mesh.vertices)
     bem_count = length(bem_mesh.vertices)
     interface_count = length(interface_map.fem_vertex_indices)
@@ -396,10 +609,17 @@ function build_coupled_reference_system(
     coupled[fem_range, fem_range] = Matrix(fem_system)
     coupled[fem_range, flux_range] = -Complex{T}.(Matrix(interface_operators.fem_load))
     coupled[bem_range, bem_range] = bem_lhs
-    coupled[bem_range, flux_range] = -(bem_rhs_operator * Complex{T}.(interface_operators.bem_flux))
+    coupled[bem_range, flux_range] = bem_blocks.bem_interface_block
     coupled[flux_range, fem_range] = Complex{T}.(Matrix(interface_operators.fem_trace))
     coupled[flux_range, bem_range] = -Complex{T}.(Matrix(interface_operators.bem_trace))
+    block_assembly_s = (time_ns() - block_assembly_started) / 1.0e9
 
+    coupled_factorization_started = time_ns()
+    factorization = validation_diagnostics ? lu(coupled) : lu!(coupled)
+    coupled_factorization_s = (time_ns() - coupled_factorization_started) / 1.0e9
+    replay_factorization_started = time_ns()
+    bem_factorization = validation_diagnostics ? lu(bem_lhs) : nothing
+    replay_factorization_s = (time_ns() - replay_factorization_started) / 1.0e9
     return (
         fem_mesh=fem_mesh,
         bem_mesh=bem_mesh,
@@ -408,15 +628,27 @@ function build_coupled_reference_system(
         density=density,
         omega=omega,
         wavenumber=wavenumber,
-        field_cache=build_field_evaluation_cache(bem_mesh, rule),
-        coupled=coupled,
-        factorization=lu(coupled),
+        field_cache=prepared.field_cache,
+        coupled=validation_diagnostics ? coupled : nothing,
+        factorization=factorization,
         fem_range=fem_range,
         bem_range=bem_range,
         flux_range=flux_range,
-        bem_lhs=bem_lhs,
-        bem_factorization=lu(bem_lhs),
-        bem_rhs_operator=bem_rhs_operator,
+        bem_lhs=validation_diagnostics ? bem_lhs : nothing,
+        bem_factorization=bem_factorization,
+        bem_rhs_operator=validation_diagnostics ? bem_rhs_operator : nothing,
+        bem_backend=bem_backend,
+        prepared_cache=prepared,
+        owns_prepared_cache=isnothing(cache),
+        validation_diagnostics=validation_diagnostics,
+        timings=(
+            fem_system_s=fem_system_s,
+            bem_operator_s=bem_operator_s,
+            bem_matrix_s=bem_matrix_s,
+            block_assembly_s=block_assembly_s,
+            coupled_factorization_s=coupled_factorization_s,
+            replay_factorization_s=replay_factorization_s,
+        ),
     )
 end
 
@@ -425,7 +657,7 @@ function solve_coupled_reference_system(
     radiator_tag::Int;
     radiator_velocity=ComplexF64(1, 0),
 )
-    T = typeof(real(zero(eltype(system.coupled))))
+    T = typeof(real(zero(eltype(system.factorization))))
     velocity = Complex{T}(radiator_velocity)
     fem_rhs = assemble_prescribed_velocity_load(
         system.fem_mesh,
@@ -434,7 +666,7 @@ function solve_coupled_reference_system(
         system.omega,
         velocity,
     )
-    rhs = zeros(Complex{T}, size(system.coupled, 1))
+    rhs = zeros(Complex{T}, size(system.factorization, 1))
     rhs[system.fem_range] = fem_rhs
     solution = system.factorization \ rhs
     fem_pressure = solution[system.fem_range]
@@ -469,10 +701,14 @@ function solve_coupled_reference_system(
         )
     end
     flux_scale = max(abs(fem_integrated_flux), abs(bem_integrated_flux_along_fem_normal), eps(T))
-    replay_pressure = system.bem_factorization \ (system.bem_rhs_operator * bem_neumann)
-    replay_scale = max(norm(bem_pressure), norm(replay_pressure), eps(T))
-
-    relative_residual = norm(system.coupled * solution - rhs) / max(norm(rhs), eps(T))
+    replay_error = nothing
+    relative_residual = nothing
+    if system.validation_diagnostics
+        replay_pressure = system.bem_factorization \ (system.bem_rhs_operator * bem_neumann)
+        replay_scale = max(norm(bem_pressure), norm(replay_pressure), eps(T))
+        replay_error = norm(bem_pressure - replay_pressure) / replay_scale
+        relative_residual = norm(system.coupled * solution - rhs) / max(norm(rhs), eps(T))
+    end
     return (
         fem_pressure=fem_pressure,
         bem_pressure=bem_pressure,
@@ -481,7 +717,7 @@ function solve_coupled_reference_system(
         relative_residual=relative_residual,
         pressure_continuity_error=norm(pressure_jump) / pressure_scale,
         flux_conservation_error=abs(fem_integrated_flux - bem_integrated_flux_along_fem_normal) / flux_scale,
-        all_bem_replay_error=norm(bem_pressure - replay_pressure) / replay_scale,
+        all_bem_replay_error=replay_error,
         interface_map=system.interface_map,
         interface_operators=system.interface_operators,
     )

@@ -60,6 +60,12 @@ class MeshAssemblyService:
             if not source_path.exists():
                 raise FileNotFoundError(f"Imported mesh not found: {source_path}")
 
+            if self.is_volume_mesh(source_path):
+                # The legacy cleaner is intentionally a surface-mesh operation.
+                # Preserve FEM volume connectivity and all embedded physical groups.
+                cleaned_meshes.append(replace(mesh, cleaned_file=None))
+                continue
+
             cleaned_path = Path(mesh.cleaned_file) if mesh.cleaned_file else self.cleaned_imported_mesh_path(mesh)
             if not cleaned_path.exists() or source_path.stat().st_mtime > cleaned_path.stat().st_mtime:
                 cleaned_path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +79,11 @@ class MeshAssemblyService:
                 )
             cleaned_meshes.append(replace(mesh, cleaned_file=str(cleaned_path)))
         return tuple(cleaned_meshes)
+
+    @staticmethod
+    def is_volume_mesh(path: str | Path) -> bool:
+        mesh = meshio.read(Path(path))
+        return any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
 
     def prepare(
         self,

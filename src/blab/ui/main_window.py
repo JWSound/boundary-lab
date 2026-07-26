@@ -154,6 +154,12 @@ from blab.ui.source_channel_config import (
     channels_for_solver_radiators,
     source_config_payload,
 )
+from blab.ui.system_config import (
+    SystemConfigDialog,
+    inspect_system_meshes,
+    sync_physical_system_meshes,
+)
+from blab.ui.system_solve import prepare_coupled_ui_solve
 from blab.ui.theme import apply_application_theme
 
 DEFAULT_MESH_SCALE_FACTOR = 0.001
@@ -324,10 +330,10 @@ class MainWindow(QMainWindow):
         self.cancel_button = QPushButton("Stop (Shift+F5)")
         self.cancel_button.setShortcut(QKeySequence("Shift+F5"))
         self.cancel_button.setEnabled(False)
-        self.mesh_config_button = QPushButton("Mesh Config")
-        self.channel_config_button = QPushButton("Channel Config")
-        self.source_config_button = QPushButton("Source Config")
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.mesh_config_button = QPushButton("Meshes")
+        self.system_config_button = QPushButton("System")
+        self.channel_config_button = QPushButton("Channels")
+        self.system_config_button.setEnabled(self._has_solver_meshes())
 
         freq_min = min(max(settings_int(self.settings, "solve/freq_min_hz", 200), AUDIO_FREQ_MIN_HZ), AUDIO_FREQ_MAX_HZ)
         freq_max = min(
@@ -579,6 +585,10 @@ class MainWindow(QMainWindow):
         preferences_action = QAction("Preferences", self)
         preferences_action.triggered.connect(self.open_preferences)
         edit_menu.addAction(preferences_action)
+        legacy_source_action = QAction("Legacy Source Config...", self)
+        legacy_source_action.setToolTip("Configure driven surfaces for projects that still use the legacy BEM workflow.")
+        legacy_source_action.triggered.connect(self.open_source_config)
+        edit_menu.addAction(legacy_source_action)
 
         about_menu = self.menuBar().addMenu("About")
         diagnostics_action = QAction("Diagnostic Info", self)
@@ -690,8 +700,8 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.solve_button)
         controls_layout.addWidget(self.cancel_button)
         controls_layout.addWidget(self.mesh_config_button)
+        controls_layout.addWidget(self.system_config_button)
         controls_layout.addWidget(self.channel_config_button)
-        controls_layout.addWidget(self.source_config_button)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(QLabel("Min Hz"))
         controls_layout.addWidget(self.freq_min_slider)
@@ -716,8 +726,8 @@ class MainWindow(QMainWindow):
         self.solve_button.clicked.connect(self.start_solve)
         self.cancel_button.clicked.connect(self.cancel_current_operation)
         self.mesh_config_button.clicked.connect(self.open_mesh_config)
+        self.system_config_button.clicked.connect(self.open_system_config)
         self.channel_config_button.clicked.connect(self.open_channel_config)
-        self.source_config_button.clicked.connect(self.open_source_config)
 
         self.freq_min_slider.valueChanged.connect(
             lambda value: self._sync_frequency_spin_from_slider(self.freq_min_spin, value)
@@ -759,7 +769,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_mesh_state_changed(self, _reason: str) -> None:
         self._refresh_mesh_preview()
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.system_config_button.setEnabled(self._has_solver_meshes())
 
     @Slot(str)
     def _on_source_config_changed(self, _reason: str) -> None:
@@ -768,7 +778,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_project_state_changed(self, _reason: str) -> None:
         self._refresh_mesh_preview()
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.system_config_button.setEnabled(self._has_solver_meshes())
 
     @Slot(str)
     def _on_solve_results_invalidated(self, reason: str) -> None:
@@ -1266,6 +1276,8 @@ class MainWindow(QMainWindow):
         source_path = Path(mesh.source_file)
         if source_path.suffix.lower() != ".msh" or not source_path.exists():
             return False
+        if self._mesh_service().is_volume_mesh(source_path):
+            return False
         cleaned_path = Path(mesh.cleaned_file) if mesh.cleaned_file else self._cleaned_imported_mesh_path(mesh)
         if not cleaned_path.exists():
             return True
@@ -1729,6 +1741,7 @@ class MainWindow(QMainWindow):
             physical_system=(
                 None if self.project.physical_system is None else physical_system_to_dict(self.project.physical_system)
             ),
+            component_channel_by_id=self.project.component_channel_by_id,
         )
 
     def _current_project_preferences(self) -> ProjectPreferencesState:
@@ -1842,6 +1855,9 @@ class MainWindow(QMainWindow):
         physical_system = (
             physical_system_from_dict(raw_physical_system) if isinstance(raw_physical_system, dict) else None
         )
+        component_channels = payload.get("component_channel_by_id", {})
+        if not isinstance(component_channels, dict):
+            component_channels = {}
         self.project = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
@@ -1862,6 +1878,10 @@ class MainWindow(QMainWindow):
             channel_config_by_name=channel_config,
             project_preferences=self._current_project_preferences(),
             physical_system=physical_system,
+            component_channel_by_id={
+                str(component_id): str(channel_name)
+                for component_id, channel_name in component_channels.items()
+            },
         )
         self.generated_geometry_by_document_id = {}
         for document in self.generator_documents:
@@ -2231,6 +2251,43 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     @Slot()
+    def open_system_config(self) -> None:
+        try:
+            meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
+        except Exception as exc:
+            QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
+            return
+        if not meshes:
+            QMessageBox.warning(self, "System", "Enable at least one mesh before configuring the system.")
+            return
+        system = self.project.physical_system
+        if system is not None:
+            system = sync_physical_system_meshes(system, meshes)
+        dialog = SystemConfigDialog(
+            meshes,
+            system,
+            tuple(channel.name for channel in self._channel_configs()),
+            self.project.component_channel_by_id,
+            self,
+        )
+        dialog.systemApplied.connect(self._apply_system_config)
+        dialog.exec()
+
+    @Slot(object)
+    def _apply_system_config(self, configuration) -> None:
+        if (
+            configuration.system == self.project.physical_system
+            and configuration.component_channel_by_id == self.project.component_channel_by_id
+        ):
+            self.status_label.setText("System unchanged")
+            return
+        self.project.physical_system = configuration.system
+        self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
+        self.project_state_changed.emit("system_config_changed")
+        self.solve_results_invalidated.emit("system_config_changed")
+        self.status_label.setText("System updated")
+
+    @Slot()
     def open_channel_config(self) -> None:
         if self.channel_config_dialog is not None:
             self.channel_config_dialog.show()
@@ -2377,7 +2434,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
         self.channel_config_button.setEnabled(False)
-        self.source_config_button.setEnabled(False)
+        self.system_config_button.setEnabled(False)
         self.cancel_button.setEnabled(False)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
@@ -2434,7 +2491,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
         self.channel_config_button.setEnabled(True)
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.system_config_button.setEnabled(self._has_solver_meshes())
         self.cancel_button.setEnabled(False)
 
     @Slot()
@@ -2444,10 +2501,15 @@ class MainWindow(QMainWindow):
         if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
+        if self.project.physical_system is not None:
+            self._start_coupled_system_solve()
+            return
         radiators = self._all_radiators()
         if not radiators:
             QMessageBox.warning(
-                self, "No driven surfaces", "Open Source Config and mark at least one surface as Driven."
+                self,
+                "No driven surfaces",
+                "Configure a physical System, or open Legacy Source Config from the Edit menu.",
             )
             return
         if self._disable_symmetry_if_backend_unsupported():
@@ -2500,7 +2562,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(False)
         self.mesh_config_button.setEnabled(False)
         self.channel_config_button.setEnabled(False)
-        self.source_config_button.setEnabled(False)
+        self.system_config_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
@@ -2516,6 +2578,52 @@ class MainWindow(QMainWindow):
                 server_access_token=load_server_access_token(self.preferences.solve_server_url),
             )
         )
+
+    def _start_coupled_system_solve(self) -> None:
+        if self.symmetry != "off":
+            QMessageBox.warning(
+                self,
+                "Coupled solve",
+                "The coupled solver does not support symmetry yet. Set Symmetry to Off in Meshes.",
+            )
+            return
+        try:
+            meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
+            system = sync_physical_system_meshes(self.project.physical_system, meshes)
+            self.project.physical_system = system
+            prepared = prepare_coupled_ui_solve(
+                system,
+                freq_min_hz=float(self.freq_min_spin.value()),
+                freq_max_hz=float(self.freq_max_spin.value()),
+                freq_count=int(self.freq_count_spin.value()),
+                observation_distance_m=self.preferences.polar_observation_distance_m,
+                polar_angle_step_deg=self.preferences.polar_angle_step_deg,
+                spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
+                spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
+                component_channel_by_id=self.project.component_channel_by_id,
+                backend_id=self.preferences.solve_backend,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Coupled solve", str(exc))
+            return
+
+        self.live_dataset = None
+        self._clear_plots()
+        self._apply_last_completed_isobar_comparison()
+        self.balloon_plot_action.setEnabled(False)
+        self._use_final_isobar_resolution = False
+        self._final_isobar_plots_rendered = False
+        self.solve_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self.mesh_config_button.setEnabled(False)
+        self.system_config_button.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self._set_export_plot_actions_enabled(False)
+        self.export_polar_data_action.setEnabled(False)
+        self._set_contour_button_states()
+        self.status_label.setText("Initializing coupled solver...")
+        self.solve_controller.start(prepared)
 
     @Slot()
     def cancel_current_operation(self) -> None:
@@ -2598,7 +2706,7 @@ class MainWindow(QMainWindow):
         self.generate_button.setEnabled(True)
         self.mesh_config_button.setEnabled(True)
         self.channel_config_button.setEnabled(True)
-        self.source_config_button.setEnabled(self._has_solver_meshes())
+        self.system_config_button.setEnabled(self._has_solver_meshes())
         self.cancel_button.setEnabled(False)
         elapsed_s = completion.elapsed_s
         if self.live_dataset is not None and self.live_dataset.solved_count > 0:

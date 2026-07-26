@@ -5,10 +5,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+from blab.solvers.beat_engine_backend import (
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    BeatEngineWorkerProcess,
+    _get_julia_worker,
+)
 from blab.system_contract import (
     SystemFrequencyResult,
     SystemSolveMetadata,
@@ -19,6 +26,7 @@ from blab.system_contract import (
 
 DEFAULT_COUPLED_REFERENCE_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
 DEFAULT_COUPLED_REFERENCE_PROJECT = DEFAULT_COUPLED_REFERENCE_SCRIPT.parent
+COUPLED_BEM_BACKENDS = {"cpu", "cuda"}
 
 
 class CoupledReferenceSession:
@@ -29,12 +37,17 @@ class CoupledReferenceSession:
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
         julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        julia_threads: str | int = "4",
+        persistent_worker: bool = True,
     ):
         self.request = request
         self.julia_executable = julia_executable.strip() or "julia"
         self.solver_script = Path(solver_script).resolve()
         self.julia_project = None if julia_project is None else Path(julia_project).resolve()
+        self.julia_threads = julia_threads
+        self.persistent_worker = persistent_worker
         self._process: subprocess.Popen[str] | None = None
+        self._worker: BeatEngineWorkerProcess | None = None
         self._stop = False
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
@@ -56,12 +69,16 @@ class CoupledReferenceSession:
     ) -> Iterator[SystemFrequencyResult]:
         if self._stop:
             return
+        if self.persistent_worker:
+            yield from self._solve_stream_persistent(stop_requested=stop_requested)
+            return
+
         command = [self.julia_executable]
         if self.julia_project is not None:
             command.append(f"--project={self.julia_project}")
         command.append(str(self.solver_script))
         environment = os.environ.copy()
-        environment.setdefault("JULIA_NUM_THREADS", "1")
+        environment.setdefault("JULIA_NUM_THREADS", str(self.julia_threads))
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -100,8 +117,49 @@ class CoupledReferenceSession:
         finally:
             self._close_process()
 
+    def _solve_stream_persistent(
+        self,
+        *,
+        stop_requested: Callable[[], bool] | None,
+    ) -> Iterator[SystemFrequencyResult]:
+        self._worker = _get_julia_worker(
+            julia_executable=self.julia_executable,
+            solver_script=self.solver_script,
+            julia_threads=self.julia_threads,
+            julia_project=self.julia_project,
+        )
+        callback = self.request.status_callback
+        with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
+            request_path = Path(temp_dir) / "request.json"
+            request_path.write_text(
+                json.dumps(system_solve_request_to_dict(self.request), separators=(",", ":")),
+                encoding="utf-8",
+            )
+            try:
+                events = self._worker.submit(request_path, status_callback=callback)
+                for event in events:
+                    if self._stop or (stop_requested is not None and stop_requested()):
+                        self.stop()
+                        return
+                    event_type = str(event.get("type", ""))
+                    if event_type == "result":
+                        yield system_frequency_result_from_dict(event["result"])
+                    elif event_type == "status" and callback is not None:
+                        callback(str(event.get("message", "")))
+                    elif event_type == "failed":
+                        raise RuntimeError(str(event.get("error", "Coupled Julia reference solver failed.")))
+                    elif event_type in {"completed", "cancelled"}:
+                        return
+            except RuntimeError:
+                if not self._stop:
+                    raise
+
     def stop(self) -> None:
         self._stop = True
+        worker = self._worker
+        if worker is not None:
+            worker.terminate()
+            self._worker = None
         process = self._process
         if process is not None and process.poll() is None:
             process.terminate()
@@ -133,9 +191,52 @@ class CoupledReferenceSession:
             process.stderr.close()
 
 
-class CoupledReferenceBackend:
+class _CoupledBackend:
+    def __init__(
+        self,
+        *,
+        julia_executable: str = "julia",
+        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
+        julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        julia_threads: str | int = "4",
+        persistent_worker: bool = True,
+        precision: str = "float64",
+        bem_backend: str = "cpu",
+    ):
+        normalized_precision = str(precision).strip().lower()
+        if normalized_precision not in {"float32", "float64"}:
+            raise ValueError("Coupled precision must be float32 or float64.")
+        normalized_bem_backend = str(bem_backend).strip().lower()
+        if normalized_bem_backend not in COUPLED_BEM_BACKENDS:
+            raise ValueError("Coupled BEM backend must be cpu or cuda.")
+        self.julia_executable = julia_executable
+        self.solver_script = Path(solver_script)
+        self.julia_project = None if julia_project is None else Path(julia_project)
+        self.julia_threads = julia_threads
+        self.persistent_worker = persistent_worker
+        self.precision = normalized_precision
+        self.bem_backend = normalized_bem_backend
+
+    def create_system_session(self, request: SystemSolveRequest) -> CoupledReferenceSession:
+        solver_options = dict(request.solver_options)
+        solver_options["precision"] = self.precision
+        solver_options["bem_backend"] = self.bem_backend
+        typed_request = replace(request, solver_options=solver_options)
+        return CoupledReferenceSession(
+            typed_request,
+            julia_executable=self.julia_executable,
+            solver_script=self.solver_script,
+            julia_project=self.julia_project,
+            julia_threads=self.julia_threads,
+            persistent_worker=self.persistent_worker,
+        )
+
+
+class CoupledReferenceBackend(_CoupledBackend):
+    """Backend-only double-precision CPU correctness reference."""
+
     backend_id = "coupled_reference"
-    label = "Coupled FEM-BEM Reference (Julia CPU)"
+    label = "Coupled FEM-BEM Reference (Julia CPU FP64)"
 
     def __init__(
         self,
@@ -143,15 +244,48 @@ class CoupledReferenceBackend:
         julia_executable: str = "julia",
         solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
         julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        julia_threads: str | int = "4",
+        persistent_worker: bool = True,
     ):
-        self.julia_executable = julia_executable
-        self.solver_script = Path(solver_script)
-        self.julia_project = None if julia_project is None else Path(julia_project)
+        super().__init__(
+            julia_executable=julia_executable,
+            solver_script=solver_script,
+            julia_project=julia_project,
+            julia_threads=julia_threads,
+            persistent_worker=persistent_worker,
+            precision="float64",
+            bem_backend="cpu",
+        )
 
-    def create_system_session(self, request: SystemSolveRequest) -> CoupledReferenceSession:
-        return CoupledReferenceSession(
-            request,
-            julia_executable=self.julia_executable,
-            solver_script=self.solver_script,
-            julia_project=self.julia_project,
+
+class CoupledProductionBackend(_CoupledBackend):
+    """FP32 coupled backend used by interactive BEAT Engine CPU/CUDA solves."""
+
+    backend_id = "coupled_production"
+    label = "Coupled FEM-BEM (FP32)"
+
+    def __init__(
+        self,
+        *,
+        bem_backend: str,
+        julia_executable: str = "julia",
+        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
+        julia_threads: str | int | None = None,
+        persistent_worker: bool = True,
+    ):
+        normalized_bem_backend = str(bem_backend).strip().lower()
+        resolved_threads = (4 if normalized_bem_backend == "cuda" else 8) if julia_threads is None else julia_threads
+        julia_project = (
+            DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+            if normalized_bem_backend == "cuda"
+            else DEFAULT_COUPLED_REFERENCE_PROJECT
+        )
+        super().__init__(
+            julia_executable=julia_executable,
+            solver_script=solver_script,
+            julia_project=julia_project,
+            julia_threads=resolved_threads,
+            persistent_worker=persistent_worker,
+            precision="float32",
+            bem_backend=normalized_bem_backend,
         )

@@ -10,6 +10,7 @@ Project files store:
 - whether imported meshes should be stitched into a single solve mesh
 - source configuration by surface name
 - an optional editable physical-system graph for coupled models
+- application-side component-to-channel routing for coupled excitation responses
 
 Project files do not store:
 
@@ -22,7 +23,7 @@ Project files do not store:
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "active_generator_document_id": "design1",
   "generator_documents": [
     {
@@ -39,13 +40,17 @@ Project files do not store:
   ],
   "imported_meshes": [],
   "stitch_imported_meshes": false,
-  "source_config_by_name": {}
+  "source_config_by_name": {},
+  "component_channel_by_id": {}
 }
 ```
 
 ## Loading Projects
 
-Loading a project updates the design editor, mesh config, and source config. It does not automatically run a geometry provider or start a solve. Schema v1 and v2 project files are migrated to Ath-backed generator documents when loaded. Schema v3 projects are upgraded without inventing a coupled physical system.
+Loading a project updates the design editor, mesh, channel, and physical-system
+configuration. It does not automatically run a geometry provider or start a
+solve. Older project schemas are migrated without inventing a coupled physical
+system.
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.

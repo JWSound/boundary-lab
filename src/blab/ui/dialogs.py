@@ -552,7 +552,7 @@ class MeshConfigDialog(QDialog):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Mesh Config")
+        self.setWindowTitle("Meshes")
         self._meshes = list(meshes)
 
         self.table = MeshDropTable(0, 7)
@@ -628,7 +628,7 @@ class MeshConfigDialog(QDialog):
         try:
             self.meshes()
         except ValueError as exc:
-            QMessageBox.warning(self, "Mesh config", str(exc))
+            QMessageBox.warning(self, "Meshes", str(exc))
             return
         super().accept()
 

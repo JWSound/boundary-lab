@@ -83,6 +83,12 @@ The preferences menu contains various application-level settings for Boundary La
     3. **BEAT Engine (CPU)** - Use the Julia-based CPU solver path. Uses the local CPU BLAS/LAPACK stack and supports BEAT Engine X/XY symmetry acceleration.
     4. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
+Coupled FEM–BEM physical systems currently require **BEAT Engine (CPU)** or
+**BEAT Engine (CUDA)**. Both application paths use single precision. CUDA
+accelerates BEM assembly and exterior-field evaluation, while FEM assembly and
+the final coupled factorization remain on the CPU. The double-precision coupled
+CPU backend is reserved for internal correctness validation.
+
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. Boundary Lab silently checks this URL on startup when `BEM Solver` is already set to `Server`; use `Check Server` to query server health manually and update advertised feature availability, including BEAT Engine server-side symmetry support. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for server setup and API details. 
 
 ## Command Strip

@@ -199,14 +199,18 @@ def test_discard_channel_config_dialog_deletes_stale_dialog() -> None:
     assert window.channel_config_dialog is None
 
 
-def test_channel_config_uses_bottom_button_and_modeless_dialog() -> None:
+def test_system_and_channel_config_use_bottom_buttons() -> None:
     source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     open_channel_config = source[source.index("def open_channel_config") : source.index("def _set_panel_visible")]
 
-    assert 'self.channel_config_button = QPushButton("Channel Config")' in source
+    assert 'self.mesh_config_button = QPushButton("Meshes")' in source
+    assert 'self.system_config_button = QPushButton("System")' in source
+    assert 'self.channel_config_button = QPushButton("Channels")' in source
     assert "controls_layout.addWidget(self.mesh_config_button)" in source
+    assert "controls_layout.addWidget(self.system_config_button)" in source
     assert "controls_layout.addWidget(self.channel_config_button)" in source
-    assert "controls_layout.addWidget(self.source_config_button)" in source
+    assert "controls_layout.addWidget(self.source_config_button)" not in source
+    assert "self.system_config_button.clicked.connect(self.open_system_config)" in source
     assert "self.channel_config_button.clicked.connect(self.open_channel_config)" in source
     assert '("channel_config", "Channel Config Panel")' not in source
     assert "ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)" in open_channel_config

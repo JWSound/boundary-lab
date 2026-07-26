@@ -41,6 +41,30 @@ The editable graph is stored in a Boundary Lab project. Before solving, the
 physical-system compiler resolves its named mesh groups, validates its
 relationships, and produces an immutable solver contract.
 
+## Application workflow
+
+The main application exposes the physical model through a tabbed **System**
+window:
+
+- **Regions** assigns a name, bounded-interior or unbounded-exterior type,
+  mesh, and (for bounded regions) physical volume group.
+- **Boundaries** assigns each tagged surface as rigid, moving, interface, or
+  unused.
+- **Interfaces** identifies matching bounded and unbounded interface sides,
+  then checks conformity and orientation.
+- **Components** attaches prescribed-velocity components to moving boundaries
+  and assigns their application channel.
+
+The existing **Meshes** window remains responsible for mesh import, scale, and
+translation. Tetrahedral imports bypass the legacy surface cleaner so their
+volume connectivity and physical groups are preserved.
+
+Component-to-channel routing is stored as application project state, not in the
+physical system or compiled solver contract. The reference solver returns one
+complex unit response per excitation port; responses routed to the same channel
+are combined before the existing channel gain, polarity, delay, and filter
+settings are applied.
+
 ## Regions
 
 A region represents a connected acoustic domain with material properties such

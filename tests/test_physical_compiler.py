@@ -25,7 +25,8 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
-from blab.solvers.coupled_reference_backend import CoupledReferenceBackend
+from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+from blab.solvers.coupled_reference_backend import CoupledProductionBackend, CoupledReferenceBackend
 from blab.system_contract import (
     OutputRequest,
     QuantityResult,
@@ -142,6 +143,28 @@ def test_coupled_reference_backend_exposes_system_metadata_without_starting_juli
     assert session.metadata.system_id == compiled.id
     assert session.metadata.excitation_port_ids == request.excitation_port_ids
     assert session.metadata.available_quantity_ids == ("output:fem",)
+    assert session.request.solver_options["precision"] == "float64"
+    assert session.request.solver_options["bem_backend"] == "cpu"
+
+
+def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+        solver_options={"precision": "float64", "bem_backend": "cpu"},
+    )
+
+    backend = CoupledProductionBackend(bem_backend="cuda")
+    session = backend.create_system_session(request)
+
+    assert session.request.solver_options["precision"] == "float32"
+    assert session.request.solver_options["bem_backend"] == "cuda"
+    assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
+    assert session.julia_threads == 4
+    assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
 
 
 @pytest.mark.skipif(
@@ -179,6 +202,7 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     assert quantities["output:bem"].values.shape == (1, 1214)
     assert quantities["output:interface"].values.shape == (1, 106)
     assert quantities["output:field"].values.shape == (1, 1)
+    assert quantities["output:fem"].values.dtype == np.complex128
     assert result.diagnostics["relative_residual"] < 1e-8
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10

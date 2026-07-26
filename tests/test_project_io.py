@@ -58,6 +58,7 @@ def test_project_file_round_trip(tmp_path) -> None:
                 "lpf": {},
             }
         },
+        component_channel_by_id={"component:woofer": "tweeter"},
     )
 
     project_path = write_project_file(tmp_path / "test_project", payload)
@@ -66,6 +67,7 @@ def test_project_file_round_trip(tmp_path) -> None:
     assert project_path.name == "test_project.blab.json"
     assert loaded == payload
     assert loaded["symmetry"] == "xy"
+    assert loaded["component_channel_by_id"] == {"component:woofer": "tweeter"}
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
 
 
