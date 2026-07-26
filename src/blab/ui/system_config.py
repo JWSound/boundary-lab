@@ -166,6 +166,7 @@ class SystemConfigDialog(QDialog):
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
+        self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
         self._interface_output_root = (
             Path.cwd() / "runs" / "imported_meshes"
             if interface_output_root is None
@@ -310,10 +311,23 @@ class SystemConfigDialog(QDialog):
             for region in self._initial_system.regions:
                 resource = resources.get(region.mesh_ids[0]) if region.mesh_ids else None
                 volume_name = region.volume_groups[0].name if region.volume_groups else None
+                mesh_name = self._restored_region_mesh_name(region.kind, resource)
+                if resource is not None and mesh_name is not None:
+                    restored = self._restored_resources_by_mesh_name.get(mesh_name)
+                    if restored is None or restored.id == resource.id:
+                        self._restored_resources_by_mesh_name[mesh_name] = resource
+                available = self._mesh_by_name.get(mesh_name)
+                if (
+                    region.kind == AcousticRegionKind.BOUNDED_AIR
+                    and available is not None
+                    and volume_name not in available.volume_groups
+                    and len(available.volume_groups) == 1
+                ):
+                    volume_name = available.volume_groups[0]
                 self._append_region(
                     name=region.name,
                     kind=region.kind,
-                    mesh_name=None if resource is None else resource.name,
+                    mesh_name=mesh_name,
                     volume_group=volume_name,
                     region_id=region.id,
                 )
@@ -325,6 +339,17 @@ class SystemConfigDialog(QDialog):
             mesh_name=exterior_mesh,
             volume_group=None,
         )
+
+    def _restored_region_mesh_name(
+        self,
+        kind: AcousticRegionKind,
+        resource: MeshResource | None,
+    ) -> str | None:
+        if resource is not None and resource.name in self._mesh_by_name:
+            return resource.name
+        expects_tetrahedra = kind == AcousticRegionKind.BOUNDED_AIR
+        compatible = [mesh.name for mesh in self._meshes if mesh.has_tetrahedra == expects_tetrahedra]
+        return compatible[0] if len(compatible) == 1 else None
 
     def _append_region(
         self,
@@ -745,7 +770,7 @@ class SystemConfigDialog(QDialog):
     def _load_interfaces(self, *, status: str | None = None) -> None:
         self.interfaces_table.setRowCount(0)
         boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
-        regions = {region["id"]: region["name"] for region in self._region_drafts()}
+        regions = self._region_names_by_id()
         valid = []
         for interface in self._interfaces:
             bounded = boundaries.get(interface.bounded_boundary_id)
@@ -766,6 +791,18 @@ class SystemConfigDialog(QDialog):
                 self.interfaces_table.setItem(row, column, item)
             valid.append(interface)
         self._interfaces = valid
+
+    def _region_names_by_id(self) -> dict[str, str]:
+        names = {region.id: region.name for region in self._existing_regions.values()}
+        for row in range(self.regions_table.rowCount()):
+            name_edit = self.regions_table.cellWidget(row, 0)
+            if not isinstance(name_edit, QLineEdit):
+                continue
+            region_id = str(name_edit.property("region_id") or "")
+            name = name_edit.text().strip()
+            if region_id and name:
+                names[region_id] = name
+        return names
 
     def _load_components(self) -> None:
         if self._initial_system is None:
@@ -958,6 +995,9 @@ class SystemConfigDialog(QDialog):
         existing = {
             mesh.name: mesh.id for mesh in (() if self._initial_system is None else self._initial_system.meshes)
         }
+        existing.update(
+            {mesh_name: resource.id for mesh_name, resource in self._restored_resources_by_mesh_name.items()}
+        )
         resource_ids: dict[str, str] = {}
         used = set(existing.values())
         for mesh in self._meshes:
@@ -973,6 +1013,7 @@ class SystemConfigDialog(QDialog):
         initial_resources = {
             mesh.name: mesh for mesh in (() if self._initial_system is None else self._initial_system.meshes)
         }
+        initial_resources.update(self._restored_resources_by_mesh_name)
         resource_by_name: dict[str, MeshResource] = {}
         resource_ids = self._resource_ids_by_mesh_name()
         for draft in drafts:

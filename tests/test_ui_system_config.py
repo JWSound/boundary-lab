@@ -141,6 +141,44 @@ def test_tabbed_system_editor_builds_compilable_coupled_fixture() -> None:
     assert dialog.configuration().component_channel_by_id == {system.components[0].id: "main"}
 
 
+def test_saved_regions_rebind_to_unique_compatible_renamed_meshes() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    renamed_meshes = (
+        replace(fem, name="Replacement Interior"),
+        replace(bem, name="Replacement Exterior"),
+    )
+
+    dialog = SystemConfigDialog(renamed_meshes, system, ("main",))
+
+    exterior_mesh = dialog.regions_table.cellWidget(0, 2)
+    interior_mesh = dialog.regions_table.cellWidget(1, 2)
+    interior_volume = dialog.regions_table.cellWidget(1, 3)
+    assert isinstance(exterior_mesh, QComboBox)
+    assert isinstance(interior_mesh, QComboBox)
+    assert isinstance(interior_volume, QComboBox)
+    assert exterior_mesh.currentData() == "Replacement Exterior"
+    assert interior_mesh.currentData() == "Replacement Interior"
+    assert interior_volume.currentData() == "Volume"
+    assert dialog.interfaces_table.rowCount() == 1
+    restored = dialog.physical_system()
+    assert {mesh.id for mesh in restored.meshes} == {mesh.id for mesh in system.meshes}
+    assert {mesh.name for mesh in restored.meshes} == {"Replacement Exterior", "Replacement Interior"}
+
+
+def test_system_dialog_opens_with_an_incomplete_saved_region_selection() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    fem, _bem = inspect_system_meshes(_fixture_mesh_entries())
+
+    dialog = SystemConfigDialog((fem,), system, ("main",))
+
+    exterior_mesh = dialog.regions_table.cellWidget(0, 2)
+    assert isinstance(exterior_mesh, QComboBox)
+    assert exterior_mesh.currentData() is None
+    with pytest.raises(ValueError, match="Region 'Exterior Air' must select a mesh"):
+        dialog._region_drafts()
+
+
 def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_path: Path) -> None:
     dialog = _configured_fixture_dialog(
         bem_filename="exterior.msh",
