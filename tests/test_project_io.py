@@ -165,6 +165,19 @@ def test_schema_v2_migrates_every_ath_script_to_generator_document() -> None:
     ]
 
 
+def test_schema_v3_migrates_without_inventing_a_physical_system() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 3,
+            "generator_documents": [],
+            "imported_meshes": [],
+        }
+    )
+
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert "physical_system" not in migrated
+
+
 def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     payload = build_project_payload(
         generator_documents=[],

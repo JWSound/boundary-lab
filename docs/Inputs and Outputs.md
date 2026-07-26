@@ -9,6 +9,7 @@ Project files store:
 - imported mesh rows, including absolute `.msh` paths
 - whether imported meshes should be stitched into a single solve mesh
 - source configuration by surface name
+- an optional editable physical-system graph for coupled models
 
 Project files do not store:
 
@@ -21,7 +22,7 @@ Project files do not store:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "active_generator_document_id": "design1",
   "generator_documents": [
     {
@@ -44,7 +45,7 @@ Project files do not store:
 
 ## Loading Projects
 
-Loading a project updates the design editor, mesh config, and source config. It does not automatically run a geometry provider or start a solve. Schema v1 and v2 project files are migrated to Ath-backed generator documents when loaded.
+Loading a project updates the design editor, mesh config, and source config. It does not automatically run a geometry provider or start a solve. Schema v1 and v2 project files are migrated to Ath-backed generator documents when loaded. Schema v3 projects are upgraded without inventing a coupled physical system.
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.
@@ -66,6 +67,9 @@ their perimeter, preserves the BEM physical groups, and verifies that the
 resulting exterior mesh is watertight. Input physical-group names default to
 `Interface` and can be changed with `--fem-interface` and `--bem-interface`.
 The original input files are not modified.
+
+See [Physical System Model](Physical%20System%20Model.md) for how mesh groups,
+regions, boundaries, interfaces, components, and signals relate to one another.
 
 ## Exporting Plot Images
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+from blab.physical_model import PhysicalSystem
 
 DEFAULT_DESIGN_NAME = "waveguide"
 DEFAULT_MESH_SCALE_FACTOR = 0.001
@@ -126,6 +127,7 @@ class ProjectDocument:
     source_config_by_name: dict[str, dict] = field(default_factory=dict)
     channel_config_by_name: dict[str, dict] = field(default_factory=dict)
     project_preferences: ProjectPreferencesState | None = None
+    physical_system: PhysicalSystem | None = None
 
 
 def new_generator_document(

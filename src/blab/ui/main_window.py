@@ -49,6 +49,7 @@ from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
 )
+from blab.physical_model import physical_system_from_dict, physical_system_to_dict
 from blab.plotting import VisualizerConfig
 from blab.solvers.http_server import server_health_supports_symmetry
 from blab.solvers.registry import backend_info
@@ -1725,6 +1726,9 @@ class MainWindow(QMainWindow):
             source_config_by_name=self._load_source_config_by_name(),
             channel_config_by_name=self._load_channel_config_by_name(),
             project_preferences=project_preferences.to_payload(),
+            physical_system=(
+                None if self.project.physical_system is None else physical_system_to_dict(self.project.physical_system)
+            ),
         )
 
     def _current_project_preferences(self) -> ProjectPreferencesState:
@@ -1834,6 +1838,10 @@ class MainWindow(QMainWindow):
         if symmetry not in {"off", "x", "xy"}:
             symmetry = "off"
         imported_meshes = self._mesh_entries_from_payload(payload.get("imported_meshes", []))
+        raw_physical_system = payload.get("physical_system")
+        physical_system = (
+            physical_system_from_dict(raw_physical_system) if isinstance(raw_physical_system, dict) else None
+        )
         self.project = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
@@ -1853,6 +1861,7 @@ class MainWindow(QMainWindow):
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
             project_preferences=self._current_project_preferences(),
+            physical_system=physical_system,
         )
         self.generated_geometry_by_document_id = {}
         for document in self.generator_documents:

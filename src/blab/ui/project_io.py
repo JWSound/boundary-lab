@@ -13,7 +13,7 @@ from typing import Any
 
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 3
+PROJECT_SCHEMA_VERSION = 4
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -26,6 +26,7 @@ PROJECT_PAYLOAD_KEYS = (
     "source_config_by_name",
     "channel_config_by_name",
     "project_preferences",
+    "physical_system",
 )
 
 
@@ -87,15 +88,29 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
         generator_documents.append(document)
     resolved["generator_documents"] = generator_documents
 
+    physical_system = resolved.get("physical_system")
+    if isinstance(physical_system, dict):
+        physical_system = physical_system.copy()
+        meshes = []
+        for item in _list_or_empty(physical_system.get("meshes")):
+            if not isinstance(item, dict):
+                meshes.append(item)
+                continue
+            mesh = item.copy()
+            _resolve_path_fields(mesh, base_path, ("file",))
+            meshes.append(mesh)
+        physical_system["meshes"] = meshes
+        resolved["physical_system"] = physical_system
+
     return resolved
 
 
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
-    if schema_version not in {1, 2, PROJECT_SCHEMA_VERSION}:
+    if schema_version not in {1, 2, 3, PROJECT_SCHEMA_VERSION}:
         raise ValueError(
-            f"Unsupported project schema version {schema_version}. Expected 1, 2, or {PROJECT_SCHEMA_VERSION}."
+            f"Unsupported project schema version {schema_version}. Expected 1, 2, 3, or {PROJECT_SCHEMA_VERSION}."
         )
     migrated = dict(payload)
     if schema_version in {1, 2}:
@@ -128,6 +143,10 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         preferences = ProjectPreferencesState.from_payload(payload["project_preferences"])
         if preferences is not None:
             normalized["project_preferences"] = preferences.to_payload()
+    if payload.get("physical_system") is not None:
+        if not isinstance(payload["physical_system"], dict):
+            raise ValueError("physical_system must be an object when provided.")
+        normalized["physical_system"] = dict(payload["physical_system"])
     return normalized
 
 
@@ -230,6 +249,7 @@ def build_project_payload(
     symmetry: str = "off",
     channel_config_by_name: dict[str, Any] | None = None,
     project_preferences: dict[str, Any] | None = None,
+    physical_system: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": PROJECT_SCHEMA_VERSION,
@@ -245,4 +265,6 @@ def build_project_payload(
         normalized_preferences = ProjectPreferencesState.from_payload(project_preferences)
         if normalized_preferences is not None:
             payload["project_preferences"] = normalized_preferences.to_payload()
+    if physical_system is not None:
+        payload["physical_system"] = dict(physical_system)
     return payload

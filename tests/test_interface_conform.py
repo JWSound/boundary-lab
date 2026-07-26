@@ -10,9 +10,9 @@ from blab.interface_conform import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-FEM_FIXTURE = REPOSITORY_ROOT / "/tests/fixtures/femvolume.msh"
-BEM_FIXTURE = REPOSITORY_ROOT / "/tests/fixtures/exterior.msh"
-CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "/tests/fixtures/exterior_conforming.msh"
+FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "femvolume.msh"
+BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior.msh"
+CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior_conforming.msh"
 
 
 def test_fixture_interfaces_are_made_connectivity_identical_and_watertight() -> None:

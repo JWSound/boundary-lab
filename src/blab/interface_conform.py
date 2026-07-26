@@ -39,6 +39,27 @@ class InterfaceIdentityReport:
 
 
 @dataclass(frozen=True)
+class InterfaceTopologyMap:
+    """Explicit topology correspondence for a conforming FEM-BEM interface.
+
+    Tuple entries are ordered by the FEM interface vertices/faces. Face indices
+    refer to the concatenated triangle blocks returned by ``meshio``.
+    ``normal_sign`` is +1 when corresponding FEM and BEM triangle normals agree
+    and -1 when they oppose one another.
+    """
+
+    fem_vertex_indices: tuple[int, ...]
+    bem_vertex_indices: tuple[int, ...]
+    fem_to_bem_vertex_indices: tuple[int, ...]
+    fem_face_indices: tuple[int, ...]
+    bem_face_indices: tuple[int, ...]
+    normal_sign: tuple[int, ...]
+    max_coordinate_error: float
+    fem_facets_on_tetra_boundary: int
+    bem_boundary_edges: int
+
+
+@dataclass(frozen=True)
 class InterfaceConformResult:
     fem_interface_triangles: int
     original_bem_interface_triangles: int
@@ -136,9 +157,7 @@ def conform_bem_interface_to_fem(
 
     interface_diameter = _point_cloud_diameter(fem_mesh.points[np.unique(fem_interface)])
     resolved_geometry_tolerance = (
-        max(interface_diameter * 1e-3, 1e-9)
-        if geometry_tolerance is None
-        else float(geometry_tolerance)
+        max(interface_diameter * 1e-3, 1e-9) if geometry_tolerance is None else float(geometry_tolerance)
     )
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
@@ -297,6 +316,34 @@ def validate_conforming_interfaces(
 ) -> InterfaceIdentityReport:
     """Validate coordinate/connectivity identity and surrounding topology."""
 
+    topology = build_conforming_interface_map(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name=fem_interface_name,
+        bem_interface_name=bem_interface_name,
+        coordinate_tolerance=coordinate_tolerance,
+        require_closed_bem=require_closed_bem,
+    )
+    return InterfaceIdentityReport(
+        interface_triangles=len(topology.fem_face_indices),
+        interface_vertices=len(topology.fem_vertex_indices),
+        max_coordinate_error=topology.max_coordinate_error,
+        fem_facets_on_tetra_boundary=topology.fem_facets_on_tetra_boundary,
+        bem_boundary_edges=topology.bem_boundary_edges,
+    )
+
+
+def build_conforming_interface_map(
+    fem_mesh: meshio.Mesh,
+    bem_mesh: meshio.Mesh,
+    *,
+    fem_interface_name: str = "Interface",
+    bem_interface_name: str = "Interface",
+    coordinate_tolerance: float = 1e-8,
+    require_closed_bem: bool = True,
+) -> InterfaceTopologyMap:
+    """Validate and return the explicit FEM-to-BEM interface correspondence."""
+
     if coordinate_tolerance <= 0.0:
         raise InterfaceConformError("coordinate_tolerance must be greater than zero.")
     fem_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
@@ -307,16 +354,14 @@ def validate_conforming_interfaces(
     bem_triangles = bem_data.triangles[bem_data.physical_tags == bem_tag]
     if len(fem_triangles) != len(bem_triangles):
         raise InterfaceConformError(
-            "Interface triangle counts differ: "
-            f"FEM has {len(fem_triangles)}, BEM has {len(bem_triangles)}."
+            f"Interface triangle counts differ: FEM has {len(fem_triangles)}, BEM has {len(bem_triangles)}."
         )
 
     fem_vertices = np.unique(fem_triangles)
     bem_vertices = np.unique(bem_triangles)
     if len(fem_vertices) != len(bem_vertices):
         raise InterfaceConformError(
-            "Interface vertex counts differ: "
-            f"FEM has {len(fem_vertices)}, BEM has {len(bem_vertices)}."
+            f"Interface vertex counts differ: FEM has {len(fem_vertices)}, BEM has {len(bem_vertices)}."
         )
     distances, local_indices = cKDTree(bem_mesh.points[bem_vertices]).query(fem_mesh.points[fem_vertices])
     max_coordinate_error = float(np.max(distances, initial=0.0))
@@ -329,12 +374,29 @@ def validate_conforming_interfaces(
         raise InterfaceConformError("FEM interface vertices do not map one-to-one onto BEM interface vertices.")
 
     fem_to_bem = dict(zip(map(int, fem_vertices), map(int, mapped_bem_vertices), strict=True))
-    mapped_fem_faces = {
-        tuple(sorted(fem_to_bem[int(vertex)] for vertex in triangle))
-        for triangle in fem_triangles
-    }
-    bem_faces = {tuple(sorted(map(int, triangle))) for triangle in bem_triangles}
-    if mapped_fem_faces != bem_faces:
+    bem_interface_indices = np.flatnonzero(bem_data.physical_tags == bem_tag)
+    bem_face_by_key: dict[tuple[int, int, int], int] = {}
+    for face_index, triangle in zip(bem_interface_indices, bem_triangles, strict=True):
+        key = tuple(sorted(map(int, triangle)))
+        if key in bem_face_by_key:
+            raise InterfaceConformError("BEM interface contains duplicate triangle connectivity.")
+        bem_face_by_key[key] = int(face_index)
+
+    fem_interface_indices = np.flatnonzero(fem_data.physical_tags == fem_tag)
+    corresponding_bem_faces: list[int] = []
+    normal_signs: list[int] = []
+    for triangle in fem_triangles:
+        mapped_key = tuple(sorted(fem_to_bem[int(vertex)] for vertex in triangle))
+        bem_face_index = bem_face_by_key.get(mapped_key)
+        if bem_face_index is None:
+            raise InterfaceConformError("FEM and BEM interface triangle connectivity differs.")
+        corresponding_bem_faces.append(bem_face_index)
+
+        fem_normal = _triangle_normal(fem_mesh.points, triangle)
+        bem_normal = _triangle_normal(bem_mesh.points, bem_data.triangles[bem_face_index])
+        normal_signs.append(1 if float(np.dot(fem_normal, bem_normal)) >= 0.0 else -1)
+
+    if len(corresponding_bem_faces) != len(bem_face_by_key):
         raise InterfaceConformError("FEM and BEM interface triangle connectivity differs.")
 
     tetra_boundary = _tetra_boundary_faces(fem_mesh)
@@ -348,13 +410,26 @@ def validate_conforming_interfaces(
     bem_boundary_edges = len(_surface_boundary_edges(bem_data.triangles))
     if require_closed_bem and bem_boundary_edges != 0:
         raise InterfaceConformError(f"Conformed BEM surface has {bem_boundary_edges} open boundary edges.")
-    return InterfaceIdentityReport(
-        interface_triangles=len(fem_triangles),
-        interface_vertices=len(fem_vertices),
+    return InterfaceTopologyMap(
+        fem_vertex_indices=tuple(map(int, fem_vertices)),
+        bem_vertex_indices=tuple(map(int, bem_vertices)),
+        fem_to_bem_vertex_indices=tuple(fem_to_bem[int(vertex)] for vertex in fem_vertices),
+        fem_face_indices=tuple(map(int, fem_interface_indices)),
+        bem_face_indices=tuple(corresponding_bem_faces),
+        normal_sign=tuple(normal_signs),
         max_coordinate_error=max_coordinate_error,
         fem_facets_on_tetra_boundary=matched_tetra_facets,
         bem_boundary_edges=bem_boundary_edges,
     )
+
+
+def _triangle_normal(points: np.ndarray, triangle: np.ndarray) -> np.ndarray:
+    vertices = np.asarray(points, dtype=float)[np.asarray(triangle, dtype=np.int64)]
+    normal = np.cross(vertices[1] - vertices[0], vertices[2] - vertices[0])
+    magnitude = float(np.linalg.norm(normal))
+    if magnitude <= 0.0:
+        raise InterfaceConformError("Interface contains a degenerate triangle.")
+    return normal / magnitude
 
 
 def _physical_surface_tag(mesh: meshio.Mesh, name: str) -> int:
