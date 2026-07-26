@@ -1,0 +1,781 @@
+"""Build a conforming BEM interface from authoritative FEM boundary facets.
+
+The initial implementation intentionally targets the common Boundary Lab case:
+
+* the FEM interface is a tagged set of triangular tetrahedron boundary facets;
+* the BEM interface is a tagged planar patch;
+* one planar BEM surface surrounds that patch.
+
+The FEM interface triangles are retained exactly. The surrounding BEM surface is
+remeshed as a planar surface with a hole whose inner loop is the FEM interface
+perimeter. This avoids modifying or retetrahedralizing the FEM volume.
+"""
+
+from __future__ import annotations
+
+import argparse
+import uuid
+from collections import Counter, defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+import meshio
+import numpy as np
+from scipy.spatial import cKDTree
+
+
+class InterfaceConformError(ValueError):
+    """Raised when an interface cannot be conformed without unsafe guessing."""
+
+
+@dataclass(frozen=True)
+class InterfaceIdentityReport:
+    interface_triangles: int
+    interface_vertices: int
+    max_coordinate_error: float
+    fem_facets_on_tetra_boundary: int
+    bem_boundary_edges: int
+
+
+@dataclass(frozen=True)
+class InterfaceConformResult:
+    fem_interface_triangles: int
+    original_bem_interface_triangles: int
+    original_adjacent_triangles: int
+    remeshed_adjacent_triangles: int
+    output_vertices: int
+    output_triangles: int
+    max_original_boundary_deviation: float
+    interface_orientation_flipped: bool
+    identity: InterfaceIdentityReport
+
+
+@dataclass(frozen=True)
+class _TriangleData:
+    triangles: np.ndarray
+    physical_tags: np.ndarray
+    geometrical_tags: np.ndarray
+
+
+def conform_bem_interface_to_fem(
+    fem_mesh: meshio.Mesh,
+    bem_mesh: meshio.Mesh,
+    *,
+    fem_interface_name: str = "Interface",
+    bem_interface_name: str = "Interface",
+    geometry_tolerance: float | None = None,
+    merge_tolerance: float = 1e-8,
+) -> tuple[meshio.Mesh, InterfaceConformResult]:
+    """Return a BEM mesh whose interface facets exactly match the FEM facets.
+
+    The BEM mesh must contain a planar tagged interface surrounded by one planar
+    geometrical surface. The FEM interface itself is not remeshed.
+    """
+
+    if merge_tolerance <= 0.0:
+        raise InterfaceConformError("merge_tolerance must be greater than zero.")
+
+    fem_interface_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
+    bem_interface_tag = _physical_surface_tag(bem_mesh, bem_interface_name)
+    fem_data = _triangle_data(fem_mesh, require_geometrical=False)
+    bem_data = _triangle_data(bem_mesh, require_geometrical=True)
+
+    fem_interface = fem_data.triangles[fem_data.physical_tags == fem_interface_tag]
+    bem_interface_mask = bem_data.physical_tags == bem_interface_tag
+    bem_interface = bem_data.triangles[bem_interface_mask]
+    if len(fem_interface) == 0:
+        raise InterfaceConformError(f"FEM physical surface '{fem_interface_name}' contains no triangles.")
+    if len(bem_interface) == 0:
+        raise InterfaceConformError(f"BEM physical surface '{bem_interface_name}' contains no triangles.")
+
+    fem_interface_loops = _boundary_loops(fem_interface)
+    bem_interface_loops = _boundary_loops(bem_interface)
+    if len(fem_interface_loops) != 1 or len(bem_interface_loops) != 1:
+        raise InterfaceConformError("The initial conformer requires one closed perimeter loop per interface.")
+    fem_inner_loop = fem_interface_loops[0]
+    old_bem_inner_loop = bem_interface_loops[0]
+
+    adjacent_geometrical_tag = _adjacent_geometrical_tag(
+        bem_data,
+        bem_interface_mask,
+        old_bem_inner_loop,
+    )
+    adjacent_mask = bem_data.geometrical_tags == adjacent_geometrical_tag
+    if np.any(adjacent_mask & bem_interface_mask):
+        raise InterfaceConformError("The BEM interface and surrounding surface share a geometrical tag.")
+
+    adjacent_triangles = bem_data.triangles[adjacent_mask]
+    adjacent_physical_tags = np.unique(bem_data.physical_tags[adjacent_mask])
+    if len(adjacent_physical_tags) != 1:
+        raise InterfaceConformError("The surrounding BEM surface must have exactly one physical tag.")
+    adjacent_physical_tag = int(adjacent_physical_tags[0])
+
+    adjacent_loops = _boundary_loops(adjacent_triangles)
+    old_inner_vertices = set(map(int, old_bem_inner_loop))
+    matching_inner = [loop for loop in adjacent_loops if set(map(int, loop)) == old_inner_vertices]
+    outer_loops = [loop for loop in adjacent_loops if set(map(int, loop)) != old_inner_vertices]
+    if len(matching_inner) != 1 or len(outer_loops) != 1:
+        raise InterfaceConformError(
+            "The surrounding BEM surface must be an annulus with the interface as its only hole."
+        )
+    outer_loop = outer_loops[0]
+
+    adjacent_normal = _surface_normal(bem_mesh.points, adjacent_triangles)
+    old_interface_normal = _surface_normal(bem_mesh.points, bem_interface)
+    fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
+    plane_origin = np.mean(bem_mesh.points[old_bem_inner_loop], axis=0)
+    plane_deviation = _maximum_plane_deviation(
+        plane_origin,
+        adjacent_normal,
+        bem_mesh.points[outer_loop],
+        bem_mesh.points[old_bem_inner_loop],
+        fem_mesh.points[fem_inner_loop],
+        fem_mesh.points[np.unique(fem_interface)],
+    )
+
+    interface_diameter = _point_cloud_diameter(fem_mesh.points[np.unique(fem_interface)])
+    resolved_geometry_tolerance = (
+        max(interface_diameter * 1e-3, 1e-9)
+        if geometry_tolerance is None
+        else float(geometry_tolerance)
+    )
+    if resolved_geometry_tolerance <= 0.0:
+        raise InterfaceConformError("geometry_tolerance must be greater than zero.")
+    if plane_deviation > resolved_geometry_tolerance:
+        raise InterfaceConformError(
+            "The FEM interface and surrounding BEM surface are not coplanar: "
+            f"maximum plane deviation {plane_deviation:g} exceeds tolerance "
+            f"{resolved_geometry_tolerance:g}."
+        )
+
+    boundary_deviation = _symmetric_polyline_deviation(
+        fem_mesh.points[fem_inner_loop],
+        bem_mesh.points[old_bem_inner_loop],
+    )
+    if boundary_deviation > resolved_geometry_tolerance:
+        raise InterfaceConformError(
+            "The FEM and BEM interface perimeters do not describe the same boundary: "
+            f"maximum deviation {boundary_deviation:g} exceeds tolerance "
+            f"{resolved_geometry_tolerance:g}."
+        )
+
+    outer_coordinates, fem_inner_coordinates = _oriented_annulus_loops(
+        bem_mesh.points[outer_loop],
+        fem_mesh.points[fem_inner_loop],
+        adjacent_normal,
+    )
+    annulus_points, annulus_triangles = _remesh_planar_annulus(
+        outer_coordinates,
+        fem_inner_coordinates,
+    )
+    annulus_triangles = _orient_triangles(
+        annulus_points,
+        annulus_triangles,
+        adjacent_normal,
+    )
+
+    interface_orientation_flipped = bool(np.dot(fem_interface_normal, old_interface_normal) < 0.0)
+    copied_interface = np.asarray(fem_interface, dtype=np.int64).copy()
+    if interface_orientation_flipped:
+        copied_interface = copied_interface[:, [0, 2, 1]]
+
+    keep_mask = ~(bem_interface_mask | adjacent_mask)
+    kept_triangles = bem_data.triangles[keep_mask]
+    kept_physical = bem_data.physical_tags[keep_mask]
+    kept_geometrical = bem_data.geometrical_tags[keep_mask]
+
+    annulus_offset = len(bem_mesh.points)
+    fem_offset = annulus_offset + len(annulus_points)
+    combined_points = np.vstack(
+        (
+            np.asarray(bem_mesh.points, dtype=float),
+            annulus_points,
+            np.asarray(fem_mesh.points, dtype=float),
+        )
+    )
+    combined_triangles = np.vstack(
+        (
+            kept_triangles,
+            annulus_triangles + annulus_offset,
+            copied_interface + fem_offset,
+        )
+    )
+    combined_physical = np.concatenate(
+        (
+            kept_physical,
+            np.full(len(annulus_triangles), adjacent_physical_tag, dtype=np.int32),
+            np.full(len(copied_interface), bem_interface_tag, dtype=np.int32),
+        )
+    )
+    interface_geometrical_tags = np.unique(bem_data.geometrical_tags[bem_interface_mask])
+    if len(interface_geometrical_tags) != 1:
+        raise InterfaceConformError("The BEM interface must have exactly one geometrical tag.")
+    combined_geometrical = np.concatenate(
+        (
+            kept_geometrical,
+            np.full(len(annulus_triangles), adjacent_geometrical_tag, dtype=np.int32),
+            np.full(len(copied_interface), int(interface_geometrical_tags[0]), dtype=np.int32),
+        )
+    )
+
+    merged_points, merged_triangles = _merge_and_compact_points(
+        combined_points,
+        combined_triangles,
+        merge_tolerance,
+    )
+    output_mesh = meshio.Mesh(
+        points=merged_points,
+        cells=[("triangle", merged_triangles)],
+        cell_data={
+            "gmsh:physical": [combined_physical],
+            "gmsh:geometrical": [combined_geometrical],
+        },
+        field_data={name: np.asarray(value).copy() for name, value in bem_mesh.field_data.items()},
+    )
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        output_mesh,
+        fem_interface_name=fem_interface_name,
+        bem_interface_name=bem_interface_name,
+        coordinate_tolerance=max(merge_tolerance * 10.0, 1e-9),
+        require_closed_bem=True,
+    )
+    result = InterfaceConformResult(
+        fem_interface_triangles=len(fem_interface),
+        original_bem_interface_triangles=len(bem_interface),
+        original_adjacent_triangles=len(adjacent_triangles),
+        remeshed_adjacent_triangles=len(annulus_triangles),
+        output_vertices=len(merged_points),
+        output_triangles=len(merged_triangles),
+        max_original_boundary_deviation=boundary_deviation,
+        interface_orientation_flipped=interface_orientation_flipped,
+        identity=identity,
+    )
+    return output_mesh, result
+
+
+def conform_interface_mesh_files(
+    fem_mesh_path: str | Path,
+    bem_mesh_path: str | Path,
+    output_mesh_path: str | Path,
+    *,
+    fem_interface_name: str = "Interface",
+    bem_interface_name: str = "Interface",
+    geometry_tolerance: float | None = None,
+    merge_tolerance: float = 1e-8,
+    binary: bool = False,
+) -> InterfaceConformResult:
+    """Conform two mesh files and write a Gmsh 2.2 BEM surface mesh."""
+
+    fem_path = Path(fem_mesh_path)
+    bem_path = Path(bem_mesh_path)
+    output_path = Path(output_mesh_path)
+    fem_mesh = meshio.read(fem_path)
+    bem_mesh = meshio.read(bem_path)
+    output_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name=fem_interface_name,
+        bem_interface_name=bem_interface_name,
+        geometry_tolerance=geometry_tolerance,
+        merge_tolerance=merge_tolerance,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    meshio.write(output_path, output_mesh, file_format="gmsh22", binary=binary)
+    return result
+
+
+def validate_conforming_interfaces(
+    fem_mesh: meshio.Mesh,
+    bem_mesh: meshio.Mesh,
+    *,
+    fem_interface_name: str = "Interface",
+    bem_interface_name: str = "Interface",
+    coordinate_tolerance: float = 1e-8,
+    require_closed_bem: bool = True,
+) -> InterfaceIdentityReport:
+    """Validate coordinate/connectivity identity and surrounding topology."""
+
+    if coordinate_tolerance <= 0.0:
+        raise InterfaceConformError("coordinate_tolerance must be greater than zero.")
+    fem_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
+    bem_tag = _physical_surface_tag(bem_mesh, bem_interface_name)
+    fem_data = _triangle_data(fem_mesh, require_geometrical=False)
+    bem_data = _triangle_data(bem_mesh, require_geometrical=False)
+    fem_triangles = fem_data.triangles[fem_data.physical_tags == fem_tag]
+    bem_triangles = bem_data.triangles[bem_data.physical_tags == bem_tag]
+    if len(fem_triangles) != len(bem_triangles):
+        raise InterfaceConformError(
+            "Interface triangle counts differ: "
+            f"FEM has {len(fem_triangles)}, BEM has {len(bem_triangles)}."
+        )
+
+    fem_vertices = np.unique(fem_triangles)
+    bem_vertices = np.unique(bem_triangles)
+    if len(fem_vertices) != len(bem_vertices):
+        raise InterfaceConformError(
+            "Interface vertex counts differ: "
+            f"FEM has {len(fem_vertices)}, BEM has {len(bem_vertices)}."
+        )
+    distances, local_indices = cKDTree(bem_mesh.points[bem_vertices]).query(fem_mesh.points[fem_vertices])
+    max_coordinate_error = float(np.max(distances, initial=0.0))
+    if max_coordinate_error > coordinate_tolerance:
+        raise InterfaceConformError(
+            f"Interface coordinate error {max_coordinate_error:g} exceeds tolerance {coordinate_tolerance:g}."
+        )
+    mapped_bem_vertices = bem_vertices[np.asarray(local_indices, dtype=np.int64)]
+    if len(np.unique(mapped_bem_vertices)) != len(mapped_bem_vertices):
+        raise InterfaceConformError("FEM interface vertices do not map one-to-one onto BEM interface vertices.")
+
+    fem_to_bem = dict(zip(map(int, fem_vertices), map(int, mapped_bem_vertices), strict=True))
+    mapped_fem_faces = {
+        tuple(sorted(fem_to_bem[int(vertex)] for vertex in triangle))
+        for triangle in fem_triangles
+    }
+    bem_faces = {tuple(sorted(map(int, triangle))) for triangle in bem_triangles}
+    if mapped_fem_faces != bem_faces:
+        raise InterfaceConformError("FEM and BEM interface triangle connectivity differs.")
+
+    tetra_boundary = _tetra_boundary_faces(fem_mesh)
+    fem_face_keys = {tuple(sorted(map(int, triangle))) for triangle in fem_triangles}
+    matched_tetra_facets = len(fem_face_keys & tetra_boundary)
+    if matched_tetra_facets != len(fem_face_keys):
+        raise InterfaceConformError(
+            f"Only {matched_tetra_facets}/{len(fem_face_keys)} FEM interface triangles are tetrahedron boundary facets."
+        )
+
+    bem_boundary_edges = len(_surface_boundary_edges(bem_data.triangles))
+    if require_closed_bem and bem_boundary_edges != 0:
+        raise InterfaceConformError(f"Conformed BEM surface has {bem_boundary_edges} open boundary edges.")
+    return InterfaceIdentityReport(
+        interface_triangles=len(fem_triangles),
+        interface_vertices=len(fem_vertices),
+        max_coordinate_error=max_coordinate_error,
+        fem_facets_on_tetra_boundary=matched_tetra_facets,
+        bem_boundary_edges=bem_boundary_edges,
+    )
+
+
+def _physical_surface_tag(mesh: meshio.Mesh, name: str) -> int:
+    value = mesh.field_data.get(name)
+    if value is None:
+        available = ", ".join(sorted(mesh.field_data)) or "(none)"
+        raise InterfaceConformError(f"Physical surface '{name}' not found. Available groups: {available}.")
+    tag, dimension = map(int, np.asarray(value).tolist())
+    if dimension != 2:
+        raise InterfaceConformError(f"Physical group '{name}' has dimension {dimension}, expected surface dimension 2.")
+    return tag
+
+
+def _triangle_data(mesh: meshio.Mesh, *, require_geometrical: bool) -> _TriangleData:
+    triangles = []
+    physical_tags = []
+    geometrical_tags = []
+    physical_blocks = mesh.cell_data.get("gmsh:physical")
+    geometrical_blocks = mesh.cell_data.get("gmsh:geometrical")
+    if physical_blocks is None:
+        raise InterfaceConformError("Mesh triangles do not contain gmsh:physical tags.")
+    if require_geometrical and geometrical_blocks is None:
+        raise InterfaceConformError("BEM triangles do not contain gmsh:geometrical tags.")
+
+    for index, cell_block in enumerate(mesh.cells):
+        if cell_block.type not in {"triangle", "triangle3"}:
+            continue
+        block = np.asarray(cell_block.data, dtype=np.int64)
+        physical = np.asarray(physical_blocks[index], dtype=np.int32)
+        if len(physical) != len(block):
+            raise InterfaceConformError("Triangle physical-tag data length does not match the triangle block.")
+        triangles.append(block)
+        physical_tags.append(physical)
+        if geometrical_blocks is None:
+            geometrical_tags.append(np.zeros(len(block), dtype=np.int32))
+        else:
+            geometrical = np.asarray(geometrical_blocks[index], dtype=np.int32)
+            if len(geometrical) != len(block):
+                raise InterfaceConformError("Triangle geometrical-tag data length does not match the triangle block.")
+            geometrical_tags.append(geometrical)
+    if not triangles:
+        raise InterfaceConformError("Mesh contains no triangular surface elements.")
+    return _TriangleData(
+        triangles=np.vstack(triangles),
+        physical_tags=np.concatenate(physical_tags),
+        geometrical_tags=np.concatenate(geometrical_tags),
+    )
+
+
+def _boundary_loops(triangles: np.ndarray) -> list[np.ndarray]:
+    boundary_edges = _surface_boundary_edges(triangles)
+    adjacency: dict[int, list[int]] = defaultdict(list)
+    for start, end in boundary_edges:
+        adjacency[int(start)].append(int(end))
+        adjacency[int(end)].append(int(start))
+    invalid = [vertex for vertex, neighbors in adjacency.items() if len(neighbors) != 2]
+    if invalid:
+        raise InterfaceConformError(
+            "Surface boundary is not a collection of simple closed loops; "
+            f"{len(invalid)} boundary vertices do not have degree two."
+        )
+
+    remaining = {tuple(map(int, edge)) for edge in boundary_edges}
+    loops = []
+    while remaining:
+        start, first_neighbor = next(iter(remaining))
+        loop = [start]
+        previous = None
+        current = start
+        while True:
+            next_vertex = next(
+                (
+                    neighbor
+                    for neighbor in adjacency[current]
+                    if neighbor != previous and tuple(sorted((current, neighbor))) in remaining
+                ),
+                None,
+            )
+            if next_vertex is None:
+                raise InterfaceConformError("Could not order a surface boundary loop.")
+            remaining.remove(tuple(sorted((current, next_vertex))))
+            if next_vertex == loop[0]:
+                break
+            loop.append(next_vertex)
+            previous, current = current, next_vertex
+        loops.append(np.asarray(loop, dtype=np.int64))
+    return loops
+
+
+def _surface_boundary_edges(triangles: np.ndarray) -> np.ndarray:
+    edges = np.sort(
+        np.vstack(
+            (
+                triangles[:, [0, 1]],
+                triangles[:, [1, 2]],
+                triangles[:, [2, 0]],
+            )
+        ),
+        axis=1,
+    )
+    unique_edges, counts = np.unique(edges, axis=0, return_counts=True)
+    if np.any(counts > 2):
+        raise InterfaceConformError("Surface contains non-manifold edges with more than two incident triangles.")
+    return unique_edges[counts == 1]
+
+
+def _adjacent_geometrical_tag(
+    bem_data: _TriangleData,
+    interface_mask: np.ndarray,
+    interface_loop: np.ndarray,
+) -> int:
+    triangle_edges: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for triangle_index, triangle in enumerate(bem_data.triangles):
+        for start, end in (
+            (triangle[0], triangle[1]),
+            (triangle[1], triangle[2]),
+            (triangle[2], triangle[0]),
+        ):
+            triangle_edges[tuple(sorted((int(start), int(end))))].append(triangle_index)
+
+    adjacent_tags = set()
+    for index, start in enumerate(interface_loop):
+        edge = tuple(sorted((int(start), int(interface_loop[(index + 1) % len(interface_loop)]))))
+        owners = triangle_edges.get(edge, [])
+        outside = [owner for owner in owners if not interface_mask[owner]]
+        if len(outside) != 1:
+            raise InterfaceConformError(
+                "Every BEM interface perimeter edge must have exactly one adjacent non-interface triangle."
+            )
+        adjacent_tags.add(int(bem_data.geometrical_tags[outside[0]]))
+    if len(adjacent_tags) != 1:
+        raise InterfaceConformError(
+            "The initial conformer requires the BEM interface to be surrounded by one geometrical surface."
+        )
+    return next(iter(adjacent_tags))
+
+
+def _surface_normal(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    cross_products = np.cross(
+        points[triangles[:, 1]] - points[triangles[:, 0]],
+        points[triangles[:, 2]] - points[triangles[:, 0]],
+    )
+    normal = np.sum(cross_products, axis=0)
+    magnitude = float(np.linalg.norm(normal))
+    if magnitude <= 0.0:
+        raise InterfaceConformError("Surface has zero aggregate normal.")
+    return normal / magnitude
+
+
+def _maximum_plane_deviation(origin: np.ndarray, normal: np.ndarray, *point_sets: np.ndarray) -> float:
+    return max(
+        (float(np.max(np.abs((points - origin) @ normal), initial=0.0)) for points in point_sets),
+        default=0.0,
+    )
+
+
+def _point_cloud_diameter(points: np.ndarray) -> float:
+    bounds = np.ptp(np.asarray(points, dtype=float), axis=0)
+    return float(np.linalg.norm(bounds))
+
+
+def _symmetric_polyline_deviation(first: np.ndarray, second: np.ndarray) -> float:
+    return max(
+        _points_to_closed_polyline_distance(first, second),
+        _points_to_closed_polyline_distance(second, first),
+    )
+
+
+def _points_to_closed_polyline_distance(points: np.ndarray, polyline: np.ndarray) -> float:
+    starts = polyline
+    ends = np.roll(polyline, -1, axis=0)
+    segments = ends - starts
+    segment_length_sq = np.sum(segments * segments, axis=1)
+    if np.any(segment_length_sq <= 0.0):
+        raise InterfaceConformError("Interface perimeter contains a zero-length segment.")
+    relative = points[:, np.newaxis, :] - starts[np.newaxis, :, :]
+    parameters = np.sum(relative * segments[np.newaxis, :, :], axis=2) / segment_length_sq[np.newaxis, :]
+    parameters = np.clip(parameters, 0.0, 1.0)
+    projections = starts[np.newaxis, :, :] + parameters[:, :, np.newaxis] * segments[np.newaxis, :, :]
+    distances = np.linalg.norm(points[:, np.newaxis, :] - projections, axis=2)
+    return float(np.max(np.min(distances, axis=1), initial=0.0))
+
+
+def _oriented_annulus_loops(
+    outer_coordinates: np.ndarray,
+    inner_coordinates: np.ndarray,
+    normal: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    origin = np.mean(outer_coordinates, axis=0)
+    first_edge = outer_coordinates[1] - outer_coordinates[0]
+    first_edge -= normal * float(np.dot(first_edge, normal))
+    first_edge_magnitude = float(np.linalg.norm(first_edge))
+    if first_edge_magnitude <= 0.0:
+        raise InterfaceConformError("Could not construct a basis for the planar BEM surface.")
+    axis_u = first_edge / first_edge_magnitude
+    axis_v = np.cross(normal, axis_u)
+
+    def signed_area(coordinates: np.ndarray) -> float:
+        relative = coordinates - origin
+        x = relative @ axis_u
+        y = relative @ axis_v
+        return float(0.5 * np.sum(x * np.roll(y, -1) - y * np.roll(x, -1)))
+
+    outer = np.asarray(outer_coordinates, dtype=float)
+    inner = np.asarray(inner_coordinates, dtype=float)
+    if signed_area(outer) < 0.0:
+        outer = outer[::-1]
+    if signed_area(inner) > 0.0:
+        inner = inner[::-1]
+    return outer, inner
+
+
+def _remesh_planar_annulus(
+    outer_coordinates: np.ndarray,
+    inner_coordinates: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        import gmsh
+    except ImportError as exc:
+        raise InterfaceConformError("The gmsh Python package is required to remesh the BEM interface annulus.") from exc
+
+    was_initialized = bool(gmsh.isInitialized())
+    previous_model = gmsh.model.getCurrent() if was_initialized else ""
+    if not was_initialized:
+        gmsh.initialize()
+    previous_terminal = gmsh.option.getNumber("General.Terminal")
+    previous_algorithm = gmsh.option.getNumber("Mesh.Algorithm")
+    model_name = f"boundary_lab_interface_{uuid.uuid4().hex}"
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.option.setNumber("Mesh.Algorithm", 6)
+        gmsh.model.add(model_name)
+
+        def add_loop(coordinates: np.ndarray) -> int:
+            segment_lengths = np.linalg.norm(np.roll(coordinates, -1, axis=0) - coordinates, axis=1)
+            mesh_size = float(np.median(segment_lengths))
+            point_tags = [
+                gmsh.model.geo.addPoint(
+                    float(point[0]),
+                    float(point[1]),
+                    float(point[2]),
+                    mesh_size,
+                )
+                for point in coordinates
+            ]
+            curve_tags = []
+            for index, point_tag in enumerate(point_tags):
+                curve_tag = gmsh.model.geo.addLine(point_tag, point_tags[(index + 1) % len(point_tags)])
+                gmsh.model.geo.mesh.setTransfiniteCurve(curve_tag, 2)
+                curve_tags.append(curve_tag)
+            return gmsh.model.geo.addCurveLoop(curve_tags)
+
+        outer_loop = add_loop(outer_coordinates)
+        inner_loop = add_loop(inner_coordinates)
+        surface = gmsh.model.geo.addPlaneSurface([outer_loop, inner_loop])
+        gmsh.model.geo.synchronize()
+        gmsh.model.mesh.generate(2)
+
+        node_tags, coordinates, _parameters = gmsh.model.mesh.getNodes()
+        points = np.asarray(coordinates, dtype=float).reshape((-1, 3))
+        element_types, _element_tags, element_nodes = gmsh.model.mesh.getElements(2, surface)
+        triangle_indices = [index for index, element_type in enumerate(element_types) if int(element_type) == 2]
+        if len(triangle_indices) != 1:
+            raise InterfaceConformError("Gmsh did not generate one first-order triangle block for the BEM annulus.")
+        node_lookup = {int(tag): index for index, tag in enumerate(node_tags)}
+        triangle_node_tags = np.asarray(element_nodes[triangle_indices[0]], dtype=np.int64).reshape((-1, 3))
+        triangles = np.asarray(
+            [[node_lookup[int(tag)] for tag in triangle] for triangle in triangle_node_tags],
+            dtype=np.int64,
+        )
+        return points, triangles
+    finally:
+        if gmsh.model.getCurrent() == model_name:
+            gmsh.model.remove()
+        gmsh.option.setNumber("General.Terminal", previous_terminal)
+        gmsh.option.setNumber("Mesh.Algorithm", previous_algorithm)
+        if was_initialized:
+            if previous_model:
+                gmsh.model.setCurrent(previous_model)
+        else:
+            gmsh.finalize()
+
+
+def _orient_triangles(points: np.ndarray, triangles: np.ndarray, target_normal: np.ndarray) -> np.ndarray:
+    oriented = np.asarray(triangles, dtype=np.int64).copy()
+    normal = _surface_normal(points, oriented)
+    if np.dot(normal, target_normal) < 0.0:
+        oriented = oriented[:, [0, 2, 1]]
+    return oriented
+
+
+def _merge_and_compact_points(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    tolerance: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    parent = np.arange(len(points), dtype=np.int64)
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = int(parent[index])
+        return index
+
+    def union(first: int, second: int) -> None:
+        root_first = find(first)
+        root_second = find(second)
+        if root_first == root_second:
+            return
+        if root_first < root_second:
+            parent[root_second] = root_first
+        else:
+            parent[root_first] = root_second
+
+    for first, second in cKDTree(points).query_pairs(tolerance):
+        union(int(first), int(second))
+    roots = np.asarray([find(index) for index in range(len(points))], dtype=np.int64)
+    unique_roots, inverse = np.unique(roots, return_inverse=True)
+    merged_points = np.asarray(points[unique_roots], dtype=float)
+    merged_triangles = inverse[np.asarray(triangles, dtype=np.int64)]
+    if np.any(
+        (merged_triangles[:, 0] == merged_triangles[:, 1])
+        | (merged_triangles[:, 1] == merged_triangles[:, 2])
+        | (merged_triangles[:, 0] == merged_triangles[:, 2])
+    ):
+        raise InterfaceConformError("Point merging collapsed one or more output triangles.")
+
+    used = np.unique(merged_triangles)
+    compact_index = np.full(len(merged_points), -1, dtype=np.int64)
+    compact_index[used] = np.arange(len(used), dtype=np.int64)
+    return merged_points[used], compact_index[merged_triangles]
+
+
+def _tetra_boundary_faces(mesh: meshio.Mesh) -> set[tuple[int, int, int]]:
+    tetrahedra = [
+        np.asarray(cell_block.data, dtype=np.int64)
+        for cell_block in mesh.cells
+        if cell_block.type in {"tetra", "tetra4"}
+    ]
+    if not tetrahedra:
+        raise InterfaceConformError("FEM mesh contains no first-order tetrahedra.")
+    tetrahedra_array = np.vstack(tetrahedra)
+    faces = np.sort(
+        np.vstack(
+            (
+                tetrahedra_array[:, [0, 1, 2]],
+                tetrahedra_array[:, [0, 1, 3]],
+                tetrahedra_array[:, [0, 2, 3]],
+                tetrahedra_array[:, [1, 2, 3]],
+            )
+        ),
+        axis=1,
+    )
+    counts = Counter(map(tuple, faces.tolist()))
+    return {face for face, count in counts.items() if count == 1}
+
+
+def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Replace a planar BEM interface with matching authoritative FEM boundary facets.",
+    )
+    parser.add_argument("fem_mesh", help="Tetrahedral FEM .msh file")
+    parser.add_argument("bem_mesh", help="Exterior BEM surface .msh file")
+    parser.add_argument("output_mesh", help="Output conforming BEM .msh file")
+    parser.add_argument("--fem-interface", default="Interface", help="FEM interface physical-group name")
+    parser.add_argument("--bem-interface", default="Interface", help="BEM interface physical-group name")
+    parser.add_argument(
+        "--geometry-tol",
+        type=float,
+        default=None,
+        help="Maximum original perimeter/plane mismatch in mesh units (default: 0.1%% of interface diameter)",
+    )
+    parser.add_argument(
+        "--merge-tol",
+        type=float,
+        default=1e-8,
+        help="Coincident-node merge tolerance in mesh units (default: 1e-8)",
+    )
+    parser.add_argument("--binary", action="store_true", help="Write binary Gmsh 2.2 output")
+    parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
+    parser = _build_arg_parser(prog)
+    args = parser.parse_args(argv)
+    output_path = Path(args.output_mesh)
+    if output_path.exists() and not args.force:
+        parser.error(f"Output already exists: {output_path}. Use --force to overwrite it.")
+    try:
+        result = conform_interface_mesh_files(
+            args.fem_mesh,
+            args.bem_mesh,
+            output_path,
+            fem_interface_name=args.fem_interface,
+            bem_interface_name=args.bem_interface,
+            geometry_tolerance=args.geometry_tol,
+            merge_tolerance=args.merge_tol,
+            binary=args.binary,
+        )
+    except (InterfaceConformError, OSError) as exc:
+        parser.error(str(exc))
+
+    print(f"Wrote conforming BEM mesh: {output_path}")
+    print(
+        "Interface: "
+        f"{result.original_bem_interface_triangles} BEM triangles replaced by "
+        f"{result.fem_interface_triangles} FEM facets"
+    )
+    print(
+        "Surrounding surface: "
+        f"{result.original_adjacent_triangles} triangles replaced by "
+        f"{result.remeshed_adjacent_triangles} triangles"
+    )
+    print(
+        f"Output: {result.output_vertices} vertices, {result.output_triangles} triangles, "
+        f"{result.identity.bem_boundary_edges} open boundary edges"
+    )
+    print(f"Maximum original perimeter deviation: {result.max_original_boundary_deviation:g}")
+
+
+if __name__ == "__main__":
+    main()

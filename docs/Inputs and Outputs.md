@@ -49,6 +49,24 @@ Loading a project updates the design editor, mesh config, and source config. It 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.
 
+## Conforming FEM and BEM Interfaces
+
+Coupled FEM–BEM models require both meshes to use the same nodes and triangle
+connectivity on their shared interface. Boundary Lab includes a command-line
+utility for the common case where a tagged planar BEM patch is surrounded by
+one planar surface:
+
+```console
+blab conform-interface femvolume.msh exterior.msh exterior_conforming.msh
+```
+
+The FEM tetrahedron boundary facets are authoritative. The utility copies those
+facets into the output BEM mesh, remeshes the surrounding BEM surface to meet
+their perimeter, preserves the BEM physical groups, and verifies that the
+resulting exterior mesh is watertight. Input physical-group names default to
+`Interface` and can be changed with `--fem-interface` and `--bem-interface`.
+The original input files are not modified.
+
 ## Exporting Plot Images
 
 Users can export any of the rendered plots as .png images.
