@@ -5,7 +5,7 @@ $PhysicalNames
 5
 2 2 "HF"
 2 3 "MF"
-2 4 "Interface"
+2 4 "INTERFACE"
 2 5 "SAWMODFEM_boundary"
 3 1 "SAWMODFEM"
 $EndPhysicalNames
