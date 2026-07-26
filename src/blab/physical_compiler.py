@@ -54,12 +54,10 @@ class PhysicalSystemCompiler:
     def compile(self, system: PhysicalSystem) -> CompiledPhysicalSystem:
         self._validate_authoring_model(system)
         meshes_by_id = {mesh.id: mesh for mesh in system.meshes}
-        regions_by_id = {region.id: region for region in system.regions}
-
         compiled_meshes = tuple(self._compile_mesh(mesh) for mesh in system.meshes)
         compiled_regions = tuple(self._compile_region(region, meshes_by_id) for region in system.regions)
         compiled_boundaries = tuple(
-            self._compile_boundary(boundary, regions_by_id, meshes_by_id) for boundary in system.boundaries
+            self._compile_boundary(boundary, meshes_by_id) for boundary in system.boundaries
         )
         compiled_boundaries_by_id = {boundary.id: boundary for boundary in compiled_boundaries}
 
@@ -318,7 +316,6 @@ class PhysicalSystemCompiler:
             issues.append(f"{owner} must contain finite JSON-compatible values: {exc}")
 
     def _compile_mesh(self, mesh_resource: MeshResource) -> CompiledMesh:
-        mesh = self._read_mesh(mesh_resource)
         return CompiledMesh(
             id=mesh_resource.id,
             name=mesh_resource.name,
@@ -326,9 +323,6 @@ class PhysicalSystemCompiler:
             purpose=mesh_resource.purpose,
             scale_to_m=float(mesh_resource.scale_to_m),
             translation_m=tuple(float(value) for value in mesh_resource.translation_m),
-            point_count=len(mesh.points),
-            triangle_count=self._cell_count(mesh, dimension=2),
-            tetrahedron_count=self._cell_count(mesh, dimension=3),
         )
 
     def _compile_region(
@@ -351,10 +345,8 @@ class PhysicalSystemCompiler:
     def _compile_boundary(
         self,
         boundary: Boundary,
-        regions_by_id: dict[str, AcousticRegion],
         meshes_by_id: dict[str, MeshResource],
     ) -> CompiledBoundary:
-        del regions_by_id  # Authoring validation already established the relationship.
         return CompiledBoundary(
             id=boundary.id,
             name=boundary.name,
@@ -442,7 +434,6 @@ class PhysicalSystemCompiler:
             dimension=group.dimension,
             tag=int(tag),
             name=name,
-            element_count=count,
         )
 
     def _validate_boundary_coverage(
@@ -513,11 +504,6 @@ class PhysicalSystemCompiler:
             field_data=mesh.field_data,
             cell_sets=mesh.cell_sets,
         )
-
-    @staticmethod
-    def _cell_count(mesh: meshio.Mesh, *, dimension: int) -> int:
-        cell_types = {"triangle", "triangle3"} if dimension == 2 else {"tetra", "tetra4"}
-        return sum(len(block.data) for block in mesh.cells if block.type in cell_types)
 
     @classmethod
     def _group_element_indices(cls, mesh: meshio.Mesh, *, dimension: int, tag: int) -> np.ndarray:

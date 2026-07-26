@@ -144,7 +144,6 @@ class ResolvedPhysicalGroup:
     dimension: int
     tag: int
     name: str | None
-    element_count: int
 
 
 @dataclass(frozen=True)
@@ -155,9 +154,6 @@ class CompiledMesh:
     purpose: MeshPurpose
     scale_to_m: float
     translation_m: tuple[float, float, float]
-    point_count: int
-    triangle_count: int
-    tetrahedron_count: int
 
 
 @dataclass(frozen=True)
@@ -211,15 +207,6 @@ class CompiledPhysicalSystem:
     source_model_version: int = PHYSICAL_MODEL_VERSION
     contract_version: int = COMPILED_SYSTEM_VERSION
     metadata: dict[str, JsonValue] = field(default_factory=dict)
-
-
-def object_by_id(items: tuple[Any, ...], object_id: str, *, label: str) -> Any:
-    """Return an object by id with a domain-oriented error."""
-
-    for item in items:
-        if item.id == object_id:
-            return item
-    raise ValueError(f"Unknown {label} id: {object_id}")
 
 
 def physical_system_to_dict(system: PhysicalSystem) -> dict[str, Any]:

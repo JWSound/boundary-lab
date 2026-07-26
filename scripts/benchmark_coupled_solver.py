@@ -23,7 +23,7 @@ from blab.physical_model import (
     PhysicalSystem,
     physical_system_from_dict,
 )
-from blab.solvers.coupled_reference_backend import (
+from blab.solvers.coupled_backend import (
     CoupledProductionBackend,
     CoupledReferenceBackend,
 )
@@ -53,16 +53,16 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=1, help="Number of runs per mode.")
     parser.add_argument(
         "--mode",
-        choices=("interactive", "reference", "legacy", "all"),
+        choices=("interactive", "reference", "uncached", "all"),
         default="all",
-        help="Interactive skips replay diagnostics; legacy also disables invariant caching.",
+        help="Interactive skips replay diagnostics; uncached also disables invariant caching.",
     )
     args = parser.parse_args()
     frequencies = tuple(float(value.strip()) for value in args.frequencies.split(",") if value.strip())
     if not frequencies:
         parser.error("--frequencies must contain at least one value.")
     system = _fixture_system() if args.project is None else _system_from_project(args.project)
-    modes = ("interactive", "reference", "legacy") if args.mode == "all" else (args.mode,)
+    modes = ("interactive", "reference", "uncached") if args.mode == "all" else (args.mode,)
     for mode in modes:
         for run_index in range(max(1, args.repeat)):
             _run_mode(
@@ -109,7 +109,7 @@ def _run_mode(
     options["quadrature_order"] = int(quadrature_order)
     options["singular_order"] = int(singular_order)
     options["validation_diagnostics"] = mode != "interactive"
-    options["cache_frequency_invariant"] = mode != "legacy"
+    options["cache_frequency_invariant"] = mode != "uncached"
     request = replace(
         prepared.request,
         frequencies_hz=frequencies,

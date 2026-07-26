@@ -60,7 +60,7 @@ translation. Tetrahedral imports bypass the legacy surface cleaner so their
 volume connectivity and physical groups are preserved.
 
 Component-to-channel routing is stored as application project state, not in the
-physical system or compiled solver contract. The reference solver returns one
+physical system or compiled solver contract. The coupled solver returns one
 complex unit response per excitation port; responses routed to the same channel
 are combined before the existing channel gain, polarity, delay, and filter
 settings are applied.

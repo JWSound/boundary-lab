@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QComboBox
 
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import AcousticRegionKind, BoundaryKind
-from blab.solvers.coupled_reference_backend import CoupledProductionBackend
+from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.mesh_assembly import MeshAssemblyService
 from blab.ui.project_state import ImportedMeshState
@@ -133,8 +133,8 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     )
     assert prepared.request.solver_options["validation_diagnostics"] is False
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
-    assert prepared.request.solver_options["precision"] == "float32"
-    assert prepared.request.solver_options["bem_backend"] == "cpu"
+    assert "precision" not in prepared.request.solver_options
+    assert "bem_backend" not in prepared.request.solver_options
     assert prepared.backend_id == "beat_cpu"
     points = np.asarray(prepared.request.outputs[0].options["points_m"])
     assert points.shape == (10, 3)
@@ -218,8 +218,8 @@ def test_coupled_ui_request_routes_cuda_backend() -> None:
     )
 
     assert prepared.backend_id == "beat_cuda"
-    assert prepared.request.solver_options["precision"] == "float32"
-    assert prepared.request.solver_options["bem_backend"] == "cuda"
+    assert "precision" not in prepared.request.solver_options
+    assert "bem_backend" not in prepared.request.solver_options
 
 
 def test_coupled_ui_request_rejects_non_beat_backend() -> None:

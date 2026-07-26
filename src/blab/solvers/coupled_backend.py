@@ -1,4 +1,4 @@
-"""Double-precision Julia reference backend for directly coupled FEM-BEM systems."""
+"""Julia backend adapters for directly coupled FEM-BEM systems."""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+from blab.physical_model import (
+    BoundaryKind,
+    ComponentKind,
+    ExcitationPortKind,
+)
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     BeatEngineWorkerProcess,
@@ -24,19 +29,24 @@ from blab.system_contract import (
     system_solve_request_to_dict,
 )
 
-DEFAULT_COUPLED_REFERENCE_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
-DEFAULT_COUPLED_REFERENCE_PROJECT = DEFAULT_COUPLED_REFERENCE_SCRIPT.parent
+DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
+DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_COUPLED_SOLVER_SCRIPT.parent
 COUPLED_BEM_BACKENDS = {"cpu", "cuda"}
+COUPLED_BOUNDARY_KINDS = {
+    BoundaryKind.RIGID,
+    BoundaryKind.MOVING,
+    BoundaryKind.INTERFACE,
+}
 
 
-class CoupledReferenceSession:
+class CoupledSession:
     def __init__(
         self,
         request: SystemSolveRequest,
         *,
         julia_executable: str = "julia",
-        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
-        julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
+        julia_project: str | Path | None = DEFAULT_COUPLED_CPU_PROJECT,
         julia_threads: str | int = "4",
         persistent_worker: bool = True,
     ):
@@ -113,7 +123,7 @@ class CoupledReferenceSession:
                 self._stderr_thread.join(timeout=2.0)
             if return_code != 0 and not self._stop:
                 detail = "\n".join(self._stderr_lines).strip()
-                raise RuntimeError(detail or f"Coupled Julia reference solver exited with status {return_code}.")
+                raise RuntimeError(detail or f"Coupled Julia solver exited with status {return_code}.")
         finally:
             self._close_process()
 
@@ -147,7 +157,7 @@ class CoupledReferenceSession:
                     elif event_type == "status" and callback is not None:
                         callback(str(event.get("message", "")))
                     elif event_type == "failed":
-                        raise RuntimeError(str(event.get("error", "Coupled Julia reference solver failed.")))
+                        raise RuntimeError(str(event.get("error", "Coupled Julia solver failed.")))
                     elif event_type in {"completed", "cancelled"}:
                         return
             except RuntimeError:
@@ -196,8 +206,8 @@ class _CoupledBackend:
         self,
         *,
         julia_executable: str = "julia",
-        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
-        julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
+        julia_project: str | Path | None = DEFAULT_COUPLED_CPU_PROJECT,
         julia_threads: str | int = "4",
         persistent_worker: bool = True,
         precision: str = "float64",
@@ -217,18 +227,75 @@ class _CoupledBackend:
         self.precision = normalized_precision
         self.bem_backend = normalized_bem_backend
 
-    def create_system_session(self, request: SystemSolveRequest) -> CoupledReferenceSession:
+    def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
+        validate_coupled_capabilities(request)
         solver_options = dict(request.solver_options)
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
         typed_request = replace(request, solver_options=solver_options)
-        return CoupledReferenceSession(
+        return CoupledSession(
             typed_request,
             julia_executable=self.julia_executable,
             solver_script=self.solver_script,
             julia_project=self.julia_project,
             julia_threads=self.julia_threads,
             persistent_worker=self.persistent_worker,
+        )
+
+
+def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
+    """Reject physical-model features that the current coupled backend cannot solve."""
+
+    system = request.compiled_system
+    unsupported_boundaries = [
+        boundary.id for boundary in system.boundaries if boundary.kind not in COUPLED_BOUNDARY_KINDS
+    ]
+    if unsupported_boundaries:
+        raise ValueError(
+            "Coupled solver does not support the boundary assignments used by: "
+            + ", ".join(unsupported_boundaries)
+        )
+    parameterized_boundaries = [boundary.id for boundary in system.boundaries if boundary.parameters]
+    if parameterized_boundaries:
+        raise ValueError(
+            "Coupled solver does not yet support boundary parameters on: "
+            + ", ".join(parameterized_boundaries)
+        )
+    lossy_regions = [region.id for region in system.regions if region.loss_model]
+    if lossy_regions:
+        raise ValueError(
+            "Coupled solver does not yet support acoustic loss models on: " + ", ".join(lossy_regions)
+        )
+    unsupported_components = [
+        component.id
+        for component in system.components
+        if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+    ]
+    if unsupported_components:
+        raise ValueError(
+            "Coupled solver currently supports only prescribed-velocity components; unsupported: "
+            + ", ".join(unsupported_components)
+        )
+    for component in system.components:
+        unsupported_parameters = set(component.parameters) - {"motion_profile"}
+        if unsupported_parameters:
+            raise ValueError(
+                f"Coupled solver does not support component parameters on '{component.id}': "
+                + ", ".join(sorted(unsupported_parameters))
+            )
+        motion_profile = component.parameters.get("motion_profile", "uniform")
+        if motion_profile != "uniform":
+            raise ValueError(
+                f"Coupled solver supports only uniform prescribed motion; component "
+                f"'{component.id}' requests {motion_profile!r}."
+            )
+    unsupported_ports = [
+        port.id for port in system.excitation_ports if port.kind != ExcitationPortKind.NORMAL_VELOCITY
+    ]
+    if unsupported_ports:
+        raise ValueError(
+            "Coupled solver currently supports only normal-velocity excitation ports; unsupported: "
+            + ", ".join(unsupported_ports)
         )
 
 
@@ -242,8 +309,8 @@ class CoupledReferenceBackend(_CoupledBackend):
         self,
         *,
         julia_executable: str = "julia",
-        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
-        julia_project: str | Path | None = DEFAULT_COUPLED_REFERENCE_PROJECT,
+        solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
+        julia_project: str | Path | None = DEFAULT_COUPLED_CPU_PROJECT,
         julia_threads: str | int = "4",
         persistent_worker: bool = True,
     ):
@@ -269,7 +336,7 @@ class CoupledProductionBackend(_CoupledBackend):
         *,
         bem_backend: str,
         julia_executable: str = "julia",
-        solver_script: str | Path = DEFAULT_COUPLED_REFERENCE_SCRIPT,
+        solver_script: str | Path = DEFAULT_COUPLED_SOLVER_SCRIPT,
         julia_threads: str | int | None = None,
         persistent_worker: bool = True,
     ):
@@ -278,7 +345,7 @@ class CoupledProductionBackend(_CoupledBackend):
         julia_project = (
             DEFAULT_BEAT_ENGINE_CUDA_PROJECT
             if normalized_bem_backend == "cuda"
-            else DEFAULT_COUPLED_REFERENCE_PROJECT
+            else DEFAULT_COUPLED_CPU_PROJECT
         )
         super().__init__(
             julia_executable=julia_executable,

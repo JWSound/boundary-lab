@@ -1,4 +1,4 @@
-# Coupled Reference Solver
+# Coupled Solver
 
 Boundary Lab includes two execution modes for the coupled FEM–BEM formulation:
 
@@ -20,6 +20,9 @@ A_F = K-k^2M
 $$
 
 using analytic P1 tetrahedron stiffness and consistent mass matrices.
+Only tetrahedra belonging to the bounded region's selected physical volume
+groups are assembled. The selected submesh is compacted and its surface and
+interface indices are remapped before matrix construction.
 Prescribed normal velocity is converted to the pressure normal derivative
 
 $$
@@ -63,11 +66,12 @@ complex transfer-function data.
 
 ## Supported input
 
-The initial backend intentionally supports a narrow reference configuration:
+The initial backend intentionally supports a narrow configuration:
 
 - one Gmsh 4.1 ASCII tetrahedral FEM mesh;
 - one Gmsh 2.2 ASCII triangular BEM mesh;
 - one bounded acoustic region and one unbounded acoustic region;
+- one or more tagged tetrahedral volume groups belonging to the bounded region;
 - one conforming FEM–BEM interface;
 - first-order tetrahedra and triangles;
 - ideal `normal_velocity` excitation ports;
@@ -80,6 +84,9 @@ The initial backend intentionally supports a narrow reference configuration:
 Voltage-driven electrodynamic components, losses, impedance boundaries,
 multiple coupled regions and iterative methods are not enabled. CUDA currently
 accelerates only the BEM portion of the production coupled path.
+Although the physical-system schema reserves several of those roles for future
+backends, the coupled backend rejects them before starting Julia rather than
+silently treating them as rigid or lossless.
 
 ## Output quantities
 
@@ -116,7 +123,7 @@ interface operators, and optionally runs the complete dense coupled solve.
 ```powershell
 $env:BLAB_RUN_COUPLED_REFERENCE = "1"
 julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/smoke_coupled_reference.jl
+  src/blab/solvers/julia_local/scripts/smoke_coupled_solver.jl
 ```
 
 The full fixture validation is opt-in because dense BEM assembly and LU are
@@ -136,7 +143,7 @@ The end-to-end benchmark uses the same compiled request and result path as the
 application:
 
 ```powershell
-python scripts/benchmark_coupled_reference.py `
+python scripts/benchmark_coupled_solver.py `
   --julia C:\path\to\julia.exe `
   --mode interactive `
   --precision float32 `
@@ -150,7 +157,7 @@ right-hand-side solve, exterior-field evaluation, and unreported process/JIT
 overhead. A project file containing a physical system can be supplied with
 `--project`.
 
-The backend remains a dense correctness reference. BEM operator assembly is
+The backend remains a dense direct solver. BEM operator assembly is
 quadratic in boundary size and the coupled dense LU is cubic in total unknown
 count, so the current improvements reduce overhead but do not make large
 production models scalable.

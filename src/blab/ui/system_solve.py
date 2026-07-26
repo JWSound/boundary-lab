@@ -12,7 +12,7 @@ from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import BoundaryKind, PhysicalSystem
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
-from blab.solvers.coupled_reference_backend import CoupledProductionBackend
+from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import OutputRequest, SystemFrequencyResult, SystemSolveRequest
 
@@ -84,7 +84,6 @@ def prepare_coupled_ui_solve(
         raise ValueError(
             "Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences."
         )
-    bem_backend = "cuda" if normalized_backend_id == "beat_cuda" else "cpu"
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
@@ -101,8 +100,6 @@ def prepare_coupled_ui_solve(
             "singular_order": 2,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
-            "precision": "float32",
-            "bem_backend": bem_backend,
         },
     )
     return CoupledUiSolveRequest(
@@ -173,7 +170,7 @@ class CoupledSolveWorker(QObject):
         )
         if quantity is None:
             raise ValueError("Coupled solver result did not contain exterior pressure.")
-        pressure = np.asarray(quantity.values, dtype=np.complex128)
+        pressure = np.asarray(quantity.values, dtype=np.complex64)
         if pressure.ndim != 2:
             raise ValueError("Coupled exterior pressure must have shape (excitation, observation).")
         horizontal_end = self.prepared.horizontal_count

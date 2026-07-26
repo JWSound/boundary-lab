@@ -7,6 +7,7 @@ export VolumeMesh,
     ConformingInterfaceMap,
     InterfaceOperators,
     load_gmsh41_volume,
+    restrict_volume_mesh,
     physical_tag,
     assemble_p1_fem_matrices,
     assemble_boundary_mass_matrix,
@@ -15,11 +16,11 @@ export VolumeMesh,
     solve_prescribed_velocity_interior,
     build_conforming_interface_map,
     assemble_interface_operators,
-    prepare_coupled_reference_cache,
-    release_coupled_reference_cache!,
-    build_coupled_reference_system,
-    solve_coupled_reference_system,
-    solve_coupled_reference
+    prepare_coupled_cache,
+    release_coupled_cache!,
+    build_coupled_system,
+    solve_coupled_system,
+    solve_coupled
 
 struct VolumeMesh{T<:AbstractFloat}
     vertices::Vector{SVector{3,T}}
@@ -32,11 +33,60 @@ end
 
 struct ConformingInterfaceMap
     fem_vertex_indices::Vector{Int}
-    bem_vertex_indices::Vector{Int}
     fem_to_bem_vertex_indices::Vector{Int}
     fem_face_indices::Vector{Int}
     bem_face_indices::Vector{Int}
     normal_sign::Vector{Int}
+end
+
+function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:AbstractFloat}
+    tags = Set(Int.(selected_tags))
+    isempty(tags) && error("Bounded FEM region must select at least one physical volume group.")
+    tetrahedron_indices = findall(tag -> tag in tags, mesh.tetra_physical_tags)
+    isempty(tetrahedron_indices) && error(
+        "Selected FEM volume groups contain no tetrahedra. Requested tags: $(join(sort(collect(tags)), ", ")).",
+    )
+
+    selected_tetrahedra = mesh.tetrahedra[tetrahedron_indices]
+    face_occurrences = Dict{NTuple{3,Int},Int}()
+    for tetrahedron in selected_tetrahedra
+        for face in _tetrahedron_faces(tetrahedron)
+            face_occurrences[face] = get(face_occurrences, face, 0) + 1
+        end
+    end
+    exterior_faces = Set(face for (face, count) in face_occurrences if count == 1)
+    boundary_face_indices = findall(
+        face -> _sorted_face(face) in exterior_faces,
+        mesh.boundary_faces,
+    )
+
+    active_vertices = sort(unique(vcat([collect(tetrahedron) for tetrahedron in selected_tetrahedra]...)))
+    vertex_index_map = Dict(vertex => index for (index, vertex) in enumerate(active_vertices))
+    boundary_face_index_map = Dict(
+        face_index => index
+        for (index, face_index) in enumerate(boundary_face_indices)
+    )
+    restricted_tetrahedra = [
+        ntuple(local_index -> vertex_index_map[tetrahedron[local_index]], 4)
+        for tetrahedron in selected_tetrahedra
+    ]
+    restricted_boundary_faces = [
+        ntuple(local_index -> vertex_index_map[face[local_index]], 3)
+        for face in mesh.boundary_faces[boundary_face_indices]
+    ]
+    restricted = VolumeMesh{T}(
+        mesh.vertices[active_vertices],
+        restricted_tetrahedra,
+        mesh.tetra_physical_tags[tetrahedron_indices],
+        restricted_boundary_faces,
+        mesh.boundary_physical_tags[boundary_face_indices],
+        mesh.physical_names,
+    )
+    return (
+        mesh=restricted,
+        vertex_index_map=vertex_index_map,
+        boundary_face_index_map=boundary_face_index_map,
+    )
 end
 
 struct InterfaceOperators{T<:AbstractFloat}
@@ -289,7 +339,6 @@ function build_conforming_interface_map(
 
     return ConformingInterfaceMap(
         fem_vertices,
-        bem_vertices,
         mapped_bem_vertices,
         fem_face_indices,
         mapped_bem_faces,
@@ -351,7 +400,7 @@ function assemble_interface_operators(
     return InterfaceOperators{T}(fem_load, bem_flux, fem_trace, bem_trace)
 end
 
-function prepare_coupled_reference_cache(
+function prepare_coupled_cache(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
     interface_map::ConformingInterfaceMap;
@@ -409,7 +458,7 @@ function _unsafe_free_cuda_fields!(value, fields)
     return nothing
 end
 
-function release_coupled_reference_cache!(cache)
+function release_coupled_cache!(cache)
     cache.bem_backend == :cuda || return nothing
     _unsafe_free_cuda_fields!(
         cache.device_cache,
@@ -519,7 +568,7 @@ function _cuda_coupled_bem_blocks(
     end
 end
 
-function build_coupled_reference_system(
+function build_coupled_system(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
     interface_map::ConformingInterfaceMap,
@@ -533,7 +582,7 @@ function build_coupled_reference_system(
     bem_backend::Symbol=:cpu,
 ) where {T<:AbstractFloat}
     fem_stage_started = time_ns()
-    prepared = isnothing(cache) ? prepare_coupled_reference_cache(
+    prepared = isnothing(cache) ? prepare_coupled_cache(
         fem_mesh,
         bem_mesh,
         interface_map;
@@ -542,7 +591,7 @@ function build_coupled_reference_system(
         bem_backend=bem_backend,
     ) : cache
     prepared.bem_backend == bem_backend ||
-        error("Coupled reference cache backend does not match requested BEM backend.")
+        error("Coupled cache backend does not match requested BEM backend.")
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
     fem_system = Complex{T}.(prepared.stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(prepared.mass)
@@ -638,8 +687,8 @@ function build_coupled_reference_system(
         bem_factorization=bem_factorization,
         bem_rhs_operator=validation_diagnostics ? bem_rhs_operator : nothing,
         bem_backend=bem_backend,
-        prepared_cache=prepared,
-        owns_prepared_cache=isnothing(cache),
+        cache=prepared,
+        owns_cache=isnothing(cache),
         validation_diagnostics=validation_diagnostics,
         timings=(
             fem_system_s=fem_system_s,
@@ -652,7 +701,7 @@ function build_coupled_reference_system(
     )
 end
 
-function solve_coupled_reference_system(
+function solve_coupled_system(
     system,
     radiator_tag::Int;
     radiator_velocity=ComplexF64(1, 0),
@@ -723,7 +772,7 @@ function solve_coupled_reference_system(
     )
 end
 
-function solve_coupled_reference(
+function solve_coupled(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
     interface_map::ConformingInterfaceMap,
@@ -735,7 +784,7 @@ function solve_coupled_reference(
     quadrature_order::Int=2,
     singular_order::Int=2,
 ) where {T<:AbstractFloat}
-    system = build_coupled_reference_system(
+    system = build_coupled_system(
         fem_mesh,
         bem_mesh,
         interface_map,
@@ -745,7 +794,7 @@ function solve_coupled_reference(
         quadrature_order=quadrature_order,
         singular_order=singular_order,
     )
-    return solve_coupled_reference_system(
+    return solve_coupled_system(
         system,
         radiator_tag;
         radiator_velocity=radiator_velocity,
@@ -873,6 +922,15 @@ end
 function _sorted_face(face::NTuple{3,Int})
     values = sort(collect(face))
     return (values[1], values[2], values[3])
+end
+
+function _tetrahedron_faces(tetrahedron::NTuple{4,Int})
+    return (
+        _sorted_face((tetrahedron[1], tetrahedron[2], tetrahedron[3])),
+        _sorted_face((tetrahedron[1], tetrahedron[2], tetrahedron[4])),
+        _sorted_face((tetrahedron[1], tetrahedron[3], tetrahedron[4])),
+        _sorted_face((tetrahedron[2], tetrahedron[3], tetrahedron[4])),
+    )
 end
 
 end

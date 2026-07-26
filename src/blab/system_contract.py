@@ -277,9 +277,6 @@ def _compiled_mesh_from_dict(raw: dict[str, Any]) -> CompiledMesh:
         purpose=MeshPurpose(str(raw["purpose"])),
         scale_to_m=float(raw["scale_to_m"]),
         translation_m=tuple(float(value) for value in raw.get("translation_m", (0.0, 0.0, 0.0))),
-        point_count=int(raw["point_count"]),
-        triangle_count=int(raw["triangle_count"]),
-        tetrahedron_count=int(raw["tetrahedron_count"]),
     )
 
 
@@ -289,7 +286,6 @@ def _resolved_group_from_dict(raw: dict[str, Any]) -> ResolvedPhysicalGroup:
         dimension=int(raw["dimension"]),
         tag=int(raw["tag"]),
         name=None if raw.get("name") is None else str(raw["name"]),
-        element_count=int(raw["element_count"]),
     )
 
 
@@ -326,7 +322,6 @@ def _compiled_interface_from_dict(raw: dict[str, Any]) -> CompiledInterface:
         unbounded_boundary_id=str(raw["unbounded_boundary_id"]),
         topology=InterfaceTopologyMap(
             fem_vertex_indices=tuple(int(value) for value in topology.get("fem_vertex_indices", ())),
-            bem_vertex_indices=tuple(int(value) for value in topology.get("bem_vertex_indices", ())),
             fem_to_bem_vertex_indices=tuple(int(value) for value in topology.get("fem_to_bem_vertex_indices", ())),
             fem_face_indices=tuple(int(value) for value in topology.get("fem_face_indices", ())),
             bem_face_indices=tuple(int(value) for value in topology.get("bem_face_indices", ())),

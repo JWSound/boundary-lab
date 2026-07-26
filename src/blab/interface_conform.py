@@ -49,7 +49,6 @@ class InterfaceTopologyMap:
     """
 
     fem_vertex_indices: tuple[int, ...]
-    bem_vertex_indices: tuple[int, ...]
     fem_to_bem_vertex_indices: tuple[int, ...]
     fem_face_indices: tuple[int, ...]
     bem_face_indices: tuple[int, ...]
@@ -412,7 +411,6 @@ def build_conforming_interface_map(
         raise InterfaceConformError(f"Conformed BEM surface has {bem_boundary_edges} open boundary edges.")
     return InterfaceTopologyMap(
         fem_vertex_indices=tuple(map(int, fem_vertices)),
-        bem_vertex_indices=tuple(map(int, bem_vertices)),
         fem_to_bem_vertex_indices=tuple(fem_to_bem[int(vertex)] for vertex in fem_vertices),
         fem_face_indices=tuple(map(int, fem_interface_indices)),
         bem_face_indices=tuple(corresponding_bem_faces),

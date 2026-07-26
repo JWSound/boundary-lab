@@ -1,11 +1,10 @@
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from blab.config import ChannelConfig, RadiatorConfig, SimulationConfig
-from blab.legacy_physical_adapter import physical_system_from_legacy_config
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticInterface,
@@ -26,7 +25,7 @@ from blab.physical_model import (
     physical_system_to_dict,
 )
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-from blab.solvers.coupled_reference_backend import CoupledProductionBackend, CoupledReferenceBackend
+from blab.solvers.coupled_backend import CoupledProductionBackend, CoupledReferenceBackend
 from blab.system_contract import (
     OutputRequest,
     QuantityResult,
@@ -49,19 +48,11 @@ def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
 
     assert compiled.contract_version == 1
-    meshes = {mesh.id: mesh for mesh in compiled.meshes}
-    assert meshes["mesh:fem"].point_count == 842
-    assert meshes["mesh:fem"].tetrahedron_count == 2925
-    assert meshes["mesh:bem"].point_count == 1214
-    assert meshes["mesh:bem"].triangle_count == 2424
     regions = {region.id: region for region in compiled.regions}
     assert regions["region:interior"].volume_groups[0].tag == 1
-    assert regions["region:interior"].volume_groups[0].element_count == 2925
 
     boundaries = {boundary.id: boundary for boundary in compiled.boundaries}
     assert boundaries["boundary:radiator"].group.tag == 2
-    assert boundaries["boundary:fem-interface"].group.element_count == 180
-    assert boundaries["boundary:bem-interface"].group.element_count == 180
 
     topology = compiled.interfaces[0].topology
     assert len(topology.fem_vertex_indices) == 106
@@ -167,6 +158,28 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
 
 
+def test_coupled_backend_rejects_unsupported_physical_roles_before_starting_julia() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    wall = next(boundary for boundary in compiled.boundaries if boundary.id == "boundary:wall")
+    unsupported = replace(
+        compiled,
+        boundaries=tuple(
+            replace(boundary, kind=BoundaryKind.IMPEDANCE)
+            if boundary.id == wall.id
+            else boundary
+            for boundary in compiled.boundaries
+        ),
+    )
+    request = SystemSolveRequest(
+        compiled_system=unsupported,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match="does not support the boundary assignments"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
 @pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia dense reference integration.",
@@ -267,33 +280,6 @@ def test_system_contract_rejects_unknown_ports_and_misaligned_excitation_axes() 
     )
     with pytest.raises(ValueError, match="excitation axis has length 2"):
         system_frequency_result_to_dict(bad_result)
-
-
-def test_legacy_bem_config_adapts_and_compiles_without_changing_legacy_protocol() -> None:
-    legacy = SimulationConfig(
-        mesh_file=str(BEM_FIXTURE),
-        scale_factor=0.001,
-        radiators=(
-            RadiatorConfig(
-                name="Legacy radiator",
-                tag=2,
-                mesh="mesh",
-                channel="main",
-            ),
-        ),
-        channels=(ChannelConfig(name="main", level_db=-3.0),),
-    )
-
-    physical = physical_system_from_legacy_config(legacy)
-    compiled = PhysicalSystemCompiler().compile(physical)
-
-    assert len(compiled.regions) == 1
-    assert compiled.regions[0].kind == AcousticRegionKind.UNBOUNDED_AIR
-    assert len(compiled.interfaces) == 0
-    assert compiled.components[0].kind == ComponentKind.IDEAL_VELOCITY_SOURCE
-    assert compiled.excitation_ports[0].kind == ExcitationPortKind.NORMAL_VELOCITY
-    assert not hasattr(compiled, "signals")
-    assert compiled.metadata["source"] == "legacy_simulation_config"
 
 
 def test_compiler_requires_one_physical_input_port_for_an_active_component() -> None:

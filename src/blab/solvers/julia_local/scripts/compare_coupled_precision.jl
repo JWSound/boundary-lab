@@ -155,7 +155,7 @@ function prepare_precision_state(::Type{T}, config::CoupledPrecisionConfig, refe
         physical_tag(fem_mesh, 2, config.fem_interface_name),
         config.bem_interface_tag,
     )
-    cache = prepare_coupled_reference_cache(
+    cache = prepare_coupled_cache(
         fem_mesh,
         bem_mesh,
         interface_map;
@@ -174,7 +174,7 @@ function prepare_precision_state(::Type{T}, config::CoupledPrecisionConfig, refe
 end
 
 function solve_precision(state, ::Type{T}, frequency_hz::Float64, config::CoupledPrecisionConfig) where {T}
-    system = build_coupled_reference_system(
+    system = build_coupled_system(
         state.fem_mesh,
         state.bem_mesh,
         state.interface_map,
@@ -186,7 +186,7 @@ function solve_precision(state, ::Type{T}, frequency_hz::Float64, config::Couple
         cache=state.cache,
         validation_diagnostics=true,
     )
-    solution = solve_coupled_reference_system(system, state.radiator_tag)
+    solution = solve_coupled_system(system, state.radiator_tag)
     field = evaluate_galerkin_field_cpu(
         state.field_points,
         state.bem_mesh,

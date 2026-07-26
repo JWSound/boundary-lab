@@ -84,6 +84,46 @@ end
     @test all(isfinite, nonzeros(mass))
 end
 
+@testset "FEM volume-group restriction compacts active topology" begin
+    vertices = SVector{3,Float64}[
+        SVector(0.0, 0.0, 0.0),
+        SVector(1.0, 0.0, 0.0),
+        SVector(0.0, 1.0, 0.0),
+        SVector(0.0, 0.0, 1.0),
+        SVector(2.0, 0.0, 0.0),
+        SVector(3.0, 0.0, 0.0),
+        SVector(2.0, 1.0, 0.0),
+        SVector(2.0, 0.0, 1.0),
+    ]
+    mesh = VolumeMesh(
+        vertices,
+        [(1, 2, 3, 4), (5, 6, 7, 8)],
+        [10, 20],
+        [
+            (1, 2, 3),
+            (1, 2, 4),
+            (1, 3, 4),
+            (2, 3, 4),
+            (5, 6, 7),
+            (5, 6, 8),
+            (5, 7, 8),
+            (6, 7, 8),
+        ],
+        [101, 101, 101, 101, 202, 202, 202, 202],
+        Dict((3, 10) => "First", (3, 20) => "Second"),
+    )
+
+    selection = restrict_volume_mesh(mesh, [20])
+
+    @test length(selection.mesh.vertices) == 4
+    @test selection.mesh.tetrahedra == [(1, 2, 3, 4)]
+    @test selection.mesh.tetra_physical_tags == [20]
+    @test selection.mesh.boundary_physical_tags == fill(202, 4)
+    @test selection.vertex_index_map == Dict(5 => 1, 6 => 2, 7 => 3, 8 => 4)
+    @test selection.boundary_face_index_map == Dict(5 => 1, 6 => 2, 7 => 3, 8 => 4)
+    @test_throws ErrorException restrict_volume_mesh(mesh, [99])
+end
+
 @testset "sealed unit-cube modes" begin
     cube = structured_unit_cube(4)
     modes = sealed_cavity_modes(cube, 343.0; count=4)
@@ -127,7 +167,7 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             physical_tag(fem_mesh, 2, "Interface"),
             2,
         )
-        solution = solve_coupled_reference(
+        solution = solve_coupled(
             fem_mesh,
             bem_mesh,
             interface_map,
@@ -158,7 +198,7 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             physical_tag(fem_mesh32, 2, "Interface"),
             2,
         )
-        solution32 = solve_coupled_reference(
+        solution32 = solve_coupled(
             fem_mesh32,
             bem_mesh32,
             interface_map32,

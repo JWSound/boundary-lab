@@ -35,12 +35,24 @@ function translated_boundary_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
     return BoundaryMesh([vertex + translation for vertex in mesh.vertices], mesh.faces, mesh.physical_tags)
 end
 
-function interface_map_from_wire(raw)
+function remapped_index(index_map, wire_index, label)
+    original_index = Int(wire_index) + 1
+    mapped = get(index_map, original_index, 0)
+    mapped > 0 || error("$label lies outside the selected FEM volume groups.")
+    return mapped
+end
+
+function interface_map_from_wire(raw, volume_selection)
     return ConformingInterfaceMap(
-        Int.(raw["fem_vertex_indices"]) .+ 1,
-        Int.(raw["bem_vertex_indices"]) .+ 1,
+        [
+            remapped_index(volume_selection.vertex_index_map, index, "FEM interface vertex")
+            for index in raw["fem_vertex_indices"]
+        ],
         Int.(raw["fem_to_bem_vertex_indices"]) .+ 1,
-        Int.(raw["fem_face_indices"]) .+ 1,
+        [
+            remapped_index(volume_selection.boundary_face_index_map, index, "FEM interface face")
+            for index in raw["fem_face_indices"]
+        ],
         Int.(raw["bem_face_indices"]) .+ 1,
         Int.(raw["normal_sign"]),
     )
@@ -120,9 +132,16 @@ function solve_request(request; event_mode=false)
         error("Unsupported coupled BEM backend: $bem_backend. Expected cpu or cuda.")
 
     mesh_setup_started = time_ns()
-    fem_mesh = translated_volume_mesh(fem_resource, FloatType)
+    full_fem_mesh = translated_volume_mesh(fem_resource, FloatType)
+    selected_volume_tags = [
+        Int(group["tag"])
+        for group in bounded_region["volume_groups"]
+        if String(group["mesh_id"]) == String(fem_resource["id"])
+    ]
+    volume_selection = restrict_volume_mesh(full_fem_mesh, selected_volume_tags)
+    fem_mesh = volume_selection.mesh
     bem_mesh = translated_boundary_mesh(bem_resource, FloatType)
-    interface_map = interface_map_from_wire(only(interfaces)["topology"])
+    interface_map = interface_map_from_wire(only(interfaces)["topology"], volume_selection)
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
     sound_speed = FloatType(bounded_region["sound_speed_m_per_s"])
     density = FloatType(bounded_region["density_kg_per_m3"])
@@ -147,18 +166,22 @@ function solve_request(request; event_mode=false)
         length(bounded_boundaries) == 1 || error(
             "Each excitation component must own exactly one moving boundary in the bounded region.",
         )
-        push!(radiator_tags, Int(only(bounded_boundaries)["group"]["tag"]))
+        radiator_tag = Int(only(bounded_boundaries)["group"]["tag"])
+        any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
+            "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
+        )
+        push!(radiator_tags, radiator_tag)
     end
 
     quadrature_order = Int(get(solver_options, "quadrature_order", 2))
     singular_order = Int(get(solver_options, "singular_order", 2))
     validation_diagnostics = Bool(get(solver_options, "validation_diagnostics", true))
     cache_frequency_invariant = Bool(get(solver_options, "cache_frequency_invariant", true))
-    reference_cache = nothing
+    coupled_cache = nothing
     cache_setup_s = 0.0
     if cache_frequency_invariant
         cache_setup_started = time_ns()
-        reference_cache = prepare_coupled_reference_cache(
+        coupled_cache = prepare_coupled_cache(
             fem_mesh,
             bem_mesh,
             interface_map;
@@ -173,7 +196,7 @@ function solve_request(request; event_mode=false)
         frequency_hz = FloatType(frequency_value)
         println(stderr, "Coupled $(precision_name)/$(bem_backend): assembling $(frequency_hz) Hz")
         assembly_started = time_ns()
-        reference_system = build_coupled_reference_system(
+        coupled_system = build_coupled_system(
             fem_mesh,
             bem_mesh,
             interface_map,
@@ -182,14 +205,14 @@ function solve_request(request; event_mode=false)
             density;
             quadrature_order=quadrature_order,
             singular_order=singular_order,
-            cache=reference_cache,
+            cache=coupled_cache,
             validation_diagnostics=validation_diagnostics,
             bem_backend=bem_backend,
         )
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
         solutions = [
-            solve_coupled_reference_system(reference_system, radiator_tag)
+            solve_coupled_system(coupled_system, radiator_tag)
             for radiator_tag in radiator_tags
         ]
         solve_s = (time_ns() - solve_started) / 1.0e9
@@ -243,8 +266,8 @@ function solve_request(request; event_mode=false)
                             bem_mesh,
                             solution.bem_pressure,
                             solution.bem_neumann,
-                            reference_system.wavenumber,
-                            reference_system.field_cache,
+                            coupled_system.wavenumber,
+                            coupled_system.field_cache,
                         )
                     else
                         evaluate_galerkin_field_cpu(
@@ -252,8 +275,8 @@ function solve_request(request; event_mode=false)
                             bem_mesh,
                             solution.bem_pressure,
                             solution.bem_neumann,
-                            reference_system.wavenumber,
-                            reference_system.field_cache,
+                            coupled_system.wavenumber,
+                            coupled_system.field_cache,
                         )
                     end
                     for solution in solutions
@@ -290,12 +313,12 @@ function solve_request(request; event_mode=false)
                 "field_s" => field_s,
                 "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
                 "cache_setup_s" => frequency_index == 1 ? cache_setup_s : 0.0,
-                "fem_system_s" => reference_system.timings.fem_system_s,
-                "bem_operator_s" => reference_system.timings.bem_operator_s,
-                "bem_matrix_s" => reference_system.timings.bem_matrix_s,
-                "block_assembly_s" => reference_system.timings.block_assembly_s,
-                "coupled_factorization_s" => reference_system.timings.coupled_factorization_s,
-                "replay_factorization_s" => reference_system.timings.replay_factorization_s,
+                "fem_system_s" => coupled_system.timings.fem_system_s,
+                "bem_operator_s" => coupled_system.timings.bem_operator_s,
+                "bem_matrix_s" => coupled_system.timings.bem_matrix_s,
+                "block_assembly_s" => coupled_system.timings.block_assembly_s,
+                "coupled_factorization_s" => coupled_system.timings.coupled_factorization_s,
+                "replay_factorization_s" => coupled_system.timings.replay_factorization_s,
             ),
         )
         if validation_diagnostics
@@ -317,10 +340,10 @@ function solve_request(request; event_mode=false)
             println(JSON.json(result))
         end
         flush(stdout)
-        reference_system.owns_prepared_cache &&
-            release_coupled_reference_cache!(reference_system.prepared_cache)
+        coupled_system.owns_cache &&
+            release_coupled_cache!(coupled_system.cache)
     end
-    reference_cache === nothing || release_coupled_reference_cache!(reference_cache)
+    coupled_cache === nothing || release_coupled_cache!(coupled_cache)
 end
 
 function reclaim_accelerator_memory_after_failure()
