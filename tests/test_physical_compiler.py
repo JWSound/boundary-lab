@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +25,7 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
+from blab.solvers.coupled_reference_backend import CoupledReferenceBackend
 from blab.system_contract import (
     OutputRequest,
     QuantityResult,
@@ -124,6 +126,63 @@ def test_compiled_system_and_request_round_trip_through_versioned_contract() -> 
     )
     restored_request = system_solve_request_from_dict(system_solve_request_to_dict(request))
     assert restored_request == request
+
+
+def test_coupled_reference_backend_exposes_system_metadata_without_starting_julia() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+    )
+
+    session = CoupledReferenceBackend().create_system_session(request)
+
+    assert session.metadata.system_id == compiled.id
+    assert session.metadata.excitation_port_ids == request.excitation_port_ids
+    assert session.metadata.available_quantity_ids == ("output:fem",)
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia dense reference integration.",
+)
+def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:interface", quantity="interface_normal_derivative"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={"quadrature_order": 1, "singular_order": 1},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    results = list(
+        CoupledReferenceBackend(julia_executable=julia_executable).create_system_session(request).solve_stream()
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.excitation_port_ids == request.excitation_port_ids
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert quantities["output:fem"].values.shape == (1, 842)
+    assert quantities["output:bem"].values.shape == (1, 1214)
+    assert quantities["output:interface"].values.shape == (1, 106)
+    assert quantities["output:field"].values.shape == (1, 1)
+    assert result.diagnostics["relative_residual"] < 1e-8
+    assert result.diagnostics["pressure_continuity_error"] < 1e-8
+    assert result.diagnostics["flux_conservation_error"] < 1e-10
+    assert result.diagnostics["all_bem_replay_error"] < 1e-8
 
 
 def test_editable_physical_system_round_trips_for_project_persistence() -> None:

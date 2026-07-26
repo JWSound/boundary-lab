@@ -27,6 +27,8 @@ cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
     @test singular_cache.pair_count > 0
 end
 
+include(joinpath(@__DIR__, "coupled_reference_tests.jl"))
+
 @testset "cpu BLAS thread policy" begin
     @test beat_cpu_blas_thread_count(441; available_threads=16) == 1
     @test beat_cpu_blas_thread_count(1390; available_threads=16) == 4

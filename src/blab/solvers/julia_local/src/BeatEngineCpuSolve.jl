@@ -42,14 +42,23 @@ function configure_beat_cpu_blas_threads!(
     return BLAS.get_num_threads()
 end
 
-function build_burton_miller_neumann_cpu_system(operators, identity_p1_p1, identity_p1_dp0, k::T) where {T<:AbstractFloat}
+function burton_miller_neumann_matrices(operators, identity_p1_p1, identity_p1_dp0, k::T) where {T<:AbstractFloat}
     coupling = Complex{T}(0, 1) / k
     identity_p1_p1_complex = Complex{T}.(identity_p1_p1)
     identity_p1_dp0_complex = Complex{T}.(identity_p1_dp0)
 
     lhs = Complex{T}(0.5) .* identity_p1_p1_complex .- operators.double_layer .+ coupling .* operators.hypersingular
     rhs_operator = -operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_p1_dp0_complex)
+    return lhs, rhs_operator
+end
 
+function build_burton_miller_neumann_cpu_system(operators, identity_p1_p1, identity_p1_dp0, k::T) where {T<:AbstractFloat}
+    lhs, rhs_operator = burton_miller_neumann_matrices(
+        operators,
+        identity_p1_p1,
+        identity_p1_dp0,
+        k,
+    )
     return (
         factorization=lu!(lhs),
         rhs_operator=rhs_operator,

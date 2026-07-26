@@ -69,7 +69,9 @@ resulting exterior mesh is watertight. Input physical-group names default to
 The original input files are not modified.
 
 See [Physical System Model](Physical%20System%20Model.md) for how mesh groups,
-regions, boundaries, interfaces, components, and signals relate to one another.
+regions, boundaries, interfaces, components, and excitation ports relate to
+one another. See [Coupled Reference Solver](Coupled%20Reference%20Solver.md)
+for the initial direct FEM–BEM backend and its supported outputs.
 
 ## Exporting Plot Images
 
