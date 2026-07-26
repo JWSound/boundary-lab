@@ -43,6 +43,14 @@ conforming interface has:
 - a face-average projection into BEAT Engine's DP0 Neumann space;
 - per-face normal-orientation signs.
 
+The System window's **Build/Identify Interfaces** action can construct this
+conformity for imported BEM meshes. It preserves the original mesh file, writes
+a derived Gmsh 2.2 mesh in Boundary Lab's imported-mesh output directory, and
+stores that derived file with the project mesh state. The interface surface may
+be curved as long as its perimeter describes the same planar opening as the FEM
+interface. The surrounding planar BEM surface may span multiple Gmsh
+geometrical entities.
+
 The direct block system is:
 
 $$

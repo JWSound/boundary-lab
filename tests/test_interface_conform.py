@@ -1,10 +1,16 @@
+import copy
 from pathlib import Path
 
 import meshio
+import numpy as np
 import pytest
 
 from blab.interface_conform import (
     InterfaceConformError,
+    _best_fit_plane,
+    _boundary_loops,
+    _physical_surface_tag,
+    _triangle_data,
     conform_bem_interface_to_fem,
     validate_conforming_interfaces,
 )
@@ -51,3 +57,58 @@ def test_generated_fixture_round_trips_as_a_conforming_gmsh_mesh() -> None:
     assert report.interface_vertices == 106
     assert report.max_coordinate_error <= 1e-9
     assert report.bem_boundary_edges == 0
+
+
+def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conformed() -> None:
+    fem_mesh = copy.deepcopy(meshio.read(FEM_FIXTURE))
+    bem_mesh = copy.deepcopy(meshio.read(BEM_FIXTURE))
+
+    fem_data = _triangle_data(fem_mesh, require_geometrical=False)
+    fem_tag = _physical_surface_tag(fem_mesh, "Interface")
+    fem_interface = fem_data.triangles[fem_data.physical_tags == fem_tag]
+    fem_loop = _boundary_loops(fem_interface)[0]
+    fem_vertices = np.unique(fem_interface)
+    fem_interior = np.setdiff1d(fem_vertices, fem_loop)
+    _origin, fem_plane_normal = _best_fit_plane(fem_mesh.points[fem_loop])
+    fem_mesh.points[fem_interior] += fem_plane_normal * 1.0
+
+    bem_data = _triangle_data(bem_mesh, require_geometrical=True)
+    bem_tag = _physical_surface_tag(bem_mesh, "Interface")
+    bem_interface_mask = bem_data.physical_tags == bem_tag
+    bem_interface = bem_data.triangles[bem_interface_mask]
+    bem_loop = _boundary_loops(bem_interface)[0]
+
+    duplicated_start = len(bem_mesh.points)
+    duplicated_indices = np.arange(duplicated_start, duplicated_start + len(bem_loop))
+    duplicate_map = dict(zip(map(int, bem_loop), map(int, duplicated_indices), strict=True))
+    duplicated_points = bem_mesh.points[bem_loop].copy()
+    duplicated_points[:, 0] += 0.01
+    bem_mesh.points = np.vstack((bem_mesh.points, duplicated_points))
+
+    triangles = bem_mesh.cells[0].data.copy()
+    for triangle_index in np.flatnonzero(bem_interface_mask):
+        triangles[triangle_index] = [
+            duplicate_map.get(int(vertex), int(vertex)) for vertex in triangles[triangle_index]
+        ]
+    bem_mesh.cells[0].data = triangles
+
+    geometrical = bem_mesh.cell_data["gmsh:geometrical"][0].copy()
+    exterior_indices = np.flatnonzero(~bem_interface_mask)
+    geometrical[exterior_indices] += np.arange(len(exterior_indices), dtype=geometrical.dtype) % 2
+    bem_mesh.cell_data["gmsh:geometrical"][0] = geometrical
+
+    conformed_mesh, result = conform_bem_interface_to_fem(fem_mesh, bem_mesh)
+    identity = validate_conforming_interfaces(fem_mesh, conformed_mesh)
+
+    assert result.identity.bem_boundary_edges == 0
+    assert identity.interface_triangles == len(fem_interface)
+    assert identity.max_coordinate_error <= 1e-9
+
+    conformed_data = _triangle_data(conformed_mesh, require_geometrical=True)
+    conformed_interface = conformed_data.triangles[conformed_data.physical_tags == bem_tag]
+    conformed_loop = _boundary_loops(conformed_interface)[0]
+    plane_origin, plane_normal = _best_fit_plane(conformed_mesh.points[conformed_loop])
+    interface_deviation = np.max(
+        np.abs((conformed_mesh.points[np.unique(conformed_interface)] - plane_origin) @ plane_normal)
+    )
+    assert interface_deviation > 0.5

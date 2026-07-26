@@ -1,10 +1,12 @@
 """Build a conforming BEM interface from authoritative FEM boundary facets.
 
-The initial implementation intentionally targets the common Boundary Lab case:
+The implementation targets the common Boundary Lab case:
 
 * the FEM interface is a tagged set of triangular tetrahedron boundary facets;
-* the BEM interface is a tagged planar patch;
-* one planar BEM surface surrounds that patch.
+* the FEM and BEM interface perimeters describe the same planar opening;
+* the interface interior may be curved;
+* a planar BEM physical surface surrounds that opening, possibly split across
+  multiple geometrical entities.
 
 The FEM interface triangles are retained exactly. The surrounding BEM surface is
 remeshed as a planar surface with a hole whose inner loop is the FEM interface
@@ -89,8 +91,9 @@ def conform_bem_interface_to_fem(
 ) -> tuple[meshio.Mesh, InterfaceConformResult]:
     """Return a BEM mesh whose interface facets exactly match the FEM facets.
 
-    The BEM mesh must contain a planar tagged interface surrounded by one planar
-    geometrical surface. The FEM interface itself is not remeshed.
+    The BEM mesh must contain a tagged interface with a planar perimeter
+    surrounded by a planar physical surface. The FEM interface itself is not
+    remeshed.
     """
 
     if merge_tolerance <= 0.0:
@@ -112,18 +115,27 @@ def conform_bem_interface_to_fem(
     fem_interface_loops = _boundary_loops(fem_interface)
     bem_interface_loops = _boundary_loops(bem_interface)
     if len(fem_interface_loops) != 1 or len(bem_interface_loops) != 1:
-        raise InterfaceConformError("The initial conformer requires one closed perimeter loop per interface.")
+        raise InterfaceConformError("The interface conformer requires one closed perimeter loop per interface.")
     fem_inner_loop = fem_interface_loops[0]
     old_bem_inner_loop = bem_interface_loops[0]
 
-    adjacent_geometrical_tag = _adjacent_geometrical_tag(
-        bem_data,
-        bem_interface_mask,
-        old_bem_inner_loop,
+    interface_diameter = _point_cloud_diameter(fem_mesh.points[np.unique(fem_interface)])
+    resolved_geometry_tolerance = (
+        max(interface_diameter * 5e-3, 1e-9) if geometry_tolerance is None else float(geometry_tolerance)
     )
-    adjacent_mask = bem_data.geometrical_tags == adjacent_geometrical_tag
-    if np.any(adjacent_mask & bem_interface_mask):
-        raise InterfaceConformError("The BEM interface and surrounding surface share a geometrical tag.")
+    if resolved_geometry_tolerance <= 0.0:
+        raise InterfaceConformError("geometry_tolerance must be greater than zero.")
+
+    plane_origin, perimeter_normal = _best_fit_plane(bem_mesh.points[old_bem_inner_loop])
+    triangle_plane_deviation = np.max(
+        np.abs((bem_mesh.points[bem_data.triangles] - plane_origin) @ perimeter_normal),
+        axis=1,
+    )
+    adjacent_mask = (~bem_interface_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
+    if not np.any(adjacent_mask):
+        raise InterfaceConformError(
+            "Could not find a planar non-interface BEM surface surrounding the interface perimeter."
+        )
 
     adjacent_triangles = bem_data.triangles[adjacent_mask]
     adjacent_physical_tags = np.unique(bem_data.physical_tags[adjacent_mask])
@@ -132,48 +144,51 @@ def conform_bem_interface_to_fem(
     adjacent_physical_tag = int(adjacent_physical_tags[0])
 
     adjacent_loops = _boundary_loops(adjacent_triangles)
-    old_inner_vertices = set(map(int, old_bem_inner_loop))
-    matching_inner = [loop for loop in adjacent_loops if set(map(int, loop)) == old_inner_vertices]
-    outer_loops = [loop for loop in adjacent_loops if set(map(int, loop)) != old_inner_vertices]
-    if len(matching_inner) != 1 or len(outer_loops) != 1:
+    if len(adjacent_loops) != 2:
         raise InterfaceConformError(
-            "The surrounding BEM surface must be an annulus with the interface as its only hole."
+            "The planar BEM surface surrounding the interface must be an annulus with exactly two perimeter loops."
         )
-    outer_loop = outer_loops[0]
+    loop_deviations = [
+        _symmetric_polyline_deviation(
+            bem_mesh.points[loop],
+            bem_mesh.points[old_bem_inner_loop],
+        )
+        for loop in adjacent_loops
+    ]
+    inner_loop_index = int(np.argmin(loop_deviations))
+    adjacent_inner_loop = adjacent_loops[inner_loop_index]
+    outer_loop = adjacent_loops[1 - inner_loop_index]
 
     adjacent_normal = _surface_normal(bem_mesh.points, adjacent_triangles)
     old_interface_normal = _surface_normal(bem_mesh.points, bem_interface)
     fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
-    plane_origin = np.mean(bem_mesh.points[old_bem_inner_loop], axis=0)
     plane_deviation = _maximum_plane_deviation(
         plane_origin,
         adjacent_normal,
         bem_mesh.points[outer_loop],
         bem_mesh.points[old_bem_inner_loop],
         fem_mesh.points[fem_inner_loop],
-        fem_mesh.points[np.unique(fem_interface)],
     )
 
-    interface_diameter = _point_cloud_diameter(fem_mesh.points[np.unique(fem_interface)])
-    resolved_geometry_tolerance = (
-        max(interface_diameter * 1e-3, 1e-9) if geometry_tolerance is None else float(geometry_tolerance)
-    )
-    if resolved_geometry_tolerance <= 0.0:
-        raise InterfaceConformError("geometry_tolerance must be greater than zero.")
     if plane_deviation > resolved_geometry_tolerance:
         raise InterfaceConformError(
-            "The FEM interface and surrounding BEM surface are not coplanar: "
-            f"maximum plane deviation {plane_deviation:g} exceeds tolerance "
+            "The FEM and BEM interface perimeters do not lie on the surrounding BEM surface plane: "
+            f"maximum perimeter plane deviation {plane_deviation:g} exceeds tolerance "
             f"{resolved_geometry_tolerance:g}."
         )
 
-    boundary_deviation = _symmetric_polyline_deviation(
+    interface_boundary_deviation = _symmetric_polyline_deviation(
         fem_mesh.points[fem_inner_loop],
         bem_mesh.points[old_bem_inner_loop],
     )
+    surrounding_boundary_deviation = _symmetric_polyline_deviation(
+        fem_mesh.points[fem_inner_loop],
+        bem_mesh.points[adjacent_inner_loop],
+    )
+    boundary_deviation = max(interface_boundary_deviation, surrounding_boundary_deviation)
     if boundary_deviation > resolved_geometry_tolerance:
         raise InterfaceConformError(
-            "The FEM and BEM interface perimeters do not describe the same boundary: "
+            "The FEM interface, BEM interface, and surrounding opening do not describe the same perimeter: "
             f"maximum deviation {boundary_deviation:g} exceeds tolerance "
             f"{resolved_geometry_tolerance:g}."
         )
@@ -226,14 +241,13 @@ def conform_bem_interface_to_fem(
             np.full(len(copied_interface), bem_interface_tag, dtype=np.int32),
         )
     )
-    interface_geometrical_tags = np.unique(bem_data.geometrical_tags[bem_interface_mask])
-    if len(interface_geometrical_tags) != 1:
-        raise InterfaceConformError("The BEM interface must have exactly one geometrical tag.")
+    adjacent_geometrical_tag = int(np.min(bem_data.geometrical_tags[adjacent_mask]))
+    interface_geometrical_tag = int(np.min(bem_data.geometrical_tags[bem_interface_mask]))
     combined_geometrical = np.concatenate(
         (
             kept_geometrical,
             np.full(len(annulus_triangles), adjacent_geometrical_tag, dtype=np.int32),
-            np.full(len(copied_interface), int(interface_geometrical_tags[0]), dtype=np.int32),
+            np.full(len(copied_interface), interface_geometrical_tag, dtype=np.int32),
         )
     )
 
@@ -534,37 +548,6 @@ def _surface_boundary_edges(triangles: np.ndarray) -> np.ndarray:
     return unique_edges[counts == 1]
 
 
-def _adjacent_geometrical_tag(
-    bem_data: _TriangleData,
-    interface_mask: np.ndarray,
-    interface_loop: np.ndarray,
-) -> int:
-    triangle_edges: dict[tuple[int, int], list[int]] = defaultdict(list)
-    for triangle_index, triangle in enumerate(bem_data.triangles):
-        for start, end in (
-            (triangle[0], triangle[1]),
-            (triangle[1], triangle[2]),
-            (triangle[2], triangle[0]),
-        ):
-            triangle_edges[tuple(sorted((int(start), int(end))))].append(triangle_index)
-
-    adjacent_tags = set()
-    for index, start in enumerate(interface_loop):
-        edge = tuple(sorted((int(start), int(interface_loop[(index + 1) % len(interface_loop)]))))
-        owners = triangle_edges.get(edge, [])
-        outside = [owner for owner in owners if not interface_mask[owner]]
-        if len(outside) != 1:
-            raise InterfaceConformError(
-                "Every BEM interface perimeter edge must have exactly one adjacent non-interface triangle."
-            )
-        adjacent_tags.add(int(bem_data.geometrical_tags[outside[0]]))
-    if len(adjacent_tags) != 1:
-        raise InterfaceConformError(
-            "The initial conformer requires the BEM interface to be surrounded by one geometrical surface."
-        )
-    return next(iter(adjacent_tags))
-
-
 def _surface_normal(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     cross_products = np.cross(
         points[triangles[:, 1]] - points[triangles[:, 0]],
@@ -575,6 +558,17 @@ def _surface_normal(points: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     if magnitude <= 0.0:
         raise InterfaceConformError("Surface has zero aggregate normal.")
     return normal / magnitude
+
+
+def _best_fit_plane(points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    coordinates = np.asarray(points, dtype=float)
+    if len(coordinates) < 3:
+        raise InterfaceConformError("Interface perimeter requires at least three points.")
+    origin = np.mean(coordinates, axis=0)
+    _u, singular_values, vectors = np.linalg.svd(coordinates - origin, full_matrices=False)
+    if len(singular_values) < 2 or singular_values[1] <= np.finfo(float).eps:
+        raise InterfaceConformError("Interface perimeter points do not define a plane.")
+    return origin, vectors[-1]
 
 
 def _maximum_plane_deviation(origin: np.ndarray, normal: np.ndarray, *point_sets: np.ndarray) -> float:
@@ -788,7 +782,7 @@ def _tetra_boundary_faces(mesh: meshio.Mesh) -> set[tuple[int, int, int]]:
 def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Replace a planar BEM interface with matching authoritative FEM boundary facets.",
+        description="Replace a BEM interface with matching authoritative FEM boundary facets.",
     )
     parser.add_argument("fem_mesh", help="Tetrahedral FEM .msh file")
     parser.add_argument("bem_mesh", help="Exterior BEM surface .msh file")
@@ -799,7 +793,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--geometry-tol",
         type=float,
         default=None,
-        help="Maximum original perimeter/plane mismatch in mesh units (default: 0.1%% of interface diameter)",
+        help="Maximum original perimeter/plane mismatch in mesh units (default: 0.5%% of interface diameter)",
     )
     parser.add_argument(
         "--merge-tol",

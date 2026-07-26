@@ -191,6 +191,16 @@ DEFAULT_DOCK_STATE_B64 = (
 )
 
 
+def _mesh_entries_with_file_overrides(
+    meshes: tuple[MeshDialogEntry, ...],
+    overrides_by_name: dict[str, str],
+) -> tuple[MeshDialogEntry, ...]:
+    return tuple(
+        replace(mesh, cleaned_file=overrides_by_name.get(mesh.name, mesh.cleaned_file))
+        for mesh in meshes
+    )
+
+
 class MainWindow(QMainWindow):
     mesh_state_changed = Signal(str)
     source_config_changed = Signal(str)
@@ -2269,24 +2279,33 @@ class MainWindow(QMainWindow):
             tuple(channel.name for channel in self._channel_configs()),
             self.project.component_channel_by_id,
             self,
+            interface_output_root=self._mesh_service().output_root,
         )
         dialog.systemApplied.connect(self._apply_system_config)
         dialog.exec()
 
     @Slot(object)
     def _apply_system_config(self, configuration) -> None:
+        mesh_file_overrides = dict(getattr(configuration, "mesh_file_overrides_by_name", {}))
+        updated_imported_meshes = _mesh_entries_with_file_overrides(
+            self.imported_meshes,
+            mesh_file_overrides,
+        )
         if (
             configuration.system == self.project.physical_system
             and configuration.component_channel_by_id == self.project.component_channel_by_id
+            and updated_imported_meshes == self.imported_meshes
         ):
             self.status_label.setText("System unchanged")
             return
+        self.imported_meshes = updated_imported_meshes
         self.project.physical_system = configuration.system
         self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
+        if mesh_file_overrides:
+            self.mesh_state_changed.emit("system_interface_mesh_built")
         self.project_state_changed.emit("system_config_changed")
         self.solve_results_invalidated.emit("system_config_changed")
         self.status_label.setText("System updated")
-
     @Slot()
     def open_channel_config(self) -> None:
         if self.channel_config_dialog is not None:

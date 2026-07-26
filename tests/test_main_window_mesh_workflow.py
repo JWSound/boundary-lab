@@ -11,7 +11,12 @@ from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.generators.ath import ath_source
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.main_window import STITCH_FAILURE_MESSAGE, STITCHED_MESH_NAME, MainWindow
+from blab.ui.main_window import (
+    STITCH_FAILURE_MESSAGE,
+    STITCHED_MESH_NAME,
+    MainWindow,
+    _mesh_entries_with_file_overrides,
+)
 from blab.ui.project_state import ProjectPreferencesState
 
 
@@ -30,6 +35,25 @@ def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
         field_data={"SD1D1001": np.array([tag, 2], dtype=np.int32)},
     )
     meshio.write(path, mesh, file_format="gmsh22", binary=False)
+
+
+def test_system_interface_mesh_override_is_persisted_as_imported_cleaned_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "exterior.msh"
+    conformed_path = tmp_path / "exterior_interface_conformed.msh"
+    imported_meshes = (
+        MeshDialogEntry(
+            name="Exterior",
+            source_file=str(source_path),
+        ),
+    )
+
+    updated = _mesh_entries_with_file_overrides(
+        imported_meshes,
+        {"Exterior": str(conformed_path)},
+    )
+
+    assert updated[0].source_file == str(source_path)
+    assert updated[0].cleaned_file == str(conformed_path)
 
 
 def test_xy_stitch_candidates_use_reduced_generated_mesh_before_stitching(tmp_path: Path) -> None:

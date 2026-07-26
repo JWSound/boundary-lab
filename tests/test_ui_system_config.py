@@ -4,10 +4,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import meshio
 import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QComboBox
 
+from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import AcousticRegionKind, BoundaryKind
 from blab.solvers.coupled_backend import CoupledProductionBackend
@@ -21,7 +23,9 @@ _APP = QApplication.instance() or QApplication([])
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 
 
-def _fixture_mesh_entries() -> tuple[MeshDialogEntry, ...]:
+def _fixture_mesh_entries(
+    bem_filename: str = "exterior_conforming.msh",
+) -> tuple[MeshDialogEntry, ...]:
     return (
         MeshDialogEntry(
             name="Interior",
@@ -30,14 +34,23 @@ def _fixture_mesh_entries() -> tuple[MeshDialogEntry, ...]:
         ),
         MeshDialogEntry(
             name="Exterior",
-            source_file=str(FIXTURE_ROOT / "exterior_conforming.msh"),
+            source_file=str(FIXTURE_ROOT / bem_filename),
             scale_factor=0.001,
         ),
     )
 
 
-def _configured_fixture_dialog() -> SystemConfigDialog:
-    dialog = SystemConfigDialog(inspect_system_meshes(_fixture_mesh_entries()), None, ("main",))
+def _configured_fixture_dialog(
+    *,
+    bem_filename: str = "exterior_conforming.msh",
+    interface_output_root: Path | None = None,
+) -> SystemConfigDialog:
+    dialog = SystemConfigDialog(
+        inspect_system_meshes(_fixture_mesh_entries(bem_filename)),
+        None,
+        ("main",),
+        interface_output_root=interface_output_root,
+    )
     dialog._add_default_region()
     dialog._refresh_boundaries()
     assignments = {
@@ -80,6 +93,19 @@ def test_mesh_inventory_preserves_existing_scale_translation_and_volume_groups()
     assert bem.volume_groups == ()
 
 
+def test_mesh_inventory_prefers_persisted_derived_mesh_file() -> None:
+    entries = list(_fixture_mesh_entries("exterior.msh"))
+    entries[1] = replace(
+        entries[1],
+        cleaned_file=str(FIXTURE_ROOT / "exterior_conforming.msh"),
+    )
+
+    _fem, bem = inspect_system_meshes(tuple(entries))
+
+    assert bem.source_file == str(FIXTURE_ROOT / "exterior.msh")
+    assert bem.file == str(FIXTURE_ROOT / "exterior_conforming.msh")
+
+
 def test_legacy_surface_cleaner_skips_imported_tetrahedral_mesh() -> None:
     source = FIXTURE_ROOT / "femvolume.msh"
     state = ImportedMeshState(
@@ -108,8 +134,37 @@ def test_tabbed_system_editor_builds_compilable_coupled_fixture() -> None:
     assert len(system.components) == 1
     assert len(system.excitation_ports) == 1
     assert len(compiled.interfaces[0].topology.fem_face_indices) == 180
+    assert dialog.identify_interfaces_button.text() == "Build/Identify Interfaces"
+    assert dialog.interfaces_table.item(0, 3).text() == "Ready"
+    assert dialog.configuration().mesh_file_overrides_by_name == {}
     assert "channel" not in system.components[0].parameters
     assert dialog.configuration().component_channel_by_id == {system.components[0].id: "main"}
+
+
+def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_path: Path) -> None:
+    dialog = _configured_fixture_dialog(
+        bem_filename="exterior.msh",
+        interface_output_root=tmp_path,
+    )
+
+    configuration = dialog.configuration()
+    rebuilt_path = Path(configuration.mesh_file_overrides_by_name["Exterior"])
+
+    assert rebuilt_path.is_file()
+    assert rebuilt_path.parent == tmp_path
+    exterior_resource = next(mesh for mesh in configuration.system.meshes if mesh.name == "Exterior")
+    assert exterior_resource.file == str(rebuilt_path)
+    assert dialog.interfaces_table.item(0, 3).text() == "Built"
+    PhysicalSystemCompiler().compile(configuration.system)
+    validate_conforming_interfaces(
+        meshio.read(FIXTURE_ROOT / "femvolume.msh"),
+        meshio.read(rebuilt_path),
+    )
+    with pytest.raises(InterfaceConformError):
+        validate_conforming_interfaces(
+            meshio.read(FIXTURE_ROOT / "femvolume.msh"),
+            meshio.read(FIXTURE_ROOT / "exterior.msh"),
+        )
 
 
 def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> None:

@@ -1,0 +1,325 @@
+{
+  "active_generator_document_id": "58c660024bf5",
+  "channel_config_by_name": {
+    "HF": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1600.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    },
+    "MF": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1600.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": -1
+    }
+  },
+  "component_channel_by_id": {
+    "component:cd": "HF",
+    "component:mid": "MF"
+  },
+  "generator_documents": [
+    {
+      "artifact": null,
+      "id": "58c660024bf5",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        0
+      ],
+      "name": "waveguide",
+      "provider_id": "ath",
+      "provider_schema_version": 1,
+      "source": {
+        "format": "ath_cfg",
+        "text": ""
+      }
+    }
+  ],
+  "imported_meshes": [
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "femvolume",
+      "scale_factor": 0.001,
+      "source_file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\femvolume.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_7dcfae480c_interface_conformed.msh",
+      "enabled": true,
+      "name": "exterior",
+      "scale_factor": 0.001,
+      "source_file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\exterior.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "physical_system": {
+    "boundaries": [
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:exterior",
+          "name": "BEMExt",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:bemext",
+        "kind": "rigid",
+        "name": "BEMExt",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:exterior",
+          "name": "BEMInterface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:beminterface",
+        "kind": "interface",
+        "name": "BEMInterface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:femvolume",
+          "name": "HF",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:hf",
+        "kind": "moving",
+        "name": "HF",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:femvolume",
+          "name": "Interface",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:interface",
+        "kind": "interface",
+        "name": "Interface",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:femvolume",
+          "name": "MF",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:mf",
+        "kind": "moving",
+        "name": "MF",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:femvolume",
+          "name": "SAWMODFEM_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:sawmodfem_boundary",
+        "kind": "rigid",
+        "name": "SAWMODFEM_boundary",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      }
+    ],
+    "components": [
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:hf"
+        ],
+        "id": "component:cd",
+        "kind": "ideal_velocity_source",
+        "name": "CD",
+        "parameters": {
+          "motion_profile": "uniform"
+        }
+      },
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:mf"
+        ],
+        "id": "component:mid",
+        "kind": "ideal_velocity_source",
+        "name": "MID",
+        "parameters": {
+          "motion_profile": "uniform"
+        }
+      }
+    ],
+    "excitation_ports": [
+      {
+        "component_id": "component:cd",
+        "id": "excitation:component-cd",
+        "kind": "normal_velocity",
+        "name": "CD unit normal velocity"
+      },
+      {
+        "component_id": "component:mid",
+        "id": "excitation:component-mid",
+        "kind": "normal_velocity",
+        "name": "MID unit normal velocity"
+      }
+    ],
+    "id": "system:loudspeaker",
+    "interfaces": [
+      {
+        "bounded_boundary_id": "boundary:region-interior-air-1:interface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:interface-beminterface",
+        "name": "Interface / BEMInterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:beminterface"
+      }
+    ],
+    "meshes": [
+      {
+        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_7dcfae480c_interface_conformed.msh",
+        "id": "mesh:exterior",
+        "name": "exterior",
+        "purpose": "bem_surface",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\femvolume.msh",
+        "id": "mesh:femvolume",
+        "name": "femvolume",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "metadata": {},
+    "model_version": 1,
+    "name": "Loudspeaker System",
+    "regions": [
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:exterior-air",
+        "kind": "unbounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:exterior"
+        ],
+        "name": "Exterior Air",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": []
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:interior-air-1",
+        "kind": "bounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:femvolume"
+        ],
+        "name": "Interior Air 1",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:femvolume",
+            "name": "SAWMODFEM",
+            "tag": null
+          }
+        ]
+      }
+    ]
+  },
+  "project_preferences": {
+    "balloon_angle_precision_deg": 2.5,
+    "freq_count": 100,
+    "freq_max_hz": 20000,
+    "freq_min_hz": 350,
+    "horizontal_normalization_angle": 10.0,
+    "isobar_contour_step_db": 3.0,
+    "normalized_channel_correction": true,
+    "polar_angle_step_deg": 1.0,
+    "polar_observation_distance_m": 5.0,
+    "polar_smoothing": null,
+    "spherical_sampling_enabled": false,
+    "spin_horizontal_reference_angle": 0.0,
+    "spin_vertical_reference_angle": 0.0,
+    "spl_max_db": 0.0,
+    "spl_min_db": -30.0,
+    "stitch_tolerance_mm": 3.0,
+    "vertical_normalization_angle": 10.0
+  },
+  "schema_version": 5,
+  "source_config_by_name": {
+    "exterior:BEMExt": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "exterior:BEMInterface": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "femvolume:HF": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "femvolume:Interface": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "femvolume:MF": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    },
+    "femvolume:SAWMODFEM_boundary": {
+      "channel": "main",
+      "driven": false,
+      "velocity_offset_db": 0.0
+    }
+  },
+  "stitch_imported_meshes": false,
+  "symmetry": "off"
+}

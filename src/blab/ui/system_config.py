@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import meshio
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -26,7 +28,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
+from blab.interface_conform import (
+    InterfaceConformError,
+    build_conforming_interface_map,
+    conform_bem_interface_to_fem,
+)
 from blab.physical_model import (
     AcousticInterface,
     AcousticRegion,
@@ -50,18 +56,27 @@ class AvailableSystemMesh:
     """An enabled application mesh available to the physical-system editor."""
 
     name: str
+    source_file: str
     file: str
     scale_to_m: float
     translation_m: tuple[float, float, float]
     surface_groups: tuple[str, ...]
     volume_groups: tuple[str, ...]
     has_tetrahedra: bool
+    locked: bool = False
 
 
 @dataclass(frozen=True)
 class SystemConfigResult:
     system: PhysicalSystem
     component_channel_by_id: dict[str, str]
+    mesh_file_overrides_by_name: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _InterfacePairMatch:
+    boundary: Boundary
+    conformed_bem_mesh: meshio.Mesh | None = None
 
 
 def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[AvailableSystemMesh, ...]:
@@ -71,7 +86,13 @@ def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[Availabl
     for entry in meshes:
         if not entry.enabled:
             continue
-        mesh = meshio.read(Path(entry.source_file))
+        source_path = Path(entry.source_file)
+        effective_path = (
+            Path(entry.cleaned_file)
+            if entry.cleaned_file is not None and Path(entry.cleaned_file).is_file()
+            else source_path
+        )
+        mesh = meshio.read(effective_path)
         surface_groups = []
         volume_groups = []
         for name, raw in mesh.field_data.items():
@@ -83,12 +104,14 @@ def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[Availabl
         inspected.append(
             AvailableSystemMesh(
                 name=entry.name,
-                file=str(Path(entry.source_file)),
+                source_file=str(source_path),
+                file=str(effective_path),
                 scale_to_m=float(entry.scale_factor),
                 translation_m=tuple(float(value) / 1000.0 for value in entry.translation_mm),
                 surface_groups=tuple(sorted(surface_groups)),
                 volume_groups=tuple(sorted(volume_groups)),
                 has_tetrahedra=any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells),
+                locked=bool(entry.locked),
             )
         )
     return tuple(inspected)
@@ -130,6 +153,8 @@ class SystemConfigDialog(QDialog):
         channel_names: tuple[str, ...],
         component_channel_by_id: dict[str, str] | None = None,
         parent: QWidget | None = None,
+        *,
+        interface_output_root: str | Path | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("System")
@@ -139,6 +164,13 @@ class SystemConfigDialog(QDialog):
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
         self._collected_component_channels: dict[str, str] = {}
+        self._mesh_file_overrides_by_name: dict[str, str] = {}
+        self._interface_status_by_id: dict[str, str] = {}
+        self._interface_output_root = (
+            Path.cwd() / "runs" / "imported_meshes"
+            if interface_output_root is None
+            else Path(interface_output_root)
+        )
         self._interfaces = list(system.interfaces if system is not None else ())
         self._existing_regions = {region.id: region for region in (() if system is None else system.regions)}
         self._existing_boundaries = {
@@ -223,7 +255,7 @@ class SystemConfigDialog(QDialog):
         layout.addWidget(self.boundaries_table)
 
     def _build_interfaces_tab(self) -> None:
-        self.identify_interfaces_button = QPushButton("Identify Interfaces")
+        self.identify_interfaces_button = QPushButton("Build/Identify Interfaces")
         self.identify_interfaces_button.clicked.connect(self._identify_interfaces)
         self.interfaces_table = QTableWidget(0, 4)
         self.interfaces_table.setHorizontalHeaderLabels(["Name", "Bounded Interior", "Unbounded Exterior", "Status"])
@@ -233,8 +265,8 @@ class SystemConfigDialog(QDialog):
             self.interfaces_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
-            "Boundary Lab checks interface geometry, conformity, and orientation before adding each connection "
-            "to the system."
+            "Boundary Lab identifies matching interface surfaces and, when necessary, rebuilds the imported "
+            "BEM side to use the FEM interface nodes and faces."
         )
         note.setWordWrap(True)
         row = QHBoxLayout()
@@ -263,7 +295,7 @@ class SystemConfigDialog(QDialog):
         row.addWidget(remove_button)
         row.addStretch(1)
         note = QLabel(
-            "The reference coupled solver currently supports prescribed-velocity components. "
+            "The coupled solver currently supports prescribed-velocity components. "
             "A unit normal-velocity excitation is created automatically."
         )
         note.setWordWrap(True)
@@ -451,6 +483,7 @@ class SystemConfigDialog(QDialog):
 
     def _invalidate_identified_interfaces(self, _index: int) -> None:
         self._interfaces.clear()
+        self._interface_status_by_id.clear()
         self._load_interfaces()
 
     def _collect_boundaries(self) -> tuple[Boundary, ...]:
@@ -489,6 +522,8 @@ class SystemConfigDialog(QDialog):
         return tuple(boundaries)
 
     def _identify_interfaces(self) -> None:
+        self.identify_interfaces_button.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             regions, resources = self._collect_regions_and_resources()
             boundaries = self._collect_boundaries()
@@ -510,26 +545,47 @@ class SystemConfigDialog(QDialog):
             used_ids: set[str] = set()
             available_unbounded = list(unbounded)
             for fem_boundary in bounded:
-                matches = []
+                matches: list[_InterfacePairMatch] = []
                 last_error = None
                 for bem_boundary in available_unbounded:
                     try:
-                        self._check_interface_pair(
-                            fem_boundary,
-                            bem_boundary,
-                            resource_by_id=resource_by_id,
+                        matches.append(
+                            self._match_interface_pair(
+                                fem_boundary,
+                                bem_boundary,
+                                resource_by_id=resource_by_id,
+                            )
                         )
                     except InterfaceConformError as exc:
                         last_error = exc
                         continue
-                    matches.append(bem_boundary)
                 if len(matches) != 1:
                     detail = "" if last_error is None or matches else f" Last check: {last_error}"
                     raise ValueError(
-                        f"Interface surface '{fem_boundary.group.name}' requires exactly one conforming "
+                        f"Interface surface '{fem_boundary.group.name}' requires exactly one compatible "
                         f"unbounded interface side; found {len(matches)}.{detail}"
                     )
-                bem_boundary = matches[0]
+                match = matches[0]
+                bem_boundary = match.boundary
+                interface_status = "Ready"
+                if match.conformed_bem_mesh is not None:
+                    fem_resource = resource_by_id[fem_boundary.group.mesh_id]
+                    bem_resource = resource_by_id[bem_boundary.group.mesh_id]
+                    output_path = self._write_conformed_bem_mesh(
+                        match.conformed_bem_mesh,
+                        bem_resource,
+                        fem_resource=fem_resource,
+                        fem_interface_name=str(fem_boundary.group.name),
+                        bem_interface_name=str(bem_boundary.group.name),
+                    )
+                    resource_by_id[bem_resource.id] = replace(bem_resource, file=str(output_path))
+                    self._set_available_mesh_file(bem_resource.name, output_path)
+                    interface_status = "Built"
+                self._check_interface_pair(
+                    fem_boundary,
+                    bem_boundary,
+                    resource_by_id=resource_by_id,
+                )
                 available_unbounded.remove(bem_boundary)
                 interface_name = (
                     str(fem_boundary.group.name)
@@ -559,12 +615,112 @@ class SystemConfigDialog(QDialog):
                         unbounded_boundary_id=bem_boundary.id,
                     )
                 )
+                self._interface_status_by_id[interface_id] = interface_status
             if not interfaces:
                 raise ValueError("Mark matching bounded and unbounded surface groups as Interface first.")
             self._interfaces = interfaces
-            self._load_interfaces(status="Ready")
+            self._load_interfaces()
         except (ValueError, OSError, InterfaceConformError) as exc:
-            QMessageBox.warning(self, "Identify Interfaces", str(exc))
+            QMessageBox.warning(self, "Build/Identify Interfaces", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.identify_interfaces_button.setEnabled(True)
+
+    def _match_interface_pair(
+        self,
+        fem_boundary: Boundary,
+        bem_boundary: Boundary,
+        *,
+        resource_by_id: dict[str, MeshResource],
+    ) -> _InterfacePairMatch:
+        try:
+            self._check_interface_pair(
+                fem_boundary,
+                bem_boundary,
+                resource_by_id=resource_by_id,
+            )
+            return _InterfacePairMatch(boundary=bem_boundary)
+        except InterfaceConformError:
+            fem_resource = resource_by_id[fem_boundary.group.mesh_id]
+            bem_resource = resource_by_id[bem_boundary.group.mesh_id]
+            available = self._mesh_by_name.get(bem_resource.name)
+            if available is not None and available.locked:
+                raise InterfaceConformError(
+                    f"BEM mesh '{bem_resource.name}' is generated/locked. Interface rebuilding currently "
+                    "requires an imported BEM mesh."
+                ) from None
+            fem_mesh = _transformed_mesh(fem_resource)
+            bem_mesh = _transformed_mesh(bem_resource)
+            conformed_mesh, _result = conform_bem_interface_to_fem(
+                fem_mesh,
+                bem_mesh,
+                fem_interface_name=str(fem_boundary.group.name),
+                bem_interface_name=str(bem_boundary.group.name),
+                merge_tolerance=1e-8,
+            )
+            return _InterfacePairMatch(
+                boundary=bem_boundary,
+                conformed_bem_mesh=conformed_mesh,
+            )
+
+    def _write_conformed_bem_mesh(
+        self,
+        transformed_mesh: meshio.Mesh,
+        resource: MeshResource,
+        *,
+        fem_resource: MeshResource,
+        fem_interface_name: str,
+        bem_interface_name: str,
+    ) -> Path:
+        available = self._mesh_by_name.get(resource.name)
+        if available is None:
+            raise InterfaceConformError(f"BEM mesh '{resource.name}' is not available in the System editor.")
+        if available.locked:
+            raise InterfaceConformError(
+                f"BEM mesh '{resource.name}' is generated/locked. Interface rebuilding currently requires "
+                "an imported BEM mesh."
+            )
+        output_path = self._conformed_mesh_path(
+            available,
+            fem_resource=fem_resource,
+            fem_interface_name=fem_interface_name,
+            bem_interface_name=bem_interface_name,
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_mesh = _mesh_in_resource_coordinates(transformed_mesh, resource)
+        meshio.write(output_path, output_mesh, file_format="gmsh22", binary=False)
+        return output_path
+
+    def _conformed_mesh_path(
+        self,
+        mesh: AvailableSystemMesh,
+        *,
+        fem_resource: MeshResource,
+        fem_interface_name: str,
+        bem_interface_name: str,
+    ) -> Path:
+        identity = "|".join(
+            (
+                str(Path(mesh.source_file).resolve()),
+                repr(mesh.scale_to_m),
+                repr(mesh.translation_m),
+                str(Path(fem_resource.file).resolve()),
+                repr(fem_resource.scale_to_m),
+                repr(fem_resource.translation_m),
+                fem_interface_name,
+                bem_interface_name,
+            )
+        )
+        digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
+        return self._interface_output_root / f"{_slug(mesh.name)}_{digest}_interface_conformed.msh"
+
+    def _set_available_mesh_file(self, mesh_name: str, output_path: Path) -> None:
+        updated = []
+        for mesh in self._meshes:
+            updated.append(replace(mesh, file=str(output_path)) if mesh.name == mesh_name else mesh)
+        self._meshes = tuple(updated)
+        self._mesh_by_name = {mesh.name: mesh for mesh in self._meshes}
+        self._mesh_file_overrides_by_name[mesh_name] = str(output_path)
 
     def _check_interface_pair(
         self,
@@ -586,7 +742,7 @@ class SystemConfigDialog(QDialog):
             require_closed_bem=True,
         )
 
-    def _load_interfaces(self, *, status: str = "Configured") -> None:
+    def _load_interfaces(self, *, status: str | None = None) -> None:
         self.interfaces_table.setRowCount(0)
         boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
         regions = {region["id"]: region["name"] for region in self._region_drafts()}
@@ -602,7 +758,7 @@ class SystemConfigDialog(QDialog):
                 interface.name,
                 f"{regions.get(bounded.region_id, bounded.region_id)} / {bounded.group.name}",
                 f"{regions.get(unbounded.region_id, unbounded.region_id)} / {unbounded.group.name}",
-                status,
+                status or self._interface_status_by_id.get(interface.id, "Configured"),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
@@ -907,6 +1063,7 @@ class SystemConfigDialog(QDialog):
         return SystemConfigResult(
             system=system,
             component_channel_by_id=dict(self._collected_component_channels),
+            mesh_file_overrides_by_name=dict(self._mesh_file_overrides_by_name),
         )
 
     def apply(self) -> bool:
@@ -927,6 +1084,22 @@ def _transformed_mesh(resource: MeshResource) -> meshio.Mesh:
     mesh = meshio.read(Path(resource.file))
     points = np.asarray(mesh.points, dtype=float) * float(resource.scale_to_m)
     points += np.asarray(resource.translation_m, dtype=float)
+    return meshio.Mesh(
+        points=points,
+        cells=mesh.cells,
+        point_data=mesh.point_data,
+        cell_data=mesh.cell_data,
+        field_data=mesh.field_data,
+        cell_sets=mesh.cell_sets,
+    )
+
+
+def _mesh_in_resource_coordinates(mesh: meshio.Mesh, resource: MeshResource) -> meshio.Mesh:
+    scale = float(resource.scale_to_m)
+    if scale <= 0.0:
+        raise ValueError(f"Mesh '{resource.name}' scale must be greater than zero.")
+    points = np.asarray(mesh.points, dtype=float) - np.asarray(resource.translation_m, dtype=float)
+    points /= scale
     return meshio.Mesh(
         points=points,
         cells=mesh.cells,

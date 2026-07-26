@@ -50,8 +50,13 @@ window:
   mesh, and (for bounded regions) physical volume group.
 - **Boundaries** assigns each tagged surface as rigid, moving, interface, or
   unused.
-- **Interfaces** identifies matching bounded and unbounded interface sides,
-  then checks conformity and orientation.
+- **Interfaces** uses **Build/Identify Interfaces** to match bounded and
+  unbounded interface sides. When an imported BEM interface is meshed
+  differently, Boundary Lab writes a derived BEM mesh whose interface nodes and
+  faces come from the FEM side, then validates conformity and orientation.
+  Curved interface interiors are supported when the FEM and BEM perimeters
+  describe the same planar opening; the surrounding planar BEM surface may be
+  split across multiple Gmsh geometrical entities.
 - **Components** attaches prescribed-velocity components to moving boundaries
   and assigns their application channel.
 
