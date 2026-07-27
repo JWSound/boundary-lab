@@ -10,12 +10,25 @@ import blab.ui.main_window as main_window_module
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.generators.ath import ath_source
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
+from blab.physical_model import (
+    AcousticRegion,
+    AcousticRegionKind,
+    Boundary,
+    BoundaryKind,
+    ComponentKind,
+    MeshPurpose,
+    MeshResource,
+    PhysicalComponent,
+    PhysicalGroupRef,
+    PhysicalSystem,
+)
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window import (
     STITCH_FAILURE_MESSAGE,
     STITCHED_MESH_NAME,
     MainWindow,
     _mesh_entries_with_file_overrides,
+    _physical_system_preview_metadata,
 )
 from blab.ui.project_state import ProjectPreferencesState
 
@@ -54,6 +67,79 @@ def test_system_interface_mesh_override_is_persisted_as_imported_cleaned_file(tm
 
     assert updated[0].source_file == str(source_path)
     assert updated[0].cleaned_file == str(conformed_path)
+
+
+def test_physical_system_preview_metadata_identifies_interface_surfaces_and_mesh_regions() -> None:
+    system = PhysicalSystem(
+        id="system",
+        name="System",
+        meshes=(
+            MeshResource("fem", "Interior mesh", "interior.msh", MeshPurpose.FEM_VOLUME),
+            MeshResource("bem", "Exterior mesh", "exterior.msh", MeshPurpose.BEM_SURFACE),
+        ),
+        regions=(
+            AcousticRegion("interior", "Interior", AcousticRegionKind.BOUNDED_AIR, ("fem",)),
+            AcousticRegion("exterior", "Exterior", AcousticRegionKind.UNBOUNDED_AIR, ("bem",)),
+        ),
+        boundaries=(
+            Boundary(
+                "fem-interface",
+                "Interior interface",
+                "interior",
+                PhysicalGroupRef("fem", 2, name="Interface"),
+                BoundaryKind.INTERFACE,
+            ),
+            Boundary(
+                "bem-interface",
+                "Exterior interface",
+                "exterior",
+                PhysicalGroupRef("bem", 2, tag=7),
+                BoundaryKind.INTERFACE,
+            ),
+            Boundary(
+                "driver",
+                "Driver",
+                "interior",
+                PhysicalGroupRef("fem", 2, name="Driver"),
+                BoundaryKind.MOVING,
+            ),
+        ),
+        components=(
+            PhysicalComponent(
+                "component",
+                "Driver",
+                ComponentKind.IDEAL_VELOCITY_SOURCE,
+                ("driver",),
+            ),
+        ),
+    )
+
+    interfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
+        system,
+        {
+            "Interior mesh": {"Interface": 4, "Driver": 9},
+            "Exterior mesh": {"Interface": 7},
+        },
+    )
+
+    assert interfaces == {("Interior mesh", 4), ("Exterior mesh", 7)}
+    assert component_surfaces == {("Interior mesh", 9)}
+    assert mesh_regions == {"Interior mesh": "interior", "Exterior mesh": "exterior"}
+    assert has_interior is True
+
+
+def test_mesh_preview_dock_exposes_theme_aware_region_filter_actions() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+
+    assert 'QAction("Show interior regions", self)' in source
+    assert 'QAction("Show exterior region", self)' in source
+    assert "FEMTetra_dark.ico" in source
+    assert "FEMTetra_light.ico" in source
+    assert "BEMTri_dark.ico" in source
+    assert "BEMTri_light.ico" in source
+    assert "tool_actions=(self.show_interior_regions_action, self.show_exterior_region_action)" in source
+    assert "self.show_interior_regions_action.setEnabled(has_interior_region)" in source
+    assert "self.show_exterior_region_action.setEnabled(has_interior_region)" in source
 
 
 def test_xy_stitch_candidates_use_reduced_generated_mesh_before_stitching(tmp_path: Path) -> None:

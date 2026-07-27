@@ -49,7 +49,14 @@ from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
 )
-from blab.physical_model import physical_system_from_dict, physical_system_to_dict
+from blab.physical_model import (
+    AcousticRegionKind,
+    BoundaryKind,
+    MeshPurpose,
+    PhysicalSystem,
+    physical_system_from_dict,
+    physical_system_to_dict,
+)
 from blab.plotting import VisualizerConfig
 from blab.solvers.http_server import server_health_supports_symmetry
 from blab.solvers.registry import backend_info
@@ -177,6 +184,10 @@ CAPTURE_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "capturecontours_dark.ico"
 CAPTURE_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "capturecontours_light.ico"
 CLEAR_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "clearcontours_dark.ico"
 CLEAR_CONTOURS_LIGHT_ICON = APP_ROOT / "assets" / "clearcontours_light.ico"
+FEM_PREVIEW_DARK_ICON = APP_ROOT / "assets" / "FEMTetra_dark.ico"
+FEM_PREVIEW_LIGHT_ICON = APP_ROOT / "assets" / "FEMTetra_light.ico"
+BEM_PREVIEW_DARK_ICON = APP_ROOT / "assets" / "BEMTri_dark.ico"
+BEM_PREVIEW_LIGHT_ICON = APP_ROOT / "assets" / "BEMTri_light.ico"
 ADD_DESIGN_TAB_LABEL = "+"
 DEFAULT_DOCK_STATE_B64 = (
     "AAAA/wAAAAD9AAAAAQAAAAAAAAduAAADdvwCAAAAAfwAAAAAAAADdgAAAG4A/////AEAAAAG+wAAAB4AYQB0AGgAXwBl"
@@ -199,6 +210,55 @@ def _mesh_entries_with_file_overrides(
         replace(mesh, cleaned_file=overrides_by_name.get(mesh.name, mesh.cleaned_file))
         for mesh in meshes
     )
+
+
+def _physical_system_preview_metadata(
+    system: PhysicalSystem | None,
+    surface_tags_by_mesh: dict[str, dict[str, int]],
+) -> tuple[set[tuple[str, int]], set[tuple[str, int]], dict[str, str], bool]:
+    if system is None:
+        return set(), set(), {}, False
+
+    meshes_by_id = {mesh.id: mesh for mesh in system.meshes}
+    boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
+    mesh_regions = {
+        mesh.name: "interior" if mesh.purpose == MeshPurpose.FEM_VOLUME else "exterior"
+        for mesh in system.meshes
+    }
+    has_interior_region = any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
+
+    def resolved_surface(boundary_id: str) -> tuple[str, int] | None:
+        boundary = boundaries_by_id.get(boundary_id)
+        if boundary is None:
+            return None
+        mesh = meshes_by_id.get(boundary.group.mesh_id)
+        if mesh is None:
+            return None
+        tag = boundary.group.tag
+        if tag is None and boundary.group.name is not None:
+            tag = surface_tags_by_mesh.get(mesh.name, {}).get(boundary.group.name)
+        if tag is None:
+            return None
+        return mesh.name, int(tag)
+
+    interface_surfaces: set[tuple[str, int]] = set()
+    for boundary in system.boundaries:
+        if boundary.kind != BoundaryKind.INTERFACE:
+            continue
+        surface = resolved_surface(boundary.id)
+        if surface is not None:
+            interface_surfaces.add(surface)
+
+    component_surfaces: set[tuple[str, int]] = set()
+    for component in system.components:
+        for boundary_id in component.boundary_ids:
+            boundary = boundaries_by_id.get(boundary_id)
+            if boundary is None or boundary.kind != BoundaryKind.MOVING:
+                continue
+            surface = resolved_surface(boundary_id)
+            if surface is not None:
+                component_surfaces.add(surface)
+    return interface_surfaces, component_surfaces, mesh_regions, has_interior_region
 
 
 class MainWindow(QMainWindow):
@@ -427,6 +487,8 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().changeEvent(event)
+        if event.type() == QEvent.Type.PaletteChange:
+            self._refresh_plot_export_icons()
         if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
             self._reload_updated_imported_meshes_on_focus()
 
@@ -653,7 +715,22 @@ class MainWindow(QMainWindow):
             "Waveguide Design",
             self.editor_container,
         )
-        self.preview_dock = self._make_panel_dock("mesh_preview_dock", "Mesh Preview", self.preview)
+        self.show_interior_regions_action = QAction("Show interior regions", self)
+        self.show_interior_regions_action.setToolTip("Show interior regions")
+        self.show_interior_regions_action.setCheckable(True)
+        self.show_interior_regions_action.setEnabled(False)
+        self.show_interior_regions_action.triggered.connect(self._on_show_interior_regions)
+        self.show_exterior_region_action = QAction("Show exterior region", self)
+        self.show_exterior_region_action.setToolTip("Show exterior region")
+        self.show_exterior_region_action.setCheckable(True)
+        self.show_exterior_region_action.setEnabled(False)
+        self.show_exterior_region_action.triggered.connect(self._on_show_exterior_region)
+        self.preview_dock = self._make_panel_dock(
+            "mesh_preview_dock",
+            "Mesh Preview",
+            self.preview,
+            tool_actions=(self.show_interior_regions_action, self.show_exterior_region_action),
+        )
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
@@ -789,6 +866,50 @@ class MainWindow(QMainWindow):
     def _on_project_state_changed(self, _reason: str) -> None:
         self._refresh_mesh_preview()
         self.system_config_button.setEnabled(self._has_solver_meshes())
+
+    @Slot(bool)
+    def _on_show_interior_regions(self, checked: bool) -> None:
+        if checked:
+            blocker = QSignalBlocker(self.show_exterior_region_action)
+            self.show_exterior_region_action.setChecked(False)
+            del blocker
+        self._apply_preview_region_action_state()
+
+    @Slot(bool)
+    def _on_show_exterior_region(self, checked: bool) -> None:
+        if checked:
+            blocker = QSignalBlocker(self.show_interior_regions_action)
+            self.show_interior_regions_action.setChecked(False)
+            del blocker
+        self._apply_preview_region_action_state()
+
+    def _apply_preview_region_action_state(self) -> None:
+        if self.show_interior_regions_action.isChecked():
+            mode = "interior"
+        elif self.show_exterior_region_action.isChecked():
+            mode = "exterior"
+        else:
+            mode = "all"
+        self.preview.set_region_visibility_mode(mode)
+
+    def _sync_preview_region_actions(self) -> None:
+        if not hasattr(self, "show_interior_regions_action"):
+            return
+        system = getattr(self._project_document(), "physical_system", None)
+        has_interior_region = (
+            system is not None
+            and any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
+        )
+        self.show_interior_regions_action.setEnabled(has_interior_region)
+        self.show_exterior_region_action.setEnabled(has_interior_region)
+        if has_interior_region:
+            return
+        interior_blocker = QSignalBlocker(self.show_interior_regions_action)
+        exterior_blocker = QSignalBlocker(self.show_exterior_region_action)
+        self.show_interior_regions_action.setChecked(False)
+        self.show_exterior_region_action.setChecked(False)
+        del interior_blocker, exterior_blocker
+        self.preview.set_region_visibility_mode("all")
 
     @Slot(str)
     def _on_solve_results_invalidated(self, reason: str) -> None:
@@ -959,7 +1080,7 @@ class MainWindow(QMainWindow):
         self._refresh_plot_export_icons()
 
     def _refresh_plot_export_icons(self) -> None:
-        if not hasattr(self, "export_plot_actions"):
+        if not hasattr(self, "export_plot_actions") and not hasattr(self, "show_interior_regions_action"):
             return
         palette = self.palette()
         window_color = palette.color(QPalette.Window)
@@ -967,12 +1088,18 @@ class MainWindow(QMainWindow):
         icon = QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))
         capture_icon = QIcon(str(CAPTURE_CONTOURS_LIGHT_ICON if light_theme else CAPTURE_CONTOURS_DARK_ICON))
         clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
-        for action in self.export_plot_actions.values():
+        fem_icon = QIcon(str(FEM_PREVIEW_LIGHT_ICON if light_theme else FEM_PREVIEW_DARK_ICON))
+        bem_icon = QIcon(str(BEM_PREVIEW_LIGHT_ICON if light_theme else BEM_PREVIEW_DARK_ICON))
+        for action in getattr(self, "export_plot_actions", {}).values():
             action.setIcon(icon)
-        for action in self.capture_contour_actions.values():
+        for action in getattr(self, "capture_contour_actions", {}).values():
             action.setIcon(capture_icon)
-        for action in self.clear_contour_actions.values():
+        for action in getattr(self, "clear_contour_actions", {}).values():
             action.setIcon(clear_icon)
+        if hasattr(self, "show_interior_regions_action"):
+            self.show_interior_regions_action.setIcon(fem_icon)
+        if hasattr(self, "show_exterior_region_action"):
+            self.show_exterior_region_action.setIcon(bem_icon)
 
     @Slot()
     def _save_frequency_settings(self) -> None:
@@ -1486,6 +1613,7 @@ class MainWindow(QMainWindow):
         return self._prepare_mesh_assembly(self._all_radiators()).surface_tags
 
     def _refresh_mesh_preview(self) -> None:
+        self._sync_preview_region_actions()
         if not self._has_solver_meshes():
             self.preview.clear()
             return
@@ -1495,10 +1623,21 @@ class MainWindow(QMainWindow):
             if not mesh_configs:
                 self.preview.clear()
                 return
+            interface_surfaces, component_surfaces, mesh_regions, _has_interior = (
+                _physical_system_preview_metadata(
+                    self._project_document().physical_system,
+                    assembly.surface_tags_by_mesh,
+                )
+            )
+            driven_surfaces = {
+                (radiator.mesh, radiator.tag) for radiator in assembly.radiators
+            } | component_surfaces
             self.preview.load_mesh_configs(
                 mesh_configs,
-                driven_surfaces={(radiator.mesh, radiator.tag) for radiator in assembly.radiators},
+                driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=assembly.surface_tags_by_mesh,
+                interface_surfaces=interface_surfaces,
+                mesh_regions=mesh_regions,
                 symmetry=self.symmetry,
             )
         except Exception as exc:
@@ -1516,10 +1655,21 @@ class MainWindow(QMainWindow):
             surface_tags_by_mesh = {
                 mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
             }
+            interface_surfaces, component_surfaces, mesh_regions, _has_interior = (
+                _physical_system_preview_metadata(
+                    self._project_document().physical_system,
+                    surface_tags_by_mesh,
+                )
+            )
+            driven_surfaces = {
+                (radiator.mesh, radiator.tag) for radiator in self._all_radiators()
+            } | component_surfaces
             self.preview.load_mesh_configs(
                 mesh_configs,
-                driven_surfaces={(radiator.mesh, radiator.tag) for radiator in self._all_radiators()},
+                driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=surface_tags_by_mesh,
+                interface_surfaces=interface_surfaces,
+                mesh_regions=mesh_regions,
                 symmetry=self.symmetry,
             )
             self.status_label.setText("Mesh preview showing unstitched meshes; stitching failed")
