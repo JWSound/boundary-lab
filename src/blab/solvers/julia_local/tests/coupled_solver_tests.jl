@@ -157,6 +157,19 @@ end
     )
 end
 
+@testset "empty FEM-BEM interface operators" begin
+    fem_mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), 0.001)
+    bem_mesh = load_gmsh22_with_tags(joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"), 0.001)
+    interface_map = ConformingInterfaceMap(Int[], Int[], Int[], Int[], Int[])
+
+    operators = assemble_interface_operators(fem_mesh, bem_mesh, interface_map)
+
+    @test size(operators.fem_load) == (length(fem_mesh.vertices), 0)
+    @test size(operators.bem_flux) == (length(bem_mesh.faces), 0)
+    @test size(operators.fem_trace) == (0, length(fem_mesh.vertices))
+    @test size(operators.bem_trace) == (0, length(bem_mesh.vertices))
+end
+
 @testset "rigid-piston electrodynamic surface operators" begin
     fem_mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), 0.001)
     bem_mesh = load_gmsh22_with_tags(joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"), 0.001)

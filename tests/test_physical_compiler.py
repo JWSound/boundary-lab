@@ -49,6 +49,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
 SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "skram"
+SIMPLE_SEALED_FIXTURE_ROOT = FIXTURE_ROOT / "simple_sealed"
 
 
 def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
@@ -352,6 +353,25 @@ def test_skram_multi_chamber_model_compiles_with_shared_fractional_driver(
     assert session.request.solver_options["symmetry"] == "x"
 
 
+def test_simple_sealed_model_compiles_without_an_acoustic_interface() -> None:
+    compiled = PhysicalSystemCompiler().compile(_simple_sealed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(200.0,),
+        excitation_port_ids=("excitation:simple-sealed-driver",),
+        solver_options={"static_condensation": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
+
+    assert compiled.interfaces == ()
+    assert compiled.components[0].boundary_ids == (
+        "boundary:simple-sealed-rear-diaphragm",
+        "boundary:simple-sealed-front-diaphragm",
+    )
+    assert session.request.solver_options["static_condensation"] is True
+
+
 @pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia dense reference integration.",
@@ -454,6 +474,54 @@ def test_coupled_reference_backend_solves_bidirectional_electrodynamic_fixture()
 
 
 @pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the sealed zero-interface integration.",
+)
+def test_coupled_reference_backend_solves_sealed_zero_interface_fixture() -> None:
+    compiled = PhysicalSystemCompiler().compile(_sealed_electrodynamic_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+            OutputRequest(id="output:flux", quantity="interface_normal_derivative"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={"quadrature_order": 1, "singular_order": 1},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+
+    (result,) = tuple(
+        CoupledReferenceBackend(
+            julia_executable=julia_executable,
+            persistent_worker=False,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert np.isfinite(quantities["output:velocity"].values[0, 0])
+    assert np.isfinite(quantities["output:current"].values[0, 0])
+    assert np.isfinite(quantities["output:field"].values[0, 0])
+    assert quantities["output:flux"].values.shape == (1, 0)
+    assert result.diagnostics["interface_count"] == 0
+    assert result.diagnostics["interface_ids"] == []
+    assert result.diagnostics["pressure_continuity_error"] is None
+    assert result.diagnostics["flux_conservation_error"] is None
+    assert result.diagnostics["interface_pressure_continuity_errors"] == []
+    assert result.diagnostics["interface_flux_conservation_errors"] == []
+    assert result.diagnostics["relative_residual"] < 1e-8
+    assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
     reason="Set BLAB_RUN_COUPLED_CUDA=1 to run electrodynamic CPU/CUDA parity.",
 )
@@ -515,6 +583,112 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
     assert cuda_result.diagnostics["formulation"] == "fem_interface_condensed"
     assert cuda_result.diagnostics["static_condensation_requested"] is True
     assert cuda_result.diagnostics["static_condensation_active"] is True
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
+    reason="Set BLAB_RUN_COUPLED_CUDA=1 to run sealed zero-interface CPU/CUDA parity.",
+)
+def test_coupled_sealed_zero_interface_cuda_matches_cpu() -> None:
+    compiled = PhysicalSystemCompiler().compile(_sealed_electrodynamic_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={
+            "quadrature_order": 1,
+            "singular_order": 1,
+            "validation_diagnostics": False,
+            "static_condensation": True,
+        },
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    cpu_backend = CoupledProductionBackend(
+        bem_backend="cpu",
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+    cuda_backend = CoupledProductionBackend(
+        bem_backend="cuda",
+        julia_executable=julia_executable,
+        persistent_worker=True,
+    )
+
+    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
+
+    cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}
+    cuda_quantities = {quantity.id: quantity.values for quantity in cuda_result.quantities}
+    for quantity_id in cpu_quantities:
+        scale = max(float(np.linalg.norm(cpu_quantities[quantity_id])), np.finfo(float).eps)
+        relative_error = float(
+            np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])
+        ) / scale
+        assert relative_error < 5e-3, (quantity_id, relative_error)
+    assert cpu_result.diagnostics["interface_count"] == 0
+    assert cuda_result.diagnostics["interface_count"] == 0
+    assert cuda_result.diagnostics["formulation"] == "fem_interface_condensed"
+    assert cuda_result.diagnostics["static_condensation_active"] is True
+    assert cuda_result.diagnostics["solved_system_order"] < cuda_result.diagnostics["full_system_order"]
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
+    reason="Set BLAB_RUN_COUPLED_CUDA=1 to run the simple sealed condensed integration.",
+)
+def test_simple_sealed_cuda_condensed_solve() -> None:
+    compiled = PhysicalSystemCompiler().compile(_simple_sealed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(200.0,),
+        excitation_port_ids=("excitation:simple-sealed-driver",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.5]]},
+            ),
+        ),
+        solver_options={
+            "quadrature_order": 1,
+            "singular_order": 1,
+            "validation_diagnostics": False,
+            "static_condensation": True,
+        },
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+
+    (result,) = tuple(
+        CoupledProductionBackend(
+            bem_backend="cuda",
+            julia_executable=julia_executable,
+            persistent_worker=True,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert np.isfinite(quantities["output:velocity"].values[0, 0])
+    assert np.isfinite(quantities["output:current"].values[0, 0])
+    assert np.isfinite(quantities["output:field"].values[0, 0])
+    assert result.diagnostics["interface_count"] == 0
+    assert result.diagnostics["pressure_continuity_error"] is None
+    assert result.diagnostics["flux_conservation_error"] is None
+    assert result.diagnostics["formulation"] == "fem_interface_condensed"
+    assert result.diagnostics["static_condensation_active"] is True
+    assert result.diagnostics["solved_system_order"] < result.diagnostics["full_system_order"]
 
 
 @pytest.mark.skipif(
@@ -698,6 +872,143 @@ def _bidirectional_electrodynamic_fixture_system() -> PhysicalSystem:
             for boundary in system.boundaries
         ),
         components=(component,),
+    )
+
+
+def _sealed_electrodynamic_fixture_system() -> PhysicalSystem:
+    system = _bidirectional_electrodynamic_fixture_system()
+    return replace(
+        system,
+        boundaries=tuple(
+            replace(boundary, kind=BoundaryKind.RIGID)
+            if boundary.kind == BoundaryKind.INTERFACE
+            else boundary
+            for boundary in system.boundaries
+        ),
+        interfaces=(),
+    )
+
+
+def _simple_sealed_fixture_system() -> PhysicalSystem:
+    interior_mesh_id = "mesh:simple-sealed-interior"
+    exterior_mesh_id = "mesh:simple-sealed-exterior"
+    interior_region_id = "region:simple-sealed-interior"
+    exterior_region_id = "region:simple-sealed-exterior"
+    component = PhysicalComponent(
+        id="component:simple-sealed-driver",
+        name="Simple sealed driver",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        boundary_ids=(
+            "boundary:simple-sealed-rear-diaphragm",
+            "boundary:simple-sealed-front-diaphragm",
+        ),
+        parameters={
+            "re_ohm": 6.0,
+            "le_h": 0.0005,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 0.0005,
+            "rms_n_s_per_m": 1.0,
+            "motion_axis": [0.0, 0.0, 1.0],
+            "motion_profile": "rigid_translation",
+        },
+    )
+    return PhysicalSystem(
+        id="system:simple-sealed",
+        name="Simple sealed enclosure",
+        meshes=(
+            MeshResource(
+                id=interior_mesh_id,
+                name="Simple sealed interior",
+                file=str(SIMPLE_SEALED_FIXTURE_ROOT / "interior.msh"),
+                purpose=MeshPurpose.FEM_VOLUME,
+                scale_to_m=0.001,
+            ),
+            MeshResource(
+                id=exterior_mesh_id,
+                name="Simple sealed exterior",
+                file=str(SIMPLE_SEALED_FIXTURE_ROOT / "Exterior.msh"),
+                purpose=MeshPurpose.BEM_SURFACE,
+                scale_to_m=0.001,
+            ),
+        ),
+        regions=(
+            AcousticRegion(
+                id=interior_region_id,
+                name="Sealed interior air",
+                kind=AcousticRegionKind.BOUNDED_AIR,
+                mesh_ids=(interior_mesh_id,),
+                volume_groups=(
+                    PhysicalGroupRef(
+                        mesh_id=interior_mesh_id,
+                        dimension=3,
+                        name="interior",
+                    ),
+                ),
+            ),
+            AcousticRegion(
+                id=exterior_region_id,
+                name="Exterior air",
+                kind=AcousticRegionKind.UNBOUNDED_AIR,
+                mesh_ids=(exterior_mesh_id,),
+            ),
+        ),
+        boundaries=(
+            Boundary(
+                id="boundary:simple-sealed-rear-diaphragm",
+                name="Rear diaphragm",
+                region_id=interior_region_id,
+                group=PhysicalGroupRef(
+                    mesh_id=interior_mesh_id,
+                    dimension=2,
+                    name="Radiator",
+                ),
+                kind=BoundaryKind.MOVING,
+            ),
+            Boundary(
+                id="boundary:simple-sealed-interior-wall",
+                name="Interior enclosure wall",
+                region_id=interior_region_id,
+                group=PhysicalGroupRef(
+                    mesh_id=interior_mesh_id,
+                    dimension=2,
+                    name="interior_boundary",
+                ),
+                kind=BoundaryKind.RIGID,
+            ),
+            Boundary(
+                id="boundary:simple-sealed-front-diaphragm",
+                name="Front diaphragm",
+                region_id=exterior_region_id,
+                group=PhysicalGroupRef(
+                    mesh_id=exterior_mesh_id,
+                    dimension=2,
+                    name="woofer",
+                ),
+                kind=BoundaryKind.MOVING,
+            ),
+            Boundary(
+                id="boundary:simple-sealed-exterior-wall",
+                name="Exterior enclosure wall",
+                region_id=exterior_region_id,
+                group=PhysicalGroupRef(
+                    mesh_id=exterior_mesh_id,
+                    dimension=2,
+                    name="enclosure",
+                ),
+                kind=BoundaryKind.RIGID,
+            ),
+        ),
+        interfaces=(),
+        components=(component,),
+        excitation_ports=(
+            ExcitationPort(
+                id="excitation:simple-sealed-driver",
+                name="Simple sealed driver 2.83 V",
+                component_id=component.id,
+                kind=ExcitationPortKind.VOLTAGE,
+            ),
+        ),
     )
 
 

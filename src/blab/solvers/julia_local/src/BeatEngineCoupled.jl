@@ -864,12 +864,14 @@ function _cuda_coupled_bem_blocks(
             size(operators.single_layer, 1),
             size(d_bem_flux, 2),
         )
-        d_interface_temp = similar(d_interface_block)
-        mul!(d_interface_block, operators.single_layer, d_bem_flux)
-        mul!(d_interface_temp, operators.adjoint_double_layer, d_bem_flux)
-        d_interface_block .+= coupling .* d_interface_temp
-        mul!(d_interface_temp, d_identity_p1_dp0, d_bem_flux)
-        d_interface_block .+= Complex{T}(0.5) * coupling .* d_interface_temp
+        if size(d_bem_flux, 2) > 0
+            d_interface_temp = similar(d_interface_block)
+            mul!(d_interface_block, operators.single_layer, d_bem_flux)
+            mul!(d_interface_temp, operators.adjoint_double_layer, d_bem_flux)
+            d_interface_block .+= coupling .* d_interface_temp
+            mul!(d_interface_temp, d_identity_p1_dp0, d_bem_flux)
+            d_interface_block .+= Complex{T}(0.5) * coupling .* d_interface_temp
+        end
         if !isnothing(bem_motion_flux)
             d_motion_block = similar(
                 operators.single_layer,

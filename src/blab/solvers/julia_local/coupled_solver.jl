@@ -300,7 +300,13 @@ function combined_interface_map_from_wire(
         push!(ranges, next_interface_dof:(next_interface_dof + count - 1))
         next_interface_dof += count
     end
-    isempty(maps) && error("Coupled backend requires at least one FEM-BEM interface.")
+    if isempty(maps)
+        return (
+            map=ConformingInterfaceMap(Int[], Int[], Int[], Int[], Int[]),
+            ranges=ranges,
+            maps=maps,
+        )
+    end
     return (
         map=ConformingInterfaceMap(
             reduce(vcat, (map.fem_vertex_indices for map in maps)),
@@ -508,7 +514,6 @@ function solve_request(request; event_mode=false)
     components = system["components"]
     ports = system["excitation_ports"]
     interfaces = system["interfaces"]
-    isempty(interfaces) && error("Coupled backend requires at least one FEM-BEM interface.")
 
     bounded_regions = [region for region in regions if String(region["kind"]) == "bounded_air"]
     unbounded_regions = [region for region in regions if String(region["kind"]) == "unbounded_air"]
@@ -926,8 +931,12 @@ function solve_request(request; event_mode=false)
             "transducer_reference_voltage_v" => transducer_reference_voltage_v,
             "static_condensation_requested" => static_condensation_requested,
             "static_condensation_active" => static_condensation,
-            "pressure_continuity_error" => maximum(interface_pressure_errors),
-            "flux_conservation_error" => maximum(interface_flux_errors),
+            "pressure_continuity_error" => isempty(interface_pressure_errors) ?
+                                           nothing :
+                                           maximum(interface_pressure_errors),
+            "flux_conservation_error" => isempty(interface_flux_errors) ?
+                                         nothing :
+                                         maximum(interface_flux_errors),
             "interface_ids" => [String(interface["id"]) for interface in interfaces],
             "interface_pressure_continuity_errors" => interface_pressure_errors,
             "interface_flux_conservation_errors" => interface_flux_errors,

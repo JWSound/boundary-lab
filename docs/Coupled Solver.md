@@ -49,7 +49,7 @@ system:
 
 - one or more bounded-air regions, currently with one FEM mesh each;
 - exactly one unbounded-air region with one BEM mesh;
-- one or more FEM-BEM interfaces into that exterior mesh;
+- zero or more FEM-BEM interfaces into that exterior mesh;
 - one or more selected physical volume groups in each bounded region;
 - ideal prescribed-velocity components, linear electrodynamic transducers, or
   both;
@@ -77,6 +77,14 @@ moving boundaries in several FEM regions, as well as to BEM moving boundaries.
 The independently meshed front and rear diaphragm surfaces do not need a
 node-to-node map because they communicate through the shared mechanical degree
 of freedom.
+
+A sealed enclosure therefore has no FEM-BEM acoustic interface: its rear
+diaphragm is a moving FEM boundary, its front diaphragm is a moving BEM
+boundary, and both belong to the same electrodynamic component. The interior
+and exterior acoustic domains communicate only through that component's
+mechanical degree of freedom. A ported enclosure adds a conforming FEM-BEM
+interface at each port mouth; its diaphragm boundaries remain moving
+boundaries rather than interface boundaries.
 
 ### Current medium-property rule
 
