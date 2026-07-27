@@ -11,14 +11,20 @@ import meshio
 import numpy as np
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -78,6 +84,148 @@ class SystemConfigResult:
 class _InterfacePairMatch:
     boundary: Boundary
     conformed_bem_mesh: meshio.Mesh | None = None
+
+
+@dataclass(frozen=True)
+class MotionAxisInference:
+    """Dominant unoriented rigid-translation axis inferred from surface normals."""
+
+    axis: tuple[float, float, float]
+    confidence: float
+    mean_squared_alignment: float
+    boundary_alignment: float
+    area_m2: float
+    triangle_count: int
+
+
+@dataclass
+class _ComponentDraft:
+    id: str
+    name: str
+    kind: ComponentKind
+    boundary_ids: tuple[str, ...]
+    channel: str
+    parameters: dict
+    motion_axis_mode: str = "manual"
+    axis_confidence: float | None = None
+
+
+_COMPONENT_UI_METADATA_KEY = "component_editor"
+_TRANSDUCER_PARAMETER_FIELDS = (
+    ("re_ohm", "Re", "Ω", 1.0),
+    ("le_h", "Le", "mH", 1_000.0),
+    ("bl_n_per_a", "Bl", "N/A", 1.0),
+    ("mmd_kg", "Mmd", "g", 1_000.0),
+    ("cms_m_per_n", "Cms", "µm/N", 1_000_000.0),
+    ("rms_n_s_per_m", "Rms", "N·s/m", 1.0),
+)
+
+
+def infer_component_motion_axis(
+    boundaries: tuple[Boundary, ...],
+    resources_by_id: dict[str, MeshResource],
+    *,
+    mesh_cache: dict[str, meshio.Mesh] | None = None,
+) -> MotionAxisInference:
+    """Infer a common translation axis without allowing opposed mesh normals to cancel."""
+
+    if not boundaries:
+        raise ValueError("Select at least one moving boundary before inferring its motion axis.")
+    cache = {} if mesh_cache is None else mesh_cache
+    tensors = []
+    combined = np.zeros((3, 3), dtype=float)
+    total_area = 0.0
+    triangle_count = 0
+    for boundary in boundaries:
+        resource = resources_by_id.get(boundary.group.mesh_id)
+        if resource is None:
+            raise ValueError(
+                f"Moving boundary '{boundary.name}' references unavailable mesh '{boundary.group.mesh_id}'."
+            )
+        cache_key = resource.id
+        mesh = cache.get(cache_key)
+        if mesh is None:
+            mesh = _transformed_mesh(resource)
+            cache[cache_key] = mesh
+        tensor, area, count = _boundary_normal_tensor(mesh, boundary)
+        tensors.append(tensor)
+        combined += tensor
+        total_area += area
+        triangle_count += count
+    if total_area <= 0.0 or triangle_count == 0:
+        raise ValueError("The selected moving boundaries contain no non-degenerate triangles.")
+
+    eigenvalues, eigenvectors = np.linalg.eigh(combined)
+    axis = np.asarray(eigenvectors[:, -1], dtype=float)
+    largest_component = int(np.argmax(np.abs(axis)))
+    if axis[largest_component] < 0.0:
+        axis *= -1.0
+    trace = float(np.sum(eigenvalues))
+    confidence = float(max(0.0, min(1.0, (eigenvalues[-1] - eigenvalues[-2]) / trace)))
+    mean_squared_alignment = float(max(0.0, min(1.0, eigenvalues[-1] / trace)))
+
+    boundary_axes = []
+    for tensor in tensors:
+        _values, vectors = np.linalg.eigh(tensor)
+        boundary_axes.append(np.asarray(vectors[:, -1], dtype=float))
+    boundary_alignment = min(
+        (abs(float(np.dot(axis, boundary_axis))) for boundary_axis in boundary_axes),
+        default=1.0,
+    )
+    confidence = min(confidence, boundary_alignment)
+    return MotionAxisInference(
+        axis=tuple(float(value) for value in axis),
+        confidence=confidence,
+        mean_squared_alignment=mean_squared_alignment,
+        boundary_alignment=boundary_alignment,
+        area_m2=total_area,
+        triangle_count=triangle_count,
+    )
+
+
+def _boundary_normal_tensor(mesh: meshio.Mesh, boundary: Boundary) -> tuple[np.ndarray, float, int]:
+    if boundary.group.name is not None:
+        field = mesh.field_data.get(boundary.group.name)
+        if field is None:
+            raise ValueError(
+                f"Mesh '{boundary.group.mesh_id}' does not contain surface group '{boundary.group.name}'."
+            )
+        tag, dimension = map(int, np.asarray(field).tolist())
+        if dimension != 2:
+            raise ValueError(f"Physical group '{boundary.group.name}' is not a surface group.")
+    elif boundary.group.tag is not None:
+        tag = int(boundary.group.tag)
+    else:
+        raise ValueError(f"Moving boundary '{boundary.name}' must identify a surface group by name or tag.")
+
+    physical_blocks = mesh.cell_data.get("gmsh:physical")
+    if physical_blocks is None:
+        raise ValueError(f"Mesh '{boundary.group.mesh_id}' has no physical surface tags.")
+    points = np.asarray(mesh.points, dtype=float)
+    tensor = np.zeros((3, 3), dtype=float)
+    total_area = 0.0
+    count = 0
+    for index, block in enumerate(mesh.cells):
+        if block.type not in {"triangle", "triangle3"}:
+            continue
+        triangles = np.asarray(block.data, dtype=np.int64)
+        physical = np.asarray(physical_blocks[index], dtype=np.int64)
+        if len(physical) != len(triangles):
+            raise ValueError(f"Mesh '{boundary.group.mesh_id}' has inconsistent triangle physical tags.")
+        for triangle in triangles[physical == tag]:
+            vertices = points[np.asarray(triangle[:3], dtype=np.int64)]
+            area_vector = np.cross(vertices[1] - vertices[0], vertices[2] - vertices[0])
+            magnitude = float(np.linalg.norm(area_vector))
+            if magnitude <= 0.0:
+                continue
+            normal = area_vector / magnitude
+            area = 0.5 * magnitude
+            tensor += area * np.outer(normal, normal)
+            total_area += area
+            count += 1
+    if count == 0:
+        raise ValueError(f"Moving boundary '{boundary.name}' contains no non-degenerate triangles.")
+    return tensor, total_area, count
 
 
 def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[AvailableSystemMesh, ...]:
@@ -142,8 +290,384 @@ def sync_physical_system_meshes(
     return replace(system, meshes=tuple(resources))
 
 
+class _ComponentEditorDialog(QDialog):
+    """Edit one component while keeping the Components table an overview."""
+
+    def __init__(
+        self,
+        draft: _ComponentDraft,
+        *,
+        boundaries: tuple[Boundary, ...],
+        resources_by_id: dict[str, MeshResource],
+        region_names: dict[str, str],
+        channel_names: tuple[str, ...],
+        unavailable_boundary_ids: set[str],
+        symmetry_mode: str,
+        mesh_cache: dict[str, meshio.Mesh],
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Component")
+        self._draft = draft
+        self._boundaries_by_id = {boundary.id: boundary for boundary in boundaries}
+        self._resources_by_id = resources_by_id
+        self._mesh_cache = mesh_cache
+        self._axis_inference: MotionAxisInference | None = None
+        self._axis_inference_error: str | None = None
+
+        self.name_edit = QLineEdit(draft.name)
+        self.type_combo = QComboBox()
+        self.type_combo.addItem("Prescribed Velocity", ComponentKind.IDEAL_VELOCITY_SOURCE)
+        self.type_combo.addItem("Electrodynamic Transducer", ComponentKind.ELECTRODYNAMIC_TRANSDUCER)
+        type_index = self.type_combo.findData(draft.kind)
+        self.type_combo.setCurrentIndex(max(type_index, 0))
+        self.channel_combo = QComboBox()
+        for channel_name in channel_names:
+            self.channel_combo.addItem(channel_name, channel_name)
+        channel_index = self.channel_combo.findData(draft.channel)
+        self.channel_combo.setCurrentIndex(max(channel_index, 0))
+
+        identity_form = QFormLayout()
+        identity_form.addRow("Name", self.name_edit)
+        identity_form.addRow("Type", self.type_combo)
+        identity_form.addRow("Channel", self.channel_combo)
+
+        self.boundary_list = QListWidget()
+        self.boundary_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.boundary_list.blockSignals(True)
+        for boundary in boundaries:
+            region_name = region_names.get(boundary.region_id, boundary.region_id)
+            label = f"{boundary.name} — {region_name}"
+            unavailable = boundary.id in unavailable_boundary_ids and boundary.id not in draft.boundary_ids
+            if unavailable:
+                label += " (assigned to another component)"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, boundary.id)
+            flags = item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+            if unavailable:
+                flags &= ~Qt.ItemFlag.ItemIsEnabled
+            item.setFlags(flags)
+            item.setCheckState(
+                Qt.CheckState.Checked if boundary.id in draft.boundary_ids else Qt.CheckState.Unchecked
+            )
+            self.boundary_list.addItem(item)
+        self.boundary_list.blockSignals(False)
+
+        surfaces_group = QGroupBox("Moving surfaces")
+        surfaces_layout = QVBoxLayout(surfaces_group)
+        surfaces_layout.addWidget(
+            QLabel("Select every acoustic surface driven by this component, including front and rear sides.")
+        )
+        surfaces_layout.addWidget(self.boundary_list)
+
+        self.axis_mode_combo = QComboBox()
+        self.axis_mode_combo.addItem("Automatic from surface normals", "automatic")
+        self.axis_mode_combo.addItem("Manual", "manual")
+        mode_index = self.axis_mode_combo.findData(draft.motion_axis_mode)
+        self.axis_mode_combo.setCurrentIndex(max(mode_index, 0))
+        raw_axis = draft.parameters.get("motion_axis", (0.0, 0.0, 1.0))
+        if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) != 3:
+            raw_axis = (0.0, 0.0, 1.0)
+        self.axis_spins = []
+        axis_row = QHBoxLayout()
+        for label, value in zip(("X", "Y", "Z"), raw_axis):
+            axis_row.addWidget(QLabel(label))
+            spin = QDoubleSpinBox()
+            spin.setDecimals(6)
+            spin.setRange(-1.0, 1.0)
+            spin.setSingleStep(0.05)
+            spin.setValue(float(value))
+            self.axis_spins.append(spin)
+            axis_row.addWidget(spin)
+        self.flip_axis_button = QPushButton("Flip")
+        axis_row.addWidget(self.flip_axis_button)
+        self.axis_confidence_label = QLabel()
+        self.axis_confidence_label.setWordWrap(True)
+
+        axis_form = QFormLayout()
+        axis_form.addRow("Motion axis", self.axis_mode_combo)
+        axis_form.addRow("Direction", axis_row)
+        axis_form.addRow("Inference", self.axis_confidence_label)
+
+        self.parameter_edits: dict[str, QLineEdit] = {}
+        transducer_form = QFormLayout()
+        for key, label, unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
+            edit = QLineEdit()
+            if key in draft.parameters:
+                edit.setText(f"{float(draft.parameters[key]) * display_per_si:.12g}")
+            edit.setPlaceholderText(unit)
+            self.parameter_edits[key] = edit
+            transducer_form.addRow(f"{label} ({unit})", edit)
+        self.symmetry_combo = QComboBox()
+        for label, value in _component_symmetry_options(symmetry_mode):
+            self.symmetry_combo.addItem(label, value)
+        symmetry_value = _component_symmetry_value(draft.parameters)
+        symmetry_index = next(
+            (
+                index
+                for index in range(self.symmetry_combo.count())
+                if self.symmetry_combo.itemData(index) == symmetry_value
+            ),
+            0,
+        )
+        self.symmetry_combo.setCurrentIndex(max(symmetry_index, 0))
+        transducer_form.addRow("Symmetry representation", self.symmetry_combo)
+        transducer_form.addRow("", QLabel("The voltage excitation uses the solver's 2.83 V reference signal."))
+
+        self.transducer_group = QGroupBox("Rigid-piston transducer")
+        transducer_layout = QVBoxLayout(self.transducer_group)
+        transducer_layout.addLayout(transducer_form)
+        transducer_layout.addLayout(axis_form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(identity_form)
+        layout.addWidget(surfaces_group)
+        layout.addWidget(self.transducer_group)
+        layout.addWidget(buttons)
+        self.resize(680, 700)
+
+        self.type_combo.currentIndexChanged.connect(self._refresh_type_controls)
+        self.axis_mode_combo.currentIndexChanged.connect(self._refresh_axis_controls)
+        self.boundary_list.itemChanged.connect(self._selected_boundaries_changed)
+        self.flip_axis_button.clicked.connect(self._flip_axis)
+        self._refresh_type_controls()
+        self._refresh_axis_controls()
+        if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER and draft.motion_axis_mode == "automatic":
+            self._infer_axis()
+
+    def selected_boundary_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(item.data(Qt.ItemDataRole.UserRole))
+            for index in range(self.boundary_list.count())
+            if (item := self.boundary_list.item(index)).checkState() == Qt.CheckState.Checked
+        )
+
+    def component_draft(self) -> _ComponentDraft:
+        name = self.name_edit.text().strip()
+        if not name:
+            raise ValueError("The component must have a name.")
+        boundary_ids = self.selected_boundary_ids()
+        if not boundary_ids:
+            raise ValueError(f"Component '{name}' must select at least one moving boundary.")
+        kind = self.type_combo.currentData()
+        if kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            parameters = {}
+            for key, label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
+                text = self.parameter_edits[key].text().strip()
+                try:
+                    display_value = float(text)
+                except ValueError as exc:
+                    raise ValueError(f"{label} must be a finite number.") from exc
+                if not np.isfinite(display_value):
+                    raise ValueError(f"{label} must be a finite number.")
+                if key in {"le_h", "rms_n_s_per_m"}:
+                    if display_value < 0.0:
+                        raise ValueError(f"{label} must not be negative.")
+                elif display_value <= 0.0:
+                    raise ValueError(f"{label} must be greater than zero.")
+                parameters[key] = display_value / display_per_si
+            mode = str(self.axis_mode_combo.currentData())
+            if mode == "automatic":
+                inference = self._infer_axis()
+                if inference is None:
+                    raise ValueError(self._axis_inference_error or "The motion axis could not be inferred.")
+                if inference.confidence < 0.2:
+                    raise ValueError(
+                        "Automatic motion-axis confidence is low. Check the selected surfaces or use a manual axis."
+                    )
+            axis = np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
+            norm = float(np.linalg.norm(axis))
+            if norm <= 0.0:
+                raise ValueError("The motion axis must have nonzero length.")
+            parameters["motion_axis"] = [float(value) for value in axis / norm]
+            parameters["motion_profile"] = "rigid_translation"
+            parameters.update(dict(self.symmetry_combo.currentData()))
+            raw_signs = self._draft.parameters.get("boundary_motion_signs", {})
+            if isinstance(raw_signs, dict):
+                signs = {
+                    str(boundary_id): float(sign)
+                    for boundary_id, sign in raw_signs.items()
+                    if str(boundary_id) in boundary_ids
+                }
+                if signs:
+                    parameters["boundary_motion_signs"] = signs
+            confidence = None if self._axis_inference is None else self._axis_inference.confidence
+        else:
+            parameters = {"motion_profile": "uniform"}
+            mode = "manual"
+            confidence = None
+        return _ComponentDraft(
+            id=self._draft.id,
+            name=name,
+            kind=kind,
+            boundary_ids=boundary_ids,
+            channel=str(self.channel_combo.currentData()),
+            parameters=parameters,
+            motion_axis_mode=mode,
+            axis_confidence=confidence,
+        )
+
+    def _accept(self) -> None:
+        try:
+            self._draft = self.component_draft()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Component", str(exc))
+            return
+        self.accept()
+
+    def _refresh_type_controls(self, _index: int = -1) -> None:
+        self.transducer_group.setVisible(
+            self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        )
+
+    def _refresh_axis_controls(self, _index: int = -1) -> None:
+        automatic = self.axis_mode_combo.currentData() == "automatic"
+        for spin in self.axis_spins:
+            spin.setEnabled(not automatic)
+        if automatic:
+            self._infer_axis()
+        elif not self.axis_confidence_label.text():
+            self.axis_confidence_label.setText("Manual direction; it will be normalized when saved.")
+
+    def _selected_boundaries_changed(self, _item: QListWidgetItem) -> None:
+        if self.axis_mode_combo.currentData() == "automatic":
+            self._infer_axis()
+
+    def _infer_axis(self) -> MotionAxisInference | None:
+        selected = tuple(
+            self._boundaries_by_id[boundary_id]
+            for boundary_id in self.selected_boundary_ids()
+            if boundary_id in self._boundaries_by_id
+        )
+        try:
+            inference = infer_component_motion_axis(
+                selected,
+                self._resources_by_id,
+                mesh_cache=self._mesh_cache,
+            )
+        except (ValueError, OSError) as exc:
+            self._axis_inference = None
+            self._axis_inference_error = str(exc)
+            self.axis_confidence_label.setText(str(exc))
+            return None
+        inferred_axis = np.asarray(inference.axis, dtype=float)
+        current_axis = np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
+        if float(np.linalg.norm(current_axis)) > 0.0 and float(np.dot(inferred_axis, current_axis)) < 0.0:
+            inferred_axis *= -1.0
+        for spin, value in zip(self.axis_spins, inferred_axis):
+            spin.setValue(float(value))
+        self._axis_inference = inference
+        self._axis_inference_error = None
+        quality = "High" if inference.confidence >= 0.8 else "Moderate" if inference.confidence >= 0.2 else "Low"
+        self.axis_confidence_label.setText(
+            f"{quality} confidence ({inference.confidence:.0%}); "
+            f"{inference.triangle_count} triangles, projected-normal alignment "
+            f"{inference.mean_squared_alignment:.0%}."
+        )
+        return inference
+
+    def _flip_axis(self) -> None:
+        for spin in self.axis_spins:
+            spin.setValue(-spin.value())
+
+
+def _component_symmetry_options(symmetry_mode: str) -> tuple[tuple[str, dict], ...]:
+    if symmetry_mode == "x":
+        return (
+            (
+                "Complete driver mirrored across X",
+                {
+                    "symmetry_role": "complete_representative",
+                    "surface_completion_factor": 1,
+                    "physical_driver_orbit_count": 2,
+                    "fractional_symmetry_axes": [],
+                },
+            ),
+            (
+                "One driver cut by X",
+                {
+                    "symmetry_role": "fractional_driver",
+                    "surface_completion_factor": 2,
+                    "physical_driver_orbit_count": 1,
+                    "fractional_symmetry_axes": ["x"],
+                },
+            ),
+        )
+    if symmetry_mode == "xy":
+        return (
+            (
+                "Complete driver in a four-driver orbit",
+                {
+                    "symmetry_role": "complete_representative",
+                    "surface_completion_factor": 1,
+                    "physical_driver_orbit_count": 4,
+                    "fractional_symmetry_axes": [],
+                },
+            ),
+            (
+                "Driver cut by X, mirrored across Y",
+                {
+                    "symmetry_role": "fractional_driver",
+                    "surface_completion_factor": 2,
+                    "physical_driver_orbit_count": 2,
+                    "fractional_symmetry_axes": ["x"],
+                },
+            ),
+            (
+                "Driver cut by Y, mirrored across X",
+                {
+                    "symmetry_role": "fractional_driver",
+                    "surface_completion_factor": 2,
+                    "physical_driver_orbit_count": 2,
+                    "fractional_symmetry_axes": ["y"],
+                },
+            ),
+            (
+                "One driver cut by X and Y",
+                {
+                    "symmetry_role": "fractional_driver",
+                    "surface_completion_factor": 4,
+                    "physical_driver_orbit_count": 1,
+                    "fractional_symmetry_axes": ["x", "y"],
+                },
+            ),
+        )
+    return (
+        (
+            "Complete driver",
+            {
+                "symmetry_role": "complete_representative",
+                "surface_completion_factor": 1,
+                "physical_driver_orbit_count": 1,
+                "fractional_symmetry_axes": [],
+            },
+        ),
+    )
+
+
+def _component_symmetry_value(parameters: dict) -> dict:
+    completion_factor = int(parameters.get("surface_completion_factor", 1))
+    return {
+        "symmetry_role": str(
+            parameters.get(
+                "symmetry_role",
+                "fractional_driver" if completion_factor > 1 else "complete_representative",
+            )
+        ),
+        "surface_completion_factor": completion_factor,
+        "physical_driver_orbit_count": int(parameters.get("physical_driver_orbit_count", 1)),
+        "fractional_symmetry_axes": list(parameters.get("fractional_symmetry_axes", [])),
+    }
+
+
 class SystemConfigDialog(QDialog):
-    """Edit regions, boundaries, inferred interfaces, and ideal components."""
+    """Edit regions, boundaries, inferred interfaces, and physical components."""
 
     systemApplied = Signal(object)
 
@@ -182,6 +706,8 @@ class SystemConfigDialog(QDialog):
         self._existing_components = {
             component.id: component for component in (() if system is None else system.components)
         }
+        self._component_drafts: list[_ComponentDraft] = []
+        self._motion_axis_mesh_cache: dict[str, meshio.Mesh] = {}
 
         self.tabs = QTabWidget()
         self.regions_tab = QWidget()
@@ -281,24 +807,30 @@ class SystemConfigDialog(QDialog):
 
     def _build_components_tab(self) -> None:
         self.components_table = QTableWidget(0, 4)
-        self.components_table.setHorizontalHeaderLabels(["Name", "Type", "Moving Boundary", "Channel"])
+        self.components_table.setHorizontalHeaderLabels(["Name", "Type", "Moving Boundaries", "Channel"])
         self.components_table.verticalHeader().setVisible(False)
         self.components_table.setAlternatingRowColors(True)
+        self.components_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.components_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.components_table.cellDoubleClicked.connect(lambda row, _column: self._edit_component(row))
         self.components_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.components_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.components_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.components_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         add_button = QPushButton("Add Component")
+        edit_button = QPushButton("Edit")
         remove_button = QPushButton("Remove")
         add_button.clicked.connect(self._add_component)
+        edit_button.clicked.connect(self._edit_selected_component)
         remove_button.clicked.connect(self._remove_selected_components)
         row = QHBoxLayout()
         row.addWidget(add_button)
+        row.addWidget(edit_button)
         row.addWidget(remove_button)
         row.addStretch(1)
         note = QLabel(
-            "The coupled solver currently supports prescribed-velocity components. "
-            "A unit normal-velocity excitation is created automatically."
+            "A component may drive one or more moving surfaces. Electrodynamic components use one "
+            "rigid-piston degree of freedom and a 2.83 V reference excitation."
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(self.components_tab)
@@ -816,80 +1348,168 @@ class SystemConfigDialog(QDialog):
     def _load_components(self) -> None:
         if self._initial_system is None:
             return
-        boundaries = {boundary.id: boundary for boundary in self._initial_system.boundaries}
+        raw_ui = self._initial_system.metadata.get(_COMPONENT_UI_METADATA_KEY, {})
+        component_ui = raw_ui if isinstance(raw_ui, dict) else {}
         for component in self._initial_system.components:
-            boundary_id = component.boundary_ids[0] if component.boundary_ids else None
-            boundary = boundaries.get(boundary_id)
             channel = self._component_channel_by_id.get(component.id, "main")
-            self._append_component_row(
-                name=component.name,
-                boundary_id=None if boundary is None else boundary.id,
-                channel=channel,
-                component_id=component.id,
+            raw_component_ui = component_ui.get(component.id, {})
+            motion_axis_mode = (
+                str(raw_component_ui.get("motion_axis_mode", "manual"))
+                if isinstance(raw_component_ui, dict)
+                else "manual"
             )
+            if motion_axis_mode not in {"automatic", "manual"}:
+                motion_axis_mode = "manual"
+            self._component_drafts.append(
+                _ComponentDraft(
+                    id=component.id,
+                    name=component.name,
+                    kind=component.kind,
+                    boundary_ids=tuple(component.boundary_ids),
+                    channel=channel,
+                    parameters=dict(component.parameters),
+                    motion_axis_mode=motion_axis_mode,
+                )
+            )
+        self._render_components_table()
 
-    def _moving_boundary_options(self) -> tuple[tuple[str, str], ...]:
+    def _moving_boundaries(self) -> tuple[Boundary, ...]:
         return tuple(
-            (boundary.id, f"{boundary.name} ({boundary.region_id})")
+            boundary
             for boundary in self._collect_boundaries()
             if boundary.kind == BoundaryKind.MOVING
         )
 
     def _refresh_components_boundary_choices(self) -> None:
-        options = self._moving_boundary_options()
-        for row in range(self.components_table.rowCount()):
-            combo = self.components_table.cellWidget(row, 2)
-            if not isinstance(combo, QComboBox):
-                continue
-            current = combo.currentData()
-            combo.clear()
-            combo.addItem("", None)
-            for boundary_id, label in options:
-                combo.addItem(label, boundary_id)
-            index = combo.findData(current)
-            combo.setCurrentIndex(max(index, 0))
+        self._render_components_table()
 
     def _add_component(self) -> None:
-        self._append_component_row(
+        draft = _ComponentDraft(
+            id="",
             name=f"Radiator {self.components_table.rowCount() + 1}",
-            boundary_id=None,
+            kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+            boundary_ids=(),
             channel=self._channel_names[0],
+            parameters={"motion_profile": "uniform"},
+            motion_axis_mode="automatic",
         )
+        self._open_component_editor(draft, row=None)
 
-    def _append_component_row(
+    def _append_component_draft(
         self,
         *,
         name: str,
-        boundary_id: str | None,
+        boundary_ids: tuple[str, ...],
         channel: str,
+        kind: ComponentKind = ComponentKind.IDEAL_VELOCITY_SOURCE,
+        parameters: dict | None = None,
         component_id: str | None = None,
+        motion_axis_mode: str = "manual",
     ) -> None:
-        row = self.components_table.rowCount()
-        self.components_table.insertRow(row)
-        name_edit = QLineEdit(name)
-        name_edit.setProperty("component_id", component_id or "")
-        self.components_table.setCellWidget(row, 0, name_edit)
-        type_combo = QComboBox()
-        type_combo.addItem("Prescribed Velocity", ComponentKind.IDEAL_VELOCITY_SOURCE)
-        self.components_table.setCellWidget(row, 1, type_combo)
-        boundary_combo = QComboBox()
-        boundary_combo.addItem("", None)
-        for candidate_id, label in self._moving_boundary_options():
-            boundary_combo.addItem(label, candidate_id)
-        index = boundary_combo.findData(boundary_id)
-        boundary_combo.setCurrentIndex(max(index, 0))
-        self.components_table.setCellWidget(row, 2, boundary_combo)
-        channel_combo = QComboBox()
-        for channel_name in self._channel_names:
-            channel_combo.addItem(channel_name, channel_name)
-        index = channel_combo.findData(channel)
-        channel_combo.setCurrentIndex(max(index, 0))
-        self.components_table.setCellWidget(row, 3, channel_combo)
+        self._component_drafts.append(
+            _ComponentDraft(
+                id=component_id or "",
+                name=name,
+                kind=kind,
+                boundary_ids=tuple(boundary_ids),
+                channel=channel,
+                parameters=(
+                    {"motion_profile": "uniform"}
+                    if parameters is None and kind == ComponentKind.IDEAL_VELOCITY_SOURCE
+                    else dict(parameters or {})
+                ),
+                motion_axis_mode=motion_axis_mode,
+            )
+        )
+        self._render_components_table()
+
+    def _render_components_table(self) -> None:
+        current_row = self.components_table.currentRow()
+        boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
+        region_names = self._region_names_by_id()
+        self.components_table.setRowCount(0)
+        for row, draft in enumerate(self._component_drafts):
+            self.components_table.insertRow(row)
+            boundary_labels = []
+            for boundary_id in draft.boundary_ids:
+                boundary = boundaries.get(boundary_id)
+                if boundary is None:
+                    boundary_labels.append(f"{boundary_id} (missing)")
+                    continue
+                region_name = region_names.get(boundary.region_id, boundary.region_id)
+                boundary_labels.append(f"{boundary.name} — {region_name}")
+            kind_label = (
+                "Electrodynamic Transducer"
+                if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+                else "Prescribed Velocity"
+            )
+            values = (
+                draft.name,
+                kind_label,
+                ", ".join(boundary_labels) if boundary_labels else "Not configured",
+                draft.channel,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if column == 2:
+                    item.setToolTip("\n".join(boundary_labels))
+                self.components_table.setItem(row, column, item)
+        if self._component_drafts and current_row >= 0:
+            self.components_table.selectRow(min(current_row, len(self._component_drafts) - 1))
+
+    def _edit_selected_component(self) -> None:
+        row = self.components_table.currentRow()
+        if row >= 0:
+            self._edit_component(row)
+
+    def _edit_component(self, row: int) -> None:
+        if 0 <= row < len(self._component_drafts):
+            self._open_component_editor(self._component_drafts[row], row=row)
+
+    def _open_component_editor(self, draft: _ComponentDraft, *, row: int | None) -> None:
+        self._refresh_boundaries()
+        boundaries = self._moving_boundaries()
+        try:
+            _regions, resources = self._collect_regions_and_resources()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Component", str(exc))
+            return
+        unavailable = {
+            boundary_id
+            for index, other in enumerate(self._component_drafts)
+            if row is None or index != row
+            for boundary_id in other.boundary_ids
+        }
+        editor = _ComponentEditorDialog(
+            draft,
+            boundaries=boundaries,
+            resources_by_id={resource.id: resource for resource in resources},
+            region_names=self._region_names_by_id(),
+            channel_names=self._channel_names,
+            unavailable_boundary_ids=unavailable,
+            symmetry_mode=self._symmetry_mode,
+            mesh_cache=self._motion_axis_mesh_cache,
+            parent=self,
+        )
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = editor.component_draft()
+        if row is None:
+            self._component_drafts.append(updated)
+        else:
+            self._component_drafts[row] = updated
+        self._render_components_table()
+        self.components_table.selectRow(
+            len(self._component_drafts) - 1 if row is None else row
+        )
 
     def _remove_selected_components(self) -> None:
         rows = sorted({index.row() for index in self.components_table.selectedIndexes()}, reverse=True)
         for row in rows:
-            self.components_table.removeRow(row)
+            if 0 <= row < len(self._component_drafts):
+                del self._component_drafts[row]
+        self._render_components_table()
 
     def _collect_components(
         self,
@@ -899,42 +1519,42 @@ class SystemConfigDialog(QDialog):
         component_channels = {}
         used_ids: set[str] = set()
         used_boundaries: set[str] = set()
-        for row in range(self.components_table.rowCount()):
-            name_edit = self.components_table.cellWidget(row, 0)
-            boundary_combo = self.components_table.cellWidget(row, 2)
-            channel_combo = self.components_table.cellWidget(row, 3)
-            if (
-                not isinstance(name_edit, QLineEdit)
-                or not isinstance(boundary_combo, QComboBox)
-                or not isinstance(channel_combo, QComboBox)
-            ):
-                continue
-            name = name_edit.text().strip()
-            boundary_id = boundary_combo.currentData()
+        moving_boundaries = {
+            boundary.id: boundary
+            for boundary in self._collect_boundaries()
+            if boundary.kind == BoundaryKind.MOVING
+        }
+        for draft in self._component_drafts:
+            name = draft.name.strip()
             if not name:
                 raise ValueError("Each component must have a name.")
-            if boundary_id is None:
-                raise ValueError(f"Component '{name}' must select a moving boundary.")
-            boundary_id = str(boundary_id)
-            if boundary_id in used_boundaries:
-                raise ValueError("Each moving boundary can belong to only one component.")
-            used_boundaries.add(boundary_id)
-            component_id = str(name_edit.property("component_id") or "")
+            if not draft.boundary_ids:
+                raise ValueError(f"Component '{name}' must select at least one moving boundary.")
+            for boundary_id in draft.boundary_ids:
+                if boundary_id not in moving_boundaries:
+                    raise ValueError(
+                        f"Component '{name}' references a boundary that is missing or no longer moving: "
+                        f"{boundary_id}."
+                    )
+                if boundary_id in used_boundaries:
+                    raise ValueError("Each moving boundary can belong to only one component.")
+                used_boundaries.add(boundary_id)
+            component_id = draft.id
             if not component_id:
                 component_id = _unique_id(f"component:{_slug(name)}", used_ids)
-                name_edit.setProperty("component_id", component_id)
+                draft.id = component_id
+            elif component_id in used_ids:
+                raise ValueError(f"Duplicate component id: {component_id}")
             used_ids.add(component_id)
             component = PhysicalComponent(
                 id=component_id,
                 name=name,
-                kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
-                boundary_ids=(boundary_id,),
-                parameters={
-                    "motion_profile": "uniform",
-                },
+                kind=draft.kind,
+                boundary_ids=tuple(draft.boundary_ids),
+                parameters=dict(draft.parameters),
             )
             components.append(component)
-            component_channels[component_id] = str(channel_combo.currentData())
+            component_channels[component_id] = draft.channel
             existing_port = next(
                 (
                     port
@@ -943,14 +1563,29 @@ class SystemConfigDialog(QDialog):
                 ),
                 None,
             )
+            port_kind = (
+                ExcitationPortKind.VOLTAGE
+                if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+                else ExcitationPortKind.NORMAL_VELOCITY
+            )
+            default_port_name = (
+                f"{name} voltage"
+                if port_kind == ExcitationPortKind.VOLTAGE
+                else f"{name} unit normal velocity"
+            )
             ports.append(
                 ExcitationPort(
                     id=existing_port.id if existing_port is not None else f"excitation:{_slug(component_id)}",
-                    name=(existing_port.name if existing_port is not None else f"{name} unit normal velocity"),
+                    name=(
+                        existing_port.name
+                        if existing_port is not None and existing_port.kind == port_kind
+                        else default_port_name
+                    ),
                     component_id=component_id,
-                    kind=ExcitationPortKind.NORMAL_VELOCITY,
+                    kind=port_kind,
                 )
             )
+        self._render_components_table()
         return tuple(components), tuple(ports), component_channels
 
     def _region_kind(self, row: int) -> AcousticRegionKind:
@@ -1090,6 +1725,11 @@ class SystemConfigDialog(QDialog):
         system_id = self._initial_system.id if self._initial_system is not None else "system:loudspeaker"
         system_name = self._initial_system.name if self._initial_system is not None else "Loudspeaker System"
         metadata = {} if self._initial_system is None else dict(self._initial_system.metadata)
+        metadata[_COMPONENT_UI_METADATA_KEY] = {
+            draft.id: {"motion_axis_mode": draft.motion_axis_mode}
+            for draft in self._component_drafts
+            if draft.id
+        }
         return PhysicalSystem(
             id=system_id,
             name=system_name,
@@ -1170,8 +1810,10 @@ def _unique_id(base: str, used: set[str]) -> str:
 
 __all__ = [
     "AvailableSystemMesh",
+    "MotionAxisInference",
     "SystemConfigResult",
     "SystemConfigDialog",
+    "infer_component_motion_axis",
     "inspect_system_meshes",
     "sync_physical_system_meshes",
 ]

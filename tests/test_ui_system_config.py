@@ -11,12 +11,26 @@ from PySide6.QtWidgets import QApplication, QComboBox
 
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
 from blab.physical_compiler import PhysicalSystemCompiler
-from blab.physical_model import AcousticRegionKind, BoundaryKind
+from blab.physical_model import (
+    AcousticRegionKind,
+    Boundary,
+    BoundaryKind,
+    ComponentKind,
+    MeshPurpose,
+    MeshResource,
+    PhysicalGroupRef,
+)
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.mesh_assembly import MeshAssemblyService
 from blab.ui.project_state import ImportedMeshState
-from blab.ui.system_config import SystemConfigDialog, inspect_system_meshes
+from blab.ui.system_config import (
+    SystemConfigDialog,
+    _ComponentDraft,
+    _ComponentEditorDialog,
+    infer_component_motion_axis,
+    inspect_system_meshes,
+)
 from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
 _APP = QApplication.instance() or QApplication([])
@@ -67,11 +81,37 @@ def _configured_fixture_dialog(
         assert isinstance(combo, QComboBox)
         combo.setCurrentIndex(combo.findData(assignments[(mesh_name, group_name)]))
     dialog._identify_interfaces()
-    dialog._add_component()
-    boundary_combo = dialog.components_table.cellWidget(0, 2)
-    assert isinstance(boundary_combo, QComboBox)
-    boundary_combo.setCurrentIndex(1)
+    (moving_boundary,) = dialog._moving_boundaries()
+    dialog._append_component_draft(
+        name="Radiator 1",
+        boundary_ids=(moving_boundary.id,),
+        channel="main",
+    )
     return dialog
+
+
+def _planar_surface_mesh(
+    *,
+    group_name: str,
+    z_m: float,
+    reverse: bool,
+) -> meshio.Mesh:
+    triangle = [0, 2, 1] if reverse else [0, 1, 2]
+    return meshio.Mesh(
+        points=np.asarray(
+            [
+                [0.0, 0.0, z_m],
+                [1.0, 0.0, z_m],
+                [0.0, 1.0, z_m],
+            ]
+        ),
+        cells=[("triangle", np.asarray([triangle], dtype=np.int32))],
+        cell_data={
+            "gmsh:physical": [np.asarray([1], dtype=np.int32)],
+            "gmsh:geometrical": [np.asarray([1], dtype=np.int32)],
+        },
+        field_data={group_name: np.asarray([1, 2], dtype=np.int32)},
+    )
 
 
 def test_mesh_inventory_preserves_existing_scale_translation_and_volume_groups() -> None:
@@ -118,6 +158,208 @@ def test_legacy_surface_cleaner_skips_imported_tetrahedral_mesh() -> None:
 
     assert preserved.source_file == str(source)
     assert preserved.cleaned_file is None
+
+
+def test_motion_axis_inference_does_not_cancel_opposed_surface_normals() -> None:
+    resources = {
+        "mesh:front": MeshResource(
+            id="mesh:front",
+            name="Front",
+            file="unused-front.msh",
+            purpose=MeshPurpose.FEM_VOLUME,
+        ),
+        "mesh:rear": MeshResource(
+            id="mesh:rear",
+            name="Rear",
+            file="unused-rear.msh",
+            purpose=MeshPurpose.FEM_VOLUME,
+        ),
+    }
+    boundaries = (
+        Boundary(
+            id="boundary:front",
+            name="Front",
+            region_id="region:front",
+            group=PhysicalGroupRef(mesh_id="mesh:front", dimension=2, name="Front"),
+            kind=BoundaryKind.MOVING,
+        ),
+        Boundary(
+            id="boundary:rear",
+            name="Rear",
+            region_id="region:rear",
+            group=PhysicalGroupRef(mesh_id="mesh:rear", dimension=2, name="Rear"),
+            kind=BoundaryKind.MOVING,
+        ),
+    )
+
+    inferred = infer_component_motion_axis(
+        boundaries,
+        resources,
+        mesh_cache={
+            "mesh:front": _planar_surface_mesh(group_name="Front", z_m=0.0, reverse=False),
+            "mesh:rear": _planar_surface_mesh(group_name="Rear", z_m=0.01, reverse=True),
+        },
+    )
+
+    assert np.abs(inferred.axis) == pytest.approx((0.0, 0.0, 1.0))
+    assert inferred.confidence == pytest.approx(1.0)
+    assert inferred.mean_squared_alignment == pytest.approx(1.0)
+    assert inferred.boundary_alignment == pytest.approx(1.0)
+    assert inferred.triangle_count == 2
+
+
+def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
+    resources = {
+        "mesh:front": MeshResource(
+            id="mesh:front",
+            name="Front",
+            file="unused-front.msh",
+            purpose=MeshPurpose.FEM_VOLUME,
+        ),
+        "mesh:rear": MeshResource(
+            id="mesh:rear",
+            name="Rear",
+            file="unused-rear.msh",
+            purpose=MeshPurpose.FEM_VOLUME,
+        ),
+    }
+    boundaries = (
+        Boundary(
+            id="boundary:front",
+            name="Front",
+            region_id="region:front",
+            group=PhysicalGroupRef(mesh_id="mesh:front", dimension=2, name="Front"),
+            kind=BoundaryKind.MOVING,
+        ),
+        Boundary(
+            id="boundary:rear",
+            name="Rear",
+            region_id="region:rear",
+            group=PhysicalGroupRef(mesh_id="mesh:rear", dimension=2, name="Rear"),
+            kind=BoundaryKind.MOVING,
+        ),
+    )
+    parameters = {
+        "re_ohm": 6.0,
+        "le_h": 0.0005,
+        "bl_n_per_a": 7.0,
+        "mmd_kg": 0.015,
+        "cms_m_per_n": 0.0005,
+        "rms_n_s_per_m": 1.0,
+        "motion_axis": [1.0, 0.0, 0.0],
+    }
+    editor = _ComponentEditorDialog(
+        _ComponentDraft(
+            id="component:woofer",
+            name="Woofer",
+            kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=("boundary:front", "boundary:rear"),
+            channel="main",
+            parameters=parameters,
+            motion_axis_mode="automatic",
+        ),
+        boundaries=boundaries,
+        resources_by_id=resources,
+        region_names={"region:front": "Front chamber", "region:rear": "Rear chamber"},
+        channel_names=("main",),
+        unavailable_boundary_ids=set(),
+        symmetry_mode="off",
+        mesh_cache={
+            "mesh:front": _planar_surface_mesh(group_name="Front", z_m=0.0, reverse=False),
+            "mesh:rear": _planar_surface_mesh(group_name="Rear", z_m=0.01, reverse=True),
+        },
+    )
+
+    assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
+    assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
+    assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
+    editor.parameter_edits["le_h"].setText("0.75")
+    editor.parameter_edits["mmd_kg"].setText("18")
+    editor.parameter_edits["cms_m_per_n"].setText("625")
+    updated = editor.component_draft()
+
+    assert updated.boundary_ids == ("boundary:front", "boundary:rear")
+    assert np.abs(updated.parameters["motion_axis"]) == pytest.approx((0.0, 0.0, 1.0))
+    assert updated.parameters["le_h"] == pytest.approx(0.00075)
+    assert updated.parameters["mmd_kg"] == pytest.approx(0.018)
+    assert updated.parameters["cms_m_per_n"] == pytest.approx(0.000625)
+    assert updated.motion_axis_mode == "automatic"
+    assert "High confidence" in editor.axis_confidence_label.text()
+
+
+def test_components_tab_round_trips_multiple_moving_boundaries() -> None:
+    dialog = _configured_fixture_dialog()
+    for row in range(dialog.boundaries_table.rowCount()):
+        mesh_name = dialog.boundaries_table.item(row, 1).text()
+        group_name = dialog.boundaries_table.item(row, 2).text()
+        if (mesh_name, group_name) != ("Interior", "Volume_boundary"):
+            continue
+        combo = dialog.boundaries_table.cellWidget(row, 3)
+        assert isinstance(combo, QComboBox)
+        combo.setCurrentIndex(combo.findData(BoundaryKind.MOVING))
+    moving_ids = tuple(boundary.id for boundary in dialog._moving_boundaries())
+    dialog._component_drafts[0].boundary_ids = moving_ids
+    dialog._render_components_table()
+
+    system = dialog.physical_system()
+    restored = SystemConfigDialog(
+        inspect_system_meshes(_fixture_mesh_entries()),
+        system,
+        ("main",),
+        component_channel_by_id={system.components[0].id: "main"},
+    )
+
+    assert system.components[0].boundary_ids == moving_ids
+    assert restored._component_drafts[0].boundary_ids == moving_ids
+    assert "Radiator" in restored.components_table.item(0, 2).text()
+    assert "Volume_boundary" in restored.components_table.item(0, 2).text()
+
+
+def test_electrodynamic_component_collection_uses_voltage_port_and_preserves_auto_axis_mode() -> None:
+    dialog = _configured_fixture_dialog()
+    (moving_boundary,) = dialog._moving_boundaries()
+    dialog._component_drafts.clear()
+    dialog._append_component_draft(
+        name="Woofer",
+        boundary_ids=(moving_boundary.id,),
+        channel="main",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        parameters={
+            "re_ohm": 6.0,
+            "le_h": 0.0005,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 0.0005,
+            "rms_n_s_per_m": 1.0,
+            "motion_axis": [0.0, 0.0, 1.0],
+            "motion_profile": "rigid_translation",
+            "symmetry_role": "complete_representative",
+            "surface_completion_factor": 1,
+            "physical_driver_orbit_count": 1,
+            "fractional_symmetry_axes": [],
+        },
+        motion_axis_mode="automatic",
+    )
+
+    system = dialog.physical_system()
+
+    assert system.components[0].kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+    assert system.components[0].parameters["mmd_kg"] == pytest.approx(0.015)
+    assert system.excitation_ports[0].kind.value == "voltage"
+    assert system.metadata["component_editor"][system.components[0].id]["motion_axis_mode"] == "automatic"
+    PhysicalSystemCompiler().compile(system)
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+    )
+    session = CoupledProductionBackend(bem_backend="cpu", persistent_worker=False).create_system_session(
+        prepared.request
+    )
+    assert session.request.solver_options["transducer_reference_voltage_v"] == pytest.approx(2.83)
 
 
 def test_tabbed_system_editor_builds_compilable_coupled_fixture() -> None:
