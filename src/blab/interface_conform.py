@@ -88,6 +88,7 @@ def conform_bem_interface_to_fem(
     bem_interface_name: str = "Interface",
     geometry_tolerance: float | None = None,
     merge_tolerance: float = 1e-8,
+    symmetry_mode: str = "off",
 ) -> tuple[meshio.Mesh, InterfaceConformResult]:
     """Return a BEM mesh whose interface facets exactly match the FEM facets.
 
@@ -96,6 +97,8 @@ def conform_bem_interface_to_fem(
     remeshed.
     """
 
+    symmetry = _normalized_symmetry_mode(symmetry_mode)
+    symmetry_axes = _symmetry_axes(symmetry)
     if merge_tolerance <= 0.0:
         raise InterfaceConformError("merge_tolerance must be greater than zero.")
 
@@ -125,8 +128,28 @@ def conform_bem_interface_to_fem(
     )
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
+    symmetry_plane_tolerance = max(interface_diameter * 1e-6, merge_tolerance * 10.0, 1e-9)
 
-    plane_origin, perimeter_normal = _best_fit_plane(bem_mesh.points[old_bem_inner_loop])
+    if symmetry_axes:
+        _validate_positive_symmetry_domain(fem_mesh.points, symmetry_axes, symmetry_plane_tolerance, "FEM")
+        _validate_positive_symmetry_domain(bem_mesh.points, symmetry_axes, symmetry_plane_tolerance, "BEM")
+        fem_opening_path = _physical_opening_path(
+            fem_mesh.points,
+            fem_interface,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+        )
+        old_bem_opening_path = _physical_opening_path(
+            bem_mesh.points,
+            bem_interface,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+        )
+    else:
+        fem_opening_path = fem_inner_loop
+        old_bem_opening_path = old_bem_inner_loop
+
+    plane_origin, perimeter_normal = _best_fit_plane(bem_mesh.points[old_bem_opening_path])
     triangle_plane_deviation = np.max(
         np.abs((bem_mesh.points[bem_data.triangles] - plane_origin) @ perimeter_normal),
         axis=1,
@@ -144,20 +167,38 @@ def conform_bem_interface_to_fem(
     adjacent_physical_tag = int(adjacent_physical_tags[0])
 
     adjacent_loops = _boundary_loops(adjacent_triangles)
-    if len(adjacent_loops) != 2:
-        raise InterfaceConformError(
-            "The planar BEM surface surrounding the interface must be an annulus with exactly two perimeter loops."
+    if symmetry_axes:
+        if len(adjacent_loops) != 1:
+            raise InterfaceConformError(
+                "The planar reduced BEM surface surrounding the interface must have exactly one perimeter loop."
+            )
+        adjacent_loop = adjacent_loops[0]
+        adjacent_edges = np.column_stack((adjacent_loop, np.roll(adjacent_loop, -1)))
+        adjacent_midpoints = np.mean(bem_mesh.points[adjacent_edges], axis=1)
+        opening_distances = _points_to_open_polyline_distances(
+            adjacent_midpoints,
+            bem_mesh.points[old_bem_opening_path],
         )
-    loop_deviations = [
-        _symmetric_polyline_deviation(
-            bem_mesh.points[loop],
-            bem_mesh.points[old_bem_inner_loop],
-        )
-        for loop in adjacent_loops
-    ]
-    inner_loop_index = int(np.argmin(loop_deviations))
-    adjacent_inner_loop = adjacent_loops[inner_loop_index]
-    outer_loop = adjacent_loops[1 - inner_loop_index]
+        inner_edge_mask = opening_distances <= resolved_geometry_tolerance
+        if not np.any(inner_edge_mask) or np.all(inner_edge_mask):
+            raise InterfaceConformError("Could not separate the reduced BEM opening from its exterior perimeter.")
+        adjacent_inner_path = _ordered_open_path(adjacent_edges[inner_edge_mask])
+        adjacent_outer_path = _ordered_open_path(adjacent_edges[~inner_edge_mask])
+    else:
+        if len(adjacent_loops) != 2:
+            raise InterfaceConformError(
+                "The planar BEM surface surrounding the interface must be an annulus with exactly two perimeter loops."
+            )
+        loop_deviations = [
+            _symmetric_polyline_deviation(
+                bem_mesh.points[loop],
+                bem_mesh.points[old_bem_inner_loop],
+            )
+            for loop in adjacent_loops
+        ]
+        inner_loop_index = int(np.argmin(loop_deviations))
+        adjacent_inner_path = adjacent_loops[inner_loop_index]
+        adjacent_outer_path = adjacent_loops[1 - inner_loop_index]
 
     adjacent_normal = _surface_normal(bem_mesh.points, adjacent_triangles)
     old_interface_normal = _surface_normal(bem_mesh.points, bem_interface)
@@ -165,9 +206,9 @@ def conform_bem_interface_to_fem(
     plane_deviation = _maximum_plane_deviation(
         plane_origin,
         adjacent_normal,
-        bem_mesh.points[outer_loop],
-        bem_mesh.points[old_bem_inner_loop],
-        fem_mesh.points[fem_inner_loop],
+        bem_mesh.points[adjacent_outer_path],
+        bem_mesh.points[old_bem_opening_path],
+        fem_mesh.points[fem_opening_path],
     )
 
     if plane_deviation > resolved_geometry_tolerance:
@@ -177,13 +218,14 @@ def conform_bem_interface_to_fem(
             f"{resolved_geometry_tolerance:g}."
         )
 
-    interface_boundary_deviation = _symmetric_polyline_deviation(
-        fem_mesh.points[fem_inner_loop],
-        bem_mesh.points[old_bem_inner_loop],
+    deviation_function = _symmetric_open_polyline_deviation if symmetry_axes else _symmetric_polyline_deviation
+    interface_boundary_deviation = deviation_function(
+        fem_mesh.points[fem_opening_path],
+        bem_mesh.points[old_bem_opening_path],
     )
-    surrounding_boundary_deviation = _symmetric_polyline_deviation(
-        fem_mesh.points[fem_inner_loop],
-        bem_mesh.points[adjacent_inner_loop],
+    surrounding_boundary_deviation = deviation_function(
+        fem_mesh.points[fem_opening_path],
+        bem_mesh.points[adjacent_inner_path],
     )
     boundary_deviation = max(interface_boundary_deviation, surrounding_boundary_deviation)
     if boundary_deviation > resolved_geometry_tolerance:
@@ -193,15 +235,28 @@ def conform_bem_interface_to_fem(
             f"{resolved_geometry_tolerance:g}."
         )
 
-    outer_coordinates, fem_inner_coordinates = _oriented_annulus_loops(
-        bem_mesh.points[outer_loop],
-        fem_mesh.points[fem_inner_loop],
-        adjacent_normal,
-    )
-    annulus_points, annulus_triangles = _remesh_planar_annulus(
-        outer_coordinates,
-        fem_inner_coordinates,
-    )
+    if symmetry_axes:
+        outer_coordinates, fem_inner_coordinates = _aligned_open_paths(
+            bem_mesh.points[adjacent_outer_path],
+            fem_mesh.points[fem_opening_path],
+        )
+        polygon_coordinates = _closed_polygon_from_paths(
+            outer_coordinates,
+            fem_inner_coordinates,
+            merge_tolerance,
+        )
+        polygon_coordinates = _oriented_planar_loop(polygon_coordinates, adjacent_normal)
+        annulus_points, annulus_triangles = _remesh_planar_surface((polygon_coordinates,))
+    else:
+        outer_coordinates, fem_inner_coordinates = _oriented_annulus_loops(
+            bem_mesh.points[adjacent_outer_path],
+            fem_mesh.points[fem_opening_path],
+            adjacent_normal,
+        )
+        annulus_points, annulus_triangles = _remesh_planar_annulus(
+            outer_coordinates,
+            fem_inner_coordinates,
+        )
     annulus_triangles = _orient_triangles(
         annulus_points,
         annulus_triangles,
@@ -272,6 +327,7 @@ def conform_bem_interface_to_fem(
         bem_interface_name=bem_interface_name,
         coordinate_tolerance=max(merge_tolerance * 10.0, 1e-9),
         require_closed_bem=True,
+        symmetry_mode=symmetry,
     )
     result = InterfaceConformResult(
         fem_interface_triangles=len(fem_interface),
@@ -296,6 +352,7 @@ def conform_interface_mesh_files(
     bem_interface_name: str = "Interface",
     geometry_tolerance: float | None = None,
     merge_tolerance: float = 1e-8,
+    symmetry_mode: str = "off",
     binary: bool = False,
 ) -> InterfaceConformResult:
     """Conform two mesh files and write a Gmsh 2.2 BEM surface mesh."""
@@ -312,6 +369,7 @@ def conform_interface_mesh_files(
         bem_interface_name=bem_interface_name,
         geometry_tolerance=geometry_tolerance,
         merge_tolerance=merge_tolerance,
+        symmetry_mode=symmetry_mode,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     meshio.write(output_path, output_mesh, file_format="gmsh22", binary=binary)
@@ -326,6 +384,7 @@ def validate_conforming_interfaces(
     bem_interface_name: str = "Interface",
     coordinate_tolerance: float = 1e-8,
     require_closed_bem: bool = True,
+    symmetry_mode: str = "off",
 ) -> InterfaceIdentityReport:
     """Validate coordinate/connectivity identity and surrounding topology."""
 
@@ -336,6 +395,7 @@ def validate_conforming_interfaces(
         bem_interface_name=bem_interface_name,
         coordinate_tolerance=coordinate_tolerance,
         require_closed_bem=require_closed_bem,
+        symmetry_mode=symmetry_mode,
     )
     return InterfaceIdentityReport(
         interface_triangles=len(topology.fem_face_indices),
@@ -354,11 +414,32 @@ def build_conforming_interface_map(
     bem_interface_name: str = "Interface",
     coordinate_tolerance: float = 1e-8,
     require_closed_bem: bool = True,
+    symmetry_mode: str = "off",
 ) -> InterfaceTopologyMap:
     """Validate and return the explicit FEM-to-BEM interface correspondence."""
 
+    symmetry = _normalized_symmetry_mode(symmetry_mode)
+    symmetry_axes = _symmetry_axes(symmetry)
     if coordinate_tolerance <= 0.0:
         raise InterfaceConformError("coordinate_tolerance must be greater than zero.")
+    symmetry_plane_tolerance = max(
+        coordinate_tolerance,
+        _point_cloud_diameter(bem_mesh.points) * 1e-6,
+        1e-12,
+    )
+    if symmetry_axes:
+        _validate_positive_symmetry_domain(
+            fem_mesh.points,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+            "FEM",
+        )
+        _validate_positive_symmetry_domain(
+            bem_mesh.points,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+            "BEM",
+        )
     fem_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
     bem_tag = _physical_surface_tag(bem_mesh, bem_interface_name)
     fem_data = _triangle_data(fem_mesh, require_geometrical=False)
@@ -420,9 +501,20 @@ def build_conforming_interface_map(
             f"Only {matched_tetra_facets}/{len(fem_face_keys)} FEM interface triangles are tetrahedron boundary facets."
         )
 
-    bem_boundary_edges = len(_surface_boundary_edges(bem_data.triangles))
+    boundary_edges = _surface_boundary_edges(bem_data.triangles)
+    bem_boundary_edges = len(boundary_edges)
     if require_closed_bem and bem_boundary_edges != 0:
-        raise InterfaceConformError(f"Conformed BEM surface has {bem_boundary_edges} open boundary edges.")
+        invalid_boundary_edges = _edges_off_symmetry_planes(
+            bem_mesh.points,
+            boundary_edges,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+        )
+        if len(invalid_boundary_edges):
+            raise InterfaceConformError(
+                f"Conformed BEM surface has {len(invalid_boundary_edges)} open boundary edges "
+                "away from the active symmetry planes."
+            )
     return InterfaceTopologyMap(
         fem_vertex_indices=tuple(map(int, fem_vertices)),
         fem_to_bem_vertex_indices=tuple(fem_to_bem[int(vertex)] for vertex in fem_vertices),
@@ -489,6 +581,95 @@ def _triangle_data(mesh: meshio.Mesh, *, require_geometrical: bool) -> _Triangle
         physical_tags=np.concatenate(physical_tags),
         geometrical_tags=np.concatenate(geometrical_tags),
     )
+
+
+def _normalized_symmetry_mode(mode: object) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in {"off", "x", "xy"}:
+        raise InterfaceConformError(f"Unsupported symmetry mode {mode!r}; expected 'off', 'x', or 'xy'.")
+    return normalized
+
+
+def _symmetry_axes(mode: str) -> tuple[int, ...]:
+    return () if mode == "off" else (0,) if mode == "x" else (0, 1)
+
+
+def _validate_positive_symmetry_domain(
+    points: np.ndarray,
+    axes: tuple[int, ...],
+    tolerance: float,
+    label: str,
+) -> None:
+    coordinates = np.asarray(points, dtype=float)
+    axis_names = ("X", "Y", "Z")
+    for axis in axes:
+        minimum = float(np.min(coordinates[:, axis], initial=0.0))
+        if minimum < -tolerance:
+            raise InterfaceConformError(
+                f"{label} mesh extends to {minimum:g} on the negative {axis_names[axis]} axis "
+                "outside the requested symmetry fundamental domain."
+            )
+
+
+def _edges_off_symmetry_planes(
+    points: np.ndarray,
+    edges: np.ndarray,
+    axes: tuple[int, ...],
+    tolerance: float,
+) -> np.ndarray:
+    candidates = np.asarray(edges, dtype=np.int64).reshape((-1, 2))
+    if not axes or len(candidates) == 0:
+        return candidates
+    coordinates = np.asarray(points, dtype=float)
+    on_symmetry_plane = np.zeros(len(candidates), dtype=bool)
+    for axis in axes:
+        on_symmetry_plane |= np.max(np.abs(coordinates[candidates, axis]), axis=1) <= tolerance
+    return candidates[~on_symmetry_plane]
+
+
+def _physical_opening_path(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    symmetry_axes: tuple[int, ...],
+    tolerance: float,
+) -> np.ndarray:
+    physical_edges = _edges_off_symmetry_planes(
+        points,
+        _surface_boundary_edges(triangles),
+        symmetry_axes,
+        tolerance,
+    )
+    if len(physical_edges) == 0:
+        raise InterfaceConformError("Reduced interface has no perimeter away from its symmetry planes.")
+    return _ordered_open_path(physical_edges)
+
+
+def _ordered_open_path(edges: np.ndarray) -> np.ndarray:
+    candidates = np.asarray(edges, dtype=np.int64).reshape((-1, 2))
+    if len(candidates) == 0:
+        raise InterfaceConformError("Cannot order an empty open boundary path.")
+    adjacency: dict[int, list[int]] = defaultdict(list)
+    for start, end in candidates:
+        adjacency[int(start)].append(int(end))
+        adjacency[int(end)].append(int(start))
+    endpoints = sorted(vertex for vertex, neighbors in adjacency.items() if len(neighbors) == 1)
+    invalid = [vertex for vertex, neighbors in adjacency.items() if len(neighbors) not in {1, 2}]
+    if len(endpoints) != 2 or invalid:
+        raise InterfaceConformError("Reduced interface opening is not one simple open perimeter path.")
+
+    ordered = [endpoints[0]]
+    previous = None
+    current = endpoints[0]
+    while current != endpoints[1]:
+        next_vertices = [neighbor for neighbor in adjacency[current] if neighbor != previous]
+        if len(next_vertices) != 1:
+            raise InterfaceConformError("Could not order the reduced interface opening path.")
+        next_vertex = next_vertices[0]
+        ordered.append(next_vertex)
+        previous, current = current, next_vertex
+    if len(ordered) != len(candidates) + 1:
+        raise InterfaceConformError("Reduced interface opening contains disconnected perimeter edges.")
+    return np.asarray(ordered, dtype=np.int64)
 
 
 def _boundary_loops(triangles: np.ndarray) -> list[np.ndarray]:
@@ -590,6 +771,29 @@ def _symmetric_polyline_deviation(first: np.ndarray, second: np.ndarray) -> floa
     )
 
 
+def _symmetric_open_polyline_deviation(first: np.ndarray, second: np.ndarray) -> float:
+    return max(
+        float(np.max(_points_to_open_polyline_distances(first, second), initial=0.0)),
+        float(np.max(_points_to_open_polyline_distances(second, first), initial=0.0)),
+    )
+
+
+def _points_to_open_polyline_distances(points: np.ndarray, polyline: np.ndarray) -> np.ndarray:
+    coordinates = np.asarray(polyline, dtype=float)
+    if len(coordinates) < 2:
+        raise InterfaceConformError("Interface opening requires at least two perimeter points.")
+    starts = coordinates[:-1]
+    ends = coordinates[1:]
+    segments = ends - starts
+    segment_length_sq = np.sum(segments * segments, axis=1)
+    if np.any(segment_length_sq <= 0.0):
+        raise InterfaceConformError("Interface opening contains a zero-length segment.")
+    relative = np.asarray(points, dtype=float)[:, np.newaxis, :] - starts[np.newaxis, :, :]
+    parameters = np.sum(relative * segments[np.newaxis, :, :], axis=2) / segment_length_sq[np.newaxis, :]
+    parameters = np.clip(parameters, 0.0, 1.0)
+    return np.min(np.linalg.norm(relative - parameters[:, :, np.newaxis] * segments, axis=2), axis=1)
+
+
 def _points_to_closed_polyline_distance(points: np.ndarray, polyline: np.ndarray) -> float:
     starts = polyline
     ends = np.roll(polyline, -1, axis=0)
@@ -603,6 +807,41 @@ def _points_to_closed_polyline_distance(points: np.ndarray, polyline: np.ndarray
     projections = starts[np.newaxis, :, :] + parameters[:, :, np.newaxis] * segments[np.newaxis, :, :]
     distances = np.linalg.norm(points[:, np.newaxis, :] - projections, axis=2)
     return float(np.max(np.min(distances, axis=1), initial=0.0))
+
+
+def _aligned_open_paths(
+    first: np.ndarray,
+    second: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    reference = np.asarray(first, dtype=float)
+    candidate = np.asarray(second, dtype=float)
+    same_direction = np.linalg.norm(reference[0] - candidate[0]) + np.linalg.norm(reference[-1] - candidate[-1])
+    reverse_direction = np.linalg.norm(reference[0] - candidate[-1]) + np.linalg.norm(reference[-1] - candidate[0])
+    return reference, candidate if same_direction <= reverse_direction else candidate[::-1]
+
+
+def _closed_polygon_from_paths(
+    outer_path: np.ndarray,
+    inner_path: np.ndarray,
+    tolerance: float,
+) -> np.ndarray:
+    coordinates = np.vstack((outer_path, inner_path[::-1]))
+    keep = np.ones(len(coordinates), dtype=bool)
+    keep[1:] = np.linalg.norm(np.diff(coordinates, axis=0), axis=1) > tolerance
+    coordinates = coordinates[keep]
+    if len(coordinates) > 1 and np.linalg.norm(coordinates[-1] - coordinates[0]) <= tolerance:
+        coordinates = coordinates[:-1]
+    if len(coordinates) < 3:
+        raise InterfaceConformError("Reduced surrounding surface does not define a planar polygon.")
+    return coordinates
+
+
+def _oriented_planar_loop(coordinates: np.ndarray, normal: np.ndarray) -> np.ndarray:
+    loop = np.asarray(coordinates, dtype=float)
+    polygon_normal = np.sum(np.cross(loop, np.roll(loop, -1, axis=0)), axis=0)
+    if float(np.dot(polygon_normal, normal)) < 0.0:
+        loop = loop[::-1]
+    return loop
 
 
 def _oriented_annulus_loops(
@@ -638,10 +877,16 @@ def _remesh_planar_annulus(
     outer_coordinates: np.ndarray,
     inner_coordinates: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    return _remesh_planar_surface((outer_coordinates, inner_coordinates))
+
+
+def _remesh_planar_surface(
+    boundary_loops: tuple[np.ndarray, ...],
+) -> tuple[np.ndarray, np.ndarray]:
     try:
         import gmsh
     except ImportError as exc:
-        raise InterfaceConformError("The gmsh Python package is required to remesh the BEM interface annulus.") from exc
+        raise InterfaceConformError("The gmsh Python package is required to remesh the BEM interface surface.") from exc
 
     was_initialized = bool(gmsh.isInitialized())
     previous_model = gmsh.model.getCurrent() if was_initialized else ""
@@ -674,9 +919,8 @@ def _remesh_planar_annulus(
                 curve_tags.append(curve_tag)
             return gmsh.model.geo.addCurveLoop(curve_tags)
 
-        outer_loop = add_loop(outer_coordinates)
-        inner_loop = add_loop(inner_coordinates)
-        surface = gmsh.model.geo.addPlaneSurface([outer_loop, inner_loop])
+        curve_loops = [add_loop(coordinates) for coordinates in boundary_loops]
+        surface = gmsh.model.geo.addPlaneSurface(curve_loops)
         gmsh.model.geo.synchronize()
         gmsh.model.mesh.generate(2)
 
@@ -685,7 +929,7 @@ def _remesh_planar_annulus(
         element_types, _element_tags, element_nodes = gmsh.model.mesh.getElements(2, surface)
         triangle_indices = [index for index, element_type in enumerate(element_types) if int(element_type) == 2]
         if len(triangle_indices) != 1:
-            raise InterfaceConformError("Gmsh did not generate one first-order triangle block for the BEM annulus.")
+            raise InterfaceConformError("Gmsh did not generate one first-order triangle block for the BEM surface.")
         node_lookup = {int(tag): index for index, tag in enumerate(node_tags)}
         triangle_node_tags = np.asarray(element_nodes[triangle_indices[0]], dtype=np.int64).reshape((-1, 3))
         triangles = np.asarray(
@@ -801,6 +1045,12 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         default=1e-8,
         help="Coincident-node merge tolerance in mesh units (default: 1e-8)",
     )
+    parser.add_argument(
+        "--symmetry",
+        choices=("off", "x", "xy"),
+        default="off",
+        help="Reduced-domain symmetry mode (default: off)",
+    )
     parser.add_argument("--binary", action="store_true", help="Write binary Gmsh 2.2 output")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     return parser
@@ -821,6 +1071,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             bem_interface_name=args.bem_interface,
             geometry_tolerance=args.geometry_tol,
             merge_tolerance=args.merge_tol,
+            symmetry_mode=args.symmetry,
             binary=args.binary,
         )
     except (InterfaceConformError, OSError) as exc:

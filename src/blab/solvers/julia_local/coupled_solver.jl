@@ -35,6 +35,19 @@ function translated_boundary_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
     return BoundaryMesh([vertex + translation for vertex in mesh.vertices], mesh.faces, mesh.physical_tags)
 end
 
+function validate_volume_symmetry_fundamental_domain!(mesh, symmetry_mode; tolerance)
+    active_axes = symmetry_mode == :off ? () : symmetry_mode == :x ? (1,) : (1, 2)
+    for axis in active_axes
+        minimum_coordinate, vertex_index = findmin(vertex[axis] for vertex in mesh.vertices)
+        minimum_coordinate >= -tolerance || error(
+            "FEM mesh is not in the positive $(axis == 1 ? "X" : "Y") fundamental domain for " *
+            "$(uppercase(String(symmetry_mode))) symmetry. Vertex $vertex_index has coordinate " *
+            "$minimum_coordinate m.",
+        )
+    end
+    return nothing
+end
+
 function remapped_index(index_map, wire_index, label)
     original_index = Int(wire_index) + 1
     mapped = get(index_map, original_index, 0)
@@ -130,6 +143,9 @@ function solve_request(request; event_mode=false)
     bem_backend = Symbol(lowercase(String(get(solver_options, "bem_backend", "cpu"))))
     bem_backend in (:cpu, :cuda) ||
         error("Unsupported coupled BEM backend: $bem_backend. Expected cpu or cuda.")
+    symmetry_mode = BeatEngineCore.normalized_symmetry_mode(
+        get(solver_options, "symmetry", "off"),
+    )
 
     mesh_setup_started = time_ns()
     full_fem_mesh = translated_volume_mesh(fem_resource, FloatType)
@@ -141,6 +157,20 @@ function solve_request(request; event_mode=false)
     volume_selection = restrict_volume_mesh(full_fem_mesh, selected_volume_tags)
     fem_mesh = volume_selection.mesh
     bem_mesh = translated_boundary_mesh(bem_resource, FloatType)
+    symmetry_tolerance = max(
+        FloatType(1e-9),
+        maximum(maximum(abs, vertex) for vertex in fem_mesh.vertices) * FloatType(1e-6),
+    )
+    validate_volume_symmetry_fundamental_domain!(
+        fem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
+    )
+    validate_symmetry_fundamental_domain!(
+        bem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
+    )
     interface_map = interface_map_from_wire(only(interfaces)["topology"], volume_selection)
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
     sound_speed = FloatType(bounded_region["sound_speed_m_per_s"])
@@ -188,6 +218,7 @@ function solve_request(request; event_mode=false)
             quadrature_order=quadrature_order,
             singular_order=singular_order,
             bem_backend=bem_backend,
+            symmetry_mode=symmetry_mode,
         )
         cache_setup_s = (time_ns() - cache_setup_started) / 1.0e9
     end
@@ -208,13 +239,11 @@ function solve_request(request; event_mode=false)
             cache=coupled_cache,
             validation_diagnostics=validation_diagnostics,
             bem_backend=bem_backend,
+            symmetry_mode=symmetry_mode,
         )
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
-        solutions = [
-            solve_coupled_system(coupled_system, radiator_tag)
-            for radiator_tag in radiator_tags
-        ]
+        solutions = solve_coupled_systems(coupled_system, radiator_tags)
         solve_s = (time_ns() - solve_started) / 1.0e9
         field_s = 0.0
         quantities = Dict{String,Any}[]
@@ -300,7 +329,9 @@ function solve_request(request; event_mode=false)
         diagnostics = Dict{String,Any}(
             "precision" => precision_name,
             "bem_backend" => String(bem_backend),
-            "linear_solver" => "dense_lu",
+            "linear_backend" => String(coupled_system.linear_backend),
+            "symmetry" => String(symmetry_mode),
+            "linear_solver" => "$(coupled_system.linear_backend)_dense_lu",
             "pressure_continuity_error" => maximum(
                 solution.pressure_continuity_error for solution in solutions
             ),
@@ -340,8 +371,7 @@ function solve_request(request; event_mode=false)
             println(JSON.json(result))
         end
         flush(stdout)
-        coupled_system.owns_cache &&
-            release_coupled_cache!(coupled_system.cache)
+        release_coupled_system!(coupled_system)
     end
     coupled_cache === nothing || release_coupled_cache!(coupled_cache)
 end

@@ -2280,6 +2280,7 @@ class MainWindow(QMainWindow):
             self.project.component_channel_by_id,
             self,
             interface_output_root=self._mesh_service().output_root,
+            symmetry_mode=self.symmetry,
         )
         dialog.systemApplied.connect(self._apply_system_config)
         dialog.exec()
@@ -2599,13 +2600,6 @@ class MainWindow(QMainWindow):
         )
 
     def _start_coupled_system_solve(self) -> None:
-        if self.symmetry != "off":
-            QMessageBox.warning(
-                self,
-                "Coupled solve",
-                "The coupled solver does not support symmetry yet. Set Symmetry to Off in Meshes.",
-            )
-            return
         try:
             meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
             system = sync_physical_system_meshes(self.project.physical_system, meshes)
@@ -2621,6 +2615,7 @@ class MainWindow(QMainWindow):
                 spherical_sampling_points=balloon_sampling_points(self.preferences.balloon_angle_precision_deg),
                 component_channel_by_id=self.project.component_channel_by_id,
                 backend_id=self.preferences.solve_backend,
+                symmetry_mode=self.symmetry,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Coupled solve", str(exc))

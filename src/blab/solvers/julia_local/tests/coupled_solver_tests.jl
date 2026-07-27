@@ -222,3 +222,76 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
 else
     @info "Set BLAB_RUN_COUPLED_REFERENCE=1 to run the full dense FEM-BEM fixture validation."
 end
+
+if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
+    @testset "FP32 GPU-resident coupled solve" begin
+        fem_mesh = load_gmsh41_volume(
+            joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"),
+            Float32(0.001),
+        )
+        bem_mesh = load_gmsh22_with_tags(
+            joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"),
+            Float32(0.001),
+        )
+        interface_map = build_conforming_interface_map(
+            fem_mesh,
+            bem_mesh,
+            physical_tag(fem_mesh, 2, "Interface"),
+            2,
+        )
+        radiator_tag = physical_tag(fem_mesh, 2, "Radiator")
+        cpu_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            quadrature_order=COUPLED_QUADRATURE_ORDER,
+            singular_order=COUPLED_SINGULAR_ORDER,
+            validation_diagnostics=false,
+            bem_backend=:cpu,
+        )
+        cuda_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            quadrature_order=COUPLED_QUADRATURE_ORDER,
+            singular_order=COUPLED_SINGULAR_ORDER,
+            validation_diagnostics=false,
+            bem_backend=:cuda,
+        )
+        try
+            cpu_solution = solve_coupled_system(cpu_system, radiator_tag)
+            cuda_solutions = solve_coupled_systems(
+                cuda_system,
+                [radiator_tag, radiator_tag];
+                radiator_velocities=ComplexF32[1, 0.5],
+            )
+            cuda_solution = cuda_solutions[1]
+            relative_error(reference, candidate) = norm(candidate - reference) / norm(reference)
+
+            @test cpu_system.linear_backend == :cpu
+            @test cuda_system.linear_backend == :cuda
+            @test relative_error(cpu_solution.fem_pressure, cuda_solution.fem_pressure) < 5e-4
+            @test relative_error(cpu_solution.bem_pressure, cuda_solution.bem_pressure) < 5e-4
+            @test relative_error(cpu_solution.interface_flux, cuda_solution.interface_flux) < 5e-4
+            @test relative_error(
+                0.5f0 .* cuda_solution.bem_pressure,
+                cuda_solutions[2].bem_pressure,
+            ) < 1e-5
+            @test cuda_solution.pressure_continuity_error < 1e-4
+            @test cuda_solution.flux_conservation_error < 1e-4
+        finally
+            release_coupled_system!(cpu_system)
+            release_coupled_system!(cuda_system)
+        end
+    end
+elseif get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1"
+    @test_skip "CUDA unavailable; skipping GPU-resident coupled solve."
+else
+    @info "Set BLAB_RUN_COUPLED_CUDA=1 to run the GPU-resident coupled solve validation."
+end

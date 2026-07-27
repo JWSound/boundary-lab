@@ -45,6 +45,7 @@ def main() -> int:
     parser.add_argument("--singular-order", type=int, default=2)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
     parser.add_argument("--bem-backend", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--symmetry", choices=("off", "x", "xy"), default="off")
     parser.add_argument(
         "--persistent",
         action="store_true",
@@ -78,6 +79,7 @@ def main() -> int:
                 persistent_worker=args.persistent,
                 precision=args.precision,
                 bem_backend=args.bem_backend,
+                symmetry_mode=args.symmetry,
             )
     return 0
 
@@ -96,6 +98,7 @@ def _run_mode(
     persistent_worker: bool,
     precision: str,
     bem_backend: str,
+    symmetry_mode: str,
 ) -> None:
     prepared = prepare_coupled_ui_solve(
         system,
@@ -104,6 +107,7 @@ def _run_mode(
         freq_count=len(frequencies),
         observation_distance_m=2.0,
         polar_angle_step_deg=angle_step,
+        symmetry_mode=symmetry_mode,
     )
     options = dict(prepared.request.solver_options)
     options["quadrature_order"] = int(quadrature_order)
@@ -146,7 +150,7 @@ def _run_mode(
     detail_totals = {key: 0.0 for key in detail_keys}
     print(
         f"\n{mode.upper()} run={run_index}  precision={precision}  bem={bem_backend}"
-        f"  frequencies={len(results)}  wall={wall_s:.3f}s"
+        f"  symmetry={symmetry_mode}  frequencies={len(results)}  wall={wall_s:.3f}s"
     )
     print("frequency       assembly       solve       field       setup")
     for result in results:

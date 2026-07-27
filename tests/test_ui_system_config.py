@@ -226,6 +226,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     )
     assert prepared.request.solver_options["validation_diagnostics"] is False
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
+    assert prepared.request.solver_options["symmetry"] == "off"
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options
     assert prepared.backend_id == "beat_cpu"
@@ -363,6 +364,8 @@ def test_coupled_cuda_matches_cpu_exterior_pressure() -> None:
 
     assert cpu_result.diagnostics["bem_backend"] == "cpu"
     assert cuda_result.diagnostics["bem_backend"] == "cuda"
+    assert cpu_result.diagnostics["linear_backend"] == "cpu"
+    assert cuda_result.diagnostics["linear_backend"] == "cuda"
     assert cpu_pressure.dtype == np.complex64
     assert cuda_pressure.dtype == np.complex64
     assert relative_l2 < 5e-3

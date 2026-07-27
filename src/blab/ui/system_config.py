@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab.config import normalize_symmetry
 from blab.interface_conform import (
     InterfaceConformError,
     build_conforming_interface_map,
@@ -155,6 +156,7 @@ class SystemConfigDialog(QDialog):
         parent: QWidget | None = None,
         *,
         interface_output_root: str | Path | None = None,
+        symmetry_mode: str = "off",
     ):
         super().__init__(parent)
         self.setWindowTitle("System")
@@ -167,10 +169,9 @@ class SystemConfigDialog(QDialog):
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
         self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
+        self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._interface_output_root = (
-            Path.cwd() / "runs" / "imported_meshes"
-            if interface_output_root is None
-            else Path(interface_output_root)
+            Path.cwd() / "runs" / "imported_meshes" if interface_output_root is None else Path(interface_output_root)
         )
         self._interfaces = list(system.interfaces if system is not None else ())
         self._existing_regions = {region.id: region for region in (() if system is None else system.regions)}
@@ -621,15 +622,12 @@ class SystemConfigDialog(QDialog):
                     (
                         item
                         for item in self._interfaces
-                        if item.bounded_boundary_id == fem_boundary.id
-                        and item.unbounded_boundary_id == bem_boundary.id
+                        if item.bounded_boundary_id == fem_boundary.id and item.unbounded_boundary_id == bem_boundary.id
                     ),
                     None,
                 )
                 interface_id = (
-                    existing.id
-                    if existing is not None
-                    else _unique_id(f"interface:{_slug(interface_name)}", used_ids)
+                    existing.id if existing is not None else _unique_id(f"interface:{_slug(interface_name)}", used_ids)
                 )
                 used_ids.add(interface_id)
                 interfaces.append(
@@ -682,6 +680,7 @@ class SystemConfigDialog(QDialog):
                 fem_interface_name=str(fem_boundary.group.name),
                 bem_interface_name=str(bem_boundary.group.name),
                 merge_tolerance=1e-8,
+                symmetry_mode=self._symmetry_mode,
             )
             return _InterfacePairMatch(
                 boundary=bem_boundary,
@@ -734,6 +733,7 @@ class SystemConfigDialog(QDialog):
                 repr(fem_resource.translation_m),
                 fem_interface_name,
                 bem_interface_name,
+                self._symmetry_mode,
             )
         )
         digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
@@ -765,6 +765,7 @@ class SystemConfigDialog(QDialog):
             bem_interface_name=str(bem_boundary.group.name),
             coordinate_tolerance=1e-8,
             require_closed_bem=True,
+            symmetry_mode=self._symmetry_mode,
         )
 
     def _load_interfaces(self, *, status: str | None = None) -> None:
@@ -937,11 +938,7 @@ class SystemConfigDialog(QDialog):
             ports.append(
                 ExcitationPort(
                     id=existing_port.id if existing_port is not None else f"excitation:{_slug(component_id)}",
-                    name=(
-                        existing_port.name
-                        if existing_port is not None
-                        else f"{name} unit normal velocity"
-                    ),
+                    name=(existing_port.name if existing_port is not None else f"{name} unit normal velocity"),
                     component_id=component_id,
                     kind=ExcitationPortKind.NORMAL_VELOCITY,
                 )
@@ -1019,9 +1016,7 @@ class SystemConfigDialog(QDialog):
         for draft in drafts:
             mesh = self._mesh_by_name[draft["mesh_name"]]
             purpose = (
-                MeshPurpose.FEM_VOLUME
-                if draft["kind"] == AcousticRegionKind.BOUNDED_AIR
-                else MeshPurpose.BEM_SURFACE
+                MeshPurpose.FEM_VOLUME if draft["kind"] == AcousticRegionKind.BOUNDED_AIR else MeshPurpose.BEM_SURFACE
             )
             resource = resource_by_name.get(mesh.name)
             if resource is not None and resource.purpose != purpose:

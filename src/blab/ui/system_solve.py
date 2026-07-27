@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.config import normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import BoundaryKind, PhysicalSystem
@@ -41,12 +42,14 @@ def prepare_coupled_ui_solve(
     spherical_sampling_points: int = 0,
     component_channel_by_id: dict[str, str] | None = None,
     backend_id: str = "beat_cpu",
+    symmetry_mode: str = "off",
 ) -> CoupledUiSolveRequest:
     """Compile an editable system and request the field points used by current plots."""
 
+    symmetry = normalize_symmetry(symmetry_mode)
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
-    compiled = PhysicalSystemCompiler().compile(system)
+    compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
     frequencies = build_log_frequencies(
         float(min(freq_min_hz, freq_max_hz)),
         float(max(freq_min_hz, freq_max_hz)),
@@ -81,9 +84,7 @@ def prepare_coupled_ui_solve(
 
     normalized_backend_id = normalize_backend_id(backend_id)
     if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError(
-            "Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences."
-        )
+        raise ValueError("Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences.")
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
@@ -100,6 +101,7 @@ def prepare_coupled_ui_solve(
             "singular_order": 2,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
+            "symmetry": symmetry,
         },
     )
     return CoupledUiSolveRequest(
@@ -262,12 +264,8 @@ def _polar_observation_points(
     angles = np.arange(-180.0, 180.0 + 0.5 * step_deg, step_deg, dtype=np.float32)
     angles = np.clip(angles, -180.0, 180.0)
     radians = np.deg2rad(angles.astype(float))
-    horizontal = distance_m * np.column_stack(
-        [np.sin(radians), np.zeros_like(radians), np.cos(radians)]
-    )
-    vertical = distance_m * np.column_stack(
-        [np.zeros_like(radians), np.sin(radians), np.cos(radians)]
-    )
+    horizontal = distance_m * np.column_stack([np.sin(radians), np.zeros_like(radians), np.cos(radians)])
+    vertical = distance_m * np.column_stack([np.zeros_like(radians), np.sin(radians), np.cos(radians)])
     return angles, horizontal, vertical
 
 

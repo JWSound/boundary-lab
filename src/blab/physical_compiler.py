@@ -10,6 +10,7 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from blab.config import normalize_symmetry
 from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
 from blab.physical_model import (
     PHYSICAL_MODEL_VERSION,
@@ -51,14 +52,18 @@ class PhysicalSystemCompiler:
     def __init__(self) -> None:
         self._mesh_cache: dict[str, meshio.Mesh] = {}
 
-    def compile(self, system: PhysicalSystem) -> CompiledPhysicalSystem:
+    def compile(
+        self,
+        system: PhysicalSystem,
+        *,
+        symmetry_mode: str = "off",
+    ) -> CompiledPhysicalSystem:
+        symmetry = normalize_symmetry(symmetry_mode)
         self._validate_authoring_model(system)
         meshes_by_id = {mesh.id: mesh for mesh in system.meshes}
         compiled_meshes = tuple(self._compile_mesh(mesh) for mesh in system.meshes)
         compiled_regions = tuple(self._compile_region(region, meshes_by_id) for region in system.regions)
-        compiled_boundaries = tuple(
-            self._compile_boundary(boundary, meshes_by_id) for boundary in system.boundaries
-        )
+        compiled_boundaries = tuple(self._compile_boundary(boundary, meshes_by_id) for boundary in system.boundaries)
         compiled_boundaries_by_id = {boundary.id: boundary for boundary in compiled_boundaries}
 
         self._validate_boundary_coverage(system, compiled_boundaries, meshes_by_id)
@@ -67,6 +72,7 @@ class PhysicalSystemCompiler:
                 interface,
                 compiled_boundaries_by_id,
                 meshes_by_id,
+                symmetry_mode=symmetry,
             )
             for interface in system.interfaces
         )
@@ -361,6 +367,8 @@ class PhysicalSystemCompiler:
         interface,
         boundaries_by_id: dict[str, CompiledBoundary],
         meshes_by_id: dict[str, MeshResource],
+        *,
+        symmetry_mode: str,
     ) -> CompiledInterface:
         bounded = boundaries_by_id[interface.bounded_boundary_id]
         unbounded = boundaries_by_id[interface.unbounded_boundary_id]
@@ -376,6 +384,7 @@ class PhysicalSystemCompiler:
                 bem_interface_name=unbounded.group.name or self._name_for_tag(bem_mesh, unbounded.group.tag, 2),
                 coordinate_tolerance=float(interface.coordinate_tolerance_m),
                 require_closed_bem=True,
+                symmetry_mode=symmetry_mode,
             )
         except InterfaceConformError as exc:
             raise PhysicalModelCompileError(f"Interface '{interface.id}' is invalid: {exc}") from exc

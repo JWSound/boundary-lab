@@ -19,6 +19,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "femvolume.msh"
 BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior.msh"
 CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior_conforming.msh"
+SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
 
 
 def test_fixture_interfaces_are_made_connectivity_identical_and_watertight() -> None:
@@ -112,3 +113,47 @@ def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conf
         np.abs((conformed_mesh.points[np.unique(conformed_interface)] - plane_origin) @ plane_normal)
     )
     assert interface_deviation > 0.5
+
+
+@pytest.mark.parametrize(
+    ("symmetry_mode", "suffix", "bem_interface_name", "expected_triangles"),
+    (
+        ("x", "reduced_x", "BEMInterface (1)", 522),
+        ("xy", "reduced_xy", "BEMInterface (1) (1)", 277),
+    ),
+)
+def test_reduced_sawmod_interfaces_are_conformed_with_open_edges_only_on_symmetry_planes(
+    symmetry_mode: str,
+    suffix: str,
+    bem_interface_name: str,
+    expected_triangles: int,
+) -> None:
+    fem_mesh = meshio.read(SAWMOD_FIXTURE_ROOT / f"SMfemvolume_{suffix}.msh")
+    bem_mesh = meshio.read(SAWMOD_FIXTURE_ROOT / f"SMexterior_{suffix}.msh")
+
+    conformed_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name=bem_interface_name,
+        symmetry_mode=symmetry_mode,
+    )
+    report = validate_conforming_interfaces(
+        fem_mesh,
+        conformed_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name=bem_interface_name,
+        symmetry_mode=symmetry_mode,
+    )
+
+    assert result.fem_interface_triangles == expected_triangles
+    assert report.interface_triangles == expected_triangles
+    assert report.max_coordinate_error <= 1e-9
+    assert report.bem_boundary_edges > 0
+    with pytest.raises(InterfaceConformError, match="away from the active symmetry planes"):
+        validate_conforming_interfaces(
+            fem_mesh,
+            conformed_mesh,
+            fem_interface_name="INTERFACE",
+            bem_interface_name=bem_interface_name,
+        )

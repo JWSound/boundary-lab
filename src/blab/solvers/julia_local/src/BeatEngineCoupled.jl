@@ -19,7 +19,9 @@ export VolumeMesh,
     prepare_coupled_cache,
     release_coupled_cache!,
     build_coupled_system,
+    release_coupled_system!,
     solve_coupled_system,
+    solve_coupled_systems,
     solve_coupled
 
 struct VolumeMesh{T<:AbstractFloat}
@@ -407,9 +409,12 @@ function prepare_coupled_cache(
     quadrature_order::Int=2,
     singular_order::Int=2,
     bem_backend::Symbol=:cpu,
+    symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     bem_backend in (:cpu, :cuda) ||
         error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
+    normalized_symmetry = BeatEngineCore.normalized_symmetry_mode(symmetry_mode)
+    validate_symmetry_fundamental_domain!(bem_mesh, normalized_symmetry)
     stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
     interface_operators = assemble_interface_operators(fem_mesh, bem_mesh, interface_map)
     p1 = build_p1_space(bem_mesh)
@@ -422,6 +427,7 @@ function prepare_coupled_cache(
         dp0,
         rule;
         singular_order=singular_order,
+        symmetry_mode=normalized_symmetry,
     ) : nothing
     device_cache = bem_backend == :cuda ? build_cuda_regular_assembly_cache(bem_mesh, rule) : nothing
     device_singular_cache = bem_backend == :cuda ? BeatEngineCore.build_cuda_singular_correction_cache(
@@ -429,10 +435,20 @@ function prepare_coupled_cache(
         p1,
         dp0,
     ) : nothing
-    cpu_field_cache = build_field_evaluation_cache(bem_mesh, rule)
+    device_image_singular_cache = bem_backend == :cuda && normalized_symmetry != :off ?
+        BeatEngineCore.build_cuda_image_singular_correction_cache(
+            bem_mesh,
+            p1,
+            dp0,
+            singular_order,
+            eachindex(bem_mesh.faces),
+            normalized_symmetry,
+        ) : nothing
+    cpu_field_cache = build_field_evaluation_cache(bem_mesh, rule; symmetry_mode=normalized_symmetry)
     field_cache = bem_backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
     return (
         bem_backend=bem_backend,
+        symmetry_mode=normalized_symmetry,
         stiffness=stiffness,
         mass=mass,
         interface_operators=interface_operators,
@@ -442,9 +458,26 @@ function prepare_coupled_cache(
         cpu_assembly_cache=cpu_assembly_cache,
         device_cache=device_cache,
         device_singular_cache=device_singular_cache,
+        device_image_singular_cache=device_image_singular_cache,
         singular_cache=singular_cache,
-        identity_p1_p1=assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :p1),
-        identity_p1_dp0=assemble_l2_identity_matrix(bem_mesh, p1, dp0, rule, :p1, :dp0),
+        identity_p1_p1=assemble_l2_identity_matrix(
+            bem_mesh,
+            p1,
+            dp0,
+            rule,
+            :p1,
+            :p1;
+            symmetry_mode=normalized_symmetry,
+        ),
+        identity_p1_dp0=assemble_l2_identity_matrix(
+            bem_mesh,
+            p1,
+            dp0,
+            rule,
+            :p1,
+            :dp0;
+            symmetry_mode=normalized_symmetry,
+        ),
         field_cache=field_cache,
     )
 end
@@ -492,6 +525,25 @@ function release_coupled_cache!(cache)
         ),
     )
     _unsafe_free_cuda_fields!(
+        cache.device_image_singular_cache,
+        (
+            :test_indices,
+            :trial_indices,
+            :rule_indices,
+            :jac_scales,
+            :normal_products,
+            :p1_rows,
+            :p1_cols,
+            :dp0_cols,
+            :rule_offsets,
+            :rule_test_points,
+            :rule_trial_points,
+            :rule_weights,
+            :transform_signs,
+            :curl_signs,
+        ),
+    )
+    _unsafe_free_cuda_fields!(
         cache.field_cache,
         (
             :source_points,
@@ -512,6 +564,7 @@ function _cuda_coupled_bem_blocks(
     bem_flux,
     wavenumber::T;
     validation_diagnostics::Bool,
+    keep_device::Bool=false,
 ) where {T<:AbstractFloat}
     cuda = BeatEngineCore.cuda_module()
     coupling = Complex{T}(0, 1) / wavenumber
@@ -549,21 +602,31 @@ function _cuda_coupled_bem_blocks(
         end
         cuda.synchronize()
         return (
-            bem_lhs=Complex{T}.(Array(d_lhs)),
-            bem_rhs_operator=isnothing(d_rhs_operator) ? nothing : Complex{T}.(Array(d_rhs_operator)),
-            bem_interface_block=Complex{T}.(Array(d_interface_block)),
+            bem_lhs=keep_device ? d_lhs : Complex{T}.(Array(d_lhs)),
+            bem_rhs_operator=if isnothing(d_rhs_operator)
+                nothing
+            elseif keep_device
+                d_rhs_operator
+            else
+                Complex{T}.(Array(d_rhs_operator))
+            end,
+            bem_interface_block=keep_device ?
+                                d_interface_block :
+                                Complex{T}.(Array(d_interface_block)),
         )
     finally
         for value in (
             d_identity_p1_p1,
             d_identity_p1_dp0,
             d_bem_flux,
-            d_lhs,
-            d_interface_block,
             d_interface_temp,
-            d_rhs_operator,
         )
             isnothing(value) || cuda.unsafe_free!(value)
+        end
+        if !keep_device
+            for value in (d_lhs, d_interface_block, d_rhs_operator)
+                isnothing(value) || cuda.unsafe_free!(value)
+            end
         end
     end
 end
@@ -580,6 +643,7 @@ function build_coupled_system(
     cache=nothing,
     validation_diagnostics::Bool=true,
     bem_backend::Symbol=:cpu,
+    symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     fem_stage_started = time_ns()
     prepared = isnothing(cache) ? prepare_coupled_cache(
@@ -589,9 +653,12 @@ function build_coupled_system(
         quadrature_order=quadrature_order,
         singular_order=singular_order,
         bem_backend=bem_backend,
+        symmetry_mode=symmetry_mode,
     ) : cache
     prepared.bem_backend == bem_backend ||
         error("Coupled cache backend does not match requested BEM backend.")
+    prepared.symmetry_mode == BeatEngineCore.normalized_symmetry_mode(symmetry_mode) ||
+        error("Coupled cache symmetry mode does not match requested symmetry.")
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
     fem_system = Complex{T}.(prepared.stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(prepared.mass)
@@ -611,12 +678,15 @@ function build_coupled_system(
         singular_cache=prepared.singular_cache,
         cpu_cache=prepared.cpu_assembly_cache,
         device_cache=prepared.device_cache,
+        device_image_singular_cache=prepared.device_image_singular_cache,
+        symmetry_mode=prepared.symmetry_mode,
         return_device=bem_backend == :cuda,
         accelerator_quadrature=bem_backend == :cuda,
         device_singular_cache=prepared.device_singular_cache,
     )
     bem_operator_s = (time_ns() - bem_operator_started) / 1.0e9
     bem_matrix_started = time_ns()
+    linear_backend = bem_backend == :cuda && !validation_diagnostics ? :cuda : :cpu
     bem_blocks = if bem_backend == :cuda
         try
             _cuda_coupled_bem_blocks(
@@ -626,6 +696,7 @@ function build_coupled_system(
                 interface_operators.bem_flux,
                 wavenumber;
                 validation_diagnostics=validation_diagnostics,
+                keep_device=linear_backend == :cuda,
             )
         finally
             release_operator_storage!(operators)
@@ -654,17 +725,50 @@ function build_coupled_system(
     fem_range = 1:fem_count
     bem_range = (fem_count + 1):(fem_count + bem_count)
     flux_range = (fem_count + bem_count + 1):(fem_count + bem_count + interface_count)
-    coupled = zeros(Complex{T}, fem_count + bem_count + interface_count, fem_count + bem_count + interface_count)
-    coupled[fem_range, fem_range] = Matrix(fem_system)
-    coupled[fem_range, flux_range] = -Complex{T}.(Matrix(interface_operators.fem_load))
-    coupled[bem_range, bem_range] = bem_lhs
-    coupled[bem_range, flux_range] = bem_blocks.bem_interface_block
-    coupled[flux_range, fem_range] = Complex{T}.(Matrix(interface_operators.fem_trace))
-    coupled[flux_range, bem_range] = -Complex{T}.(Matrix(interface_operators.bem_trace))
+    system_count = fem_count + bem_count + interface_count
+    coupled = if linear_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        d_coupled = cuda.zeros(Complex{T}, system_count, system_count)
+        device_blocks = (
+            cuda.CuArray(Complex{T}.(Matrix(fem_system))),
+            cuda.CuArray(-Complex{T}.(Matrix(interface_operators.fem_load))),
+            cuda.CuArray(Complex{T}.(Matrix(interface_operators.fem_trace))),
+            cuda.CuArray(-Complex{T}.(Matrix(interface_operators.bem_trace))),
+        )
+        try
+            view(d_coupled, fem_range, fem_range) .= device_blocks[1]
+            view(d_coupled, fem_range, flux_range) .= device_blocks[2]
+            view(d_coupled, bem_range, bem_range) .= bem_lhs
+            view(d_coupled, bem_range, flux_range) .= bem_blocks.bem_interface_block
+            view(d_coupled, flux_range, fem_range) .= device_blocks[3]
+            view(d_coupled, flux_range, bem_range) .= device_blocks[4]
+            cuda.synchronize()
+        finally
+            for value in device_blocks
+                cuda.unsafe_free!(value)
+            end
+            cuda.unsafe_free!(bem_lhs)
+            cuda.unsafe_free!(bem_blocks.bem_interface_block)
+        end
+        d_coupled
+    else
+        host_coupled = zeros(Complex{T}, system_count, system_count)
+        host_coupled[fem_range, fem_range] = Matrix(fem_system)
+        host_coupled[fem_range, flux_range] =
+            -Complex{T}.(Matrix(interface_operators.fem_load))
+        host_coupled[bem_range, bem_range] = bem_lhs
+        host_coupled[bem_range, flux_range] = bem_blocks.bem_interface_block
+        host_coupled[flux_range, fem_range] =
+            Complex{T}.(Matrix(interface_operators.fem_trace))
+        host_coupled[flux_range, bem_range] =
+            -Complex{T}.(Matrix(interface_operators.bem_trace))
+        host_coupled
+    end
     block_assembly_s = (time_ns() - block_assembly_started) / 1.0e9
 
     coupled_factorization_started = time_ns()
     factorization = validation_diagnostics ? lu(coupled) : lu!(coupled)
+    linear_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
     coupled_factorization_s = (time_ns() - coupled_factorization_started) / 1.0e9
     replay_factorization_started = time_ns()
     bem_factorization = validation_diagnostics ? lu(bem_lhs) : nothing
@@ -687,6 +791,8 @@ function build_coupled_system(
         bem_factorization=bem_factorization,
         bem_rhs_operator=validation_diagnostics ? bem_rhs_operator : nothing,
         bem_backend=bem_backend,
+        linear_backend=linear_backend,
+        symmetry_mode=prepared.symmetry_mode,
         cache=prepared,
         owns_cache=isnothing(cache),
         validation_diagnostics=validation_diagnostics,
@@ -701,23 +807,18 @@ function build_coupled_system(
     )
 end
 
-function solve_coupled_system(
-    system,
-    radiator_tag::Int;
-    radiator_velocity=ComplexF64(1, 0),
-)
+function release_coupled_system!(system)
+    if system.linear_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        cuda.unsafe_free!(system.factorization.factors)
+        cuda.unsafe_free!(system.factorization.ipiv)
+    end
+    system.owns_cache && release_coupled_cache!(system.cache)
+    return nothing
+end
+
+function _coupled_solution_from_vector(system, solution, rhs)
     T = typeof(real(zero(eltype(system.factorization))))
-    velocity = Complex{T}(radiator_velocity)
-    fem_rhs = assemble_prescribed_velocity_load(
-        system.fem_mesh,
-        radiator_tag,
-        system.density,
-        system.omega,
-        velocity,
-    )
-    rhs = zeros(Complex{T}, size(system.factorization, 1))
-    rhs[system.fem_range] = fem_rhs
-    solution = system.factorization \ rhs
     fem_pressure = solution[system.fem_range]
     bem_pressure = solution[system.bem_range]
     interface_flux = solution[system.flux_range]
@@ -772,6 +873,64 @@ function solve_coupled_system(
     )
 end
 
+function solve_coupled_systems(
+    system,
+    radiator_tags;
+    radiator_velocities=nothing,
+)
+    T = typeof(real(zero(eltype(system.factorization))))
+    tags = Int.(collect(radiator_tags))
+    isempty(tags) && error("At least one radiator tag is required.")
+    velocities = isnothing(radiator_velocities) ?
+                 fill(Complex{T}(1, 0), length(tags)) :
+                 Complex{T}.(collect(radiator_velocities))
+    length(velocities) == length(tags) ||
+        error("Radiator tags and velocities must have the same length.")
+    rhs = zeros(Complex{T}, size(system.factorization, 1), length(tags))
+    for (column, (radiator_tag, velocity)) in enumerate(zip(tags, velocities))
+        rhs[system.fem_range, column] = assemble_prescribed_velocity_load(
+            system.fem_mesh,
+            radiator_tag,
+            system.density,
+            system.omega,
+            velocity,
+        )
+    end
+    solution = if system.linear_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        d_rhs = cuda.CuArray(rhs)
+        d_solution = nothing
+        try
+            d_solution = system.factorization \ d_rhs
+            cuda.synchronize()
+            Complex{T}.(Array(d_solution))
+        finally
+            cuda.unsafe_free!(d_rhs)
+            isnothing(d_solution) || cuda.unsafe_free!(d_solution)
+        end
+    else
+        system.factorization \ rhs
+    end
+    return [
+        _coupled_solution_from_vector(system, solution[:, column], rhs[:, column])
+        for column in axes(solution, 2)
+    ]
+end
+
+function solve_coupled_system(
+    system,
+    radiator_tag::Int;
+    radiator_velocity=ComplexF64(1, 0),
+)
+    return only(
+        solve_coupled_systems(
+            system,
+            [radiator_tag];
+            radiator_velocities=[radiator_velocity],
+        ),
+    )
+end
+
 function solve_coupled(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
@@ -783,6 +942,7 @@ function solve_coupled(
     radiator_velocity::Complex{T}=Complex{T}(1, 0),
     quadrature_order::Int=2,
     singular_order::Int=2,
+    symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     system = build_coupled_system(
         fem_mesh,
@@ -793,6 +953,7 @@ function solve_coupled(
         density;
         quadrature_order=quadrature_order,
         singular_order=singular_order,
+        symmetry_mode=symmetry_mode,
     )
     return solve_coupled_system(
         system,

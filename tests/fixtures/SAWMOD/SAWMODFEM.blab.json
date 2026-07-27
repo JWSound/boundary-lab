@@ -54,9 +54,9 @@
     {
       "cleaned_file": null,
       "enabled": true,
-      "name": "femvolume",
+      "name": "SMfemvolume_reduced_xy",
       "scale_factor": 0.001,
-      "source_file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\femvolume.msh",
+      "source_file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\SAWMOD\\SMfemvolume_reduced_xy.msh",
       "translation_mm": [
         0,
         0,
@@ -64,11 +64,11 @@
       ]
     },
     {
-      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_7dcfae480c_interface_conformed.msh",
+      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\smexterior_reduced_xy_8629f2df04_interface_conformed.msh",
       "enabled": true,
-      "name": "exterior",
+      "name": "SMexterior_reduced_xy",
       "scale_factor": 0.001,
-      "source_file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\exterior.msh",
+      "source_file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\SAWMOD\\SMexterior_reduced_xy.msh",
       "translation_mm": [
         0,
         0,
@@ -82,12 +82,12 @@
         "group": {
           "dimension": 2,
           "mesh_id": "mesh:exterior",
-          "name": "BEMExt",
+          "name": "BEMExt (1) (1)",
           "tag": null
         },
-        "id": "boundary:region-exterior-air:bemext",
+        "id": "boundary:region-exterior-air:bemext-1-1",
         "kind": "rigid",
-        "name": "BEMExt",
+        "name": "BEMExt (1) (1)",
         "parameters": {},
         "region_id": "region:exterior-air"
       },
@@ -95,12 +95,12 @@
         "group": {
           "dimension": 2,
           "mesh_id": "mesh:exterior",
-          "name": "BEMInterface",
+          "name": "BEMInterface (1) (1)",
           "tag": null
         },
-        "id": "boundary:region-exterior-air:beminterface",
+        "id": "boundary:region-exterior-air:beminterface-1-1",
         "kind": "interface",
-        "name": "BEMInterface",
+        "name": "BEMInterface (1) (1)",
         "parameters": {},
         "region_id": "region:exterior-air"
       },
@@ -121,12 +121,12 @@
         "group": {
           "dimension": 2,
           "mesh_id": "mesh:femvolume",
-          "name": "Interface",
+          "name": "INTERFACE",
           "tag": null
         },
         "id": "boundary:region-interior-air-1:interface",
         "kind": "interface",
-        "name": "Interface",
+        "name": "INTERFACE",
         "parameters": {},
         "region_id": "region:interior-air-1"
       },
@@ -147,12 +147,12 @@
         "group": {
           "dimension": 2,
           "mesh_id": "mesh:femvolume",
-          "name": "SAWMODFEM_boundary",
+          "name": "SAWMODFEM (1) (1)_boundary",
           "tag": null
         },
-        "id": "boundary:region-interior-air-1:sawmodfem_boundary",
+        "id": "boundary:region-interior-air-1:sawmodfem-1-1-_boundary",
         "kind": "rigid",
-        "name": "SAWMODFEM_boundary",
+        "name": "SAWMODFEM (1) (1)_boundary",
         "parameters": {},
         "region_id": "region:interior-air-1"
       }
@@ -196,20 +196,12 @@
       }
     ],
     "id": "system:loudspeaker",
-    "interfaces": [
-      {
-        "bounded_boundary_id": "boundary:region-interior-air-1:interface",
-        "coordinate_tolerance_m": 1e-08,
-        "id": "interface:interface-beminterface",
-        "name": "Interface / BEMInterface",
-        "unbounded_boundary_id": "boundary:region-exterior-air:beminterface"
-      }
-    ],
+    "interfaces": [],
     "meshes": [
       {
-        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_7dcfae480c_interface_conformed.msh",
+        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\smexterior_reduced_xy_8629f2df04_interface_conformed.msh",
         "id": "mesh:exterior",
-        "name": "exterior",
+        "name": "SMexterior_reduced_xy",
         "purpose": "bem_surface",
         "scale_to_m": 0.001,
         "translation_m": [
@@ -219,9 +211,9 @@
         ]
       },
       {
-        "file": "G:\\My Drive\\Projects\\Boundary Lab Projects\\SAWMODFEM\\femvolume.msh",
+        "file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\SAWMOD\\SMfemvolume_reduced_xy.msh",
         "id": "mesh:femvolume",
-        "name": "femvolume",
+        "name": "SMfemvolume_reduced_xy",
         "purpose": "fem_volume",
         "scale_to_m": 0.001,
         "translation_m": [
@@ -261,7 +253,7 @@
           {
             "dimension": 3,
             "mesh_id": "mesh:femvolume",
-            "name": "SAWMODFEM",
+            "name": "SAWMODFEM (1) (1)",
             "tag": null
           }
         ]
@@ -321,5 +313,5 @@
     }
   },
   "stitch_imported_meshes": false,
-  "symmetry": "off"
+  "symmetry": "xy"
 }
