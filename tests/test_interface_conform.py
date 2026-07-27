@@ -9,6 +9,7 @@ from blab.interface_conform import (
     InterfaceConformError,
     _best_fit_plane,
     _boundary_loops,
+    _matching_discrete_paths,
     _physical_surface_tag,
     _triangle_data,
     conform_bem_interface_to_fem,
@@ -20,6 +21,40 @@ FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "femvolume.msh"
 BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior.msh"
 CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior_conforming.msh"
 SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
+CURVED_FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceFEM.msh"
+CURVED_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceBEM.msh"
+
+
+def test_direct_seam_match_requires_identical_edge_connectivity() -> None:
+    points = np.asarray(
+        (
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (1.0, 1.0, 0.0),
+            (0.0, 1.0, 0.0),
+        )
+    )
+
+    reversed_match, reversed_deviation = _matching_discrete_paths(
+        points,
+        np.asarray((0, 1, 2, 3)),
+        points,
+        np.asarray((0, 3, 2, 1)),
+        tolerance=1e-8,
+        closed=True,
+    )
+    mismatched_edges, _deviation = _matching_discrete_paths(
+        points,
+        np.asarray((0, 1, 2, 3)),
+        points,
+        np.asarray((0, 2, 1, 3)),
+        tolerance=1e-8,
+        closed=True,
+    )
+
+    assert reversed_match
+    assert reversed_deviation == 0.0
+    assert not mismatched_edges
 
 
 def test_fixture_interfaces_are_made_connectivity_identical_and_watertight() -> None:
@@ -113,6 +148,55 @@ def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conf
         np.abs((conformed_mesh.points[np.unique(conformed_interface)] - plane_origin) @ plane_normal)
     )
     assert interface_deviation > 0.5
+
+
+def test_nonplanar_curved_interface_with_matching_discrete_seam_is_replaced_directly(
+    tmp_path: Path,
+) -> None:
+    fem_mesh = meshio.read(CURVED_FEM_FIXTURE)
+    bem_mesh = meshio.read(CURVED_BEM_FIXTURE)
+
+    conformed_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        conformed_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+
+    assert result.fem_interface_triangles == 2506
+    assert result.original_bem_interface_triangles == 2702
+    assert result.original_adjacent_triangles == 0
+    assert result.remeshed_adjacent_triangles == 0
+    assert result.max_original_boundary_deviation <= 1e-8
+    assert identity.interface_triangles == 2506
+    assert identity.interface_vertices == 1318
+    assert identity.max_coordinate_error <= 1e-8
+    assert identity.fem_facets_on_tetra_boundary == 2506
+    assert identity.bem_boundary_edges == 141
+
+    output_path = tmp_path / "curvedinterface_conforming.msh"
+    meshio.write(
+        output_path,
+        conformed_mesh,
+        file_format="gmsh22",
+        binary=False,
+    )
+    round_trip_identity = validate_conforming_interfaces(
+        fem_mesh,
+        meshio.read(output_path),
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    assert round_trip_identity == identity
 
 
 @pytest.mark.parametrize(

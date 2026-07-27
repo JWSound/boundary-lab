@@ -1,16 +1,18 @@
 """Build a conforming BEM interface from authoritative FEM boundary facets.
 
-The implementation targets the common Boundary Lab case:
+The implementation supports two bounded Boundary Lab cases:
 
 * the FEM interface is a tagged set of triangular tetrahedron boundary facets;
-* the FEM and BEM interface perimeters describe the same planar opening;
-* the interface interior may be curved;
-* a planar BEM physical surface surrounds that opening, possibly split across
+* when the FEM and BEM interface seams already have identical discrete vertices
+  and edges, the BEM interface is replaced directly and may be fully curved;
+* otherwise the FEM and BEM interface perimeters describe the same planar
+  opening, surrounded by a planar BEM physical surface, possibly split across
   multiple geometrical entities.
 
-The FEM interface triangles are retained exactly. The surrounding BEM surface is
-remeshed as a planar surface with a hole whose inner loop is the FEM interface
-perimeter. This avoids modifying or retetrahedralizing the FEM volume.
+The FEM interface triangles are retained exactly. A matching discrete seam
+preserves the surrounding BEM surface unchanged. The planar fallback remeshes
+that surface with a hole whose inner loop is the FEM interface perimeter. Both
+paths avoid modifying or retetrahedralizing the FEM volume.
 """
 
 from __future__ import annotations
@@ -92,9 +94,10 @@ def conform_bem_interface_to_fem(
 ) -> tuple[meshio.Mesh, InterfaceConformResult]:
     """Return a BEM mesh whose interface facets exactly match the FEM facets.
 
-    The BEM mesh must contain a tagged interface with a planar perimeter
-    surrounded by a planar physical surface. The FEM interface itself is not
-    remeshed.
+    A curved interface is replaced directly when its FEM and BEM seams already
+    have identical discrete vertices and edges. Otherwise, the BEM interface
+    must have a planar perimeter surrounded by a planar physical surface. The
+    FEM interface itself is not remeshed.
     """
 
     symmetry = _normalized_symmetry_mode(symmetry_mode)
@@ -149,6 +152,46 @@ def conform_bem_interface_to_fem(
         fem_opening_path = fem_inner_loop
         old_bem_opening_path = old_bem_inner_loop
 
+    direct_seam_match, direct_seam_deviation = _matching_discrete_paths(
+        fem_mesh.points,
+        fem_opening_path,
+        bem_mesh.points,
+        old_bem_opening_path,
+        tolerance=merge_tolerance,
+        closed=not symmetry_axes,
+    )
+    if direct_seam_match:
+        output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
+            fem_mesh,
+            bem_mesh,
+            fem_interface,
+            bem_data,
+            bem_interface_mask,
+            bem_interface_tag,
+            merge_tolerance,
+        )
+        identity = validate_conforming_interfaces(
+            fem_mesh,
+            output_mesh,
+            fem_interface_name=fem_interface_name,
+            bem_interface_name=bem_interface_name,
+            coordinate_tolerance=max(merge_tolerance * 10.0, 1e-9),
+            require_closed_bem=True,
+            symmetry_mode=symmetry,
+        )
+        result = InterfaceConformResult(
+            fem_interface_triangles=len(fem_interface),
+            original_bem_interface_triangles=len(bem_interface),
+            original_adjacent_triangles=0,
+            remeshed_adjacent_triangles=0,
+            output_vertices=len(output_mesh.points),
+            output_triangles=len(_triangle_data(output_mesh, require_geometrical=True).triangles),
+            max_original_boundary_deviation=direct_seam_deviation,
+            interface_orientation_flipped=interface_orientation_flipped,
+            identity=identity,
+        )
+        return output_mesh, result
+
     plane_origin, perimeter_normal = _best_fit_plane(bem_mesh.points[old_bem_opening_path])
     triangle_plane_deviation = np.max(
         np.abs((bem_mesh.points[bem_data.triangles] - plane_origin) @ perimeter_normal),
@@ -157,7 +200,9 @@ def conform_bem_interface_to_fem(
     adjacent_mask = (~bem_interface_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
     if not np.any(adjacent_mask):
         raise InterfaceConformError(
-            "Could not find a planar non-interface BEM surface surrounding the interface perimeter."
+            "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "
+            "A curved interface seam can be replaced only when its FEM and BEM vertices and edges "
+            "already match within merge_tolerance."
         )
 
     adjacent_triangles = bem_data.triangles[adjacent_mask]
@@ -809,6 +854,134 @@ def _points_to_closed_polyline_distance(points: np.ndarray, polyline: np.ndarray
     return float(np.max(np.min(distances, axis=1), initial=0.0))
 
 
+def _matching_discrete_paths(
+    first_points: np.ndarray,
+    first_path: np.ndarray,
+    second_points: np.ndarray,
+    second_path: np.ndarray,
+    *,
+    tolerance: float,
+    closed: bool,
+) -> tuple[bool, float]:
+    """Return whether two paths have bijective vertices and identical edges."""
+
+    first_coordinates = np.asarray(first_points, dtype=float)[np.asarray(first_path, dtype=np.int64)]
+    second_coordinates = np.asarray(second_points, dtype=float)[np.asarray(second_path, dtype=np.int64)]
+    if len(first_coordinates) != len(second_coordinates):
+        return False, float("inf")
+
+    first_distances, first_to_second = cKDTree(second_coordinates).query(first_coordinates, k=1)
+    second_distances, second_to_first = cKDTree(first_coordinates).query(second_coordinates, k=1)
+    maximum_deviation = max(
+        float(np.max(first_distances, initial=0.0)),
+        float(np.max(second_distances, initial=0.0)),
+    )
+    if maximum_deviation > tolerance:
+        return False, maximum_deviation
+    if len(np.unique(first_to_second)) != len(first_coordinates):
+        return False, maximum_deviation
+    if len(np.unique(second_to_first)) != len(second_coordinates):
+        return False, maximum_deviation
+    if not np.array_equal(
+        second_to_first[first_to_second],
+        np.arange(len(first_coordinates)),
+    ):
+        return False, maximum_deviation
+
+    def path_edges(vertex_count: int) -> set[tuple[int, int]]:
+        stop = vertex_count if closed else vertex_count - 1
+        return {
+            tuple(sorted((index, (index + 1) % vertex_count)))
+            for index in range(stop)
+        }
+
+    mapped_first_edges = {
+        tuple(sorted((int(first_to_second[start]), int(first_to_second[end]))))
+        for start, end in path_edges(len(first_coordinates))
+    }
+    return mapped_first_edges == path_edges(len(second_coordinates)), maximum_deviation
+
+
+def _replace_bem_interface_directly(
+    fem_mesh: meshio.Mesh,
+    bem_mesh: meshio.Mesh,
+    fem_interface: np.ndarray,
+    bem_data: _TriangleData,
+    bem_interface_mask: np.ndarray,
+    bem_interface_tag: int,
+    merge_tolerance: float,
+) -> tuple[meshio.Mesh, bool]:
+    """Copy FEM facets into a BEM mesh whose discrete seam already matches."""
+
+    old_bem_interface = bem_data.triangles[bem_interface_mask]
+    fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
+    old_interface_normal = _surface_normal(bem_mesh.points, old_bem_interface)
+    interface_orientation_flipped = bool(
+        np.dot(fem_interface_normal, old_interface_normal) < 0.0
+    )
+    copied_interface = np.asarray(fem_interface, dtype=np.int64).copy()
+    if interface_orientation_flipped:
+        copied_interface = copied_interface[:, [0, 2, 1]]
+
+    fem_vertices = np.unique(copied_interface)
+    fem_vertex_map = np.full(len(fem_mesh.points), -1, dtype=np.int64)
+    fem_vertex_map[fem_vertices] = np.arange(len(fem_vertices), dtype=np.int64)
+    copied_interface = fem_vertex_map[copied_interface]
+
+    keep_mask = ~bem_interface_mask
+    fem_offset = len(bem_mesh.points)
+    combined_points = np.vstack(
+        (
+            np.asarray(bem_mesh.points, dtype=float),
+            np.asarray(fem_mesh.points, dtype=float)[fem_vertices],
+        )
+    )
+    combined_triangles = np.vstack(
+        (
+            bem_data.triangles[keep_mask],
+            copied_interface + fem_offset,
+        )
+    )
+    combined_physical = np.concatenate(
+        (
+            bem_data.physical_tags[keep_mask],
+            np.full(len(copied_interface), bem_interface_tag, dtype=np.int32),
+        )
+    )
+    interface_geometrical_tag = int(
+        np.min(bem_data.geometrical_tags[bem_interface_mask])
+    )
+    combined_geometrical = np.concatenate(
+        (
+            bem_data.geometrical_tags[keep_mask],
+            np.full(
+                len(copied_interface),
+                interface_geometrical_tag,
+                dtype=np.int32,
+            ),
+        )
+    )
+
+    merged_points, merged_triangles = _merge_and_compact_points(
+        combined_points,
+        combined_triangles,
+        merge_tolerance,
+    )
+    output_mesh = meshio.Mesh(
+        points=merged_points,
+        cells=[("triangle", merged_triangles)],
+        cell_data={
+            "gmsh:physical": [combined_physical],
+            "gmsh:geometrical": [combined_geometrical],
+        },
+        field_data={
+            name: np.asarray(value).copy()
+            for name, value in bem_mesh.field_data.items()
+        },
+    )
+    return output_mesh, interface_orientation_flipped
+
+
 def _aligned_open_paths(
     first: np.ndarray,
     second: np.ndarray,
@@ -1083,11 +1256,14 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
         f"{result.original_bem_interface_triangles} BEM triangles replaced by "
         f"{result.fem_interface_triangles} FEM facets"
     )
-    print(
-        "Surrounding surface: "
-        f"{result.original_adjacent_triangles} triangles replaced by "
-        f"{result.remeshed_adjacent_triangles} triangles"
-    )
+    if result.original_adjacent_triangles == result.remeshed_adjacent_triangles == 0:
+        print("Surrounding BEM surface preserved: interface seams already matched discretely")
+    else:
+        print(
+            "Surrounding surface: "
+            f"{result.original_adjacent_triangles} triangles replaced by "
+            f"{result.remeshed_adjacent_triangles} triangles"
+        )
     print(
         f"Output: {result.output_vertices} vertices, {result.output_triangles} triangles, "
         f"{result.identity.bem_boundary_edges} open boundary edges"

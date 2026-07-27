@@ -1,6 +1,6 @@
 module BeatEngineCore
 
-using Base.Threads, LinearAlgebra, StaticArrays
+using Base.Threads, LinearAlgebra, SparseArrays, StaticArrays
 
 const CUDA_MODULE = try
     @eval import CUDA
@@ -26,8 +26,11 @@ export BoundaryMesh,
     build_cuda_field_evaluation_cache,
     build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    build_cuda_sparse_scatter_cache,
     release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
+    release_cuda_sparse_scatter_cache!,
+    scatter_cuda_sparse_to_dense!,
     build_rocm_regular_assembly_cache,
     build_rocm_field_evaluation_cache,
     build_field_evaluation_cache,
@@ -926,6 +929,18 @@ end
 
 function build_cuda_burton_miller_identity_cache(args...; kwargs...)
     error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
+end
+
+function build_cuda_sparse_scatter_cache(args...; kwargs...)
+    error("CUDA sparse scatter cache requested, but CUDA.jl is not loaded.")
+end
+
+function scatter_cuda_sparse_to_dense!(args...; kwargs...)
+    error("CUDA sparse scatter requested, but CUDA.jl is not loaded.")
+end
+
+function release_cuda_sparse_scatter_cache!(args...; kwargs...)
+    error("CUDA sparse scatter cache release requested, but CUDA.jl is not loaded.")
 end
 
 function release_cuda_burton_miller_identity_cache!(cache::CudaBurtonMillerIdentityCache)

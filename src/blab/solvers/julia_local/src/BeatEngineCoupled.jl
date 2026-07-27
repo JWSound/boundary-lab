@@ -3,6 +3,20 @@ module BeatEngineCoupled
 using LinearAlgebra, SparseArrays, StaticArrays
 using ..BeatEngineCore
 
+const CUDSS_MODULE = try
+    @eval import CUDSS
+    CUDSS
+catch
+    nothing
+end
+
+function _cudss_module()
+    CUDSS_MODULE === nothing && error(
+        "CUDA FEM static condensation requires CUDSS.jl in the active Julia environment.",
+    )
+    return CUDSS_MODULE
+end
+
 export VolumeMesh,
     ConformingInterfaceMap,
     InterfaceOperators,
@@ -415,12 +429,26 @@ function prepare_coupled_cache(
         error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
     normalized_symmetry = BeatEngineCore.normalized_symmetry_mode(symmetry_mode)
     validate_symmetry_fundamental_domain!(bem_mesh, normalized_symmetry)
+
+    fem_matrix_started = time_ns()
     stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    fem_matrix_cache_s = (time_ns() - fem_matrix_started) / 1.0e9
+
+    interface_started = time_ns()
     interface_operators = assemble_interface_operators(fem_mesh, bem_mesh, interface_map)
+    interface_operator_cache_s = (time_ns() - interface_started) / 1.0e9
+
+    bem_space_started = time_ns()
     p1 = build_p1_space(bem_mesh)
     dp0 = build_dp0_space(bem_mesh)
     rule = triangle_rule(T, quadrature_order)
+    bem_space_cache_s = (time_ns() - bem_space_started) / 1.0e9
+
+    singular_started = time_ns()
     singular_cache = build_singular_correction_cache(bem_mesh, singular_order)
+    bem_singular_cache_s = (time_ns() - singular_started) / 1.0e9
+
+    cpu_assembly_started = time_ns()
     cpu_assembly_cache = bem_backend == :cpu ? build_beat_cpu_assembly_cache(
         bem_mesh,
         p1,
@@ -429,12 +457,23 @@ function prepare_coupled_cache(
         singular_order=singular_order,
         symmetry_mode=normalized_symmetry,
     ) : nothing
+    bem_cpu_assembly_cache_s = (time_ns() - cpu_assembly_started) / 1.0e9
+
+    device_regular_started = time_ns()
     device_cache = bem_backend == :cuda ? build_cuda_regular_assembly_cache(bem_mesh, rule) : nothing
+    bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_device_regular_cache_s = (time_ns() - device_regular_started) / 1.0e9
+
+    device_singular_started = time_ns()
     device_singular_cache = bem_backend == :cuda ? BeatEngineCore.build_cuda_singular_correction_cache(
         singular_cache,
         p1,
         dp0,
     ) : nothing
+    bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_device_singular_cache_s = (time_ns() - device_singular_started) / 1.0e9
+
+    device_image_started = time_ns()
     device_image_singular_cache = bem_backend == :cuda && normalized_symmetry != :off ?
         BeatEngineCore.build_cuda_image_singular_correction_cache(
             bem_mesh,
@@ -444,8 +483,71 @@ function prepare_coupled_cache(
             eachindex(bem_mesh.faces),
             normalized_symmetry,
         ) : nothing
-    cpu_field_cache = build_field_evaluation_cache(bem_mesh, rule; symmetry_mode=normalized_symmetry)
-    field_cache = bem_backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
+    bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_device_image_cache_s = (time_ns() - device_image_started) / 1.0e9
+
+    identity_started = time_ns()
+    identity_p1_p1 = assemble_l2_identity_matrix(
+        bem_mesh,
+        p1,
+        dp0,
+        rule,
+        :p1,
+        :p1;
+        symmetry_mode=normalized_symmetry,
+    )
+    identity_p1_dp0 = assemble_l2_identity_matrix(
+        bem_mesh,
+        p1,
+        dp0,
+        rule,
+        :p1,
+        :dp0;
+        symmetry_mode=normalized_symmetry,
+    )
+    bem_identity_cache_s = (time_ns() - identity_started) / 1.0e9
+
+    device_block_started = time_ns()
+    device_identity_cache = nothing
+    device_bem_flux = nothing
+    device_sparse_blocks = nothing
+    if bem_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        device_identity_cache = build_cuda_burton_miller_identity_cache(
+            identity_p1_p1,
+            identity_p1_dp0,
+            T,
+        )
+        device_bem_flux = cuda.CuArray(Complex{T}.(Matrix(interface_operators.bem_flux)))
+        gamma = interface_map.fem_vertex_indices
+        device_sparse_blocks = (
+            stiffness=build_cuda_sparse_scatter_cache(stiffness),
+            mass=build_cuda_sparse_scatter_cache(mass),
+            fem_load=build_cuda_sparse_scatter_cache(interface_operators.fem_load),
+            fem_trace=build_cuda_sparse_scatter_cache(interface_operators.fem_trace),
+            bem_trace=build_cuda_sparse_scatter_cache(interface_operators.bem_trace),
+            condensed_fem_load=build_cuda_sparse_scatter_cache(
+                interface_operators.fem_load[gamma, :],
+            ),
+            condensed_fem_trace=build_cuda_sparse_scatter_cache(
+                interface_operators.fem_trace[:, gamma],
+            ),
+        )
+        cuda.synchronize()
+    end
+    device_block_cache_s = (time_ns() - device_block_started) / 1.0e9
+
+    field_started = time_ns()
+    cpu_field_cache = build_field_evaluation_cache(
+        bem_mesh,
+        rule;
+        symmetry_mode=normalized_symmetry,
+    )
+    field_cache =
+        bem_backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
+    bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    field_cache_s = (time_ns() - field_started) / 1.0e9
+
     return (
         bem_backend=bem_backend,
         symmetry_mode=normalized_symmetry,
@@ -460,25 +562,25 @@ function prepare_coupled_cache(
         device_singular_cache=device_singular_cache,
         device_image_singular_cache=device_image_singular_cache,
         singular_cache=singular_cache,
-        identity_p1_p1=assemble_l2_identity_matrix(
-            bem_mesh,
-            p1,
-            dp0,
-            rule,
-            :p1,
-            :p1;
-            symmetry_mode=normalized_symmetry,
-        ),
-        identity_p1_dp0=assemble_l2_identity_matrix(
-            bem_mesh,
-            p1,
-            dp0,
-            rule,
-            :p1,
-            :dp0;
-            symmetry_mode=normalized_symmetry,
-        ),
+        identity_p1_p1=identity_p1_p1,
+        identity_p1_dp0=identity_p1_dp0,
+        device_identity_cache=device_identity_cache,
+        device_bem_flux=device_bem_flux,
+        device_sparse_blocks=device_sparse_blocks,
         field_cache=field_cache,
+        timings=(
+            fem_matrix_cache_s=fem_matrix_cache_s,
+            interface_operator_cache_s=interface_operator_cache_s,
+            bem_space_cache_s=bem_space_cache_s,
+            bem_singular_cache_s=bem_singular_cache_s,
+            bem_cpu_assembly_cache_s=bem_cpu_assembly_cache_s,
+            bem_device_regular_cache_s=bem_device_regular_cache_s,
+            bem_device_singular_cache_s=bem_device_singular_cache_s,
+            bem_device_image_cache_s=bem_device_image_cache_s,
+            bem_identity_cache_s=bem_identity_cache_s,
+            device_block_cache_s=device_block_cache_s,
+            field_cache_s=field_cache_s,
+        ),
     )
 end
 
@@ -554,6 +656,11 @@ function release_coupled_cache!(cache)
             :basis_values,
         ),
     )
+    release_cuda_burton_miller_identity_cache!(cache.device_identity_cache)
+    BeatEngineCore.cuda_module().unsafe_free!(cache.device_bem_flux)
+    for sparse_cache in values(cache.device_sparse_blocks)
+        release_cuda_sparse_scatter_cache!(sparse_cache)
+    end
     return nothing
 end
 
@@ -565,15 +672,22 @@ function _cuda_coupled_bem_blocks(
     wavenumber::T;
     validation_diagnostics::Bool,
     keep_device::Bool=false,
+    inputs_on_device::Bool=false,
 ) where {T<:AbstractFloat}
     cuda = BeatEngineCore.cuda_module()
     coupling = Complex{T}(0, 1) / wavenumber
     d_identity_p1_p1 = d_identity_p1_dp0 = d_bem_flux = nothing
     d_lhs = d_interface_block = d_interface_temp = d_rhs_operator = nothing
     try
-        d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
-        d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
-        d_bem_flux = cuda.CuArray(Complex{T}.(Matrix(bem_flux)))
+        if inputs_on_device
+            d_identity_p1_p1 = identity_p1_p1
+            d_identity_p1_dp0 = identity_p1_dp0
+            d_bem_flux = bem_flux
+        else
+            d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
+            d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
+            d_bem_flux = cuda.CuArray(Complex{T}.(Matrix(bem_flux)))
+        end
         d_lhs = (
             Complex{T}(0.5) .* d_identity_p1_p1 .-
             operators.double_layer .+
@@ -615,12 +729,12 @@ function _cuda_coupled_bem_blocks(
                                 Complex{T}.(Array(d_interface_block)),
         )
     finally
-        for value in (
+        input_allocations = inputs_on_device ? () : (
             d_identity_p1_p1,
             d_identity_p1_dp0,
             d_bem_flux,
-            d_interface_temp,
         )
+        for value in (input_allocations..., d_interface_temp)
             isnothing(value) || cuda.unsafe_free!(value)
         end
         if !keep_device
@@ -629,6 +743,94 @@ function _cuda_coupled_bem_blocks(
             end
         end
     end
+end
+
+function _build_cuda_fem_condensation(
+    fem_system::SparseMatrixCSC{Complex{T}},
+    interface_operators::InterfaceOperators{T},
+    interface_map::ConformingInterfaceMap,
+) where {T<:AbstractFloat}
+    cuda = BeatEngineCore.cuda_module()
+    cudss = _cudss_module()
+    fem_count = size(fem_system, 1)
+    interface_vertices = interface_map.fem_vertex_indices
+    interface_set = Set(interface_vertices)
+    interior_vertices = [
+        vertex for vertex in 1:fem_count
+        if !(vertex in interface_set)
+    ]
+    interior_load = interface_operators.fem_load[interior_vertices, :]
+    nnz(interior_load) == 0 || error(
+        "FEM static condensation currently requires interface loads to have support only on interface nodes.",
+    )
+
+    permutation = vcat(interior_vertices, interface_vertices)
+    permuted_system = fem_system[permutation, permutation]
+    device_system = cuda.CUSPARSE.CuSparseMatrixCSR(permuted_system)
+    solver = cudss.CudssSolver(device_system, "G", 'F')
+    cudss.cudss_set(solver, "schur_mode", 1)
+    cudss.cudss_set(
+        solver,
+        "user_schur_indices",
+        vcat(
+            zeros(Cint, length(interior_vertices)),
+            ones(Cint, length(interface_vertices)),
+        ),
+    )
+    device_rhs = cuda.zeros(Complex{T}, fem_count)
+    device_solution = similar(device_rhs)
+    analysis_started = time_ns()
+    cudss.cudss("analysis", solver, device_solution, device_rhs; asynchronous=false)
+    analysis_s = (time_ns() - analysis_started) / 1.0e9
+    factorization_started = time_ns()
+    cudss.cudss(
+        "factorization",
+        solver,
+        device_solution,
+        device_rhs;
+        asynchronous=false,
+    )
+    factorization_s = (time_ns() - factorization_started) / 1.0e9
+
+    schur_shape = cudss.cudss_get(solver, "schur_shape")
+    device_schur = cuda.zeros(Complex{T}, schur_shape[1], schur_shape[2])
+    schur_descriptor = cudss.CudssMatrix(device_schur)
+    schur_started = time_ns()
+    cudss.cudss_set(solver, "schur_matrix", schur_descriptor.matrix)
+    cudss.cudss_get(solver, "schur_matrix")
+    cuda.synchronize()
+    schur_extraction_s = (time_ns() - schur_started) / 1.0e9
+    cuda.unsafe_free!(device_rhs)
+    cuda.unsafe_free!(device_solution)
+
+    return (
+        solver=solver,
+        device_system=device_system,
+        device_schur=device_schur,
+        schur_descriptor=schur_descriptor,
+        permutation=permutation,
+        interior_count=length(interior_vertices),
+        interface_count=length(interface_vertices),
+        timings=(
+            analysis_s=analysis_s,
+            factorization_s=factorization_s,
+            schur_extraction_s=schur_extraction_s,
+        ),
+    )
+end
+
+function _release_cuda_fem_condensation!(condensation)
+    isnothing(condensation) && return nothing
+    cuda = BeatEngineCore.cuda_module()
+    finalize(condensation.solver.data)
+    finalize(condensation.solver.config)
+    finalize(condensation.solver.matrix)
+    finalize(condensation.schur_descriptor)
+    cuda.unsafe_free!(condensation.device_schur)
+    cuda.unsafe_free!(condensation.device_system.rowPtr)
+    cuda.unsafe_free!(condensation.device_system.colVal)
+    cuda.unsafe_free!(condensation.device_system.nzVal)
+    return nothing
 end
 
 function build_coupled_system(
@@ -644,7 +846,14 @@ function build_coupled_system(
     validation_diagnostics::Bool=true,
     bem_backend::Symbol=:cpu,
     symmetry_mode::Symbol=:off,
+    static_condensation::Bool=false,
 ) where {T<:AbstractFloat}
+    static_condensation && bem_backend != :cuda && error(
+        "FEM static condensation is currently available only for the CUDA coupled backend.",
+    )
+    static_condensation && validation_diagnostics && error(
+        "FEM static condensation cannot be combined with full-matrix validation diagnostics.",
+    )
     fem_stage_started = time_ns()
     prepared = isnothing(cache) ? prepare_coupled_cache(
         fem_mesh,
@@ -691,12 +900,13 @@ function build_coupled_system(
         try
             _cuda_coupled_bem_blocks(
                 operators,
-                prepared.identity_p1_p1,
-                prepared.identity_p1_dp0,
-                interface_operators.bem_flux,
+                prepared.device_identity_cache.identity_p1_p1,
+                prepared.device_identity_cache.identity_p1_dp0,
+                prepared.device_bem_flux,
                 wavenumber;
                 validation_diagnostics=validation_diagnostics,
                 keep_device=linear_backend == :cuda,
+                inputs_on_device=true,
             )
         finally
             release_operator_storage!(operators)
@@ -718,35 +928,81 @@ function build_coupled_system(
     bem_rhs_operator = bem_blocks.bem_rhs_operator
     bem_matrix_s = (time_ns() - bem_matrix_started) / 1.0e9
 
+    condensation_started = time_ns()
+    condensation = static_condensation ? _build_cuda_fem_condensation(
+        fem_system,
+        interface_operators,
+        interface_map,
+    ) : nothing
+    fem_condensation_s = (time_ns() - condensation_started) / 1.0e9
+
     block_assembly_started = time_ns()
     fem_count = length(fem_mesh.vertices)
     bem_count = length(bem_mesh.vertices)
     interface_count = length(interface_map.fem_vertex_indices)
+    formulation = static_condensation ? :fem_interface_condensed : :monolithic
     fem_range = 1:fem_count
-    bem_range = (fem_count + 1):(fem_count + bem_count)
-    flux_range = (fem_count + bem_count + 1):(fem_count + bem_count + interface_count)
-    system_count = fem_count + bem_count + interface_count
+    gamma_range = static_condensation ? (1:interface_count) : nothing
+    bem_range = static_condensation ?
+                ((interface_count + 1):(interface_count + bem_count)) :
+                ((fem_count + 1):(fem_count + bem_count))
+    flux_range = static_condensation ?
+                 ((interface_count + bem_count + 1):(2 * interface_count + bem_count)) :
+                 ((fem_count + bem_count + 1):(fem_count + bem_count + interface_count))
+    system_count = static_condensation ?
+                   (2 * interface_count + bem_count) :
+                   (fem_count + bem_count + interface_count)
     coupled = if linear_backend == :cuda
         cuda = BeatEngineCore.cuda_module()
         d_coupled = cuda.zeros(Complex{T}, system_count, system_count)
-        device_blocks = (
-            cuda.CuArray(Complex{T}.(Matrix(fem_system))),
-            cuda.CuArray(-Complex{T}.(Matrix(interface_operators.fem_load))),
-            cuda.CuArray(Complex{T}.(Matrix(interface_operators.fem_trace))),
-            cuda.CuArray(-Complex{T}.(Matrix(interface_operators.bem_trace))),
-        )
         try
-            view(d_coupled, fem_range, fem_range) .= device_blocks[1]
-            view(d_coupled, fem_range, flux_range) .= device_blocks[2]
+            if static_condensation
+                view(d_coupled, gamma_range, gamma_range) .= condensation.device_schur
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.condensed_fem_load;
+                    column_offset=first(flux_range) - 1,
+                    alpha=-one(Complex{T}),
+                )
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.condensed_fem_trace;
+                    row_offset=first(flux_range) - 1,
+                )
+            else
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.stiffness,
+                )
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.mass;
+                    alpha=-Complex{T}(wavenumber^2),
+                    add=true,
+                )
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.fem_load;
+                    column_offset=first(flux_range) - 1,
+                    alpha=-one(Complex{T}),
+                )
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.fem_trace;
+                    row_offset=first(flux_range) - 1,
+                )
+            end
             view(d_coupled, bem_range, bem_range) .= bem_lhs
             view(d_coupled, bem_range, flux_range) .= bem_blocks.bem_interface_block
-            view(d_coupled, flux_range, fem_range) .= device_blocks[3]
-            view(d_coupled, flux_range, bem_range) .= device_blocks[4]
+            scatter_cuda_sparse_to_dense!(
+                d_coupled,
+                prepared.device_sparse_blocks.bem_trace;
+                row_offset=first(flux_range) - 1,
+                column_offset=first(bem_range) - 1,
+                alpha=-one(Complex{T}),
+            )
             cuda.synchronize()
         finally
-            for value in device_blocks
-                cuda.unsafe_free!(value)
-            end
             cuda.unsafe_free!(bem_lhs)
             cuda.unsafe_free!(bem_blocks.bem_interface_block)
         end
@@ -784,7 +1040,10 @@ function build_coupled_system(
         field_cache=prepared.field_cache,
         coupled=validation_diagnostics ? coupled : nothing,
         factorization=factorization,
+        formulation=formulation,
+        condensation=condensation,
         fem_range=fem_range,
+        gamma_range=gamma_range,
         bem_range=bem_range,
         flux_range=flux_range,
         bem_lhs=validation_diagnostics ? bem_lhs : nothing,
@@ -796,10 +1055,14 @@ function build_coupled_system(
         cache=prepared,
         owns_cache=isnothing(cache),
         validation_diagnostics=validation_diagnostics,
+        scalar_type=T,
+        full_system_order=fem_count + bem_count + interface_count,
+        solved_system_order=system_count,
         timings=(
             fem_system_s=fem_system_s,
             bem_operator_s=bem_operator_s,
             bem_matrix_s=bem_matrix_s,
+            fem_condensation_s=fem_condensation_s,
             block_assembly_s=block_assembly_s,
             coupled_factorization_s=coupled_factorization_s,
             replay_factorization_s=replay_factorization_s,
@@ -812,16 +1075,21 @@ function release_coupled_system!(system)
         cuda = BeatEngineCore.cuda_module()
         cuda.unsafe_free!(system.factorization.factors)
         cuda.unsafe_free!(system.factorization.ipiv)
+        _release_cuda_fem_condensation!(system.condensation)
     end
     system.owns_cache && release_coupled_cache!(system.cache)
     return nothing
 end
 
-function _coupled_solution_from_vector(system, solution, rhs)
-    T = typeof(real(zero(eltype(system.factorization))))
-    fem_pressure = solution[system.fem_range]
-    bem_pressure = solution[system.bem_range]
-    interface_flux = solution[system.flux_range]
+function _coupled_solution_from_parts(
+    system,
+    fem_pressure,
+    bem_pressure,
+    interface_flux;
+    solution=nothing,
+    rhs=nothing,
+)
+    T = system.scalar_type
     bem_neumann = Complex{T}.(system.interface_operators.bem_flux) * interface_flux
 
     pressure_jump = (
@@ -854,6 +1122,8 @@ function _coupled_solution_from_vector(system, solution, rhs)
     replay_error = nothing
     relative_residual = nothing
     if system.validation_diagnostics
+        isnothing(solution) && error("Validation diagnostics require the monolithic solution vector.")
+        isnothing(rhs) && error("Validation diagnostics require the monolithic right-hand side.")
         replay_pressure = system.bem_factorization \ (system.bem_rhs_operator * bem_neumann)
         replay_scale = max(norm(bem_pressure), norm(replay_pressure), eps(T))
         replay_error = norm(bem_pressure - replay_pressure) / replay_scale
@@ -873,12 +1143,23 @@ function _coupled_solution_from_vector(system, solution, rhs)
     )
 end
 
+function _coupled_solution_from_vector(system, solution, rhs)
+    return _coupled_solution_from_parts(
+        system,
+        solution[system.fem_range],
+        solution[system.bem_range],
+        solution[system.flux_range];
+        solution=solution,
+        rhs=rhs,
+    )
+end
+
 function solve_coupled_systems(
     system,
     radiator_tags;
     radiator_velocities=nothing,
 )
-    T = typeof(real(zero(eltype(system.factorization))))
+    T = system.scalar_type
     tags = Int.(collect(radiator_tags))
     isempty(tags) && error("At least one radiator tag is required.")
     velocities = isnothing(radiator_velocities) ?
@@ -886,9 +1167,9 @@ function solve_coupled_systems(
                  Complex{T}.(collect(radiator_velocities))
     length(velocities) == length(tags) ||
         error("Radiator tags and velocities must have the same length.")
-    rhs = zeros(Complex{T}, size(system.factorization, 1), length(tags))
+    fem_rhs = zeros(Complex{T}, length(system.fem_mesh.vertices), length(tags))
     for (column, (radiator_tag, velocity)) in enumerate(zip(tags, velocities))
-        rhs[system.fem_range, column] = assemble_prescribed_velocity_load(
+        fem_rhs[:, column] = assemble_prescribed_velocity_load(
             system.fem_mesh,
             radiator_tag,
             system.density,
@@ -896,6 +1177,64 @@ function solve_coupled_systems(
             velocity,
         )
     end
+    if system.formulation == :fem_interface_condensed
+        cuda = BeatEngineCore.cuda_module()
+        cudss = _cudss_module()
+        condensation = system.condensation
+        permuted_rhs = fem_rhs[condensation.permutation, :]
+        d_fem_rhs = cuda.CuArray(permuted_rhs)
+        d_forward = similar(d_fem_rhs)
+        d_rhs = cuda.zeros(
+            Complex{T},
+            size(system.factorization, 1),
+            length(tags),
+        )
+        d_solution = nothing
+        try
+            cudss.cudss(
+                "solve_fwd_schur",
+                condensation.solver,
+                d_forward,
+                d_fem_rhs;
+                asynchronous=false,
+            )
+            schur_rows = (condensation.interior_count + 1):length(condensation.permutation)
+            view(d_rhs, system.gamma_range, :) .= view(d_forward, schur_rows, :)
+            d_solution = system.factorization \ d_rhs
+            view(d_forward, schur_rows, :) .= view(d_solution, system.gamma_range, :)
+            cudss.cudss(
+                "solve_bwd_schur",
+                condensation.solver,
+                d_fem_rhs,
+                d_forward;
+                asynchronous=false,
+            )
+            view(d_fem_rhs, schur_rows, :) .= view(d_solution, system.gamma_range, :)
+            cuda.synchronize()
+            permuted_pressure = Complex{T}.(Array(d_fem_rhs))
+            fem_pressure = similar(permuted_pressure)
+            fem_pressure[condensation.permutation, :] = permuted_pressure
+            bem_pressure = Complex{T}.(Array(view(d_solution, system.bem_range, :)))
+            interface_flux = Complex{T}.(Array(view(d_solution, system.flux_range, :)))
+            return [
+                _coupled_solution_from_parts(
+                    system,
+                    fem_pressure[:, column],
+                    bem_pressure[:, column],
+                    interface_flux[:, column],
+                )
+                for column in axes(fem_pressure, 2)
+            ]
+        finally
+            cuda.unsafe_free!(d_fem_rhs)
+            cuda.unsafe_free!(d_forward)
+            cuda.unsafe_free!(d_rhs)
+            isnothing(d_solution) || cuda.unsafe_free!(d_solution)
+        end
+    end
+
+    rhs = zeros(Complex{T}, size(system.factorization, 1), length(tags))
+    rhs[system.fem_range, :] = fem_rhs
     solution = if system.linear_backend == :cuda
         cuda = BeatEngineCore.cuda_module()
         d_rhs = cuda.CuArray(rhs)

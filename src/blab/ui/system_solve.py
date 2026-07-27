@@ -101,6 +101,7 @@ def prepare_coupled_ui_solve(
             "singular_order": 2,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
+            "static_condensation": normalized_backend_id == "beat_cuda",
             "symmetry": symmetry,
         },
     )

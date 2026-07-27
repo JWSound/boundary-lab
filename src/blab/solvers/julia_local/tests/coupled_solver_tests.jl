@@ -264,6 +264,19 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             validation_diagnostics=false,
             bem_backend=:cuda,
         )
+        condensed_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            quadrature_order=COUPLED_QUADRATURE_ORDER,
+            singular_order=COUPLED_SINGULAR_ORDER,
+            validation_diagnostics=false,
+            bem_backend=:cuda,
+            static_condensation=true,
+        )
         try
             cpu_solution = solve_coupled_system(cpu_system, radiator_tag)
             cuda_solutions = solve_coupled_systems(
@@ -272,6 +285,12 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
                 radiator_velocities=ComplexF32[1, 0.5],
             )
             cuda_solution = cuda_solutions[1]
+            condensed_solutions = solve_coupled_systems(
+                condensed_system,
+                [radiator_tag, radiator_tag];
+                radiator_velocities=ComplexF32[1, 0.5],
+            )
+            condensed_solution = condensed_solutions[1]
             relative_error(reference, candidate) = norm(candidate - reference) / norm(reference)
 
             @test cpu_system.linear_backend == :cpu
@@ -285,9 +304,30 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             ) < 1e-5
             @test cuda_solution.pressure_continuity_error < 1e-4
             @test cuda_solution.flux_conservation_error < 1e-4
+            @test condensed_system.formulation == :fem_interface_condensed
+            @test condensed_system.solved_system_order < condensed_system.full_system_order
+            @test relative_error(
+                cuda_solution.fem_pressure,
+                condensed_solution.fem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                cuda_solution.bem_pressure,
+                condensed_solution.bem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                cuda_solution.interface_flux,
+                condensed_solution.interface_flux,
+            ) < 1e-3
+            @test relative_error(
+                0.5f0 .* condensed_solution.bem_pressure,
+                condensed_solutions[2].bem_pressure,
+            ) < 1e-5
+            @test condensed_solution.pressure_continuity_error < 1e-4
+            @test condensed_solution.flux_conservation_error < 1e-4
         finally
             release_coupled_system!(cpu_system)
             release_coupled_system!(cuda_system)
+            release_coupled_system!(condensed_system)
         end
     end
 elseif get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1"

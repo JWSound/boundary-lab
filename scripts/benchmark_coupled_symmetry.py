@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import meshio
 import numpy as np
 
 from blab.interface_conform import conform_interface_mesh_files
@@ -43,6 +44,7 @@ class ModeSpec:
     volume: str
     wall: str
     symmetry_surface: str | None
+    bem_suffix: str | None = None
 
 
 MODE_SPECS = {
@@ -73,19 +75,49 @@ MODE_SPECS = {
         "SAWMODFEM (1) (1)_boundary",
         "SYMMETRY",
     ),
+    "xy-detailed": ModeSpec(
+        "xy",
+        "reduced_xy_detailed",
+        "BEMInterface (1) (1)",
+        "BEMExt (1) (1)",
+        "SAWMODFEM (1) (1)",
+        "SAWMODFEM (1) (1)_boundary",
+        None,
+        bem_suffix="reduced_xy",
+    ),
 }
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--modes", default="off,x,xy", help="Comma-separated subset of off,x,xy.")
+    parser.add_argument(
+        "--modes",
+        default="off,x,xy",
+        help="Comma-separated subset of off,x,xy,xy-detailed.",
+    )
     parser.add_argument("--frequencies", default="500", help="Comma-separated frequencies in Hz.")
     parser.add_argument("--bem-backend", choices=("cpu", "cuda", "both"), default="cpu")
     parser.add_argument("--julia", default="julia")
     parser.add_argument("--julia-threads", default="4")
+    parser.add_argument(
+        "--solver-script",
+        type=Path,
+        help="Optional Julia coupled-worker entry point, primarily for profiler wrappers.",
+    )
     parser.add_argument("--quadrature-order", type=int, default=2)
     parser.add_argument("--singular-order", type=int, default=2)
     parser.add_argument("--validation-diagnostics", action="store_true")
+    parser.add_argument(
+        "--static-condensation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable exact FEM interface condensation (CUDA defaults to enabled).",
+    )
+    parser.add_argument(
+        "--inspect-only",
+        action="store_true",
+        help="Conform and compile the selected meshes, then report topology and dense-storage estimates without solving.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -96,30 +128,66 @@ def main() -> int:
 
     modes = tuple(value.strip().lower() for value in args.modes.split(",") if value.strip())
     if not modes or any(mode not in MODE_SPECS for mode in modes):
-        parser.error("--modes must contain off, x, and/or xy.")
+        parser.error("--modes must contain off, x, xy, and/or xy-detailed.")
     frequencies = tuple(float(value) for value in args.frequencies.split(",") if value.strip())
     if not frequencies or any(value <= 0.0 for value in frequencies):
         parser.error("--frequencies must contain positive values.")
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.inspect_only:
+        inspections = {}
+        for mode in modes:
+            spec = MODE_SPECS[mode]
+            system = _system_for_mode(spec, output_dir)
+            compiled = PhysicalSystemCompiler().compile(
+                system,
+                symmetry_mode=spec.symmetry,
+            )
+            inspections[mode] = _topology_report(mode, spec.symmetry, system, compiled)
+            print(_format_topology_report(inspections[mode]))
+        payload = {
+            "schema_version": 1,
+            "precision": "float32",
+            "inspections": inspections,
+        }
+        _write_payload(args.output_json, payload)
+        return 0
+
     points = _observation_points()
     backend_names = ("cpu", "cuda") if args.bem_backend == "both" else (args.bem_backend,)
     reports_by_backend: dict[str, dict[str, dict[str, object]]] = {}
     pressure_by_backend: dict[str, dict[str, np.ndarray]] = {}
 
     for backend_name in backend_names:
+        backend_options = {
+            "bem_backend": backend_name,
+            "julia_executable": args.julia,
+            "julia_threads": args.julia_threads,
+        }
+        if args.solver_script is not None:
+            backend_options["solver_script"] = args.solver_script.resolve()
         backend = CoupledProductionBackend(
-            bem_backend=backend_name,
-            julia_executable=args.julia,
-            julia_threads=args.julia_threads,
+            **backend_options,
         )
         reports: dict[str, dict[str, object]] = {}
         pressure_by_mode: dict[str, np.ndarray] = {}
         for mode in modes:
             spec = MODE_SPECS[mode]
             system = _system_for_mode(spec, output_dir)
-            compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=mode)
+            compiled = PhysicalSystemCompiler().compile(
+                system,
+                symmetry_mode=spec.symmetry,
+            )
+            solver_options = {
+                "quadrature_order": args.quadrature_order,
+                "singular_order": args.singular_order,
+                "validation_diagnostics": args.validation_diagnostics,
+                "cache_frequency_invariant": True,
+                "symmetry": spec.symmetry,
+            }
+            if args.static_condensation is not None:
+                solver_options["static_condensation"] = args.static_condensation
             request = SystemSolveRequest(
                 compiled_system=compiled,
                 frequencies_hz=frequencies,
@@ -131,13 +199,7 @@ def main() -> int:
                         options={"points_m": points.tolist()},
                     ),
                 ),
-                solver_options={
-                    "quadrature_order": args.quadrature_order,
-                    "singular_order": args.singular_order,
-                    "validation_diagnostics": args.validation_diagnostics,
-                    "cache_frequency_invariant": True,
-                    "symmetry": mode,
-                },
+                solver_options=solver_options,
             )
             started = time.perf_counter()
             results = list(backend.create_system_session(request).solve_stream())
@@ -149,7 +211,7 @@ def main() -> int:
                 ]
             )
             pressure_by_mode[mode] = pressure
-            reports[mode] = _mode_report(mode, compiled, results, wall_s)
+            reports[mode] = _mode_report(mode, spec.symmetry, compiled, results, wall_s)
             print(f"{backend_name.upper():>4} {_format_mode_report(reports[mode])}")
 
         reference_mode = "off" if "off" in pressure_by_mode else modes[0]
@@ -190,17 +252,13 @@ def main() -> int:
     }
     if len(backend_names) == 1:
         payload["modes"] = reports_by_backend[backend_names[0]]
-    if args.output_json is not None:
-        output_json = args.output_json.resolve()
-        output_json.parent.mkdir(parents=True, exist_ok=True)
-        output_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        print(f"Wrote {output_json}")
+    _write_payload(args.output_json, payload)
     return 0
 
 
 def _system_for_mode(spec: ModeSpec, output_dir: Path) -> PhysicalSystem:
     fem_path = FIXTURE_ROOT / f"SMfemvolume_{spec.suffix}.msh"
-    raw_bem_path = FIXTURE_ROOT / f"SMexterior_{spec.suffix}.msh"
+    raw_bem_path = FIXTURE_ROOT / f"SMexterior_{spec.bem_suffix or spec.suffix}.msh"
     bem_path = output_dir / f"SMexterior_{spec.suffix}_conforming.msh"
     conform_interface_mesh_files(
         fem_path,
@@ -348,14 +406,84 @@ def _observation_points() -> np.ndarray:
     return np.vstack((horizontal, vertical))
 
 
-def _mode_report(mode, compiled, results, wall_s: float) -> dict[str, object]:
+def _topology_report(mode, symmetry, system, compiled) -> dict[str, object]:
+    fem_resource = next(mesh for mesh in system.meshes if mesh.purpose == MeshPurpose.FEM_VOLUME)
+    bem_resource = next(mesh for mesh in system.meshes if mesh.purpose == MeshPurpose.BEM_SURFACE)
+    fem_mesh = meshio.read(fem_resource.file)
+    bem_mesh = meshio.read(bem_resource.file)
+    fem_nodes = len(fem_mesh.points)
+    fem_tetrahedra = sum(len(block.data) for block in fem_mesh.cells if block.type in {"tetra", "tetra4"})
+    bem_nodes = len(bem_mesh.points)
+    bem_faces = sum(len(block.data) for block in bem_mesh.cells if block.type in {"triangle", "triangle3"})
+    topology = compiled.interfaces[0].topology
+    interface_nodes = len(topology.fem_vertex_indices)
+    interface_faces = len(topology.fem_face_indices)
+    system_order = fem_nodes + bem_nodes + interface_nodes
+    bytes_per_complex = np.dtype(np.complex64).itemsize
+    return {
+        "mode": mode,
+        "symmetry": symmetry,
+        "fem_nodes": fem_nodes,
+        "fem_tetrahedra": fem_tetrahedra,
+        "bem_nodes": bem_nodes,
+        "bem_faces": bem_faces,
+        "interface_nodes": interface_nodes,
+        "interface_faces": interface_faces,
+        "coupled_order": system_order,
+        "fem_dense_gib": fem_nodes * fem_nodes * bytes_per_complex / 2**30,
+        "coupled_dense_gib": system_order * system_order * bytes_per_complex / 2**30,
+    }
+
+
+def _format_topology_report(report: dict[str, object]) -> str:
+    return (
+        f"{str(report['mode']).upper():>11}: "
+        f"FEM={report['fem_nodes']} nodes/{report['fem_tetrahedra']} tets, "
+        f"BEM={report['bem_nodes']} nodes/{report['bem_faces']} faces, "
+        f"interface={report['interface_nodes']} nodes/{report['interface_faces']} faces, "
+        f"coupled order={report['coupled_order']}, "
+        f"dense={report['coupled_dense_gib']:.2f} GiB"
+    )
+
+
+def _write_payload(output_json: Path | None, payload: dict[str, object]) -> None:
+    if output_json is None:
+        return
+    resolved = output_json.resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    print(f"Wrote {resolved}")
+
+
+def _mode_report(
+    mode,
+    symmetry,
+    compiled,
+    results,
+    wall_s: float,
+) -> dict[str, object]:
     timing_keys = (
         "mesh_setup_s",
         "cache_setup_s",
+        "fem_matrix_cache_s",
+        "interface_operator_cache_s",
+        "bem_space_cache_s",
+        "bem_singular_cache_s",
+        "bem_cpu_assembly_cache_s",
+        "bem_device_regular_cache_s",
+        "bem_device_singular_cache_s",
+        "bem_device_image_cache_s",
+        "bem_identity_cache_s",
+        "device_block_cache_s",
+        "field_cache_s",
         "assembly_s",
         "fem_system_s",
         "bem_operator_s",
         "bem_matrix_s",
+        "fem_condensation_s",
+        "fem_condensation_analysis_s",
+        "fem_condensation_factorization_s",
+        "fem_schur_extraction_s",
         "block_assembly_s",
         "coupled_factorization_s",
         "solve_s",
@@ -374,9 +502,13 @@ def _mode_report(mode, compiled, results, wall_s: float) -> dict[str, object]:
     ]
     topology = compiled.interfaces[0].topology
     return {
-        "symmetry": mode,
+        "mode": mode,
+        "symmetry": symmetry,
         "bem_backend": str(results[0].diagnostics["bem_backend"]),
         "linear_backend": str(results[0].diagnostics["linear_backend"]),
+        "formulation": str(results[0].diagnostics["formulation"]),
+        "full_system_order": int(results[0].diagnostics["full_system_order"]),
+        "solved_system_order": int(results[0].diagnostics["solved_system_order"]),
         "wall_s": float(wall_s),
         "frequency_count": len(results),
         "interface_vertices": len(topology.fem_vertex_indices),
@@ -395,8 +527,9 @@ def _format_mode_report(report: dict[str, object]) -> str:
     timings = report["timings_s"]
     assert isinstance(timings, dict)
     return (
-        f"{str(report['symmetry']).upper():>3}: wall={report['wall_s']:.3f}s, "
+        f"{str(report['mode']).upper():>11}: wall={report['wall_s']:.3f}s, "
         f"interface={report['interface_vertices']} nodes/{report['interface_faces']} faces, "
+        f"order={report['solved_system_order']}/{report['full_system_order']}, "
         f"assembly={timings['assembly_s']:.3f}s, solve={timings['solve_s']:.3f}s, "
         f"field={timings['field_s']:.3f}s"
     )

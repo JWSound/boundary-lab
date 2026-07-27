@@ -207,6 +207,13 @@ function solve_request(request; event_mode=false)
     singular_order = Int(get(solver_options, "singular_order", 2))
     validation_diagnostics = Bool(get(solver_options, "validation_diagnostics", true))
     cache_frequency_invariant = Bool(get(solver_options, "cache_frequency_invariant", true))
+    static_condensation = Bool(
+        get(
+            solver_options,
+            "static_condensation",
+            bem_backend == :cuda && !validation_diagnostics,
+        ),
+    )
     coupled_cache = nothing
     cache_setup_s = 0.0
     if cache_frequency_invariant
@@ -240,6 +247,7 @@ function solve_request(request; event_mode=false)
             validation_diagnostics=validation_diagnostics,
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
+            static_condensation=static_condensation,
         )
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
@@ -331,7 +339,12 @@ function solve_request(request; event_mode=false)
             "bem_backend" => String(bem_backend),
             "linear_backend" => String(coupled_system.linear_backend),
             "symmetry" => String(symmetry_mode),
-            "linear_solver" => "$(coupled_system.linear_backend)_dense_lu",
+            "formulation" => String(coupled_system.formulation),
+            "linear_solver" => coupled_system.formulation == :fem_interface_condensed ?
+                               "cuda_cudss_schur_plus_dense_lu" :
+                               "$(coupled_system.linear_backend)_dense_lu",
+            "full_system_order" => coupled_system.full_system_order,
+            "solved_system_order" => coupled_system.solved_system_order,
             "pressure_continuity_error" => maximum(
                 solution.pressure_continuity_error for solution in solutions
             ),
@@ -344,9 +357,41 @@ function solve_request(request; event_mode=false)
                 "field_s" => field_s,
                 "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
                 "cache_setup_s" => frequency_index == 1 ? cache_setup_s : 0.0,
+                "fem_matrix_cache_s" => frequency_index == 1 ?
+                                        coupled_system.cache.timings.fem_matrix_cache_s : 0.0,
+                "interface_operator_cache_s" => frequency_index == 1 ?
+                                                coupled_system.cache.timings.interface_operator_cache_s : 0.0,
+                "bem_space_cache_s" => frequency_index == 1 ?
+                                       coupled_system.cache.timings.bem_space_cache_s : 0.0,
+                "bem_singular_cache_s" => frequency_index == 1 ?
+                                          coupled_system.cache.timings.bem_singular_cache_s : 0.0,
+                "bem_cpu_assembly_cache_s" => frequency_index == 1 ?
+                                              coupled_system.cache.timings.bem_cpu_assembly_cache_s : 0.0,
+                "bem_device_regular_cache_s" => frequency_index == 1 ?
+                                                coupled_system.cache.timings.bem_device_regular_cache_s : 0.0,
+                "bem_device_singular_cache_s" => frequency_index == 1 ?
+                                                 coupled_system.cache.timings.bem_device_singular_cache_s : 0.0,
+                "bem_device_image_cache_s" => frequency_index == 1 ?
+                                              coupled_system.cache.timings.bem_device_image_cache_s : 0.0,
+                "bem_identity_cache_s" => frequency_index == 1 ?
+                                          coupled_system.cache.timings.bem_identity_cache_s : 0.0,
+                "device_block_cache_s" => frequency_index == 1 ?
+                                          coupled_system.cache.timings.device_block_cache_s : 0.0,
+                "field_cache_s" => frequency_index == 1 ?
+                                   coupled_system.cache.timings.field_cache_s : 0.0,
                 "fem_system_s" => coupled_system.timings.fem_system_s,
                 "bem_operator_s" => coupled_system.timings.bem_operator_s,
                 "bem_matrix_s" => coupled_system.timings.bem_matrix_s,
+                "fem_condensation_s" => coupled_system.timings.fem_condensation_s,
+                "fem_condensation_analysis_s" => isnothing(coupled_system.condensation) ?
+                                                 0.0 :
+                                                 coupled_system.condensation.timings.analysis_s,
+                "fem_condensation_factorization_s" => isnothing(coupled_system.condensation) ?
+                                                      0.0 :
+                                                      coupled_system.condensation.timings.factorization_s,
+                "fem_schur_extraction_s" => isnothing(coupled_system.condensation) ?
+                                            0.0 :
+                                            coupled_system.condensation.timings.schur_extraction_s,
                 "block_assembly_s" => coupled_system.timings.block_assembly_s,
                 "coupled_factorization_s" => coupled_system.timings.coupled_factorization_s,
                 "replay_factorization_s" => coupled_system.timings.replay_factorization_s,

@@ -226,6 +226,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     )
     assert prepared.request.solver_options["validation_diagnostics"] is False
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
+    assert prepared.request.solver_options["static_condensation"] is False
     assert prepared.request.solver_options["symmetry"] == "off"
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options
@@ -312,6 +313,7 @@ def test_coupled_ui_request_routes_cuda_backend() -> None:
     )
 
     assert prepared.backend_id == "beat_cuda"
+    assert prepared.request.solver_options["static_condensation"] is True
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options
 
