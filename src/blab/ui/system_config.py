@@ -580,6 +580,12 @@ class SystemConfigDialog(QDialog):
                                 fem_boundary,
                                 bem_boundary,
                                 resource_by_id=resource_by_id,
+                                protected_bem_interface_names=tuple(
+                                    str(other.group.name)
+                                    for other in unbounded
+                                    if other.id != bem_boundary.id
+                                    and other.group.name is not None
+                                ),
                             )
                         )
                     except InterfaceConformError as exc:
@@ -655,6 +661,7 @@ class SystemConfigDialog(QDialog):
         bem_boundary: Boundary,
         *,
         resource_by_id: dict[str, MeshResource],
+        protected_bem_interface_names: tuple[str, ...] = (),
     ) -> _InterfacePairMatch:
         try:
             self._check_interface_pair(
@@ -681,6 +688,7 @@ class SystemConfigDialog(QDialog):
                 bem_interface_name=str(bem_boundary.group.name),
                 merge_tolerance=1e-8,
                 symmetry_mode=self._symmetry_mode,
+                protected_bem_interface_names=protected_bem_interface_names,
             )
             return _InterfacePairMatch(
                 boundary=bem_boundary,

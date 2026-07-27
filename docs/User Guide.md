@@ -86,8 +86,9 @@ The preferences menu contains various application-level settings for Boundary La
 Coupled FEM–BEM physical systems currently require **BEAT Engine (CPU)** or
 **BEAT Engine (CUDA)**. Both application paths use single precision. CUDA
 assembles BEM operators and evaluates the exterior field on the GPU. It also
-factors either the condensed acoustic system or, for electrodynamic models, the
-full monolithic coupled system on the GPU. The double-precision coupled CPU
+factors an exact Schur-condensed acoustic or electrodynamic system on the GPU,
+retaining port and diaphragm surface nodes while eliminating FEM volume
+interiors. The double-precision coupled CPU
 backend is reserved for internal correctness validation. See
 [Coupled Solver](Coupled%20Solver.md) for the current formulation and component
 support.

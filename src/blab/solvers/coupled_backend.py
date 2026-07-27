@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from blab.physical_model import (
+    AcousticRegionKind,
     BoundaryKind,
     ComponentKind,
     ExcitationPortKind,
@@ -46,10 +47,15 @@ ELECTRODYNAMIC_REQUIRED_PARAMETERS = {
     "mmd_kg",
     "cms_m_per_n",
     "rms_n_s_per_m",
+    "motion_axis",
 }
 ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
     "motion_profile",
     "boundary_motion_signs",
+    "symmetry_role",
+    "surface_completion_factor",
+    "physical_driver_orbit_count",
+    "fractional_symmetry_axes",
 }
 
 
@@ -249,13 +255,7 @@ class _CoupledBackend:
         solver_options["transducer_reference_voltage_v"] = (
             DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         )
-        if any(
-            component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-            for component in request.compiled_system.components
-        ):
-            # The first LEM implementation keeps the full FEM pressure vector in
-            # the coupled system. Condensing arbitrary moving-boundary loads
-            # requires additional Schur coupling blocks and will be added later.
+        if self.bem_backend != "cuda":
             solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
         return CoupledSession(
@@ -272,15 +272,46 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     """Reject physical-model features that the current coupled backend cannot solve."""
 
     system = request.compiled_system
-    has_electrodynamic_transducers = any(
-        component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-        for component in system.components
-    )
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
-    if has_electrodynamic_transducers and requested_symmetry not in {"", "off", "none"}:
+    symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
+    symmetry_factors = {"off": 1, "x": 2, "xy": 4}
+    if symmetry_mode not in symmetry_factors:
         raise ValueError(
-            "Electrodynamic transducers currently require symmetry to be off; "
-            "mechanical parameter scaling for reduced driver surfaces is not yet defined."
+            f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy."
+        )
+    bounded_regions = [
+        region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
+    ]
+    unbounded_regions = [
+        region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+    ]
+    if not bounded_regions:
+        raise ValueError("Coupled solver requires at least one bounded acoustic region.")
+    if len(unbounded_regions) != 1:
+        raise ValueError("Coupled solver requires exactly one unbounded acoustic region.")
+    if any(len(region.mesh_ids) != 1 for region in system.regions):
+        raise ValueError("Each coupled acoustic region must currently reference exactly one mesh.")
+    reference_medium = bounded_regions[0]
+    mismatched_media = [
+        region.id
+        for region in system.regions
+        if not math.isclose(
+            region.sound_speed_m_per_s,
+            reference_medium.sound_speed_m_per_s,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+        or not math.isclose(
+            region.density_kg_per_m3,
+            reference_medium.density_kg_per_m3,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+    ]
+    if mismatched_media:
+        raise ValueError(
+            "Coupled solver currently requires one shared sound speed and density across all regions; "
+            "mismatched: " + ", ".join(mismatched_media)
         )
     unsupported_boundaries = [
         boundary.id for boundary in system.boundaries if boundary.kind not in COUPLED_BOUNDARY_KINDS
@@ -317,7 +348,17 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         )
     for component in system.components:
         if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
-            _validate_electrodynamic_component(component)
+            _validate_electrodynamic_component(
+                component,
+                symmetry_factor=symmetry_factors[symmetry_mode],
+                active_symmetry_axes=(
+                    ()
+                    if symmetry_mode == "off"
+                    else ("x",)
+                    if symmetry_mode == "x"
+                    else ("x", "y")
+                ),
+            )
             continue
         unsupported_parameters = set(component.parameters) - {"motion_profile"}
         if unsupported_parameters:
@@ -349,7 +390,12 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         )
 
 
-def _validate_electrodynamic_component(component) -> None:
+def _validate_electrodynamic_component(
+    component,
+    *,
+    symmetry_factor: int,
+    active_symmetry_axes: tuple[str, ...],
+) -> None:
     parameters = component.parameters
     parameter_names = set(parameters)
     missing = sorted(ELECTRODYNAMIC_REQUIRED_PARAMETERS - parameter_names)
@@ -386,11 +432,92 @@ def _validate_electrodynamic_component(component) -> None:
                 f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative."
             )
 
-    motion_profile = parameters.get("motion_profile", "uniform")
-    if motion_profile != "uniform":
+    raw_axis = parameters["motion_axis"]
+    if (
+        not isinstance(raw_axis, (list, tuple))
+        or len(raw_axis) != 3
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in raw_axis
+        )
+        or math.sqrt(sum(float(value) ** 2 for value in raw_axis)) <= 0.0
+    ):
         raise ValueError(
-            f"Coupled solver supports only a uniform rigid-piston motion profile; component "
+            f"Electrodynamic component '{component.id}' motion_axis must contain three finite "
+            "values with nonzero length."
+        )
+
+    motion_profile = parameters.get("motion_profile", "rigid_translation")
+    if motion_profile != "rigid_translation":
+        raise ValueError(
+            f"Coupled solver supports only a rigid-translation piston motion profile; component "
             f"'{component.id}' requests {motion_profile!r}."
+        )
+
+    symmetry_role = parameters.get("symmetry_role", "complete_representative")
+    if symmetry_role not in {"complete_representative", "fractional_driver"}:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' symmetry_role must be "
+            "'complete_representative' or 'fractional_driver'."
+        )
+    completion_factor = parameters.get("surface_completion_factor", 1)
+    orbit_count = parameters.get("physical_driver_orbit_count", 1)
+    for name, value in (
+        ("surface_completion_factor", completion_factor),
+        ("physical_driver_orbit_count", orbit_count),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int) or value not in {1, 2, 4}:
+            raise ValueError(
+                f"Electrodynamic component '{component.id}' {name} must be one of 1, 2, or 4."
+            )
+    expected_role = "fractional_driver" if completion_factor > 1 else "complete_representative"
+    if symmetry_role != expected_role:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' symmetry_role {symmetry_role!r} "
+            f"is inconsistent with surface_completion_factor={completion_factor}."
+        )
+    raw_fractional_axes = parameters.get("fractional_symmetry_axes", [])
+    if (
+        not isinstance(raw_fractional_axes, (list, tuple))
+        or any(axis not in {"x", "y"} for axis in raw_fractional_axes)
+        or len(raw_fractional_axes) != len(set(raw_fractional_axes))
+    ):
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' fractional_symmetry_axes must contain "
+            "unique axis names chosen from 'x' and 'y'."
+        )
+    fractional_axes = tuple(str(axis) for axis in raw_fractional_axes)
+    if any(axis not in active_symmetry_axes for axis in fractional_axes):
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' fractional_symmetry_axes must be active "
+            "in the selected global symmetry mode."
+        )
+    if completion_factor != 2 ** len(fractional_axes):
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' surface_completion_factor must equal "
+            "2 raised to the number of fractional_symmetry_axes."
+        )
+    axis_norm = math.sqrt(sum(float(value) ** 2 for value in raw_axis))
+    normalized_axis = tuple(float(value) / axis_norm for value in raw_axis)
+    axis_indices = {"x": 0, "y": 1}
+    incompatible_axes = [
+        axis
+        for axis in fractional_axes
+        if abs(normalized_axis[axis_indices[axis]]) > 1e-8
+    ]
+    if incompatible_axes:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' motion_axis must lie in each symmetry "
+            "plane that cuts the same physical driver; incompatible: "
+            + ", ".join(incompatible_axes)
+        )
+    if completion_factor * orbit_count != symmetry_factor:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' represents "
+            f"{completion_factor * orbit_count} symmetry images, but the selected symmetry "
+            f"requires {symmetry_factor}."
         )
 
     raw_signs = parameters.get("boundary_motion_signs", {})

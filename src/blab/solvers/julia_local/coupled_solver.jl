@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using JSON, LinearAlgebra, StaticArrays
+using JSON, LinearAlgebra, SparseArrays, StaticArrays
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
@@ -109,21 +109,227 @@ function rows(vectors, ::Type{T}) where {T<:AbstractFloat}
     return reduce(vcat, (reshape(Complex{T}.(values), 1, :) for values in vectors))
 end
 
+function per_interface_errors(
+    solution,
+    fem_mesh,
+    bem_mesh,
+    interface_maps,
+    interface_ranges,
+    ::Type{T},
+) where {T<:AbstractFloat}
+    pressure_errors = T[]
+    flux_errors = T[]
+    for (interface_map, interface_range) in zip(interface_maps, interface_ranges)
+        fem_trace = solution.fem_pressure[interface_map.fem_vertex_indices]
+        bem_trace = solution.bem_pressure[interface_map.fem_to_bem_vertex_indices]
+        pressure_scale = max(norm(fem_trace), norm(bem_trace), eps(T))
+        push!(pressure_errors, T(norm(fem_trace - bem_trace) / pressure_scale))
+
+        local_flux = solution.interface_flux[interface_range]
+        interface_dof = Dict(
+            vertex => index
+            for (index, vertex) in enumerate(interface_map.fem_vertex_indices)
+        )
+        fem_integrated_flux = zero(Complex{T})
+        bem_integrated_flux_along_fem_normal = zero(Complex{T})
+        for local_face_index in eachindex(interface_map.fem_face_indices)
+            fem_face = fem_mesh.boundary_faces[
+                interface_map.fem_face_indices[local_face_index]
+            ]
+            fem_flux_average = sum(
+                local_flux[interface_dof[vertex]] for vertex in fem_face
+            ) / T(3)
+            bem_face_index = interface_map.bem_face_indices[local_face_index]
+            fem_integrated_flux +=
+                BeatEngineCoupled._triangle_area(fem_mesh.vertices, fem_face) *
+                fem_flux_average
+            bem_integrated_flux_along_fem_normal +=
+                T(interface_map.normal_sign[local_face_index]) *
+                bem_mesh.areas[bem_face_index] *
+                solution.bem_neumann[bem_face_index]
+        end
+        flux_scale = max(
+            abs(fem_integrated_flux),
+            abs(bem_integrated_flux_along_fem_normal),
+            eps(T),
+        )
+        push!(
+            flux_errors,
+            T(
+                abs(fem_integrated_flux - bem_integrated_flux_along_fem_normal) /
+                flux_scale,
+            ),
+        )
+    end
+    return pressure_errors, flux_errors
+end
+
+function aggregate_fem_domains(
+    meshes,
+    bounded_regions,
+    boundaries,
+    ::Type{T},
+) where {T<:AbstractFloat}
+    vertices = SVector{3,T}[]
+    tetrahedra = NTuple{4,Int}[]
+    tetra_tags = Int[]
+    boundary_faces = NTuple{3,Int}[]
+    boundary_tags = Int[]
+    domains = NamedTuple[]
+    fem_boundary_tag_by_id = Dict{String,Int}()
+    domain_by_boundary_id = Dict{String,Int}()
+    next_boundary_tag = 1
+
+    for region in bounded_regions
+        length(region["mesh_ids"]) == 1 ||
+            error("Each bounded region must currently contain exactly one FEM mesh.")
+        mesh_id = String(only(region["mesh_ids"]))
+        resource = object_by_id(meshes, mesh_id, "mesh")
+        String(resource["purpose"]) == "fem_volume" ||
+            error("Bounded region mesh must be a FEM volume.")
+        full_mesh = translated_volume_mesh(resource, T)
+        selected_volume_tags = [
+            Int(group["tag"])
+            for group in region["volume_groups"]
+            if String(group["mesh_id"]) == mesh_id
+        ]
+        selection = restrict_volume_mesh(full_mesh, selected_volume_tags)
+        region_boundaries = [
+            boundary
+            for boundary in boundaries
+            if String(boundary["region_id"]) == String(region["id"]) &&
+               String(boundary["group"]["mesh_id"]) == mesh_id
+        ]
+        local_tag_map = Dict{Int,Int}()
+        for boundary in region_boundaries
+            source_tag = Int(boundary["group"]["tag"])
+            haskey(local_tag_map, source_tag) && error(
+                "FEM physical tag $source_tag on mesh $(repr(mesh_id)) is assigned more than once.",
+            )
+            solver_tag = next_boundary_tag
+            next_boundary_tag += 1
+            local_tag_map[source_tag] = solver_tag
+            boundary_id = String(boundary["id"])
+            fem_boundary_tag_by_id[boundary_id] = solver_tag
+            domain_by_boundary_id[boundary_id] = length(domains) + 1
+        end
+        remapped_boundary_tags = [
+            get(local_tag_map, tag, 0)
+            for tag in selection.mesh.boundary_physical_tags
+        ]
+        any(==(0), remapped_boundary_tags) && error(
+            "Selected FEM region $(repr(String(region["id"]))) contains an unassigned boundary tag.",
+        )
+
+        vertex_offset = length(vertices)
+        face_offset = length(boundary_faces)
+        append!(vertices, selection.mesh.vertices)
+        append!(
+            tetrahedra,
+            [
+                ntuple(index -> tetrahedron[index] + vertex_offset, 4)
+                for tetrahedron in selection.mesh.tetrahedra
+            ],
+        )
+        append!(tetra_tags, selection.mesh.tetra_physical_tags)
+        append!(
+            boundary_faces,
+            [
+                ntuple(index -> face[index] + vertex_offset, 3)
+                for face in selection.mesh.boundary_faces
+            ],
+        )
+        append!(boundary_tags, remapped_boundary_tags)
+        push!(
+            domains,
+            (
+                id=String(region["id"]),
+                mesh_id=mesh_id,
+                selection=selection,
+                vertex_offset=vertex_offset,
+                face_offset=face_offset,
+                vertex_count=length(selection.mesh.vertices),
+            ),
+        )
+    end
+
+    mesh = VolumeMesh{T}(
+        vertices,
+        tetrahedra,
+        tetra_tags,
+        boundary_faces,
+        boundary_tags,
+        Dict{Tuple{Int,Int},String}(),
+    )
+    return (
+        mesh=mesh,
+        domains=domains,
+        fem_boundary_tag_by_id=fem_boundary_tag_by_id,
+        domain_by_boundary_id=domain_by_boundary_id,
+    )
+end
+
+function combined_interface_map_from_wire(
+    interfaces,
+    fem_domains,
+)
+    maps = ConformingInterfaceMap[]
+    ranges = UnitRange{Int}[]
+    next_interface_dof = 1
+    for interface in interfaces
+        bounded_boundary_id = String(interface["bounded_boundary_id"])
+        domain_index = get(
+            fem_domains.domain_by_boundary_id,
+            bounded_boundary_id,
+            0,
+        )
+        domain_index > 0 || error(
+            "Interface $(repr(String(interface["id"]))) does not reference a bounded FEM boundary.",
+        )
+        domain = fem_domains.domains[domain_index]
+        local_map = interface_map_from_wire(interface["topology"], domain.selection)
+        mapped = ConformingInterfaceMap(
+            local_map.fem_vertex_indices .+ domain.vertex_offset,
+            local_map.fem_to_bem_vertex_indices,
+            local_map.fem_face_indices .+ domain.face_offset,
+            local_map.bem_face_indices,
+            local_map.normal_sign,
+        )
+        push!(maps, mapped)
+        count = length(mapped.fem_vertex_indices)
+        push!(ranges, next_interface_dof:(next_interface_dof + count - 1))
+        next_interface_dof += count
+    end
+    isempty(maps) && error("Coupled backend requires at least one FEM-BEM interface.")
+    return (
+        map=ConformingInterfaceMap(
+            reduce(vcat, (map.fem_vertex_indices for map in maps)),
+            reduce(vcat, (map.fem_to_bem_vertex_indices for map in maps)),
+            reduce(vcat, (map.fem_face_indices for map in maps)),
+            reduce(vcat, (map.bem_face_indices for map in maps)),
+            reduce(vcat, (map.normal_sign for map in maps)),
+        ),
+        ranges=ranges,
+        maps=maps,
+    )
+end
+
 function electrodynamic_transducers_from_wire(
     components,
     boundaries,
-    bounded_region,
-    unbounded_region,
+    fem_boundary_tag_by_id,
+    bem_boundary_tag_by_id,
     fem_mesh,
     bem_mesh,
     ::Type{T},
+    symmetry_mode,
 ) where {T<:AbstractFloat}
     transducers = ElectrodynamicTransducer{T}[]
     index_by_component_id = Dict{String,Int}()
     for component in components
         String(component["kind"]) == "electrodynamic_transducer" || continue
         parameters = get(component, "parameters", Dict{String,Any}())
-        required = (
+        scalar_required = (
             "re_ohm",
             "le_h",
             "bl_n_per_a",
@@ -131,7 +337,15 @@ function electrodynamic_transducers_from_wire(
             "cms_m_per_n",
             "rms_n_s_per_m",
         )
-        optional = ("motion_profile", "boundary_motion_signs")
+        required = (scalar_required..., "motion_axis")
+        optional = (
+            "motion_profile",
+            "boundary_motion_signs",
+            "symmetry_role",
+            "surface_completion_factor",
+            "physical_driver_orbit_count",
+            "fractional_symmetry_axes",
+        )
         missing = [name for name in required if !haskey(parameters, name)]
         isempty(missing) || error(
             "Electrodynamic component $(repr(String(component["id"]))) is missing: " *
@@ -145,8 +359,62 @@ function electrodynamic_transducers_from_wire(
             "Electrodynamic component $(repr(String(component["id"]))) has unsupported " *
             "parameters: " * join(sort(unsupported), ", "),
         )
-        String(get(parameters, "motion_profile", "uniform")) == "uniform" || error(
-            "Electrodynamic components currently require a uniform rigid-piston motion profile.",
+        motion_profile = String(get(parameters, "motion_profile", "rigid_translation"))
+        motion_profile == "rigid_translation" || error(
+            "Electrodynamic components currently require a rigid-translation piston motion profile.",
+        )
+        raw_axis = parameters["motion_axis"]
+        length(raw_axis) == 3 || error("motion_axis must contain exactly three values.")
+        motion_axis = SVector{3,T}(T.(raw_axis))
+        all(isfinite, motion_axis) || error("motion_axis must contain finite values.")
+        axis_norm = norm(motion_axis)
+        axis_norm > zero(T) || error("motion_axis must have nonzero length.")
+        motion_axis /= axis_norm
+        completion_factor = Int(get(parameters, "surface_completion_factor", 1))
+        orbit_count = Int(get(parameters, "physical_driver_orbit_count", 1))
+        completion_factor in (1, 2, 4) ||
+            error("surface_completion_factor must be 1, 2, or 4.")
+        orbit_count in (1, 2, 4) ||
+            error("physical_driver_orbit_count must be 1, 2, or 4.")
+        symmetry_role = String(
+            get(parameters, "symmetry_role", "complete_representative"),
+        )
+        expected_role = completion_factor > 1 ?
+                        "fractional_driver" :
+                        "complete_representative"
+        symmetry_role == expected_role || error(
+            "symmetry_role is inconsistent with surface_completion_factor.",
+        )
+        fractional_symmetry_axes = String.(
+            get(parameters, "fractional_symmetry_axes", Any[]),
+        )
+        length(fractional_symmetry_axes) == length(unique(fractional_symmetry_axes)) ||
+            error("fractional_symmetry_axes must not contain duplicates.")
+        all(axis -> axis in ("x", "y"), fractional_symmetry_axes) ||
+            error("fractional_symmetry_axes may contain only x and y.")
+        active_symmetry_axes = symmetry_mode == :off ?
+                               String[] :
+                               symmetry_mode == :x ?
+                               ["x"] :
+                               ["x", "y"]
+        all(axis -> axis in active_symmetry_axes, fractional_symmetry_axes) ||
+            error("fractional_symmetry_axes must be active in the selected symmetry mode.")
+        completion_factor == 2^length(fractional_symmetry_axes) || error(
+            "surface_completion_factor must equal 2 raised to the number of " *
+            "fractional_symmetry_axes.",
+        )
+        for axis in fractional_symmetry_axes
+            axis_index = axis == "x" ? 1 : 2
+            abs(motion_axis[axis_index]) <= T(1e-8) || error(
+                "motion_axis must lie in every symmetry plane that cuts the physical driver.",
+            )
+        end
+        represented_images = completion_factor * orbit_count
+        expected_images = BeatEngineCore.symmetry_reduction_factor(symmetry_mode)
+        represented_images == expected_images || error(
+            "Electrodynamic component $(repr(String(component["id"]))) represents " *
+            "$represented_images symmetry images, but $(String(symmetry_mode)) symmetry " *
+            "requires $expected_images.",
         )
         raw_signs = get(parameters, "boundary_motion_signs", Dict{String,Any}())
         component_boundary_ids = Set(String.(component["boundary_ids"]))
@@ -173,15 +441,15 @@ function electrodynamic_transducers_from_wire(
             sign in (-one(T), one(T)) || error(
                 "Electrodynamic boundary motion signs must be -1 or +1.",
             )
-            region_id = String(boundary["region_id"])
-            tag = Int(boundary["group"]["tag"])
-            if region_id == String(bounded_region["id"])
+            if haskey(fem_boundary_tag_by_id, boundary_id)
+                tag = fem_boundary_tag_by_id[boundary_id]
                 any(==(tag), fem_mesh.boundary_physical_tags) || error(
                     "Electrodynamic FEM boundary tag $tag is outside the selected volume groups.",
                 )
                 push!(fem_tags, tag)
                 push!(fem_signs, sign)
-            elseif region_id == String(unbounded_region["id"])
+            elseif haskey(bem_boundary_tag_by_id, boundary_id)
+                tag = bem_boundary_tag_by_id[boundary_id]
                 any(==(tag), bem_mesh.physical_tags) || error(
                     "Electrodynamic BEM boundary tag $tag is not present in the exterior mesh.",
                 )
@@ -197,7 +465,7 @@ function electrodynamic_transducers_from_wire(
         isempty(fem_tags) && isempty(bem_tags) && error(
             "Electrodynamic component $(repr(String(component["id"]))) has no moving acoustic boundary.",
         )
-        values = Dict(name => T(parameters[name]) for name in required)
+        values = Dict(name => T(parameters[name]) for name in scalar_required)
         all(isfinite, Base.values(values)) || error(
             "Electrodynamic parameters must be finite numbers.",
         )
@@ -215,6 +483,9 @@ function electrodynamic_transducers_from_wire(
                 fem_signs,
                 bem_tags,
                 bem_signs,
+                motion_axis,
+                T(completion_factor),
+                orbit_count,
                 values["re_ohm"],
                 values["le_h"],
                 values["bl_n_per_a"],
@@ -237,20 +508,33 @@ function solve_request(request; event_mode=false)
     components = system["components"]
     ports = system["excitation_ports"]
     interfaces = system["interfaces"]
-    length(interfaces) == 1 || error("Coupled backend currently requires exactly one FEM-BEM interface.")
+    isempty(interfaces) && error("Coupled backend requires at least one FEM-BEM interface.")
 
     bounded_regions = [region for region in regions if String(region["kind"]) == "bounded_air"]
     unbounded_regions = [region for region in regions if String(region["kind"]) == "unbounded_air"]
-    length(bounded_regions) == 1 || error("Coupled backend currently requires exactly one bounded region.")
+    isempty(bounded_regions) && error("Coupled backend requires at least one bounded region.")
     length(unbounded_regions) == 1 || error("Coupled backend currently requires exactly one unbounded region.")
-    bounded_region = only(bounded_regions)
     unbounded_region = only(unbounded_regions)
-    length(bounded_region["mesh_ids"]) == 1 || error("Bounded region must contain exactly one FEM mesh.")
     length(unbounded_region["mesh_ids"]) == 1 || error("Unbounded region must contain exactly one BEM mesh.")
-    fem_resource = object_by_id(meshes, String(only(bounded_region["mesh_ids"])), "mesh")
     bem_resource = object_by_id(meshes, String(only(unbounded_region["mesh_ids"])), "mesh")
-    String(fem_resource["purpose"]) == "fem_volume" || error("Bounded region mesh must be a FEM volume.")
     String(bem_resource["purpose"]) == "bem_surface" || error("Unbounded region mesh must be a BEM surface.")
+    reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
+    reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
+    for region in regions
+        isapprox(
+            Float64(region["sound_speed_m_per_s"]),
+            reference_sound_speed;
+            rtol=1e-9,
+            atol=0,
+        ) && isapprox(
+            Float64(region["density_kg_per_m3"]),
+            reference_density;
+            rtol=1e-9,
+            atol=0,
+        ) || error(
+            "Coupled backend currently requires one shared sound speed and density across all regions.",
+        )
+    end
 
     solver_options = get(request, "solver_options", Dict{String,Any}())
     precision_name = lowercase(String(get(solver_options, "precision", "float64")))
@@ -279,14 +563,13 @@ function solve_request(request; event_mode=false)
     )
 
     mesh_setup_started = time_ns()
-    full_fem_mesh = translated_volume_mesh(fem_resource, FloatType)
-    selected_volume_tags = [
-        Int(group["tag"])
-        for group in bounded_region["volume_groups"]
-        if String(group["mesh_id"]) == String(fem_resource["id"])
-    ]
-    volume_selection = restrict_volume_mesh(full_fem_mesh, selected_volume_tags)
-    fem_mesh = volume_selection.mesh
+    fem_domains = aggregate_fem_domains(
+        meshes,
+        bounded_regions,
+        boundaries,
+        FloatType,
+    )
+    fem_mesh = fem_domains.mesh
     bem_mesh = translated_boundary_mesh(bem_resource, FloatType)
     symmetry_tolerance = max(
         FloatType(1e-9),
@@ -302,21 +585,28 @@ function solve_request(request; event_mode=false)
         symmetry_mode;
         tolerance=symmetry_tolerance,
     )
-    interface_map = interface_map_from_wire(only(interfaces)["topology"], volume_selection)
+    combined_interfaces = combined_interface_map_from_wire(
+        interfaces,
+        fem_domains,
+    )
+    interface_map = combined_interfaces.map
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
-    sound_speed = FloatType(bounded_region["sound_speed_m_per_s"])
-    density = FloatType(bounded_region["density_kg_per_m3"])
+    sound_speed = FloatType(reference_sound_speed)
+    density = FloatType(reference_density)
+    bem_boundary_tag_by_id = Dict(
+        String(boundary["id"]) => Int(boundary["group"]["tag"])
+        for boundary in boundaries
+        if String(boundary["region_id"]) == String(unbounded_region["id"])
+    )
     transducers, transducer_index_by_component_id = electrodynamic_transducers_from_wire(
         components,
         boundaries,
-        bounded_region,
-        unbounded_region,
+        fem_domains.fem_boundary_tag_by_id,
+        bem_boundary_tag_by_id,
         fem_mesh,
         bem_mesh,
         FloatType,
-    )
-    isempty(transducers) || symmetry_mode == :off || error(
-        "Electrodynamic transducers currently require symmetry to be off.",
+        symmetry_mode,
     )
     transducer_operators = assemble_transducer_operators(
         fem_mesh,
@@ -339,13 +629,18 @@ function solve_request(request; event_mode=false)
             bounded_boundaries = [
                 boundary
                 for boundary in candidate_boundaries
-                if String(boundary["region_id"]) == String(bounded_region["id"])
+                if haskey(
+                    fem_domains.fem_boundary_tag_by_id,
+                    String(boundary["id"]),
+                )
             ]
             length(bounded_boundaries) == 1 || error(
                 "Each prescribed-velocity component must own exactly one moving boundary " *
                 "in the bounded region.",
             )
-            radiator_tag = Int(only(bounded_boundaries)["group"]["tag"])
+            radiator_tag = fem_domains.fem_boundary_tag_by_id[
+                String(only(bounded_boundaries)["id"])
+            ]
             any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
                 "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
             )
@@ -398,7 +693,13 @@ function solve_request(request; event_mode=false)
             bem_backend == :cuda && !validation_diagnostics,
         ),
     )
-    static_condensation = static_condensation_requested && isempty(transducers)
+    static_condensation = static_condensation_requested
+    transducer_fem_vertices = isempty(transducers) ?
+                              Int[] :
+                              unique(findnz(transducer_operators.fem_surface)[1])
+    retained_fem_vertices = sort(
+        unique(vcat(interface_map.fem_vertex_indices, transducer_fem_vertices)),
+    )
     coupled_cache = nothing
     cache_setup_s = 0.0
     if cache_frequency_invariant
@@ -411,6 +712,7 @@ function solve_request(request; event_mode=false)
             singular_order=singular_order,
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
+            retained_fem_vertices=retained_fem_vertices,
         )
         cache_setup_s = (time_ns() - cache_setup_started) / 1.0e9
     end
@@ -440,6 +742,25 @@ function solve_request(request; event_mode=false)
         solve_started = time_ns()
         solutions = solve_coupled_excitations(coupled_system, excitations)
         solve_s = (time_ns() - solve_started) / 1.0e9
+        interface_error_sets = [
+            per_interface_errors(
+                solution,
+                fem_mesh,
+                bem_mesh,
+                combined_interfaces.maps,
+                combined_interfaces.ranges,
+                FloatType,
+            )
+            for solution in solutions
+        ]
+        interface_pressure_errors = [
+            maximum(errors[1][index] for errors in interface_error_sets)
+            for index in eachindex(interfaces)
+        ]
+        interface_flux_errors = [
+            maximum(errors[2][index] for errors in interface_error_sets)
+            for index in eachindex(interfaces)
+        ]
         field_s = 0.0
         quantities = Dict{String,Any}[]
         for output in outputs
@@ -452,7 +773,16 @@ function solve_request(request; event_mode=false)
                         rows([solution.fem_pressure for solution in solutions], FloatType),
                         "Pa",
                         ["excitation", "fem_node"],
-                        metadata=Dict("mesh_id" => String(fem_resource["id"])),
+                        metadata=Dict(
+                            "mesh_ids" => [domain.mesh_id for domain in fem_domains.domains],
+                            "region_ids" => [domain.id for domain in fem_domains.domains],
+                            "node_offsets" => [
+                                domain.vertex_offset for domain in fem_domains.domains
+                            ],
+                            "node_counts" => [
+                                domain.vertex_count for domain in fem_domains.domains
+                            ],
+                        ),
                     ),
                 )
             elseif quantity == "bem_boundary_pressure"
@@ -474,7 +804,17 @@ function solve_request(request; event_mode=false)
                         rows([solution.interface_flux for solution in solutions], FloatType),
                         "Pa/m",
                         ["excitation", "interface_node"],
-                        metadata=Dict("interface_id" => String(only(interfaces)["id"])),
+                        metadata=Dict(
+                            "interface_ids" => [
+                                String(interface["id"]) for interface in interfaces
+                            ],
+                            "interface_offsets" => [
+                                first(range) - 1 for range in combined_interfaces.ranges
+                            ],
+                            "interface_counts" => [
+                                length(range) for range in combined_interfaces.ranges
+                            ],
+                        ),
                     ),
                 )
             elseif quantity == "diaphragm_velocity"
@@ -490,6 +830,14 @@ function solve_request(request; event_mode=false)
                         ["excitation", "transducer"],
                         metadata=Dict(
                             "component_ids" => [transducer.id for transducer in transducers],
+                            "surface_completion_factors" => [
+                                transducer.surface_completion_factor
+                                for transducer in transducers
+                            ],
+                            "physical_driver_orbit_counts" => [
+                                transducer.physical_driver_orbit_count
+                                for transducer in transducers
+                            ],
                         ),
                     ),
                 )
@@ -506,6 +854,14 @@ function solve_request(request; event_mode=false)
                         ["excitation", "transducer"],
                         metadata=Dict(
                             "component_ids" => [transducer.id for transducer in transducers],
+                            "surface_completion_factors" => [
+                                transducer.surface_completion_factor
+                                for transducer in transducers
+                            ],
+                            "physical_driver_orbit_counts" => [
+                                transducer.physical_driver_orbit_count
+                                for transducer in transducers
+                            ],
                         ),
                     ),
                 )
@@ -564,15 +920,17 @@ function solve_request(request; event_mode=false)
                                "$(coupled_system.linear_backend)_dense_lu",
             "full_system_order" => coupled_system.full_system_order,
             "solved_system_order" => coupled_system.solved_system_order,
+            "bounded_region_count" => length(bounded_regions),
+            "interface_count" => length(interfaces),
             "transducer_count" => length(transducers),
             "transducer_reference_voltage_v" => transducer_reference_voltage_v,
             "static_condensation_requested" => static_condensation_requested,
-            "pressure_continuity_error" => maximum(
-                solution.pressure_continuity_error for solution in solutions
-            ),
-            "flux_conservation_error" => maximum(
-                solution.flux_conservation_error for solution in solutions
-            ),
+            "static_condensation_active" => static_condensation,
+            "pressure_continuity_error" => maximum(interface_pressure_errors),
+            "flux_conservation_error" => maximum(interface_flux_errors),
+            "interface_ids" => [String(interface["id"]) for interface in interfaces],
+            "interface_pressure_continuity_errors" => interface_pressure_errors,
+            "interface_flux_conservation_errors" => interface_flux_errors,
             "timings" => Dict(
                 "assembly_s" => assembly_s,
                 "solve_s" => solve_s,

@@ -161,12 +161,16 @@ end
     fem_mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), 0.001)
     bem_mesh = load_gmsh22_with_tags(joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"), 0.001)
     radiator_tag = physical_tag(fem_mesh, 2, "Radiator")
+    motion_axis = SVector(0.0, 0.0, 1.0)
     transducer = ElectrodynamicTransducer{Float64}(
         "component:test",
         [radiator_tag],
         [1.0],
         [1],
         [-1.0],
+        motion_axis,
+        2.0,
+        1,
         6.0,
         0.0005,
         7.0,
@@ -177,23 +181,28 @@ end
 
     operators = assemble_transducer_operators(fem_mesh, bem_mesh, [transducer])
 
-    fem_area = sum(
+    fem_normals = BeatEngineCoupled._outward_boundary_normals(fem_mesh)
+    fem_projected_area = sum(
+        dot(fem_normals[index], motion_axis) *
         BeatEngineCoupled._triangle_area(fem_mesh.vertices, fem_mesh.boundary_faces[index])
         for index in eachindex(fem_mesh.boundary_faces)
         if fem_mesh.boundary_physical_tags[index] == radiator_tag
     )
-    bem_area = sum(
-        bem_mesh.areas[index]
+    bem_projected_area = sum(
+        -dot(bem_mesh.normals[index], motion_axis) * bem_mesh.areas[index]
         for index in eachindex(bem_mesh.faces)
         if bem_mesh.physical_tags[index] == 1
     )
     @test size(operators.fem_surface) == (length(fem_mesh.vertices), 1)
     @test size(operators.bem_surface) == (length(bem_mesh.vertices), 1)
     @test size(operators.bem_normal_velocity) == (length(bem_mesh.faces), 1)
-    @test sum(operators.fem_surface[:, 1]) ≈ fem_area
-    @test sum(operators.bem_surface[:, 1]) ≈ -bem_area
+    @test sum(operators.fem_surface[:, 1]) ≈ fem_projected_area
+    @test sum(operators.fem_force[:, 1]) ≈ 2 * fem_projected_area
+    @test sum(operators.bem_surface[:, 1]) ≈ bem_projected_area
+    @test sum(operators.bem_force[:, 1]) ≈ 2 * bem_projected_area
     @test all(
-        operators.bem_normal_velocity[index, 1] == -1.0
+        operators.bem_normal_velocity[index, 1] ≈
+        -dot(bem_mesh.normals[index], motion_axis)
         for index in eachindex(bem_mesh.faces)
         if bem_mesh.physical_tags[index] == 1
     )

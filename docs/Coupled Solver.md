@@ -1,10 +1,10 @@
 # Coupled Solver
 
-Boundary Lab's coupled solver models a bounded air volume and the surrounding
-unbounded air in one frequency-domain acoustic solve. The bounded region is
-solved with tetrahedral finite elements (FEM), the exterior is solved with the
-BEAT Engine boundary element method (BEM), and a conforming interface transfers
-pressure and normal derivative between them.
+Boundary Lab's coupled solver models one or more bounded air volumes and the
+surrounding unbounded air in one frequency-domain acoustic solve. Each bounded
+region is solved with tetrahedral finite elements (FEM), the exterior is solved
+with the BEAT Engine boundary element method (BEM), and conforming port
+interfaces transfer pressure and normal derivative between them.
 
 The application uses this path whenever the project contains a configured
 physical system. Projects without a physical system continue to use the legacy
@@ -25,17 +25,17 @@ frequency.
 |---|---|---|
 | FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU |
 | BEM operators | Assembled on CPU | Assembled on GPU |
-| Coupled system | Full monolithic dense system on CPU | Condensed acoustic system, or full monolithic system with transducers, on GPU |
+| Coupled system | Full monolithic dense system on CPU | Schur-condensed acoustic/electromechanical system on GPU |
 | Factorization | CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic |
 | Exterior field | Evaluated on CPU | Evaluated on GPU |
 | Default Julia threads | 8 | 4 |
 
-CUDA therefore accelerates more than BEM assembly. For prescribed-velocity
-models, FEM interior unknowns are eliminated with an exact Schur complement,
-the reduced coupled matrix is assembled and factored on the GPU, and the
-eliminated FEM pressure is reconstructed after the coupled solve.
-Electrodynamic models currently disable condensation and use the full
-GPU-resident monolithic matrix so arbitrary diaphragm loads remain exact.
+CUDA therefore accelerates more than BEM assembly. FEM volume-interior
+unknowns are eliminated with an exact Schur complement, the reduced coupled
+matrix is assembled and factored on the GPU, and eliminated FEM pressure is
+reconstructed after the coupled solve. Electrodynamic models retain the FEM
+nodes on their diaphragm surfaces in addition to the port-interface nodes, so
+the condensed coupling remains exact.
 
 A separate backend-only **reference path** uses `Float64/ComplexF64` on the CPU.
 It retains the full monolithic matrix and enables additional residual and
@@ -47,21 +47,21 @@ an application solver.
 The production backend currently accepts a deliberately focused physical
 system:
 
-- exactly one bounded-air region with one FEM mesh;
+- one or more bounded-air regions, currently with one FEM mesh each;
 - exactly one unbounded-air region with one BEM mesh;
-- exactly one FEM-BEM interface;
-- one or more selected physical volume groups in the bounded region;
+- one or more FEM-BEM interfaces into that exterior mesh;
+- one or more selected physical volume groups in each bounded region;
 - ideal prescribed-velocity components, linear electrodynamic transducers, or
   both;
 - one `normal_velocity` port per ideal source or one `voltage` port per
   electrodynamic transducer;
-- uniform rigid-piston motion;
+- single-axis rigid-body piston motion with an explicit `motion_axis`;
 - one or more FEM or BEM moving boundaries per electrodynamic transducer;
 - direct `Re`, `Le`, `Bl`, `Mmd`, `Cms`, and `Rms` transducer parameters;
-- rigid boundaries everywhere else except the two interface boundaries;
+- rigid boundaries everywhere else except configured interface boundaries;
 - lossless, linear pressure acoustics;
-- `off`, `x`, or `xy` symmetry for acoustic-only models, and `off` for
-  electrodynamic models.
+- `off`, `x`, or `xy` symmetry, with explicit completion/orbit semantics for
+  electrodynamic components.
 
 The FEM input must be a Gmsh 4.1 ASCII mesh containing first-order tetrahedra
 and triangular boundary facets. The BEM input must be a Gmsh 2.2 ASCII mesh
@@ -72,30 +72,30 @@ Every tagged surface belonging to an active region must have one boundary
 assignment. The application rejects `unused` surfaces, and the coupled backend
 supports only `rigid`, `moving`, and `interface` assignments. A source used by
 an ideal prescribed-velocity component must act on a moving FEM boundary. An
-electrodynamic component may couple the same rigid-piston degree of freedom to
-moving FEM and BEM boundaries, allowing rear and front acoustic pressure to
-back-drive the same diaphragm.
+electrodynamic component may couple the same rigid-body degree of freedom to
+moving boundaries in several FEM regions, as well as to BEM moving boundaries.
+The independently meshed front and rear diaphragm surfaces do not need a
+node-to-node map because they communicate through the shared mechanical degree
+of freedom.
 
 ### Current medium-property rule
 
-The solver takes sound speed and density from the bounded region. That sound
-speed sets the wavenumber for both the FEM and BEM equations, and that density
-is used to convert prescribed velocity to pressure normal derivative. The
-unbounded region's material values are validated but are not separately used
-by the current numerical backend. Configure both regions with the same fluid
-properties.
+The current backend requires the same sound speed and density in every bounded
+and unbounded acoustic region. The shared sound speed sets the FEM and BEM
+wavenumber, and the shared density converts velocity to pressure normal
+derivative. Differing fluids are rejected.
 
 ## Setting up a coupled solve
 
-1. Import the tetrahedral FEM mesh and triangular BEM mesh. Confirm their scale,
-   translation, and physical-group names.
-2. In **System > Regions**, create one bounded-air region and one unbounded-air
-   region. Select the active FEM physical volume group or groups.
+1. Import the tetrahedral FEM mesh or meshes and the triangular BEM mesh.
+   Confirm their scale, translation, and physical-group names.
+2. In **System > Regions**, create a bounded-air region for each FEM chamber
+   and one unbounded-air region. Select each active FEM volume group.
 3. In **Boundaries**, classify every active physical surface. Use `moving` for
    prescribed FEM radiators, `interface` for both sides of the opening, and
    `rigid` for the remaining walls.
 4. In **Interfaces**, use **Build/Identify Interfaces** to create and validate
-   the FEM-to-BEM connection.
+   every FEM-to-BEM port connection.
 5. In **Components**, attach an ideal prescribed-velocity component to each
    moving FEM boundary and assign its application channel.
 6. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in Preferences. Choose
@@ -138,26 +138,32 @@ There are two conformance cases:
   surface to meet their perimeter. That surrounding surface may span multiple
   Gmsh geometrical entities.
 
+When several openings occupy the same planar BEM surface, interface construction
+protects the other tagged openings while rebuilding each pair. This allows,
+for example, independently meshed front- and rear-chamber ports to connect to
+one exterior boundary without consuming one another's physical groups.
+
 Without symmetry, the completed BEM surface must be watertight. With X or XY
 symmetry, open BEM boundary edges are allowed only on the active symmetry
 planes.
 
 ## Numerical formulation
 
-### FEM region
+### FEM regions
 
-The bounded region uses continuous first-order pressure basis functions on
-tetrahedra. Boundary Lab assembles analytic stiffness and consistent mass
-matrices once for the frequency sweep. At angular frequency
+Each bounded region uses continuous first-order pressure basis functions on
+tetrahedra. The disconnected FEM meshes are assembled into a block-diagonal
+aggregate pressure system. Boundary Lab assembles analytic stiffness and
+consistent mass matrices once for the frequency sweep. At angular frequency
 \(\omega=2\pi f\), the FEM Helmholtz matrix is
 
 $$
 A_F = K-k^2M, \qquad k=\frac{\omega}{c}.
 $$
 
-Only tetrahedra in the selected physical volume groups are retained. Their
-vertices, exterior facets, source tags, and interface indices are compacted and
-remapped before assembly.
+Only tetrahedra in the selected physical volume groups are retained. Each
+domain's vertices and facets are compacted, and boundary tags are remapped into
+a collision-free aggregate namespace before assembly.
 
 A prescribed normal velocity \(v_n\) on a moving FEM surface is converted to
 the implemented pressure normal derivative
@@ -196,12 +202,31 @@ parameters are:
 - `bl_n_per_a`;
 - `mmd_kg`, explicitly the dry moving mass;
 - `cms_m_per_n`;
-- `rms_n_s_per_m`.
+- `rms_n_s_per_m`;
+- `motion_axis`, a three-component translation direction.
 
 `Mms` is deliberately not accepted. Diaphragm area is integrated from the
 attached moving mesh surfaces, so a separate `Sd` is not required by the
-backend. All attached surfaces use the same uniform piston velocity; optional
-per-boundary signs reverse motion when mesh orientation requires it.
+backend. The axis is normalized by the backend. For a triangle with acoustic
+domain outward normal \(\mathbf n\) and normalized motion axis \(\mathbf d\),
+the normal velocity and generalized acoustic force use the same projection:
+
+$$
+v_n=(\mathbf n\mathbin{\cdot}\mathbf d)v_d,
+\qquad
+F_\mathrm{ac}=c_d\left[
+\sum_{\mathrm{FEM}}\int_{\Gamma_d}p(\mathbf n\mathbin{\cdot}\mathbf d)\,dS
+-
+\sum_{\mathrm{BEM}}\int_{\Gamma_d}p(\mathbf n\mathbin{\cdot}\mathbf d)\,dS
+\right].
+$$
+
+This reciprocal projection represents a shaped but rigidly translating cone
+correctly. It also makes independently meshed front and rear FEM surfaces load
+the same degree of freedom with opposite pressure directions. Optional
+per-boundary signs are orientation corrections, not substitutes for the
+motion axis. The completion factor \(c_d\) is described under
+[Symmetry](#symmetry).
 
 With the solver's time convention, the electrical and mechanical impedances
 are
@@ -226,11 +251,9 @@ Z_m v_d-Bl\,I-F_\mathrm{ac}=0.
 $$
 
 The reference voltage is currently fixed by the backend at \(2.83\ \mathrm{V}\)
-with zero source impedance. Acoustic pressure is integrated over every
-attached FEM and BEM moving surface to form \(F_\mathrm{ac}\). The same solved
-\(v_d\) generates each surface's normal derivative, so pressure loading,
-diaphragm motion, coil current, back-EMF, and radiation are solved
-bidirectionally.
+with zero source impedance. The same solved \(v_d\) generates every attached
+surface's projected normal derivative, so pressure loading, diaphragm motion,
+coil current, back-EMF, and radiation are solved bidirectionally.
 
 ### Coupled block system
 
@@ -265,7 +288,7 @@ With \(N_T\) electrodynamic transducers, the monolithic system extends to
 
 $$
 \begin{bmatrix}
-A_F & 0 & -G_F & -i\rho\omega B_F & 0 \\
+A_F & 0 & -G_F & -i\rho\omega D_F & 0 \\
 0 & A_B & -R_BQ_B & -R_B(i\rho\omega D_B) & 0 \\
 T_F & -T_B & 0 & 0 & 0 \\
 -B_F^\mathsf{T} & B_B^\mathsf{T} & 0 & Z_m & -Bl \\
@@ -280,23 +303,29 @@ f_v \\ 0 \\ 0 \\ 0 \\ V
 \end{bmatrix}.
 $$
 
-\(B_F\) and \(B_B\) integrate pressure over FEM and BEM piston surfaces, while
-\(D_B\) maps piston velocity to BEM DP0 Neumann data. Opposite acoustic-domain
-force signs make front and rear pressure act on the same mechanical degree of
-freedom.
+\(D_F\) maps piston velocity into projected FEM surface loads and \(D_B\) maps
+it to BEM DP0 Neumann data. \(B_F\) and \(B_B\) contain the reciprocal
+projected pressure-force integrals, including any reduced-driver completion
+factor. \(A_F\) is block diagonal when several bounded FEM domains are present.
+Opposite acoustic-domain force conventions make front and rear pressure act on
+the same mechanical degree of freedom.
 
 If the FEM mesh has \(N_F\) vertices, the BEM mesh has \(N_B\) vertices, and the
 interface has \(N_I\) vertices, the monolithic matrix order is
 \(N_F+N_B+N_I+2N_T\).
 
-For prescribed-velocity models, the CUDA production path partitions the FEM
-nodes into interior and interface sets and eliminates the interior set with an
-exact sparse Schur complement. Its dense coupled matrix has order \(N_B+2N_I\).
-After that reduced system is solved, a backward sparse solve reconstructs all
-\(N_F\) FEM pressures. Static condensation changes the work and memory
-requirements, not the mathematical solution.
+The CUDA production path retains the union of FEM-BEM interface nodes and
+electrodynamic diaphragm nodes. All other FEM nodes are eliminated with an
+exact sparse Schur complement. If that retained set has \(N_R\) nodes, the
+dense coupled matrix has order
+\(N_R+N_B+N_I+2N_T\). For a prescribed-velocity-only model,
+\(N_R=N_I\), giving \(N_B+2N_I\). After the reduced system is solved, a
+backward sparse solve reconstructs every FEM domain's pressure. Static
+condensation changes the work and memory requirements, not the mathematical
+solution.
 
-Electrodynamic models currently remain monolithic on both CPU and CUDA.
+CPU production and FP64 reference solves remain monolithic. CUDA
+electrodynamic solves use the retained-surface condensed formulation.
 
 The matrix is assembled and factored once per frequency. All requested
 excitation ports are then solved together as multiple right-hand sides, so an
@@ -312,10 +341,24 @@ Both production backends support:
 - `xy`: positive-X/positive-Y quarter model, mirrored across \(X=0\) and
   \(Y=0\).
 
-These symmetry modes currently apply only to prescribed-velocity models.
-Electrodynamic transducers require symmetry to be off until Boundary Lab has an
-explicit rule for whether reduced diaphragm geometry represents part of one
-driver or an orbit of multiple identical drivers.
+Electrodynamic components use explicit symmetry semantics while retaining
+full-driver T/S parameters:
+
+- `symmetry_role` is `complete_representative` when the fundamental domain
+  contains one complete representative driver and `fractional_driver` when a
+  symmetry plane cuts the same physical driver;
+- `fractional_symmetry_axes` records which active planes cut that driver;
+- `surface_completion_factor` is \(2^n\), where \(n\) is the number of those
+  axes, and multiplies only the generalized pressure-force integral;
+- `physical_driver_orbit_count` records the number of distinct identical
+  physical drivers represented by symmetry images.
+
+The completion factor times the orbit count must equal 1, 2, or 4 for off, X,
+or XY symmetry respectively. A motion axis must lie in every symmetry plane
+that cuts the same physical driver. Velocity and Neumann data are not
+multiplied: BEM symmetry images already reconstruct their acoustic effect.
+Velocity and current outputs are per physical driver; aggregate current for an
+orbit is the reported current times `physical_driver_orbit_count`.
 
 Both FEM and BEM meshes must lie in the selected positive fundamental domain.
 The FEM cut faces have the natural zero-normal-derivative condition represented
@@ -374,6 +417,10 @@ across excitation bases of:
 - relative pressure-continuity error at the interface;
 - relative integrated interface-flux conservation error.
 
+For multi-port models these are the worst values over the individual
+interfaces, not one potentially cancelling aggregate. Per-interface IDs and
+error arrays are included in the diagnostics.
+
 Production solves deliberately do not retain the complete coupled matrix after
 factorization. Consequently, they do not report a full coupled-system residual.
 The FP64 reference path keeps the matrices and additionally reports:
@@ -406,11 +453,11 @@ factorizations are rebuilt at every frequency.
 The solver is still limited by dense BEM and coupled algebra. BEM assembly grows
 approximately quadratically with boundary size. CPU monolithic LU grows
 approximately cubically with \(N_F+N_B+N_I+2N_T\). CUDA condensation removes FEM
-interior nodes from the dense block, but the remaining \(N_B+2N_I\) system is
-still dense and requires substantial GPU memory. Symmetry can reduce these
-costs dramatically for prescribed-velocity models. Electrodynamic models use
-the full monolithic CPU or GPU matrix. The current backend is not an iterative
-or large-scale fast-multipole solver.
+interior nodes from the dense block, but the remaining interface, diaphragm,
+BEM, and transducer system is still dense and requires substantial GPU memory.
+Symmetry can reduce these costs dramatically for both prescribed-velocity and
+electrodynamic models. The current backend is not an iterative or large-scale
+fast-multipole solver.
 
 Before committing to a fine sweep, test a few representative frequencies and
 watch the reported system order, assembly time, factorization time, and
@@ -430,8 +477,8 @@ rejected during application preparation or backend validation:
 - cone breakup, nonlinear or asymmetric `Bl`, thermal effects, and lossy or
   frequency-dependent voice-coil inductance;
 - nonuniform prescribed-motion profiles;
-- multiple bounded or unbounded regions;
-- multiple FEM-BEM interfaces;
+- more than one unbounded exterior region;
+- different fluid properties among coupled acoustic regions;
 - iterative, fast-multipole, or distributed coupled solution methods;
 - Bempp, ROCm, server, or legacy-local execution for a physical system.
 

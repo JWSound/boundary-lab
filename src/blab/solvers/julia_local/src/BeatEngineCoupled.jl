@@ -64,6 +64,9 @@ struct ElectrodynamicTransducer{T<:AbstractFloat}
     fem_motion_signs::Vector{T}
     bem_boundary_tags::Vector{Int}
     bem_motion_signs::Vector{T}
+    motion_axis::SVector{3,T}
+    surface_completion_factor::T
+    physical_driver_orbit_count::Int
     re_ohm::T
     le_h::T
     bl_n_per_a::T
@@ -441,20 +444,25 @@ function assemble_transducer_operators(
     transducer_count = length(transducers)
     transducer_count == 0 && return (
         fem_surface=spzeros(T, length(fem_mesh.vertices), 0),
+        fem_force=spzeros(T, length(fem_mesh.vertices), 0),
         bem_surface=spzeros(T, length(bem_mesh.vertices), 0),
+        bem_force=spzeros(T, length(bem_mesh.vertices), 0),
         bem_normal_velocity=spzeros(T, length(bem_mesh.faces), 0),
     )
 
     fem_rows = Int[]
     fem_cols = Int[]
     fem_values = T[]
+    fem_force_values = T[]
     bem_rows = Int[]
     bem_cols = Int[]
     bem_values = T[]
+    bem_force_values = T[]
     bem_velocity_rows = Int[]
     bem_velocity_cols = Int[]
     bem_velocity_values = T[]
 
+    fem_outward_normals = _outward_boundary_normals(fem_mesh)
     for (column, transducer) in enumerate(transducers)
         length(transducer.fem_boundary_tags) == length(transducer.fem_motion_signs) ||
             error("Transducer $(repr(transducer.id)) FEM boundary tags and signs differ in length.")
@@ -462,6 +470,13 @@ function assemble_transducer_operators(
             error("Transducer $(repr(transducer.id)) BEM boundary tags and signs differ in length.")
         isempty(transducer.fem_boundary_tags) && isempty(transducer.bem_boundary_tags) &&
             error("Transducer $(repr(transducer.id)) has no acoustic moving boundary.")
+        axis_norm = norm(transducer.motion_axis)
+        axis_norm > zero(T) || error("Transducer $(repr(transducer.id)) has a zero motion axis.")
+        motion_axis = transducer.motion_axis / axis_norm
+        transducer.surface_completion_factor >= one(T) ||
+            error("Transducer $(repr(transducer.id)) has an invalid surface completion factor.")
+        transducer.physical_driver_orbit_count >= 1 ||
+            error("Transducer $(repr(transducer.id)) has an invalid physical driver orbit count.")
 
         fem_sign_by_tag = Dict(zip(transducer.fem_boundary_tags, transducer.fem_motion_signs))
         length(fem_sign_by_tag) == length(transducer.fem_boundary_tags) ||
@@ -473,11 +488,16 @@ function assemble_transducer_operators(
             sign == zero(T) && continue
             push!(matched_fem_tags, tag)
             face = fem_mesh.boundary_faces[face_index]
-            nodal_area = sign * _triangle_area(fem_mesh.vertices, face) / T(3)
+            projection = sign * dot(fem_outward_normals[face_index], motion_axis)
+            nodal_area = projection * _triangle_area(fem_mesh.vertices, face) / T(3)
             for vertex in face
                 push!(fem_rows, vertex)
                 push!(fem_cols, column)
                 push!(fem_values, nodal_area)
+                push!(
+                    fem_force_values,
+                    transducer.surface_completion_factor * nodal_area,
+                )
             end
         end
         missing_fem_tags = setdiff(Set(keys(fem_sign_by_tag)), matched_fem_tags)
@@ -496,15 +516,20 @@ function assemble_transducer_operators(
             sign == zero(T) && continue
             push!(matched_bem_tags, tag)
             face = bem_mesh.faces[face_index]
-            nodal_area = sign * bem_mesh.areas[face_index] / T(3)
+            projection = sign * dot(bem_mesh.normals[face_index], motion_axis)
+            nodal_area = projection * bem_mesh.areas[face_index] / T(3)
             for vertex in face
                 push!(bem_rows, vertex)
                 push!(bem_cols, column)
                 push!(bem_values, nodal_area)
+                push!(
+                    bem_force_values,
+                    transducer.surface_completion_factor * nodal_area,
+                )
             end
             push!(bem_velocity_rows, face_index)
             push!(bem_velocity_cols, column)
-            push!(bem_velocity_values, sign)
+            push!(bem_velocity_values, projection)
         end
         missing_bem_tags = setdiff(Set(keys(bem_sign_by_tag)), matched_bem_tags)
         isempty(missing_bem_tags) || error(
@@ -521,10 +546,24 @@ function assemble_transducer_operators(
             length(fem_mesh.vertices),
             transducer_count,
         ),
+        fem_force=sparse(
+            fem_rows,
+            fem_cols,
+            fem_force_values,
+            length(fem_mesh.vertices),
+            transducer_count,
+        ),
         bem_surface=sparse(
             bem_rows,
             bem_cols,
             bem_values,
+            length(bem_mesh.vertices),
+            transducer_count,
+        ),
+        bem_force=sparse(
+            bem_rows,
+            bem_cols,
+            bem_force_values,
             length(bem_mesh.vertices),
             transducer_count,
         ),
@@ -546,6 +585,7 @@ function prepare_coupled_cache(
     singular_order::Int=2,
     bem_backend::Symbol=:cpu,
     symmetry_mode::Symbol=:off,
+    retained_fem_vertices=interface_map.fem_vertex_indices,
 ) where {T<:AbstractFloat}
     bem_backend in (:cpu, :cuda) ||
         error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
@@ -641,7 +681,7 @@ function prepare_coupled_cache(
             T,
         )
         device_bem_flux = cuda.CuArray(Complex{T}.(Matrix(interface_operators.bem_flux)))
-        gamma = interface_map.fem_vertex_indices
+        gamma = Int.(collect(retained_fem_vertices))
         device_sparse_blocks = (
             stiffness=build_cuda_sparse_scatter_cache(stiffness),
             mass=build_cuda_sparse_scatter_cache(mass),
@@ -673,6 +713,7 @@ function prepare_coupled_cache(
     return (
         bem_backend=bem_backend,
         symmetry_mode=normalized_symmetry,
+        retained_fem_vertices=Int.(collect(retained_fem_vertices)),
         stiffness=stiffness,
         mass=mass,
         interface_operators=interface_operators,
@@ -893,23 +934,23 @@ end
 function _build_cuda_fem_condensation(
     fem_system::SparseMatrixCSC{Complex{T}},
     interface_operators::InterfaceOperators{T},
-    interface_map::ConformingInterfaceMap,
+    retained_vertices,
 ) where {T<:AbstractFloat}
     cuda = BeatEngineCore.cuda_module()
     cudss = _cudss_module()
     fem_count = size(fem_system, 1)
-    interface_vertices = interface_map.fem_vertex_indices
-    interface_set = Set(interface_vertices)
+    retained_vertices = Int.(collect(retained_vertices))
+    retained_set = Set(retained_vertices)
     interior_vertices = [
         vertex for vertex in 1:fem_count
-        if !(vertex in interface_set)
+        if !(vertex in retained_set)
     ]
     interior_load = interface_operators.fem_load[interior_vertices, :]
     nnz(interior_load) == 0 || error(
         "FEM static condensation currently requires interface loads to have support only on interface nodes.",
     )
 
-    permutation = vcat(interior_vertices, interface_vertices)
+    permutation = vcat(interior_vertices, retained_vertices)
     permuted_system = fem_system[permutation, permutation]
     device_system = cuda.CUSPARSE.CuSparseMatrixCSR(permuted_system)
     solver = cudss.CudssSolver(device_system, "G", 'F')
@@ -919,7 +960,7 @@ function _build_cuda_fem_condensation(
         "user_schur_indices",
         vcat(
             zeros(Cint, length(interior_vertices)),
-            ones(Cint, length(interface_vertices)),
+            ones(Cint, length(retained_vertices)),
         ),
     )
     device_rhs = cuda.zeros(Complex{T}, fem_count)
@@ -955,7 +996,7 @@ function _build_cuda_fem_condensation(
         schur_descriptor=schur_descriptor,
         permutation=permutation,
         interior_count=length(interior_vertices),
-        interface_count=length(interface_vertices),
+        retained_count=length(retained_vertices),
         timings=(
             analysis_s=analysis_s,
             factorization_s=factorization_s,
@@ -1001,10 +1042,21 @@ function build_coupled_system(
     static_condensation && validation_diagnostics && error(
         "FEM static condensation cannot be combined with full-matrix validation diagnostics.",
     )
-    static_condensation && !isempty(transducers) && error(
-        "FEM static condensation is not yet available with electrodynamic transducers.",
-    )
     fem_stage_started = time_ns()
+    resolved_transducer_operators = isnothing(transducer_operators) ?
+                                    assemble_transducer_operators(
+        fem_mesh,
+        bem_mesh,
+        transducers,
+    ) : transducer_operators
+    transducer_fem_vertices = if isempty(transducers)
+        Int[]
+    else
+        unique(findnz(resolved_transducer_operators.fem_surface)[1])
+    end
+    retained_fem_vertices = sort(
+        unique(vcat(interface_map.fem_vertex_indices, transducer_fem_vertices)),
+    )
     prepared = isnothing(cache) ? prepare_coupled_cache(
         fem_mesh,
         bem_mesh,
@@ -1013,21 +1065,18 @@ function build_coupled_system(
         singular_order=singular_order,
         bem_backend=bem_backend,
         symmetry_mode=symmetry_mode,
+        retained_fem_vertices=retained_fem_vertices,
     ) : cache
     prepared.bem_backend == bem_backend ||
         error("Coupled cache backend does not match requested BEM backend.")
     prepared.symmetry_mode == BeatEngineCore.normalized_symmetry_mode(symmetry_mode) ||
         error("Coupled cache symmetry mode does not match requested symmetry.")
+    prepared.retained_fem_vertices == retained_fem_vertices ||
+        error("Coupled cache retained FEM vertices do not match the current moving surfaces.")
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
     fem_system = Complex{T}.(prepared.stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(prepared.mass)
     interface_operators = prepared.interface_operators
-    resolved_transducer_operators = isnothing(transducer_operators) ?
-                                    assemble_transducer_operators(
-        fem_mesh,
-        bem_mesh,
-        transducers,
-    ) : transducer_operators
     transducer_count = length(transducers)
     size(resolved_transducer_operators.fem_surface, 2) == transducer_count ||
         error("FEM transducer operator count does not match the transducer list.")
@@ -1109,7 +1158,7 @@ function build_coupled_system(
     condensation = static_condensation ? _build_cuda_fem_condensation(
         fem_system,
         interface_operators,
-        interface_map,
+        retained_fem_vertices,
     ) : nothing
     fem_condensation_s = (time_ns() - condensation_started) / 1.0e9
 
@@ -1117,17 +1166,21 @@ function build_coupled_system(
     fem_count = length(fem_mesh.vertices)
     bem_count = length(bem_mesh.vertices)
     interface_count = length(interface_map.fem_vertex_indices)
+    retained_fem_count = length(retained_fem_vertices)
     formulation = static_condensation ? :fem_interface_condensed : :monolithic
     fem_range = 1:fem_count
-    gamma_range = static_condensation ? (1:interface_count) : nothing
+    gamma_range = static_condensation ? (1:retained_fem_count) : nothing
     bem_range = static_condensation ?
-                ((interface_count + 1):(interface_count + bem_count)) :
+                ((retained_fem_count + 1):(retained_fem_count + bem_count)) :
                 ((fem_count + 1):(fem_count + bem_count))
     flux_range = static_condensation ?
-                 ((interface_count + bem_count + 1):(2 * interface_count + bem_count)) :
+                 (
+        (retained_fem_count + bem_count + 1):
+        (retained_fem_count + bem_count + interface_count)
+    ) :
                  ((fem_count + bem_count + 1):(fem_count + bem_count + interface_count))
     acoustic_system_count = static_condensation ?
-                            (2 * interface_count + bem_count) :
+                            (retained_fem_count + interface_count + bem_count) :
                             (fem_count + bem_count + interface_count)
     mechanical_range = transducer_count == 0 ?
                        (1:0) :
@@ -1139,6 +1192,8 @@ function build_coupled_system(
         (acoustic_system_count + 2 * transducer_count)
     )
     system_count = acoustic_system_count + 2 * transducer_count
+    coupled_fem_range = static_condensation ? gamma_range : fem_range
+    coupled_fem_vertices = static_condensation ? retained_fem_vertices : collect(fem_range)
     mechanical_impedance = Complex{T}[
         Complex{T}(
             transducer.rms_n_s_per_m,
@@ -1204,17 +1259,29 @@ function build_coupled_system(
             if transducer_count > 0
                 d_fem_motion = cuda.CuArray(
                     -normal_derivative_scale .* Complex{T}.(
-                        Matrix(resolved_transducer_operators.fem_surface)
+                        Matrix(
+                            resolved_transducer_operators.fem_surface[
+                                coupled_fem_vertices,
+                                :,
+                            ],
+                        )
                     ),
                 )
                 d_fem_force = cuda.CuArray(
                     -Complex{T}.(
-                        transpose(Matrix(resolved_transducer_operators.fem_surface))
+                        transpose(
+                            Matrix(
+                                resolved_transducer_operators.fem_force[
+                                    coupled_fem_vertices,
+                                    :,
+                                ],
+                            ),
+                        )
                     ),
                 )
                 d_bem_force = cuda.CuArray(
                     Complex{T}.(
-                        transpose(Matrix(resolved_transducer_operators.bem_surface))
+                        transpose(Matrix(resolved_transducer_operators.bem_force))
                     ),
                 )
                 d_mechanical = cuda.CuArray(Matrix(Diagonal(mechanical_impedance)))
@@ -1231,9 +1298,9 @@ function build_coupled_system(
                         d_force_factor,
                     ),
                 )
-                view(d_coupled, fem_range, mechanical_range) .= d_fem_motion
+                view(d_coupled, coupled_fem_range, mechanical_range) .= d_fem_motion
                 view(d_coupled, bem_range, mechanical_range) .= bem_blocks.bem_motion_block
-                view(d_coupled, mechanical_range, fem_range) .= d_fem_force
+                view(d_coupled, mechanical_range, coupled_fem_range) .= d_fem_force
                 view(d_coupled, mechanical_range, bem_range) .= d_bem_force
                 view(d_coupled, mechanical_range, mechanical_range) .= d_mechanical
                 view(d_coupled, mechanical_range, electrical_range) .= -d_force_factor
@@ -1270,11 +1337,11 @@ function build_coupled_system(
             host_coupled[bem_range, mechanical_range] = bem_blocks.bem_motion_block
             host_coupled[mechanical_range, fem_range] =
                 -Complex{T}.(
-                    transpose(Matrix(resolved_transducer_operators.fem_surface))
+                    transpose(Matrix(resolved_transducer_operators.fem_force))
                 )
             host_coupled[mechanical_range, bem_range] =
                 Complex{T}.(
-                    transpose(Matrix(resolved_transducer_operators.bem_surface))
+                    transpose(Matrix(resolved_transducer_operators.bem_force))
                 )
             host_coupled[mechanical_range, mechanical_range] =
                 Matrix(Diagonal(mechanical_impedance))
@@ -1313,6 +1380,7 @@ function build_coupled_system(
         condensation=condensation,
         fem_range=fem_range,
         gamma_range=gamma_range,
+        retained_fem_vertices=retained_fem_vertices,
         bem_range=bem_range,
         flux_range=flux_range,
         mechanical_range=mechanical_range,
@@ -1471,8 +1539,6 @@ function solve_coupled_excitations(system, excitations)
         end
     end
     if system.formulation == :fem_interface_condensed
-        isempty(system.transducers) ||
-            error("Condensed solves do not yet support electrodynamic transducers.")
         cuda = BeatEngineCore.cuda_module()
         cudss = _cudss_module()
         condensation = system.condensation
@@ -1484,6 +1550,7 @@ function solve_coupled_excitations(system, excitations)
             size(system.factorization, 1),
             excitation_count,
         )
+        d_electrical_rhs = nothing
         d_solution = nothing
         try
             cudss.cudss(
@@ -1495,6 +1562,10 @@ function solve_coupled_excitations(system, excitations)
             )
             schur_rows = (condensation.interior_count + 1):length(condensation.permutation)
             view(d_rhs, system.gamma_range, :) .= view(d_forward, schur_rows, :)
+            if !isempty(system.transducers)
+                d_electrical_rhs = cuda.CuArray(electrical_rhs)
+                view(d_rhs, system.electrical_range, :) .= d_electrical_rhs
+            end
             d_solution = system.factorization \ d_rhs
             view(d_forward, schur_rows, :) .= view(d_solution, system.gamma_range, :)
             cudss.cudss(
@@ -1511,12 +1582,20 @@ function solve_coupled_excitations(system, excitations)
             fem_pressure[condensation.permutation, :] = permuted_pressure
             bem_pressure = Complex{T}.(Array(view(d_solution, system.bem_range, :)))
             interface_flux = Complex{T}.(Array(view(d_solution, system.flux_range, :)))
+            diaphragm_velocity = Complex{T}.(
+                Array(view(d_solution, system.mechanical_range, :)),
+            )
+            voice_coil_current = Complex{T}.(
+                Array(view(d_solution, system.electrical_range, :)),
+            )
             return [
                 _coupled_solution_from_parts(
                     system,
                     fem_pressure[:, column],
                     bem_pressure[:, column],
-                    interface_flux[:, column],
+                    interface_flux[:, column];
+                    diaphragm_velocity=diaphragm_velocity[:, column],
+                    voice_coil_current=voice_coil_current[:, column],
                 )
                 for column in axes(fem_pressure, 2)
             ]
@@ -1524,6 +1603,7 @@ function solve_coupled_excitations(system, excitations)
             cuda.unsafe_free!(d_fem_rhs)
             cuda.unsafe_free!(d_forward)
             cuda.unsafe_free!(d_rhs)
+            isnothing(d_electrical_rhs) || cuda.unsafe_free!(d_electrical_rhs)
             isnothing(d_solution) || cuda.unsafe_free!(d_solution)
         end
     end
@@ -1740,6 +1820,41 @@ function _triangle_normal(vertices, face)
     magnitude = norm(normal)
     magnitude > 0 || error("Interface contains a degenerate triangle.")
     return normal / magnitude
+end
+
+function _outward_boundary_normals(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
+    face_counts = Dict{NTuple{3,Int},Int}()
+    opposite_vertex = Dict{NTuple{3,Int},Int}()
+    for tetrahedron in mesh.tetrahedra
+        faces = _tetrahedron_faces(tetrahedron)
+        opposites = (
+            tetrahedron[4],
+            tetrahedron[3],
+            tetrahedron[2],
+            tetrahedron[1],
+        )
+        for (face, opposite) in zip(faces, opposites)
+            face_counts[face] = get(face_counts, face, 0) + 1
+            opposite_vertex[face] = opposite
+        end
+    end
+
+    return [
+        begin
+            key = _sorted_face(face)
+            get(face_counts, key, 0) == 1 ||
+                error("FEM boundary triangle is not an exterior tetrahedral facet.")
+            normal = _triangle_normal(mesh.vertices, face)
+            centroid = (
+                mesh.vertices[face[1]] +
+                mesh.vertices[face[2]] +
+                mesh.vertices[face[3]]
+            ) / T(3)
+            inward = mesh.vertices[opposite_vertex[key]] - centroid
+            dot(normal, inward) > zero(T) ? -normal : normal
+        end
+        for face in mesh.boundary_faces
+    ]
 end
 
 function _sorted_face(face::NTuple{3,Int})

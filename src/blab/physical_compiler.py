@@ -581,7 +581,13 @@ class PhysicalSystemCompiler:
             assumptions.append(
                 PhysicsAssumption(
                     AssumptionStatus.INCLUDED,
-                    "Linear rigid-piston electrodynamic transducers with dry moving mass",
+                    "Linear single-axis rigid-body electrodynamic transducers with dry moving mass",
+                )
+            )
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED,
+                    "Explicit reduced-driver completion and identical symmetry-orbit excitation",
                 )
             )
             assumptions.append(

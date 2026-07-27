@@ -91,6 +91,7 @@ def conform_bem_interface_to_fem(
     geometry_tolerance: float | None = None,
     merge_tolerance: float = 1e-8,
     symmetry_mode: str = "off",
+    protected_bem_interface_names: tuple[str, ...] = (),
 ) -> tuple[meshio.Mesh, InterfaceConformResult]:
     """Return a BEM mesh whose interface facets exactly match the FEM facets.
 
@@ -107,6 +108,11 @@ def conform_bem_interface_to_fem(
 
     fem_interface_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
     bem_interface_tag = _physical_surface_tag(bem_mesh, bem_interface_name)
+    protected_bem_tags = {
+        _physical_surface_tag(bem_mesh, name)
+        for name in protected_bem_interface_names
+        if name != bem_interface_name
+    }
     fem_data = _triangle_data(fem_mesh, require_geometrical=False)
     bem_data = _triangle_data(bem_mesh, require_geometrical=True)
 
@@ -197,7 +203,15 @@ def conform_bem_interface_to_fem(
         np.abs((bem_mesh.points[bem_data.triangles] - plane_origin) @ perimeter_normal),
         axis=1,
     )
-    adjacent_mask = (~bem_interface_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
+    protected_mask = np.isin(
+        bem_data.physical_tags,
+        np.asarray(sorted(protected_bem_tags), dtype=bem_data.physical_tags.dtype),
+    )
+    adjacent_mask = (
+        (~bem_interface_mask)
+        & (~protected_mask)
+        & (triangle_plane_deviation <= resolved_geometry_tolerance)
+    )
     if not np.any(adjacent_mask):
         raise InterfaceConformError(
             "Could not find a planar non-interface BEM surface surrounding the interface perimeter. "

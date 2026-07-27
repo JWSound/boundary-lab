@@ -150,7 +150,7 @@ An interface connects two boundary assignments and transfers acoustic state
 between their regions. It represents a relationship between surfaces rather
 than another physical surface.
 
-The initial FEM-BEM interface has:
+Each FEM-BEM interface has:
 
 - one boundary belonging to a bounded FEM air region;
 - one boundary belonging to the unbounded BEM exterior;
@@ -193,6 +193,10 @@ An ordinary open port mouth is therefore an interface, not a component. It
 connects two air domains but does not introduce an independent mechanical
 device.
 
+Several bounded FEM chambers may connect to different tagged openings in the
+same unbounded BEM mesh. When coplanar openings require rebuilding, Boundary
+Lab preserves the other interface groups while conforming each FEM-BEM pair.
+
 ## Components
 
 A component represents a physical device with behavior beyond the air itself.
@@ -229,27 +233,46 @@ The component owns the behavior of its referenced moving boundaries. A moving
 boundary must be owned by exactly one component so that two devices cannot
 silently prescribe incompatible motion on the same surface.
 
-A component may reference multiple boundaries. A full electrodynamic driver,
-for example, may have a front diaphragm boundary facing the exterior and a
-rear diaphragm boundary facing an enclosure:
+A component may reference multiple boundaries, including moving groups from
+different FEM meshes. A full electrodynamic driver, for example, may have
+independently triangulated front- and rear-chamber diaphragm boundaries:
 
 ```text
-Exterior region ---- Front diaphragm boundary
+Front FEM chamber --- Front diaphragm boundary
                                   |
 Excitation port -------- Driver component
                                   |
-Enclosure region --- Rear diaphragm boundary
+Rear FEM chamber ---- Rear diaphragm boundary
 ```
 
 Both acoustic pressures load the same mechanical diaphragm degree of freedom.
+The diaphragm surfaces are not acoustic interfaces and do not require matching
+nodes: their pressures remain independent and couple only through the
+component.
 The component converts the resulting pressure difference, motor force, moving
 mass, suspension, and damping into boundary motion.
 
-The initial electrodynamic backend model is a uniform rigid piston with direct
+The initial electrodynamic backend model is a single-axis rigid translation
+with direct
 `re_ohm`, `le_h`, `bl_n_per_a`, `mmd_kg`, `cms_m_per_n`, and
-`rms_n_s_per_m` parameters. `mmd_kg` is dry moving mass; `Mms` is not accepted.
-Diaphragm area and pressure force are integrated from the attached moving mesh
-surfaces.
+`rms_n_s_per_m` parameters plus a three-component `motion_axis`. `mmd_kg` is
+dry moving mass; `Mms` is not accepted. Normal velocity and generalized force
+both use each face's projection onto the motion axis. Diaphragm projected area
+and pressure force are therefore integrated from the attached moving meshes,
+including shaped rigid cones.
+
+Reduced electrodynamic models keep full physical-driver T/S parameters. Their
+component parameters distinguish a driver cut by a symmetry plane from a
+complete representative mirrored into distinct drivers:
+
+- `symmetry_role`;
+- `fractional_symmetry_axes`;
+- `surface_completion_factor`;
+- `physical_driver_orbit_count`.
+
+The completion factor scales only the recovered full-diaphragm pressure force.
+The orbit count describes distinct identically driven physical drivers and is
+used when aggregating electrical current or power.
 
 A passive radiator uses the same general pattern without an excitation port. Its
 motion is driven by the pressure difference across its front and rear

@@ -2,9 +2,11 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
+import meshio
 import numpy as np
 import pytest
 
+from blab.interface_conform import conform_bem_interface_to_fem
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticInterface,
@@ -46,6 +48,7 @@ from blab.system_contract import (
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
+SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "skram"
 
 
 def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
@@ -199,11 +202,14 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
 
     session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
 
-    assert session.request.solver_options["static_condensation"] is False
+    assert session.request.solver_options["static_condensation"] is True
     assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
-    assert "Linear rigid-piston electrodynamic transducers with dry moving mass" in assumptions
+    assert (
+        "Linear single-axis rigid-body electrodynamic transducers with dry moving mass"
+        in assumptions
+    )
 
 
 @pytest.mark.parametrize(
@@ -216,6 +222,7 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
                 "bl_n_per_a": 7.0,
                 "cms_m_per_n": 0.0005,
                 "rms_n_s_per_m": 1.0,
+                "motion_axis": [0.0, 0.0, 1.0],
             },
             "mmd_kg",
         ),
@@ -228,13 +235,14 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
                 "mms_kg": 0.016,
                 "cms_m_per_n": 0.0005,
                 "rms_n_s_per_m": 1.0,
+                "motion_axis": [0.0, 0.0, 1.0],
             },
             "mms_kg",
         ),
     ),
 )
 def test_coupled_backend_rejects_incomplete_or_mms_transducer_parameters(
-    parameters: dict[str, float],
+    parameters: dict[str, object],
     message: str,
 ) -> None:
     system = _electrodynamic_fixture_system()
@@ -252,7 +260,32 @@ def test_coupled_backend_rejects_incomplete_or_mms_transducer_parameters(
         CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
-def test_coupled_backend_rejects_symmetry_for_electrodynamic_component() -> None:
+def test_coupled_backend_accepts_explicit_fractional_driver_symmetry() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "symmetry_role": "fractional_driver",
+            "surface_completion_factor": 2,
+            "physical_driver_orbit_count": 1,
+            "fractional_symmetry_axes": ["x"],
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"symmetry": "x"},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert session.request.solver_options["symmetry"] == "x"
+
+
+def test_coupled_backend_rejects_ambiguous_transducer_symmetry_scaling() -> None:
     compiled = PhysicalSystemCompiler().compile(_electrodynamic_fixture_system())
     request = SystemSolveRequest(
         compiled_system=compiled,
@@ -261,8 +294,62 @@ def test_coupled_backend_rejects_symmetry_for_electrodynamic_component() -> None
         solver_options={"symmetry": "x"},
     )
 
-    with pytest.raises(ValueError, match="require symmetry to be off"):
+    with pytest.raises(ValueError, match="requires 2"):
         CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
+def test_coupled_backend_rejects_fractional_driver_motion_normal_to_cut_plane() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "motion_axis": [1.0, 0.0, 0.0],
+            "symmetry_role": "fractional_driver",
+            "surface_completion_factor": 2,
+            "physical_driver_orbit_count": 1,
+            "fractional_symmetry_axes": ["x"],
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"symmetry": "x"},
+    )
+
+    with pytest.raises(ValueError, match="motion_axis must lie"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
+def test_skram_multi_chamber_model_compiles_with_shared_fractional_driver(
+    tmp_path: Path,
+) -> None:
+    system = _skram_fixture_system(tmp_path)
+
+    compiled = PhysicalSystemCompiler().compile(system, symmetry_mode="x")
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(200.0,),
+        excitation_port_ids=("excitation:skram-driver",),
+        solver_options={"symmetry": "x"},
+    )
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert len(
+        [
+            region
+            for region in compiled.regions
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+        ]
+    ) == 2
+    assert len(compiled.interfaces) == 2
+    assert compiled.components[0].boundary_ids == (
+        "boundary:front-radiator",
+        "boundary:rear-radiator",
+    )
+    assert session.request.solver_options["symmetry"] == "x"
 
 
 @pytest.mark.skipif(
@@ -416,20 +503,87 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
         relative_error = float(
             np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])
         ) / scale
-        assert relative_error < 5e-3
+        assert relative_error < 5e-3, (
+            quantity_id,
+            relative_error,
+            cpu_quantities[quantity_id],
+            cuda_quantities[quantity_id],
+        )
     assert cpu_result.diagnostics["linear_backend"] == "cpu"
     assert cuda_result.diagnostics["linear_backend"] == "cuda"
     assert cpu_result.diagnostics["formulation"] == "monolithic"
-    assert cuda_result.diagnostics["formulation"] == "monolithic"
-    assert cuda_result.diagnostics["static_condensation_requested"] is False
+    assert cuda_result.diagnostics["formulation"] == "fem_interface_condensed"
+    assert cuda_result.diagnostics["static_condensation_requested"] is True
+    assert cuda_result.diagnostics["static_condensation_active"] is True
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
+    reason="Set BLAB_RUN_COUPLED_CUDA=1 to run the condensed SKRAM integration.",
+)
+def test_skram_multi_chamber_cuda_condensed_solve(tmp_path: Path) -> None:
+    compiled = PhysicalSystemCompiler().compile(
+        _skram_fixture_system(tmp_path),
+        symmetry_mode="x",
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(200.0,),
+        excitation_port_ids=("excitation:skram-driver",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+        ),
+        solver_options={
+            "symmetry": "x",
+            "quadrature_order": 1,
+            "singular_order": 1,
+            "validation_diagnostics": False,
+            "static_condensation": True,
+        },
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+
+    (result,) = tuple(
+        CoupledProductionBackend(
+            bem_backend="cuda",
+            julia_executable=julia_executable,
+            persistent_worker=True,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    velocity = quantities["output:velocity"].values[0, 0]
+    current = quantities["output:current"].values[0, 0]
+    electrical_impedance = 6.0 - 1j * 2.0 * np.pi * 200.0 * 0.0005
+    electrical_residual = abs(
+        electrical_impedance * current
+        + 7.0 * velocity
+        - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    ) / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+
+    assert np.isfinite(velocity)
+    assert np.isfinite(current)
+    assert electrical_residual < 5e-4
+    assert result.diagnostics["bounded_region_count"] == 2
+    assert result.diagnostics["interface_count"] == 2
+    assert result.diagnostics["symmetry"] == "x"
+    assert result.diagnostics["formulation"] == "fem_interface_condensed"
+    assert result.diagnostics["static_condensation_active"] is True
+    assert result.diagnostics["solved_system_order"] < result.diagnostics["full_system_order"]
 
 
 def test_editable_physical_system_round_trips_for_project_persistence() -> None:
-    system = _fixture_system()
+    system = _electrodynamic_fixture_system()
 
     restored = physical_system_from_dict(physical_system_to_dict(system))
 
     assert restored == system
+    assert restored.components[0].parameters["mmd_kg"] == pytest.approx(0.015)
+    assert restored.components[0].parameters["motion_axis"] == [0.0, 0.0, 1.0]
+    assert restored.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
 
 
 def test_generalized_frequency_result_preserves_complex_double_precision() -> None:
@@ -513,7 +667,8 @@ def _electrodynamic_fixture_system() -> PhysicalSystem:
             "mmd_kg": 0.015,
             "cms_m_per_n": 0.0005,
             "rms_n_s_per_m": 1.0,
-            "motion_profile": "uniform",
+            "motion_axis": [0.0, 0.0, 1.0],
+            "motion_profile": "rigid_translation",
         },
     )
     port = replace(
@@ -543,6 +698,249 @@ def _bidirectional_electrodynamic_fixture_system() -> PhysicalSystem:
             for boundary in system.boundaries
         ),
         components=(component,),
+    )
+
+
+def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
+    front_file = SKRAM_FIXTURE_ROOT / "SkramFrontChamber.msh"
+    rear_file = SKRAM_FIXTURE_ROOT / "SkramRearChamber.msh"
+    exterior_file = SKRAM_FIXTURE_ROOT / "SkramExterior.msh"
+    front_mesh = meshio.read(front_file)
+    rear_mesh = meshio.read(rear_file)
+    exterior_mesh = meshio.read(exterior_file)
+    front_mesh.points = np.asarray(front_mesh.points, dtype=float) * 0.001
+    rear_mesh.points = np.asarray(rear_mesh.points, dtype=float) * 0.001
+    exterior_mesh.points = np.asarray(exterior_mesh.points, dtype=float) * 0.001
+    conformed_exterior, _ = conform_bem_interface_to_fem(
+        front_mesh,
+        exterior_mesh,
+        fem_interface_name="Port",
+        bem_interface_name="FrontChamberInterface",
+        merge_tolerance=1e-8,
+        symmetry_mode="x",
+        protected_bem_interface_names=("RearChamberInterface",),
+    )
+    conformed_exterior, _ = conform_bem_interface_to_fem(
+        rear_mesh,
+        conformed_exterior,
+        fem_interface_name="Port",
+        bem_interface_name="RearChamberInterface",
+        merge_tolerance=1e-8,
+        symmetry_mode="x",
+        protected_bem_interface_names=("FrontChamberInterface",),
+    )
+    conformed_file = tmp_path / "skram_exterior_conformed.msh"
+    meshio.write(conformed_file, conformed_exterior, file_format="gmsh22", binary=False)
+
+    meshes = (
+        MeshResource(
+            id="mesh:skram-front",
+            name="SKRAM front chamber",
+            file=str(front_file),
+            purpose=MeshPurpose.FEM_VOLUME,
+            scale_to_m=0.001,
+        ),
+        MeshResource(
+            id="mesh:skram-rear",
+            name="SKRAM rear chamber",
+            file=str(rear_file),
+            purpose=MeshPurpose.FEM_VOLUME,
+            scale_to_m=0.001,
+        ),
+        MeshResource(
+            id="mesh:skram-exterior",
+            name="SKRAM conformed exterior",
+            file=str(conformed_file),
+            purpose=MeshPurpose.BEM_SURFACE,
+        ),
+    )
+    regions = (
+        AcousticRegion(
+            id="region:skram-front",
+            name="Front chamber",
+            kind=AcousticRegionKind.BOUNDED_AIR,
+            mesh_ids=("mesh:skram-front",),
+            volume_groups=(
+                PhysicalGroupRef(
+                    mesh_id="mesh:skram-front",
+                    dimension=3,
+                    name="FrontChamber",
+                ),
+            ),
+        ),
+        AcousticRegion(
+            id="region:skram-rear",
+            name="Rear chamber",
+            kind=AcousticRegionKind.BOUNDED_AIR,
+            mesh_ids=("mesh:skram-rear",),
+            volume_groups=(
+                PhysicalGroupRef(
+                    mesh_id="mesh:skram-rear",
+                    dimension=3,
+                    name="RearChamber",
+                ),
+            ),
+        ),
+        AcousticRegion(
+            id="region:skram-exterior",
+            name="Exterior",
+            kind=AcousticRegionKind.UNBOUNDED_AIR,
+            mesh_ids=("mesh:skram-exterior",),
+        ),
+    )
+    boundaries = (
+        Boundary(
+            id="boundary:front-radiator",
+            name="Front diaphragm side",
+            region_id="region:skram-front",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-front",
+                dimension=2,
+                name="Radiator",
+            ),
+            kind=BoundaryKind.MOVING,
+        ),
+        Boundary(
+            id="boundary:front-port",
+            name="Front chamber port",
+            region_id="region:skram-front",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-front",
+                dimension=2,
+                name="Port",
+            ),
+            kind=BoundaryKind.INTERFACE,
+        ),
+        Boundary(
+            id="boundary:front-wall",
+            name="Front chamber wall",
+            region_id="region:skram-front",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-front",
+                dimension=2,
+                name="FrontChamber_boundary",
+            ),
+            kind=BoundaryKind.RIGID,
+        ),
+        Boundary(
+            id="boundary:rear-radiator",
+            name="Rear diaphragm side",
+            region_id="region:skram-rear",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-rear",
+                dimension=2,
+                name="Radiator",
+            ),
+            kind=BoundaryKind.MOVING,
+        ),
+        Boundary(
+            id="boundary:rear-port",
+            name="Rear chamber port",
+            region_id="region:skram-rear",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-rear",
+                dimension=2,
+                name="Port",
+            ),
+            kind=BoundaryKind.INTERFACE,
+        ),
+        Boundary(
+            id="boundary:rear-wall",
+            name="Rear chamber wall",
+            region_id="region:skram-rear",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-rear",
+                dimension=2,
+                name="RearChamber_boundary",
+            ),
+            kind=BoundaryKind.RIGID,
+        ),
+        Boundary(
+            id="boundary:skram-exterior",
+            name="Exterior enclosure",
+            region_id="region:skram-exterior",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-exterior",
+                dimension=2,
+                name="Exterior",
+            ),
+            kind=BoundaryKind.RIGID,
+        ),
+        Boundary(
+            id="boundary:front-exterior-interface",
+            name="Exterior front port",
+            region_id="region:skram-exterior",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-exterior",
+                dimension=2,
+                name="FrontChamberInterface",
+            ),
+            kind=BoundaryKind.INTERFACE,
+        ),
+        Boundary(
+            id="boundary:rear-exterior-interface",
+            name="Exterior rear port",
+            region_id="region:skram-exterior",
+            group=PhysicalGroupRef(
+                mesh_id="mesh:skram-exterior",
+                dimension=2,
+                name="RearChamberInterface",
+            ),
+            kind=BoundaryKind.INTERFACE,
+        ),
+    )
+    component = PhysicalComponent(
+        id="component:skram-driver",
+        name="SKRAM rigid driver",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        boundary_ids=(
+            "boundary:front-radiator",
+            "boundary:rear-radiator",
+        ),
+        parameters={
+            "re_ohm": 6.0,
+            "le_h": 0.0005,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 0.0005,
+            "rms_n_s_per_m": 1.0,
+            "motion_axis": [0.0, 0.0, -1.0],
+            "motion_profile": "rigid_translation",
+            "symmetry_role": "fractional_driver",
+            "surface_completion_factor": 2,
+            "physical_driver_orbit_count": 1,
+            "fractional_symmetry_axes": ["x"],
+        },
+    )
+    return PhysicalSystem(
+        id="system:skram",
+        name="SKRAM two-chamber fixture",
+        meshes=meshes,
+        regions=regions,
+        boundaries=boundaries,
+        interfaces=(
+            AcousticInterface(
+                id="interface:skram-front",
+                name="Front chamber to exterior",
+                bounded_boundary_id="boundary:front-port",
+                unbounded_boundary_id="boundary:front-exterior-interface",
+            ),
+            AcousticInterface(
+                id="interface:skram-rear",
+                name="Rear chamber to exterior",
+                bounded_boundary_id="boundary:rear-port",
+                unbounded_boundary_id="boundary:rear-exterior-interface",
+            ),
+        ),
+        components=(component,),
+        excitation_ports=(
+            ExcitationPort(
+                id="excitation:skram-driver",
+                name="SKRAM 2.83 V",
+                component_id=component.id,
+                kind=ExcitationPortKind.VOLTAGE,
+            ),
+        ),
     )
 
 
