@@ -66,7 +66,7 @@ volume connectivity and physical groups are preserved.
 
 Component-to-channel routing is stored as application project state, not in the
 physical system or compiled solver contract. The coupled solver returns one
-complex unit response per excitation port; responses routed to the same channel
+complex reference response per excitation port; responses routed to the same channel
 are combined before the existing channel gain, polarity, delay, and filter
 settings are applied.
 
@@ -206,9 +206,10 @@ The initial component kinds are:
 - `passive_radiator`: has mechanical dynamics and acoustic loading but no
   electrical drive.
 
-The ideal velocity source is the first acoustic validation target.
-Electrodynamic and passive-radiator behavior require the later lumped-element
-solver phase.
+The coupled backend supports ideal velocity sources and a first linear
+electrodynamic model. Passive-radiator behavior remains deferred. The
+application System editor currently exposes only ideal velocity sources; the
+electrodynamic parameter editor is a later UI phase.
 
 An ideal source might be authored as:
 
@@ -244,6 +245,12 @@ Both acoustic pressures load the same mechanical diaphragm degree of freedom.
 The component converts the resulting pressure difference, motor force, moving
 mass, suspension, and damping into boundary motion.
 
+The initial electrodynamic backend model is a uniform rigid piston with direct
+`re_ohm`, `le_h`, `bl_n_per_a`, `mmd_kg`, `cms_m_per_n`, and
+`rms_n_s_per_m` parameters. `mmd_kg` is dry moving mass; `Mms` is not accepted.
+Diaphragm area and pressure force are integrated from the attached moving mesh
+surfaces.
+
 A passive radiator uses the same general pattern without an excitation port. Its
 motion is driven by the pressure difference across its front and rear
 boundaries.
@@ -266,12 +273,11 @@ input:
 }
 ```
 
-For a future electrodynamic transducer, the port represents a canonical voltage
-input. A requested port is always solved at one SI unit: `1 m/s` for
-`normal_velocity` or `1 V` for `voltage`. Passive radiators have no excitation
-port.
+For an electrodynamic transducer, the port represents a canonical voltage
+input. The current reference amplitudes are `1 m/s` for `normal_velocity` and
+`2.83 V` for `voltage`. Passive radiators have no excitation port.
 
-The coupled solver computes one complex unit response for each requested port.
+The coupled solver computes one complex reference response for each requested port.
 For a linear system, the pressure at an observation point is then:
 
 $$
@@ -337,7 +343,7 @@ exterior cabinet surfaces also receive rigid assignments.
 
 During a coupled solve:
 
-1. The solver applies the excitation port's canonical unit input.
+1. The solver applies the excitation port's canonical reference input.
 2. The component determines or prescribes diaphragm motion for that basis.
 3. The front diaphragm excites the exterior while the rear diaphragm excites
    the enclosure FEM region.

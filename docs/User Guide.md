@@ -85,9 +85,12 @@ The preferences menu contains various application-level settings for Boundary La
 
 Coupled FEM–BEM physical systems currently require **BEAT Engine (CPU)** or
 **BEAT Engine (CUDA)**. Both application paths use single precision. CUDA
-accelerates BEM assembly and exterior-field evaluation, while FEM assembly and
-the final coupled factorization remain on the CPU. The double-precision coupled
-CPU backend is reserved for internal correctness validation.
+assembles BEM operators and evaluates the exterior field on the GPU. It also
+factors either the condensed acoustic system or, for electrodynamic models, the
+full monolithic coupled system on the GPU. The double-precision coupled CPU
+backend is reserved for internal correctness validation. See
+[Coupled Solver](Coupled%20Solver.md) for the current formulation and component
+support.
 
 - `Solve Server URL`: The address and port of the server if using a server-based solver backend. Boundary Lab silently checks this URL on startup when `BEM Solver` is already set to `Server`; use `Check Server` to query server health manually and update advertised feature availability, including BEAT Engine server-side symmetry support. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for server setup and API details. 
 

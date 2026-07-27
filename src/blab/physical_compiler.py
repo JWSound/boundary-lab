@@ -574,9 +574,25 @@ class PhysicalSystemCompiler:
             assumptions.append(
                 PhysicsAssumption(AssumptionStatus.INCLUDED, "Conforming bidirectional FEM-BEM interfaces")
             )
+        if any(
+            component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            for component in system.components
+        ):
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED,
+                    "Linear rigid-piston electrodynamic transducers with dry moving mass",
+                )
+            )
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.EXCLUDED,
+                    "Cone breakup, nonlinear motor behavior, and lossy voice-coil inductance",
+                )
+            )
         if system.excitation_ports:
             assumptions.append(
-                PhysicsAssumption(AssumptionStatus.INCLUDED, "Independent unit-excitation transfer basis")
+                PhysicsAssumption(AssumptionStatus.INCLUDED, "Independent reference-excitation transfer basis")
             )
             assumptions.append(PhysicsAssumption(AssumptionStatus.EXCLUDED, "Application DSP and channel synthesis"))
         if all(not region.loss_model for region in system.regions):

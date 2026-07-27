@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -36,6 +37,19 @@ COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
     BoundaryKind.MOVING,
     BoundaryKind.INTERFACE,
+}
+DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+ELECTRODYNAMIC_REQUIRED_PARAMETERS = {
+    "re_ohm",
+    "le_h",
+    "bl_n_per_a",
+    "mmd_kg",
+    "cms_m_per_n",
+    "rms_n_s_per_m",
+}
+ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
+    "motion_profile",
+    "boundary_motion_signs",
 }
 
 
@@ -232,6 +246,17 @@ class _CoupledBackend:
         solver_options = dict(request.solver_options)
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
+        solver_options["transducer_reference_voltage_v"] = (
+            DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+        )
+        if any(
+            component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            for component in request.compiled_system.components
+        ):
+            # The first LEM implementation keeps the full FEM pressure vector in
+            # the coupled system. Condensing arbitrary moving-boundary loads
+            # requires additional Schur coupling blocks and will be added later.
+            solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
         return CoupledSession(
             typed_request,
@@ -247,6 +272,16 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     """Reject physical-model features that the current coupled backend cannot solve."""
 
     system = request.compiled_system
+    has_electrodynamic_transducers = any(
+        component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        for component in system.components
+    )
+    requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
+    if has_electrodynamic_transducers and requested_symmetry not in {"", "off", "none"}:
+        raise ValueError(
+            "Electrodynamic transducers currently require symmetry to be off; "
+            "mechanical parameter scaling for reduced driver surfaces is not yet defined."
+        )
     unsupported_boundaries = [
         boundary.id for boundary in system.boundaries if boundary.kind not in COUPLED_BOUNDARY_KINDS
     ]
@@ -266,17 +301,24 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError(
             "Coupled solver does not yet support acoustic loss models on: " + ", ".join(lossy_regions)
         )
+    supported_component_kinds = {
+        ComponentKind.IDEAL_VELOCITY_SOURCE,
+        ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+    }
     unsupported_components = [
         component.id
         for component in system.components
-        if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+        if component.kind not in supported_component_kinds
     ]
     if unsupported_components:
         raise ValueError(
-            "Coupled solver currently supports only prescribed-velocity components; unsupported: "
+            "Coupled solver supports prescribed-velocity and linear electrodynamic components; unsupported: "
             + ", ".join(unsupported_components)
         )
     for component in system.components:
+        if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            _validate_electrodynamic_component(component)
+            continue
         unsupported_parameters = set(component.parameters) - {"motion_profile"}
         if unsupported_parameters:
             raise ValueError(
@@ -289,14 +331,90 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
                 f"Coupled solver supports only uniform prescribed motion; component "
                 f"'{component.id}' requests {motion_profile!r}."
             )
-    unsupported_ports = [
-        port.id for port in system.excitation_ports if port.kind != ExcitationPortKind.NORMAL_VELOCITY
-    ]
+    components_by_id = {component.id: component for component in system.components}
+    unsupported_ports = []
+    for port in system.excitation_ports:
+        component = components_by_id[port.component_id]
+        expected = (
+            ExcitationPortKind.VOLTAGE
+            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            else ExcitationPortKind.NORMAL_VELOCITY
+        )
+        if port.kind != expected:
+            unsupported_ports.append(port.id)
     if unsupported_ports:
         raise ValueError(
-            "Coupled solver currently supports only normal-velocity excitation ports; unsupported: "
+            "Coupled solver received excitation ports incompatible with their components: "
             + ", ".join(unsupported_ports)
         )
+
+
+def _validate_electrodynamic_component(component) -> None:
+    parameters = component.parameters
+    parameter_names = set(parameters)
+    missing = sorted(ELECTRODYNAMIC_REQUIRED_PARAMETERS - parameter_names)
+    if missing:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' is missing required parameters: "
+            + ", ".join(missing)
+        )
+    unsupported = sorted(
+        parameter_names
+        - ELECTRODYNAMIC_REQUIRED_PARAMETERS
+        - ELECTRODYNAMIC_OPTIONAL_PARAMETERS
+    )
+    if unsupported:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' has unsupported parameters: "
+            + ", ".join(unsupported)
+        )
+
+    positive = ("re_ohm", "bl_n_per_a", "mmd_kg", "cms_m_per_n")
+    nonnegative = ("le_h", "rms_n_s_per_m")
+    for name in (*positive, *nonnegative):
+        value = parameters[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            raise ValueError(
+                f"Electrodynamic component '{component.id}' parameter '{name}' must be a finite number."
+            )
+        if name in positive and float(value) <= 0.0:
+            raise ValueError(
+                f"Electrodynamic component '{component.id}' parameter '{name}' must be greater than zero."
+            )
+        if name in nonnegative and float(value) < 0.0:
+            raise ValueError(
+                f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative."
+            )
+
+    motion_profile = parameters.get("motion_profile", "uniform")
+    if motion_profile != "uniform":
+        raise ValueError(
+            f"Coupled solver supports only a uniform rigid-piston motion profile; component "
+            f"'{component.id}' requests {motion_profile!r}."
+        )
+
+    raw_signs = parameters.get("boundary_motion_signs", {})
+    if not isinstance(raw_signs, dict):
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' boundary_motion_signs must be an object."
+        )
+    if not all(isinstance(boundary_id, str) for boundary_id in raw_signs):
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' boundary_motion_signs keys must be boundary IDs."
+        )
+    component_boundaries = set(component.boundary_ids)
+    unknown_boundaries = sorted(set(raw_signs) - component_boundaries)
+    if unknown_boundaries:
+        raise ValueError(
+            f"Electrodynamic component '{component.id}' has motion signs for unrelated boundaries: "
+            + ", ".join(unknown_boundaries)
+        )
+    for boundary_id, sign in raw_signs.items():
+        if isinstance(sign, bool) or not isinstance(sign, (int, float)) or float(sign) not in {-1.0, 1.0}:
+            raise ValueError(
+                f"Electrodynamic component '{component.id}' motion sign for '{boundary_id}' "
+                "must be -1 or +1."
+            )
 
 
 class CoupledReferenceBackend(_CoupledBackend):

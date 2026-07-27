@@ -25,7 +25,11 @@ from blab.physical_model import (
     physical_system_to_dict,
 )
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-from blab.solvers.coupled_backend import CoupledProductionBackend, CoupledReferenceBackend
+from blab.solvers.coupled_backend import (
+    DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
+    CoupledProductionBackend,
+    CoupledReferenceBackend,
+)
 from blab.system_contract import (
     OutputRequest,
     QuantityResult,
@@ -180,6 +184,87 @@ def test_coupled_backend_rejects_unsupported_physical_roles_before_starting_juli
         CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
+def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port() -> None:
+    compiled = PhysicalSystemCompiler().compile(_electrodynamic_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+        ),
+        solver_options={"static_condensation": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
+
+    assert session.request.solver_options["static_condensation"] is False
+    assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
+    assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
+    assumptions = {item.statement for item in compiled.assumptions}
+    assert "Linear rigid-piston electrodynamic transducers with dry moving mass" in assumptions
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    (
+        (
+            {
+                "re_ohm": 6.0,
+                "le_h": 0.0005,
+                "bl_n_per_a": 7.0,
+                "cms_m_per_n": 0.0005,
+                "rms_n_s_per_m": 1.0,
+            },
+            "mmd_kg",
+        ),
+        (
+            {
+                "re_ohm": 6.0,
+                "le_h": 0.0005,
+                "bl_n_per_a": 7.0,
+                "mmd_kg": 0.015,
+                "mms_kg": 0.016,
+                "cms_m_per_n": 0.0005,
+                "rms_n_s_per_m": 1.0,
+            },
+            "mms_kg",
+        ),
+    ),
+)
+def test_coupled_backend_rejects_incomplete_or_mms_transducer_parameters(
+    parameters: dict[str, float],
+    message: str,
+) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(system.components[0], parameters=parameters)
+    compiled = PhysicalSystemCompiler().compile(
+        replace(system, components=(component,))
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
+def test_coupled_backend_rejects_symmetry_for_electrodynamic_component() -> None:
+    compiled = PhysicalSystemCompiler().compile(_electrodynamic_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"symmetry": "x"},
+    )
+
+    with pytest.raises(ValueError, match="require symmetry to be off"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
 @pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia dense reference integration.",
@@ -220,6 +305,123 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia electrodynamic integration.",
+)
+def test_coupled_reference_backend_solves_bidirectional_electrodynamic_fixture() -> None:
+    compiled = PhysicalSystemCompiler().compile(
+        _bidirectional_electrodynamic_fixture_system()
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={"quadrature_order": 1, "singular_order": 1},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+
+    (result,) = tuple(
+        CoupledReferenceBackend(
+            julia_executable=julia_executable,
+            persistent_worker=False,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    velocity = quantities["output:velocity"].values[0, 0]
+    current = quantities["output:current"].values[0, 0]
+    electrical_impedance = 6.0 - 1j * 2.0 * np.pi * 500.0 * 0.0005
+    electrical_residual = abs(
+        electrical_impedance * current + 7.0 * velocity - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    ) / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+
+    assert quantities["output:velocity"].unit == "m/s"
+    assert quantities["output:current"].unit == "A"
+    assert quantities["output:velocity"].metadata["component_ids"] == ["component:radiator"]
+    assert np.isfinite(velocity)
+    assert np.isfinite(current)
+    assert abs(velocity) > 0.0
+    assert abs(current) > 0.0
+    assert electrical_residual < 1e-8
+    assert result.diagnostics["transducer_count"] == 1
+    assert result.diagnostics["transducer_reference_voltage_v"] == pytest.approx(2.83)
+    assert result.diagnostics["formulation"] == "monolithic"
+    assert result.diagnostics["relative_residual"] < 1e-8
+    assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
+    reason="Set BLAB_RUN_COUPLED_CUDA=1 to run electrodynamic CPU/CUDA parity.",
+)
+def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
+    compiled = PhysicalSystemCompiler().compile(
+        _bidirectional_electrodynamic_fixture_system()
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(
+            OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+            OutputRequest(id="output:current", quantity="voice_coil_current"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={
+            "quadrature_order": 1,
+            "singular_order": 1,
+            "validation_diagnostics": False,
+            "static_condensation": True,
+        },
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    cpu_backend = CoupledProductionBackend(
+        bem_backend="cpu",
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+    cuda_backend = CoupledProductionBackend(
+        bem_backend="cuda",
+        julia_executable=julia_executable,
+        persistent_worker=True,
+    )
+
+    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
+
+    cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}
+    cuda_quantities = {quantity.id: quantity.values for quantity in cuda_result.quantities}
+    for quantity_id in cpu_quantities:
+        scale = max(float(np.linalg.norm(cpu_quantities[quantity_id])), np.finfo(float).eps)
+        relative_error = float(
+            np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])
+        ) / scale
+        assert relative_error < 5e-3
+    assert cpu_result.diagnostics["linear_backend"] == "cpu"
+    assert cuda_result.diagnostics["linear_backend"] == "cuda"
+    assert cpu_result.diagnostics["formulation"] == "monolithic"
+    assert cuda_result.diagnostics["formulation"] == "monolithic"
+    assert cuda_result.diagnostics["static_condensation_requested"] is False
 
 
 def test_editable_physical_system_round_trips_for_project_persistence() -> None:
@@ -296,6 +498,52 @@ def test_compiler_requires_one_physical_input_port_for_an_active_component() -> 
 
     with pytest.raises(PhysicalModelCompileError, match="requires 1 excitation port"):
         PhysicalSystemCompiler().compile(without_port)
+
+
+def _electrodynamic_fixture_system() -> PhysicalSystem:
+    system = _fixture_system()
+    component = replace(
+        system.components[0],
+        name="Linear electrodynamic radiator",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        parameters={
+            "re_ohm": 6.0,
+            "le_h": 0.0005,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 0.0005,
+            "rms_n_s_per_m": 1.0,
+            "motion_profile": "uniform",
+        },
+    )
+    port = replace(
+        system.excitation_ports[0],
+        name="Radiator 2.83 V reference",
+        kind=ExcitationPortKind.VOLTAGE,
+    )
+    return replace(system, components=(component,), excitation_ports=(port,))
+
+
+def _bidirectional_electrodynamic_fixture_system() -> PhysicalSystem:
+    system = _electrodynamic_fixture_system()
+    exterior_boundary = next(
+        boundary
+        for boundary in system.boundaries
+        if boundary.id == "boundary:exterior"
+    )
+    moving_exterior = replace(exterior_boundary, kind=BoundaryKind.MOVING)
+    component = replace(
+        system.components[0],
+        boundary_ids=("boundary:radiator", "boundary:exterior"),
+    )
+    return replace(
+        system,
+        boundaries=tuple(
+            moving_exterior if boundary.id == moving_exterior.id else boundary
+            for boundary in system.boundaries
+        ),
+        components=(component,),
+    )
 
 
 def _fixture_system() -> PhysicalSystem:

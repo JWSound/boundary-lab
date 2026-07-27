@@ -7,6 +7,8 @@ using .BeatEngineCore
 include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 
+const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+
 function object_by_id(items, object_id, label)
     for item in items
         String(item["id"]) == object_id && return item
@@ -107,6 +109,125 @@ function rows(vectors, ::Type{T}) where {T<:AbstractFloat}
     return reduce(vcat, (reshape(Complex{T}.(values), 1, :) for values in vectors))
 end
 
+function electrodynamic_transducers_from_wire(
+    components,
+    boundaries,
+    bounded_region,
+    unbounded_region,
+    fem_mesh,
+    bem_mesh,
+    ::Type{T},
+) where {T<:AbstractFloat}
+    transducers = ElectrodynamicTransducer{T}[]
+    index_by_component_id = Dict{String,Int}()
+    for component in components
+        String(component["kind"]) == "electrodynamic_transducer" || continue
+        parameters = get(component, "parameters", Dict{String,Any}())
+        required = (
+            "re_ohm",
+            "le_h",
+            "bl_n_per_a",
+            "mmd_kg",
+            "cms_m_per_n",
+            "rms_n_s_per_m",
+        )
+        optional = ("motion_profile", "boundary_motion_signs")
+        missing = [name for name in required if !haskey(parameters, name)]
+        isempty(missing) || error(
+            "Electrodynamic component $(repr(String(component["id"]))) is missing: " *
+            join(missing, ", "),
+        )
+        unsupported = [
+            String(name) for name in keys(parameters)
+            if !(String(name) in required) && !(String(name) in optional)
+        ]
+        isempty(unsupported) || error(
+            "Electrodynamic component $(repr(String(component["id"]))) has unsupported " *
+            "parameters: " * join(sort(unsupported), ", "),
+        )
+        String(get(parameters, "motion_profile", "uniform")) == "uniform" || error(
+            "Electrodynamic components currently require a uniform rigid-piston motion profile.",
+        )
+        raw_signs = get(parameters, "boundary_motion_signs", Dict{String,Any}())
+        component_boundary_ids = Set(String.(component["boundary_ids"]))
+        unknown_sign_boundaries = [
+            String(boundary_id) for boundary_id in keys(raw_signs)
+            if !(String(boundary_id) in component_boundary_ids)
+        ]
+        isempty(unknown_sign_boundaries) || error(
+            "Electrodynamic component $(repr(String(component["id"]))) has motion signs " *
+            "for unrelated boundaries: " * join(sort(unknown_sign_boundaries), ", "),
+        )
+        fem_tags = Int[]
+        fem_signs = T[]
+        bem_tags = Int[]
+        bem_signs = T[]
+        for boundary_id_value in component["boundary_ids"]
+            boundary_id = String(boundary_id_value)
+            boundary = object_by_id(boundaries, boundary_id, "boundary")
+            String(boundary["kind"]) == "moving" || error(
+                "Electrodynamic component $(repr(String(component["id"]))) boundary " *
+                "$(repr(boundary_id)) is not moving.",
+            )
+            sign = T(get(raw_signs, boundary_id, 1))
+            sign in (-one(T), one(T)) || error(
+                "Electrodynamic boundary motion signs must be -1 or +1.",
+            )
+            region_id = String(boundary["region_id"])
+            tag = Int(boundary["group"]["tag"])
+            if region_id == String(bounded_region["id"])
+                any(==(tag), fem_mesh.boundary_physical_tags) || error(
+                    "Electrodynamic FEM boundary tag $tag is outside the selected volume groups.",
+                )
+                push!(fem_tags, tag)
+                push!(fem_signs, sign)
+            elseif region_id == String(unbounded_region["id"])
+                any(==(tag), bem_mesh.physical_tags) || error(
+                    "Electrodynamic BEM boundary tag $tag is not present in the exterior mesh.",
+                )
+                push!(bem_tags, tag)
+                push!(bem_signs, sign)
+            else
+                error(
+                    "Electrodynamic component $(repr(String(component["id"]))) references " *
+                    "a boundary outside the active acoustic regions.",
+                )
+            end
+        end
+        isempty(fem_tags) && isempty(bem_tags) && error(
+            "Electrodynamic component $(repr(String(component["id"]))) has no moving acoustic boundary.",
+        )
+        values = Dict(name => T(parameters[name]) for name in required)
+        all(isfinite, Base.values(values)) || error(
+            "Electrodynamic parameters must be finite numbers.",
+        )
+        values["re_ohm"] > zero(T) || error("re_ohm must be greater than zero.")
+        values["le_h"] >= zero(T) || error("le_h must not be negative.")
+        values["bl_n_per_a"] > zero(T) || error("bl_n_per_a must be greater than zero.")
+        values["mmd_kg"] > zero(T) || error("mmd_kg must be greater than zero.")
+        values["cms_m_per_n"] > zero(T) || error("cms_m_per_n must be greater than zero.")
+        values["rms_n_s_per_m"] >= zero(T) || error("rms_n_s_per_m must not be negative.")
+        push!(
+            transducers,
+            ElectrodynamicTransducer{T}(
+                String(component["id"]),
+                fem_tags,
+                fem_signs,
+                bem_tags,
+                bem_signs,
+                values["re_ohm"],
+                values["le_h"],
+                values["bl_n_per_a"],
+                values["mmd_kg"],
+                values["cms_m_per_n"],
+                values["rms_n_s_per_m"],
+            ),
+        )
+        index_by_component_id[String(component["id"])] = length(transducers)
+    end
+    return transducers, index_by_component_id
+end
+
 function solve_request(request; event_mode=false)
     Int(get(request, "schema_version", 0)) == 1 || error("Unsupported system solve request schema.")
     system = request["compiled_system"]
@@ -146,6 +267,16 @@ function solve_request(request; event_mode=false)
     symmetry_mode = BeatEngineCore.normalized_symmetry_mode(
         get(solver_options, "symmetry", "off"),
     )
+    transducer_reference_voltage_v = FloatType(
+        get(
+            solver_options,
+            "transducer_reference_voltage_v",
+            DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
+        ),
+    )
+    transducer_reference_voltage_v > zero(FloatType) || error(
+        "transducer_reference_voltage_v must be greater than zero.",
+    )
 
     mesh_setup_started = time_ns()
     full_fem_mesh = translated_volume_mesh(fem_resource, FloatType)
@@ -175,45 +306,99 @@ function solve_request(request; event_mode=false)
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
     sound_speed = FloatType(bounded_region["sound_speed_m_per_s"])
     density = FloatType(bounded_region["density_kg_per_m3"])
+    transducers, transducer_index_by_component_id = electrodynamic_transducers_from_wire(
+        components,
+        boundaries,
+        bounded_region,
+        unbounded_region,
+        fem_mesh,
+        bem_mesh,
+        FloatType,
+    )
+    isempty(transducers) || symmetry_mode == :off || error(
+        "Electrodynamic transducers currently require symmetry to be off.",
+    )
+    transducer_operators = assemble_transducer_operators(
+        fem_mesh,
+        bem_mesh,
+        transducers,
+    )
     excitation_port_ids = String.(request["excitation_port_ids"])
     isempty(excitation_port_ids) && error("Coupled solve requires at least one excitation port.")
-    radiator_tags = Int[]
+    excitations = NamedTuple[]
     for port_id in excitation_port_ids
         port = object_by_id(ports, port_id, "excitation port")
-        String(port["kind"]) == "normal_velocity" || error(
-            "Coupled backend currently supports only normal_velocity excitation ports.",
-        )
         component = object_by_id(components, String(port["component_id"]), "component")
-        candidate_boundaries = [
-            object_by_id(boundaries, String(boundary_id), "boundary")
-            for boundary_id in component["boundary_ids"]
-        ]
-        bounded_boundaries = [
-            boundary
-            for boundary in candidate_boundaries
-            if String(boundary["region_id"]) == String(bounded_region["id"])
-        ]
-        length(bounded_boundaries) == 1 || error(
-            "Each excitation component must own exactly one moving boundary in the bounded region.",
-        )
-        radiator_tag = Int(only(bounded_boundaries)["group"]["tag"])
-        any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
-            "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
-        )
-        push!(radiator_tags, radiator_tag)
+        port_kind = String(port["kind"])
+        component_kind = String(component["kind"])
+        if port_kind == "normal_velocity" && component_kind == "ideal_velocity_source"
+            candidate_boundaries = [
+                object_by_id(boundaries, String(boundary_id), "boundary")
+                for boundary_id in component["boundary_ids"]
+            ]
+            bounded_boundaries = [
+                boundary
+                for boundary in candidate_boundaries
+                if String(boundary["region_id"]) == String(bounded_region["id"])
+            ]
+            length(bounded_boundaries) == 1 || error(
+                "Each prescribed-velocity component must own exactly one moving boundary " *
+                "in the bounded region.",
+            )
+            radiator_tag = Int(only(bounded_boundaries)["group"]["tag"])
+            any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
+                "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
+            )
+            push!(
+                excitations,
+                (
+                    kind=:normal_velocity,
+                    radiator_tag=radiator_tag,
+                    transducer_index=0,
+                    amplitude=Complex{FloatType}(1, 0),
+                ),
+            )
+        elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"
+            transducer_index = get(
+                transducer_index_by_component_id,
+                String(component["id"]),
+                0,
+            )
+            transducer_index > 0 || error(
+                "Voltage port $port_id references an unresolved electrodynamic component.",
+            )
+            push!(
+                excitations,
+                (
+                    kind=:voltage,
+                    radiator_tag=0,
+                    transducer_index=transducer_index,
+                    amplitude=Complex{FloatType}(
+                        transducer_reference_voltage_v,
+                        0,
+                    ),
+                ),
+            )
+        else
+            error(
+                "Excitation port $port_id kind $(repr(port_kind)) is incompatible with " *
+                "component kind $(repr(component_kind)).",
+            )
+        end
     end
 
     quadrature_order = Int(get(solver_options, "quadrature_order", 2))
     singular_order = Int(get(solver_options, "singular_order", 2))
     validation_diagnostics = Bool(get(solver_options, "validation_diagnostics", true))
     cache_frequency_invariant = Bool(get(solver_options, "cache_frequency_invariant", true))
-    static_condensation = Bool(
+    static_condensation_requested = Bool(
         get(
             solver_options,
             "static_condensation",
             bem_backend == :cuda && !validation_diagnostics,
         ),
     )
+    static_condensation = static_condensation_requested && isempty(transducers)
     coupled_cache = nothing
     cache_setup_s = 0.0
     if cache_frequency_invariant
@@ -248,10 +433,12 @@ function solve_request(request; event_mode=false)
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
             static_condensation=static_condensation,
+            transducers=transducers,
+            transducer_operators=transducer_operators,
         )
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
-        solutions = solve_coupled_systems(coupled_system, radiator_tags)
+        solutions = solve_coupled_excitations(coupled_system, excitations)
         solve_s = (time_ns() - solve_started) / 1.0e9
         field_s = 0.0
         quantities = Dict{String,Any}[]
@@ -288,6 +475,38 @@ function solve_request(request; event_mode=false)
                         "Pa/m",
                         ["excitation", "interface_node"],
                         metadata=Dict("interface_id" => String(only(interfaces)["id"])),
+                    ),
+                )
+            elseif quantity == "diaphragm_velocity"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(
+                            [solution.diaphragm_velocity for solution in solutions],
+                            FloatType,
+                        ),
+                        "m/s",
+                        ["excitation", "transducer"],
+                        metadata=Dict(
+                            "component_ids" => [transducer.id for transducer in transducers],
+                        ),
+                    ),
+                )
+            elseif quantity == "voice_coil_current"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(
+                            [solution.voice_coil_current for solution in solutions],
+                            FloatType,
+                        ),
+                        "A",
+                        ["excitation", "transducer"],
+                        metadata=Dict(
+                            "component_ids" => [transducer.id for transducer in transducers],
+                        ),
                     ),
                 )
             elseif quantity == "exterior_pressure"
@@ -345,6 +564,9 @@ function solve_request(request; event_mode=false)
                                "$(coupled_system.linear_backend)_dense_lu",
             "full_system_order" => coupled_system.full_system_order,
             "solved_system_order" => coupled_system.solved_system_order,
+            "transducer_count" => length(transducers),
+            "transducer_reference_voltage_v" => transducer_reference_voltage_v,
+            "static_condensation_requested" => static_condensation_requested,
             "pressure_continuity_error" => maximum(
                 solution.pressure_continuity_error for solution in solutions
             ),
