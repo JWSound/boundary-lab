@@ -368,6 +368,13 @@ multiplied: BEM symmetry images already reconstruct their acoustic effect.
 Velocity and current outputs are per physical driver; aggregate current for an
 orbit is the reported current times `physical_driver_orbit_count`.
 
+When the component editor infers a motion axis automatically, it first
+reconstructs the selected diaphragm's normal-orientation tensor across every
+axis in `fractional_symmetry_axes`. This removes the lateral bias that can
+otherwise arise from averaging only a reduced half or quarter of a curved
+diaphragm and guarantees that the inferred rigid-translation axis lies in each
+plane that cuts the physical driver.
+
 Both FEM and BEM meshes must lie in the selected positive fundamental domain.
 The FEM cut faces have the natural zero-normal-derivative condition represented
 by a rigid symmetry surface. BEM operator assembly includes the reflected

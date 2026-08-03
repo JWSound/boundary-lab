@@ -125,12 +125,18 @@ def infer_component_motion_axis(
     boundaries: tuple[Boundary, ...],
     resources_by_id: dict[str, MeshResource],
     *,
+    fractional_symmetry_axes: tuple[str, ...] = (),
     mesh_cache: dict[str, meshio.Mesh] | None = None,
 ) -> MotionAxisInference:
-    """Infer a common translation axis without allowing opposed mesh normals to cancel."""
+    """Infer a common translation axis from the completed physical-driver surface."""
 
     if not boundaries:
         raise ValueError("Select at least one moving boundary before inferring its motion axis.")
+    symmetry_axes = tuple(str(axis).strip().lower() for axis in fractional_symmetry_axes)
+    if len(symmetry_axes) != len(set(symmetry_axes)) or any(
+        axis not in {"x", "y"} for axis in symmetry_axes
+    ):
+        raise ValueError("Fractional symmetry axes must be unique axis names chosen from X and Y.")
     cache = {} if mesh_cache is None else mesh_cache
     tensors = []
     combined = np.zeros((3, 3), dtype=float)
@@ -155,18 +161,21 @@ def infer_component_motion_axis(
     if total_area <= 0.0 or triangle_count == 0:
         raise ValueError("The selected moving boundaries contain no non-degenerate triangles.")
 
-    eigenvalues, eigenvectors = np.linalg.eigh(combined)
+    combined = _symmetry_completed_normal_tensor(combined, symmetry_axes)
+    tensors = [_symmetry_completed_normal_tensor(tensor, symmetry_axes) for tensor in tensors]
+    axis_tensor = _normal_tensor_in_symmetry_planes(combined, symmetry_axes)
+    eigenvalues, eigenvectors = np.linalg.eigh(axis_tensor)
     axis = np.asarray(eigenvectors[:, -1], dtype=float)
     largest_component = int(np.argmax(np.abs(axis)))
     if axis[largest_component] < 0.0:
         axis *= -1.0
-    trace = float(np.sum(eigenvalues))
+    trace = float(np.trace(combined))
     confidence = float(max(0.0, min(1.0, (eigenvalues[-1] - eigenvalues[-2]) / trace)))
     mean_squared_alignment = float(max(0.0, min(1.0, eigenvalues[-1] / trace)))
 
     boundary_axes = []
     for tensor in tensors:
-        _values, vectors = np.linalg.eigh(tensor)
+        _values, vectors = np.linalg.eigh(_normal_tensor_in_symmetry_planes(tensor, symmetry_axes))
         boundary_axes.append(np.asarray(vectors[:, -1], dtype=float))
     boundary_alignment = min(
         (abs(float(np.dot(axis, boundary_axis))) for boundary_axis in boundary_axes),
@@ -181,6 +190,32 @@ def infer_component_motion_axis(
         area_m2=total_area,
         triangle_count=triangle_count,
     )
+
+
+def _symmetry_completed_normal_tensor(
+    tensor: np.ndarray,
+    symmetry_axes: tuple[str, ...],
+) -> np.ndarray:
+    completed = np.asarray(tensor, dtype=float).copy()
+    axis_indices = {"x": 0, "y": 1}
+    for axis in symmetry_axes:
+        reflection = np.eye(3, dtype=float)
+        reflection[axis_indices[axis], axis_indices[axis]] = -1.0
+        completed += reflection @ completed @ reflection
+    return completed
+
+
+def _normal_tensor_in_symmetry_planes(
+    tensor: np.ndarray,
+    symmetry_axes: tuple[str, ...],
+) -> np.ndarray:
+    projected = np.asarray(tensor, dtype=float).copy()
+    axis_indices = {"x": 0, "y": 1}
+    for axis in symmetry_axes:
+        axis_index = axis_indices[axis]
+        projected[axis_index, :] = 0.0
+        projected[:, axis_index] = 0.0
+    return projected
 
 
 def _boundary_normal_tensor(mesh: meshio.Mesh, boundary: Boundary) -> tuple[np.ndarray, float, int]:
@@ -435,6 +470,7 @@ class _ComponentEditorDialog(QDialog):
         self.type_combo.currentIndexChanged.connect(self._refresh_type_controls)
         self.axis_mode_combo.currentIndexChanged.connect(self._refresh_axis_controls)
         self.boundary_list.itemChanged.connect(self._selected_boundaries_changed)
+        self.symmetry_combo.currentIndexChanged.connect(self._symmetry_representation_changed)
         self.flip_axis_button.clicked.connect(self._flip_axis)
         self._refresh_type_controls()
         self._refresh_axis_controls()
@@ -539,16 +575,27 @@ class _ComponentEditorDialog(QDialog):
         if self.axis_mode_combo.currentData() == "automatic":
             self._infer_axis()
 
+    def _symmetry_representation_changed(self, _index: int = -1) -> None:
+        if self.axis_mode_combo.currentData() == "automatic":
+            self._infer_axis()
+
     def _infer_axis(self) -> MotionAxisInference | None:
         selected = tuple(
             self._boundaries_by_id[boundary_id]
             for boundary_id in self.selected_boundary_ids()
             if boundary_id in self._boundaries_by_id
         )
+        symmetry_parameters = self.symmetry_combo.currentData()
+        fractional_symmetry_axes = (
+            tuple(str(axis) for axis in symmetry_parameters.get("fractional_symmetry_axes", ()))
+            if isinstance(symmetry_parameters, dict)
+            else ()
+        )
         try:
             inference = infer_component_motion_axis(
                 selected,
                 self._resources_by_id,
+                fractional_symmetry_axes=fractional_symmetry_axes,
                 mesh_cache=self._mesh_cache,
             )
         except (ValueError, OSError) as exc:

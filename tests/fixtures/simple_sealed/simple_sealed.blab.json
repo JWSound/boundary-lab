@@ -1,0 +1,239 @@
+{
+  "active_generator_document_id": "c3ea422e1827",
+  "channel_config_by_name": {},
+  "component_channel_by_id": {
+    "component:radiator-1": "main"
+  },
+  "generator_documents": [
+    {
+      "artifact": null,
+      "id": "c3ea422e1827",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        0
+      ],
+      "name": "waveguide",
+      "provider_id": "ath",
+      "provider_schema_version": 1,
+      "source": {
+        "format": "ath_cfg",
+        "text": ""
+      }
+    }
+  ],
+  "imported_meshes": [
+    {
+      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\Exterior_f3d7f98cb8_clean.msh",
+      "enabled": true,
+      "name": "Exterior",
+      "scale_factor": 0.001,
+      "source_file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\simple_sealed\\Exterior.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "interior",
+      "scale_factor": 0.001,
+      "source_file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\simple_sealed\\interior.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "physical_system": {
+    "boundaries": [
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:exterior",
+          "name": "enclosure",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:enclosure",
+        "kind": "rigid",
+        "name": "enclosure",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:exterior",
+          "name": "woofer",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:woofer",
+        "kind": "moving",
+        "name": "woofer",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:interior",
+          "name": "Radiator",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:radiator",
+        "kind": "moving",
+        "name": "Radiator",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:interior",
+          "name": "interior_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:interior_boundary",
+        "kind": "rigid",
+        "name": "interior_boundary",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      }
+    ],
+    "components": [
+      {
+        "boundary_ids": [
+          "boundary:region-exterior-air:woofer",
+          "boundary:region-interior-air-1:radiator"
+        ],
+        "id": "component:radiator-1",
+        "kind": "electrodynamic_transducer",
+        "name": "Radiator 1",
+        "parameters": {
+          "bl_n_per_a": 7.9,
+          "cms_m_per_n": 0.00086,
+          "fractional_symmetry_axes": [],
+          "le_h": 0.00029,
+          "mmd_kg": 0.039700000000000006,
+          "motion_axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 1,
+          "re_ohm": 3.3,
+          "rms_n_s_per_m": 1.25,
+          "surface_completion_factor": 1,
+          "symmetry_role": "complete_representative"
+        }
+      }
+    ],
+    "excitation_ports": [
+      {
+        "component_id": "component:radiator-1",
+        "id": "excitation:component-radiator-1",
+        "kind": "voltage",
+        "name": "Radiator 1 voltage"
+      }
+    ],
+    "id": "system:loudspeaker",
+    "interfaces": [],
+    "meshes": [
+      {
+        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\Exterior_f3d7f98cb8_clean.msh",
+        "id": "mesh:exterior",
+        "name": "Exterior",
+        "purpose": "bem_surface",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "E:\\AthGUI\\boundary-lab\\tests\\fixtures\\simple_sealed\\interior.msh",
+        "id": "mesh:interior",
+        "name": "interior",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "metadata": {
+      "component_editor": {
+        "component:radiator-1": {
+          "motion_axis_mode": "manual"
+        }
+      }
+    },
+    "model_version": 1,
+    "name": "Loudspeaker System",
+    "regions": [
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:exterior-air",
+        "kind": "unbounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:exterior"
+        ],
+        "name": "Exterior Air",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": []
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:interior-air-1",
+        "kind": "bounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:interior"
+        ],
+        "name": "Interior Air 1",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:interior",
+            "name": "interior",
+            "tag": null
+          }
+        ]
+      }
+    ]
+  },
+  "project_preferences": {
+    "balloon_angle_precision_deg": 2.5,
+    "freq_count": 200,
+    "freq_max_hz": 20000,
+    "freq_min_hz": 20,
+    "horizontal_normalization_angle": 0.0,
+    "isobar_contour_step_db": 3.0,
+    "normalized_channel_correction": false,
+    "polar_angle_step_deg": 1.0,
+    "polar_observation_distance_m": 1.0,
+    "polar_smoothing": null,
+    "spherical_sampling_enabled": false,
+    "spin_horizontal_reference_angle": 0.0,
+    "spin_vertical_reference_angle": 0.0,
+    "spl_max_db": 0.0,
+    "spl_min_db": -30.0,
+    "stitch_tolerance_mm": 3.0,
+    "vertical_normalization_angle": 0.0
+  },
+  "schema_version": 5,
+  "source_config_by_name": {},
+  "stitch_imported_meshes": false,
+  "symmetry": "off"
+}

@@ -208,6 +208,99 @@ def test_motion_axis_inference_does_not_cancel_opposed_surface_normals() -> None
     assert inferred.triangle_count == 2
 
 
+def test_motion_axis_inference_completes_a_curved_driver_across_its_symmetry_plane() -> None:
+    resource = MeshResource(
+        id="mesh:curved-fem",
+        name="Curved FEM",
+        file=str(FIXTURE_ROOT / "curvedinterfaceFEM.msh"),
+        purpose=MeshPurpose.FEM_VOLUME,
+        scale_to_m=0.001,
+    )
+    boundary = Boundary(
+        id="boundary:mf",
+        name="MF",
+        region_id="region:interior",
+        group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name="MF"),
+        kind=BoundaryKind.MOVING,
+    )
+
+    reduced = infer_component_motion_axis((boundary,), {resource.id: resource})
+    completed = infer_component_motion_axis(
+        (boundary,),
+        {resource.id: resource},
+        fractional_symmetry_axes=("y",),
+    )
+
+    assert abs(reduced.axis[1]) > 0.2
+    assert completed.axis == pytest.approx((0.913545, 0.0, -0.406737), abs=1e-6)
+    assert completed.confidence > 0.8
+
+
+def test_component_editor_reinfers_axis_when_driver_symmetry_representation_changes() -> None:
+    resource = MeshResource(
+        id="mesh:curved-fem",
+        name="Curved FEM",
+        file=str(FIXTURE_ROOT / "curvedinterfaceFEM.msh"),
+        purpose=MeshPurpose.FEM_VOLUME,
+        scale_to_m=0.001,
+    )
+    boundary = Boundary(
+        id="boundary:mf",
+        name="MF",
+        region_id="region:interior",
+        group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name="MF"),
+        kind=BoundaryKind.MOVING,
+    )
+    editor = _ComponentEditorDialog(
+        _ComponentDraft(
+            id="component:mid",
+            name="Midrange",
+            kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=(boundary.id,),
+            channel="main",
+            parameters={
+                "re_ohm": 6.0,
+                "le_h": 0.0005,
+                "bl_n_per_a": 7.0,
+                "mmd_kg": 0.015,
+                "cms_m_per_n": 0.0005,
+                "rms_n_s_per_m": 1.0,
+                "motion_axis": [1.0, 0.0, 0.0],
+                "symmetry_role": "complete_representative",
+                "surface_completion_factor": 1,
+                "physical_driver_orbit_count": 4,
+                "fractional_symmetry_axes": [],
+            },
+            motion_axis_mode="automatic",
+        ),
+        boundaries=(boundary,),
+        resources_by_id={resource.id: resource},
+        region_names={"region:interior": "Interior"},
+        channel_names=("main",),
+        unavailable_boundary_ids=set(),
+        symmetry_mode="xy",
+        mesh_cache={},
+    )
+    raw_axis = np.asarray([spin.value() for spin in editor.axis_spins])
+    y_cut_index = next(
+        index
+        for index in range(editor.symmetry_combo.count())
+        if editor.symmetry_combo.itemData(index)["fractional_symmetry_axes"] == ["y"]
+    )
+
+    editor.symmetry_combo.setCurrentIndex(y_cut_index)
+    updated = editor.component_draft()
+
+    assert abs(raw_axis[1]) > 0.2
+    assert np.abs(updated.parameters["motion_axis"]) == pytest.approx(
+        (0.913545, 0.0, 0.406737),
+        abs=1e-6,
+    )
+    assert updated.parameters["fractional_symmetry_axes"] == ["y"]
+    assert updated.parameters["surface_completion_factor"] == 2
+    assert updated.parameters["physical_driver_orbit_count"] == 2
+
+
 def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
     resources = {
         "mesh:front": MeshResource(
