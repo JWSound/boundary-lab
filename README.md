@@ -28,7 +28,7 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
+Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependent on hardware; GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -56,8 +56,6 @@ GPU solving VRAM requirements scale quadratically with mesh element count. Below
 | 15,000 | ~8-12 GB |
 | 20,000 | ~14-20 GB |
 
-##
-
 ### BEAT Engine CPU Solver Requirements
 
 * Intel, AMD, or ARM CPU
@@ -69,16 +67,12 @@ To prepare the Julia environment, from the repository root run:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-##
-
 ### Bempp CPU Solver Requirements
 
 * Intel or AMD CPU
 * An OpenCL runtime
 
 The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
-
-##
 
 ## Application Installation
 

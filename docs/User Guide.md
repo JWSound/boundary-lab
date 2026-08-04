@@ -17,7 +17,7 @@ The Ath script editor contains a text editor for defining Ath shapes. Existing A
 
 <img src="../assets/scripteditor.png" alt="Script Editor" width="300">
 
-Ath scripts can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a script, double click its tab. Multi-script workflows can be useful for complex multiway designs (see /examples/MultiAth+Mesh_3WayIntegrated), or worflows where you might be comparing outputs on the same script with different values by copy/pasting it into multiple script tabs and enabling/disabling them in the `Mesh Config` window.
+Ath scripts can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a script, double click its tab. Multi-script workflows can be useful for complex multiway designs (see /examples/MultiAth+Mesh_3WayIntegrated), or workflows where you might be comparing outputs on the same script with different values by copy/pasting it into multiple script tabs and enabling/disabling them in the `Mesh Config` window.
 
 ## 3D Viewport
 
