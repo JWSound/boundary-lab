@@ -400,6 +400,13 @@ Interface construction is symmetry-aware: a reduced interface may meet a
 symmetry plane, and a reduced BEM surface may remain open on that plane. Open
 edges away from an active symmetry plane are rejected.
 
+Symmetry participation is determined separately for each interface. An
+interface whose perimeter contains edges on an active symmetry plane is
+treated as an open reduced patch on those planes; a complete port mouth away
+from the planes retains its ordinary closed perimeter even when the project
+uses X or XY symmetry. This allows one reduced model to combine central,
+symmetry-cut openings with complete side or top openings.
+
 Symmetry reduces the FEM, BEM, and interface unknown counts before the coupled
 matrix is built. This is especially valuable because the BEM operators and the
 final coupled factorization are dense.

@@ -142,16 +142,37 @@ def conform_bem_interface_to_fem(
     if symmetry_axes:
         _validate_positive_symmetry_domain(fem_mesh.points, symmetry_axes, symmetry_plane_tolerance, "FEM")
         _validate_positive_symmetry_domain(bem_mesh.points, symmetry_axes, symmetry_plane_tolerance, "BEM")
+        fem_interface_symmetry_axes = _perimeter_symmetry_axes(
+            fem_mesh.points,
+            fem_inner_loop,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+        )
+        bem_interface_symmetry_axes = _perimeter_symmetry_axes(
+            bem_mesh.points,
+            old_bem_inner_loop,
+            symmetry_axes,
+            symmetry_plane_tolerance,
+        )
+        if fem_interface_symmetry_axes != bem_interface_symmetry_axes:
+            raise InterfaceConformError(
+                "The FEM and BEM interface perimeters are cut by different active symmetry planes."
+            )
+        interface_symmetry_axes = fem_interface_symmetry_axes
+    else:
+        interface_symmetry_axes = ()
+
+    if interface_symmetry_axes:
         fem_opening_path = _physical_opening_path(
             fem_mesh.points,
             fem_interface,
-            symmetry_axes,
+            interface_symmetry_axes,
             symmetry_plane_tolerance,
         )
         old_bem_opening_path = _physical_opening_path(
             bem_mesh.points,
             bem_interface,
-            symmetry_axes,
+            interface_symmetry_axes,
             symmetry_plane_tolerance,
         )
     else:
@@ -164,7 +185,7 @@ def conform_bem_interface_to_fem(
         bem_mesh.points,
         old_bem_opening_path,
         tolerance=merge_tolerance,
-        closed=not symmetry_axes,
+        closed=not interface_symmetry_axes,
     )
     if direct_seam_match:
         output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
@@ -226,7 +247,7 @@ def conform_bem_interface_to_fem(
     adjacent_physical_tag = int(adjacent_physical_tags[0])
 
     adjacent_loops = _boundary_loops(adjacent_triangles)
-    if symmetry_axes:
+    if interface_symmetry_axes:
         if len(adjacent_loops) != 1:
             raise InterfaceConformError(
                 "The planar reduced BEM surface surrounding the interface must have exactly one perimeter loop."
@@ -277,7 +298,11 @@ def conform_bem_interface_to_fem(
             f"{resolved_geometry_tolerance:g}."
         )
 
-    deviation_function = _symmetric_open_polyline_deviation if symmetry_axes else _symmetric_polyline_deviation
+    deviation_function = (
+        _symmetric_open_polyline_deviation
+        if interface_symmetry_axes
+        else _symmetric_polyline_deviation
+    )
     interface_boundary_deviation = deviation_function(
         fem_mesh.points[fem_opening_path],
         bem_mesh.points[old_bem_opening_path],
@@ -294,7 +319,7 @@ def conform_bem_interface_to_fem(
             f"{resolved_geometry_tolerance:g}."
         )
 
-    if symmetry_axes:
+    if interface_symmetry_axes:
         outer_coordinates, fem_inner_coordinates = _aligned_open_paths(
             bem_mesh.points[adjacent_outer_path],
             fem_mesh.points[fem_opening_path],
@@ -651,6 +676,22 @@ def _normalized_symmetry_mode(mode: object) -> str:
 
 def _symmetry_axes(mode: str) -> tuple[int, ...]:
     return () if mode == "off" else (0,) if mode == "x" else (0, 1)
+
+
+def _perimeter_symmetry_axes(
+    points: np.ndarray,
+    perimeter: np.ndarray,
+    active_axes: tuple[int, ...],
+    tolerance: float,
+) -> tuple[int, ...]:
+    loop = np.asarray(perimeter, dtype=np.int64)
+    edges = np.column_stack((loop, np.roll(loop, -1)))
+    coordinates = np.asarray(points, dtype=float)
+    return tuple(
+        axis
+        for axis in active_axes
+        if np.any(np.max(np.abs(coordinates[edges, axis]), axis=1) <= tolerance)
+    )
 
 
 def _validate_positive_symmetry_domain(

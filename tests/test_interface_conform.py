@@ -95,6 +95,32 @@ def test_generated_fixture_round_trips_as_a_conforming_gmsh_mesh() -> None:
     assert report.bem_boundary_edges == 0
 
 
+def test_closed_interface_away_from_global_symmetry_planes_is_conformed_as_closed() -> None:
+    fem_mesh = copy.deepcopy(meshio.read(FEM_FIXTURE))
+    bem_mesh = copy.deepcopy(meshio.read(BEM_FIXTURE))
+    fem_mesh.points[:, :2] += 200.0
+    bem_mesh.points[:, :2] += 200.0
+
+    conformed_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        symmetry_mode="xy",
+    )
+    report = validate_conforming_interfaces(
+        fem_mesh,
+        conformed_mesh,
+        symmetry_mode="xy",
+    )
+
+    assert result.fem_interface_triangles == 180
+    assert result.original_bem_interface_triangles == 196
+    assert result.remeshed_adjacent_triangles > 0
+    assert report.interface_triangles == 180
+    assert report.interface_vertices == 106
+    assert report.max_coordinate_error <= 1e-9
+    assert report.bem_boundary_edges == 0
+
+
 def test_curved_interface_with_disconnected_perimeter_and_split_geometry_is_conformed() -> None:
     fem_mesh = copy.deepcopy(meshio.read(FEM_FIXTURE))
     bem_mesh = copy.deepcopy(meshio.read(BEM_FIXTURE))
