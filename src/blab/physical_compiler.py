@@ -602,5 +602,7 @@ class PhysicalSystemCompiler:
             )
             assumptions.append(PhysicsAssumption(AssumptionStatus.EXCLUDED, "Application DSP and channel synthesis"))
         if all(not region.loss_model for region in system.regions):
-            assumptions.append(PhysicsAssumption(AssumptionStatus.EXCLUDED, "Acoustic loss models"))
+            assumptions.append(
+                PhysicsAssumption(AssumptionStatus.EXCLUDED, "Region-specific acoustic material loss models")
+            )
         return tuple(assumptions)

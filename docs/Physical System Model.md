@@ -73,7 +73,10 @@ settings are applied.
 ## Regions
 
 A region represents a connected acoustic domain with material properties such
-as density, sound speed, and an optional loss model.
+as density, sound speed, and an optional loss model. Region-specific loss
+models are reserved by the schema but are not yet supported by the production
+solver. A single homogeneous bulk-loss factor for every bounded FEM region is
+available separately in application Preferences.
 
 The initial model supports two region kinds:
 

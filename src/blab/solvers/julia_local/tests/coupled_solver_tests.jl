@@ -236,16 +236,32 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             physical_tag(fem_mesh, 2, "Interface"),
             2,
         )
-        solution = solve_coupled(
+        bulk_loss_factor = 0.01
+        coupled_system = build_coupled_system(
             fem_mesh,
             bem_mesh,
             interface_map,
             500.0,
             343.0,
-            1.21,
-            physical_tag(fem_mesh, 2, "Radiator");
+            1.21;
             quadrature_order=COUPLED_QUADRATURE_ORDER,
             singular_order=COUPLED_SINGULAR_ORDER,
+            bulk_loss_factor=bulk_loss_factor,
+        )
+        expected_fem_system = assemble_fem_dynamic_stiffness(
+            coupled_system.cache.stiffness,
+            coupled_system.cache.mass,
+            coupled_system.wavenumber;
+            bulk_loss_factor=bulk_loss_factor,
+        )
+        @test coupled_system.bulk_loss_factor == bulk_loss_factor
+        @test isapprox(
+            coupled_system.coupled[coupled_system.fem_range, coupled_system.fem_range],
+            Matrix(expected_fem_system),
+        )
+        solution = solve_coupled_system(
+            coupled_system,
+            physical_tag(fem_mesh, 2, "Radiator"),
         )
         @info "Coupled reference diagnostics" relative_residual=solution.relative_residual pressure_continuity_error=solution.pressure_continuity_error flux_conservation_error=solution.flux_conservation_error all_bem_replay_error=solution.all_bem_replay_error
         @test solution.relative_residual < 1e-8
@@ -277,6 +293,7 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             physical_tag(fem_mesh32, 2, "Radiator");
             quadrature_order=COUPLED_QUADRATURE_ORDER,
             singular_order=COUPLED_SINGULAR_ORDER,
+            bulk_loss_factor=Float32(bulk_loss_factor),
         )
         relative_error(reference, candidate) = norm(
             ComplexF64.(candidate) .- ComplexF64.(reference),
@@ -320,6 +337,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             singular_order=COUPLED_SINGULAR_ORDER,
             validation_diagnostics=false,
             bem_backend=:cpu,
+            bulk_loss_factor=0.01f0,
         )
         cuda_system = build_coupled_system(
             fem_mesh,
@@ -332,6 +350,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             singular_order=COUPLED_SINGULAR_ORDER,
             validation_diagnostics=false,
             bem_backend=:cuda,
+            bulk_loss_factor=0.01f0,
         )
         condensed_system = build_coupled_system(
             fem_mesh,
@@ -345,6 +364,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             validation_diagnostics=false,
             bem_backend=:cuda,
             static_condensation=true,
+            bulk_loss_factor=0.01f0,
         )
         try
             cpu_solution = solve_coupled_system(cpu_system, radiator_tag)
@@ -364,6 +384,9 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
 
             @test cpu_system.linear_backend == :cpu
             @test cuda_system.linear_backend == :cuda
+            @test cpu_system.bulk_loss_factor == 0.01f0
+            @test cuda_system.bulk_loss_factor == 0.01f0
+            @test condensed_system.bulk_loss_factor == 0.01f0
             @test relative_error(cpu_solution.fem_pressure, cuda_solution.fem_pressure) < 5e-4
             @test relative_error(cpu_solution.bem_pressure, cuda_solution.bem_pressure) < 5e-4
             @test relative_error(cpu_solution.interface_flux, cuda_solution.interface_flux) < 5e-4

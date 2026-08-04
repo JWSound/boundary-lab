@@ -279,6 +279,12 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError(
             f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy."
         )
+    try:
+        fem_bulk_loss_factor = float(request.solver_options.get("fem_bulk_loss_factor", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("FEM bulk loss factor must be a finite number between 0 and 1.") from exc
+    if not math.isfinite(fem_bulk_loss_factor) or not 0.0 <= fem_bulk_loss_factor <= 1.0:
+        raise ValueError("FEM bulk loss factor must be a finite number between 0 and 1.")
     bounded_regions = [
         region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     ]

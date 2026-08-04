@@ -566,6 +566,11 @@ function solve_request(request; event_mode=false)
     transducer_reference_voltage_v > zero(FloatType) || error(
         "transducer_reference_voltage_v must be greater than zero.",
     )
+    fem_bulk_loss_factor = FloatType(get(solver_options, "fem_bulk_loss_factor", 0.0))
+    isfinite(fem_bulk_loss_factor) &&
+        zero(FloatType) <= fem_bulk_loss_factor <= one(FloatType) || error(
+        "fem_bulk_loss_factor must be finite and between 0 and 1.",
+    )
 
     mesh_setup_started = time_ns()
     fem_domains = aggregate_fem_domains(
@@ -740,6 +745,7 @@ function solve_request(request; event_mode=false)
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
             static_condensation=static_condensation,
+            bulk_loss_factor=fem_bulk_loss_factor,
             transducers=transducers,
             transducer_operators=transducer_operators,
         )
@@ -929,6 +935,7 @@ function solve_request(request; event_mode=false)
             "interface_count" => length(interfaces),
             "transducer_count" => length(transducers),
             "transducer_reference_voltage_v" => transducer_reference_voltage_v,
+            "fem_bulk_loss_factor" => fem_bulk_loss_factor,
             "static_condensation_requested" => static_condensation_requested,
             "static_condensation_active" => static_condensation,
             "pressure_continuity_error" => isempty(interface_pressure_errors) ?

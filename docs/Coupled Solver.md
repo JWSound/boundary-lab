@@ -59,7 +59,8 @@ system:
 - one or more FEM or BEM moving boundaries per electrodynamic transducer;
 - direct `Re`, `Le`, `Bl`, `Mmd`, `Cms`, and `Rms` transducer parameters;
 - rigid boundaries everywhere else except configured interface boundaries;
-- lossless, linear pressure acoustics;
+- linear pressure acoustics, with optional homogeneous bulk loss in every
+  bounded FEM air volume;
 - `off`, `x`, or `xy` symmetry, with explicit completion/orbit semantics for
   electrodynamic components.
 
@@ -106,7 +107,8 @@ derivative. Differing fluids are rejected.
    every FEM-to-BEM port connection.
 5. In **Components**, attach an ideal prescribed-velocity component to each
    moving FEM boundary and assign its application channel.
-6. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in Preferences. Choose
+6. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in Preferences. Set
+   **FEM Bulk Loss Factor** if bounded-volume damping is required, and choose
    full, X-half, or XY-quarter symmetry in Mesh Config.
 7. Run the normal application solve.
 
@@ -118,8 +120,7 @@ are deferred to the next UI phase.
 The physical-system compiler resolves group names to Gmsh tags, checks boundary
 coverage and model relationships, and records explicit interface vertex, face,
 and orientation maps before Julia starts. Unsupported boundary roles and
-component models are rejected rather than silently treated as rigid or
-lossless.
+component models are rejected rather than silently substituted.
 
 ## Interface requirements
 
@@ -166,8 +167,21 @@ consistent mass matrices once for the frequency sweep. At angular frequency
 \(\omega=2\pi f\), the FEM Helmholtz matrix is
 
 $$
-A_F = K-k^2M, \qquad k=\frac{\omega}{c}.
+A_F(\eta) = K-k^2(1+i\eta)M, \qquad k=\frac{\omega}{c}.
 $$
+
+The application preference **FEM Bulk Loss Factor** supplies the constant
+dimensionless value \(\eta\). The dropdown provides `0`, `0.002`, `0.005`,
+`0.01`, `0.02`, and `0.05`; `0` reproduces the lossless formulation. With the
+solver's \(\exp(-i\omega t)\) convention, the negative imaginary mass term is
+passive. Near an isolated lightly damped cavity mode, \(Q\) is approximately
+\(1/\eta\).
+
+This is a deliberately simple, global approximation: the same value is
+applied to every bounded FEM air region at every frequency. It does not damp
+the exterior BEM domain, model wall impedance, distinguish absorbing
+materials, or reproduce frequency-dependent thermoviscous boundary-layer
+losses. The value used by a solve is included in its result diagnostics.
 
 Only tetrahedra in the selected physical volume groups are retained. Each
 domain's vertices and facets are compacted, and boundary tags are remapped into
@@ -485,7 +499,8 @@ following are not implemented by the current coupled backend and are normally
 rejected during application preparation or backend validation:
 
 - impedance or parameterized boundaries;
-- acoustic region loss models;
+- region-specific or spatially varying acoustic material loss models (the
+  global homogeneous FEM bulk-loss preference is supported);
 - `Mms` input or automatic conversion from conventional T/S parameter sets;
 - passive radiators;
 - nonideal amplifier/source impedance;
@@ -508,6 +523,62 @@ $env:BLAB_RUN_COUPLED_REFERENCE = "1"
 julia --project=src/blab/solvers/julia_local `
   src/blab/solvers/julia_local/scripts/smoke_coupled_solver.jl
 ```
+
+The dedicated noncubic-cavity correctness test compares the sparse P1 FEM
+matrices with the analytic rigid-wall modes of a 470 x 330 x 220 mm cavity.
+Centered patches on the X, Y, and Z walls verify first-axial-mode source
+selectivity at nominal 20, 14, and 10 mm element sizes. A sparse block
+shift-invert solve checks that the first twelve nonzero modes match the analytic
+rectangular-cavity sequence and converge monotonically under refinement. The
+test also checks a homogeneous passive bulk-loss factor in the interior helper,
+including the solver sign convention, resonant amplitude scaling, half-power
+bandwidth, and modal Q for all three axes:
+
+```powershell
+julia --project=src/blab/solvers/julia_local `
+  src/blab/solvers/julia_local/scripts/test_noncubic_cavity_loss.jl
+```
+
+The companion high-frequency dispersion diagnostic samples exact axial and
+oblique modes from about 2 to 10 kHz on the same three mesh densities:
+
+```powershell
+julia --project=src/blab/solvers/julia_local `
+  src/blab/solvers/julia_local/scripts/analyze_noncubic_ppw.jl
+```
+
+For these P1 tetrahedral fixtures, conservative sampled limits are about 17
+nominal elements per wavelength for 1% modal-frequency error, 12 for 2%, 8 for
+5%, and 6 for 10%. The nominal 14 mm mesh is therefore near the 5% boundary at
+3 kHz and is not a reliable 5--10 kHz reference. Bulk loss can reduce resonance
+Q, but it cannot correct this spatial-dispersion error.
+
+The curved-interface production fixture has a separate targeted convergence
+diagnostic. It compares the baseline and independently exported detailed FEM
+meshes using overlapping block shift-invert slices, nearest-node transferred
+modal assurance, and HF, MF, interface, and wall participation:
+
+```powershell
+julia --project=src/blab/solvers/julia_local `
+  src/blab/solvers/julia_local/scripts/analyze_curved_fem_convergence.jl
+```
+
+Pass `--stats-only` to validate geometry, physical groups, edge lengths, and
+tetrahedron quality without running the eigensolves. For the current fixtures,
+the detailed mesh reduces median edge length from 3.18 to 1.96 mm while changing
+enclosed volume by 0.060%. Targeted modes from 3 to approximately 10.2 kHz pair
+across the meshes. Median baseline-to-detailed frequency shifts are 0.20% from
+3--5 kHz, 0.41% from 5--8 kHz, and 0.70% above 8 kHz; the corresponding maximum
+sampled shifts are 0.44%, 0.59%, and 0.86%. Closely spaced modes can rotate
+within their shared modal subspace, so low individual MAC or participation
+agreement in a cluster must be assessed at the subspace level before declaring
+a mode unmatched.
+
+For the solver's `exp(-i omega t)` convention, this diagnostic loss uses
+
+$$
+A_F(eta)=K-k^2(1+i eta)M=K-k^2M-i eta k^2M.
+$$
 
 The end-to-end benchmark exercises the compiled request and streamed-result
 path. This CPU example uses the same FP32 monolithic formulation as an

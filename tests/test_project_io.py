@@ -191,6 +191,7 @@ def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
             "solve_backend": "bempp",
             "gmres_tolerance": 1e-8,
             "use_burton_miller": False,
+            "fem_bulk_loss_factor": 0.02,
         },
     )
 
@@ -199,6 +200,7 @@ def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     assert "solve_backend" not in saved_preferences
     assert "gmres_tolerance" not in saved_preferences
     assert "use_burton_miller" not in saved_preferences
+    assert saved_preferences["fem_bulk_loss_factor"] == 0.02
 
 
 def test_shipped_examples_do_not_request_preference_overrides() -> None:

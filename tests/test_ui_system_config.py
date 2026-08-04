@@ -21,9 +21,10 @@ from blab.physical_model import (
     PhysicalGroupRef,
 )
 from blab.solvers.coupled_backend import CoupledProductionBackend
-from blab.ui.dialogs import MeshDialogEntry
+from blab.ui.dialogs import MeshDialogEntry, PreferencesDialog
 from blab.ui.mesh_assembly import MeshAssemblyService
 from blab.ui.project_state import ImportedMeshState
+from blab.ui.settings import GuiPreferences
 from blab.ui.system_config import (
     SystemConfigDialog,
     _ComponentDraft,
@@ -550,6 +551,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
         freq_count=3,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
+        fem_bulk_loss_factor=0.01,
     )
 
     assert prepared.polar_angle_deg.tolist() == [-180.0, -90.0, 0.0, 90.0, 180.0]
@@ -563,11 +565,30 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
     assert prepared.request.solver_options["static_condensation"] is False
     assert prepared.request.solver_options["symmetry"] == "off"
+    assert prepared.request.solver_options["fem_bulk_loss_factor"] == pytest.approx(0.01)
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options
     assert prepared.backend_id == "beat_cpu"
     points = np.asarray(prepared.request.outputs[0].options["points_m"])
     assert points.shape == (10, 3)
+
+
+def test_preferences_dialog_exposes_numeric_fem_bulk_loss_dropdown() -> None:
+    dialog = PreferencesDialog(GuiPreferences(fem_bulk_loss_factor=0.005))
+
+    assert isinstance(dialog.fem_bulk_loss_combo, QComboBox)
+    assert dialog.fem_bulk_loss_combo.currentData() == pytest.approx(0.005)
+    assert [dialog.fem_bulk_loss_combo.itemData(index) for index in range(dialog.fem_bulk_loss_combo.count())] == [
+        0.0,
+        0.002,
+        0.005,
+        0.01,
+        0.02,
+        0.05,
+    ]
+
+    dialog.fem_bulk_loss_combo.setCurrentIndex(dialog.fem_bulk_loss_combo.findData(0.02))
+    assert dialog.preferences().fem_bulk_loss_factor == pytest.approx(0.02)
 
 
 def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
@@ -613,6 +634,7 @@ def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
         freq_count=1,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
+        fem_bulk_loss_factor=0.01,
     )
     backend = CoupledProductionBackend(
         bem_backend="cpu",
@@ -629,6 +651,7 @@ def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
     assert system_result.quantities[0].values.dtype == np.complex64
     assert system_result.diagnostics["precision"] == "float32"
     assert system_result.diagnostics["bem_backend"] == "cpu"
+    assert system_result.diagnostics["fem_bulk_loss_factor"] == pytest.approx(0.01)
     assert live_result.timings.assembly_s > 0.0
     assert live_result.timings.solve_s > 0.0
     assert live_result.timings.field_s > 0.0

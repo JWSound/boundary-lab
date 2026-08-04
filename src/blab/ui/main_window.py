@@ -2766,6 +2766,7 @@ class MainWindow(QMainWindow):
                 component_channel_by_id=self.project.component_channel_by_id,
                 backend_id=self.preferences.solve_backend,
                 symmetry_mode=self.symmetry,
+                fem_bulk_loss_factor=self.preferences.fem_bulk_loss_factor,
             )
         except Exception as exc:
             QMessageBox.warning(self, "Coupled solve", str(exc))

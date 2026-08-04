@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, replace
 
@@ -43,6 +44,7 @@ def prepare_coupled_ui_solve(
     component_channel_by_id: dict[str, str] | None = None,
     backend_id: str = "beat_cpu",
     symmetry_mode: str = "off",
+    fem_bulk_loss_factor: float = 0.0,
 ) -> CoupledUiSolveRequest:
     """Compile an editable system and request the field points used by current plots."""
 
@@ -85,6 +87,9 @@ def prepare_coupled_ui_solve(
     normalized_backend_id = normalize_backend_id(backend_id)
     if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
         raise ValueError("Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences.")
+    bulk_loss_factor = float(fem_bulk_loss_factor)
+    if not math.isfinite(bulk_loss_factor) or not 0.0 <= bulk_loss_factor <= 1.0:
+        raise ValueError("FEM bulk loss factor must be finite and between 0 and 1.")
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
@@ -103,6 +108,7 @@ def prepare_coupled_ui_solve(
             "cache_frequency_invariant": True,
             "static_condensation": normalized_backend_id == "beat_cuda",
             "symmetry": symmetry,
+            "fem_bulk_loss_factor": bulk_loss_factor,
         },
     )
     return CoupledUiSolveRequest(

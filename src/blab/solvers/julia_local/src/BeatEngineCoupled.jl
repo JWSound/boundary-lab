@@ -25,6 +25,7 @@ export VolumeMesh,
     restrict_volume_mesh,
     physical_tag,
     assemble_p1_fem_matrices,
+    assemble_fem_dynamic_stiffness,
     assemble_boundary_mass_matrix,
     assemble_prescribed_velocity_load,
     sealed_cavity_modes,
@@ -229,6 +230,22 @@ function assemble_p1_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
     return stiffness, mass
 end
 
+function assemble_fem_dynamic_stiffness(
+    stiffness::SparseMatrixCSC{T,Ti},
+    mass::SparseMatrixCSC{T,Ti},
+    wavenumber::T;
+    bulk_loss_factor::T=zero(T),
+) where {T<:AbstractFloat,Ti<:Integer}
+    size(stiffness) == size(mass) || error("FEM stiffness and mass matrices must have matching shapes.")
+    isfinite(wavenumber) && wavenumber >= zero(T) || error("FEM wavenumber must be finite and nonnegative.")
+    isfinite(bulk_loss_factor) && bulk_loss_factor >= zero(T) || error(
+        "FEM bulk loss factor must be finite and nonnegative.",
+    )
+    squared_wavenumber = wavenumber^2
+    mass_scale = Complex{T}(-squared_wavenumber, -bulk_loss_factor * squared_wavenumber)
+    return Complex{T}.(stiffness) + mass_scale .* mass
+end
+
 function assemble_boundary_mass_matrix(
     mesh::VolumeMesh{T},
     face_indices,
@@ -302,11 +319,17 @@ function solve_prescribed_velocity_interior(
     density::T,
     boundary_tag::Int;
     velocity::Complex{T}=Complex{T}(1, 0),
+    bulk_loss_factor::T=zero(T),
 ) where {T<:AbstractFloat}
     stiffness, mass = assemble_p1_fem_matrices(mesh)
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
-    system = Complex{T}.(stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(mass)
+    system = assemble_fem_dynamic_stiffness(
+        stiffness,
+        mass,
+        wavenumber;
+        bulk_loss_factor=bulk_loss_factor,
+    )
     rhs = assemble_prescribed_velocity_load(mesh, boundary_tag, density, omega, velocity)
     pressure = system \ rhs
     relative_residual = norm(system * pressure - rhs) / max(norm(rhs), eps(T))
@@ -315,6 +338,7 @@ function solve_prescribed_velocity_interior(
         stiffness=stiffness,
         mass=mass,
         rhs=rhs,
+        bulk_loss_factor=bulk_loss_factor,
         relative_residual=relative_residual,
     )
 end
@@ -1035,6 +1059,7 @@ function build_coupled_system(
     bem_backend::Symbol=:cpu,
     symmetry_mode::Symbol=:off,
     static_condensation::Bool=false,
+    bulk_loss_factor::T=zero(T),
     transducers::AbstractVector{ElectrodynamicTransducer{T}}=ElectrodynamicTransducer{T}[],
     transducer_operators=nothing,
 ) where {T<:AbstractFloat}
@@ -1077,7 +1102,12 @@ function build_coupled_system(
         error("Coupled cache retained FEM vertices do not match the current moving surfaces.")
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
-    fem_system = Complex{T}.(prepared.stiffness) - Complex{T}(wavenumber^2) .* Complex{T}.(prepared.mass)
+    fem_system = assemble_fem_dynamic_stiffness(
+        prepared.stiffness,
+        prepared.mass,
+        wavenumber;
+        bulk_loss_factor=bulk_loss_factor,
+    )
     interface_operators = prepared.interface_operators
     transducer_count = length(transducers)
     size(resolved_transducer_operators.fem_surface, 2) == transducer_count ||
@@ -1234,7 +1264,10 @@ function build_coupled_system(
                 scatter_cuda_sparse_to_dense!(
                     d_coupled,
                     prepared.device_sparse_blocks.mass;
-                    alpha=-Complex{T}(wavenumber^2),
+                    alpha=Complex{T}(
+                        -(wavenumber^2),
+                        -bulk_loss_factor * wavenumber^2,
+                    ),
                     add=true,
                 )
                 scatter_cuda_sparse_to_dense!(
@@ -1373,6 +1406,7 @@ function build_coupled_system(
         transducers=transducers,
         transducer_operators=resolved_transducer_operators,
         density=density,
+        bulk_loss_factor=bulk_loss_factor,
         omega=omega,
         wavenumber=wavenumber,
         field_cache=prepared.field_cache,
@@ -1687,6 +1721,7 @@ function solve_coupled(
     quadrature_order::Int=2,
     singular_order::Int=2,
     symmetry_mode::Symbol=:off,
+    bulk_loss_factor::T=zero(T),
 ) where {T<:AbstractFloat}
     system = build_coupled_system(
         fem_mesh,
@@ -1698,6 +1733,7 @@ function solve_coupled(
         quadrature_order=quadrature_order,
         singular_order=singular_order,
         symmetry_mode=symmetry_mode,
+        bulk_loss_factor=bulk_loss_factor,
     )
     return solve_coupled_system(
         system,

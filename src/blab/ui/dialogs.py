@@ -36,7 +36,12 @@ from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.server_credentials import load_server_access_token, save_server_access_token
-from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
+from blab.ui.settings import (
+    FEM_BULK_LOSS_FACTOR_OPTIONS,
+    GuiPreferences,
+    normalize_fem_bulk_loss_factor,
+    normalize_live_plot_quality,
+)
 
 CROSSOVER_TYPE_OPTIONS = [
     ("Off", None),
@@ -189,6 +194,16 @@ class PreferencesDialog(QDialog):
         )
         self.solve_backend_combo.setCurrentText(backend_label)
 
+        self.fem_bulk_loss_combo = QComboBox()
+        for loss_factor in FEM_BULK_LOSS_FACTOR_OPTIONS:
+            self.fem_bulk_loss_combo.addItem(f"{loss_factor:g}", loss_factor)
+        selected_loss_factor = normalize_fem_bulk_loss_factor(preferences.fem_bulk_loss_factor)
+        loss_index = self.fem_bulk_loss_combo.findData(selected_loss_factor)
+        if loss_index < 0:
+            self.fem_bulk_loss_combo.addItem(f"{selected_loss_factor:g}", selected_loss_factor)
+            loss_index = self.fem_bulk_loss_combo.count() - 1
+        self.fem_bulk_loss_combo.setCurrentIndex(loss_index)
+
         self.solve_server_url_edit = QLineEdit()
         self.solve_server_url_edit.setText(preferences.solve_server_url)
         self.server_health_payload: dict | None = None
@@ -336,6 +351,11 @@ class PreferencesDialog(QDialog):
                 "Solver Config",
                 (
                     ("BEM Solver", self.solve_backend_combo, ""),
+                    (
+                        "FEM Bulk Loss Factor",
+                        self.fem_bulk_loss_combo,
+                        "Uniform phenomenological damping for all bounded FEM air volumes. Approximate acoustic Q is 1 / loss factor; 0 is lossless.",
+                    ),
                     ("Solve Server URL", self.solve_server_url_edit, ""),
                     (
                         "",
@@ -489,6 +509,7 @@ class PreferencesDialog(QDialog):
         return GuiPreferences(
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
+            fem_bulk_loss_factor=float(self.fem_bulk_loss_combo.currentData()),
             solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],

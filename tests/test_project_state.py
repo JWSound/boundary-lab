@@ -40,6 +40,7 @@ def test_project_preferences_round_trip_only_contains_project_fields() -> None:
         freq_max_hz=12000,
         normalized_channel_correction=False,
         spherical_sampling_enabled=True,
+        fem_bulk_loss_factor=0.01,
     )
 
     payload = preferences.to_payload()
@@ -48,6 +49,7 @@ def test_project_preferences_round_trip_only_contains_project_fields() -> None:
     assert "solve_backend" not in payload
     assert "gmres_tolerance" not in payload
     assert "use_burton_miller" not in payload
+    assert payload["fem_bulk_loss_factor"] == 0.01
 
 
 def test_new_project_document_owns_project_local_collections() -> None:

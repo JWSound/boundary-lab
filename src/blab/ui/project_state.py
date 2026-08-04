@@ -31,6 +31,7 @@ class ProjectPreferencesState:
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
     normalized_channel_correction: bool = True
+    fem_bulk_loss_factor: float = 0.0
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
@@ -72,6 +73,12 @@ class ProjectPreferencesState:
             ),
             normalized_channel_correction=_boolean(
                 payload.get("normalized_channel_correction"), defaults.normalized_channel_correction
+            ),
+            fem_bulk_loss_factor=_finite_float(
+                payload.get("fem_bulk_loss_factor"),
+                defaults.fem_bulk_loss_factor,
+                minimum=0.0,
+                maximum=1.0,
             ),
             polar_smoothing=_optional_int(payload.get("polar_smoothing"), defaults.polar_smoothing),
             horizontal_normalization_angle=_finite_float(
@@ -315,12 +322,22 @@ def _positive_float(value: object, default: float) -> float:
     return parsed if parsed > 0.0 else default
 
 
-def _finite_float(value: object, default: float, *, minimum: float | None = None) -> float:
+def _finite_float(
+    value: object,
+    default: float,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return default
-    if not math.isfinite(parsed) or (minimum is not None and parsed < minimum):
+    if (
+        not math.isfinite(parsed)
+        or (minimum is not None and parsed < minimum)
+        or (maximum is not None and parsed > maximum)
+    ):
         return default
     return parsed
 

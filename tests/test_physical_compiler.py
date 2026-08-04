@@ -77,7 +77,10 @@ def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
         AssumptionStatus.INCLUDED,
         "Conforming bidirectional FEM-BEM interfaces",
     ) in assumptions
-    assert (AssumptionStatus.EXCLUDED, "Acoustic loss models") in assumptions
+    assert (
+        AssumptionStatus.EXCLUDED,
+        "Region-specific acoustic material loss models",
+    ) in assumptions
 
 
 def test_compiler_rejects_unassigned_physical_surface_group() -> None:
@@ -164,6 +167,34 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
     assert session.julia_threads == 4
     assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
+
+
+@pytest.mark.parametrize("loss_factor", (-0.001, 1.001, "invalid"))
+def test_coupled_backend_rejects_invalid_fem_bulk_loss_factor(loss_factor) -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"fem_bulk_loss_factor": loss_factor},
+    )
+
+    with pytest.raises(ValueError, match="FEM bulk loss factor"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
+def test_coupled_backend_preserves_valid_fem_bulk_loss_factor() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"fem_bulk_loss_factor": 0.01},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert session.request.solver_options["fem_bulk_loss_factor"] == pytest.approx(0.01)
 
 
 def test_coupled_backend_rejects_unsupported_physical_roles_before_starting_julia() -> None:

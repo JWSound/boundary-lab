@@ -7,6 +7,7 @@ from blab.ui.settings import (
     live_plot_freq_samples,
     load_gui_preferences,
     normalize_balloon_angle_precision_deg,
+    normalize_fem_bulk_loss_factor,
     normalize_live_plot_quality,
     preferences_require_solve_invalidation,
     preferences_require_visualization_refresh,
@@ -51,6 +52,20 @@ def test_balloon_angle_precision_point_conversion() -> None:
     assert round(balloon_angle_precision_from_points(6000), 1) == 2.6
 
 
+def test_fem_bulk_loss_preference_is_normalized_and_persisted() -> None:
+    assert normalize_fem_bulk_loss_factor(0.01) == 0.01
+    assert normalize_fem_bulk_loss_factor(-0.01) == 0.0
+    assert normalize_fem_bulk_loss_factor(float("nan")) == 0.0
+    assert normalize_fem_bulk_loss_factor(1.01) == 0.0
+
+    settings = MemorySettings({"preferences/fem_bulk_loss_factor": "0.02"})
+    assert load_gui_preferences(settings).fem_bulk_loss_factor == 0.02
+
+    saved = MemorySettings()
+    save_gui_preferences(saved, GuiPreferences(fem_bulk_loss_factor=0.005))
+    assert saved.values["preferences/fem_bulk_loss_factor"] == 0.005
+
+
 def test_hidden_solver_preferences_always_use_backend_defaults() -> None:
     settings = MemorySettings(
         {
@@ -83,6 +98,10 @@ def test_preference_change_classification() -> None:
     assert preferences_require_solve_invalidation(
         baseline,
         GuiPreferences(gmres_tolerance=5e-4),
+    )
+    assert preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(fem_bulk_loss_factor=0.01),
     )
     assert preferences_require_solve_invalidation(
         baseline,
@@ -161,12 +180,14 @@ def test_applying_project_preferences_preserves_solver_and_application_choices()
         live_plot_quality="high",
         gmres_tolerance=1e-7,
         use_burton_miller=False,
+        fem_bulk_loss_factor=0.02,
     )
     project = project_preferences_from_gui(
         GuiPreferences(
             polar_angle_step_deg=5.0,
             normalized_channel_correction=False,
             spherical_sampling_enabled=True,
+            fem_bulk_loss_factor=0.01,
         ),
         freq_min_hz=80,
         freq_max_hz=16000,
@@ -182,6 +203,7 @@ def test_applying_project_preferences_preserves_solver_and_application_choices()
     assert applied.solve_server_url == "http://solver.example:8765"
     assert applied.gmres_tolerance == 1e-7
     assert applied.use_burton_miller is False
+    assert applied.fem_bulk_loss_factor == 0.01
     assert applied.theme == "dark"
     assert applied.live_plot_streaming is False
     assert applied.live_plot_quality == "high"
