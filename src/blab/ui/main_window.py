@@ -130,7 +130,6 @@ from blab.ui.project_state import (
     unique_generator_name,
 )
 from blab.ui.result_projection import (
-    IsobarProjection,
     ProjectionOptions,
     ResultProjectionService,
     VisualizationProjection,
@@ -362,7 +361,7 @@ class MainWindow(QMainWindow):
         self.generated_geometry_by_document_id: dict[str, GeneratedGeometry] = {}
         self.imported_radiators: tuple[RadiatorConfig, ...] = ()
         self.live_dataset: LiveSolveDataset | None = None
-        self._last_completed_isobar_dataset: IsobarProjection | None = None
+        self._last_completed_visualization_dataset: VisualizationProjection | None = None
         self.balloon_window: QWidget | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self.project_path: Path | None = None
@@ -918,7 +917,7 @@ class MainWindow(QMainWindow):
         if policy.clear_solve_results:
             self._clear_plots()
         if policy.clear_comparison_history:
-            self._clear_isobar_comparison_history()
+            self._clear_plot_comparison_history()
 
     def _has_solved_data(self) -> bool:
         return bool(self.live_dataset is not None and self.live_dataset.solved_count > 0)
@@ -2721,7 +2720,7 @@ class MainWindow(QMainWindow):
 
         self.live_dataset = None
         self._clear_plots()
-        self._apply_last_completed_isobar_comparison()
+        self._apply_last_completed_plot_comparison()
         self.balloon_plot_action.setEnabled(False)
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
@@ -2771,7 +2770,7 @@ class MainWindow(QMainWindow):
 
         self.live_dataset = None
         self._clear_plots()
-        self._apply_last_completed_isobar_comparison()
+        self._apply_last_completed_plot_comparison()
         self.balloon_plot_action.setEnabled(False)
         self._use_final_isobar_resolution = False
         self._final_isobar_plots_rendered = False
@@ -2887,7 +2886,7 @@ class MainWindow(QMainWindow):
                         freq_samples=FINAL_ISOBAR_FREQ_SAMPLES,
                     )
                 if refreshed_dataset is not None:
-                    self._last_completed_isobar_dataset = self._snapshot_isobar_dataset(refreshed_dataset)
+                    self._last_completed_visualization_dataset = refreshed_dataset.snapshot()
             self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
@@ -2917,40 +2916,61 @@ class MainWindow(QMainWindow):
         self.balloon_plot_action.setEnabled(False)
         self._set_contour_button_states()
 
-    def _snapshot_isobar_dataset(self, dataset: VisualizationProjection) -> IsobarProjection:
-        return dataset.isobar.snapshot()
-
-    def _apply_last_completed_isobar_comparison(self) -> None:
-        dataset = self._last_completed_isobar_dataset
+    def _apply_last_completed_plot_comparison(self) -> None:
+        dataset = self._last_completed_visualization_dataset
         if dataset is None:
-            self.horizontal_plot.clear_comparison_plot()
-            self.vertical_plot.clear_comparison_plot()
+            for entry in self.plot_entries:
+                entry.widget.clear_comparison_plot()
             return
+        isobar = dataset.isobar
         options = {
             "shading": FINAL_ISOBAR_SHADING,
             "contour_step_db": self.preferences.isobar_contour_step_db,
         }
         self.horizontal_plot.set_comparison_plot(
-            dataset.freq_hz,
-            dataset.angle_deg,
-            dataset.horizontal_db,
-            dataset.clip_min_db,
-            dataset.clip_max_db,
+            isobar.freq_hz,
+            isobar.angle_deg,
+            isobar.horizontal_db,
+            isobar.clip_min_db,
+            isobar.clip_max_db,
             **options,
         )
         self.vertical_plot.set_comparison_plot(
-            dataset.freq_hz,
-            dataset.angle_deg,
-            dataset.vertical_db,
-            dataset.clip_min_db,
-            dataset.clip_max_db,
+            isobar.freq_hz,
+            isobar.angle_deg,
+            isobar.vertical_db,
+            isobar.clip_min_db,
+            isobar.clip_max_db,
             **options,
         )
+        impedance = dataset.impedance
+        self.impedance_plot.set_comparison_plot(
+            impedance.freq_hz,
+            impedance.radiator_names,
+            impedance.real,
+            impedance.imaginary,
+        )
+        response = dataset.response
+        self.on_axis_plot.set_comparison_plot(
+            response.freq_hz,
+            response.angle_deg,
+            response.horizontal_spl_db,
+            response.channel_on_axis_names,
+            response.channel_on_axis_spl_db,
+        )
+        self.spinorama_plot.set_comparison_plot(
+            response.freq_hz,
+            response.angle_deg,
+            response.horizontal_spl_db,
+            response.vertical_spl_db,
+            horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
+            vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
+        )
 
-    def _clear_isobar_comparison_history(self) -> None:
-        self._last_completed_isobar_dataset = None
-        self.horizontal_plot.clear_comparison_plot()
-        self.vertical_plot.clear_comparison_plot()
+    def _clear_plot_comparison_history(self) -> None:
+        self._last_completed_visualization_dataset = None
+        for entry in self.plot_entries:
+            entry.widget.clear_comparison_plot()
 
     def _set_plot_visible(self, plot_id: str, visible: bool) -> None:
         for entry in self.plot_entries:

@@ -478,16 +478,18 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
 def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
     source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
     isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
+    interaction_block = source[source.index("class InteractivePlotCanvas") : source.index("class IsobarCanvas")]
 
     assert "from matplotlib.backend_bases import MouseButton" in source
-    assert "self._crosshair_visible = False" in isobar_block
-    assert "self._connect_crosshair_events()" in isobar_block
-    assert "button_press_event" in isobar_block
-    assert "motion_notify_event" in isobar_block
-    assert "button_release_event" in isobar_block
-    assert "event.button != MouseButton.LEFT" in isobar_block
-    assert 'getattr(event, "dblclick", False)' in isobar_block
-    assert "self._hide_crosshair()" in isobar_block
+    assert "class IsobarCanvas(InteractivePlotCanvas)" in source
+    assert "self._crosshair_visible = False" in interaction_block
+    assert "self._connect_interaction_events()" in interaction_block
+    assert "button_press_event" in interaction_block
+    assert "motion_notify_event" in interaction_block
+    assert "button_release_event" in interaction_block
+    assert "event.button != MouseButton.LEFT" in interaction_block
+    assert 'getattr(event, "dblclick", False)' in interaction_block
+    assert "self._hide_crosshair()" in interaction_block
     assert "self.axes.axvline(" in isobar_block
     assert "self.axes.axhline(" in isobar_block
     assert "self.axes.get_xaxis_transform()" in isobar_block
@@ -499,11 +501,11 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
     assert "self._crosshair_db_label.xy = (axis_x, self._crosshair_angle_deg)" in isobar_block
     assert "if self._crosshair_visible:" in isobar_block
     assert "self._redraw_crosshair()" in isobar_block
-    assert "draw_event" in isobar_block
-    assert "self.copy_from_bbox(self.figure.bbox)" in isobar_block
-    assert "self.restore_region(self._crosshair_background)" in isobar_block
-    assert "self.axes.draw_artist(artist)" in isobar_block
-    assert "self.blit(self.figure.bbox)" in isobar_block
+    assert "draw_event" in interaction_block
+    assert "self.copy_from_bbox(self.figure.bbox)" in interaction_block
+    assert "self.restore_region(self._crosshair_background)" in interaction_block
+    assert "artist.axes.draw_artist(artist)" in interaction_block
+    assert "self.blit(self.figure.bbox)" in interaction_block
     assert "artist.set_animated(True)" in isobar_block
     assert "_grid_bracket(log_freqs, log_freq)" in isobar_block
 
@@ -513,17 +515,25 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
     state_source = Path("src/blab/ui/application_state.py").read_text(encoding="utf-8")
     isobar_block = plot_source[plot_source.index("class IsobarCanvas") : plot_source.index("class ImpedanceCanvas")]
+    interaction_block = plot_source[
+        plot_source.index("class InteractivePlotCanvas") : plot_source.index("class IsobarCanvas")
+    ]
 
-    assert "self._comparison_plot" in isobar_block
+    assert "self._comparison_plot" in interaction_block
     assert "def set_comparison_plot(" in isobar_block
-    assert "def clear_comparison_plot(" in isobar_block
-    assert "event.button != MouseButton.RIGHT" in isobar_block
-    assert 'f"{self.title} - Previous Solve"' in isobar_block
-    assert "self._apply_plot_state(self._comparison_plot)" in isobar_block
-    assert "self._apply_plot_state(restore_plot)" in isobar_block
-    assert "self._last_completed_isobar_dataset" in main_source
-    assert "def _snapshot_isobar_dataset(" in main_source
-    assert "self._apply_last_completed_isobar_comparison()" in main_source
+    assert "def clear_comparison_plot(" in interaction_block
+    assert "event.button != MouseButton.RIGHT" in interaction_block
+    assert 'f"{self.title} - Previous Solve"' in interaction_block
+    assert "self._apply_plot_state(self._comparison_plot)" in interaction_block
+    assert "self._apply_plot_state(restore_plot)" in interaction_block
+    assert "self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)" in interaction_block
+    assert 'self.mpl_connect("figure_leave_event", self._on_figure_leave)' in interaction_block
+    assert "self._last_completed_visualization_dataset" in main_source
+    assert "refreshed_dataset.snapshot()" in main_source
+    assert "self._apply_last_completed_plot_comparison()" in main_source
+    assert "self.impedance_plot.set_comparison_plot(" in main_source
+    assert "self.on_axis_plot.set_comparison_plot(" in main_source
+    assert "self.spinorama_plot.set_comparison_plot(" in main_source
     assert "SolveInvalidationReason.NEW_PROJECT" in state_source
     assert "clear_comparison_history=True" in state_source
 
@@ -700,7 +710,7 @@ def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
     assert 'object_name="forward_beam_shape"' in source
     assert "tool_actions=(self.save_wavefront_shape_action,)" in source
     assert "def _save_wavefront_shape_image(self) -> None:" in source
-    assert 'self.file_dialogs.save_file(' in source
+    assert "self.file_dialogs.save_file(" in source
     assert '"forward_beam_shape.png"' in source
     assert "export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
     assert "self._update_wavefront_shape_frequency_cursor(index)" in source
