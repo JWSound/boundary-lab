@@ -13,6 +13,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -78,6 +79,7 @@ class SystemConfigResult:
     system: PhysicalSystem
     component_channel_by_id: dict[str, str]
     mesh_file_overrides_by_name: dict[str, str] = field(default_factory=dict)
+    stitch_exterior_meshes: bool = False
 
 
 @dataclass(frozen=True)
@@ -111,6 +113,7 @@ class _ComponentDraft:
 
 
 _COMPONENT_UI_METADATA_KEY = "component_editor"
+_BOUNDARY_MOTION_WEIGHTS_KEY = "boundary_motion_weights"
 _TRANSDUCER_PARAMETER_FIELDS = (
     ("re_ohm", "Re", "Ω", 1.0),
     ("le_h", "Le", "mH", 1_000.0),
@@ -119,6 +122,99 @@ _TRANSDUCER_PARAMETER_FIELDS = (
     ("cms_m_per_n", "Cms", "µm/N", 1_000_000.0),
     ("rms_n_s_per_m", "Rms", "N·s/m", 1.0),
 )
+
+
+class _RegionMeshCombo(QComboBox):
+    """Single-selection combo with an exterior-region multi-mesh chooser."""
+
+    _CHOOSE_MULTIPLE = "__choose_multiple__"
+
+    def __init__(self, mesh_names: tuple[str, ...], parent: QWidget | None = None):
+        super().__init__(parent)
+        self._mesh_names = mesh_names
+        self._multiple_enabled = False
+        self._selected_mesh_names: tuple[str, ...] = ()
+        self.addItem("", None)
+        for mesh_name in mesh_names:
+            self.addItem(mesh_name, mesh_name)
+        self.addItem("Select multiple meshes...", self._CHOOSE_MULTIPLE)
+        self.currentIndexChanged.connect(self._current_changed)
+        self.activated.connect(self._activated)
+
+    def set_multiple_enabled(self, enabled: bool) -> None:
+        self._multiple_enabled = bool(enabled)
+        item = self.model().item(self.findData(self._CHOOSE_MULTIPLE))
+        if item is not None:
+            item.setEnabled(self._multiple_enabled)
+
+    def selected_mesh_names(self) -> tuple[str, ...]:
+        return self._selected_mesh_names
+
+    def set_selected_mesh_names(self, mesh_names: tuple[str, ...]) -> None:
+        selected = tuple(name for name in mesh_names if name in self._mesh_names)
+        if len(selected) <= 1:
+            self._selected_mesh_names = selected
+            self.setCurrentIndex(max(self.findData(selected[0] if selected else None), 0))
+            return
+        self._set_summary_item(selected)
+
+    def _activated(self, _index: int) -> None:
+        if self.currentData() != self._CHOOSE_MULTIPLE or not self._multiple_enabled:
+            return
+        previous = self._selected_mesh_names
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Exterior Region Meshes")
+        mesh_list = QListWidget()
+        for mesh_name in self._mesh_names:
+            item = QListWidgetItem(mesh_name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if mesh_name in previous else Qt.CheckState.Unchecked
+            )
+            mesh_list.addItem(item)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(mesh_list)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.set_selected_mesh_names(previous)
+            return
+        selected = tuple(
+            mesh_list.item(index).text()
+            for index in range(mesh_list.count())
+            if mesh_list.item(index).checkState() == Qt.CheckState.Checked
+        )
+        self.set_selected_mesh_names(selected)
+
+    def _set_summary_item(self, selected: tuple[str, ...]) -> None:
+        summary_index = next(
+            (
+                index
+                for index in range(self.count())
+                if isinstance(self.itemData(index), tuple)
+            ),
+            -1,
+        )
+        label = ", ".join(selected)
+        if summary_index < 0:
+            summary_index = self.count() - 1
+            self.insertItem(summary_index, label, selected)
+        else:
+            self.setItemText(summary_index, label)
+            self.setItemData(summary_index, selected)
+        self.setCurrentIndex(summary_index)
+        self._selected_mesh_names = selected
+
+    def _current_changed(self, _index: int) -> None:
+        value = self.currentData()
+        if value is None:
+            self._selected_mesh_names = ()
+        elif isinstance(value, tuple):
+            self._selected_mesh_names = tuple(str(item) for item in value)
+        elif isinstance(value, str) and value != self._CHOOSE_MULTIPLE:
+            self._selected_mesh_names = (value,)
 
 
 def infer_component_motion_axis(
@@ -367,33 +463,63 @@ class _ComponentEditorDialog(QDialog):
         identity_form.addRow("Type", self.type_combo)
         identity_form.addRow("Channel", self.channel_combo)
 
-        self.boundary_list = QListWidget()
-        self.boundary_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.boundary_list.blockSignals(True)
-        for boundary in boundaries:
+        self.boundary_table = QTableWidget(len(boundaries), 4)
+        self.boundary_table.setHorizontalHeaderLabels(["Use", "Surface", "Region", "Relative Velocity"])
+        self.boundary_table.verticalHeader().setVisible(False)
+        self.boundary_table.setAlternatingRowColors(True)
+        self.boundary_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.boundary_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.boundary_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.boundary_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.boundary_weight_spins: list[QDoubleSpinBox] = []
+        raw_weights = draft.parameters.get(_BOUNDARY_MOTION_WEIGHTS_KEY, {})
+        weights = raw_weights if isinstance(raw_weights, dict) else {}
+        self.boundary_table.blockSignals(True)
+        for row, boundary in enumerate(boundaries):
             region_name = region_names.get(boundary.region_id, boundary.region_id)
-            label = f"{boundary.name} — {region_name}"
             unavailable = boundary.id in unavailable_boundary_ids and boundary.id not in draft.boundary_ids
-            if unavailable:
-                label += " (assigned to another component)"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, boundary.id)
-            flags = item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+            use_item = QTableWidgetItem()
+            use_item.setData(Qt.ItemDataRole.UserRole, boundary.id)
+            flags = use_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
             if unavailable:
                 flags &= ~Qt.ItemFlag.ItemIsEnabled
-            item.setFlags(flags)
-            item.setCheckState(
+            use_item.setFlags(flags)
+            use_item.setCheckState(
                 Qt.CheckState.Checked if boundary.id in draft.boundary_ids else Qt.CheckState.Unchecked
             )
-            self.boundary_list.addItem(item)
-        self.boundary_list.blockSignals(False)
+            self.boundary_table.setItem(row, 0, use_item)
+            name_item = QTableWidgetItem(
+                boundary.name + (" (assigned to another component)" if unavailable else "")
+            )
+            region_item = QTableWidgetItem(region_name)
+            for display_item in (name_item, region_item):
+                display_item.setFlags(display_item.flags() & ~Qt.ItemIsEditable)
+                if unavailable:
+                    display_item.setFlags(display_item.flags() & ~Qt.ItemIsEnabled)
+            self.boundary_table.setItem(row, 1, name_item)
+            self.boundary_table.setItem(row, 2, region_item)
+            try:
+                weight = float(weights.get(boundary.id, 1.0))
+            except (TypeError, ValueError):
+                weight = 1.0
+            weight_db = 20.0 * np.log10(max(weight, 1.0e-6))
+            spin = QDoubleSpinBox()
+            spin.setRange(-120.0, 20.0)
+            spin.setDecimals(2)
+            spin.setSingleStep(0.5)
+            spin.setSuffix(" dB")
+            spin.setValue(float(weight_db))
+            spin.setEnabled(not unavailable and boundary.id in draft.boundary_ids)
+            self.boundary_table.setCellWidget(row, 3, spin)
+            self.boundary_weight_spins.append(spin)
+        self.boundary_table.blockSignals(False)
 
         surfaces_group = QGroupBox("Moving surfaces")
         surfaces_layout = QVBoxLayout(surfaces_group)
         surfaces_layout.addWidget(
             QLabel("Select every acoustic surface driven by this component, including front and rear sides.")
         )
-        surfaces_layout.addWidget(self.boundary_list)
+        surfaces_layout.addWidget(self.boundary_table)
 
         self.axis_mode_combo = QComboBox()
         self.axis_mode_combo.addItem("Automatic from surface normals", "automatic")
@@ -469,7 +595,7 @@ class _ComponentEditorDialog(QDialog):
 
         self.type_combo.currentIndexChanged.connect(self._refresh_type_controls)
         self.axis_mode_combo.currentIndexChanged.connect(self._refresh_axis_controls)
-        self.boundary_list.itemChanged.connect(self._selected_boundaries_changed)
+        self.boundary_table.itemChanged.connect(self._selected_boundaries_changed)
         self.symmetry_combo.currentIndexChanged.connect(self._symmetry_representation_changed)
         self.flip_axis_button.clicked.connect(self._flip_axis)
         self._refresh_type_controls()
@@ -480,9 +606,19 @@ class _ComponentEditorDialog(QDialog):
     def selected_boundary_ids(self) -> tuple[str, ...]:
         return tuple(
             str(item.data(Qt.ItemDataRole.UserRole))
-            for index in range(self.boundary_list.count())
-            if (item := self.boundary_list.item(index)).checkState() == Qt.CheckState.Checked
+            for row in range(self.boundary_table.rowCount())
+            if (item := self.boundary_table.item(row, 0)).checkState() == Qt.CheckState.Checked
         )
+
+    def boundary_motion_weights(self) -> dict[str, float]:
+        selected = set(self.selected_boundary_ids())
+        return {
+            str(self.boundary_table.item(row, 0).data(Qt.ItemDataRole.UserRole)): float(
+                10.0 ** (self.boundary_weight_spins[row].value() / 20.0)
+            )
+            for row in range(self.boundary_table.rowCount())
+            if str(self.boundary_table.item(row, 0).data(Qt.ItemDataRole.UserRole)) in selected
+        }
 
     def component_draft(self) -> _ComponentDraft:
         name = self.name_edit.text().strip()
@@ -538,6 +674,7 @@ class _ComponentEditorDialog(QDialog):
             parameters = {"motion_profile": "uniform"}
             mode = "manual"
             confidence = None
+        parameters[_BOUNDARY_MOTION_WEIGHTS_KEY] = self.boundary_motion_weights()
         return _ComponentDraft(
             id=self._draft.id,
             name=name,
@@ -571,7 +708,12 @@ class _ComponentEditorDialog(QDialog):
         elif not self.axis_confidence_label.text():
             self.axis_confidence_label.setText("Manual direction; it will be normalized when saved.")
 
-    def _selected_boundaries_changed(self, _item: QListWidgetItem) -> None:
+    def _selected_boundaries_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == 0:
+            self.boundary_weight_spins[item.row()].setEnabled(
+                bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
+                and item.checkState() == Qt.CheckState.Checked
+            )
         if self.axis_mode_combo.currentData() == "automatic":
             self._infer_axis()
 
@@ -726,6 +868,7 @@ class SystemConfigDialog(QDialog):
         component_channel_by_id: dict[str, str] | None = None,
         parent: QWidget | None = None,
         *,
+        stitch_exterior_meshes: bool = False,
         interface_output_root: str | Path | None = None,
         symmetry_mode: str = "off",
     ):
@@ -736,6 +879,7 @@ class SystemConfigDialog(QDialog):
         self._initial_system = system
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
+        self._stitch_exterior_meshes = bool(stitch_exterior_meshes)
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
@@ -776,6 +920,7 @@ class SystemConfigDialog(QDialog):
         self._refresh_boundaries()
         self._load_interfaces()
         self._load_components()
+        self._refresh_interfaces_tab_availability()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -807,6 +952,13 @@ class SystemConfigDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(add_button)
         row.addWidget(remove_button)
+        self.stitch_exterior_meshes_check = QCheckBox("Stitch exterior region meshes")
+        self.stitch_exterior_meshes_check.setChecked(self._stitch_exterior_meshes)
+        self.stitch_exterior_meshes_check.setToolTip(
+            "Join the exterior region's mesh parts into one conforming BEM solve mesh."
+        )
+        row.addSpacing(16)
+        row.addWidget(self.stitch_exterior_meshes_check)
         row.addStretch(1)
         layout = QVBoxLayout(self.regions_tab)
         layout.addWidget(self.regions_table)
@@ -890,14 +1042,22 @@ class SystemConfigDialog(QDialog):
         if self._initial_system is not None and self._initial_system.regions:
             resources = {mesh.id: mesh for mesh in self._initial_system.meshes}
             for region in self._initial_system.regions:
-                resource = resources.get(region.mesh_ids[0]) if region.mesh_ids else None
+                region_resources = tuple(
+                    resource
+                    for mesh_id in region.mesh_ids
+                    if (resource := resources.get(mesh_id)) is not None
+                )
                 volume_name = region.volume_groups[0].name if region.volume_groups else None
-                mesh_name = self._restored_region_mesh_name(region.kind, resource)
-                if resource is not None and mesh_name is not None:
+                mesh_names = tuple(
+                    mesh_name
+                    for resource in region_resources
+                    if (mesh_name := self._restored_region_mesh_name(region.kind, resource)) is not None
+                )
+                for resource, mesh_name in zip(region_resources, mesh_names, strict=False):
                     restored = self._restored_resources_by_mesh_name.get(mesh_name)
                     if restored is None or restored.id == resource.id:
                         self._restored_resources_by_mesh_name[mesh_name] = resource
-                available = self._mesh_by_name.get(mesh_name)
+                available = self._mesh_by_name.get(mesh_names[0] if mesh_names else None)
                 if (
                     region.kind == AcousticRegionKind.BOUNDED_AIR
                     and available is not None
@@ -908,16 +1068,16 @@ class SystemConfigDialog(QDialog):
                 self._append_region(
                     name=region.name,
                     kind=region.kind,
-                    mesh_name=mesh_name,
+                    mesh_name=mesh_names,
                     volume_group=volume_name,
                     region_id=region.id,
                 )
             return
-        exterior_mesh = next((mesh.name for mesh in self._meshes if not mesh.has_tetrahedra), None)
+        exterior_meshes = tuple(mesh.name for mesh in self._meshes if not mesh.has_tetrahedra)
         self._append_region(
             name="Exterior Air",
             kind=AcousticRegionKind.UNBOUNDED_AIR,
-            mesh_name=exterior_mesh,
+            mesh_name=exterior_meshes,
             volume_group=None,
         )
 
@@ -937,7 +1097,7 @@ class SystemConfigDialog(QDialog):
         *,
         name: str,
         kind: AcousticRegionKind,
-        mesh_name: str | None,
+        mesh_name: str | tuple[str, ...] | None,
         volume_group: str | None,
         region_id: str | None = None,
     ) -> None:
@@ -953,19 +1113,24 @@ class SystemConfigDialog(QDialog):
         type_combo.setCurrentIndex(0 if kind == AcousticRegionKind.BOUNDED_AIR else 1)
         self.regions_table.setCellWidget(row, 1, type_combo)
 
-        mesh_combo = QComboBox()
-        mesh_combo.addItem("", None)
-        for mesh in self._meshes:
-            mesh_combo.addItem(mesh.name, mesh.name)
-        index = mesh_combo.findData(mesh_name)
-        mesh_combo.setCurrentIndex(max(index, 0))
+        mesh_combo = _RegionMeshCombo(tuple(mesh.name for mesh in self._meshes))
+        mesh_combo.set_multiple_enabled(kind == AcousticRegionKind.UNBOUNDED_AIR)
+        selected_meshes = mesh_name if isinstance(mesh_name, tuple) else (() if mesh_name is None else (mesh_name,))
+        mesh_combo.set_selected_mesh_names(tuple(selected_meshes))
         self.regions_table.setCellWidget(row, 2, mesh_combo)
 
         volume_combo = QComboBox()
         self.regions_table.setCellWidget(row, 3, volume_combo)
         type_combo.currentIndexChanged.connect(lambda _index, r=row: self._refresh_region_volume_combo(r))
+        type_combo.currentIndexChanged.connect(self._refresh_interfaces_tab_availability)
+        type_combo.currentIndexChanged.connect(
+            lambda _index, combo=mesh_combo, r=row: combo.set_multiple_enabled(
+                self._region_kind(r) == AcousticRegionKind.UNBOUNDED_AIR
+            )
+        )
         mesh_combo.currentIndexChanged.connect(lambda _index, r=row: self._refresh_region_volume_combo(r))
         self._refresh_region_volume_combo(row, selected=volume_group)
+        self._refresh_interfaces_tab_availability()
 
     def _add_default_region(self) -> None:
         volume_mesh = next((mesh for mesh in self._meshes if mesh.has_tetrahedra), None)
@@ -987,6 +1152,16 @@ class SystemConfigDialog(QDialog):
             self.regions_table.removeRow(row)
         self._interfaces.clear()
         self._load_interfaces()
+        self._refresh_interfaces_tab_availability()
+
+    def _refresh_interfaces_tab_availability(self, _index: int = -1) -> None:
+        has_bounded_region = any(
+            self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR
+            for row in range(self.regions_table.rowCount())
+        )
+        tab_index = self.tabs.indexOf(self.interfaces_tab)
+        self.tabs.setTabEnabled(tab_index, has_bounded_region)
+        self.identify_interfaces_button.setEnabled(has_bounded_region)
 
     def _refresh_region_volume_combo(self, row: int, *, selected: str | None = None) -> None:
         if row >= self.regions_table.rowCount():
@@ -999,7 +1174,8 @@ class SystemConfigDialog(QDialog):
         combo.clear()
         combo.addItem("", None)
         bounded = self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR
-        mesh = self._mesh_by_name.get(mesh_combo.currentData())
+        selected_meshes = mesh_combo.selected_mesh_names() if isinstance(mesh_combo, _RegionMeshCombo) else ()
+        mesh = self._mesh_by_name.get(selected_meshes[0] if selected_meshes else None)
         if bounded and mesh is not None:
             for name in mesh.volume_groups:
                 combo.addItem(name, name)
@@ -1038,20 +1214,22 @@ class SystemConfigDialog(QDialog):
         except ValueError:
             return
         for region in regions:
-            mesh = self._mesh_for_region_draft(region)
-            if mesh is None:
-                continue
-            for group_name in mesh.surface_groups:
-                key = (region["id"], region["mesh_id"], group_name)
-                existing = self._existing_boundaries.get(key)
-                boundary_id, selected = current.get(
-                    key,
-                    (
-                        "" if existing is None else existing.id,
-                        None if existing is None else existing.kind,
-                    ),
-                )
-                self._append_boundary_row(region, mesh, group_name, boundary_id, selected)
+            for mesh_name, mesh_id in zip(region["mesh_names"], region["mesh_ids"], strict=True):
+                mesh = self._mesh_by_name.get(mesh_name)
+                if mesh is None:
+                    continue
+                mesh_region = dict(region, mesh_id=mesh_id)
+                for group_name in mesh.surface_groups:
+                    key = (region["id"], mesh_id, group_name)
+                    existing = self._existing_boundaries.get(key)
+                    boundary_id, selected = current.get(
+                        key,
+                        (
+                            "" if existing is None else existing.id,
+                            None if existing is None else existing.kind,
+                        ),
+                    )
+                    self._append_boundary_row(mesh_region, mesh, group_name, boundary_id, selected)
 
     def _append_boundary_row(
         self,
@@ -1496,13 +1674,20 @@ class SystemConfigDialog(QDialog):
         for row, draft in enumerate(self._component_drafts):
             self.components_table.insertRow(row)
             boundary_labels = []
+            raw_weights = draft.parameters.get(_BOUNDARY_MOTION_WEIGHTS_KEY, {})
+            weights = raw_weights if isinstance(raw_weights, dict) else {}
             for boundary_id in draft.boundary_ids:
                 boundary = boundaries.get(boundary_id)
                 if boundary is None:
                     boundary_labels.append(f"{boundary_id} (missing)")
                     continue
                 region_name = region_names.get(boundary.region_id, boundary.region_id)
-                boundary_labels.append(f"{boundary.name} — {region_name}")
+                try:
+                    weight = float(weights.get(boundary_id, 1.0))
+                except (TypeError, ValueError):
+                    weight = 1.0
+                offset_db = 20.0 * np.log10(max(weight, 1.0e-6))
+                boundary_labels.append(f"{boundary.name} — {region_name} ({offset_db:g} dB)")
             kind_label = (
                 "Electrodynamic Transducer"
                 if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
@@ -1665,13 +1850,13 @@ class SystemConfigDialog(QDialog):
             name_edit = self.regions_table.cellWidget(row, 0)
             mesh_combo = self.regions_table.cellWidget(row, 2)
             volume_combo = self.regions_table.cellWidget(row, 3)
-            if not isinstance(name_edit, QLineEdit) or not isinstance(mesh_combo, QComboBox):
+            if not isinstance(name_edit, QLineEdit) or not isinstance(mesh_combo, _RegionMeshCombo):
                 continue
             name = name_edit.text().strip()
             if not name:
                 raise ValueError("Each region must have a name.")
-            mesh_name = mesh_combo.currentData()
-            if mesh_name is None:
+            mesh_names = mesh_combo.selected_mesh_names()
+            if not mesh_names:
                 raise ValueError(f"Region '{name}' must select a mesh.")
             region_id = str(name_edit.property("region_id") or "")
             if not region_id:
@@ -1681,6 +1866,8 @@ class SystemConfigDialog(QDialog):
                 raise ValueError(f"Duplicate region id: {region_id}")
             used_ids.add(region_id)
             kind = self._region_kind(row)
+            if kind == AcousticRegionKind.BOUNDED_AIR and len(mesh_names) != 1:
+                raise ValueError(f"Bounded region '{name}' must select exactly one FEM volume mesh.")
             volume_group = volume_combo.currentData() if isinstance(volume_combo, QComboBox) else None
             if kind == AcousticRegionKind.BOUNDED_AIR and volume_group is None:
                 raise ValueError(f"Bounded region '{name}' must select a volume group.")
@@ -1689,8 +1876,8 @@ class SystemConfigDialog(QDialog):
                     "id": region_id,
                     "name": name,
                     "kind": kind,
-                    "mesh_name": str(mesh_name),
-                    "mesh_id": resource_ids[str(mesh_name)],
+                    "mesh_names": mesh_names,
+                    "mesh_ids": tuple(resource_ids[mesh_name] for mesh_name in mesh_names),
                     "volume_group": None if volume_group is None else str(volume_group),
                 }
             )
@@ -1710,8 +1897,12 @@ class SystemConfigDialog(QDialog):
             used.add(resource_ids[mesh.name])
         return resource_ids
 
-    def _mesh_for_region_draft(self, region: dict) -> AvailableSystemMesh | None:
-        return self._mesh_by_name.get(region["mesh_name"])
+    def _meshes_for_region_draft(self, region: dict) -> tuple[AvailableSystemMesh, ...]:
+        return tuple(
+            mesh
+            for mesh_name in region["mesh_names"]
+            if (mesh := self._mesh_by_name.get(mesh_name)) is not None
+        )
 
     def _collect_regions_and_resources(self) -> tuple[tuple[AcousticRegion, ...], tuple[MeshResource, ...]]:
         drafts = list(self._region_drafts())
@@ -1722,26 +1913,29 @@ class SystemConfigDialog(QDialog):
         resource_by_name: dict[str, MeshResource] = {}
         resource_ids = self._resource_ids_by_mesh_name()
         for draft in drafts:
-            mesh = self._mesh_by_name[draft["mesh_name"]]
             purpose = (
                 MeshPurpose.FEM_VOLUME if draft["kind"] == AcousticRegionKind.BOUNDED_AIR else MeshPurpose.BEM_SURFACE
             )
-            resource = resource_by_name.get(mesh.name)
-            if resource is not None and resource.purpose != purpose:
-                raise ValueError(f"Mesh '{mesh.name}' cannot be both a bounded FEM and unbounded BEM region.")
-            if resource is None:
-                existing = initial_resources.get(mesh.name)
-                resource_id = existing.id if existing is not None else resource_ids[mesh.name]
-                resource = MeshResource(
-                    id=resource_id,
-                    name=mesh.name,
-                    file=mesh.file,
-                    purpose=purpose,
-                    scale_to_m=mesh.scale_to_m,
-                    translation_m=mesh.translation_m,
-                )
-                resource_by_name[mesh.name] = resource
-            draft["mesh_id"] = resource.id
+            resolved_ids = []
+            for mesh_name in draft["mesh_names"]:
+                mesh = self._mesh_by_name[mesh_name]
+                resource = resource_by_name.get(mesh.name)
+                if resource is not None and resource.purpose != purpose:
+                    raise ValueError(f"Mesh '{mesh.name}' cannot be both a bounded FEM and unbounded BEM region.")
+                if resource is None:
+                    existing = initial_resources.get(mesh.name)
+                    resource_id = existing.id if existing is not None else resource_ids[mesh.name]
+                    resource = MeshResource(
+                        id=resource_id,
+                        name=mesh.name,
+                        file=mesh.file,
+                        purpose=purpose,
+                        scale_to_m=mesh.scale_to_m,
+                        translation_m=mesh.translation_m,
+                    )
+                    resource_by_name[mesh.name] = resource
+                resolved_ids.append(resource.id)
+            draft["mesh_ids"] = tuple(resolved_ids)
 
         regions = []
         for draft in drafts:
@@ -1751,13 +1945,13 @@ class SystemConfigDialog(QDialog):
                     id=draft["id"],
                     name=draft["name"],
                     kind=draft["kind"],
-                    mesh_ids=(draft["mesh_id"],),
+                    mesh_ids=draft["mesh_ids"],
                     volume_groups=(
                         ()
                         if draft["kind"] == AcousticRegionKind.UNBOUNDED_AIR
                         else (
                             PhysicalGroupRef(
-                                mesh_id=draft["mesh_id"],
+                                mesh_id=draft["mesh_ids"][0],
                                 dimension=3,
                                 name=draft["volume_group"],
                             ),
@@ -1781,6 +1975,17 @@ class SystemConfigDialog(QDialog):
             if interface.bounded_boundary_id in boundary_ids and interface.unbounded_boundary_id in boundary_ids
         )
         components, ports, component_channels = self._collect_components(boundaries)
+        if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
+            unsupported = [
+                component.name
+                for component in components
+                if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+            ]
+            if unsupported:
+                raise ValueError(
+                    "Exterior-only systems currently support prescribed-velocity components only: "
+                    + ", ".join(unsupported)
+                )
         self._collected_component_channels = component_channels
         moving_ids = {boundary.id for boundary in boundaries if boundary.kind == BoundaryKind.MOVING}
         owned_ids = {boundary_id for component in components for boundary_id in component.boundary_ids}
@@ -1813,6 +2018,7 @@ class SystemConfigDialog(QDialog):
             system=system,
             component_channel_by_id=dict(self._collected_component_channels),
             mesh_file_overrides_by_name=dict(self._mesh_file_overrides_by_name),
+            stitch_exterior_meshes=bool(self.stitch_exterior_meshes_check.isChecked()),
         )
 
     def apply(self) -> bool:

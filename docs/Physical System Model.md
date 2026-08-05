@@ -214,9 +214,8 @@ The initial component kinds are:
   electrical drive.
 
 The coupled backend supports ideal velocity sources and a first linear
-electrodynamic model. Passive-radiator behavior remains deferred. The
-application System editor currently exposes only ideal velocity sources; the
-electrodynamic parameter editor is a later UI phase.
+electrodynamic model. Passive-radiator behavior remains deferred. The System
+editor exposes both supported active component types.
 
 An ideal source might be authored as:
 
@@ -235,6 +234,14 @@ An ideal source might be authored as:
 The component owns the behavior of its referenced moving boundaries. A moving
 boundary must be owned by exactly one component so that two devices cannot
 silently prescribe incompatible motion on the same surface.
+
+Each moving boundary may also have a positive relative motion weight. The
+System editor displays this value in dB while the physical model stores its
+linear amplitude in `boundary_motion_weights`. A dome, inner surround, and
+outer surround can therefore share one component while using progressively
+lower surface velocity. Electrodynamic coupling applies the same weight to
+boundary velocity and generalized pressure force so the coupling remains
+reciprocal.
 
 A component may reference multiple boundaries, including moving groups from
 different FEM meshes. A full electrodynamic driver, for example, may have

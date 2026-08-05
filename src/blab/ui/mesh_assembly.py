@@ -98,21 +98,42 @@ class MeshAssemblyService:
         cleaned_imported = self.clean_imported_meshes(imported_meshes)
         imported_configs = tuple(self._imported_mesh_config(mesh) for mesh in cleaned_imported if mesh.enabled)
         candidates = (*generated_mesh_configs, *imported_configs)
-        if stitch_imported_meshes and len(candidates) > 1:
-            stitched = self._stitched_mesh_config(candidates, stitch_tolerance_mm, symmetry)
-            mesh_configs = (stitched,)
-            resolved_radiators = self.radiators_for_stitched_mesh(candidates, radiators)
-        else:
-            mesh_configs = candidates
-            resolved_radiators = radiators
+        mesh_configs, resolved_radiators = self.prepare_mesh_configs(
+            tuple(candidates),
+            radiators,
+            stitch_meshes_enabled=stitch_imported_meshes,
+            stitch_tolerance_mm=stitch_tolerance_mm,
+            symmetry=symmetry,
+        )
         surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
         return PreparedMeshAssembly(
             imported_meshes=cleaned_imported,
-            source_mesh_configs=candidates,
+            source_mesh_configs=tuple(candidates),
             mesh_configs=mesh_configs,
             radiators=resolved_radiators,
             surface_tags_by_mesh=surface_tags_by_mesh,
         )
+
+    def prepare_mesh_configs(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        radiators: tuple[RadiatorConfig, ...],
+        *,
+        stitch_meshes_enabled: bool,
+        stitch_tolerance_mm: float,
+        symmetry: str,
+    ) -> tuple[tuple[MeshConfig, ...], tuple[RadiatorConfig, ...]]:
+        """Apply optional region assembly to already materialized mesh resources."""
+
+        candidates = tuple(mesh_configs)
+        if stitch_meshes_enabled and len(candidates) > 1:
+            stitched = self._stitched_mesh_config(candidates, stitch_tolerance_mm, symmetry)
+            resolved_meshes = (stitched,)
+            resolved_radiators = self.radiators_for_stitched_mesh(candidates, radiators)
+        else:
+            resolved_meshes = candidates
+            resolved_radiators = radiators
+        return resolved_meshes, resolved_radiators
 
     def cleaned_imported_mesh_path(self, mesh: ImportedMeshState) -> Path:
         source_path = Path(mesh.source_file)

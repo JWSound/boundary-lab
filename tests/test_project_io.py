@@ -71,6 +71,18 @@ def test_project_file_round_trip(tmp_path) -> None:
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
 
 
+def test_pending_legacy_source_configuration_can_coexist_with_partial_physical_system() -> None:
+    payload = build_project_payload(
+        generator_documents=[],
+        active_generator_document_id=None,
+        imported_meshes=[],
+        source_config_by_name={"speaker:driver": {"driven": True}},
+        physical_system={"model_version": 1},
+    )
+
+    assert payload["source_config_by_name"] == {"speaker:driver": {"driven": True}}
+
+
 def test_project_file_rejects_unknown_schema(tmp_path) -> None:
     project_path = tmp_path / "future_project.json"
     project_path.write_text('{"schema_version": 999}', encoding="utf-8")
@@ -178,6 +190,18 @@ def test_schema_v3_migrates_without_inventing_a_physical_system() -> None:
 
     assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
     assert "physical_system" not in migrated
+
+
+def test_legacy_stitch_setting_migrates_to_exterior_region_name() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 5,
+            "stitch_imported_meshes": True,
+        }
+    )
+
+    assert migrated["stitch_exterior_meshes"] is True
+    assert "stitch_imported_meshes" not in migrated
 
 
 def test_project_preferences_are_optional_and_drop_solver_settings() -> None:

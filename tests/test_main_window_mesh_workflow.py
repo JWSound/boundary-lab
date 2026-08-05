@@ -187,6 +187,51 @@ def test_xy_stitch_candidates_use_reduced_generated_mesh_before_stitching(tmp_pa
     assert configs[1].file == str(imported_clean_msh)
 
 
+def test_physical_system_solve_entries_use_reduced_generated_mesh_for_symmetry(tmp_path: Path) -> None:
+    raw_msh = tmp_path / "ath_case.msh"
+    expanded_clean_msh = tmp_path / "ath_case_clean.msh"
+    imported_clean_msh = tmp_path / "external_clean.msh"
+    _write_triangle_mesh(raw_msh)
+    _write_triangle_mesh(expanded_clean_msh)
+    _write_triangle_mesh(imported_clean_msh, tag=3)
+
+    document = GeneratorDocument(
+        id="design1",
+        name="ath",
+        provider_id="ath",
+        provider_schema_version=1,
+        source=ath_source(""),
+    )
+    result = GeneratedGeometry(
+        provider_id="ath",
+        output_dir=tmp_path,
+        mesh_path=raw_msh,
+        source_path=tmp_path / "ath_case.cfg",
+        radiators=(),
+        cleaned_mesh_path=expanded_clean_msh,
+    )
+
+    window = MainWindow.__new__(MainWindow)
+    window.generator_documents = (document,)
+    window.generated_geometry_by_document_id = {document.id: result}
+    window.imported_meshes = (
+        MeshDialogEntry(
+            name="external",
+            source_file=str(imported_clean_msh),
+            cleaned_file=str(imported_clean_msh),
+        ),
+    )
+
+    editor_entries = window._mesh_config_dialog_entries()
+    solve_entries = window._mesh_config_dialog_entries_for_symmetry("xy")
+    reduced_msh = tmp_path / "ath_case_clean_reduced.msh"
+
+    assert editor_entries[0].source_file == str(expanded_clean_msh)
+    assert solve_entries[0].source_file == str(reduced_msh)
+    assert reduced_msh.exists()
+    assert solve_entries[1].source_file == str(imported_clean_msh)
+
+
 def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tmp_path: Path) -> None:
     mesh_path = tmp_path / "quarter.msh"
     _write_triangle_mesh(mesh_path)

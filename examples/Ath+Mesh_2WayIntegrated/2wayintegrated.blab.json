@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "active_generator_document_id": "96522e9293a3",
   "generator_documents": [
     {
@@ -35,7 +35,7 @@
       ]
     }
   ],
-  "stitch_imported_meshes": true,
+  "stitch_exterior_meshes": true,
   "symmetry": "",
   "source_config_by_name": {
     "2wayintegratedenclosure:baffle": {

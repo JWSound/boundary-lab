@@ -6,9 +6,9 @@ region is solved with tetrahedral finite elements (FEM), the exterior is solved
 with the BEAT Engine boundary element method (BEM), and conforming port
 interfaces transfer pressure and normal derivative between them.
 
-The application uses this path whenever the project contains a configured
-physical system. Projects without a physical system continue to use the legacy
-exterior-BEM workflow.
+The application infers this path when a physical system contains one or more
+bounded regions. A system containing only its unbounded exterior instead uses
+the established exterior-BEM solver.
 
 For the concepts used in the System window, see
 [Physical System Model](Physical%20System%20Model.md). For mesh and project-file
@@ -517,7 +517,7 @@ rejected during application preparation or backend validation:
 - more than one unbounded exterior region;
 - different fluid properties among coupled acoustic regions;
 - iterative, fast-multipole, or distributed coupled solution methods;
-- Bempp, ROCm, server, or legacy-local execution for a physical system.
+- Bempp, ROCm, server, or exterior-local execution for a coupled physical system.
 
 ## Validation and profiling
 

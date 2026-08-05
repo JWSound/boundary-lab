@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "active_generator_document_id": "9cdc8d03b277",
   "generator_documents": [
     {
@@ -22,7 +22,7 @@
     }
   ],
   "imported_meshes": [],
-  "stitch_imported_meshes": false,
+  "stitch_exterior_meshes": false,
   "symmetry": "x",
   "source_config_by_name": {
     "2way:SD1D1001": {

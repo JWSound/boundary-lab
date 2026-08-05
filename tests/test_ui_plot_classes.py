@@ -157,9 +157,7 @@ def test_streaming_plot_canvases_reuse_artists_and_layout() -> None:
 def test_channel_config_changes_apply_only_on_apply_button() -> None:
     dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
     main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    channel_dialog = dialog_source[
-        dialog_source.index("class ChannelConfigDialog") : dialog_source.index("class SourceConfigDialog")
-    ]
+    channel_dialog = dialog_source[dialog_source.index("class ChannelConfigDialog") :]
 
     assert "channelsChanged" not in channel_dialog
     assert "_emit_channels_changed" not in channel_dialog
@@ -189,7 +187,6 @@ def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() 
             "    @Slot()", source.index("def _apply_channel_config")
         )
     ]
-    source_block = source[source.index("def open_source_config") : source.index("def generate_geometry")]
 
     assert "Applying this action will clear solved data" in confirm_block
     assert 'message.addButton("Continue", QMessageBox.AcceptRole)' in confirm_block
@@ -200,8 +197,8 @@ def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() 
     assert "if not self._confirm_clear_solved_data():" in mesh_block
     assert "if not channel_config_changed and not radiator_assignments_changed:" in channel_block
     assert "if not can_resynthesize and not self._confirm_clear_solved_data():" in channel_block
-    assert "if radiators == self._all_radiators():" in source_block
-    assert "if not self._confirm_clear_solved_data():" in source_block
+    assert "def open_source_config" not in source
+    assert "Legacy Source Config" not in source
 
 
 def test_application_startup_invokes_new_project_reset() -> None:

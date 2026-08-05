@@ -52,6 +52,7 @@ ELECTRODYNAMIC_REQUIRED_PARAMETERS = {
 ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
     "motion_profile",
     "boundary_motion_signs",
+    "boundary_motion_weights",
     "symmetry_role",
     "surface_completion_factor",
     "physical_driver_orbit_count",
@@ -366,6 +367,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             + ", ".join(unsupported_components)
         )
     for component in system.components:
+        _validate_boundary_motion_weights(component)
         if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
             _validate_electrodynamic_component(
                 component,
@@ -379,7 +381,10 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
                 ),
             )
             continue
-        unsupported_parameters = set(component.parameters) - {"motion_profile"}
+        unsupported_parameters = set(component.parameters) - {
+            "motion_profile",
+            "boundary_motion_weights",
+        }
         if unsupported_parameters:
             raise ValueError(
                 f"Coupled solver does not support component parameters on '{component.id}': "
@@ -409,6 +414,29 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         )
 
 
+def _validate_boundary_motion_weights(component) -> None:
+    raw_weights = component.parameters.get("boundary_motion_weights", {})
+    if not isinstance(raw_weights, dict):
+        raise ValueError(
+            f"Component '{component.id}' boundary_motion_weights must be an object."
+        )
+    unknown = sorted(set(raw_weights) - set(component.boundary_ids))
+    if unknown:
+        raise ValueError(
+            f"Component '{component.id}' has motion weights for unrelated boundaries: "
+            + ", ".join(unknown)
+        )
+    for boundary_id, value in raw_weights.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(
+                f"Component '{component.id}' motion weight for '{boundary_id}' "
+                "must be finite and greater than zero."
+            )
 def _validate_electrodynamic_component(
     component,
     *,

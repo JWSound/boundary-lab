@@ -176,6 +176,28 @@ class PhysicalSystemCompiler:
             self._validate_json_mapping(
                 component.parameters, owner=f"Component '{component.id}' parameters", issues=issues
             )
+            raw_weights = component.parameters.get("boundary_motion_weights", {})
+            if not isinstance(raw_weights, dict):
+                issues.append(f"Component '{component.id}' boundary_motion_weights must be an object.")
+            else:
+                unknown_weight_boundaries = sorted(set(map(str, raw_weights)) - set(component.boundary_ids))
+                if unknown_weight_boundaries:
+                    issues.append(
+                        f"Component '{component.id}' has motion weights for unrelated boundaries: "
+                        + ", ".join(unknown_weight_boundaries)
+                        + "."
+                    )
+                for boundary_id, value in raw_weights.items():
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        or float(value) <= 0.0
+                    ):
+                        issues.append(
+                            f"Component '{component.id}' motion weight for '{boundary_id}' "
+                            "must be finite and greater than zero."
+                        )
 
         for boundary in system.boundaries:
             if boundary.kind == BoundaryKind.MOVING and component_by_boundary[boundary.id] != 1:

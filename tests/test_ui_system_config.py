@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication, QComboBox
 
 import blab.ui.system_config as system_config_module
 import blab.ui.system_solve as system_solve_module
+from blab.ath import read_surface_physical_names
+from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
@@ -21,10 +23,14 @@ from blab.physical_model import (
     MeshPurpose,
     MeshResource,
     PhysicalGroupRef,
+    PhysicalSolveKind,
+    infer_physical_solve_kind,
 )
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.ui.dialogs import MeshDialogEntry, PreferencesDialog
+from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.mesh_assembly import MeshAssemblyService
+from blab.ui.physical_system_migration import seed_exterior_system
 from blab.ui.project_state import ImportedMeshState
 from blab.ui.settings import GuiPreferences
 from blab.ui.system_config import (
@@ -153,6 +159,78 @@ def test_boundary_assignments_default_to_rigid_without_unused_options() -> None:
             "Interface",
         ]
         assert combo.currentData() == BoundaryKind.RIGID
+
+
+def test_interfaces_tab_is_disabled_until_a_bounded_region_exists() -> None:
+    dialog = SystemConfigDialog(
+        inspect_system_meshes((_fixture_mesh_entries()[1],)),
+        None,
+        ("main",),
+    )
+
+    assert not dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
+
+    dialog = SystemConfigDialog(
+        inspect_system_meshes(_fixture_mesh_entries()),
+        None,
+        ("main",),
+    )
+    dialog._add_default_region()
+
+    assert dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
+
+
+def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    second = replace(bem, name="Exterior B")
+    dialog = SystemConfigDialog((bem, second), None, ("main",))
+
+    system = dialog.physical_system()
+
+    assert len(system.regions) == 1
+    assert len(system.regions[0].mesh_ids) == 2
+    assert infer_physical_solve_kind(system) == PhysicalSolveKind.EXTERIOR_BEM
+    PhysicalSystemCompiler().compile(system)
+    restored = SystemConfigDialog((bem, second), system, ("main",))
+    assert len(restored.physical_system().regions[0].mesh_ids) == 2
+
+
+def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    tags = read_surface_physical_names(Path(bem.file))
+    group_name, tag = next(iter(tags.items()))
+
+    system, channels = seed_exterior_system(
+        (bem,),
+        (
+            RadiatorConfig(
+                name=f"{bem.name}:{group_name}",
+                mesh=bem.name,
+                tag=tag,
+                channel="High",
+                velocity_offset_db=-6.0,
+            ),
+        ),
+    )
+    inputs = exterior_bem_inputs(system, component_channel_by_id=channels)
+
+    assert infer_physical_solve_kind(system) == PhysicalSolveKind.EXTERIOR_BEM
+    assert len(system.components) == 1
+    boundary_id = system.components[0].boundary_ids[0]
+    assert system.components[0].parameters["boundary_motion_weights"][boundary_id] == pytest.approx(
+        10.0 ** (-6.0 / 20.0)
+    )
+    assert inputs.radiators[0].channel == "High"
+    assert inputs.radiators[0].velocity_offset_db == pytest.approx(-6.0)
+
+    unsupported = replace(
+        system,
+        components=(
+            replace(system.components[0], kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
+        ),
+    )
+    with pytest.raises(ValueError, match="prescribed-velocity components only"):
+        exterior_bem_inputs(unsupported, component_channel_by_id=channels)
 
 
 def test_saved_unused_boundary_is_presented_and_collected_as_rigid() -> None:
@@ -341,6 +419,46 @@ def test_component_editor_reinfers_axis_when_driver_symmetry_representation_chan
     assert updated.parameters["fractional_symmetry_axes"] == ["y"]
     assert updated.parameters["surface_completion_factor"] == 2
     assert updated.parameters["physical_driver_orbit_count"] == 2
+
+
+def test_component_editor_persists_per_surface_velocity_weights() -> None:
+    resource = MeshResource(
+        id="mesh:surface",
+        name="Surface",
+        file="unused.msh",
+        purpose=MeshPurpose.BEM_SURFACE,
+    )
+    boundary = Boundary(
+        id="boundary:surround",
+        name="Surround",
+        region_id="region:exterior",
+        group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name="Surround"),
+        kind=BoundaryKind.MOVING,
+    )
+    editor = _ComponentEditorDialog(
+        _ComponentDraft(
+            id="component:tweeter",
+            name="Tweeter",
+            kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+            boundary_ids=(boundary.id,),
+            channel="main",
+            parameters={"motion_profile": "uniform"},
+        ),
+        boundaries=(boundary,),
+        resources_by_id={resource.id: resource},
+        region_names={"region:exterior": "Exterior"},
+        channel_names=("main",),
+        unavailable_boundary_ids=set(),
+        symmetry_mode="off",
+        mesh_cache={},
+    )
+
+    editor.boundary_weight_spins[0].setValue(-12.0)
+    updated = editor.component_draft()
+
+    assert updated.parameters["boundary_motion_weights"][boundary.id] == pytest.approx(
+        10.0 ** (-12.0 / 20.0)
+    )
 
 
 def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:

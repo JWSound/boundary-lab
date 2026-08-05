@@ -13,7 +13,7 @@ from typing import Any
 
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 5
+PROJECT_SCHEMA_VERSION = 6
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -21,7 +21,7 @@ PROJECT_PAYLOAD_KEYS = (
     "generator_documents",
     "active_generator_document_id",
     "imported_meshes",
-    "stitch_imported_meshes",
+    "stitch_exterior_meshes",
     "symmetry",
     "source_config_by_name",
     "channel_config_by_name",
@@ -109,7 +109,7 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a normalized current-schema project payload."""
     schema_version = _schema_version(payload)
-    if schema_version not in {1, 2, 3, 4, PROJECT_SCHEMA_VERSION}:
+    if schema_version not in range(1, PROJECT_SCHEMA_VERSION + 1):
         raise ValueError(
             f"Unsupported project schema version {schema_version}. Expected 1 through {PROJECT_SCHEMA_VERSION}."
         )
@@ -135,7 +135,9 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "generator_documents": _list_or_empty(payload.get("generator_documents")),
         "active_generator_document_id": _optional_str(payload.get("active_generator_document_id")),
         "imported_meshes": _list_or_empty(payload.get("imported_meshes")),
-        "stitch_imported_meshes": bool(payload.get("stitch_imported_meshes", False)),
+        "stitch_exterior_meshes": bool(
+            payload.get("stitch_exterior_meshes", payload.get("stitch_imported_meshes", False))
+        ),
         "symmetry": _normalize_symmetry(payload.get("symmetry", "off")),
         "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
         "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
@@ -262,9 +264,8 @@ def build_project_payload(
         "generator_documents": generator_documents,
         "active_generator_document_id": active_generator_document_id,
         "imported_meshes": imported_meshes,
-        "stitch_imported_meshes": bool(stitch_imported_meshes),
+        "stitch_exterior_meshes": bool(stitch_imported_meshes),
         "symmetry": _normalize_symmetry(symmetry),
-        "source_config_by_name": source_config_by_name,
         "channel_config_by_name": channel_config_by_name or {},
         "component_channel_by_id": component_channel_by_id or {},
     }
@@ -274,4 +275,8 @@ def build_project_payload(
             payload["project_preferences"] = normalized_preferences.to_payload()
     if physical_system is not None:
         payload["physical_system"] = dict(physical_system)
+    if source_config_by_name:
+        # Transitional read-only compatibility data. It is dropped as soon as
+        # the application can materialize an exterior physical system.
+        payload["source_config_by_name"] = dict(source_config_by_name)
     return payload

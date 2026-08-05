@@ -347,6 +347,7 @@ function electrodynamic_transducers_from_wire(
         optional = (
             "motion_profile",
             "boundary_motion_signs",
+            "boundary_motion_weights",
             "symmetry_role",
             "surface_completion_factor",
             "physical_driver_orbit_count",
@@ -423,6 +424,7 @@ function electrodynamic_transducers_from_wire(
             "requires $expected_images.",
         )
         raw_signs = get(parameters, "boundary_motion_signs", Dict{String,Any}())
+        raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
         component_boundary_ids = Set(String.(component["boundary_ids"]))
         unknown_sign_boundaries = [
             String(boundary_id) for boundary_id in keys(raw_signs)
@@ -431,6 +433,14 @@ function electrodynamic_transducers_from_wire(
         isempty(unknown_sign_boundaries) || error(
             "Electrodynamic component $(repr(String(component["id"]))) has motion signs " *
             "for unrelated boundaries: " * join(sort(unknown_sign_boundaries), ", "),
+        )
+        unknown_weight_boundaries = [
+            String(boundary_id) for boundary_id in keys(raw_weights)
+            if !(String(boundary_id) in component_boundary_ids)
+        ]
+        isempty(unknown_weight_boundaries) || error(
+            "Electrodynamic component $(repr(String(component["id"]))) has motion weights " *
+            "for unrelated boundaries: " * join(sort(unknown_weight_boundaries), ", "),
         )
         fem_tags = Int[]
         fem_signs = T[]
@@ -447,20 +457,25 @@ function electrodynamic_transducers_from_wire(
             sign in (-one(T), one(T)) || error(
                 "Electrodynamic boundary motion signs must be -1 or +1.",
             )
+            weight = T(get(raw_weights, boundary_id, 1))
+            isfinite(weight) && weight > zero(T) || error(
+                "Electrodynamic boundary motion weights must be finite and greater than zero.",
+            )
+            coefficient = sign * weight
             if haskey(fem_boundary_tag_by_id, boundary_id)
                 tag = fem_boundary_tag_by_id[boundary_id]
                 any(==(tag), fem_mesh.boundary_physical_tags) || error(
                     "Electrodynamic FEM boundary tag $tag is outside the selected volume groups.",
                 )
                 push!(fem_tags, tag)
-                push!(fem_signs, sign)
+                push!(fem_signs, coefficient)
             elseif haskey(bem_boundary_tag_by_id, boundary_id)
                 tag = bem_boundary_tag_by_id[boundary_id]
                 any(==(tag), bem_mesh.physical_tags) || error(
                     "Electrodynamic BEM boundary tag $tag is not present in the exterior mesh.",
                 )
                 push!(bem_tags, tag)
-                push!(bem_signs, sign)
+                push!(bem_signs, coefficient)
             else
                 error(
                     "Electrodynamic component $(repr(String(component["id"]))) references " *
@@ -635,6 +650,8 @@ function solve_request(request; event_mode=false)
         port_kind = String(port["kind"])
         component_kind = String(component["kind"])
         if port_kind == "normal_velocity" && component_kind == "ideal_velocity_source"
+            parameters = get(component, "parameters", Dict{String,Any}())
+            raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
             candidate_boundaries = [
                 object_by_id(boundaries, String(boundary_id), "boundary")
                 for boundary_id in component["boundary_ids"]
@@ -654,6 +671,11 @@ function solve_request(request; event_mode=false)
             radiator_tag = fem_domains.fem_boundary_tag_by_id[
                 String(only(bounded_boundaries)["id"])
             ]
+            boundary_id = String(only(bounded_boundaries)["id"])
+            amplitude = FloatType(get(raw_weights, boundary_id, 1))
+            isfinite(amplitude) && amplitude > zero(FloatType) || error(
+                "Prescribed-velocity boundary motion weights must be finite and greater than zero.",
+            )
             any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
                 "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
             )
@@ -663,7 +685,7 @@ function solve_request(request; event_mode=false)
                     kind=:normal_velocity,
                     radiator_tag=radiator_tag,
                     transducer_index=0,
-                    amplitude=Complex{FloatType}(1, 0),
+                    amplitude=Complex{FloatType}(amplitude, 0),
                 ),
             )
         elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"

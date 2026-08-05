@@ -7,10 +7,9 @@ Project files store:
 - waveguide design documents, including generator provider ID and provider-owned source
 - generated mesh enabled state, scale, and XYZ offset
 - imported mesh rows, including absolute `.msh` paths
-- whether imported meshes should be stitched into a single solve mesh
-- source configuration by surface name
-- an optional editable physical-system graph for coupled models
-- application-side component-to-channel routing for coupled excitation responses
+- whether the exterior region's mesh parts should be stitched into one solve mesh
+- an editable physical-system graph for exterior BEM and coupled BEM/FEM models
+- application-side component-to-channel routing for excitation responses
 
 Project files do not store:
 
@@ -23,7 +22,7 @@ Project files do not store:
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "active_generator_document_id": "design1",
   "generator_documents": [
     {
@@ -39,8 +38,8 @@ Project files do not store:
     }
   ],
   "imported_meshes": [],
-  "stitch_imported_meshes": false,
-  "source_config_by_name": {},
+  "stitch_exterior_meshes": false,
+  "physical_system": {},
   "component_channel_by_id": {}
 }
 ```
@@ -49,8 +48,9 @@ Project files do not store:
 
 Loading a project updates the design editor, mesh, channel, and physical-system
 configuration. It does not automatically run a geometry provider or start a
-solve. Older project schemas are migrated without inventing a coupled physical
-system.
+solve. Older source-config projects are converted to an exterior physical
+system as soon as their mesh artifacts are available. Pending compatibility
+assignments are retained when a generated artifact must be rebuilt first.
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.

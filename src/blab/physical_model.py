@@ -49,6 +49,13 @@ class ExcitationPortKind(StrEnum):
     VOLTAGE = "voltage"
 
 
+class PhysicalSolveKind(StrEnum):
+    """Numerical workflow implied by the authored acoustic regions."""
+
+    EXTERIOR_BEM = "exterior_bem"
+    COUPLED_BEM_FEM = "coupled_bem_fem"
+
+
 class AssumptionStatus(StrEnum):
     INCLUDED = "included"
     EXCLUDED = "excluded"
@@ -136,6 +143,23 @@ class PhysicalSystem:
     excitation_ports: tuple[ExcitationPort, ...] = ()
     model_version: int = PHYSICAL_MODEL_VERSION
     metadata: dict[str, JsonValue] = field(default_factory=dict)
+
+
+def infer_physical_solve_kind(system: PhysicalSystem) -> PhysicalSolveKind:
+    """Infer the solve workflow from region topology, independent of backend support."""
+
+    bounded_count = sum(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
+    unbounded_count = sum(region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in system.regions)
+    if unbounded_count != 1:
+        raise ValueError(
+            "A physical system must contain exactly one unbounded exterior acoustic region; "
+            f"found {unbounded_count}."
+        )
+    if bounded_count == 0:
+        if system.interfaces:
+            raise ValueError("An exterior-only BEM system cannot contain FEM-BEM interfaces.")
+        return PhysicalSolveKind.EXTERIOR_BEM
+    return PhysicalSolveKind.COUPLED_BEM_FEM
 
 
 @dataclass(frozen=True)

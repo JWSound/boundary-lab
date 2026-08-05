@@ -38,7 +38,7 @@ Plots are displayed when selected from the `view` menu. Results are streamed in 
 - `New Project`: clears the editor, mesh setup, source setup, preview, and solved data.
 - `Save Project`: saves the current project to the active `.blab.json` file.
 - `Save Project As`: chooses a new `.blab.json` path.
-- `Load Project`: loads editor text, mesh config, and source config.
+- `Load Project`: loads editor text, mesh configuration, and the physical system.
 - `Import Waveguide Design`: imports a source file supported by the active design provider. The bundled Ath provider accepts `.cfg` files.
 - `Export Waveguide Design`: exports the active provider's editable source.
 - `Export Plot`: exports generated plot panels as PNG files.
@@ -142,15 +142,21 @@ When imported meshes are enabled, they are included in the preview and solve. If
 - `HPF/LPF Type`: Sets acoustic highpass/lowpass filters for this channel. Reference the Model Assumptions help article for more information about how Boundary Lab applies crossover filters
 - `HPF/LPF Frequency`: Set the frequency of the highpass/lowpass filters
 
-### Source Config
+### System
 
-`Source Config` lists mesh surface groups discovered from the active meshes. Use it to mark driven radiator surfaces and set their assigned channel and gain offset.
+`System` is the source and acoustic-region editor for both exterior BEM and
+coupled BEM/FEM projects. Assign every mesh surface as Rigid, Moving, or an
+Interface, then attach moving surfaces to prescribed-velocity or
+electrodynamic components.
 
-<img src="../assets/sourceconfig.png" alt="source config" width="500">
+Each component surface has a relative-velocity value in dB. This can represent
+a dome and surround as one source while tapering motion toward the rigid frame.
+All surfaces default to Rigid. ATH-generated driver groups are automatically
+seeded as prescribed-velocity components.
 
-Generally, the gain offset feature should be used to define complex radiating sources for more accurate BEM modelling. For example, splitting a dome tweeter into 3 surface groups (dome, inner surround, outer surround), allows you to taper off the drive level towards the surround edge. Load the /examples/Ath_2WayBookshelf/ example to see how this can be configured.
-
-Only driven surfaces are excited during the BEM solve. All other surfaces are treated as rigid boundaries. Recall that the 3d viewport displays surface group names when you hover the mouse over the mesh preview.
+An exterior region can use multiple meshes. Select `Stitch exterior region
+meshes` when those meshes are adjoining parts of one continuous BEM surface;
+leave them separate for disconnected closed bodies.
 
 ### Frequency Controls
 The frequency controls set the minimum, maximum, and number of frequencies that will be solved when clicking "Solved". The solver automatically uses logarithmic spacing according to the min/max/number.

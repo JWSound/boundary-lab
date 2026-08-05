@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.config import ChannelConfig, CrossoverConfig
 from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
@@ -600,8 +600,9 @@ class MeshConfigDialog(QDialog):
         self.replace_button = QPushButton("Replace .msh")
         self.replace_button.setEnabled(False)
         self.remove_button = QPushButton("Remove")
-        self.stitch_imported_meshes_check = QCheckBox("Stitch Imported Meshes")
-        self.stitch_imported_meshes_check.setChecked(stitch_imported_meshes)
+        # Kept as a compatibility input while project files migrate; the control now
+        # belongs to the exterior region in the System editor.
+        self._stitch_imported_meshes = bool(stitch_imported_meshes)
         self.symmetry_combo = QComboBox()
         self.symmetry_options = {
             "Off": "off",
@@ -627,8 +628,6 @@ class MeshConfigDialog(QDialog):
         button_row.addWidget(self.replace_button)
         button_row.addWidget(self.remove_button)
         button_row.addSpacing(16)
-        button_row.addWidget(self.stitch_imported_meshes_check)
-        button_row.addSpacing(16)
         button_row.addWidget(QLabel("Symmetry"))
         button_row.addWidget(self.symmetry_combo)
         button_row.addStretch(1)
@@ -647,7 +646,7 @@ class MeshConfigDialog(QDialog):
         self.resize(820, 360)
 
     def stitch_imported_meshes(self) -> bool:
-        return bool(self.stitch_imported_meshes_check.isChecked())
+        return self._stitch_imported_meshes
 
     def symmetry(self) -> str:
         return self.symmetry_options.get(self.symmetry_combo.currentText(), "off")
@@ -1009,107 +1008,3 @@ class ChannelConfigDialog(QDialog):
                 )
             )
         return tuple(channels)
-
-
-class SourceConfigDialog(QDialog):
-    def __init__(
-        self,
-        surface_tags: dict[str, tuple[str, int]],
-        radiators: tuple[RadiatorConfig, ...],
-        channels: tuple[ChannelConfig, ...],
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Source Config")
-        self.surface_items = sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0]))
-        self.radiators_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
-        self.channel_names = tuple(channel.name for channel in channels) or ("main",)
-
-        self.table = QTableWidget(len(self.surface_items), 5)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "Surface",
-                "Tag",
-                "Mode",
-                "Channel",
-                "Velocity Offset dB",
-            ]
-        )
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 5):
-            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-
-        self.mode_widgets: list[QComboBox] = []
-        self.channel_widgets: list[QComboBox] = []
-        self.velocity_widgets: list[QDoubleSpinBox] = []
-
-        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
-            radiator = self.radiators_by_key.get((mesh_name, tag))
-
-            name_item = QTableWidgetItem(surface_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, name_item)
-
-            tag_item = QTableWidgetItem(str(tag))
-            tag_item.setFlags(tag_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, tag_item)
-
-            mode_combo = QComboBox()
-            mode_combo.addItems(["Rigid", "Driven"])
-            mode_combo.setCurrentText("Driven" if radiator is not None else "Rigid")
-            self.table.setCellWidget(row, 2, mode_combo)
-            self.mode_widgets.append(mode_combo)
-
-            channel_combo = QComboBox()
-            channel_combo.addItems(self.channel_names)
-            channel_combo.setCurrentText(
-                radiator.channel
-                if radiator is not None and radiator.channel in self.channel_names
-                else self.channel_names[0]
-            )
-            self.table.setCellWidget(row, 3, channel_combo)
-            self.channel_widgets.append(channel_combo)
-
-            velocity_spin = QDoubleSpinBox()
-            velocity_spin.setRange(-120.0, 60.0)
-            velocity_spin.setDecimals(2)
-            velocity_spin.setSingleStep(0.5)
-            velocity_spin.setValue(0.0 if radiator is None else float(radiator.velocity_offset_db))
-            self.table.setCellWidget(row, 4, velocity_spin)
-            self.velocity_widgets.append(velocity_spin)
-
-            mode_combo.currentTextChanged.connect(
-                lambda mode, row=row: self._set_drive_controls_enabled(row, mode == "Driven")
-            )
-            self._set_drive_controls_enabled(row, radiator is not None)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.table)
-        layout.addWidget(buttons)
-        self.resize(860, min(520, 160 + 34 * max(1, len(self.surface_items))))
-
-    def _set_drive_controls_enabled(self, row: int, enabled: bool) -> None:
-        self.channel_widgets[row].setEnabled(enabled)
-        self.velocity_widgets[row].setEnabled(enabled)
-
-    def radiators(self) -> tuple[RadiatorConfig, ...]:
-        radiators = []
-        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
-            if self.mode_widgets[row].currentText() != "Driven":
-                continue
-            radiators.append(
-                RadiatorConfig(
-                    name=surface_name,
-                    mesh=mesh_name,
-                    tag=tag,
-                    channel=str(self.channel_widgets[row].currentText()),
-                    velocity_offset_db=float(self.velocity_widgets[row].value()),
-                )
-            )
-        return tuple(radiators)

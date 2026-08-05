@@ -52,7 +52,9 @@ from blab.physical_model import (
     AcousticRegionKind,
     BoundaryKind,
     MeshPurpose,
+    PhysicalSolveKind,
     PhysicalSystem,
+    infer_physical_solve_kind,
     physical_system_from_dict,
     physical_system_to_dict,
 )
@@ -68,8 +70,8 @@ from blab.ui.dialogs import (
     MeshConfigDialog,
     MeshDialogEntry,
     PreferencesDialog,
-    SourceConfigDialog,
 )
+from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window_widgets import (
     AthScriptEditor,
@@ -88,6 +90,7 @@ from blab.ui.operation_controllers import (
     SolveController,
     SolveRequest,
 )
+from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY, seed_exterior_system
 from blab.ui.plots import (
     AUDIO_FREQ_MAX_HZ,
     AUDIO_FREQ_MIN_HZ,
@@ -158,7 +161,6 @@ from blab.ui.source_channel_config import (
     channel_config_payload,
     channel_configs_from_payload,
     channels_for_solver_radiators,
-    source_config_payload,
 )
 from blab.ui.system_config import (
     SystemConfigDialog,
@@ -657,10 +659,6 @@ class MainWindow(QMainWindow):
         preferences_action = QAction("Preferences", self)
         preferences_action.triggered.connect(self.open_preferences)
         edit_menu.addAction(preferences_action)
-        legacy_source_action = QAction("Legacy Source Config...", self)
-        legacy_source_action.setToolTip("Configure driven surfaces for projects that still use the legacy BEM workflow.")
-        legacy_source_action.triggered.connect(self.open_source_config)
-        edit_menu.addAction(legacy_source_action)
 
         about_menu = self.menuBar().addMenu("About")
         diagnostics_action = QAction("Diagnostic Info", self)
@@ -1167,15 +1165,24 @@ class MainWindow(QMainWindow):
         self.open_recent_menu.addAction(clear_action)
 
     def _mesh_config_dialog_entries(self) -> tuple[MeshDialogEntry, ...]:
+        return self._mesh_config_dialog_entries_for_symmetry("off")
+
+    def _mesh_config_dialog_entries_for_symmetry(
+        self,
+        symmetry: str,
+    ) -> tuple[MeshDialogEntry, ...]:
+        """Return mesh entries backed by solve-ready generated geometry."""
+
         entries = []
         for document in self.generator_documents:
             result = self.generated_geometry_by_document_id.get(document.id)
             if result is None:
                 continue
+            solver_result = self._generated_geometry_for_solver_symmetry(document, result, symmetry)
             entries.append(
                 MeshDialogEntry(
                     name=generator_mesh_name(document),
-                    source_file=str(result.solver_mesh_path),
+                    source_file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,
@@ -1260,6 +1267,73 @@ class MainWindow(QMainWindow):
             radiators.extend(replace(radiator, mesh=mesh_name) for radiator in result.radiators)
         radiators.extend(self.imported_radiators)
         return tuple(radiators)
+
+    def _ensure_seeded_exterior_system(self) -> None:
+        current = self.project.physical_system
+        if current is not None and not bool(current.metadata.get(AUTO_SEEDED_EXTERIOR_KEY, False)):
+            return
+        try:
+            meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
+            if not any(not mesh.has_tetrahedra for mesh in meshes):
+                return
+            system, component_channels = seed_exterior_system(
+                meshes,
+                self._source_radiators_for_system_seed(),
+            )
+        except (OSError, ValueError):
+            return
+        self.project.physical_system = system
+        self.project.component_channel_by_id = component_channels
+        if all(
+            not document.mesh_enabled or document.id in self.generated_geometry_by_document_id
+            for document in self.generator_documents
+        ):
+            self.project.source_config_by_name = {}
+
+    def _source_radiators_for_system_seed(self) -> tuple[RadiatorConfig, ...]:
+        radiators = self._all_radiators()
+        if not any(radiator.mesh == STITCHED_MESH_NAME for radiator in radiators):
+            return radiators
+        try:
+            source_meshes = self._stitch_candidate_mesh_configs()
+            stitched_map = self._mesh_service().stitched_radiator_map(source_meshes)
+            source_name_by_key = {
+                (mesh.name, int(tag)): f"{mesh.name}:{name}"
+                for mesh in source_meshes
+                for name, tag in read_surface_physical_names(Path(mesh.file)).items()
+            }
+        except (OSError, ValueError):
+            return radiators
+        reverse = {
+            (str(stitched_name), int(stitched_tag)): (str(mesh_name), int(source_tag))
+            for (mesh_name, source_tag), (stitched_name, stitched_tag) in stitched_map.items()
+        }
+        resolved = []
+        for radiator in radiators:
+            if radiator.mesh != STITCHED_MESH_NAME:
+                resolved.append(radiator)
+                continue
+            source_key = reverse.get((radiator.name, int(radiator.tag)))
+            if source_key is None:
+                source_key = next(
+                    (
+                        candidate
+                        for (stitched_name, stitched_tag), candidate in reverse.items()
+                        if stitched_tag == int(radiator.tag)
+                    ),
+                    None,
+                )
+            if source_key is None:
+                continue
+            resolved.append(
+                replace(
+                    radiator,
+                    name=source_name_by_key.get(source_key, radiator.name),
+                    mesh=source_key[0],
+                    tag=source_key[1],
+                )
+            )
+        return tuple(resolved)
 
     def _apply_radiators_to_results(self, radiators: tuple[RadiatorConfig, ...]) -> None:
         generated_mesh_names = {generator_mesh_name(document) for document in self.generator_documents}
@@ -1679,15 +1753,6 @@ class MainWindow(QMainWindow):
     def _load_source_config_by_name(self) -> dict[str, dict]:
         return self.project.source_config_by_name
 
-    def _save_source_config(
-        self, surface_tags: dict[str, tuple[str, int]], radiators: tuple[RadiatorConfig, ...]
-    ) -> None:
-        self.project.source_config_by_name = source_config_payload(
-            surface_tags,
-            radiators,
-            existing=self.project.source_config_by_name,
-        )
-
     def _load_channel_config_by_name(self) -> dict[str, dict]:
         return self.project.channel_config_by_name
 
@@ -2013,6 +2078,10 @@ class MainWindow(QMainWindow):
         physical_system = (
             physical_system_from_dict(raw_physical_system) if isinstance(raw_physical_system, dict) else None
         )
+        if physical_system is not None and not bool(
+            physical_system.metadata.get(AUTO_SEEDED_EXTERIOR_KEY, False)
+        ):
+            source_config = {}
         component_channels = payload.get("component_channel_by_id", {})
         if not isinstance(component_channels, dict):
             component_channels = {}
@@ -2030,7 +2099,9 @@ class MainWindow(QMainWindow):
                 )
                 for mesh in imported_meshes
             ),
-            stitch_imported_meshes=bool(payload.get("stitch_imported_meshes", False)),
+            stitch_imported_meshes=bool(
+                payload.get("stitch_exterior_meshes", payload.get("stitch_imported_meshes", False))
+            ),
             symmetry=symmetry,
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
@@ -2056,6 +2127,7 @@ class MainWindow(QMainWindow):
             self._apply_saved_imported_source_config(self._surface_tags_for_meshes())
         except Exception:
             self.imported_radiators = ()
+        self._ensure_seeded_exterior_system()
 
         self.project_state_changed.emit("project_loaded")
         self.solve_results_invalidated.emit("project_loaded")
@@ -2311,7 +2383,7 @@ class MainWindow(QMainWindow):
                 "radiators": len(self._all_radiators()),
                 "channels": len(self._channel_configs()),
                 "symmetry": self.symmetry,
-                "stitch imported meshes": self.stitch_imported_meshes,
+                "stitch exterior meshes": self.stitch_imported_meshes,
                 "frequency minimum Hz": int(self.freq_min_spin.value()),
                 "frequency maximum Hz": int(self.freq_max_spin.value()),
                 "frequency count": int(self.freq_count_spin.value()),
@@ -2425,6 +2497,7 @@ class MainWindow(QMainWindow):
         if not meshes:
             QMessageBox.warning(self, "System", "Enable at least one mesh before configuring the system.")
             return
+        self._ensure_seeded_exterior_system()
         system = self.project.physical_system
         if system is not None:
             system = sync_physical_system_meshes(system, meshes)
@@ -2434,6 +2507,7 @@ class MainWindow(QMainWindow):
             tuple(channel.name for channel in self._channel_configs()),
             self.project.component_channel_by_id,
             self,
+            stitch_exterior_meshes=self.stitch_imported_meshes,
             interface_output_root=self._mesh_service().output_root,
             symmetry_mode=self.symmetry,
         )
@@ -2450,13 +2524,18 @@ class MainWindow(QMainWindow):
         if (
             configuration.system == self.project.physical_system
             and configuration.component_channel_by_id == self.project.component_channel_by_id
+            and configuration.stitch_exterior_meshes == self.stitch_imported_meshes
             and updated_imported_meshes == self.imported_meshes
         ):
             self.status_label.setText("System unchanged")
             return
         self.imported_meshes = updated_imported_meshes
-        self.project.physical_system = configuration.system
+        metadata = dict(configuration.system.metadata)
+        metadata.pop(AUTO_SEEDED_EXTERIOR_KEY, None)
+        self.project.physical_system = replace(configuration.system, metadata=metadata)
         self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
+        self.project.source_config_by_name = {}
+        self.stitch_imported_meshes = bool(configuration.stitch_exterior_meshes)
         reason = "system_interface_mesh_built" if mesh_file_overrides else "system_config_changed"
         self.project_state_changed.emit(reason)
         self.solve_results_invalidated.emit("system_config_changed")
@@ -2528,10 +2607,6 @@ class MainWindow(QMainWindow):
                     for radiator in result.radiators
                 ),
             )
-        try:
-            self._save_source_config(self._surface_tags_for_meshes(), self._all_radiators())
-        except Exception:
-            pass
         current_radiator_assignments = tuple(
             (radiator.mesh, radiator.tag, radiator.channel) for radiator in self._all_radiators()
         )
@@ -2548,37 +2623,6 @@ class MainWindow(QMainWindow):
         else:
             self.solve_results_invalidated.emit("channel_config_changed")
             self.status_label.setText(f"Channel config updated: {len(channels)} channels")
-
-    @Slot()
-    def open_source_config(self) -> None:
-        if not self._has_solver_meshes():
-            QMessageBox.warning(self, "No mesh", "Generate or load a mesh before configuring sources.")
-            return
-
-        try:
-            surface_tags = self._surface_tags_for_meshes()
-            self._apply_saved_imported_source_config(surface_tags)
-        except Exception as exc:
-            self._show_stitch_or_generic_error("Source config failed", exc)
-            return
-
-        dialog = SourceConfigDialog(
-            surface_tags, self._all_radiators(), self._channel_configs_for_current_radiators(), self
-        )
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        radiators = dialog.radiators()
-        if radiators == self._all_radiators():
-            self.status_label.setText("Source config unchanged")
-            return
-        if not self._confirm_clear_solved_data():
-            return
-        self._apply_radiators_to_results(radiators)
-        self._save_source_config(surface_tags, radiators)
-        self.source_config_changed.emit("source_config_changed")
-        self.solve_results_invalidated.emit("source_config_changed")
-        self.status_label.setText(f"Source config updated: {len(radiators)} driven surfaces")
 
     @Slot()
     def generate_geometry(self) -> None:
@@ -2645,6 +2689,7 @@ class MainWindow(QMainWindow):
             document_id,
             artifact=result.to_reference(),
         )
+        self._ensure_seeded_exterior_system()
         self.mesh_state_changed.emit("geometry_generated")
         self.status_label.setText(f"Generated and cleaned {result.output_dir}")
         self._show_mesh_quality_warning(result)
@@ -2675,15 +2720,24 @@ class MainWindow(QMainWindow):
         if not self._has_solver_meshes():
             QMessageBox.warning(self, "No mesh", "Enable at least one generated or imported mesh before solving.")
             return
+        self._ensure_seeded_exterior_system()
         if self.project.physical_system is not None:
-            self._start_coupled_system_solve()
+            try:
+                solve_kind = infer_physical_solve_kind(self.project.physical_system)
+            except ValueError as exc:
+                QMessageBox.warning(self, "System solve", str(exc))
+                return
+            if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+                self._start_exterior_system_solve()
+            else:
+                self._start_coupled_system_solve()
             return
         radiators = self._all_radiators()
         if not radiators:
             QMessageBox.warning(
                 self,
                 "No driven surfaces",
-                "Configure a physical System, or open Legacy Source Config from the Edit menu.",
+                "Open System and add a prescribed-velocity component to a moving boundary.",
             )
             return
         if self._disable_symmetry_if_backend_unsupported():
@@ -2753,9 +2807,80 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _start_exterior_system_solve(self) -> None:
+        if self._disable_symmetry_if_backend_unsupported():
+            self.mesh_state_changed.emit("symmetry_disabled_for_backend")
+        try:
+            meshes = inspect_system_meshes(self._mesh_config_dialog_entries_for_symmetry(self.symmetry))
+            system = sync_physical_system_meshes(self.project.physical_system, meshes)
+            self.project.physical_system = system
+            inputs = exterior_bem_inputs(
+                system,
+                component_channel_by_id=self.project.component_channel_by_id,
+                symmetry_mode=self.symmetry,
+            )
+            mesh_configs, radiators = self._mesh_service().prepare_mesh_configs(
+                inputs.mesh_configs,
+                inputs.radiators,
+                stitch_meshes_enabled=self.stitch_imported_meshes,
+                stitch_tolerance_mm=self.preferences.stitch_tolerance_mm,
+                symmetry=self.symmetry,
+            )
+            prepared_simulation = self.simulation_assembler.prepare(
+                mesh_configs=mesh_configs,
+                radiators=radiators,
+                channels=self._channels_for_solver_radiators(radiators),
+                parameters=SimulationParameters(
+                    freq_min_hz=float(self.freq_min_spin.value()),
+                    freq_max_hz=float(self.freq_max_spin.value()),
+                    freq_count=int(self.freq_count_spin.value()),
+                    observation_distance_m=self.preferences.polar_observation_distance_m,
+                    polar_angle_step_deg=self.preferences.polar_angle_step_deg,
+                    use_burton_miller=self.preferences.use_burton_miller,
+                    gmres_tolerance=self.preferences.gmres_tolerance,
+                    normalized_channel_correction=self.preferences.normalized_channel_correction,
+                    horizontal_normalization_angle_deg=self.preferences.horizontal_normalization_angle,
+                    spherical_sampling_enabled=self.preferences.spherical_sampling_enabled,
+                    spherical_sampling_points=balloon_sampling_points(
+                        self.preferences.balloon_angle_precision_deg
+                    ),
+                    symmetry=self.symmetry,
+                ),
+            )
+        except (ValueError, OSError, SymmetryValidationError) as exc:
+            self._show_stitch_or_generic_error("Exterior system preparation failed", exc)
+            return
+
+        self.live_dataset = None
+        self._clear_plots()
+        self._apply_last_completed_plot_comparison()
+        self.balloon_plot_action.setEnabled(False)
+        self._use_final_isobar_resolution = False
+        self._final_isobar_plots_rendered = False
+        self.solve_button.setEnabled(False)
+        self.generate_button.setEnabled(False)
+        self.mesh_config_button.setEnabled(False)
+        self.channel_config_button.setEnabled(False)
+        self.system_config_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self._set_export_plot_actions_enabled(False)
+        self.export_polar_data_action.setEnabled(False)
+        self._set_contour_button_states()
+        self.status_label.setText("Initializing exterior solver...")
+        self.solve_controller.start(
+            SolveRequest(
+                config=prepared_simulation.config,
+                ordered_frequencies=prepared_simulation.ordered_frequencies,
+                worker_count=1,
+                backend_id=self.preferences.solve_backend,
+                server_url=self.preferences.solve_server_url,
+                server_access_token=load_server_access_token(self.preferences.solve_server_url),
+            )
+        )
+
     def _start_coupled_system_solve(self) -> None:
         try:
-            meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
+            meshes = inspect_system_meshes(self._mesh_config_dialog_entries_for_symmetry(self.symmetry))
             system = sync_physical_system_meshes(self.project.physical_system, meshes)
             self.project.physical_system = system
             prepared = prepare_coupled_ui_solve(
