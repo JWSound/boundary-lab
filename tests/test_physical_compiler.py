@@ -379,28 +379,36 @@ def test_coupled_backend_rejects_incomplete_or_mms_transducer_parameters(
         CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
-def test_coupled_backend_accepts_explicit_fractional_driver_symmetry() -> None:
-    system = _electrodynamic_fixture_system()
+def test_compiler_infers_fractional_driver_symmetry_and_overrides_legacy_values(
+    tmp_path: Path,
+) -> None:
+    system = _skram_fixture_system(tmp_path)
     component = replace(
         system.components[0],
         parameters={
             **system.components[0].parameters,
-            "symmetry_role": "fractional_driver",
-            "surface_completion_factor": 2,
-            "physical_driver_orbit_count": 1,
-            "fractional_symmetry_axes": ["x"],
+            "symmetry_role": "complete_representative",
+            "surface_completion_factor": 1,
+            "physical_driver_orbit_count": 2,
+            "fractional_symmetry_axes": [],
         },
     )
-    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    compiled = PhysicalSystemCompiler().compile(
+        replace(system, components=(component,)),
+        symmetry_mode="x",
+    )
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
-        excitation_port_ids=("excitation:radiator",),
+        excitation_port_ids=("excitation:skram-driver",),
         solver_options={"symmetry": "x"},
     )
 
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
+    assert compiled.components[0].parameters["fractional_symmetry_axes"] == ["x"]
+    assert compiled.components[0].parameters["surface_completion_factor"] == 2
+    assert compiled.components[0].parameters["physical_driver_orbit_count"] == 1
     assert session.request.solver_options["symmetry"] == "x"
 
 
@@ -417,24 +425,25 @@ def test_coupled_backend_rejects_ambiguous_transducer_symmetry_scaling() -> None
         CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
-def test_coupled_backend_rejects_fractional_driver_motion_normal_to_cut_plane() -> None:
-    system = _electrodynamic_fixture_system()
+def test_coupled_backend_rejects_fractional_driver_motion_normal_to_cut_plane(
+    tmp_path: Path,
+) -> None:
+    system = _skram_fixture_system(tmp_path)
     component = replace(
         system.components[0],
         parameters={
             **system.components[0].parameters,
             "motion_axis": [1.0, 0.0, 0.0],
-            "symmetry_role": "fractional_driver",
-            "surface_completion_factor": 2,
-            "physical_driver_orbit_count": 1,
-            "fractional_symmetry_axes": ["x"],
         },
     )
-    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    compiled = PhysicalSystemCompiler().compile(
+        replace(system, components=(component,)),
+        symmetry_mode="x",
+    )
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
-        excitation_port_ids=("excitation:radiator",),
+        excitation_port_ids=("excitation:skram-driver",),
         solver_options={"symmetry": "x"},
     )
 

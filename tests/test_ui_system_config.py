@@ -142,6 +142,36 @@ def test_mesh_inventory_preserves_existing_scale_translation_and_volume_groups()
     assert bem.volume_groups == ()
 
 
+def test_system_editor_uses_reduced_mesh_only_for_symmetry_analysis() -> None:
+    full_path = FIXTURE_ROOT / "SAWMOD" / "SMfemvolume_full.msh"
+    reduced_path = FIXTURE_ROOT / "SAWMOD" / "SMfemvolume_reduced_xy.msh"
+    canonical = inspect_system_meshes(
+        (MeshDialogEntry(name="SAWMOD", source_file=str(full_path), scale_factor=0.001),)
+    )[0]
+    analysis = inspect_system_meshes(
+        (MeshDialogEntry(name="SAWMOD", source_file=str(reduced_path), scale_factor=0.001),)
+    )[0]
+    dialog = SystemConfigDialog(
+        (canonical,),
+        None,
+        ("main",),
+        symmetry_mode="xy",
+        symmetry_analysis_meshes=(analysis,),
+    )
+    resource = MeshResource(
+        id="mesh:sawmod",
+        name="SAWMOD",
+        file=str(full_path),
+        purpose=MeshPurpose.FEM_VOLUME,
+        scale_to_m=0.001,
+    )
+
+    resolved = dialog._symmetry_analysis_resources_by_id((resource,))
+
+    assert resolved[resource.id].file == str(reduced_path)
+    assert resource.file == str(full_path)
+
+
 def test_boundary_assignments_default_to_rigid_without_unused_options() -> None:
     dialog = SystemConfigDialog(
         inspect_system_meshes(_fixture_mesh_entries()),
@@ -356,7 +386,7 @@ def test_motion_axis_inference_completes_a_curved_driver_across_its_symmetry_pla
     assert completed.confidence > 0.8
 
 
-def test_component_editor_reinfers_axis_when_driver_symmetry_representation_changes() -> None:
+def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
     resource = MeshResource(
         id="mesh:curved-fem",
         name="Curved FEM",
@@ -401,17 +431,10 @@ def test_component_editor_reinfers_axis_when_driver_symmetry_representation_chan
         symmetry_mode="xy",
         mesh_cache={},
     )
-    raw_axis = np.asarray([spin.value() for spin in editor.axis_spins])
-    y_cut_index = next(
-        index
-        for index in range(editor.symmetry_combo.count())
-        if editor.symmetry_combo.itemData(index)["fractional_symmetry_axes"] == ["y"]
-    )
-
-    editor.symmetry_combo.setCurrentIndex(y_cut_index)
     updated = editor.component_draft()
 
-    assert abs(raw_axis[1]) > 0.2
+    assert not hasattr(editor, "symmetry_combo")
+    assert "Cut by Y" in editor.symmetry_inference_label.text()
     assert np.abs(updated.parameters["motion_axis"]) == pytest.approx(
         (0.913545, 0.0, 0.406737),
         abs=1e-6,

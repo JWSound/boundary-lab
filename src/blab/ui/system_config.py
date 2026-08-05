@@ -35,6 +35,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab.component_symmetry import (
+    SYMMETRY_PARAMETER_KEYS,
+    ComponentSymmetryInference,
+    ComponentSymmetryInferenceError,
+    infer_component_symmetry,
+)
 from blab.config import normalize_symmetry
 from blab.interface_conform import (
     InterfaceConformError,
@@ -445,6 +451,9 @@ class _ComponentEditorDialog(QDialog):
         self._mesh_cache = mesh_cache
         self._axis_inference: MotionAxisInference | None = None
         self._axis_inference_error: str | None = None
+        self._symmetry_mode = normalize_symmetry(symmetry_mode)
+        self._symmetry_inference: ComponentSymmetryInference | None = None
+        self._symmetry_inference_error: str | None = None
 
         self.name_edit = QLineEdit(draft.name)
         self.type_combo = QComboBox()
@@ -559,20 +568,9 @@ class _ComponentEditorDialog(QDialog):
             edit.setPlaceholderText(unit)
             self.parameter_edits[key] = edit
             transducer_form.addRow(f"{label} ({unit})", edit)
-        self.symmetry_combo = QComboBox()
-        for label, value in _component_symmetry_options(symmetry_mode):
-            self.symmetry_combo.addItem(label, value)
-        symmetry_value = _component_symmetry_value(draft.parameters)
-        symmetry_index = next(
-            (
-                index
-                for index in range(self.symmetry_combo.count())
-                if self.symmetry_combo.itemData(index) == symmetry_value
-            ),
-            0,
-        )
-        self.symmetry_combo.setCurrentIndex(max(symmetry_index, 0))
-        transducer_form.addRow("Symmetry representation", self.symmetry_combo)
+        self.symmetry_inference_label = QLabel()
+        self.symmetry_inference_label.setWordWrap(True)
+        transducer_form.addRow("Symmetry", self.symmetry_inference_label)
         transducer_form.addRow("", QLabel("The voltage excitation uses the solver's 2.83 V reference signal."))
 
         self.transducer_group = QGroupBox("Rigid-piston transducer")
@@ -596,10 +594,10 @@ class _ComponentEditorDialog(QDialog):
         self.type_combo.currentIndexChanged.connect(self._refresh_type_controls)
         self.axis_mode_combo.currentIndexChanged.connect(self._refresh_axis_controls)
         self.boundary_table.itemChanged.connect(self._selected_boundaries_changed)
-        self.symmetry_combo.currentIndexChanged.connect(self._symmetry_representation_changed)
         self.flip_axis_button.clicked.connect(self._flip_axis)
         self._refresh_type_controls()
         self._refresh_axis_controls()
+        self._infer_component_symmetry()
         if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER and draft.motion_axis_mode == "automatic":
             self._infer_axis()
 
@@ -629,6 +627,11 @@ class _ComponentEditorDialog(QDialog):
             raise ValueError(f"Component '{name}' must select at least one moving boundary.")
         kind = self.type_combo.currentData()
         if kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            symmetry_inference = self._infer_component_symmetry()
+            if symmetry_inference is None:
+                raise ValueError(
+                    self._symmetry_inference_error or "Component symmetry could not be inferred."
+                )
             parameters = {}
             for key, label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
                 text = self.parameter_edits[key].text().strip()
@@ -659,7 +662,7 @@ class _ComponentEditorDialog(QDialog):
                 raise ValueError("The motion axis must have nonzero length.")
             parameters["motion_axis"] = [float(value) for value in axis / norm]
             parameters["motion_profile"] = "rigid_translation"
-            parameters.update(dict(self.symmetry_combo.currentData()))
+            parameters.update(symmetry_inference.parameters())
             raw_signs = self._draft.parameters.get("boundary_motion_signs", {})
             if isinstance(raw_signs, dict):
                 signs = {
@@ -695,9 +698,10 @@ class _ComponentEditorDialog(QDialog):
         self.accept()
 
     def _refresh_type_controls(self, _index: int = -1) -> None:
-        self.transducer_group.setVisible(
-            self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-        )
+        electrodynamic = self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        self.transducer_group.setVisible(electrodynamic)
+        if electrodynamic:
+            self._infer_component_symmetry()
 
     def _refresh_axis_controls(self, _index: int = -1) -> None:
         automatic = self.axis_mode_combo.currentData() == "automatic"
@@ -714,12 +718,32 @@ class _ComponentEditorDialog(QDialog):
                 bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
                 and item.checkState() == Qt.CheckState.Checked
             )
+        self._infer_component_symmetry()
         if self.axis_mode_combo.currentData() == "automatic":
             self._infer_axis()
 
-    def _symmetry_representation_changed(self, _index: int = -1) -> None:
-        if self.axis_mode_combo.currentData() == "automatic":
-            self._infer_axis()
+    def _infer_component_symmetry(self) -> ComponentSymmetryInference | None:
+        selected = tuple(
+            self._boundaries_by_id[boundary_id]
+            for boundary_id in self.selected_boundary_ids()
+            if boundary_id in self._boundaries_by_id
+        )
+        try:
+            inference = infer_component_symmetry(
+                selected,
+                self._resources_by_id,
+                self._symmetry_mode,
+                mesh_cache=self._mesh_cache,
+            )
+        except ComponentSymmetryInferenceError as exc:
+            self._symmetry_inference = None
+            self._symmetry_inference_error = str(exc)
+            self.symmetry_inference_label.setText(str(exc))
+            return None
+        self._symmetry_inference = inference
+        self._symmetry_inference_error = None
+        self.symmetry_inference_label.setText(inference.summary())
+        return inference
 
     def _infer_axis(self) -> MotionAxisInference | None:
         selected = tuple(
@@ -727,17 +751,19 @@ class _ComponentEditorDialog(QDialog):
             for boundary_id in self.selected_boundary_ids()
             if boundary_id in self._boundaries_by_id
         )
-        symmetry_parameters = self.symmetry_combo.currentData()
-        fractional_symmetry_axes = (
-            tuple(str(axis) for axis in symmetry_parameters.get("fractional_symmetry_axes", ()))
-            if isinstance(symmetry_parameters, dict)
-            else ()
-        )
+        symmetry_inference = self._infer_component_symmetry()
+        if symmetry_inference is None:
+            self._axis_inference = None
+            self._axis_inference_error = self._symmetry_inference_error
+            self.axis_confidence_label.setText(
+                self._symmetry_inference_error or "Component symmetry could not be inferred."
+            )
+            return None
         try:
             inference = infer_component_motion_axis(
                 selected,
                 self._resources_by_id,
-                fractional_symmetry_axes=fractional_symmetry_axes,
+                fractional_symmetry_axes=symmetry_inference.fractional_symmetry_axes,
                 mesh_cache=self._mesh_cache,
             )
         except (ValueError, OSError) as exc:
@@ -766,95 +792,6 @@ class _ComponentEditorDialog(QDialog):
             spin.setValue(-spin.value())
 
 
-def _component_symmetry_options(symmetry_mode: str) -> tuple[tuple[str, dict], ...]:
-    if symmetry_mode == "x":
-        return (
-            (
-                "Complete driver mirrored across X",
-                {
-                    "symmetry_role": "complete_representative",
-                    "surface_completion_factor": 1,
-                    "physical_driver_orbit_count": 2,
-                    "fractional_symmetry_axes": [],
-                },
-            ),
-            (
-                "One driver cut by X",
-                {
-                    "symmetry_role": "fractional_driver",
-                    "surface_completion_factor": 2,
-                    "physical_driver_orbit_count": 1,
-                    "fractional_symmetry_axes": ["x"],
-                },
-            ),
-        )
-    if symmetry_mode == "xy":
-        return (
-            (
-                "Complete driver in a four-driver orbit",
-                {
-                    "symmetry_role": "complete_representative",
-                    "surface_completion_factor": 1,
-                    "physical_driver_orbit_count": 4,
-                    "fractional_symmetry_axes": [],
-                },
-            ),
-            (
-                "Driver cut by X, mirrored across Y",
-                {
-                    "symmetry_role": "fractional_driver",
-                    "surface_completion_factor": 2,
-                    "physical_driver_orbit_count": 2,
-                    "fractional_symmetry_axes": ["x"],
-                },
-            ),
-            (
-                "Driver cut by Y, mirrored across X",
-                {
-                    "symmetry_role": "fractional_driver",
-                    "surface_completion_factor": 2,
-                    "physical_driver_orbit_count": 2,
-                    "fractional_symmetry_axes": ["y"],
-                },
-            ),
-            (
-                "One driver cut by X and Y",
-                {
-                    "symmetry_role": "fractional_driver",
-                    "surface_completion_factor": 4,
-                    "physical_driver_orbit_count": 1,
-                    "fractional_symmetry_axes": ["x", "y"],
-                },
-            ),
-        )
-    return (
-        (
-            "Complete driver",
-            {
-                "symmetry_role": "complete_representative",
-                "surface_completion_factor": 1,
-                "physical_driver_orbit_count": 1,
-                "fractional_symmetry_axes": [],
-            },
-        ),
-    )
-
-
-def _component_symmetry_value(parameters: dict) -> dict:
-    completion_factor = int(parameters.get("surface_completion_factor", 1))
-    return {
-        "symmetry_role": str(
-            parameters.get(
-                "symmetry_role",
-                "fractional_driver" if completion_factor > 1 else "complete_representative",
-            )
-        ),
-        "surface_completion_factor": completion_factor,
-        "physical_driver_orbit_count": int(parameters.get("physical_driver_orbit_count", 1)),
-        "fractional_symmetry_axes": list(parameters.get("fractional_symmetry_axes", [])),
-    }
-
-
 class SystemConfigDialog(QDialog):
     """Edit regions, boundaries, inferred interfaces, and physical components."""
 
@@ -871,11 +808,16 @@ class SystemConfigDialog(QDialog):
         stitch_exterior_meshes: bool = False,
         interface_output_root: str | Path | None = None,
         symmetry_mode: str = "off",
+        symmetry_analysis_meshes: tuple[AvailableSystemMesh, ...] | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("System")
         self._meshes = tuple(meshes)
         self._mesh_by_name = {mesh.name: mesh for mesh in meshes}
+        self._symmetry_analysis_mesh_by_name = {
+            mesh.name: mesh
+            for mesh in (meshes if symmetry_analysis_meshes is None else symmetry_analysis_meshes)
+        }
         self._initial_system = system
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
@@ -1006,8 +948,10 @@ class SystemConfigDialog(QDialog):
         layout.addWidget(self.interfaces_table)
 
     def _build_components_tab(self) -> None:
-        self.components_table = QTableWidget(0, 4)
-        self.components_table.setHorizontalHeaderLabels(["Name", "Type", "Moving Boundaries", "Channel"])
+        self.components_table = QTableWidget(0, 5)
+        self.components_table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Moving Boundaries", "Symmetry", "Channel"]
+        )
         self.components_table.verticalHeader().setVisible(False)
         self.components_table.setAlternatingRowColors(True)
         self.components_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1016,7 +960,8 @@ class SystemConfigDialog(QDialog):
         self.components_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.components_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.components_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.components_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.components_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.components_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         add_button = QPushButton("Add Component")
         edit_button = QPushButton("Edit")
         remove_button = QPushButton("Remove")
@@ -1507,6 +1452,13 @@ class SystemConfigDialog(QDialog):
             updated.append(replace(mesh, file=str(output_path)) if mesh.name == mesh_name else mesh)
         self._meshes = tuple(updated)
         self._mesh_by_name = {mesh.name: mesh for mesh in self._meshes}
+        analysis_mesh = self._symmetry_analysis_mesh_by_name.get(mesh_name)
+        if analysis_mesh is not None:
+            self._symmetry_analysis_mesh_by_name[mesh_name] = replace(
+                analysis_mesh,
+                file=str(output_path),
+            )
+        self._motion_axis_mesh_cache.clear()
         self._mesh_file_overrides_by_name[mesh_name] = str(output_path)
 
     def _check_interface_pair(
@@ -1670,6 +1622,11 @@ class SystemConfigDialog(QDialog):
         current_row = self.components_table.currentRow()
         boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
         region_names = self._region_names_by_id()
+        try:
+            _regions, resources = self._collect_regions_and_resources()
+            analysis_resources = self._symmetry_analysis_resources_by_id(resources)
+        except ValueError:
+            analysis_resources = {}
         self.components_table.setRowCount(0)
         for row, draft in enumerate(self._component_drafts):
             self.components_table.insertRow(row)
@@ -1693,10 +1650,28 @@ class SystemConfigDialog(QDialog):
                 if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
                 else "Prescribed Velocity"
             )
+            symmetry_summary = "Handled by acoustic symmetry"
+            if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+                selected = tuple(
+                    boundaries[boundary_id]
+                    for boundary_id in draft.boundary_ids
+                    if boundary_id in boundaries
+                )
+                try:
+                    inference = infer_component_symmetry(
+                        selected,
+                        analysis_resources,
+                        self._symmetry_mode,
+                        mesh_cache=self._motion_axis_mesh_cache,
+                    )
+                    symmetry_summary = inference.summary()
+                except ComponentSymmetryInferenceError as exc:
+                    symmetry_summary = f"Could not infer: {exc}"
             values = (
                 draft.name,
                 kind_label,
                 ", ".join(boundary_labels) if boundary_labels else "Not configured",
+                symmetry_summary,
                 draft.channel,
             )
             for column, value in enumerate(values):
@@ -1734,7 +1709,7 @@ class SystemConfigDialog(QDialog):
         editor = _ComponentEditorDialog(
             draft,
             boundaries=boundaries,
-            resources_by_id={resource.id: resource for resource in resources},
+            resources_by_id=self._symmetry_analysis_resources_by_id(resources),
             region_names=self._region_names_by_id(),
             channel_names=self._channel_names,
             unavailable_boundary_ids=unavailable,
@@ -1753,6 +1728,53 @@ class SystemConfigDialog(QDialog):
         self.components_table.selectRow(
             len(self._component_drafts) - 1 if row is None else row
         )
+
+    def _symmetry_analysis_resources_by_id(
+        self,
+        resources: tuple[MeshResource, ...],
+    ) -> dict[str, MeshResource]:
+        resolved = {}
+        for resource in resources:
+            analysis_mesh = self._symmetry_analysis_mesh_by_name.get(resource.name)
+            if analysis_mesh is None:
+                resolved[resource.id] = resource
+                continue
+            resolved[resource.id] = replace(
+                resource,
+                file=analysis_mesh.file,
+                scale_to_m=analysis_mesh.scale_to_m,
+                translation_m=analysis_mesh.translation_m,
+            )
+        return resolved
+
+    def _refresh_component_symmetry_parameters(
+        self,
+        boundaries: tuple[Boundary, ...],
+        resources: tuple[MeshResource, ...],
+    ) -> None:
+        boundaries_by_id = {boundary.id: boundary for boundary in boundaries}
+        analysis_resources = self._symmetry_analysis_resources_by_id(resources)
+        for draft in self._component_drafts:
+            if draft.kind != ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+                continue
+            selected = tuple(
+                boundaries_by_id[boundary_id]
+                for boundary_id in draft.boundary_ids
+                if boundary_id in boundaries_by_id
+            )
+            inference = infer_component_symmetry(
+                selected,
+                analysis_resources,
+                self._symmetry_mode,
+                mesh_cache=self._motion_axis_mesh_cache,
+            )
+            parameters = {
+                key: value
+                for key, value in draft.parameters.items()
+                if key not in SYMMETRY_PARAMETER_KEYS
+            }
+            parameters.update(inference.parameters())
+            draft.parameters = parameters
 
     def _remove_selected_components(self) -> None:
         rows = sorted({index.row() for index in self.components_table.selectedIndexes()}, reverse=True)
@@ -1974,6 +1996,7 @@ class SystemConfigDialog(QDialog):
             for interface in self._interfaces
             if interface.bounded_boundary_id in boundary_ids and interface.unbounded_boundary_id in boundary_ids
         )
+        self._refresh_component_symmetry_parameters(boundaries, resources)
         components, ports, component_channels = self._collect_components(boundaries)
         if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
             unsupported = [

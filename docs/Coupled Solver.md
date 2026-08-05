@@ -363,8 +363,14 @@ Both production backends support:
 - `xy`: positive-X/positive-Y quarter model, mirrored across \(X=0\) and
   \(Y=0\).
 
-Electrodynamic components use explicit symmetry semantics while retaining
-full-driver T/S parameters:
+Electrodynamic components retain full-driver T/S parameters. Boundary Lab
+infers their symmetry representation from the perimeter topology of the
+selected moving surfaces on the reduced solve meshes. An active symmetry plane
+cuts a driver when the union of its selected surface groups has perimeter edges
+on that plane. Adjacent groups are unioned first, so internal seams between
+parts such as a dome and surround do not affect the result.
+
+The inferred solver contract contains:
 
 - `symmetry_role` is `complete_representative` when the fundamental domain
   contains one complete representative driver and `fractional_driver` when a
@@ -375,16 +381,22 @@ full-driver T/S parameters:
 - `physical_driver_orbit_count` records the number of distinct identical
   physical drivers represented by symmetry images.
 
-The completion factor times the orbit count must equal 1, 2, or 4 for off, X,
-or XY symmetry respectively. A motion axis must lie in every symmetry plane
-that cuts the same physical driver. Velocity and Neumann data are not
-multiplied: BEM symmetry images already reconstruct their acoustic effect.
-Velocity and current outputs are per physical driver; aggregate current for an
-orbit is the reported current times `physical_driver_orbit_count`.
+The component editor displays this inference instead of asking the user to
+choose a representation. The compiler repeats the inference, replacing any
+legacy persisted values so a change in global symmetry cannot leave stale
+component scaling. Disconnected selected patches that imply different cuts are
+rejected as ambiguous.
+
+The completion factor times the orbit count equals 1, 2, or 4 for off, X, or
+XY symmetry respectively. A motion axis must lie in every symmetry plane that
+cuts the same physical driver. Velocity and Neumann data are not multiplied:
+BEM symmetry images already reconstruct their acoustic effect. Velocity and
+current outputs are per physical driver; aggregate current for an orbit is the
+reported current times `physical_driver_orbit_count`.
 
 When the component editor infers a motion axis automatically, it first
 reconstructs the selected diaphragm's normal-orientation tensor across every
-axis in `fractional_symmetry_axes`. This removes the lateral bias that can
+inferred fractional symmetry axis. This removes the lateral bias that can
 otherwise arise from averaging only a reduced half or quarter of a curved
 diaphragm and guarantees that the inferred rigid-translation axis lies in each
 plane that cuts the physical driver.

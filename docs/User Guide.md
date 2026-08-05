@@ -154,6 +154,12 @@ a dome and surround as one source while tapering motion toward the rigid frame.
 All surfaces default to Rigid. ATH-generated driver groups are automatically
 seeded as prescribed-velocity components.
 
+For electrodynamic components in X or XY symmetry models, the Components tab
+automatically determines whether each driver is complete or cut by an active
+symmetry plane. It uses moving-surface perimeter edges on the reduced solve
+mesh and displays the resulting number of represented physical drivers; no
+manual component-symmetry selection is required.
+
 An exterior region can use multiple meshes. Select `Stitch exterior region
 meshes` when those meshes are adjoining parts of one continuous BEM surface;
 leave them separate for disconnected closed bodies.

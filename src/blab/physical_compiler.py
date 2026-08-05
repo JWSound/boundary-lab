@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import meshio
 import numpy as np
 
+from blab.component_symmetry import (
+    SYMMETRY_PARAMETER_KEYS,
+    ComponentSymmetryInferenceError,
+    infer_component_symmetry,
+)
 from blab.config import normalize_symmetry
 from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
 from blab.physical_model import (
@@ -28,6 +34,7 @@ from blab.physical_model import (
     ExcitationPortKind,
     MeshPurpose,
     MeshResource,
+    PhysicalComponent,
     PhysicalGroupRef,
     PhysicalSystem,
     PhysicsAssumption,
@@ -65,6 +72,7 @@ class PhysicalSystemCompiler:
         compiled_regions = tuple(self._compile_region(region, meshes_by_id) for region in system.regions)
         compiled_boundaries = tuple(self._compile_boundary(boundary, meshes_by_id) for boundary in system.boundaries)
         compiled_boundaries_by_id = {boundary.id: boundary for boundary in compiled_boundaries}
+        compiled_components = self._compile_components(system, symmetry)
 
         self._validate_boundary_coverage(system, compiled_boundaries, meshes_by_id)
         compiled_interfaces = tuple(
@@ -84,12 +92,50 @@ class PhysicalSystemCompiler:
             regions=compiled_regions,
             boundaries=compiled_boundaries,
             interfaces=compiled_interfaces,
-            components=system.components,
+            components=compiled_components,
             excitation_ports=system.excitation_ports,
             assumptions=self._assumptions(system),
             source_model_version=system.model_version,
             metadata=dict(system.metadata),
         )
+
+    def _compile_components(
+        self,
+        system: PhysicalSystem,
+        symmetry_mode: str,
+    ) -> tuple[PhysicalComponent, ...]:
+        boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
+        resources_by_id = {resource.id: resource for resource in system.meshes}
+        mesh_cache: dict[str, meshio.Mesh] = {}
+        compiled = []
+        for component in system.components:
+            if component.kind != ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+                compiled.append(component)
+                continue
+            boundaries = tuple(
+                boundaries_by_id[boundary_id]
+                for boundary_id in component.boundary_ids
+                if boundary_id in boundaries_by_id
+            )
+            try:
+                inference = infer_component_symmetry(
+                    boundaries,
+                    resources_by_id,
+                    symmetry_mode,
+                    mesh_cache=mesh_cache,
+                )
+            except ComponentSymmetryInferenceError as exc:
+                raise PhysicalModelCompileError(
+                    f"Could not infer symmetry for component '{component.name}': {exc}"
+                ) from exc
+            parameters = {
+                key: value
+                for key, value in component.parameters.items()
+                if key not in SYMMETRY_PARAMETER_KEYS
+            }
+            parameters.update(inference.parameters())
+            compiled.append(replace(component, parameters=parameters))
+        return tuple(compiled)
 
     def _validate_authoring_model(self, system: PhysicalSystem) -> None:
         issues: list[str] = []

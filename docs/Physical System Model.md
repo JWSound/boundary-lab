@@ -271,9 +271,10 @@ both use each face's projection onto the motion axis. Diaphragm projected area
 and pressure force are therefore integrated from the attached moving meshes,
 including shaped rigid cones.
 
-Reduced electrodynamic models keep full physical-driver T/S parameters. Their
-component parameters distinguish a driver cut by a symmetry plane from a
-complete representative mirrored into distinct drivers:
+Reduced electrodynamic models keep full physical-driver T/S parameters. The
+compiler determines whether a driver is cut by each active symmetry plane by
+examining perimeter edges in the union of its selected moving surface groups.
+It then emits these derived component parameters into the solver contract:
 
 - `symmetry_role`;
 - `fractional_symmetry_axes`;
@@ -282,7 +283,9 @@ complete representative mirrored into distinct drivers:
 
 The completion factor scales only the recovered full-diaphragm pressure force.
 The orbit count describes distinct identically driven physical drivers and is
-used when aggregating electrical current or power.
+used when aggregating electrical current or power. These fields may exist in
+older project files, but current compilation re-infers and replaces them from
+the active symmetry mode and reduced mesh topology.
 
 A passive radiator uses the same general pattern without an excitation port. Its
 motion is driven by the pressure difference across its front and rear
