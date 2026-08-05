@@ -19,7 +19,7 @@ from blab.ath import (
     write_ath_gmsh_path,
     write_ath_output_root,
 )
-from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
+from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
 from blab.config import ChannelConfig
 from blab.exporting import export_balloon_data, export_polar_text_files
 from blab.live import (
@@ -659,107 +659,117 @@ def test_live_dataset_balloon_bundle_does_not_reindex_float32_frequencies() -> N
 
 
 def test_prepare_balloon_data_builds_surface_arrays() -> None:
-    theta_values = np.linspace(0.05, np.pi - 0.05, 8, dtype=np.float32)
-    phi_values = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False, dtype=np.float32)
-    theta, phi = np.meshgrid(theta_values, phi_values, indexing="ij")
-    spl = -12.0 + 12.0 * np.cos(theta.ravel()) ** 2
+    theta, phi = _fibonacci_angles(32)
+    spl = -12.0 + 12.0 * np.cos(theta) ** 2
     raw = {
         "freq_hz": np.array([500.0], dtype=np.float32),
         "r_distance_m": np.full(theta.size, 2.0, dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl[np.newaxis, :].astype(np.float32),
     }
 
-    prepared = prepare_balloon_data(raw, BalloonPrepConfig(theta_samples=10, phi_samples=12))
+    prepared = prepare_balloon_data(raw)
 
-    assert prepared["balloon_x"].shape == (1, 10, 12)
-    assert prepared["balloon_surface_spl"].shape == (1, 10, 12)
+    assert prepared["directions_xyz"].shape == (32, 3)
+    assert prepared["triangle_indices"].shape == (60, 3)
+    assert prepared["balloon_surface_spl"].shape == (1, 32)
     assert float(prepared["balloon_surface_spl"].max()) <= 0.0
-
-
-def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
-    theta, phi = np.meshgrid(
-        np.linspace(0.0, np.pi, 6, dtype=np.float32),
-        np.linspace(0.0, 2.0 * np.pi, 8, dtype=np.float32),
-        indexing="ij",
+    edges = np.sort(
+        prepared["triangle_indices"][:, ((0, 1), (1, 2), (2, 0))].reshape(-1, 2),
+        axis=1,
     )
-    spl = (-12.0 + 3.0 * np.cos(theta.ravel()) + 2.0 * np.sin(phi.ravel())).astype(np.float32)
+    _, edge_counts = np.unique(edges, axis=0, return_counts=True)
+    assert np.all(edge_counts == 2)
+
+
+def test_balloon_surface_sampler_is_exact_at_solved_vertices() -> None:
+    theta, phi = _fibonacci_angles(64)
+    values = (-20.0 + np.arange(64, dtype=np.float32) / 8.0)[np.newaxis, :]
+    prepared = prepare_balloon_data(
+        {
+            "freq_hz": np.array([1000.0], dtype=np.float32),
+            "theta_polar_rad": theta,
+            "phi_azimuth_rad": phi,
+            "spl_norm": values,
+        }
+    )
+    sampler = BalloonSurfaceSampler(prepared["directions_xyz"], prepared["triangle_indices"])
+
+    sampled = sampler.interpolate(prepared["balloon_surface_spl"], prepared["directions_xyz"])
+
+    np.testing.assert_allclose(sampled, prepared["balloon_surface_spl"], atol=1e-5)
+
+
+def test_prepare_balloon_data_preserves_solved_vertex_values() -> None:
+    theta, phi = _fibonacci_angles(48)
+    spl = (-12.0 + 3.0 * np.cos(theta) + 2.0 * np.sin(phi)).astype(np.float32)
     raw = {
         "freq_hz": np.array([1000.0], dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl[np.newaxis, :],
     }
 
-    prepared = prepare_balloon_data(raw, BalloonPrepConfig(theta_samples=9, phi_samples=11, min_db=-30.0))
-    expected = _grid_spl_surface(
-        raw["theta_polar_rad"],
-        raw["phi_azimuth_rad"],
-        spl,
-        prepared["theta_grid_rad"],
-        prepared["phi_grid_rad"],
-        -30.0,
-    )
+    prepared = prepare_balloon_data(raw, BalloonPrepConfig(min_db=-30.0))
 
-    np.testing.assert_allclose(prepared["balloon_surface_spl"][0], expected, atol=1e-5)
+    np.testing.assert_array_equal(prepared["balloon_surface_spl"][0], np.clip(spl, -30.0, 0.0))
 
 
 def test_export_balloon_data_writes_fixed_topology_artifact(tmp_path: Path) -> None:
-    theta, phi = np.meshgrid(
-        np.linspace(0.0, np.pi, 5, dtype=np.float32),
-        np.linspace(0.0, 2.0 * np.pi, 7, dtype=np.float32),
-        indexing="ij",
-    )
+    theta, phi = _fibonacci_angles(35)
     spl = np.stack(
         [
-            -30.0 + 30.0 * np.cos(theta.ravel()) ** 2,
-            -24.0 + 24.0 * np.sin(theta.ravel()) ** 2,
+            -30.0 + 30.0 * np.cos(theta) ** 2,
+            -24.0 + 24.0 * np.sin(theta) ** 2,
         ],
         axis=0,
     ).astype(np.float32)
     raw = {
         "freq_hz": np.array([500.0, 1000.0], dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl,
     }
     prepared = prepare_balloon_data(
         raw,
-        BalloonPrepConfig(theta_samples=5, phi_samples=7, min_db=-30.0, max_db=0.0),
+        BalloonPrepConfig(min_db=-30.0, max_db=0.0),
     )
 
     result = export_balloon_data(prepared, tmp_path)
 
     assert result.frequency_count == 2
     assert result.point_count == 35
-    assert result.quad_count == 24
+    assert result.triangle_count == 66
     assert {path.name for path in result.files} == {
         "metadata.json",
         "topology.npz",
         "spl_db.npy",
         "radius_norm.npy",
-        "positions_xyz.npy",
     }
 
     metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["schema_version"] == 1
-    assert metadata["point_order"].startswith("row-major")
-    assert metadata["array_shapes"]["positions_xyz"] == ["frequency", "theta", "phi", "xyz"]
+    assert metadata["schema_version"] == 2
+    assert metadata["point_order"] == "original solver Fibonacci sample order"
+    assert metadata["array_shapes"]["directions_xyz"] == ["point", "xyz"]
 
     with np.load(tmp_path / "topology.npz") as topology:
         assert topology["directions_xyz"].shape == (35, 3)
-        assert topology["quad_indices"].shape == (24, 4)
-        np.testing.assert_array_equal(topology["quad_indices"][0], [0, 1, 8, 7])
+        assert topology["triangle_indices"].shape == (66, 3)
         np.testing.assert_allclose(topology["freq_hz"], [500.0, 1000.0])
 
     spl_db = np.load(tmp_path / "spl_db.npy")
     radius_norm = np.load(tmp_path / "radius_norm.npy")
-    positions = np.load(tmp_path / "positions_xyz.npy")
-    assert spl_db.shape == (2, 5, 7)
-    assert radius_norm.shape == (2, 5, 7)
-    assert positions.shape == (2, 5, 7, 3)
+    assert spl_db.shape == (2, 35)
+    assert radius_norm.shape == (2, 35)
     np.testing.assert_allclose(radius_norm, np.clip((spl_db + 30.0) / 30.0, 0.0, 1.0), atol=1e-6)
+
+
+def _fibonacci_angles(count: int) -> tuple[np.ndarray, np.ndarray]:
+    indices = np.arange(count, dtype=float)
+    z = 1.0 - 2.0 * (indices + 0.5) / count
+    phi = indices * np.pi * (3.0 - np.sqrt(5.0))
+    return np.arccos(z).astype(np.float32), phi.astype(np.float32)
 
 
 def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path) -> None:

@@ -579,6 +579,14 @@ def test_balloon_contours_exclude_configured_maximum() -> None:
     assert "if min_db < level < max_db" in source
 
 
+def test_balloon_contours_refresh_while_frequency_slider_is_dragged() -> None:
+    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
+
+    assert "self._refresh_spl_contours()" in source
+    assert "self.frequency_slider.isSliderDown()" not in source
+    assert "self.frequency_slider.sliderReleased.connect(self._refresh_spl_contours)" not in source
+
+
 def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
     source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
 

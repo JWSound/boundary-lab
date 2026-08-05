@@ -3,6 +3,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.ui.balloon import (
     HORIZONTAL_ANGLE_SCALAR_NAME,
     SPL_SCALAR_NAME,
@@ -13,13 +14,30 @@ from blab.ui.balloon import (
     _balloon_radar_slice,
     _contour_levels,
     _front_angle_meshes,
-    _nearest_periodic_angle_index,
     _protractor_basis,
     _protractor_line_specs,
     _protractor_ring_radii,
     _superellipse_radius,
     _wavefront_shape_summary,
 )
+
+
+def _fibonacci_prepared(spl: np.ndarray, freqs_hz: np.ndarray) -> dict[str, np.ndarray]:
+    values = np.asarray(spl, dtype=np.float32)
+    count = values.shape[1]
+    indices = np.arange(count, dtype=float)
+    z = 1.0 - 2.0 * (indices + 0.5) / count
+    theta = np.arccos(z).astype(np.float32)
+    phi = (indices * np.pi * (3.0 - np.sqrt(5.0))).astype(np.float32)
+    return prepare_balloon_data(
+        {
+            "freq_hz": np.asarray(freqs_hz, dtype=np.float32),
+            "theta_polar_rad": theta,
+            "phi_azimuth_rad": phi,
+            "spl_norm": values,
+        },
+        BalloonPrepConfig(min_db=-200.0, max_db=200.0),
+    )
 
 
 def test_balloon_angle_arrays_match_horizontal_and_vertical_planes() -> None:
@@ -85,12 +103,6 @@ def test_protractor_line_specs_start_in_xz_plane() -> None:
     np.testing.assert_allclose(all_points[:, 1], 0.0, atol=1e-8)
 
 
-def test_nearest_periodic_angle_index_wraps_around_zero() -> None:
-    angles = np.deg2rad(np.array([0.0, 90.0, 180.0, 270.0, 360.0]))
-
-    assert _nearest_periodic_angle_index(angles, np.deg2rad(359.0)) in (0, 4)
-
-
 def test_superellipse_radius_matches_axis_radii() -> None:
     angles = np.deg2rad(np.array([0.0, 90.0, 180.0, 270.0]))
 
@@ -118,9 +130,9 @@ def test_wavefront_shape_summary_fits_aspect_scaled_superellipse() -> None:
     spl[front_mask] = np.clip(-6.0 * metric[front_mask], -30.0, 0.0)
     prepared = {
         "freq_hz": np.array([1000.0], dtype=np.float32),
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": spl[np.newaxis, :, :],
+        "theta_polar_rad": theta_grid.ravel(),
+        "phi_azimuth_rad": phi_grid.ravel(),
+        "balloon_surface_spl": spl.reshape(1, -1),
     }
 
     summary = _wavefront_shape_summary(prepared)
@@ -144,9 +156,9 @@ def test_wavefront_shape_summary_keeps_wide_axisymmetric_beam_circular() -> None
     spl[front_mask] = np.clip(-6.0 * metric[front_mask], -30.0, 0.0)
     prepared = {
         "freq_hz": np.array([329.0], dtype=np.float32),
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": spl[np.newaxis, :, :],
+        "theta_polar_rad": theta_grid.ravel(),
+        "phi_azimuth_rad": phi_grid.ravel(),
+        "balloon_surface_spl": spl.reshape(1, -1),
     }
 
     summary = _wavefront_shape_summary(prepared)
@@ -166,9 +178,9 @@ def test_wavefront_shape_summary_computes_spherical_directivity_index_from_raw_s
     freqs = np.array([500.0, 1000.0], dtype=np.float32)
     prepared = {
         "freq_hz": freqs,
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": np.zeros((2, 3, 4), dtype=np.float32),
+        "theta_polar_rad": theta_grid.ravel(),
+        "phi_azimuth_rad": phi_grid.ravel(),
+        "balloon_surface_spl": np.zeros((2, 12), dtype=np.float32),
     }
     raw = {
         "freq_hz": freqs,
@@ -189,83 +201,44 @@ def test_wavefront_shape_summary_computes_spherical_directivity_index_from_raw_s
 
 
 def test_balloon_isobar_slice_uses_opposite_azimuth_for_negative_angles() -> None:
-    theta = np.deg2rad(np.array([0.0, 90.0, 180.0], dtype=np.float32))
-    phi = np.deg2rad(np.array([0.0, 90.0, 180.0, 270.0, 360.0], dtype=np.float32))
-    theta_grid, phi_grid = np.meshgrid(theta, phi, indexing="ij")
-    spl = np.array(
-        [
-            [
-                [0.0, 10.0, 20.0, 30.0, 40.0],
-                [1.0, 11.0, 21.0, 31.0, 41.0],
-                [2.0, 12.0, 22.0, 32.0, 42.0],
-            ]
-        ],
-        dtype=np.float32,
-    )
-    prepared = {
-        "freq_hz": np.array([1000.0], dtype=np.float32),
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": spl,
-    }
+    count = 512
+    indices = np.arange(count, dtype=float)
+    z = 1.0 - 2.0 * (indices + 0.5) / count
+    radius = np.sqrt(1.0 - z * z)
+    phi = indices * np.pi * (3.0 - np.sqrt(5.0))
+    y = radius * np.sin(phi)
+    prepared = _fibonacci_prepared((10.0 * y)[np.newaxis, :], np.array([1000.0]))
 
     freqs_hz, angles_deg, values_db = _balloon_isobar_slice(prepared, 90.0)
 
     np.testing.assert_allclose(freqs_hz, [1000.0])
-    np.testing.assert_allclose(angles_deg, [-180.0, -90.0, 0.0, 90.0, 180.0])
-    assert values_db.shape == (5, 1)
-    np.testing.assert_allclose(values_db[:, 0], [32.0, 31.0, 10.0, 11.0, 12.0])
+    negative_index = int(np.argmin(np.abs(angles_deg + 90.0)))
+    positive_index = int(np.argmin(np.abs(angles_deg - 90.0)))
+    assert values_db.shape == (angles_deg.size, 1)
+    assert values_db[negative_index, 0] < -9.5
+    assert values_db[positive_index, 0] > 9.5
 
 
 def test_balloon_radar_slice_selects_current_frequency() -> None:
-    theta = np.deg2rad(np.array([0.0, 90.0, 180.0], dtype=np.float32))
-    phi = np.deg2rad(np.array([0.0, 90.0, 180.0, 270.0, 360.0], dtype=np.float32))
-    theta_grid, phi_grid = np.meshgrid(theta, phi, indexing="ij")
-    spl = np.array(
-        [
-            [
-                [0.0, 10.0, 20.0, 30.0, 40.0],
-                [1.0, 11.0, 21.0, 31.0, 41.0],
-                [2.0, 12.0, 22.0, 32.0, 42.0],
-            ],
-            [
-                [100.0, 110.0, 120.0, 130.0, 140.0],
-                [101.0, 111.0, 121.0, 131.0, 141.0],
-                [102.0, 112.0, 122.0, 132.0, 142.0],
-            ],
-        ],
-        dtype=np.float32,
+    base = np.linspace(-20.0, 0.0, 256, dtype=np.float32)
+    prepared = _fibonacci_prepared(
+        np.vstack((base, base + 100.0)),
+        np.array([1000.0, 2000.0]),
     )
-    prepared = {
-        "freq_hz": np.array([1000.0, 2000.0], dtype=np.float32),
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": spl,
-    }
 
+    _, first_values = _balloon_radar_slice(prepared, 0, 90.0)
     angles_deg, values_db = _balloon_radar_slice(prepared, 1, 90.0)
 
-    np.testing.assert_allclose(angles_deg, [-180.0, -90.0, 0.0, 90.0, 180.0])
-    np.testing.assert_allclose(values_db, [132.0, 131.0, 110.0, 111.0, 112.0])
+    assert angles_deg.shape == values_db.shape
+    np.testing.assert_allclose(values_db - first_values, 100.0, atol=1e-4)
 
 
 def test_balloon_isobar_slice_can_smooth_and_interpolate_for_plotting() -> None:
-    theta = np.deg2rad(np.array([0.0, 90.0, 180.0], dtype=np.float32))
-    phi = np.deg2rad(np.array([0.0, 180.0, 360.0], dtype=np.float32))
-    theta_grid, phi_grid = np.meshgrid(theta, phi, indexing="ij")
-    spl = np.array(
-        [
-            [[-3.0, -5.0, -3.0], [-6.0, -8.0, -6.0], [-9.0, -11.0, -9.0]],
-            [[-2.0, -4.0, -2.0], [-5.0, -7.0, -5.0], [-8.0, -10.0, -8.0]],
-        ],
-        dtype=np.float32,
+    first = np.linspace(-12.0, -3.0, 256, dtype=np.float32)
+    prepared = _fibonacci_prepared(
+        np.vstack((first, first + 1.0)),
+        np.array([1000.0, 2000.0]),
     )
-    prepared = {
-        "freq_hz": np.array([1000.0, 2000.0], dtype=np.float32),
-        "theta_grid_rad": theta_grid,
-        "phi_grid_rad": phi_grid,
-        "balloon_surface_spl": spl,
-    }
 
     freqs_hz, angles_deg, values_db = _balloon_isobar_slice(
         prepared,

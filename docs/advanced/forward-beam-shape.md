@@ -24,12 +24,14 @@ A vertical cursor line follows the current frequency selected in the balloon vie
 
 ## Source Data
 
-The plot uses the prepared spherical balloon arrays:
+The plot uses the solved Fibonacci balloon samples directly:
 
 - `freq_hz`: solved frequencies
-- `theta_grid_rad`: polar angle from the forward `+z` axis
-- `phi_grid_rad`: azimuth angle around `+z`
-- `balloon_surface_spl`: normalized SPL in dB on the spherical grid
+- `theta_polar_rad`: polar angle from the forward `+z` axis
+- `phi_azimuth_rad`: azimuth angle around `+z`
+- `directions_xyz`: unit direction for every solved sample
+- `triangle_indices`: shared triangular surface topology
+- `balloon_surface_spl`: normalized SPL in dB at the solved vertices
 
 The balloon coordinate convention is:
 
@@ -171,7 +173,7 @@ Low residual means the contour is close to the fitted superellipse. High residua
 
 The secondary axis shows spherical directivity index computed from the spherical normalized SPL data.
 
-If raw equal-area spherical samples are available, Boundary Lab uses them directly. Since SPL has already been normalized to the reference axis, it converts normalized dB values to relative linear energy:
+Boundary Lab uses the equal-area Fibonacci samples directly. Since SPL has already been normalized to the reference axis, it converts normalized dB values to relative linear energy:
 
 $$
 E_i = 10^{S_i/10}.
@@ -188,14 +190,6 @@ The spherical directivity index is then:
 $$
 DI = -10\log_{10}(\bar{E}).
 $$
-
-If only the prepared theta/phi grid is available, Boundary Lab uses a spherical area weighting proportional to:
-
-$$
-\sin\theta.
-$$
-
-This compensates for the fact that a regular theta/phi grid has many more samples near the poles than near the equator.
 
 ## Interpreting Results
 
