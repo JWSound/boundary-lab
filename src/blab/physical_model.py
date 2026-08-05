@@ -254,7 +254,7 @@ def physical_system_from_dict(raw: dict[str, Any]) -> PhysicalSystem:
                 name=str(item["name"]),
                 region_id=str(item["region_id"]),
                 group=_physical_group_ref_from_dict(item["group"]),
-                kind=BoundaryKind(str(item["kind"])),
+                kind=_boundary_kind_from_value(item["kind"]),
                 parameters=dict(item.get("parameters", {})),
             )
             for item in raw.get("boundaries", ())
@@ -300,6 +300,11 @@ def _physical_group_ref_from_dict(raw: dict[str, Any]) -> PhysicalGroupRef:
         name=None if raw.get("name") is None else str(raw["name"]),
         tag=None if raw.get("tag") is None else int(raw["tag"]),
     )
+
+
+def _boundary_kind_from_value(value: object) -> BoundaryKind:
+    kind = BoundaryKind(str(value))
+    return BoundaryKind.RIGID if kind == BoundaryKind.UNUSED else kind
 
 
 def _to_json_value(value: Any) -> Any:

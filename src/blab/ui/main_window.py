@@ -2374,6 +2374,7 @@ class MainWindow(QMainWindow):
             return
 
         meshes = dialog.meshes()
+        replaced_mesh_names = dialog.replaced_mesh_names()
         stitch_imported_meshes = dialog.stitch_imported_meshes()
         symmetry = dialog.symmetry() if symmetry_enabled else self.symmetry
         config_changed = (
@@ -2395,6 +2396,14 @@ class MainWindow(QMainWindow):
             if symmetry_enabled:
                 self.symmetry = symmetry
             self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            if replaced_mesh_names:
+                if self.project.physical_system is not None:
+                    inspected_meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
+                    self.project.physical_system = sync_physical_system_meshes(
+                        self.project.physical_system,
+                        inspected_meshes,
+                    )
+                self._apply_saved_imported_source_config(self._surface_tags_for_meshes())
             self.mesh_state_changed.emit("mesh_config_changed")
             self.solve_results_invalidated.emit("mesh_config_changed")
             self.status_label.setText(
@@ -2448,9 +2457,8 @@ class MainWindow(QMainWindow):
         self.imported_meshes = updated_imported_meshes
         self.project.physical_system = configuration.system
         self.project.component_channel_by_id = dict(configuration.component_channel_by_id)
-        if mesh_file_overrides:
-            self.mesh_state_changed.emit("system_interface_mesh_built")
-        self.project_state_changed.emit("system_config_changed")
+        reason = "system_interface_mesh_built" if mesh_file_overrides else "system_config_changed"
+        self.project_state_changed.emit(reason)
         self.solve_results_invalidated.emit("system_config_changed")
         self.status_label.setText("System updated")
     @Slot()

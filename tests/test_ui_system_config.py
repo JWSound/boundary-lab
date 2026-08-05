@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QComboBox
 
+import blab.ui.system_config as system_config_module
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
@@ -132,6 +133,45 @@ def test_mesh_inventory_preserves_existing_scale_translation_and_volume_groups()
     assert fem.translation_m == (0.001, 0.002, 0.003)
     assert not bem.has_tetrahedra
     assert bem.volume_groups == ()
+
+
+def test_boundary_assignments_default_to_rigid_without_unused_options() -> None:
+    dialog = SystemConfigDialog(
+        inspect_system_meshes(_fixture_mesh_entries()),
+        None,
+        ("main",),
+    )
+
+    assert dialog.boundaries_table.rowCount() > 0
+    for row in range(dialog.boundaries_table.rowCount()):
+        combo = dialog.boundaries_table.cellWidget(row, 3)
+        assert isinstance(combo, QComboBox)
+        assert [combo.itemText(index) for index in range(combo.count())] == [
+            "Rigid",
+            "Moving",
+            "Interface",
+        ]
+        assert combo.currentData() == BoundaryKind.RIGID
+
+
+def test_saved_unused_boundary_is_presented_and_collected_as_rigid() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    rigid = next(boundary for boundary in system.boundaries if boundary.kind == BoundaryKind.RIGID)
+    migrated = replace(
+        system,
+        boundaries=tuple(
+            replace(boundary, kind=BoundaryKind.UNUSED) if boundary.id == rigid.id else boundary
+            for boundary in system.boundaries
+        ),
+    )
+    dialog = SystemConfigDialog(
+        inspect_system_meshes(_fixture_mesh_entries()),
+        migrated,
+        ("main",),
+    )
+
+    restored = next(boundary for boundary in dialog._collect_boundaries() if boundary.id == rigid.id)
+    assert restored.kind == BoundaryKind.RIGID
 
 
 def test_mesh_inventory_prefers_persisted_derived_mesh_file() -> None:
@@ -475,6 +515,23 @@ def test_tabbed_system_editor_builds_compilable_coupled_fixture() -> None:
     assert dialog.configuration().mesh_file_overrides_by_name == {}
     assert "channel" not in system.components[0].parameters
     assert dialog.configuration().component_channel_by_id == {system.components[0].id: "main"}
+
+
+def test_identify_interfaces_reuses_each_transformed_mesh(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    dialog._interface_mesh_cache.clear()
+    transformed_resources = []
+    original = system_config_module._transformed_mesh
+
+    def tracked(resource):
+        transformed_resources.append(resource.id)
+        return original(resource)
+
+    monkeypatch.setattr(system_config_module, "_transformed_mesh", tracked)
+
+    dialog._identify_interfaces()
+
+    assert sorted(transformed_resources) == ["mesh:exterior", "mesh:interior"]
 
 
 def test_saved_regions_rebind_to_unique_compatible_renamed_meshes() -> None:

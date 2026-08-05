@@ -755,6 +755,7 @@ class SystemConfigDialog(QDialog):
         }
         self._component_drafts: list[_ComponentDraft] = []
         self._motion_axis_mesh_cache: dict[str, meshio.Mesh] = {}
+        self._interface_mesh_cache: dict[tuple[str, float, tuple[float, float, float]], meshio.Mesh] = {}
 
         self.tabs = QTabWidget()
         self.regions_tab = QWidget()
@@ -1075,13 +1076,12 @@ class SystemConfigDialog(QDialog):
         self.boundaries_table.setItem(row, 1, mesh_item)
         self.boundaries_table.setItem(row, 2, group_item)
         combo = QComboBox()
-        combo.addItem("Unassigned", None)
         combo.addItem("Rigid", BoundaryKind.RIGID)
         combo.addItem("Moving", BoundaryKind.MOVING)
         combo.addItem("Interface", BoundaryKind.INTERFACE)
-        combo.addItem("Unused", BoundaryKind.UNUSED)
         combo.setProperty("boundary_id", boundary_id)
-        index = combo.findData(selected)
+        normalized = BoundaryKind.RIGID if selected in {None, BoundaryKind.UNUSED} else selected
+        index = combo.findData(normalized)
         combo.setCurrentIndex(max(index, 0))
         combo.currentIndexChanged.connect(self._invalidate_identified_interfaces)
         self.boundaries_table.setCellWidget(row, 3, combo)
@@ -1189,14 +1189,11 @@ class SystemConfigDialog(QDialog):
                         fem_interface_name=str(fem_boundary.group.name),
                         bem_interface_name=str(bem_boundary.group.name),
                     )
-                    resource_by_id[bem_resource.id] = replace(bem_resource, file=str(output_path))
+                    updated_bem_resource = replace(bem_resource, file=str(output_path))
+                    resource_by_id[bem_resource.id] = updated_bem_resource
+                    self._cache_interface_mesh(updated_bem_resource, match.conformed_bem_mesh)
                     self._set_available_mesh_file(bem_resource.name, output_path)
                     interface_status = "Built"
-                self._check_interface_pair(
-                    fem_boundary,
-                    bem_boundary,
-                    resource_by_id=resource_by_id,
-                )
                 available_unbounded.remove(bem_boundary)
                 interface_name = (
                     str(fem_boundary.group.name)
@@ -1258,8 +1255,8 @@ class SystemConfigDialog(QDialog):
                     f"BEM mesh '{bem_resource.name}' is generated/locked. Interface rebuilding currently "
                     "requires an imported BEM mesh."
                 ) from None
-            fem_mesh = _transformed_mesh(fem_resource)
-            bem_mesh = _transformed_mesh(bem_resource)
+            fem_mesh = self._interface_mesh(fem_resource)
+            bem_mesh = self._interface_mesh(bem_resource)
             conformed_mesh, _result = conform_bem_interface_to_fem(
                 fem_mesh,
                 bem_mesh,
@@ -1343,8 +1340,8 @@ class SystemConfigDialog(QDialog):
     ) -> None:
         fem_resource = resource_by_id[fem_boundary.group.mesh_id]
         bem_resource = resource_by_id[bem_boundary.group.mesh_id]
-        fem_mesh = _transformed_mesh(fem_resource)
-        bem_mesh = _transformed_mesh(bem_resource)
+        fem_mesh = self._interface_mesh(fem_resource)
+        bem_mesh = self._interface_mesh(bem_resource)
         build_conforming_interface_map(
             fem_mesh,
             bem_mesh,
@@ -1354,6 +1351,27 @@ class SystemConfigDialog(QDialog):
             require_closed_bem=True,
             symmetry_mode=self._symmetry_mode,
         )
+
+    @staticmethod
+    def _interface_mesh_cache_key(
+        resource: MeshResource,
+    ) -> tuple[str, float, tuple[float, float, float]]:
+        return (
+            str(Path(resource.file).resolve()),
+            float(resource.scale_to_m),
+            tuple(float(value) for value in resource.translation_m),
+        )
+
+    def _interface_mesh(self, resource: MeshResource) -> meshio.Mesh:
+        key = self._interface_mesh_cache_key(resource)
+        mesh = self._interface_mesh_cache.get(key)
+        if mesh is None:
+            mesh = _transformed_mesh(resource)
+            self._interface_mesh_cache[key] = mesh
+        return mesh
+
+    def _cache_interface_mesh(self, resource: MeshResource, mesh: meshio.Mesh) -> None:
+        self._interface_mesh_cache[self._interface_mesh_cache_key(resource)] = mesh
 
     def _load_interfaces(self, *, status: str | None = None) -> None:
         self.interfaces_table.setRowCount(0)
@@ -1560,6 +1578,7 @@ class SystemConfigDialog(QDialog):
 
     def _collect_components(
         self,
+        boundaries: tuple[Boundary, ...] | None = None,
     ) -> tuple[tuple[PhysicalComponent, ...], tuple[ExcitationPort, ...], dict[str, str]]:
         components = []
         ports = []
@@ -1568,7 +1587,7 @@ class SystemConfigDialog(QDialog):
         used_boundaries: set[str] = set()
         moving_boundaries = {
             boundary.id: boundary
-            for boundary in self._collect_boundaries()
+            for boundary in (self._collect_boundaries() if boundaries is None else boundaries)
             if boundary.kind == BoundaryKind.MOVING
         }
         for draft in self._component_drafts:
@@ -1632,7 +1651,6 @@ class SystemConfigDialog(QDialog):
                     kind=port_kind,
                 )
             )
-        self._render_components_table()
         return tuple(components), tuple(ports), component_channels
 
     def _region_kind(self, row: int) -> AcousticRegionKind:
@@ -1762,7 +1780,7 @@ class SystemConfigDialog(QDialog):
             for interface in self._interfaces
             if interface.bounded_boundary_id in boundary_ids and interface.unbounded_boundary_id in boundary_ids
         )
-        components, ports, component_channels = self._collect_components()
+        components, ports, component_channels = self._collect_components(boundaries)
         self._collected_component_channels = component_channels
         moving_ids = {boundary.id for boundary in boundaries if boundary.kind == BoundaryKind.MOVING}
         owned_ids = {boundary_id for component in components for boundary_id in component.boundary_ids}

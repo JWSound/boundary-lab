@@ -330,6 +330,15 @@ def test_system_and_channel_config_use_bottom_buttons() -> None:
     assert "addDockWidget" not in open_channel_config
 
 
+def test_system_apply_coalesces_interface_and_project_preview_refresh() -> None:
+    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    apply_system = source[source.index("def _apply_system_config") : source.index("def open_channel_config")]
+
+    assert 'reason = "system_interface_mesh_built" if mesh_file_overrides else "system_config_changed"' in apply_system
+    assert "self.project_state_changed.emit(reason)" in apply_system
+    assert "self.mesh_state_changed.emit" not in apply_system
+
+
 def test_project_dirty_state_ignores_generated_geometry_artifacts() -> None:
     payload = {
         "generator_documents": [

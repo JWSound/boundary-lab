@@ -597,6 +597,8 @@ class MeshConfigDialog(QDialog):
         self.z_widgets: list[QSpinBox] = []
 
         self.add_button = QPushButton("Import .msh")
+        self.replace_button = QPushButton("Replace .msh")
+        self.replace_button.setEnabled(False)
         self.remove_button = QPushButton("Remove")
         self.stitch_imported_meshes_check = QCheckBox("Stitch Imported Meshes")
         self.stitch_imported_meshes_check.setChecked(stitch_imported_meshes)
@@ -615,11 +617,14 @@ class MeshConfigDialog(QDialog):
         self.symmetry_combo.setCurrentText(current_label)
         self.symmetry_combo.setEnabled(symmetry_enabled)
         self.add_button.clicked.connect(self._add_mesh)
+        self.replace_button.clicked.connect(self._replace_mesh)
         self.remove_button.clicked.connect(self._remove_selected_meshes)
+        self.table.itemSelectionChanged.connect(self._update_replace_button)
         self.table.meshFilesDropped.connect(self._add_mesh_paths)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.add_button)
+        button_row.addWidget(self.replace_button)
         button_row.addWidget(self.remove_button)
         button_row.addSpacing(16)
         button_row.addWidget(self.stitch_imported_meshes_check)
@@ -647,6 +652,13 @@ class MeshConfigDialog(QDialog):
     def symmetry(self) -> str:
         return self.symmetry_options.get(self.symmetry_combo.currentText(), "off")
 
+    def replaced_mesh_names(self) -> tuple[str, ...]:
+        return tuple(
+            self.name_items[row].text().strip()
+            for row in range(self.table.rowCount())
+            if bool(self.file_items[row].data(int(Qt.ItemDataRole.UserRole) + 1))
+        )
+
     def accept(self) -> None:
         try:
             self.meshes()
@@ -672,6 +684,8 @@ class MeshConfigDialog(QDialog):
 
         file_item = QTableWidgetItem(mesh.source_file)
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
+        file_item.setData(Qt.ItemDataRole.UserRole, mesh.cleaned_file)
+        file_item.setData(int(Qt.ItemDataRole.UserRole) + 1, False)
         self.table.setItem(row, 2, file_item)
         self.file_items.append(file_item)
 
@@ -715,6 +729,36 @@ class MeshConfigDialog(QDialog):
             return
         for path in paths:
             self._append_mesh_path(path)
+
+    def _replace_mesh(self) -> None:
+        row = self._selected_replaceable_row()
+        if row is None:
+            return
+        path = self.file_dialogs.open_file(
+            self,
+            "Replace mesh",
+            "Gmsh mesh files (*.msh)",
+        )
+        if path is None:
+            return
+        if path.suffix.lower() != ".msh":
+            QMessageBox.warning(self, "Unsupported mesh", "Only .msh mesh files can be imported.")
+            return
+        self.file_items[row].setText(str(path))
+        self.file_items[row].setData(Qt.ItemDataRole.UserRole, None)
+        self.file_items[row].setData(int(Qt.ItemDataRole.UserRole) + 1, True)
+
+    def _selected_replaceable_row(self) -> int | None:
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            return None
+        row = next(iter(rows))
+        if not bool(self.name_items[row].flags() & Qt.ItemIsEditable):
+            return None
+        return row
+
+    def _update_replace_button(self) -> None:
+        self.replace_button.setEnabled(self._selected_replaceable_row() is not None)
 
     def _append_mesh_path(self, path: Path) -> None:
         self._append_row(
@@ -783,10 +827,8 @@ class MeshConfigDialog(QDialog):
         return tuple(meshes)
 
     def _cleaned_file_for_row(self, row: int) -> str | None:
-        for mesh in self._meshes:
-            if mesh.source_file == self.file_items[row].text():
-                return mesh.cleaned_file
-        return None
+        value = self.file_items[row].data(Qt.ItemDataRole.UserRole)
+        return None if value is None else str(value)
 
 
 class ChannelConfigDialog(QDialog):

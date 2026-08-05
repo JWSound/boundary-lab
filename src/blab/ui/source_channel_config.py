@@ -205,6 +205,7 @@ def apply_saved_imported_source_config(
     config_by_name: dict[str, dict],
 ) -> tuple[RadiatorConfig, ...]:
     existing_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in existing_radiators}
+    existing_by_name = {radiator.name: radiator for radiator in existing_radiators}
     radiators = []
     for surface_name, (mesh_name, tag) in sorted(
         surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])
@@ -212,7 +213,7 @@ def apply_saved_imported_source_config(
         if mesh_name in generated_mesh_names:
             continue
         saved = config_by_name.get(surface_name)
-        existing = existing_by_key.get((mesh_name, tag))
+        existing = existing_by_name.get(surface_name) or existing_by_key.get((mesh_name, tag))
         if isinstance(saved, dict):
             if not bool(saved.get("driven", False)):
                 continue
@@ -226,7 +227,14 @@ def apply_saved_imported_source_config(
                 )
             )
         elif existing is not None:
-            radiators.append(existing)
+            radiators.append(
+                replace(
+                    existing,
+                    name=surface_name,
+                    mesh=mesh_name,
+                    tag=tag,
+                )
+            )
     return tuple(radiators)
 
 

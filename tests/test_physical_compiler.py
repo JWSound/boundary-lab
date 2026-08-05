@@ -100,6 +100,15 @@ def test_compiler_rejects_unassigned_physical_surface_group() -> None:
         PhysicalSystemCompiler().compile(incomplete)
 
 
+def test_legacy_unused_boundary_deserializes_as_rigid() -> None:
+    payload = physical_system_to_dict(_fixture_system())
+    payload["boundaries"][0]["kind"] = "unused"
+
+    restored = physical_system_from_dict(payload)
+
+    assert restored.boundaries[0].kind == BoundaryKind.RIGID
+
+
 def test_compiled_system_and_request_round_trip_through_versioned_contract() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
     compiled_wire = compiled_system_to_dict(compiled)
