@@ -79,6 +79,7 @@ class CoupledSession:
         self._process: subprocess.Popen[str] | None = None
         self._worker: BeatEngineWorkerProcess | None = None
         self._stop = False
+        self._cancel_path: Path | None = None
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
         self._metadata = SystemSolveMetadata(
@@ -161,19 +162,24 @@ class CoupledSession:
         callback = self.request.status_callback
         with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
             request_path = Path(temp_dir) / "request.json"
+            self._cancel_path = Path(temp_dir) / "cancel"
+            payload = system_solve_request_to_dict(self.request)
+            payload["cancel_path"] = str(self._cancel_path)
             request_path.write_text(
-                json.dumps(system_solve_request_to_dict(self.request), separators=(",", ":")),
+                json.dumps(payload, separators=(",", ":")),
                 encoding="utf-8",
             )
             try:
+                if self._stop:
+                    return
                 events = self._worker.submit(request_path, status_callback=callback)
                 for event in events:
-                    if self._stop or (stop_requested is not None and stop_requested()):
+                    if not self._stop and stop_requested is not None and stop_requested():
                         self.stop()
-                        return
                     event_type = str(event.get("type", ""))
                     if event_type == "result":
-                        yield system_frequency_result_from_dict(event["result"])
+                        if not self._stop:
+                            yield system_frequency_result_from_dict(event["result"])
                     elif event_type == "status" and callback is not None:
                         callback(str(event.get("message", "")))
                     elif event_type == "failed":
@@ -183,13 +189,20 @@ class CoupledSession:
             except RuntimeError:
                 if not self._stop:
                     raise
+            finally:
+                self._cancel_path = None
 
     def stop(self) -> None:
         self._stop = True
         worker = self._worker
         if worker is not None:
-            worker.terminate()
-            self._worker = None
+            cancel_path = self._cancel_path
+            if cancel_path is not None:
+                try:
+                    cancel_path.write_text("cancel", encoding="utf-8")
+                except OSError:
+                    worker.terminate()
+                    self._worker = None
         process = self._process
         if process is not None and process.poll() is None:
             process.terminate()

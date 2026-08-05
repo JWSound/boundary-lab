@@ -507,6 +507,9 @@ end
 
 function solve_request(request; event_mode=false)
     Int(get(request, "schema_version", 0)) == 1 || error("Unsupported system solve request schema.")
+    cancel_path = get(request, "cancel_path", nothing)
+    cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
+    cancel_requested() && return (cancelled=true, solved_count=0)
     system = request["compiled_system"]
     meshes = system["meshes"]
     regions = system["regions"]
@@ -712,6 +715,9 @@ function solve_request(request; event_mode=false)
     )
     coupled_cache = nothing
     cache_setup_s = 0.0
+    solved_count = 0
+    cancelled = cancel_requested()
+    cancelled && return (cancelled=true, solved_count=solved_count)
     if cache_frequency_invariant
         cache_setup_started = time_ns()
         coupled_cache = prepare_coupled_cache(
@@ -728,6 +734,10 @@ function solve_request(request; event_mode=false)
     end
     outputs = get(request, "outputs", Any[])
     for (frequency_index, frequency_value) in enumerate(request["frequencies_hz"])
+        if cancel_requested()
+            cancelled = true
+            break
+        end
         frequency_hz = FloatType(frequency_value)
         println(stderr, "Coupled $(precision_name)/$(bem_backend): assembling $(frequency_hz) Hz")
         assembly_started = time_ns()
@@ -1013,8 +1023,11 @@ function solve_request(request; event_mode=false)
         end
         flush(stdout)
         release_coupled_system!(coupled_system)
+        solved_count = frequency_index
     end
     coupled_cache === nothing || release_coupled_cache!(coupled_cache)
+    cancelled = cancelled || cancel_requested()
+    return (cancelled=cancelled, solved_count=solved_count)
 end
 
 function reclaim_accelerator_memory_after_failure()
@@ -1037,8 +1050,9 @@ function run_worker()
             submission = JSON.parse(line)
             request_path = String(submission["request"])
             request = JSON.parse(read(request_path, String))
-            solve_request(request; event_mode=true)
-            println(JSON.json(Dict("type" => "completed")))
+            outcome = solve_request(request; event_mode=true)
+            event_type = outcome.cancelled ? "cancelled" : "completed"
+            println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
         catch exception
             reclaim_accelerator_memory_after_failure()
             error_text = sprint(showerror, exception, catch_backtrace())

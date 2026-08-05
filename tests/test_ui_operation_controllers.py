@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -11,6 +12,7 @@ import blab.ui.operation_controllers as controller_module
 from blab.config import SimulationConfig
 from blab.ui.application_state import OperationPhase
 from blab.ui.operation_controllers import GeometryController, SolveController, SolveRequest
+from blab.ui.solve_worker import SolveWorker
 
 
 class _SolveWorkerStub(QObject):
@@ -88,3 +90,43 @@ def test_controllers_preserve_latest_failure_for_diagnostics() -> None:
     assert geometry_controller.state.phase == OperationPhase.FAILED
     assert solve_controller.last_error == "solve failed"
     assert solve_controller.state.phase == OperationPhase.FAILED
+
+
+def test_solve_worker_logs_backend_detail_without_emitting_visible_status(monkeypatch, caplog) -> None:
+    class Session:
+        metadata = SimpleNamespace(
+            polar_angle_deg=np.array([0.0]),
+            radiator_names=np.array(["driver"]),
+            sphere_metadata=None,
+        )
+
+        def __init__(self, request):
+            self.request = request
+
+        def solve_stream(self, *, stop_requested=None):
+            del stop_requested
+            self.request.status_callback("assembling backend detail")
+            return iter(())
+
+        def stop(self) -> None:
+            pass
+
+    class Backend:
+        def create_session(self, request):
+            request.status_callback("initializing backend detail")
+            return Session(request)
+
+    monkeypatch.setattr("blab.ui.solve_worker.create_backend", lambda *_args, **_kwargs: Backend())
+    worker = SolveWorker(
+        SimulationConfig(mesh_file="speaker.msh"),
+        np.array([1000.0]),
+    )
+    statuses = []
+    worker.status.connect(statuses.append)
+
+    with caplog.at_level("INFO", logger="blab.ui.solve_worker"):
+        worker.run()
+
+    assert statuses == []
+    assert "initializing backend detail" in caplog.text
+    assert "assembling backend detail" in caplog.text

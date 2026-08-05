@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,7 +27,10 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
-from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+from blab.solvers.beat_engine_backend import (
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    shutdown_beat_engine_workers,
+)
 from blab.solvers.coupled_backend import (
     DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
     CoupledProductionBackend,
@@ -176,6 +180,80 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
     assert session.julia_threads == 4
     assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
+
+
+def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
+    starts_path = tmp_path / "coupled_cancel_starts.txt"
+    fake_solver = tmp_path / "fake_coupled_cancel_worker.py"
+    fake_solver.write_text(
+        f"""
+import json
+import pathlib
+import sys
+import time
+
+starts_path = pathlib.Path({str(starts_path)!r})
+starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
+starts_path.write_text(str(starts + 1), encoding="utf-8")
+
+if "--worker" not in sys.argv:
+    raise SystemExit("expected --worker")
+
+print(json.dumps({{"type": "ready"}}), flush=True)
+for line in sys.stdin:
+    submission = json.loads(line)
+    with open(submission["request"], "r", encoding="utf-8") as handle:
+        request = json.load(handle)
+    frequency = request["frequencies_hz"][0]
+    if frequency == 500.0:
+        print(json.dumps({{"type": "status", "message": "started"}}), flush=True)
+        deadline = time.monotonic() + 2.0
+        cancel_path = pathlib.Path(request["cancel_path"])
+        while not cancel_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not cancel_path.exists():
+            print(json.dumps({{"type": "failed", "error": "cancel file was not created"}}), flush=True)
+            continue
+        print(json.dumps({{"type": "cancelled", "solved_count": 0}}), flush=True)
+        continue
+    print(json.dumps({{
+        "type": "result",
+        "result": {{
+            "schema_version": 1,
+            "freq_hz": frequency,
+            "excitation_port_ids": request["excitation_port_ids"],
+            "quantities": [],
+            "diagnostics": {{}},
+        }},
+    }}), flush=True)
+    print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+
+    def request(frequency: float) -> SystemSolveRequest:
+        return SystemSolveRequest(
+            compiled_system=compiled,
+            frequencies_hz=(frequency,),
+            excitation_port_ids=("excitation:radiator",),
+        )
+
+    try:
+        backend = CoupledReferenceBackend(
+            julia_executable=sys.executable,
+            solver_script=fake_solver,
+            julia_project=None,
+            persistent_worker=True,
+        )
+        cancelled_session = backend.create_system_session(request(500.0))
+        assert list(cancelled_session.solve_stream(stop_requested=lambda: True)) == []
+
+        completed_session = backend.create_system_session(request(1000.0))
+        assert len(list(completed_session.solve_stream())) == 1
+        assert starts_path.read_text(encoding="utf-8") == "1"
+    finally:
+        shutdown_beat_engine_workers()
 
 
 @pytest.mark.parametrize("loss_factor", (-0.001, 1.001, "invalid"))

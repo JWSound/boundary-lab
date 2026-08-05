@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass, replace
@@ -17,6 +18,8 @@ from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiag
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import OutputRequest, SystemFrequencyResult, SystemSolveRequest
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -141,9 +144,7 @@ class CoupledSolveWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
-            backend_label = "CUDA" if self.prepared.backend_id == "beat_cuda" else "CPU"
-            self.status.emit(f"Initializing coupled BEAT Engine {backend_label} (FP32)...")
-            request = replace(self.prepared.request, status_callback=self.status.emit)
+            request = replace(self.prepared.request, status_callback=self._log_backend_status)
             bem_backend = "cuda" if self.prepared.backend_id == "beat_cuda" else "cpu"
             backend = CoupledProductionBackend(
                 bem_backend=bem_backend,
@@ -156,7 +157,6 @@ class CoupledSolveWorker(QObject):
                 self.prepared.excitation_component_names,
                 self.prepared.sphere_metadata,
             )
-            self.status.emit(f"Solving coupled system with BEAT Engine {backend_label} (FP32)...")
             for result in session.solve_stream(stop_requested=lambda: self._stop):
                 self.result_ready.emit(self._to_live_result(result))
         except Exception as exc:
@@ -168,9 +168,12 @@ class CoupledSolveWorker(QObject):
     @Slot()
     def stop(self) -> None:
         self._stop = True
-        self.status.emit("Stopping coupled solve...")
         if self._session is not None:
             self._session.stop()
+
+    @staticmethod
+    def _log_backend_status(message: str) -> None:
+        LOGGER.info("Coupled solver backend status: %s", message)
 
     def _to_live_result(self, result: SystemFrequencyResult) -> FrequencyResult:
         quantity = next(

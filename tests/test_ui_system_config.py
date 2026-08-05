@@ -10,6 +10,7 @@ import pytest
 from PySide6.QtWidgets import QApplication, QComboBox
 
 import blab.ui.system_config as system_config_module
+import blab.ui.system_solve as system_solve_module
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
@@ -676,6 +677,50 @@ def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
     assert grouped_horizontal.tolist() == [[3.0 + 0.0j]]
     assert grouped_vertical.tolist() == [[7.0 + 0.0j]]
     assert sphere is None
+
+
+def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monkeypatch, caplog) -> None:
+    system = _configured_fixture_dialog().physical_system()
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+    )
+
+    class Session:
+        def __init__(self, request):
+            self.request = request
+
+        def solve_stream(self, *, stop_requested=None):
+            del stop_requested
+            self.request.status_callback("assembling coupled backend detail")
+            return iter(())
+
+        def stop(self) -> None:
+            pass
+
+    class Backend:
+        def __init__(self, **_kwargs):
+            pass
+
+        def create_system_session(self, request):
+            request.status_callback("initializing coupled backend detail")
+            return Session(request)
+
+    monkeypatch.setattr(system_solve_module, "CoupledProductionBackend", Backend)
+    worker = CoupledSolveWorker(prepared)
+    statuses = []
+    worker.status.connect(statuses.append)
+
+    with caplog.at_level("INFO", logger="blab.ui.system_solve"):
+        worker.run()
+
+    assert statuses == []
+    assert "initializing coupled backend detail" in caplog.text
+    assert "assembling coupled backend detail" in caplog.text
 
 
 @pytest.mark.skipif(

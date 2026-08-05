@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import multiprocessing as mp
 from queue import Empty
 
@@ -15,6 +16,8 @@ from blab.live import (
 )
 from blab.solvers.base import SolveRequest
 from blab.solvers.registry import create_backend
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SolveWorker(QObject):
@@ -51,7 +54,6 @@ class SolveWorker(QObject):
                 self._run_process_workers()
                 return
 
-            self.status.emit("Initializing Solver...")
             backend = create_backend(
                 self.backend_id,
                 server_url=self.server_url,
@@ -61,13 +63,12 @@ class SolveWorker(QObject):
                 SolveRequest(
                     self.config,
                     self.frequencies,
-                    status_callback=self.status.emit,
+                    status_callback=self._log_backend_status,
                 )
             )
             self._session = session
             metadata = session.metadata
             self.initialized.emit(metadata.polar_angle_deg, metadata.radiator_names, metadata.sphere_metadata)
-            self.status.emit("Solving...")
             for result in session.solve_stream(stop_requested=lambda: self._stop):
                 self.result_ready.emit(result)
         except Exception as exc:
@@ -79,7 +80,6 @@ class SolveWorker(QObject):
     @Slot()
     def stop(self) -> None:
         self._stop = True
-        self.status.emit("Stopping solve...")
         if self._session is not None:
             self._session.stop()
         if self._stop_event is not None:
@@ -117,7 +117,7 @@ class SolveWorker(QObject):
                 if message == "initialized":
                     initialized_workers += 1
                     angles, radiator_names, sphere_metadata, elapsed_s = payload
-                    self.status.emit(
+                    self._log_backend_status(
                         f"Worker {worker_id + 1}/{len(processes)} initialized "
                         f"in {elapsed_s:.1f}s ({initialized_workers}/{len(processes)} ready)"
                     )
@@ -138,3 +138,7 @@ class SolveWorker(QObject):
                 if process.is_alive():
                     process.terminate()
                     process.join(timeout=2.0)
+
+    @staticmethod
+    def _log_backend_status(message: str) -> None:
+        LOGGER.info("Solver backend status: %s", message)
