@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDockWidget,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -71,6 +70,7 @@ from blab.ui.dialogs import (
     PreferencesDialog,
     SourceConfigDialog,
 )
+from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window_widgets import (
     AthScriptEditor,
     DockTitleBar,
@@ -344,6 +344,7 @@ class MainWindow(QMainWindow):
 
         startup("Loading saved settings...")
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.file_dialogs = FileDialogService(self.settings)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.preferences = self._load_preferences()
@@ -1763,16 +1764,15 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def import_config(self) -> None:
-        path_text, _ = QFileDialog.getOpenFileName(
+        path = self.file_dialogs.open_file(
             self,
             "Import Waveguide Design",
-            str(Path.cwd()),
             "Ath config files (*.cfg);;All files (*)",
         )
-        if not path_text:
+        if path is None:
             return
 
-        self._import_config_path(Path(path_text))
+        self._import_config_path(path)
 
     def _import_config_path(self, path: Path, *, document_id: str | None = None) -> None:
         try:
@@ -1822,16 +1822,16 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def save_project_as(self) -> bool:
-        default_path = self.project_path or (Path.cwd() / PROJECT_DEFAULT_NAME)
-        path_text, _ = QFileDialog.getSaveFileName(
+        suggested_filename = PROJECT_DEFAULT_NAME if self.project_path is None else self.project_path.name
+        path = self.file_dialogs.save_file(
             self,
             "Save Project",
-            str(default_path),
             PROJECT_FILE_FILTER,
+            suggested_filename,
         )
-        if not path_text:
+        if path is None:
             return False
-        return self._save_project_to_path(normalize_project_path(path_text))
+        return self._save_project_to_path(normalize_project_path(path))
 
     def _save_project_to_path(self, path: Path) -> bool:
         try:
@@ -1849,16 +1849,15 @@ class MainWindow(QMainWindow):
     def load_project(self) -> None:
         if not self._confirm_unsaved_project_changes("open_project"):
             return
-        path_text, _ = QFileDialog.getOpenFileName(
+        path = self.file_dialogs.open_file(
             self,
             "Open Project",
-            str(Path.cwd()),
             PROJECT_FILE_FILTER,
         )
-        if not path_text:
+        if path is None:
             return
 
-        self._load_project_from_path(Path(path_text))
+        self._load_project_from_path(path)
 
     @Slot()
     def open_recent_project(self, path: Path) -> None:
@@ -2064,16 +2063,15 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def export_config(self) -> None:
-        path_text, _ = QFileDialog.getSaveFileName(
+        path = self.file_dialogs.save_file(
             self,
             "Export Waveguide Design",
-            str(Path.cwd() / "waveguide.cfg"),
             "Ath config files (*.cfg);;All files (*)",
+            "waveguide.cfg",
         )
-        if not path_text:
+        if path is None:
             return
 
-        path = Path(path_text)
         if path.suffix == "":
             path = path.with_suffix(".cfg")
 
@@ -2098,16 +2096,15 @@ class MainWindow(QMainWindow):
         if entry is None:
             return
 
-        path_text, _ = QFileDialog.getSaveFileName(
+        output_path = self.file_dialogs.save_file(
             self,
             f"Export {entry.title}",
-            str(Path.cwd() / entry.default_filename),
             "PNG images (*.png);;All files (*)",
+            entry.default_filename,
         )
-        if not path_text:
+        if output_path is None:
             return
 
-        output_path = Path(path_text)
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".png")
         try:
@@ -2124,15 +2121,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No polar data", "Run a solve before exporting polar data.")
             return
 
-        dir_text = QFileDialog.getExistingDirectory(
+        output_dir = self.file_dialogs.select_directory(
             self,
             "Export polar data",
-            str(Path.cwd()),
         )
-        if not dir_text:
+        if output_dir is None:
             return
 
-        output_dir = Path(dir_text)
         try:
             self.live_dataset.set_channel_synthesis(
                 self._channel_configs(),
@@ -2173,6 +2168,7 @@ class MainWindow(QMainWindow):
                 raw_balloon_data_provider=lambda: (
                     None if self.live_dataset is None else self.live_dataset.as_balloon_raw_bundle()
                 ),
+                file_dialog_service=self.file_dialogs,
                 parent=self,
             )
             self.balloon_window.show()
@@ -2372,6 +2368,7 @@ class MainWindow(QMainWindow):
             stitch_imported_meshes=self.stitch_imported_meshes,
             symmetry=self.symmetry,
             symmetry_enabled=symmetry_enabled,
+            file_dialog_service=self.file_dialogs,
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:

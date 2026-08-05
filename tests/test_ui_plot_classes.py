@@ -700,7 +700,8 @@ def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
     assert 'object_name="forward_beam_shape"' in source
     assert "tool_actions=(self.save_wavefront_shape_action,)" in source
     assert "def _save_wavefront_shape_image(self) -> None:" in source
-    assert 'str(Path.cwd() / "forward_beam_shape.png")' in source
+    assert 'self.file_dialogs.save_file(' in source
+    assert '"forward_beam_shape.png"' in source
     assert "export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
     assert "self._update_wavefront_shape_frequency_cursor(index)" in source
     assert "def _update_wavefront_shape_frequency_cursor(self, index: int) -> None:" in source

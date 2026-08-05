@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from pathlib import Path
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -17,7 +16,6 @@ from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient,
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QLabel,
@@ -38,6 +36,7 @@ from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.exporting import export_balloon_data, export_plot_png
 from blab.plotting import VisualizerConfig
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
+from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window_widgets import DockTitleBar
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -84,6 +83,7 @@ class BalloonPlotWindow(QMainWindow):
         max_db: float,
         polar_smoothing: int | float | None = 24,
         raw_balloon_data_provider: Callable[[], dict[str, np.ndarray] | None] | None = None,
+        file_dialog_service: FileDialogService | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -120,6 +120,7 @@ class BalloonPlotWindow(QMainWindow):
         self._slice_plot_high_res = False
         self._wavefront_shape_summary_cache = None
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.file_dialogs = file_dialog_service or FileDialogService(self.settings)
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
@@ -360,17 +361,16 @@ class BalloonPlotWindow(QMainWindow):
 
     @Slot()
     def _export_balloon_data(self) -> None:
-        output_text = QFileDialog.getExistingDirectory(
+        output_dir = self.file_dialogs.select_directory(
             self,
             "Export balloon data",
-            str(Path.cwd()),
         )
-        if not output_text:
+        if output_dir is None:
             return
 
         try:
             prepared = self._prepared_balloon_data()
-            result = export_balloon_data(prepared, output_text)
+            result = export_balloon_data(prepared, output_dir)
             QMessageBox.information(
                 self,
                 "Balloon data exported",
@@ -401,16 +401,15 @@ class BalloonPlotWindow(QMainWindow):
             QMessageBox.warning(self, "No plot data", "Run a solve before saving a plot image.")
             return
 
-        path_text, _ = QFileDialog.getSaveFileName(
+        output_path = self.file_dialogs.save_file(
             self,
             "Save plot image",
-            str(Path.cwd() / "balloon_isobar_slice.png"),
             "PNG images (*.png);;All files (*)",
+            "balloon_isobar_slice.png",
         )
-        if not path_text:
+        if output_path is None:
             return
 
-        output_path = Path(path_text)
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".png")
         try:
@@ -425,16 +424,15 @@ class BalloonPlotWindow(QMainWindow):
             QMessageBox.warning(self, "No plot data", "Run a solve before saving a plot image.")
             return
 
-        path_text, _ = QFileDialog.getSaveFileName(
+        output_path = self.file_dialogs.save_file(
             self,
             "Save plot image",
-            str(Path.cwd() / "forward_beam_shape.png"),
             "PNG images (*.png);;All files (*)",
+            "forward_beam_shape.png",
         )
-        if not path_text:
+        if output_path is None:
             return
 
-        output_path = Path(path_text)
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".png")
         try:

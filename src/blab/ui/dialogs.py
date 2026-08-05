@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -35,6 +34,7 @@ from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
+from blab.ui.file_dialogs import FileDialogService
 from blab.ui.server_credentials import load_server_access_token, save_server_access_token
 from blab.ui.settings import (
     FEM_BULK_LOSS_FACTOR_OPTIONS,
@@ -570,11 +570,13 @@ class MeshConfigDialog(QDialog):
         stitch_imported_meshes: bool = False,
         symmetry: str = "off",
         symmetry_enabled: bool = True,
+        file_dialog_service: FileDialogService | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Meshes")
         self._meshes = list(meshes)
+        self.file_dialogs = file_dialog_service or FileDialogService()
 
         self.table = MeshDropTable(0, 7)
         self.table.setHorizontalHeaderLabels(["Enabled", "Name", "Mesh File", "Scale", "X mm", "Y mm", "Z mm"])
@@ -696,16 +698,14 @@ class MeshConfigDialog(QDialog):
             widgets.append(spin)
 
     def _add_mesh(self) -> None:
-        path_text, _ = QFileDialog.getOpenFileName(
+        path = self.file_dialogs.open_file(
             self,
             "Import mesh",
-            str(Path.cwd()),
             "Gmsh mesh files (*.msh)",
         )
-        if not path_text:
+        if path is None:
             return
 
-        path = Path(path_text)
         self._add_mesh_paths([path])
 
     def _add_mesh_paths(self, paths: list[Path]) -> None:
