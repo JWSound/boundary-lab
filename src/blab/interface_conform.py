@@ -3,14 +3,16 @@
 The implementation supports two bounded Boundary Lab cases:
 
 * the FEM interface is a tagged set of triangular tetrahedron boundary facets;
-* when the FEM and BEM interface seams already have identical discrete vertices
-  and edges, the BEM interface is replaced directly and may be fully curved;
+* when the FEM and BEM interface seams have identical discrete topology and are
+  geometrically near-coincident, the BEM interface is replaced directly and
+  may be fully curved or span multiple geometrical surfaces;
 * otherwise the FEM and BEM interface perimeters describe the same planar
   opening, surrounded by a planar BEM physical surface, possibly split across
   multiple geometrical entities.
 
 The FEM interface triangles are retained exactly. A matching discrete seam
-preserves the surrounding BEM surface unchanged. The planar fallback remeshes
+snaps only its BEM perimeter vertices to the authoritative FEM coordinates and
+preserves the rest of the surrounding BEM surface. The planar fallback remeshes
 that surface with a hole whose inner loop is the FEM interface perimeter. Both
 paths avoid modifying or retetrahedralizing the FEM volume.
 """
@@ -89,16 +91,17 @@ def conform_bem_interface_to_fem(
     fem_interface_name: str = "Interface",
     bem_interface_name: str = "Interface",
     geometry_tolerance: float | None = None,
+    seam_tolerance: float | None = None,
     merge_tolerance: float = 1e-8,
     symmetry_mode: str = "off",
     protected_bem_interface_names: tuple[str, ...] = (),
 ) -> tuple[meshio.Mesh, InterfaceConformResult]:
     """Return a BEM mesh whose interface facets exactly match the FEM facets.
 
-    A curved interface is replaced directly when its FEM and BEM seams already
-    have identical discrete vertices and edges. Otherwise, the BEM interface
-    must have a planar perimeter surrounded by a planar physical surface. The
-    FEM interface itself is not remeshed.
+    A curved or multi-surface interface is replaced directly when its FEM and
+    BEM seams have identical discrete topology and differ only within the seam
+    tolerance. Otherwise, the BEM interface must have a planar perimeter
+    surrounded by a planar physical surface. The FEM interface is not remeshed.
     """
 
     symmetry = _normalized_symmetry_mode(symmetry_mode)
@@ -137,6 +140,13 @@ def conform_bem_interface_to_fem(
     )
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
+    resolved_seam_tolerance = (
+        max(interface_diameter * 5e-5, merge_tolerance)
+        if seam_tolerance is None
+        else float(seam_tolerance)
+    )
+    if resolved_seam_tolerance <= 0.0:
+        raise InterfaceConformError("seam_tolerance must be greater than zero.")
     symmetry_plane_tolerance = max(interface_diameter * 1e-6, merge_tolerance * 10.0, 1e-9)
 
     if symmetry_axes:
@@ -179,15 +189,15 @@ def conform_bem_interface_to_fem(
         fem_opening_path = fem_inner_loop
         old_bem_opening_path = old_bem_inner_loop
 
-    direct_seam_match, direct_seam_deviation = _matching_discrete_paths(
+    direct_seam_mapping, direct_seam_deviation = _discrete_path_correspondence(
         fem_mesh.points,
         fem_opening_path,
         bem_mesh.points,
         old_bem_opening_path,
-        tolerance=merge_tolerance,
+        tolerance=resolved_seam_tolerance,
         closed=not interface_symmetry_axes,
     )
-    if direct_seam_match:
+    if direct_seam_mapping is not None:
         output_mesh, interface_orientation_flipped = _replace_bem_interface_directly(
             fem_mesh,
             bem_mesh,
@@ -195,7 +205,9 @@ def conform_bem_interface_to_fem(
             bem_data,
             bem_interface_mask,
             bem_interface_tag,
-            merge_tolerance,
+            fem_seam_path=fem_opening_path,
+            bem_seam_path=old_bem_opening_path,
+            fem_to_bem_path_indices=direct_seam_mapping,
         )
         identity = validate_conforming_interfaces(
             fem_mesh,
@@ -435,6 +447,7 @@ def conform_interface_mesh_files(
     fem_interface_name: str = "Interface",
     bem_interface_name: str = "Interface",
     geometry_tolerance: float | None = None,
+    seam_tolerance: float | None = None,
     merge_tolerance: float = 1e-8,
     symmetry_mode: str = "off",
     binary: bool = False,
@@ -452,6 +465,7 @@ def conform_interface_mesh_files(
         fem_interface_name=fem_interface_name,
         bem_interface_name=bem_interface_name,
         geometry_tolerance=geometry_tolerance,
+        seam_tolerance=seam_tolerance,
         merge_tolerance=merge_tolerance,
         symmetry_mode=symmetry_mode,
     )
@@ -920,10 +934,32 @@ def _matching_discrete_paths(
 ) -> tuple[bool, float]:
     """Return whether two paths have bijective vertices and identical edges."""
 
+    correspondence, maximum_deviation = _discrete_path_correspondence(
+        first_points,
+        first_path,
+        second_points,
+        second_path,
+        tolerance=tolerance,
+        closed=closed,
+    )
+    return correspondence is not None, maximum_deviation
+
+
+def _discrete_path_correspondence(
+    first_points: np.ndarray,
+    first_path: np.ndarray,
+    second_points: np.ndarray,
+    second_path: np.ndarray,
+    *,
+    tolerance: float,
+    closed: bool,
+) -> tuple[np.ndarray | None, float]:
+    """Return first-to-second path indices for a bijective edge-preserving match."""
+
     first_coordinates = np.asarray(first_points, dtype=float)[np.asarray(first_path, dtype=np.int64)]
     second_coordinates = np.asarray(second_points, dtype=float)[np.asarray(second_path, dtype=np.int64)]
     if len(first_coordinates) != len(second_coordinates):
-        return False, float("inf")
+        return None, float("inf")
 
     first_distances, first_to_second = cKDTree(second_coordinates).query(first_coordinates, k=1)
     second_distances, second_to_first = cKDTree(first_coordinates).query(second_coordinates, k=1)
@@ -932,16 +968,16 @@ def _matching_discrete_paths(
         float(np.max(second_distances, initial=0.0)),
     )
     if maximum_deviation > tolerance:
-        return False, maximum_deviation
+        return None, maximum_deviation
     if len(np.unique(first_to_second)) != len(first_coordinates):
-        return False, maximum_deviation
+        return None, maximum_deviation
     if len(np.unique(second_to_first)) != len(second_coordinates):
-        return False, maximum_deviation
+        return None, maximum_deviation
     if not np.array_equal(
         second_to_first[first_to_second],
         np.arange(len(first_coordinates)),
     ):
-        return False, maximum_deviation
+        return None, maximum_deviation
 
     def path_edges(vertex_count: int) -> set[tuple[int, int]]:
         stop = vertex_count if closed else vertex_count - 1
@@ -954,7 +990,9 @@ def _matching_discrete_paths(
         tuple(sorted((int(first_to_second[start]), int(first_to_second[end]))))
         for start, end in path_edges(len(first_coordinates))
     }
-    return mapped_first_edges == path_edges(len(second_coordinates)), maximum_deviation
+    if mapped_first_edges != path_edges(len(second_coordinates)):
+        return None, maximum_deviation
+    return np.asarray(first_to_second, dtype=np.int64), maximum_deviation
 
 
 def _replace_bem_interface_directly(
@@ -964,9 +1002,12 @@ def _replace_bem_interface_directly(
     bem_data: _TriangleData,
     bem_interface_mask: np.ndarray,
     bem_interface_tag: int,
-    merge_tolerance: float,
+    *,
+    fem_seam_path: np.ndarray,
+    bem_seam_path: np.ndarray,
+    fem_to_bem_path_indices: np.ndarray,
 ) -> tuple[meshio.Mesh, bool]:
-    """Copy FEM facets into a BEM mesh whose discrete seam already matches."""
+    """Copy FEM facets while explicitly reusing and snapping matched BEM seam vertices."""
 
     old_bem_interface = bem_data.triangles[bem_interface_mask]
     fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
@@ -978,23 +1019,32 @@ def _replace_bem_interface_directly(
     if interface_orientation_flipped:
         copied_interface = copied_interface[:, [0, 2, 1]]
 
-    fem_vertices = np.unique(copied_interface)
-    fem_vertex_map = np.full(len(fem_mesh.points), -1, dtype=np.int64)
-    fem_vertex_map[fem_vertices] = np.arange(len(fem_vertices), dtype=np.int64)
-    copied_interface = fem_vertex_map[copied_interface]
-
     keep_mask = ~bem_interface_mask
-    fem_offset = len(bem_mesh.points)
-    combined_points = np.vstack(
-        (
-            np.asarray(bem_mesh.points, dtype=float),
-            np.asarray(fem_mesh.points, dtype=float)[fem_vertices],
-        )
+    combined_points = np.asarray(bem_mesh.points, dtype=float).copy()
+    fem_vertex_map = np.full(len(fem_mesh.points), -1, dtype=np.int64)
+    fem_path = np.asarray(fem_seam_path, dtype=np.int64)
+    bem_path = np.asarray(bem_seam_path, dtype=np.int64)
+    path_mapping = np.asarray(fem_to_bem_path_indices, dtype=np.int64)
+    mapped_bem_vertices = bem_path[path_mapping]
+    fem_vertex_map[fem_path] = mapped_bem_vertices
+    combined_points[mapped_bem_vertices] = np.asarray(fem_mesh.points, dtype=float)[fem_path]
+
+    fem_vertices = np.unique(copied_interface)
+    appended_fem_vertices = fem_vertices[fem_vertex_map[fem_vertices] < 0]
+    appended_start = len(combined_points)
+    fem_vertex_map[appended_fem_vertices] = np.arange(
+        appended_start,
+        appended_start + len(appended_fem_vertices),
+        dtype=np.int64,
     )
+    combined_points = np.vstack(
+        (combined_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices])
+    )
+    copied_interface = fem_vertex_map[copied_interface]
     combined_triangles = np.vstack(
         (
             bem_data.triangles[keep_mask],
-            copied_interface + fem_offset,
+            copied_interface,
         )
     )
     combined_physical = np.concatenate(
@@ -1017,14 +1067,13 @@ def _replace_bem_interface_directly(
         )
     )
 
-    merged_points, merged_triangles = _merge_and_compact_points(
+    compact_points, compact_triangles = _compact_points(
         combined_points,
         combined_triangles,
-        merge_tolerance,
     )
     output_mesh = meshio.Mesh(
-        points=merged_points,
-        cells=[("triangle", merged_triangles)],
+        points=compact_points,
+        cells=[("triangle", compact_triangles)],
         cell_data={
             "gmsh:physical": [combined_physical],
             "gmsh:geometrical": [combined_geometrical],
@@ -1221,10 +1270,21 @@ def _merge_and_compact_points(
     ):
         raise InterfaceConformError("Point merging collapsed one or more output triangles.")
 
-    used = np.unique(merged_triangles)
-    compact_index = np.full(len(merged_points), -1, dtype=np.int64)
+    return _compact_points(merged_points, merged_triangles)
+
+
+def _compact_points(
+    points: np.ndarray,
+    triangles: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Remove unused points without changing coordinates or merging topology."""
+
+    coordinates = np.asarray(points, dtype=float)
+    connectivity = np.asarray(triangles, dtype=np.int64)
+    used = np.unique(connectivity)
+    compact_index = np.full(len(coordinates), -1, dtype=np.int64)
     compact_index[used] = np.arange(len(used), dtype=np.int64)
-    return merged_points[used], compact_index[merged_triangles]
+    return coordinates[used], compact_index[connectivity]
 
 
 def _tetra_boundary_faces(mesh: meshio.Mesh) -> set[tuple[int, int, int]]:
@@ -1274,6 +1334,15 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Coincident-node merge tolerance in mesh units (default: 1e-8)",
     )
     parser.add_argument(
+        "--seam-tol",
+        type=float,
+        default=None,
+        help=(
+            "Maximum targeted curved-seam snap in mesh units "
+            "(default: 0.005%% of interface diameter)"
+        ),
+    )
+    parser.add_argument(
         "--symmetry",
         choices=("off", "x", "xy"),
         default="off",
@@ -1298,6 +1367,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             fem_interface_name=args.fem_interface,
             bem_interface_name=args.bem_interface,
             geometry_tolerance=args.geometry_tol,
+            seam_tolerance=args.seam_tol,
             merge_tolerance=args.merge_tol,
             symmetry_mode=args.symmetry,
             binary=args.binary,

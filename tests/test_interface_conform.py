@@ -23,6 +23,9 @@ CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior_conf
 SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
 CURVED_FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceFEM.msh"
 CURVED_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceBEM.msh"
+NONPLANAR_MULTISURFACE_FIXTURE_ROOT = (
+    REPOSITORY_ROOT / "tests" / "fixtures" / "nonplanar_multisurface_interface"
+)
 
 
 def test_direct_seam_match_requires_identical_edge_connectivity() -> None:
@@ -223,6 +226,62 @@ def test_nonplanar_curved_interface_with_matching_discrete_seam_is_replaced_dire
         symmetry_mode="xy",
     )
     assert round_trip_identity == identity
+
+
+def test_nonplanar_multisurface_interface_with_near_matching_seam_is_welded_directly() -> None:
+    fem_mesh = meshio.read(NONPLANAR_MULTISURFACE_FIXTURE_ROOT / "Throat2.msh")
+    bem_mesh = meshio.read(NONPLANAR_MULTISURFACE_FIXTURE_ROOT / "Exterior2.msh")
+    fem_mesh.points = np.asarray(fem_mesh.points, dtype=float) * 0.001
+    bem_mesh.points = np.asarray(bem_mesh.points, dtype=float) * 0.001
+
+    bem_data = _triangle_data(bem_mesh, require_geometrical=True)
+    bem_tag = _physical_surface_tag(bem_mesh, "INTERFACE")
+    bem_interface_mask = bem_data.physical_tags == bem_tag
+    bem_interface = bem_data.triangles[bem_interface_mask]
+    assert len(np.unique(bem_data.geometrical_tags[bem_interface_mask])) == 2
+
+    bem_loop = _boundary_loops(bem_interface)[0]
+    plane_origin, plane_normal = _best_fit_plane(bem_mesh.points[bem_loop])
+    interface_plane_deviation = float(
+        np.max(
+            np.abs(
+                (bem_mesh.points[np.unique(bem_interface)] - plane_origin)
+                @ plane_normal
+            )
+        )
+    )
+    assert interface_plane_deviation > 1e-3
+
+    phase = np.linspace(0.0, 2.0 * np.pi, len(bem_loop), endpoint=False)
+    seam_offsets = 3e-6 + 2e-6 * np.sin(phase)
+    bem_mesh.points[bem_loop, 2] += seam_offsets
+
+    conformed_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        conformed_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+
+    assert result.fem_interface_triangles == 5883
+    assert result.original_bem_interface_triangles == 6507
+    assert result.original_adjacent_triangles == 0
+    assert result.remeshed_adjacent_triangles == 0
+    assert 1e-6 < result.max_original_boundary_deviation <= 5.1e-6
+    assert result.output_triangles == 7937
+    assert identity.interface_triangles == 5883
+    assert identity.interface_vertices == 3040
+    assert identity.max_coordinate_error <= 1e-9
+    assert identity.fem_facets_on_tetra_boundary == 5883
+    assert identity.bem_boundary_edges == 173
 
 
 @pytest.mark.parametrize(

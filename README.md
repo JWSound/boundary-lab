@@ -2,15 +2,15 @@
 
 <img src="assets/mainwindow.png" alt="Script Editor" width="500">
 
-Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker design. It generates loudspeaker surface meshes, runs BEM solves, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application. Ath is the currently bundled geometry-generator provider.
+Boundary Lab is a GUI-based Multiphysics acoustic solver tool for loudspeaker design. It generates or imports loudspeaker surface meshes, solves coupled or exterior domain acoustic radiation, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application. Ath is the currently bundled geometry-generator provider.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
 ## Features
 
-- Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) provider
+- Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) generator
 - 3D mesh viewport for generated geometry and imported `.msh` files
-- Multi-mesh and multi-radiator BEM solves
+- Multi-mesh and multi-radiator BEM and coupled FEM+BEM+LEM solves
 - Source controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and impedance plots
 - Polar magnitude/phase exporting into .txt files
@@ -24,11 +24,11 @@ Boundary Lab is a GUI-based Boundary Element Method (BEM) tool for loudspeaker d
 - Wine is required if using Ath to generate meshes
 
 
-While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
+While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of mesh files into Boundary Lab.
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
+Boundary Lab currently has 3 selectable solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 30-40x speed gains over CPU-based solving if Nvidia hardware is available. Coupled physics solving is only supported via the BEAT Engine solver.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -41,7 +41,6 @@ To prepare the Julia environment, from the repository root run:
 ```bash
 julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
 ```
-
 
 GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
 
@@ -81,6 +80,24 @@ The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer
 ##
 
 ## Application Installation
+
+### Windows batch-file setup
+
+Windows 10/11 users can double-click `01_install_update_boundary-lab.bat` from
+the repository folder. The guided installer creates the Python environment,
+installs or repairs Boundary Lab, and optionally prepares the Julia BEAT Engine
+CPU and NVIDIA CUDA solvers. If it installs a system prerequisite, close the
+window and run the script again as instructed.
+
+Run the same script later to optionally pull the latest `main` branch and update
+the installation. Start the application with `02_start_boundary_lab.bat`. To
+change a saved NVIDIA GPU selection, run the launcher from Command Prompt with:
+
+```bat
+02_start_boundary_lab.bat /choose
+```
+
+### Manual setup
 
 From the repository root run:
 
