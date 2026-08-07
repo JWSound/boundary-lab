@@ -459,6 +459,7 @@ class _ComponentEditorDialog(QDialog):
         self._resources_by_id = resources_by_id
         self._mesh_cache = mesh_cache
         self._axis_inference: MotionAxisInference | None = None
+        self._automatic_axis: np.ndarray | None = None
         self._axis_inference_error: str | None = None
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._symmetry_inference: ComponentSymmetryInference | None = None
@@ -552,9 +553,9 @@ class _ComponentEditorDialog(QDialog):
         for label, value in zip(("X", "Y", "Z"), raw_axis):
             axis_row.addWidget(QLabel(label))
             spin = QDoubleSpinBox()
-            spin.setDecimals(6)
+            spin.setDecimals(3)
             spin.setRange(-1.0, 1.0)
-            spin.setSingleStep(0.05)
+            spin.setSingleStep(0.005)
             spin.setValue(float(value))
             self.axis_spins.append(spin)
             axis_row.addWidget(spin)
@@ -665,7 +666,11 @@ class _ComponentEditorDialog(QDialog):
                     raise ValueError(
                         "Automatic motion-axis confidence is low. Check the selected surfaces or use a manual axis."
                     )
-            axis = np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
+            axis = (
+                np.asarray(self._automatic_axis, dtype=float)
+                if mode == "automatic" and self._automatic_axis is not None
+                else np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
+            )
             norm = float(np.linalg.norm(axis))
             if norm <= 0.0:
                 raise ValueError("The motion axis must have nonzero length.")
@@ -763,6 +768,7 @@ class _ComponentEditorDialog(QDialog):
         symmetry_inference = self._infer_component_symmetry()
         if symmetry_inference is None:
             self._axis_inference = None
+            self._automatic_axis = None
             self._axis_inference_error = self._symmetry_inference_error
             self.axis_confidence_label.setText(
                 self._symmetry_inference_error or "Component symmetry could not be inferred."
@@ -777,6 +783,7 @@ class _ComponentEditorDialog(QDialog):
             )
         except (ValueError, OSError) as exc:
             self._axis_inference = None
+            self._automatic_axis = None
             self._axis_inference_error = str(exc)
             self.axis_confidence_label.setText(str(exc))
             return None
@@ -787,6 +794,7 @@ class _ComponentEditorDialog(QDialog):
         for spin, value in zip(self.axis_spins, inferred_axis):
             spin.setValue(float(value))
         self._axis_inference = inference
+        self._automatic_axis = inferred_axis.copy()
         self._axis_inference_error = None
         quality = "High" if inference.confidence >= 0.8 else "Moderate" if inference.confidence >= 0.2 else "Low"
         self.axis_confidence_label.setText(
@@ -799,6 +807,8 @@ class _ComponentEditorDialog(QDialog):
     def _flip_axis(self) -> None:
         for spin in self.axis_spins:
             spin.setValue(-spin.value())
+        if self._automatic_axis is not None:
+            self._automatic_axis *= -1.0
 
 
 class _WallImpedanceDialog(QDialog):
@@ -840,7 +850,7 @@ class _WallImpedanceDialog(QDialog):
         self.thickness_spin.setEnabled(self.enabled_check.isChecked())
         self.flow_resistivity_spin.setEnabled(self.enabled_check.isChecked())
 
-        note = QLabel("Rigid-backed porous lining using the Miki model. Generic loose polyfill defaults to 30 mm and 5,000 Pa·s/m².")
+        note = QLabel("Rigid-backed porous lining approximation. Generic loose polyfill defaults to 30 mm and 5,000 Pa·s/m².")
         note.setWordWrap(True)
         form = QFormLayout()
         form.addRow("Lining thickness", self.thickness_spin)
@@ -992,8 +1002,8 @@ class SystemConfigDialog(QDialog):
         self.boundaries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
-            "Classify every surface used by a region. Boundary Lab pairs conforming bounded and unbounded "
-            "interface sides."
+            "Classify every surface used by a region. Boundary Lab auto-detects interface pairs when "
+            "assigned here."
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(self.boundaries_tab)
@@ -1011,8 +1021,8 @@ class SystemConfigDialog(QDialog):
             self.interfaces_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.interfaces_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
-            "Boundary Lab identifies matching interface surfaces and, when necessary, rebuilds the imported "
-            "BEM side to use the FEM interface nodes and faces."
+            "Interfaces are automatically detected and built from the boundary assignments. "
+            "Ensure that the interface surfaces are coplanar and have matching element density."
         )
         note.setWordWrap(True)
         row = QHBoxLayout()
@@ -1050,8 +1060,8 @@ class SystemConfigDialog(QDialog):
         row.addWidget(remove_button)
         row.addStretch(1)
         note = QLabel(
-            "A component may drive one or more moving surfaces. Electrodynamic components use one "
-            "rigid-piston degree of freedom and a 2.83 V reference excitation."
+            "A component may drive one or more moving surfaces. Electrodynamic transducers"
+            " assume a rigid-piston model and a 2.83 V reference excitation."
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(self.components_tab)

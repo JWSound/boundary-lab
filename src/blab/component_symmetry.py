@@ -55,18 +55,21 @@ class ComponentSymmetryInference:
         }
 
     def summary(self) -> str:
-        driver_label = "driver" if self.physical_driver_orbit_count == 1 else "drivers"
+        component_label = "component" if self.physical_driver_orbit_count == 1 else "components"
         if self.symmetry_mode == "off":
-            return "Full model; represents 1 physical driver."
+            return "Moving surface(s) not sliced along a symmetry axis. Detected 1 distinct component in the full system."
         if self.fractional_symmetry_axes:
-            cuts = " and ".join(axis.upper() for axis in self.fractional_symmetry_axes)
-            return (
-                f"Cut by {cuts}; {self.surface_completion_factor}x surface completion, "
-                f"representing {self.physical_driver_orbit_count} physical {driver_label}."
-            )
+            axes = " and ".join(self.fractional_symmetry_axes)
+            axis_label = "axis" if len(self.fractional_symmetry_axes) == 1 else "axes"
+            slicing = f"sliced along the {axes} {axis_label}"
+        else:
+            active_axes = _ACTIVE_AXIS_NAMES[self.symmetry_mode]
+            axes = " and ".join(active_axes)
+            axis_label = "axis" if len(active_axes) == 1 else "axes"
+            slicing = f"not sliced along the {axes} {axis_label}"
         return (
-            "Complete driver in the fundamental domain; "
-            f"represents {self.physical_driver_orbit_count} mirrored physical {driver_label}."
+            f"Moving surface(s) {slicing}. Detected {self.physical_driver_orbit_count} "
+            f"distinct {component_label} in the fully mirrored system."
         )
 
 

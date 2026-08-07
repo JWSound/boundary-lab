@@ -435,7 +435,12 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
     updated = editor.component_draft()
 
     assert not hasattr(editor, "symmetry_combo")
-    assert "Cut by Y" in editor.symmetry_inference_label.text()
+    assert editor.symmetry_inference_label.text() == (
+        "Moving surface(s) sliced along the y axis. "
+        "Detected 2 distinct components in the fully mirrored system."
+    )
+    assert all(spin.decimals() == 3 for spin in editor.axis_spins)
+    assert all(spin.singleStep() == pytest.approx(0.005) for spin in editor.axis_spins)
     assert np.abs(updated.parameters["motion_axis"]) == pytest.approx(
         (0.913545, 0.0, 0.406737),
         abs=1e-6,

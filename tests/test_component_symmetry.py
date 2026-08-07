@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from blab.component_symmetry import (
+    ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
     infer_component_symmetry,
 )
@@ -17,6 +18,58 @@ from blab.physical_model import (
 )
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.mark.parametrize(
+    ("mode", "cut_axes", "component_count", "expected"),
+    (
+        (
+            "x",
+            ("x",),
+            1,
+            "Moving surface(s) sliced along the x axis. "
+            "Detected 1 distinct component in the fully mirrored system.",
+        ),
+        (
+            "xy",
+            ("x", "y"),
+            1,
+            "Moving surface(s) sliced along the x and y axes. "
+            "Detected 1 distinct component in the fully mirrored system.",
+        ),
+        (
+            "xy",
+            ("y",),
+            2,
+            "Moving surface(s) sliced along the y axis. "
+            "Detected 2 distinct components in the fully mirrored system.",
+        ),
+        (
+            "xy",
+            (),
+            4,
+            "Moving surface(s) not sliced along the x and y axes. "
+            "Detected 4 distinct components in the fully mirrored system.",
+        ),
+    ),
+)
+def test_component_symmetry_summary_describes_slices_and_fully_mirrored_count(
+    mode: str,
+    cut_axes: tuple[str, ...],
+    component_count: int,
+    expected: str,
+) -> None:
+    inference = ComponentSymmetryInference(
+        symmetry_mode=mode,
+        fractional_symmetry_axes=cut_axes,
+        surface_completion_factor=2 ** len(cut_axes),
+        physical_driver_orbit_count=component_count,
+        surface_patch_count=1,
+        perimeter_edge_count=1,
+        plane_edge_counts=(),
+    )
+
+    assert inference.summary() == expected
 
 
 def _resource(path: Path, resource_id: str = "mesh") -> MeshResource:
