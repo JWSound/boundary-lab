@@ -21,7 +21,7 @@ from blab.ath import (
 )
 from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
 from blab.config import ChannelConfig
-from blab.exporting import export_balloon_data, export_polar_text_files
+from blab.exporting import export_balloon_data, export_on_axis_text_files, export_polar_text_files
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -837,3 +837,72 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
     assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
         "1000.000000\t0.000\t-90.000",
     ]
+
+
+def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+    )
+    for freq_hz, pressure in ((1000.0, 1.0 + 0.0j), (200.0, 0.0 + 1.0j)):
+        channel_pressure = np.full((1, 3), pressure, dtype=np.complex64)
+        dataset.add(
+            FrequencyResult(
+                freq_hz=freq_hz,
+                horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+                vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+                impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+                channel_names=np.array(["main"]),
+                horizontal_pressure=channel_pressure,
+                vertical_pressure=channel_pressure.copy(),
+            )
+        )
+
+    written = export_on_axis_text_files(dataset, tmp_path / "selected-response")
+
+    assert written == [tmp_path / "selected-response.txt"]
+    assert written[0].read_text(encoding="utf-8").splitlines() == [
+        "200.000000\t93.979\t90.000",
+        "1000.000000\t93.979\t0.000",
+    ]
+
+
+def test_export_on_axis_text_files_writes_only_individual_channels_with_safe_names(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    channel_names = np.array(["LF/woofer", "LF:woofer"])
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="LF/woofer"), ChannelConfig(name="LF:woofer")),
+        flat_target_normalization_enabled=False,
+    )
+    horizontal_pressure = np.array(
+        [
+            [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j],
+            [0.0 - 1.0j, 0.0 - 1.0j, 0.0 - 1.0j],
+        ],
+        dtype=np.complex64,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.ones((2, 2), dtype=np.float32),
+            channel_names=channel_names,
+            horizontal_pressure=horizontal_pressure,
+            vertical_pressure=horizontal_pressure.copy(),
+        )
+    )
+
+    written = export_on_axis_text_files(dataset, tmp_path / "channels")
+
+    assert [path.name for path in written] == ["on_axis_LF_woofer.txt", "on_axis_LF_woofer_2.txt"]
+    assert written[0].read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t93.979\t0.000",
+    ]
+    assert written[1].read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t93.979\t-90.000",
+    ]
+    assert len(list((tmp_path / "channels").glob("*.txt"))) == 2

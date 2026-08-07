@@ -96,6 +96,49 @@ class LiveSolveDataset:
         )
         return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
 
+    def as_channel_on_axis_export_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return frequency, channel name, SPL, and phase arrays at zero degrees."""
+        if not self.results:
+            raise ValueError("No solved on-axis data available.")
+        if not self.supports_channel_resynthesis:
+            raise ValueError("On-axis phase export requires channel-basis pressure data.")
+
+        ordered = self.ordered_results()
+        first_names = ordered[0].channel_names
+        if first_names is None:
+            raise ValueError("Channel names are unavailable.")
+        channel_names = np.asarray(first_names).astype(str)
+        channel_count = channel_names.size
+        if channel_count == 0:
+            raise ValueError("No solved channels are available for on-axis export.")
+        pressures = np.empty((channel_count, len(ordered)), dtype=np.complex64)
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+
+        for freq_index, result in enumerate(ordered):
+            if result.channel_names is None or result.horizontal_pressure is None:
+                raise ValueError("Channel-basis pressure data is incomplete.")
+            result_names = np.asarray(result.channel_names).astype(str)
+            horizontal = np.asarray(result.horizontal_pressure, dtype=np.complex64)
+            if not np.array_equal(result_names, channel_names):
+                raise ValueError("Solved channel names or ordering changed between frequencies.")
+            if horizontal.ndim != 2 or horizontal.shape != (channel_count, angles.size):
+                raise ValueError("Channel-basis pressure dimensions are inconsistent with the polar samples.")
+
+            weights = self._channel_basis_weights(result)
+            for channel_index in range(channel_count):
+                pressures[channel_index, freq_index] = complex_reference_pressure(
+                    horizontal[channel_index] * weights[channel_index],
+                    angles,
+                    0.0,
+                )
+
+        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
+        spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
+        phase_deg = np.rad2deg(np.angle(pressures)).astype(np.float32, copy=False)
+        return freqs, channel_names, spl_db, phase_deg
+
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
         if not self.results:
             return None
@@ -232,30 +275,12 @@ class LiveSolveDataset:
         if not self.supports_channel_resynthesis:
             return {}
 
-        ordered = self.ordered_results()
-        first = ordered[0]
-        if first.channel_names is None:
+        try:
+            export_freqs, channel_names, curves, _phase_deg = self.as_channel_on_axis_export_arrays()
+        except ValueError:
             return {}
-
-        channel_names = np.asarray(first.channel_names)
-        curves = np.empty((channel_names.size, len(ordered)), dtype=np.float32)
-        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
-
-        for freq_index, result in enumerate(ordered):
-            if (
-                result.channel_names is None
-                or result.horizontal_pressure is None
-                or np.asarray(result.channel_names).size != channel_names.size
-            ):
-                return {}
-            weights = self._channel_basis_weights(result)
-            for channel_index in range(np.asarray(result.channel_names).size):
-                pressure = complex_reference_pressure(
-                    np.asarray(result.horizontal_pressure[channel_index]) * weights[channel_index],
-                    angles,
-                    0.0,
-                )
-                curves[channel_index, freq_index] = float(pressure_to_spl(np.asarray([pressure]))[0])
+        if not np.array_equal(export_freqs, np.asarray(freqs, dtype=np.float32)):
+            return {}
 
         return {
             "channel_on_axis_names": channel_names,

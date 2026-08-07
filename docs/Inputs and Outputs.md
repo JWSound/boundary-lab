@@ -85,3 +85,7 @@ Users can export any of the rendered plots as .png images.
 ## Exporting Polar Data
 
 Users can export simulated polar data as individual .txt files per angle sampled for horizontal and vertical axes. Channel-basis solves export three tab-separated columns: frequency in Hz, normalized SPL in dB, and relative phase in degrees. The .txt files can be directly imported into tools such as REW and VituixCAD for external analysis.
+
+## Exporting On-Axis Data
+
+Users can export each solved channel's on-axis response as a tab-separated .txt file containing frequency in Hz, SPL in dB, and phase in degrees. Single-channel solves use a save-file dialog. Multi-channel solves use a directory picker and write one file per channel; the combined system response is not exported. The files use the original solved frequency samples and can be imported into tools such as REW and VituixCAD.

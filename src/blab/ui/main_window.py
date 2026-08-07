@@ -39,7 +39,12 @@ from blab.ath import (
     write_ath_output_root,
 )
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
-from blab.exporting import export_plot_png, export_polar_text_files
+from blab.exporting import (
+    default_on_axis_filename,
+    export_on_axis_text_files,
+    export_plot_png,
+    export_polar_text_files,
+)
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
@@ -631,6 +636,11 @@ class MainWindow(QMainWindow):
         self.export_polar_data_action.setEnabled(False)
         self.export_polar_data_action.triggered.connect(self.export_polar_data)
         file_menu.addAction(self.export_polar_data_action)
+
+        self.export_on_axis_data_action = QAction("Export On-Axis Data", self)
+        self.export_on_axis_data_action.setEnabled(False)
+        self.export_on_axis_data_action.triggered.connect(self.export_on_axis_data)
+        file_menu.addAction(self.export_on_axis_data_action)
 
         view_menu = self.menuBar().addMenu("View")
         self.balloon_plot_action = QAction("Balloon Plot", self)
@@ -2210,6 +2220,46 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export polar data failed", str(exc))
 
     @Slot()
+    def export_on_axis_data(self) -> None:
+        if self.live_dataset is None or self.live_dataset.solved_count == 0:
+            QMessageBox.warning(self, "No on-axis data", "Run a solve before exporting on-axis data.")
+            return
+
+        try:
+            self.live_dataset.set_channel_synthesis(
+                self._channel_configs(),
+                flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+            )
+            _freqs, channel_names, _spl_db, _phase_deg = self.live_dataset.as_channel_on_axis_export_arrays()
+        except Exception as exc:
+            QMessageBox.critical(self, "Export on-axis data failed", str(exc))
+            return
+
+        if channel_names.size == 1:
+            output_target = self.file_dialogs.save_file(
+                self,
+                "Export on-axis data",
+                "Text files (*.txt);;All files (*)",
+                default_on_axis_filename(str(channel_names[0])),
+            )
+        else:
+            output_target = self.file_dialogs.select_directory(
+                self,
+                "Export on-axis channel data",
+            )
+        if output_target is None:
+            return
+
+        try:
+            written = export_on_axis_text_files(self.live_dataset, output_target)
+            if len(written) == 1:
+                self.status_label.setText(f"Exported on-axis data to {written[0]}")
+            else:
+                self.status_label.setText(f"Exported {len(written)} on-axis channel files to {output_target}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export on-axis data failed", str(exc))
+
+    @Slot()
     def open_balloon_plot(self) -> None:
         if self.live_dataset is None or self.live_dataset.solved_count == 0:
             QMessageBox.warning(self, "No balloon data", "Run a solve before opening the balloon plot.")
@@ -2660,6 +2710,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self.export_on_axis_data_action.setEnabled(False)
         self._set_contour_button_states()
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
@@ -2798,6 +2849,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self.export_on_axis_data_action.setEnabled(False)
         self._set_contour_button_states()
         self.status_label.setText("Initializing Solver...")
         self.solve_controller.start(
@@ -2869,6 +2921,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self.export_on_axis_data_action.setEnabled(False)
         self._set_contour_button_states()
         self.status_label.setText("Initializing exterior solver...")
         self.solve_controller.start(
@@ -2919,6 +2972,7 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(True)
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self.export_on_axis_data_action.setEnabled(False)
         self._set_contour_button_states()
         self.status_label.setText("Initializing coupled solver...")
         self.solve_controller.start(prepared)
@@ -3027,6 +3081,7 @@ class MainWindow(QMainWindow):
             self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())
             self._set_export_plot_actions_enabled(True)
             self.export_polar_data_action.setEnabled(True)
+            self.export_on_axis_data_action.setEnabled(self.live_dataset.supports_channel_resynthesis)
             self.balloon_plot_action.setEnabled(self.live_dataset.as_balloon_raw_bundle() is not None)
             self._set_contour_button_states()
             elapsed_text = f" in {elapsed_s:.1f} s"
@@ -3050,6 +3105,7 @@ class MainWindow(QMainWindow):
             entry.widget._draw_empty()
         self._set_export_plot_actions_enabled(False)
         self.export_polar_data_action.setEnabled(False)
+        self.export_on_axis_data_action.setEnabled(False)
         self.balloon_plot_action.setEnabled(False)
         self._set_contour_button_states()
 
