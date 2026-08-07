@@ -4,6 +4,7 @@ from pathlib import Path
 
 from blab.ui import file_dialogs as file_dialogs_module
 from blab.ui.file_dialogs import LAST_USED_DIRECTORY_KEY, FileDialogService
+from repo_paths import BLAB_SRC
 
 
 class MemorySettings:
@@ -22,7 +23,7 @@ class MemorySettings:
 
 
 def test_qt_file_dialog_usage_is_centralized_in_service() -> None:
-    ui_root = Path("src/blab/ui")
+    ui_root = BLAB_SRC / "ui"
     direct_users = [
         path.relative_to(ui_root).as_posix()
         for path in ui_root.glob("*.py")

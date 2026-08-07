@@ -39,6 +39,7 @@ from blab.balloon import (
     prepare_balloon_data,
 )
 from blab.exporting import export_balloon_data, export_plot_png
+from blab.paths import APP_ROOT
 from blab.plotting import VisualizerConfig
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
 from blab.ui.file_dialogs import FileDialogService
@@ -56,7 +57,7 @@ from blab.ui.plots import (
     clear_plot_axes,
 )
 from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
-from blab.ui.theme import APP_ROOT, themed_content_background
+from blab.ui.theme import themed_content_background
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
 HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"

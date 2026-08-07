@@ -2,10 +2,6 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
-
-pytest.importorskip("PySide6")
-
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 
 import blab.ui.operation_controllers as controller_module

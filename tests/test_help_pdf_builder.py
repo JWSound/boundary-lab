@@ -1,9 +1,5 @@
 from pathlib import Path
 
-import pytest
-
-pytest.importorskip("PySide6")
-
 from scripts.build_help_pdf import GENERATED_NOTE, build_combined_markdown, discover_markdown_docs
 
 

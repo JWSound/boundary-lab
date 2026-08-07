@@ -1,7 +1,4 @@
 import numpy as np
-import pytest
-
-pytest.importorskip("PySide6")
 
 from blab.balloon import BalloonPrepConfig, prepare_balloon_data
 from blab.ui.balloon import (

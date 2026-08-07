@@ -1,8 +1,4 @@
-from pathlib import Path
 
-import pytest
-
-pytest.importorskip("PySide6")
 
 from PySide6.QtGui import QColor, QPalette
 
@@ -19,6 +15,7 @@ from blab.ui.theme import (
     _theme_stylesheet,
     themed_content_background,
 )
+from repo_paths import source_text
 
 
 def test_dark_theme_uses_requested_color_palette() -> None:
@@ -27,7 +24,7 @@ def test_dark_theme_uses_requested_color_palette() -> None:
     assert DARK_THEME_CONTENT_BACKGROUND_COLOR == "#293134"
     assert DARK_THEME_BUTTON_COLOR == "#333333"
 
-    source = Path("src/blab/ui/theme.py").read_text(encoding="utf-8")
+    source = source_text("ui", "theme.py")
     assert "window_color = QColor(DARK_THEME_WINDOW_COLOR)" in source
     assert "text_color = QColor(DARK_THEME_TEXT_COLOR)" in source
     assert "palette.setColor(QPalette.Button, QColor(DARK_THEME_BUTTON_COLOR))" in source
@@ -45,8 +42,8 @@ def test_content_background_uses_dark_canvas_color_only_for_dark_palettes() -> N
 
 
 def test_ath_editor_tracks_the_application_theme() -> None:
-    widget_source = Path("src/blab/ui/main_window_widgets.py").read_text(encoding="utf-8")
-    theme_source = Path("src/blab/ui/theme.py").read_text(encoding="utf-8")
+    widget_source = source_text("ui", "main_window_widgets.py")
+    theme_source = source_text("ui", "theme.py")
 
     assert "class AthScriptEditor(QPlainTextEdit):" in widget_source
     assert 'self.setObjectName("athScriptEditor")' in widget_source

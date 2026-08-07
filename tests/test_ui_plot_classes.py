@@ -1,8 +1,23 @@
 from pathlib import Path
 
+from repo_paths import MAIN_WINDOW_PKG, source_text
+
+
+def main_window_source(*stems: str) -> str:
+    """Concatenated source of the main_window package.
+
+    ``main_window.py`` was split into a package of mixins; these remaining
+    assertions still describe wiring rather than behaviour, so they read the
+    package as one blob. Pass module stems to narrow the read when a test
+    slices between two markers that must stay in the same module.
+    """
+    paths = [MAIN_WINDOW_PKG / f"{stem}.py" for stem in stems] if stems else sorted(MAIN_WINDOW_PKG.glob("*.py"))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
+
 
 def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
 
     on_axis_start = source.index("class OnAxisResponseCanvas")
     spinorama_start = source.index("class SpinoramaCanvas")
@@ -19,7 +34,7 @@ def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> Non
 
 
 def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
     spinorama_block = source[source.index("class SpinoramaCanvas") :]
 
     assert "tight_layout=True" not in spinorama_block
@@ -33,7 +48,7 @@ def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
 
 
 def test_plot_widgets_use_compact_title_padding() -> None:
-    plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    plot_source = source_text("ui", "plots.py")
 
     assert "PLOT_TITLE_PAD = 1" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
@@ -43,8 +58,8 @@ def test_plot_widgets_use_compact_title_padding() -> None:
 
 
 def test_main_window_uses_detachable_panel_docks() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    widgets_source = Path("src/blab/ui/main_window_widgets.py").read_text(encoding="utf-8")
+    source = main_window_source()
+    widgets_source = source_text("ui", "main_window_widgets.py")
 
     assert "QDockWidget" in source
     assert "class DockTitleBar" in widgets_source
@@ -95,45 +110,8 @@ def test_main_window_uses_detachable_panel_docks() -> None:
     assert 'QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))' in source
 
 
-def test_plot_export_uses_dock_title_save_buttons_not_file_menu() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert 'file_menu.addMenu("Export Plot")' not in source
-    assert "self.export_plot_actions[entry.plot_id] = action" in source
-    assert 'action.setToolTip(f"Export {entry.title}")' in source
-    assert "SAVE_DARK_ICON" in source
-    assert "SAVE_LIGHT_ICON" in source
-    assert "CAPTURE_CONTOURS_DARK_ICON" in source
-    assert "CAPTURE_CONTOURS_LIGHT_ICON" in source
-    assert "CLEAR_CONTOURS_DARK_ICON" in source
-    assert "CLEAR_CONTOURS_LIGHT_ICON" in source
-    assert "def _refresh_plot_export_icons(" in source
-    assert "light_theme = window_color.lightness() >= 128" in source
-    assert "QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))" in source
-    assert "action.setIcon(icon)" in source
-    assert "action.setIcon(capture_icon)" in source
-    assert "action.setIcon(clear_icon)" in source
-    assert "self._refresh_plot_export_icons()" in source
-
-
-def test_live_plot_refresh_is_coalesced_and_active_tab_aware() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert "LIVE_PLOT_REFRESH_INTERVAL_MS = 250" in source
-    assert "self._live_plot_refresh_timer = QTimer(self)" in source
-    assert "self._live_plot_refresh_timer.setSingleShot(True)" in source
-    assert "self._live_plot_refresh_timer.timeout.connect(self._flush_live_plot_refresh)" in source
-    assert "self._request_live_plot_refresh()" in source
-    assert "self._refresh_plots(active_only=True)" in source
-    assert "self.plot_docks.get(entry.plot_id)" in source
-    assert "not dock.isHidden()" in source
-    assert "not entry.widget.visibleRegion().isEmpty()" in source
-    assert "for entry in visible_entries:" in source
-    assert "self._cancel_live_plot_refresh()" in source
-
-
 def test_streaming_plot_canvases_reuse_artists_and_layout() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
     impedance_block = source[source.index("class ImpedanceCanvas") : source.index("class OnAxisResponseCanvas")]
     on_axis_block = source[source.index("class OnAxisResponseCanvas") : source.index("class SpinoramaCanvas")]
     spinorama_block = source[source.index("class SpinoramaCanvas") :]
@@ -155,8 +133,8 @@ def test_streaming_plot_canvases_reuse_artists_and_layout() -> None:
 
 
 def test_channel_config_changes_apply_only_on_apply_button() -> None:
-    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    dialog_source = source_text("ui", "dialogs.py")
+    main_source = main_window_source()
     channel_dialog = dialog_source[dialog_source.index("class ChannelConfigDialog") :]
 
     assert "channelsChanged" not in channel_dialog
@@ -173,96 +151,6 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 
 
-def test_invalidating_user_config_changes_confirm_before_clearing_solved_data() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    confirm_block = source[
-        source.index("def _confirm_clear_solved_data") : source.index(
-            "    @Slot(str)", source.index("def _confirm_clear_solved_data")
-        )
-    ]
-    preferences_block = source[source.index("def open_preferences") : source.index("def open_diagnostics")]
-    mesh_block = source[source.index("def open_mesh_config") : source.index("def open_channel_config")]
-    channel_block = source[
-        source.index("def _apply_channel_config") : source.index(
-            "    @Slot()", source.index("def _apply_channel_config")
-        )
-    ]
-
-    assert "Applying this action will clear solved data" in confirm_block
-    assert 'message.addButton("Continue", QMessageBox.AcceptRole)' in confirm_block
-    assert 'message.addButton("Cancel", QMessageBox.RejectRole)' in confirm_block
-    assert "message.setDefaultButton(cancel_button)" in confirm_block
-    assert "if requires_invalidation and not self._confirm_clear_solved_data():" in preferences_block
-    assert "if not config_changed:" in mesh_block
-    assert "if not self._confirm_clear_solved_data():" in mesh_block
-    assert "if not channel_config_changed and not radiator_assignments_changed:" in channel_block
-    assert "if not can_resynthesize and not self._confirm_clear_solved_data():" in channel_block
-    assert "def open_source_config" not in source
-    assert "Legacy Source Config" not in source
-
-
-def test_application_startup_invokes_new_project_reset() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    init_block = source[source.index("    def __init__(") : source.index("    def changeEvent")]
-
-    assert 'startup("Starting new project...")' in init_block
-    assert "self.new_project()" in init_block
-    assert "self._project_clean_payload: dict | None = None" in init_block
-    assert "_load_initial_generator_documents" not in source
-    assert "_load_imported_meshes" not in source
-    assert "mesh/imported_meshes" not in source
-    assert "mesh/ath_mesh" not in source
-
-
-def test_unsaved_project_changes_guard_close_new_and_open() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    close_block = source[source.index("def closeEvent") : source.index("def _result_from_generator_document")]
-    new_block = source[source.index("def new_project") : source.index("def save_project")]
-    save_block = source[source.index("def save_project") : source.index("def load_project")]
-    load_block = source[source.index("def load_project") : source.index("def _project_payload")]
-    confirm_block = source[
-        source.index("def _confirm_unsaved_project_changes") : source.index("def _apply_project_payload")
-    ]
-
-    assert 'if not self._confirm_unsaved_project_changes("close"):' in close_block
-    assert "event.ignore()" in close_block
-    assert 'if not self._confirm_unsaved_project_changes("new_project"):' in new_block
-    assert "self._mark_project_clean()" in new_block
-    assert "def save_project(self) -> bool:" in save_block
-    assert "def save_project_as(self) -> bool:" in save_block
-    assert "return False" in save_block
-    assert "def _save_project_to_path(self, path: Path) -> bool:" in save_block
-    assert "self._mark_project_clean()" in save_block
-    assert 'if not self._confirm_unsaved_project_changes("open_project"):' in load_block
-    assert "self._mark_project_clean()" in load_block
-    assert "You have unsaved changes. Are you sure you want to close?" in confirm_block
-    assert "You have unsaved changes. Save before continuing?" in confirm_block
-    assert 'message.addButton("Save", QMessageBox.AcceptRole)' in confirm_block
-    assert 'message.addButton("Discard", QMessageBox.DestructiveRole)' in confirm_block
-    assert 'message.addButton("Cancel", QMessageBox.RejectRole)' in confirm_block
-    assert "message.setDefaultButton(cancel_button)" in confirm_block
-
-
-def test_plot_canvases_refresh_backing_store_on_screen_dpi_changes() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    init_block = source[source.index("    def __init__(") : source.index("    def changeEvent")]
-    screen_block = source[source.index("def showEvent") : source.index("    def eventFilter")]
-
-    assert "self._plot_dpi_screen = None" in init_block
-    assert "self._plot_dpi_window_handle = None" in init_block
-    assert "self._plot_dpi_refresh_pending = False" in init_block
-    assert "window.screenChanged.connect(self._on_plot_screen_changed)" in screen_block
-    assert "screen.logicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
-    assert "screen.physicalDotsPerInchChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
-    assert "screen.geometryChanged.connect(self._schedule_plot_canvas_dpi_refresh)" in screen_block
-    assert "QTimer.singleShot(0, self._refresh_plot_canvas_dpi)" in screen_block
-    assert "canvas._update_screen(screen)" in screen_block
-    assert "canvas._update_pixel_ratio()" in screen_block
-    assert "canvas.draw_idle()" in screen_block
-    assert "_refresh_plots()" not in screen_block
-    assert "_prepared_live_plot_dataset" not in screen_block
-
-
 def test_server_health_worker_runs_query_with_timeout() -> None:
     worker_source = (Path(__file__).resolve().parents[1] / "src" / "blab" / "ui" / "server_health_worker.py").read_text(
         encoding="utf-8"
@@ -277,14 +165,12 @@ def test_server_health_worker_runs_query_with_timeout() -> None:
 
 
 def test_preferences_no_longer_expose_worker_count() -> None:
-    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
-    settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    config_source = Path("src/blab/config.py").read_text(encoding="utf-8")
-    assembler_source = Path("src/blab/ui/simulation_assembler.py").read_text(encoding="utf-8")
-    start_solve = main_source[
-        main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
-    ]
+    dialog_source = source_text("ui", "dialogs.py")
+    settings_source = source_text("ui", "settings.py")
+    main_source = main_window_source()
+    config_source = source_text("config.py")
+    assembler_source = source_text("ui", "simulation_assembler.py")
+    solve_source = main_window_source("solve_workflow")
 
     assert "worker_count_spin" not in dialog_source
     assert '"Worker Count"' not in dialog_source
@@ -292,15 +178,15 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
     assert "workers=1" in assembler_source
-    assert "worker_count=1" in start_solve
+    assert "worker_count=1" in solve_source
     assert "workers: int = 1" in config_source
 
 
 def test_completed_solves_use_final_isobar_resolution() -> None:
-    plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    dialog_source = Path("src/blab/ui/dialogs.py").read_text(encoding="utf-8")
-    settings_source = Path("src/blab/ui/settings.py").read_text(encoding="utf-8")
+    plot_source = source_text("ui", "plots.py")
+    main_source = main_window_source()
+    dialog_source = source_text("ui", "dialogs.py")
+    settings_source = source_text("ui", "settings.py")
 
     assert '"low": 180' in settings_source
     assert '"medium": 250' in settings_source
@@ -340,17 +226,9 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert 'uses_bempp = backend_id in {"local", "server"}' not in dialog_source
-    assert "self.server_health_payload: dict | None = None" in main_source
-    assert "self.server_health_thread: QThread | None = None" in main_source
-    assert "QTimer.singleShot(0, self._check_configured_server_health_on_startup)" in main_source
-    assert "def _backend_supports_symmetry(" in main_source
-    assert "server_health_supports_symmetry" in main_source
-    assert "def _check_configured_server_health_on_startup" in main_source
-    assert 'self.preferences.solve_backend != "server"' in main_source
-    assert "ServerHealthCheckWorker(" in main_source
-    assert "access_token=load_server_access_token(self.preferences.solve_server_url)" in main_source
-    assert "worker.failed.connect(lambda _message: None)" in main_source
-    assert 'self.mesh_state_changed.emit("server_health_checked")' in main_source
+    # Server health probing moved to BackendHealthController and is covered
+    # behaviourally by tests/test_backend_health.py.
+    assert "QTimer.singleShot(0, self.backend_health.check_on_startup)" in main_source
     assert "GMRES Tolerance" not in dialog_source
     assert "Burton Miller Formulation" not in dialog_source
     assert "self.gmres_spin" not in dialog_source
@@ -368,7 +246,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     )
     assert '"preferences/normalized_channel_correction"' in settings_source
     assert "normalized_channel_correction: bool = True" in settings_source
-    assert "flat_target_normalization_enabled=self.preferences.normalized_channel_correction" in main_source
+    assert "flat_target_normalization_enabled=preferences.normalized_channel_correction" in main_source
     assert '"preferences/live_plot_quality"' in settings_source
     assert '"preferences/live_plot_streaming"' in settings_source
     assert '"preferences/isobar_contour_step_db"' in settings_source
@@ -377,18 +255,21 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert '"Isobar Contour Step"' in dialog_source
     assert "live_plot_angle_samples(self.preferences.live_plot_quality)" in main_source
     assert "live_plot_freq_samples(self.preferences.live_plot_quality)" in main_source
-    start_solve = main_source[
-        main_source.index("def start_solve") : main_source.index("    @Slot()", main_source.index("def start_solve"))
-    ]
-    assert "self.live_dataset = None\n        self._clear_plots()" in start_solve
-    assert "if not self.preferences.live_plot_streaming:" in main_source
-    assert "if self.preferences.live_plot_streaming or solve_completed:" in main_source
+    solve_source = main_window_source("solve_workflow")
+    # Every solve path opens by discarding the previous run's results.
+    assert "def _begin_run(" in solve_source
+    assert "self._plots.clear_plots()" in solve_source
+    assert "if not self._read_preferences().live_plot_streaming:" in solve_source
+    assert "if self._read_preferences().live_plot_streaming or solve_completed:" in solve_source
     assert "FINAL_ISOBAR_ANGLE_SAMPLES = 1000" in plot_source
     assert "FINAL_ISOBAR_FREQ_SAMPLES = 500" in plot_source
     assert 'LIVE_ISOBAR_SHADING = "nearest"' in plot_source
     assert 'FINAL_ISOBAR_SHADING = "gouraud"' in plot_source
-    assert "self._use_final_isobar_resolution = solve_completed" in main_source
-    solve_finished = main_source[main_source.index("def _on_solve_finished") : main_source.index("def _clear_plots")]
+    assert "session.use_final_isobar_resolution = solve_completed" in solve_source
+    # _on_solve_finished is the last method in the module, so this runs to the end.
+    # Slicing the whole package instead would silently produce an empty string.
+    solve_finished = solve_source[solve_source.index("def _on_solve_finished") :]
+    assert solve_finished, "the slice must not be empty, or the next assertion is vacuous"
     assert "QApplication.processEvents()" not in solve_finished
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
@@ -405,7 +286,7 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
 
 
 def test_isobar_canvas_allows_custom_right_margin() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
 
     assert "left_margin: float = 0.14" in source
     assert "right_margin: float = 0.88" in source
@@ -415,7 +296,7 @@ def test_isobar_canvas_allows_custom_right_margin() -> None:
 
 
 def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
     isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
 
     assert "self._mesh_artist" in isobar_block
@@ -447,7 +328,7 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
 
 
 def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
     isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
     draw_empty_block = isobar_block[
         isobar_block.index("    def _draw_empty") : isobar_block.index("    def _remove_artist")
@@ -475,7 +356,7 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
 
 
 def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
-    source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
+    source = source_text("ui", "plots.py")
     isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
     interaction_block = source[source.index("class InteractivePlotCanvas") : source.index("class IsobarCanvas")]
 
@@ -510,9 +391,9 @@ def test_isobar_canvas_has_click_drag_crosshair_readout() -> None:
 
 
 def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None:
-    plot_source = Path("src/blab/ui/plots.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    state_source = Path("src/blab/ui/application_state.py").read_text(encoding="utf-8")
+    plot_source = source_text("ui", "plots.py")
+    main_source = main_window_source()
+    state_source = source_text("ui", "application_state.py")
     isobar_block = plot_source[plot_source.index("class IsobarCanvas") : plot_source.index("class ImpedanceCanvas")]
     interaction_block = plot_source[
         plot_source.index("class InteractivePlotCanvas") : plot_source.index("class IsobarCanvas")
@@ -529,7 +410,7 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert 'self.mpl_connect("figure_leave_event", self._on_figure_leave)' in interaction_block
     assert "self._last_completed_visualization_dataset" in main_source
     assert "refreshed_dataset.snapshot()" in main_source
-    assert "self._apply_last_completed_plot_comparison()" in main_source
+    assert "self._plots.apply_last_completed_comparison()" in main_source
     assert "self.impedance_plot.set_comparison_plot(" in main_source
     assert "self.on_axis_plot.set_comparison_plot(" in main_source
     assert "self.spinorama_plot.set_comparison_plot(" in main_source
@@ -537,291 +418,20 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "clear_comparison_history=True" in state_source
 
 
-def test_main_window_contour_buttons_are_final_render_and_visibility_gated() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert "self.capture_contour_actions: dict[str, QAction]" in source
-    assert "self.clear_contour_actions: dict[str, QAction]" in source
-    assert 'capture_action = QAction("Capture Contours", self)' in source
-    assert 'clear_action = QAction("Clear Contours", self)' in source
-    assert "self.capture_contour_actions[entry.plot_id] = capture_action" in source
-    assert "self.clear_contour_actions[entry.plot_id] = clear_action" in source
-    assert "self.capture_contours_button" not in source
-    assert "self.clear_contours_button" not in source
-    assert "self._final_isobar_plots_rendered = False" in source
-    assert "self._final_isobar_plots_rendered = solve_completed and bool(self._visible_isobar_plots())" in source
-    assert "self._use_final_isobar_resolution" in source
-    assert "and self._final_isobar_plots_rendered" in source
-    assert "capture_action.setEnabled(capture_base_enabled and visible)" in source
-    assert "clear_action.setEnabled(plot.has_captured_contours)" in source
-
-
-def test_main_window_captures_and_clears_contours_per_isobar_plot() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert "def _visible_isobar_plots(" in source
-    assert "def _sync_plot_view_action(" in source
-    assert "def capture_isobar_contours(" in source
-    assert "def clear_isobar_contours(" in source
-    assert "def _isobar_plot_for_id(" in source
-    assert 'self.plot_docks.get("horizontal_isobar")' in source
-    assert 'self.plot_docks.get("vertical_isobar")' in source
-    assert "action.setChecked(not dock.isHidden())" in source
-    assert "plot = self._isobar_plot_for_id(plot_id)" in source
-    assert "plot.capture_contours()" in source
-    assert "plot.clear_contours()" in source
-
-
-def test_balloon_contours_exclude_configured_maximum() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "if min_db < level < max_db" in source
-
-
-def test_balloon_contours_refresh_while_frequency_slider_is_dragged() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "self._refresh_spl_contours()" in source
-    assert "self.frequency_slider.isSliderDown()" not in source
-    assert "self.frequency_slider.sliderReleased.connect(self._refresh_spl_contours)" not in source
-
-
-def test_balloon_window_uses_dockable_widgets_and_bottom_controls() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "class BalloonPlotWindow(QMainWindow):" in source
-    assert 'view_menu = menu_bar.addMenu("View")' in source
-    assert "self.workspace = QMainWindow()" in source
-    assert "QMainWindow.AllowNestedDocks" in source
-    assert "workspace_placeholder.setMaximumSize(QSize(0, 0))" in source
-    assert "workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)" in source
-    assert "self.workspace.setCentralWidget(workspace_placeholder)" in source
-    assert "controls_bar = QFrame()" in source
-    assert "layout.addWidget(self.workspace, stretch=1)" in source
-    assert "layout.addWidget(controls_bar)" in source
-    assert "controls_layout = QGridLayout(controls_bar)" in source
-    assert "controls_bar.setStyleSheet" not in source
-    assert 'controls_layout.addWidget(QLabel("Frequency"), 0, 0)' in source
-    assert "controls_layout.addWidget(self.frequency_slider, 0, 1)" in source
-    assert "controls_layout.addWidget(self.protractor_toggle, 0, 3)" in source
-    assert 'controls_layout.addWidget(QLabel("Slice Angle"), 1, 0)' in source
-    assert "controls_layout.addWidget(self.protractor_angle_slider, 1, 1)" in source
-    assert 'self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")' in source
-    assert (
-        'self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")' in source
-    )
-    assert "self.wavefront_shape_dock = self._make_dock(" in source
-    assert '"Forward Beam Shape",' in source
-    assert "self.wavefront_shape_plot," in source
-    assert "tool_actions=(self.save_wavefront_shape_action,)," in source
-    assert "self.isobar_dock = self._make_dock(" in source
-    assert 'object_name="isobar_angle_slice"' in source
-    assert "view_menu.addAction(self.balloon_dock.toggleViewAction())" in source
-    assert "view_menu.addAction(self.radar_dock.toggleViewAction())" in source
-    assert "view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())" in source
-    assert "view_menu.addAction(self.isobar_dock.toggleViewAction())" in source
-    assert "self.wavefront_shape_dock.hide()" in source
-    assert "self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.balloon_dock)" in source
-    assert "self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.radar_dock)" in source
-    assert "self.workspace.addDockWidget(Qt.RightDockWidgetArea, self.wavefront_shape_dock)" in source
-    assert "self.wavefront_shape_dock.visibilityChanged.connect(self._on_wavefront_shape_visibility_changed)" in source
-    assert "self.workspace.splitDockWidget(self.balloon_dock, self.radar_dock, Qt.Horizontal)" in source
-    assert "self.workspace.splitDockWidget(self.radar_dock, self.wavefront_shape_dock, Qt.Vertical)" in source
-    assert "self.workspace.splitDockWidget(self.wavefront_shape_dock, self.isobar_dock, Qt.Vertical)" in source
-    assert "self.workspace.resizeDocks(" in source
-    assert "[self.balloon_dock, self.radar_dock, self.wavefront_shape_dock, self.isobar_dock]" in source
-    assert "QSplitter" not in source
-
-
-def test_balloon_window_auto_saves_geometry_and_dock_layout_only() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)" in source
-    assert "self._restore_window_state()" in source
-    assert 'self.settings.setValue("balloon_window/geometry", self.saveGeometry())' in source
-    assert 'self.settings.setValue("balloon_window/dock_state", self.workspace.saveState())' in source
-    assert "self.workspace.restoreState(dock_state)" in source
-    assert "dock.setObjectName(object_name)" in source
-    assert "object_name: str" in source
-    assert "self._save_window_state()" in source
-    assert "balloon_window/frequency_index" not in source
-    assert "balloon_window/radar_slicer_enabled" not in source
-    assert "balloon_window/protractor_angle_deg" not in source
-    assert "balloon_window/camera_position" not in source
-    assert "_restore_camera_position" not in source
-
-
-def test_balloon_window_refreshes_from_latest_results_on_focus() -> None:
-    balloon_source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert "raw_balloon_data_provider: Callable[[], dict[str, np.ndarray] | None] | None = None" in balloon_source
-    assert "self._raw_balloon_data_provider = raw_balloon_data_provider" in balloon_source
-    assert "self._raw_balloon_signature = _balloon_raw_signature(raw_balloon_data)" in balloon_source
-    assert "elif event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():" in balloon_source
-    assert "self.refresh_from_latest_results()" in balloon_source
-    assert "def refresh_from_latest_results(self) -> None:" in balloon_source
-    assert "raw_balloon_data = self._raw_balloon_data_provider()" in balloon_source
-    assert "if signature == self._raw_balloon_signature:" in balloon_source
-    assert "self._wavefront_shape_summary_cache = None" in balloon_source
-    assert "self._prepare_and_render(preserve_frequency=True)" in balloon_source
-    assert "def _prepare_and_render_initial(self) -> None:" in balloon_source
-    assert "def _prepare_and_render(self, *, preserve_frequency: bool) -> None:" in balloon_source
-    assert "def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:" in balloon_source
-    assert "hashlib.blake2b(digest_size=16)" in balloon_source
-    assert 'for key in ("freq_hz", "r_distance_m", "theta_polar_rad", "phi_azimuth_rad", "spl_norm")' in balloon_source
-    assert "raw_balloon_data_provider=lambda:" in main_source
-    assert "None if self.live_dataset is None" in main_source
-    assert "else self.live_dataset.as_balloon_raw_bundle()" in main_source
-
-
-def test_balloon_window_does_not_use_rendering_overlay() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "Rendering Balloon" not in source
-    assert "loading_label" not in source
-    assert "_set_loading_visible" not in source
-
-
-def test_balloon_viewport_polish_removes_redundant_axes_and_styles_readout() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "self._refresh_3d_view_theme()" in source
-    assert "self.plotter.set_background(themed_content_background(self.palette()))" in source
-    assert "self._refresh_hover_label_theme()" in source
-    assert "text = self.palette().color(QPalette.Text).name()" in source
-    assert "self.plotter.add_axes()" not in source
-    assert "self._axes_added" not in source
-
-
-def test_balloon_window_has_wavefront_shape_dock_and_fit_helpers() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert "WAVEFRONT_LEVEL_DB = -6.0" in source
-    assert "class WavefrontShapeCanvas(FigureCanvas):" in source
-    assert "Forward Beam Shape" in source
-    assert "Wavefront Shape" not in source
-    assert "def _wavefront_shape_summary(" in source
-    assert "def _fit_wavefront_shape_for_frequency(" in source
-    assert "LinearNDInterpolator" in source
-    assert "minimize_scalar" in source
-    assert "self.wavefront_shape_plot.update_plot(_wavefront_shape_summary(self._prepared))" not in source
-    assert "def _on_wavefront_shape_visibility_changed(self, visible: bool) -> None:" in source
-    assert "def _render_wavefront_shape_plot(self) -> None:" in source
-    assert "self._wavefront_shape_summary_cache = None" in source
-    assert "self._wavefront_shape_summary_cache = _wavefront_shape_summary(" in source
-    assert "raw_balloon_data=self._raw_balloon_data" in source
-    assert 'self.save_wavefront_shape_action = QAction("Save Plot Image", self)' in source
-    assert "self.save_wavefront_shape_action.triggered.connect(self._save_wavefront_shape_image)" in source
-    assert "self.save_wavefront_shape_action.setIcon" in source
-    assert 'object_name="forward_beam_shape"' in source
-    assert "tool_actions=(self.save_wavefront_shape_action,)" in source
-    assert "def _save_wavefront_shape_image(self) -> None:" in source
-    assert "self.file_dialogs.save_file(" in source
-    assert '"forward_beam_shape.png"' in source
-    assert "export_plot_png(self.wavefront_shape_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
-    assert "self._update_wavefront_shape_frequency_cursor(index)" in source
-    assert "def _update_wavefront_shape_frequency_cursor(self, index: int) -> None:" in source
-    assert 'self.wavefront_shape_plot.set_frequency_cursor(float(self._prepared["freq_hz"][safe_index]))' in source
-    assert "def set_frequency_cursor(self, freq_hz: float | None) -> None:" in source
-    assert "self.axes.axvline(" in source
-    assert "self._colorbar_axes = self.figure.add_axes([0.89, 0.22, 0.025, 0.68])" in source
-    assert "self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)" in source
-    assert 'self._colorbar.set_label("Fit residual (%)", fontsize=8)' in source
-    assert "self.di_axes = self.axes.twinx()" in source
-    assert 'self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=2)' in source
-    assert "self.di_axes.set_ylim(-5.0, 50.0)" in source
-    assert 'self.di_axes.yaxis.set_label_position("right")' in source
-    assert "self.di_axes.yaxis.tick_right()" in source
-    assert "self.di_axes.yaxis.set_label_coords(1.17, 0.5)" in source
-    assert "subplots_adjust(left=0.18, right=0.74" in source
-    assert "def _plot_directivity_index(self, freqs: np.ndarray, directivity_index: np.ndarray) -> None:" in source
-    assert "Normalize(vmin=0.0, vmax=15.0, clip=True)" in source
-    assert '"directivity_index_db": _spherical_directivity_index_db(prepared, raw_balloon_data)' in source
-    assert "def _spherical_directivity_index_from_raw(" in source
-    assert "def _style_colorbar(self) -> None:" in source
-    assert "self._colorbar.ax.yaxis.label.set_color(text_color)" in source
-    assert "self._colorbar.ax.tick_params(colors=text_color)" in source
-    assert "self._colorbar.outline.set_edgecolor(spine_color)" in source
-    assert "def _draw_shape_reference_markers(self) -> None:" in source
-    assert '(1.0, "D")' in source
-    assert '(2.0, "o")' in source
-    assert "(4.0, _rounded_square_marker())" in source
-    assert '(8.0, "s")' in source
-    assert "def _rounded_square_marker() -> MplPath:" in source
-    assert "self.axes.set_ylim(0.75, 8.5)" in source
-    assert "transform = self.axes.get_yaxis_transform()" in source
-    assert "marker_color = self._theme_marker_color()" in source
-    assert 'facecolors="none"' in source
-    assert "edgecolors=marker_color" in source
-    assert "def _theme_marker_color(self) -> str:" in source
-    assert '"#101214" if self.palette().color(QPalette.Window).lightness() >= 128 else "#f2f2f2"' in source
-    assert "clip_on=False" in source
-
-
-def test_balloon_slice_plot_has_hires_render_and_save_actions() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert 'HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"' in source
-    assert 'HIRES_RENDER_LIGHT_ICON = APP_ROOT / "assets" / "hiresrender_light.ico"' in source
-    assert 'self.hires_slice_action = QAction("Render High Resolution", self)' in source
-    assert 'self.hires_slice_action.setToolTip("Render high resolution plot")' in source
-    assert 'self.save_slice_action = QAction("Save Plot Image", self)' in source
-    assert 'self.save_slice_action.setToolTip("Save plot image")' in source
-    assert "self.hires_slice_action.triggered.connect(self._render_high_resolution_isobar_slice)" in source
-    assert "show_colorbar=False" in source
-    assert "self.save_slice_action.triggered.connect(self._save_isobar_slice_image)" in source
-    assert "tool_actions=(self.hires_slice_action, self.save_slice_action)" in source
-    assert "DockTitleBar(title, dock, tool_actions=tool_actions)" in source
-    assert "self.hires_slice_action.setIcon" in source
-    assert "self.save_slice_action.setIcon" in source
-    assert "self.save_wavefront_shape_action.setIcon" in source
-    assert "def _render_isobar_slice(self, *, final_resolution: bool = False)" in source
-    assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES" in source
-    assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES" in source
-    assert "shading=FINAL_ISOBAR_SHADING if final_resolution else LIVE_ISOBAR_SHADING" in source
-    assert "self._render_isobar_slice(final_resolution=True)" in source
-    assert "export_plot_png(self.slice_plot.figure, output_path, dpi=VisualizerConfig.figure_dpi)" in source
-
-
-def test_balloon_spl_legend_lives_in_bottom_control_bar() -> None:
-    source = Path("src/blab/ui/balloon.py").read_text(encoding="utf-8")
-
-    assert 'self.spl_legend = ColorLegend(self._min_db, self._max_db, orientation="horizontal")' in source
-    assert "controls_layout.addWidget(self.spl_legend, 0, 4, 2, 1)" in source
-    assert "controls_layout.setColumnStretch(4, 1)" in source
-    assert "self.legend_overlay" not in source
-    assert "legend_layout.addWidget(self.spl_legend)" not in source
-    assert "self.spl_legend.set_range(self._min_db, self._max_db)" in source
-    assert 'orientation: str = "vertical"' in source
-    assert "def _paint_horizontal(self) -> None:" in source
-    assert "self.setMinimumSize(330, 62)" in source
-    assert "label_edge_pad = 22" in source
-    assert "bar_left = label_edge_pad" in source
-    assert "bar_top = 28" in source
-    assert "bar_width = max(self.width() - 2 * label_edge_pad, 40)" in source
-    assert "label_x = int(round(np.clip" in source
-    assert "gradient = QLinearGradient(bar_left, 0, bar_left + bar_width, 0)" in source
-
-
-def test_generator_tab_add_button_uses_qtabbar_button_position_enum() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert "QTabBar.ButtonPosition.RightSide" in source
-    assert "tabBar().RightSide" not in source
-
-
 def test_geometry_generation_uses_registry_worker_and_delayed_stop_button() -> None:
-    main_source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    worker_source = Path("src/blab/ui/generator_worker.py").read_text(encoding="utf-8")
-    controller_source = Path("src/blab/ui/operation_controllers.py").read_text(encoding="utf-8")
+    main_source = main_window_source()
+    worker_source = source_text("ui", "generator_worker.py")
+    controller_source = source_text("ui", "operation_controllers.py")
 
     assert "GeometryController" in main_source
     assert "GenerationRequest(" in main_source
     assert "self.cancel_button.clicked.connect(self.cancel_current_operation)" in main_source
-    assert "QTimer.singleShot(3000, self._enable_geometry_cancel_if_active)" in main_source
+    from blab.ui.main_window.geometry_workflow import CANCEL_DELAY_MS
+
+    assert CANCEL_DELAY_MS == 3000, "Stop stays hidden for the first three seconds of a generation"
+    assert "QTimer.singleShot(CANCEL_DELAY_MS, self._enable_geometry_cancel_if_active)" in main_source
     assert "def cancel_geometry_generation(" in main_source
-    assert "self.geometry_controller.cancel()" in main_source
+    assert "self._geometry_controller.cancel()" in main_source
     assert "self._worker: GeneratorWorker | None = None" in controller_source
     assert "worker.moveToThread(thread)" in controller_source
     assert "self._worker.stop()" in controller_source

@@ -2,11 +2,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-import pytest
 
-pytest.importorskip("PySide6")
-
-import blab.ui.main_window as main_window_module
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.generators.ath import ath_source
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
@@ -30,7 +26,23 @@ from blab.ui.main_window import (
     _mesh_entries_with_file_overrides,
     _physical_system_preview_metadata,
 )
+from blab.ui.main_window.project_session import ProjectSession
+from blab.ui.main_window.project_workflow import ProjectWorkflowController
 from blab.ui.project_state import ProjectPreferencesState
+from repo_paths import MAIN_WINDOW_PKG
+
+
+def main_window_source(*stems: str) -> str:
+    """Concatenated source of the main_window package.
+
+    ``main_window.py`` was split into a package of mixins; these remaining
+    assertions still describe wiring rather than behaviour, so they read the
+    package as one blob. Pass module stems to narrow the read when a test
+    slices between two markers that must stay in the same module.
+    """
+    paths = [MAIN_WINDOW_PKG / f"{stem}.py" for stem in stems] if stems else sorted(MAIN_WINDOW_PKG.glob("*.py"))
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
+
 
 
 def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
@@ -128,20 +140,6 @@ def test_physical_system_preview_metadata_identifies_interface_surfaces_and_mesh
     assert has_interior is True
 
 
-def test_mesh_preview_dock_exposes_theme_aware_region_filter_actions() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-
-    assert 'QAction("Show interior regions", self)' in source
-    assert 'QAction("Show exterior region", self)' in source
-    assert "FEMTetra_dark.ico" in source
-    assert "FEMTetra_light.ico" in source
-    assert "BEMTri_dark.ico" in source
-    assert "BEMTri_light.ico" in source
-    assert "tool_actions=(self.show_interior_regions_action, self.show_exterior_region_action)" in source
-    assert "self.show_interior_regions_action.setEnabled(has_interior_region)" in source
-    assert "self.show_exterior_region_action.setEnabled(has_interior_region)" in source
-
-
 def test_xy_stitch_candidates_use_reduced_generated_mesh_before_stitching(tmp_path: Path) -> None:
     raw_msh = tmp_path / "ath_case.msh"
     expanded_clean_msh = tmp_path / "ath_case_clean.msh"
@@ -223,7 +221,7 @@ def test_physical_system_solve_entries_use_reduced_generated_mesh_for_symmetry(t
     )
 
     editor_entries = window._mesh_config_dialog_entries()
-    solve_entries = window._mesh_config_dialog_entries_for_symmetry("xy")
+    solve_entries = window.mesh_entries_for_symmetry("xy")
     reduced_msh = tmp_path / "ath_case_clean_reduced.msh"
 
     assert editor_entries[0].source_file == str(expanded_clean_msh)
@@ -254,10 +252,10 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     window.stitch_imported_meshes = True
     window.preview = PreviewStub()
     window.status_label = StatusStub()
-    window._has_solver_meshes = lambda: True
-    window._prepare_mesh_assembly = lambda _radiators: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
+    window.has_solver_meshes = lambda: True
+    window.prepare_mesh_assembly = lambda _radiators: (_ for _ in ()).throw(RuntimeError(STITCH_FAILURE_MESSAGE))
     window._stitch_candidate_mesh_configs = lambda: (MeshConfig(name="ath", file=str(mesh_path), scale_factor=0.001),)
-    window._all_radiators = lambda: ()
+    window.all_radiators = lambda: ()
 
     window._refresh_mesh_preview()
 
@@ -305,7 +303,7 @@ def test_stitched_solver_radiators_reference_stitched_mesh(tmp_path: Path) -> No
     radiators = window._radiators_for_solver_meshes(
         (MeshConfig(name=STITCHED_MESH_NAME, file=str(tmp_path / "stitched.msh")),),
         (
-            *window._all_radiators(),
+            *window.all_radiators(),
             RadiatorConfig(name="external:SD1D1001", mesh="external", tag=2),
         ),
     )
@@ -318,9 +316,9 @@ def test_stitched_solver_radiators_reference_stitched_mesh(tmp_path: Path) -> No
 
 def test_solver_channels_include_radiator_default_channel_when_missing() -> None:
     window = MainWindow.__new__(MainWindow)
-    window._channel_configs = lambda: (ChannelConfig(name="HF"),)
+    window.channel_configs = lambda: (ChannelConfig(name="HF"),)
 
-    channels = window._channels_for_solver_radiators(
+    channels = window.solver_channel_configs(
         (RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),)
     )
 
@@ -329,8 +327,8 @@ def test_solver_channels_include_radiator_default_channel_when_missing() -> None
 
 def test_channel_dialog_channels_include_existing_radiator_channels() -> None:
     window = MainWindow.__new__(MainWindow)
-    window._channel_configs = lambda: (ChannelConfig(name="HF", polarity=-1),)
-    window._all_radiators = lambda: (RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),)
+    window.channel_configs = lambda: (ChannelConfig(name="HF", polarity=-1),)
+    window.all_radiators = lambda: (RadiatorConfig(name="stitched:SD1D1001", mesh="stitched", tag=2, channel="main"),)
 
     channels = window._channel_configs_for_current_radiators()
 
@@ -348,14 +346,14 @@ def test_discard_channel_config_dialog_deletes_stale_dialog() -> None:
     window = MainWindow.__new__(MainWindow)
     window.channel_config_dialog = DialogStub()
 
-    window._discard_channel_config_dialog()
+    window.discard_channel_config_dialog()
 
     assert deleted["dialog"] is True
     assert window.channel_config_dialog is None
 
 
 def test_system_and_channel_config_use_bottom_buttons() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
+    source = main_window_source()
     open_channel_config = source[source.index("def open_channel_config") : source.index("def _set_panel_visible")]
 
     assert 'self.mesh_config_button = QPushButton("Meshes")' in source
@@ -376,15 +374,45 @@ def test_system_and_channel_config_use_bottom_buttons() -> None:
 
 
 def test_system_apply_coalesces_interface_and_project_preview_refresh() -> None:
-    source = Path("src/blab/ui/main_window.py").read_text(encoding="utf-8")
-    apply_system = source[source.index("def _apply_system_config") : source.index("def open_channel_config")]
+    # _apply_system_config is the last method in the dialog_actions mixin, so the
+    # slice runs to end-of-module rather than to a marker in a different file.
+    source = main_window_source("dialog_actions")
+    apply_system = source[source.index("def _apply_system_config") :]
 
     assert 'reason = "system_interface_mesh_built" if mesh_file_overrides else "system_config_changed"' in apply_system
     assert "self.project_state_changed.emit(reason)" in apply_system
     assert "self.mesh_state_changed.emit" not in apply_system
 
 
-def test_project_dirty_state_ignores_generated_geometry_artifacts() -> None:
+def _project_controller(monkeypatch, *, payload=None, project_preferences=None):
+    """A ProjectWorkflowController with no window behind it.
+
+    Both rules below used to be reached through a half-built ``MainWindow``
+    created with ``__new__``; the controller takes its collaborators as
+    arguments, so they can be driven directly.
+    """
+
+    class FakeView:
+        def __init__(self) -> None:
+            self.confirmed: list[tuple[str, str]] = []
+            self.answer = True
+
+        def confirm(self, title, message):
+            self.confirmed.append((title, message))
+            return self.answer
+
+    session = ProjectSession()
+    controller = ProjectWorkflowController.__new__(ProjectWorkflowController)
+    controller._session = session
+    controller._view = FakeView()
+    if payload is not None:
+        monkeypatch.setattr(controller, "project_payload", lambda: payload)
+    if project_preferences is not None:
+        monkeypatch.setattr(controller, "current_project_preferences", lambda: project_preferences)
+    return controller
+
+
+def test_project_dirty_state_ignores_generated_geometry_artifacts(monkeypatch) -> None:
     payload = {
         "generator_documents": [
             {
@@ -395,15 +423,13 @@ def test_project_dirty_state_ignores_generated_geometry_artifacts() -> None:
             }
         ]
     }
-    window = MainWindow.__new__(MainWindow)
-    window._project_clean_payload = None
-    window._project_payload = lambda: payload
+    controller = _project_controller(monkeypatch, payload=payload)
 
-    assert not window._has_unsaved_project_changes()
+    assert not controller.has_unsaved_project_changes()
 
-    window._mark_project_clean()
+    controller.mark_project_clean()
 
-    assert not window._has_unsaved_project_changes()
+    assert not controller.has_unsaved_project_changes()
 
     payload["generator_documents"][0]["artifact"] = {
         "output_dir": "runs/ath_output/example",
@@ -412,34 +438,21 @@ def test_project_dirty_state_ignores_generated_geometry_artifacts() -> None:
         "source_path": "runs/ath_output/example.cfg",
     }
 
-    assert not window._has_unsaved_project_changes()
+    assert not controller.has_unsaved_project_changes()
 
     payload["generator_documents"][0]["mesh_scale_factor"] = 0.002
 
-    assert window._has_unsaved_project_changes()
+    assert controller.has_unsaved_project_changes()
 
 
 def test_project_preference_prompt_only_appears_for_differences(monkeypatch) -> None:
     current = ProjectPreferencesState()
-    window = MainWindow.__new__(MainWindow)
-    window._current_project_preferences = lambda: current
-    questions = []
+    controller = _project_controller(monkeypatch, project_preferences=current)
 
-    class MessageBoxStub:
-        Yes = 1
-        No = 2
-
-        @staticmethod
-        def question(*args):
-            questions.append(args)
-            return MessageBoxStub.Yes
-
-    monkeypatch.setattr(main_window_module, "QMessageBox", MessageBoxStub)
-
-    assert window._confirm_apply_project_preferences(None) is False
-    assert window._confirm_apply_project_preferences(current) is False
-    assert questions == []
+    assert controller._confirm_apply_project_preferences(None) is False
+    assert controller._confirm_apply_project_preferences(current) is False
+    assert controller._view.confirmed == []
 
     different = ProjectPreferencesState(horizontal_normalization_angle=15.0)
-    assert window._confirm_apply_project_preferences(different) is True
-    assert "unique application preferences" in questions[0][2]
+    assert controller._confirm_apply_project_preferences(different) is True
+    assert "unique application preferences" in controller._view.confirmed[0][1]

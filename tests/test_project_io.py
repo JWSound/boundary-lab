@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import pytest
 
@@ -11,6 +10,7 @@ from blab.ui.project_io import (
     read_project_file,
     write_project_file,
 )
+from repo_paths import REPO_ROOT
 
 
 def test_project_path_gets_default_suffix() -> None:
@@ -247,8 +247,9 @@ def test_legacy_global_fem_loss_migrates_to_each_bounded_region() -> None:
 
 
 def test_shipped_examples_use_current_schema_without_solver_preference_overrides() -> None:
-    example_paths = sorted(Path("examples").glob("**/*.blab.json"))
+    example_paths = sorted((REPO_ROOT / "examples").glob("**/*.blab.json"))
 
+    # Prevent an incorrect working directory from turning this into a vacuous pass.
     assert example_paths
     for example_path in example_paths:
         payload = json.loads(example_path.read_text(encoding="utf-8"))

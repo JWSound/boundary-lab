@@ -1,14 +1,11 @@
 from types import SimpleNamespace
 
-import pytest
-
-pytest.importorskip("PySide6")
-
 import blab.ui.diagnostics as diagnostics_module
 from blab.ui.application_state import OperationState
 from blab.ui.diagnostics import DiagnosticsDialog, collect_diagnostics, format_diagnostics
 from blab.ui.dialogs import DONATE_BLURB, DONATE_QR_PATH, DONATE_URL
 from blab.ui.main_window import MainWindow
+from blab.ui.main_window.workflow_view import FrequencyRange
 from blab.ui.settings import GuiPreferences
 
 
@@ -79,13 +76,11 @@ def test_main_window_diagnostic_context_summarizes_current_state() -> None:
         imported_meshes=(),
         project_path=None,
         _has_unsaved_project_changes=lambda: False,
-        _all_radiators=lambda: (),
-        _channel_configs=lambda: (),
+        all_radiators=lambda: (),
+        channel_configs=lambda: (),
         symmetry="none",
         stitch_imported_meshes=False,
-        freq_min_spin=SimpleNamespace(value=lambda: 20),
-        freq_max_spin=SimpleNamespace(value=lambda: 20_000),
-        freq_count_spin=SimpleNamespace(value=lambda: 100),
+        frequency_range=lambda: FrequencyRange(min_hz=20, max_hz=20_000, count=100),
         live_dataset=None,
     )
 

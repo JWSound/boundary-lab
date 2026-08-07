@@ -11,6 +11,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from blab.paths import APP_ROOT
+
 
 def _missing_gui_dependency_message(exc: ImportError) -> str:
     missing = getattr(exc, "name", None) or "a GUI dependency"
@@ -32,7 +34,6 @@ except ImportError as exc:  # pragma: no cover - exercised only by manual GUI la
     ) from exc
 
 
-APP_ROOT = Path(__file__).resolve().parents[2]
 SPLASH_PATH = APP_ROOT / "assets" / "splash.png"
 ICON_PATHS = tuple(APP_ROOT / "assets" / f"{size}.ico" for size in (32, 64, 128, 256))
 STARTUP_TIMEOUT_SECONDS = 45

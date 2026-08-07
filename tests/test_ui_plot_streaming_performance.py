@@ -2,12 +2,9 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 from matplotlib.backend_bases import MouseButton
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pytest.importorskip("PySide6")
-
 from PySide6.QtWidgets import QApplication
 
 from blab.spinorama import SpinoramaCurves
@@ -64,8 +61,8 @@ def test_live_plot_refresh_requests_coalesce_while_timer_is_active() -> None:
     timer = _FakeTimer()
     window = SimpleNamespace(_live_plot_refresh_dirty=False, _live_plot_refresh_timer=timer)
 
-    MainWindow._request_live_plot_refresh(window)
-    MainWindow._request_live_plot_refresh(window)
+    MainWindow.request_live_refresh(window)
+    MainWindow.request_live_refresh(window)
 
     assert window._live_plot_refresh_dirty is True
     assert timer.start_count == 1
@@ -75,10 +72,10 @@ def test_live_plot_refresh_flushes_only_actively_visible_entries() -> None:
     refresh_calls = []
     window = SimpleNamespace(
         _live_plot_refresh_dirty=True,
-        _refresh_plots=lambda **options: refresh_calls.append(options),
+        refresh_plots=lambda **options: refresh_calls.append(options),
     )
 
-    MainWindow._flush_live_plot_refresh(window)
+    MainWindow.flush_live_refresh(window)
 
     assert window._live_plot_refresh_dirty is False
     assert refresh_calls == [{"active_only": True}]
@@ -277,7 +274,7 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
-    MainWindow._apply_last_completed_plot_comparison(window)
+    MainWindow.apply_last_completed_comparison(window)
 
     assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1]
     assert plots[4].calls[0][1] == {

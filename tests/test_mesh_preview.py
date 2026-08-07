@@ -1,9 +1,6 @@
-from pathlib import Path
 
 import numpy as np
 import pytest
-
-pytest.importorskip("PySide6")
 
 from blab.ui.mesh_preview import (
     AXIS_LABELS,
@@ -28,6 +25,7 @@ from blab.ui.mesh_preview import (
     _surface_hover_label,
     _surface_preview_colors,
 )
+from repo_paths import source_text
 
 
 def test_surface_hover_label_includes_mesh_tag_and_element_count() -> None:
@@ -43,7 +41,7 @@ def test_surface_hover_label_handles_untagged_single_mesh_preview() -> None:
 
 
 def test_preview_status_labels_do_not_force_panel_width() -> None:
-    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+    source = source_text("ui", "mesh_preview.py")
 
     assert "QSizePolicy" in source
     assert "self.hover_label.setMinimumWidth(0)" in source
@@ -53,7 +51,7 @@ def test_preview_status_labels_do_not_force_panel_width() -> None:
 
 
 def test_preview_background_tracks_the_application_theme() -> None:
-    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+    source = source_text("ui", "mesh_preview.py")
 
     assert "self._refresh_viewer_theme()" in source
     assert "viewer.set_background(themed_content_background(self.palette()))" in source
@@ -133,7 +131,7 @@ def test_preview_home_camera_projects_axes_for_speaker_forward_orientation() -> 
 
 
 def test_preview_home_camera_uses_a_tighter_default_zoom() -> None:
-    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+    source = source_text("ui", "mesh_preview.py")
 
     assert PREVIEW_HOME_ZOOM == 1.2
     assert "camera.zoom(PREVIEW_HOME_ZOOM)" in source
@@ -154,7 +152,7 @@ def test_preview_orientation_guides_match_balloon_axis_labels() -> None:
         ),
     )
 
-    source = Path("src/blab/ui/mesh_preview.py").read_text(encoding="utf-8")
+    source = source_text("ui", "mesh_preview.py")
     assert "self.viewer.add_point_labels(" in source
     assert "list(AXIS_LABELS)" in source
     assert 'text_color="white"' in source

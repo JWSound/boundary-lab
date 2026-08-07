@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig
+from blab.paths import APP_ROOT
 from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
@@ -51,7 +52,6 @@ CROSSOVER_TYPE_OPTIONS = [
     ("Linkwitz-Riley 4th", ("linkwitz_riley", 4)),
     ("Linkwitz-Riley 6th", ("linkwitz_riley", 6)),
 ]
-APP_ROOT = Path(__file__).resolve().parents[3]
 DONATE_QR_PATH = APP_ROOT / "assets" / "donateqr.png"
 INFO_ICON_PATH = APP_ROOT / "assets" / "info-16.ico"
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
