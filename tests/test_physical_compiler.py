@@ -53,7 +53,7 @@ from blab.system_contract import (
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
-SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "skram"
+SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "SKRAM"
 SIMPLE_SEALED_FIXTURE_ROOT = FIXTURE_ROOT / "simple_sealed"
 
 
@@ -1178,7 +1178,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
     conformed_exterior, _ = conform_bem_interface_to_fem(
         front_mesh,
         exterior_mesh,
-        fem_interface_name="Port",
+        fem_interface_name="Interface",
         bem_interface_name="FrontChamberInterface",
         merge_tolerance=1e-8,
         symmetry_mode="x",
@@ -1187,7 +1187,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
     conformed_exterior, _ = conform_bem_interface_to_fem(
         rear_mesh,
         conformed_exterior,
-        fem_interface_name="Port",
+        fem_interface_name="Interface",
         bem_interface_name="RearChamberInterface",
         merge_tolerance=1e-8,
         symmetry_mode="x",
@@ -1260,7 +1260,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-front",
                 dimension=2,
-                name="Radiator",
+                name="Diaphragm",
             ),
             kind=BoundaryKind.MOVING,
         ),
@@ -1271,7 +1271,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-front",
                 dimension=2,
-                name="Port",
+                name="Interface",
             ),
             kind=BoundaryKind.INTERFACE,
         ),
@@ -1293,7 +1293,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-rear",
                 dimension=2,
-                name="Radiator",
+                name="Diaphragm",
             ),
             kind=BoundaryKind.MOVING,
         ),
@@ -1304,7 +1304,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-rear",
                 dimension=2,
-                name="Port",
+                name="Interface",
             ),
             kind=BoundaryKind.INTERFACE,
         ),
