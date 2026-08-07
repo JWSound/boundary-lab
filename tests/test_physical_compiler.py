@@ -7,6 +7,7 @@ import meshio
 import numpy as np
 import pytest
 
+from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.interface_conform import conform_bem_interface_to_fem
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import (
@@ -257,31 +258,56 @@ for line in sys.stdin:
 
 
 @pytest.mark.parametrize("loss_factor", (-0.001, 1.001, "invalid"))
-def test_coupled_backend_rejects_invalid_fem_bulk_loss_factor(loss_factor) -> None:
-    compiled = PhysicalSystemCompiler().compile(_fixture_system())
-    request = SystemSolveRequest(
-        compiled_system=compiled,
-        frequencies_hz=(500.0,),
-        excitation_port_ids=("excitation:radiator",),
-        solver_options={"fem_bulk_loss_factor": loss_factor},
+def test_compiler_rejects_invalid_region_fem_bulk_loss_factor(loss_factor) -> None:
+    system = _fixture_system()
+    invalid = replace(
+        system,
+        regions=tuple(
+            replace(region, loss_model={"bulk_loss_factor": loss_factor})
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+            else region
+            for region in system.regions
+        ),
     )
 
-    with pytest.raises(ValueError, match="FEM bulk loss factor"):
-        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    with pytest.raises(PhysicalModelCompileError, match="FEM bulk loss factor"):
+        PhysicalSystemCompiler().compile(invalid)
 
 
-def test_coupled_backend_preserves_valid_fem_bulk_loss_factor() -> None:
-    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+def test_coupled_backend_accepts_region_fem_bulk_loss_and_wall_impedance() -> None:
+    system = _fixture_system()
+    configured = replace(
+        system,
+        regions=tuple(
+            replace(region, loss_model={"bulk_loss_factor": 0.01})
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+            else region
+            for region in system.regions
+        ),
+        boundaries=tuple(
+            replace(boundary, parameters=miki_wall_impedance_parameters())
+            if boundary.id == "boundary:wall"
+            else boundary
+            for boundary in system.boundaries
+        ),
+    )
+    compiled = PhysicalSystemCompiler().compile(configured)
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
         excitation_port_ids=("excitation:radiator",),
-        solver_options={"fem_bulk_loss_factor": 0.01},
     )
 
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
-    assert session.request.solver_options["fem_bulk_loss_factor"] == pytest.approx(0.01)
+    interior = next(region for region in session.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR)
+    wall = next(boundary for boundary in session.request.compiled_system.boundaries if boundary.id == "boundary:wall")
+    assert interior.loss_model["bulk_loss_factor"] == pytest.approx(0.01)
+    assert wall.parameters["wall_impedance"]["thickness_m"] == pytest.approx(0.03)
+    assert wall.parameters["wall_impedance"]["flow_resistivity_pa_s_per_m2"] == pytest.approx(5000.0)
+    assumptions = {item.statement for item in compiled.assumptions}
+    assert "Homogeneous per-region FEM bulk loss" in assumptions
+    assert "Locally reacting rigid-backed Miki porous wall treatments" in assumptions
 
 
 def test_coupled_backend_rejects_unsupported_physical_roles_before_starting_julia() -> None:

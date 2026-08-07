@@ -59,7 +59,6 @@ The preferences menu contains various application-level settings for Boundary La
 ### Solver Config
 - `GMRES Tolerance`: sets the threshold for how accurate the BEM solution needs to be at each frequency being solved. Lower values (moving the 1 to the right) increase solve times but may produce more accurate results. High values (moving the 1 to the left) decrease solve accuracy but also decrease solve times.
 - `Burton Miller Formulation`: enable/disable the Burton-Miller formulation to prevent the exterior Helmholtz boundary integral equation from becoming unreliable at certain frequencies due to fictitious cavity resonances. Not always required but turning this feature on can reduce polar irregularities with certain meshes- especially ones having enclosed volumes. Turning this feature off can typically decrease solve times by 30-40%.
-- `FEM Bulk Loss Factor`: applies uniform passive damping to all bounded FEM air volumes in coupled solves. `0` is lossless; the available nonzero presets range from `0.002` to `0.05`. For an isolated lightly damped cavity mode, the approximate acoustic Q is the reciprocal of this factor. The setting does not add loss to the exterior BEM domain or represent a particular absorber or wall material.
 - `Balloon Sampling`: Enable or disable spherical sampling needed to generate balloon plots. This feature generates a 2 meter diameter grid of sampling points around the origin according to a Fibonacci spherical sampling sequence to approximate equal point spacing. Enabling/disabling this feature typically has a minimal (<3%) impact on performance.
 - `Balloon Angle Precision`: Drives the number of points generated for the spherical balloon plot sampler. More points produce more detailed balloon plots, but slightly increase run times. The default value of 2.5 degrees produces 6,500 points in a sphere around the origin to sample from.
 
@@ -148,6 +147,20 @@ When imported meshes are enabled, they are included in the preview and solve. If
 coupled BEM/FEM projects. Assign every mesh surface as Rigid, Moving, or an
 Interface, then attach moving surfaces to prescribed-velocity or
 electrodynamic components.
+
+On the **Regions** tab, **FEM Bulk Loss Factor** is editable for each bounded
+interior region. The available values are `0`, `0.002`, `0.005`, `0.01`,
+`0.02`, and `0.05`; `0` is lossless. For an isolated lightly damped cavity mode,
+the approximate acoustic Q is `1 / loss factor`. This phenomenological volume
+loss is independent of the wall-lining model and can differ between interior
+chambers.
+
+On the **Boundaries** tab, a bounded-interior surface assigned **Rigid** can
+also have **Wall Impedance** enabled. The editor accepts porous-lining thickness
+in millimetres and airflow resistivity in Pa·s/m², defaulting to 30 mm and
+5,000 Pa·s/m². Boundary Lab treats the layer as locally reacting porous
+material against a rigid backing using the Miki empirical model. Leave wall
+impedance disabled for an acoustically hard wall.
 
 Each component surface has a relative-velocity value in dB. This can represent
 a dome and surround as one source while tapering motion toward the rigid frame.

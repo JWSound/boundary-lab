@@ -12,6 +12,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+from blab.acoustic_materials import (
+    REGION_BULK_LOSS_FACTOR_KEY,
+    WALL_IMPEDANCE_KEY,
+    region_bulk_loss_factor,
+    wall_impedance_parameters,
+)
 from blab.physical_model import (
     AcousticRegionKind,
     BoundaryKind,
@@ -293,12 +299,6 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError(
             f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy."
         )
-    try:
-        fem_bulk_loss_factor = float(request.solver_options.get("fem_bulk_loss_factor", 0.0))
-    except (TypeError, ValueError) as exc:
-        raise ValueError("FEM bulk loss factor must be a finite number between 0 and 1.") from exc
-    if not math.isfinite(fem_bulk_loss_factor) or not 0.0 <= fem_bulk_loss_factor <= 1.0:
-        raise ValueError("FEM bulk loss factor must be a finite number between 0 and 1.")
     bounded_regions = [
         region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     ]
@@ -341,17 +341,34 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             "Coupled solver does not support the boundary assignments used by: "
             + ", ".join(unsupported_boundaries)
         )
-    parameterized_boundaries = [boundary.id for boundary in system.boundaries if boundary.parameters]
+    region_by_id = {region.id: region for region in system.regions}
+    parameterized_boundaries = [
+        boundary.id
+        for boundary in system.boundaries
+        if boundary.parameters and set(boundary.parameters) != {WALL_IMPEDANCE_KEY}
+    ]
     if parameterized_boundaries:
         raise ValueError(
-            "Coupled solver does not yet support boundary parameters on: "
+            "Coupled solver does not support the boundary parameters used by: "
             + ", ".join(parameterized_boundaries)
         )
-    lossy_regions = [region.id for region in system.regions if region.loss_model]
-    if lossy_regions:
-        raise ValueError(
-            "Coupled solver does not yet support acoustic loss models on: " + ", ".join(lossy_regions)
-        )
+    for boundary in system.boundaries:
+        treatment = wall_impedance_parameters(boundary.parameters)
+        if treatment is None:
+            continue
+        region = region_by_id[boundary.region_id]
+        if boundary.kind != BoundaryKind.RIGID or region.kind != AcousticRegionKind.BOUNDED_AIR:
+            raise ValueError(f"Wall impedance boundary '{boundary.id}' must be rigid and belong to bounded air.")
+    for region in system.regions:
+        unknown_loss_keys = set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY}
+        if unknown_loss_keys:
+            raise ValueError(
+                f"Coupled solver does not support acoustic loss parameters on '{region.id}': "
+                + ", ".join(sorted(unknown_loss_keys))
+            )
+        loss_factor = region_bulk_loss_factor(region.loss_model)
+        if region.kind != AcousticRegionKind.BOUNDED_AIR and loss_factor != 0.0:
+            raise ValueError(f"FEM bulk loss on '{region.id}' requires a bounded acoustic region.")
     supported_component_kinds = {
         ComponentKind.IDEAL_VELOCITY_SOURCE,
         ComponentKind.ELECTRODYNAMIC_TRANSDUCER,

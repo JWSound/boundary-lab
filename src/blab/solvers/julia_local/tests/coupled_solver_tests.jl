@@ -84,6 +84,34 @@ end
     @test all(isfinite, nonzeros(mass))
 end
 
+@testset "per-region FEM loss and Miki wall impedance" begin
+    mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), 0.001)
+    stiffness, mass = assemble_p1_fem_matrices(mesh)
+    wavenumber = 2pi * 200.0 / 343.0
+    scalar_loss = assemble_fem_dynamic_stiffness(
+        stiffness,
+        mass,
+        wavenumber;
+        bulk_loss_factor=0.02,
+    )
+    weighted_loss = assemble_fem_dynamic_stiffness(
+        stiffness,
+        mass,
+        wavenumber;
+        bulk_loss_mass=0.02 .* mass,
+    )
+    @test weighted_loss ≈ scalar_loss rtol=1e-12
+
+    admittance = miki_rigid_backed_surface_admittance(100.0, 343.0, 1.21, 0.03, 5000.0)
+    @test real(admittance) > 0.0
+    @test imag(admittance) < 0.0
+    air_impedance = 1.21 * 343.0
+    surface_impedance = inv(admittance)
+    reflection = (surface_impedance - air_impedance) / (surface_impedance + air_impedance)
+    absorption = 1.0 - abs2(reflection)
+    @test 0.01 < absorption < 0.05
+end
+
 @testset "FEM volume-group restriction compacts active topology" begin
     vertices = SVector{3,Float64}[
         SVector(0.0, 0.0, 0.0),

@@ -27,6 +27,7 @@ export VolumeMesh,
     assemble_p1_fem_matrices,
     assemble_fem_dynamic_stiffness,
     assemble_boundary_mass_matrix,
+    miki_rigid_backed_surface_admittance,
     assemble_prescribed_velocity_load,
     sealed_cavity_modes,
     solve_prescribed_velocity_interior,
@@ -235,15 +236,54 @@ function assemble_fem_dynamic_stiffness(
     mass::SparseMatrixCSC{T,Ti},
     wavenumber::T;
     bulk_loss_factor::T=zero(T),
+    bulk_loss_mass=nothing,
 ) where {T<:AbstractFloat,Ti<:Integer}
     size(stiffness) == size(mass) || error("FEM stiffness and mass matrices must have matching shapes.")
     isfinite(wavenumber) && wavenumber >= zero(T) || error("FEM wavenumber must be finite and nonnegative.")
     isfinite(bulk_loss_factor) && bulk_loss_factor >= zero(T) || error(
         "FEM bulk loss factor must be finite and nonnegative.",
     )
+    isnothing(bulk_loss_mass) || size(bulk_loss_mass) == size(mass) || error(
+        "FEM bulk-loss mass matrix must match the ordinary mass matrix.",
+    )
     squared_wavenumber = wavenumber^2
-    mass_scale = Complex{T}(-squared_wavenumber, -bulk_loss_factor * squared_wavenumber)
-    return Complex{T}.(stiffness) + mass_scale .* mass
+    system = Complex{T}.(stiffness) - squared_wavenumber .* mass
+    if isnothing(bulk_loss_mass)
+        return system - Complex{T}(0, bulk_loss_factor * squared_wavenumber) .* mass
+    end
+    return system - Complex{T}(0, squared_wavenumber) .* bulk_loss_mass
+end
+
+function miki_rigid_backed_surface_admittance(
+    frequency_hz::T,
+    sound_speed::T,
+    density::T,
+    thickness_m::T,
+    flow_resistivity_pa_s_per_m2::T,
+) where {T<:AbstractFloat}
+    frequency_hz > zero(T) || error("Miki wall impedance requires a positive frequency.")
+    sound_speed > zero(T) && density > zero(T) || error("Miki wall impedance requires a positive medium.")
+    thickness_m > zero(T) || error("Wall-lining thickness must be positive.")
+    flow_resistivity_pa_s_per_m2 > zero(T) || error("Wall-lining airflow resistivity must be positive.")
+    normalized_frequency = frequency_hz / flow_resistivity_pa_s_per_m2
+    impedance_power = normalized_frequency^T(-0.632)
+    wavenumber_power = normalized_frequency^T(-0.618)
+    characteristic_impedance_positive = density * sound_speed * Complex{T}(
+        one(T) + T(0.070) * impedance_power,
+        -T(0.107) * impedance_power,
+    )
+    free_wavenumber = T(2pi) * frequency_hz / sound_speed
+    porous_wavenumber_positive = free_wavenumber * Complex{T}(
+        one(T) + T(0.109) * wavenumber_power,
+        -T(0.160) * wavenumber_power,
+    )
+    surface_impedance_positive = -Complex{T}(0, 1) * characteristic_impedance_positive *
+                                 cot(porous_wavenumber_positive * thickness_m)
+    # Miki is conventionally written for exp(+i*omega*t); Boundary Lab uses exp(-i*omega*t).
+    surface_impedance = conj(surface_impedance_positive)
+    admittance = inv(surface_impedance)
+    real(admittance) >= zero(T) || error("Miki wall impedance produced a non-passive admittance.")
+    return admittance
 end
 
 function assemble_boundary_mass_matrix(
@@ -610,6 +650,8 @@ function prepare_coupled_cache(
     bem_backend::Symbol=:cpu,
     symmetry_mode::Symbol=:off,
     retained_fem_vertices=interface_map.fem_vertex_indices,
+    bulk_loss_factor_by_vertex=zeros(T, length(fem_mesh.vertices)),
+    wall_impedances=NamedTuple[],
 ) where {T<:AbstractFloat}
     bem_backend in (:cpu, :cuda) ||
         error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
@@ -618,6 +660,29 @@ function prepare_coupled_cache(
 
     fem_matrix_started = time_ns()
     stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    length(bulk_loss_factor_by_vertex) == length(fem_mesh.vertices) || error(
+        "Per-region FEM bulk-loss vector must contain one value per FEM vertex.",
+    )
+    all(value -> isfinite(value) && zero(T) <= value <= one(T), bulk_loss_factor_by_vertex) || error(
+        "Per-region FEM bulk-loss factors must be finite and between 0 and 1.",
+    )
+    bulk_loss_mass = spdiagm(0 => T.(bulk_loss_factor_by_vertex)) * mass
+    wall_impedance_operators = [
+        begin
+            face_indices = findall(==(Int(spec.tag)), fem_mesh.boundary_physical_tags)
+            isempty(face_indices) && error("Wall-impedance boundary tag $(spec.tag) has no FEM faces.")
+            (
+                matrix=assemble_boundary_mass_matrix(
+                    fem_mesh,
+                    face_indices,
+                    collect(1:length(fem_mesh.vertices)),
+                ),
+                thickness_m=T(spec.thickness_m),
+                flow_resistivity_pa_s_per_m2=T(spec.flow_resistivity_pa_s_per_m2),
+            )
+        end
+        for spec in wall_impedances
+    ]
     fem_matrix_cache_s = (time_ns() - fem_matrix_started) / 1.0e9
 
     interface_started = time_ns()
@@ -709,6 +774,11 @@ function prepare_coupled_cache(
         device_sparse_blocks = (
             stiffness=build_cuda_sparse_scatter_cache(stiffness),
             mass=build_cuda_sparse_scatter_cache(mass),
+            bulk_loss_mass=build_cuda_sparse_scatter_cache(bulk_loss_mass),
+            wall_impedance=[
+                build_cuda_sparse_scatter_cache(operator.matrix)
+                for operator in wall_impedance_operators
+            ],
             fem_load=build_cuda_sparse_scatter_cache(interface_operators.fem_load),
             fem_trace=build_cuda_sparse_scatter_cache(interface_operators.fem_trace),
             bem_trace=build_cuda_sparse_scatter_cache(interface_operators.bem_trace),
@@ -740,6 +810,9 @@ function prepare_coupled_cache(
         retained_fem_vertices=Int.(collect(retained_fem_vertices)),
         stiffness=stiffness,
         mass=mass,
+        bulk_loss_mass=bulk_loss_mass,
+        bulk_loss_factor_by_vertex=T.(collect(bulk_loss_factor_by_vertex)),
+        wall_impedance_operators=wall_impedance_operators,
         interface_operators=interface_operators,
         p1=p1,
         dp0=dp0,
@@ -845,8 +918,14 @@ function release_coupled_cache!(cache)
     )
     release_cuda_burton_miller_identity_cache!(cache.device_identity_cache)
     BeatEngineCore.cuda_module().unsafe_free!(cache.device_bem_flux)
-    for sparse_cache in values(cache.device_sparse_blocks)
-        release_cuda_sparse_scatter_cache!(sparse_cache)
+    for (name, sparse_cache) in pairs(cache.device_sparse_blocks)
+        if name == :wall_impedance
+            for wall_cache in sparse_cache
+                release_cuda_sparse_scatter_cache!(wall_cache)
+            end
+        else
+            release_cuda_sparse_scatter_cache!(sparse_cache)
+        end
     end
     return nothing
 end
@@ -1060,6 +1139,8 @@ function build_coupled_system(
     symmetry_mode::Symbol=:off,
     static_condensation::Bool=false,
     bulk_loss_factor::T=zero(T),
+    bulk_loss_factor_by_vertex=nothing,
+    wall_impedances=NamedTuple[],
     transducers::AbstractVector{ElectrodynamicTransducer{T}}=ElectrodynamicTransducer{T}[],
     transducer_operators=nothing,
 ) where {T<:AbstractFloat}
@@ -1093,6 +1174,12 @@ function build_coupled_system(
         bem_backend=bem_backend,
         symmetry_mode=symmetry_mode,
         retained_fem_vertices=retained_fem_vertices,
+        bulk_loss_factor_by_vertex=(
+            isnothing(bulk_loss_factor_by_vertex) ?
+            fill(bulk_loss_factor, length(fem_mesh.vertices)) :
+            bulk_loss_factor_by_vertex
+        ),
+        wall_impedances=wall_impedances,
     ) : cache
     prepared.bem_backend == bem_backend ||
         error("Coupled cache backend does not match requested BEM backend.")
@@ -1106,8 +1193,21 @@ function build_coupled_system(
         prepared.stiffness,
         prepared.mass,
         wavenumber;
-        bulk_loss_factor=bulk_loss_factor,
+        bulk_loss_mass=prepared.bulk_loss_mass,
     )
+    wall_admittances = Complex{T}[
+        miki_rigid_backed_surface_admittance(
+            frequency_hz,
+            sound_speed,
+            density,
+            operator.thickness_m,
+            operator.flow_resistivity_pa_s_per_m2,
+        )
+        for operator in prepared.wall_impedance_operators
+    ]
+    for (operator, admittance) in zip(prepared.wall_impedance_operators, wall_admittances)
+        fem_system -= Complex{T}(0, density * omega) * admittance .* operator.matrix
+    end
     interface_operators = prepared.interface_operators
     transducer_count = length(transducers)
     size(resolved_transducer_operators.fem_surface, 2) == transducer_count ||
@@ -1264,12 +1364,26 @@ function build_coupled_system(
                 scatter_cuda_sparse_to_dense!(
                     d_coupled,
                     prepared.device_sparse_blocks.mass;
-                    alpha=Complex{T}(
-                        -(wavenumber^2),
-                        -bulk_loss_factor * wavenumber^2,
-                    ),
+                    alpha=Complex{T}(-(wavenumber^2), 0),
                     add=true,
                 )
+                scatter_cuda_sparse_to_dense!(
+                    d_coupled,
+                    prepared.device_sparse_blocks.bulk_loss_mass;
+                    alpha=Complex{T}(0, -(wavenumber^2)),
+                    add=true,
+                )
+                for (wall_cache, admittance) in zip(
+                    prepared.device_sparse_blocks.wall_impedance,
+                    wall_admittances,
+                )
+                    scatter_cuda_sparse_to_dense!(
+                        d_coupled,
+                        wall_cache;
+                        alpha=-Complex{T}(0, density * omega) * admittance,
+                        add=true,
+                    )
+                end
                 scatter_cuda_sparse_to_dense!(
                     d_coupled,
                     prepared.device_sparse_blocks.fem_load;
@@ -1406,7 +1520,9 @@ function build_coupled_system(
         transducers=transducers,
         transducer_operators=resolved_transducer_operators,
         density=density,
-        bulk_loss_factor=bulk_loss_factor,
+        bulk_loss_factor=maximum(prepared.bulk_loss_factor_by_vertex; init=zero(T)),
+        bulk_loss_factor_by_vertex=prepared.bulk_loss_factor_by_vertex,
+        wall_admittances=wall_admittances,
         omega=omega,
         wavenumber=wavenumber,
         field_cache=prepared.field_cache,

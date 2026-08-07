@@ -22,7 +22,7 @@ Project files do not store:
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "active_generator_document_id": "design1",
   "generator_documents": [
     {
@@ -51,6 +51,8 @@ configuration. It does not automatically run a geometry provider or start a
 solve. Older source-config projects are converted to an exterior physical
 system as soon as their mesh artifacts are available. Pending compatibility
 assignments are retained when a generated artifact must be rebuilt first.
+Schema-6 projects that stored a global FEM bulk-loss preference are migrated by
+copying that value to every bounded acoustic region.
 
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.

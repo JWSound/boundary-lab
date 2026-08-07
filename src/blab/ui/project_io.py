@@ -13,7 +13,7 @@ from typing import Any
 
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 6
+PROJECT_SCHEMA_VERSION = 7
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -116,6 +116,8 @@ def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
     migrated = dict(payload)
     if schema_version in {1, 2}:
         migrated = _migrate_ath_documents(migrated)
+    if schema_version <= 6:
+        migrated = _migrate_global_fem_loss(migrated)
     return _normalize_project_payload(migrated)
 
 
@@ -209,6 +211,42 @@ def _migrate_ath_documents(payload: dict[str, Any]) -> dict[str, Any]:
     migrated["generator_documents"] = documents
     active_id = _optional_str(payload.get("active_ath_script_id"))
     migrated["active_generator_document_id"] = active_id or (documents[0]["id"] if documents else None)
+    return migrated
+
+
+def _migrate_global_fem_loss(payload: dict[str, Any]) -> dict[str, Any]:
+    """Move the retired project-wide FEM loss setting onto bounded regions."""
+
+    preferences = _dict_or_empty(payload.get("project_preferences"))
+    try:
+        loss_factor = float(preferences.get("fem_bulk_loss_factor", 0.0))
+    except (TypeError, ValueError):
+        loss_factor = 0.0
+    if not 0.0 <= loss_factor <= 1.0:
+        loss_factor = 0.0
+
+    migrated = dict(payload)
+    physical_system = payload.get("physical_system")
+    if isinstance(physical_system, dict):
+        updated_system = dict(physical_system)
+        regions = []
+        for item in _list_or_empty(physical_system.get("regions")):
+            if not isinstance(item, dict):
+                regions.append(item)
+                continue
+            region = dict(item)
+            loss_model = _dict_or_empty(region.get("loss_model")).copy()
+            if region.get("kind") == "bounded_air" and "bulk_loss_factor" not in loss_model:
+                loss_model["bulk_loss_factor"] = loss_factor
+            region["loss_model"] = loss_model
+            regions.append(region)
+        updated_system["regions"] = regions
+        migrated["physical_system"] = updated_system
+    if preferences:
+        updated_preferences = dict(preferences)
+        updated_preferences.pop("fem_bulk_loss_factor", None)
+        migrated["project_preferences"] = updated_preferences
+    migrated["schema_version"] = PROJECT_SCHEMA_VERSION
     return migrated
 
 

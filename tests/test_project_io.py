@@ -224,14 +224,37 @@ def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     assert "solve_backend" not in saved_preferences
     assert "gmres_tolerance" not in saved_preferences
     assert "use_burton_miller" not in saved_preferences
-    assert saved_preferences["fem_bulk_loss_factor"] == 0.02
+    assert "fem_bulk_loss_factor" not in saved_preferences
 
 
-def test_shipped_examples_do_not_request_preference_overrides() -> None:
+def test_legacy_global_fem_loss_migrates_to_each_bounded_region() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 6,
+            "project_preferences": {"fem_bulk_loss_factor": 0.02},
+            "physical_system": {
+                "regions": [
+                    {"id": "interior", "kind": "bounded_air", "loss_model": {}},
+                    {"id": "exterior", "kind": "unbounded_air", "loss_model": {}},
+                ]
+            },
+        }
+    )
+
+    assert "fem_bulk_loss_factor" not in migrated["project_preferences"]
+    assert migrated["physical_system"]["regions"][0]["loss_model"] == {"bulk_loss_factor": 0.02}
+    assert migrated["physical_system"]["regions"][1]["loss_model"] == {}
+
+
+def test_shipped_examples_use_current_schema_without_solver_preference_overrides() -> None:
     example_paths = sorted(Path("examples").glob("**/*.blab.json"))
 
     assert example_paths
     for example_path in example_paths:
         payload = json.loads(example_path.read_text(encoding="utf-8"))
         assert payload["schema_version"] == PROJECT_SCHEMA_VERSION
-        assert "project_preferences" not in payload
+        preferences = payload.get("project_preferences", {})
+        assert "solve_backend" not in preferences
+        assert "gmres_tolerance" not in preferences
+        assert "use_burton_miller" not in preferences
+        assert "fem_bulk_loss_factor" not in preferences

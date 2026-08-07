@@ -107,9 +107,10 @@ derivative. Differing fluids are rejected.
    every FEM-to-BEM port connection.
 5. In **Components**, attach an ideal prescribed-velocity component to each
    moving FEM boundary and assign its application channel.
-6. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in Preferences. Set
-   **FEM Bulk Loss Factor** if bounded-volume damping is required, and choose
-   full, X-half, or XY-quarter symmetry in Mesh Config.
+6. Set **FEM Bulk Loss Factor** on any bounded region that requires volume
+   damping, and optionally configure **Wall Impedance** on bounded rigid
+   surfaces. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in
+   Preferences, then choose full, X-half, or XY-quarter symmetry in Mesh Config.
 7. Run the normal application solve.
 
 The current System editor exposes only prescribed-velocity components.
@@ -167,21 +168,48 @@ consistent mass matrices once for the frequency sweep. At angular frequency
 \(\omega=2\pi f\), the FEM Helmholtz matrix is
 
 $$
-A_F(\eta) = K-k^2(1+i\eta)M, \qquad k=\frac{\omega}{c}.
+A_F = K-k^2M-i k^2M_\eta, \qquad k=\frac{\omega}{c},
 $$
 
-The application preference **FEM Bulk Loss Factor** supplies the constant
-dimensionless value \(\eta\). The dropdown provides `0`, `0.002`, `0.005`,
-`0.01`, `0.02`, and `0.05`; `0` reproduces the lossless formulation. With the
-solver's \(\exp(-i\omega t)\) convention, the negative imaginary mass term is
-passive. Near an isolated lightly damped cavity mode, \(Q\) is approximately
+where \(M_\eta\) is the consistent FEM mass matrix weighted by the loss factor
+of each bounded region. **FEM Bulk Loss Factor** is configured per region in
+the System window using the presets `0`, `0.002`, `0.005`, `0.01`, `0.02`, and
+`0.05`. `0` reproduces the lossless formulation. With the solver's
+\(\exp(-i\omega t)\) convention, the negative imaginary mass term is passive.
+Near an isolated lightly damped cavity mode, \(Q\) is approximately
 \(1/\eta\).
 
-This is a deliberately simple, global approximation: the same value is
-applied to every bounded FEM air region at every frequency. It does not damp
-the exterior BEM domain, model wall impedance, distinguish absorbing
-materials, or reproduce frequency-dependent thermoviscous boundary-layer
-losses. The value used by a solve is included in its result diagnostics.
+This remains a deliberately simple frequency-independent volume-loss
+approximation. It does not damp the exterior BEM domain or reproduce
+frequency-dependent thermoviscous boundary-layer losses. The region values
+used by a solve are included in its result diagnostics.
+
+Rigid surfaces of a bounded region may also carry a rigid-backed porous wall
+treatment. For layer thickness \(d\), airflow resistivity \(\sigma\), and
+\(X=f/\sigma\), Boundary Lab evaluates the Miki characteristic impedance and
+complex wavenumber,
+
+$$
+\frac{Z_c}{\rho c}=1+0.070X^{-0.632}-i\,0.107X^{-0.632},
+\qquad
+\frac{k_c}{k}=1+0.109X^{-0.618}-i\,0.160X^{-0.618},
+$$
+
+forms the rigid-backed surface impedance
+\(Z_s=-iZ_c\cot(k_cd)\) in the conventional \(e^{+i\omega t}\) convention,
+and conjugates it for the solver's \(e^{-i\omega t}\) convention. Its surface
+admittance \(Y_s=1/Z_s\) contributes
+
+$$
+A_F \leftarrow A_F-i\rho\omega Y_s B_\Gamma,
+$$
+
+where \(B_\Gamma\) is the consistent P1 surface mass matrix. This is a
+locally reacting approximation: it captures frequency-dependent absorption by
+a porous lining but not its lateral propagation, mounting gaps, compression,
+or frame elasticity. The UI defaults of 30 mm and 5,000 Pa·s/m² are a useful
+starting approximation for typical loose loudspeaker cabinet lining, not a
+material specification.
 
 Only tetrahedra in the selected physical volume groups are retained. Each
 domain's vertices and facets are compacted, and boundary tags are remapped into
@@ -517,9 +545,10 @@ The physical-system schema includes roles intended for future solvers. The
 following are not implemented by the current coupled backend and are normally
 rejected during application preparation or backend validation:
 
-- impedance or parameterized boundaries;
-- region-specific or spatially varying acoustic material loss models (the
-  global homogeneous FEM bulk-loss preference is supported);
+- general impedance boundary kinds or arbitrary impedance functions (the Miki
+  rigid-backed treatment on bounded rigid walls is supported);
+- spatially varying acoustic material loss within one FEM region (one
+  homogeneous bulk-loss factor per bounded region is supported);
 - `Mms` input or automatic conversion from conventional T/S parameter sets;
 - passive radiators;
 - nonideal amplifier/source impedance;

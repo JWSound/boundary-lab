@@ -73,10 +73,9 @@ settings are applied.
 ## Regions
 
 A region represents a connected acoustic domain with material properties such
-as density, sound speed, and an optional loss model. Region-specific loss
-models are reserved by the schema but are not yet supported by the production
-solver. A single homogeneous bulk-loss factor for every bounded FEM region is
-available separately in application Preferences.
+as density, sound speed, and an optional loss model. A bounded FEM region may
+define a dimensionless `bulk_loss_factor`. The factor is constant within that
+region and may differ between disconnected interior chambers.
 
 The initial model supports two region kinds:
 
@@ -117,6 +116,13 @@ The initial boundary roles are:
 These are model-level roles. A solver backend must declare which roles it
 supports; including a future-facing role in the schema does not imply that the
 current numerical backend can solve it.
+
+The coupled backend additionally supports a locally reacting porous lining on
+a bounded region's `rigid` boundary. It remains a rigid boundary assignment and
+stores a `wall_impedance` parameter object containing the `miki` model,
+`thickness_m`, and `flow_resistivity_pa_s_per_m2`. Keeping the assignment rigid
+means disabling the optional treatment returns the same surface to the
+hard-wall condition without changing its physical role.
 
 An example boundary assignment is:
 

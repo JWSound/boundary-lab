@@ -176,6 +176,8 @@ function aggregate_fem_domains(
     boundary_faces = NTuple{3,Int}[]
     boundary_tags = Int[]
     domains = NamedTuple[]
+    bulk_loss_factor_by_vertex = T[]
+    wall_impedances = NamedTuple[]
     fem_boundary_tag_by_id = Dict{String,Int}()
     domain_by_boundary_id = Dict{String,Int}()
     next_boundary_tag = 1
@@ -194,6 +196,11 @@ function aggregate_fem_domains(
             if String(group["mesh_id"]) == mesh_id
         ]
         selection = restrict_volume_mesh(full_mesh, selected_volume_tags)
+        loss_model = get(region, "loss_model", Dict{String,Any}())
+        bulk_loss_factor = T(get(loss_model, "bulk_loss_factor", 0.0))
+        isfinite(bulk_loss_factor) && zero(T) <= bulk_loss_factor <= one(T) || error(
+            "Bounded-region FEM bulk loss factor must be finite and between 0 and 1.",
+        )
         region_boundaries = [
             boundary
             for boundary in boundaries
@@ -212,6 +219,33 @@ function aggregate_fem_domains(
             boundary_id = String(boundary["id"])
             fem_boundary_tag_by_id[boundary_id] = solver_tag
             domain_by_boundary_id[boundary_id] = length(domains) + 1
+            parameters = get(boundary, "parameters", Dict{String,Any}())
+            if haskey(parameters, "wall_impedance")
+                String(boundary["kind"]) == "rigid" || error(
+                    "Wall impedance boundary $(repr(boundary_id)) must be rigid.",
+                )
+                treatment = parameters["wall_impedance"]
+                String(get(treatment, "model", "miki")) == "miki" || error(
+                    "Unsupported wall impedance model on $(repr(boundary_id)).",
+                )
+                thickness_m = T(get(treatment, "thickness_m", 0.03))
+                flow_resistivity = T(get(treatment, "flow_resistivity_pa_s_per_m2", 5000.0))
+                isfinite(thickness_m) && thickness_m > zero(T) || error(
+                    "Wall-lining thickness must be finite and positive.",
+                )
+                isfinite(flow_resistivity) && flow_resistivity > zero(T) || error(
+                    "Wall-lining airflow resistivity must be finite and positive.",
+                )
+                push!(
+                    wall_impedances,
+                    (
+                        boundary_id=boundary_id,
+                        tag=solver_tag,
+                        thickness_m=thickness_m,
+                        flow_resistivity_pa_s_per_m2=flow_resistivity,
+                    ),
+                )
+            end
         end
         remapped_boundary_tags = [
             get(local_tag_map, tag, 0)
@@ -224,6 +258,7 @@ function aggregate_fem_domains(
         vertex_offset = length(vertices)
         face_offset = length(boundary_faces)
         append!(vertices, selection.mesh.vertices)
+        append!(bulk_loss_factor_by_vertex, fill(bulk_loss_factor, length(selection.mesh.vertices)))
         append!(
             tetrahedra,
             [
@@ -266,6 +301,8 @@ function aggregate_fem_domains(
         domains=domains,
         fem_boundary_tag_by_id=fem_boundary_tag_by_id,
         domain_by_boundary_id=domain_by_boundary_id,
+        bulk_loss_factor_by_vertex=bulk_loss_factor_by_vertex,
+        wall_impedances=wall_impedances,
     )
 end
 
@@ -584,12 +621,6 @@ function solve_request(request; event_mode=false)
     transducer_reference_voltage_v > zero(FloatType) || error(
         "transducer_reference_voltage_v must be greater than zero.",
     )
-    fem_bulk_loss_factor = FloatType(get(solver_options, "fem_bulk_loss_factor", 0.0))
-    isfinite(fem_bulk_loss_factor) &&
-        zero(FloatType) <= fem_bulk_loss_factor <= one(FloatType) || error(
-        "fem_bulk_loss_factor must be finite and between 0 and 1.",
-    )
-
     mesh_setup_started = time_ns()
     fem_domains = aggregate_fem_domains(
         meshes,
@@ -751,6 +782,8 @@ function solve_request(request; event_mode=false)
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
             retained_fem_vertices=retained_fem_vertices,
+            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+            wall_impedances=fem_domains.wall_impedances,
         )
         cache_setup_s = (time_ns() - cache_setup_started) / 1.0e9
     end
@@ -777,7 +810,8 @@ function solve_request(request; event_mode=false)
             bem_backend=bem_backend,
             symmetry_mode=symmetry_mode,
             static_condensation=static_condensation,
-            bulk_loss_factor=fem_bulk_loss_factor,
+            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+            wall_impedances=fem_domains.wall_impedances,
             transducers=transducers,
             transducer_operators=transducer_operators,
         )
@@ -967,7 +1001,13 @@ function solve_request(request; event_mode=false)
             "interface_count" => length(interfaces),
             "transducer_count" => length(transducers),
             "transducer_reference_voltage_v" => transducer_reference_voltage_v,
-            "fem_bulk_loss_factor" => fem_bulk_loss_factor,
+            "fem_bulk_loss_factors_by_region" => Dict(
+                String(region["id"]) => Float64(
+                    get(get(region, "loss_model", Dict{String,Any}()), "bulk_loss_factor", 0.0),
+                )
+                for region in bounded_regions
+            ),
+            "wall_impedance_boundary_ids" => [spec.boundary_id for spec in fem_domains.wall_impedances],
             "static_condensation_requested" => static_condensation_requested,
             "static_condensation_active" => static_condensation,
             "pressure_continuity_error" => isempty(interface_pressure_errors) ?

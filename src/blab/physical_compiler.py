@@ -11,6 +11,12 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from blab.acoustic_materials import (
+    REGION_BULK_LOSS_FACTOR_KEY,
+    WALL_IMPEDANCE_KEY,
+    region_bulk_loss_factor,
+    wall_impedance_parameters,
+)
 from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInferenceError,
@@ -180,6 +186,15 @@ class PhysicalSystemCompiler:
             self._validate_json_mapping(
                 boundary.parameters, owner=f"Boundary '{boundary.id}' parameters", issues=issues
             )
+            if WALL_IMPEDANCE_KEY in boundary.parameters:
+                if region.kind != AcousticRegionKind.BOUNDED_AIR:
+                    issues.append(f"Boundary '{boundary.id}' wall impedance requires a bounded-air region.")
+                if boundary.kind != BoundaryKind.RIGID:
+                    issues.append(f"Boundary '{boundary.id}' wall impedance requires a rigid assignment.")
+                try:
+                    wall_impedance_parameters(boundary.parameters)
+                except ValueError as exc:
+                    issues.append(f"Boundary '{boundary.id}' {exc}")
 
         for interface in system.interfaces:
             bounded = boundaries.get(interface.bounded_boundary_id)
@@ -347,6 +362,18 @@ class PhysicalSystemCompiler:
         ):
             issues.append(f"Region '{region.id}' sound speed and density must be finite and positive.")
         self._validate_json_mapping(region.loss_model, owner=f"Region '{region.id}' loss_model", issues=issues)
+        unknown_loss_keys = sorted(set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY})
+        if unknown_loss_keys:
+            issues.append(
+                f"Region '{region.id}' uses unsupported loss parameters: " + ", ".join(unknown_loss_keys) + "."
+            )
+        try:
+            bulk_loss_factor = region_bulk_loss_factor(region.loss_model)
+        except ValueError as exc:
+            issues.append(f"Region '{region.id}' {exc}")
+        else:
+            if region.kind != AcousticRegionKind.BOUNDED_AIR and bulk_loss_factor != 0.0:
+                issues.append(f"Region '{region.id}' FEM bulk loss requires a bounded-air region.")
 
     @staticmethod
     def _validate_group_ref(
@@ -669,8 +696,19 @@ class PhysicalSystemCompiler:
                 PhysicsAssumption(AssumptionStatus.INCLUDED, "Independent reference-excitation transfer basis")
             )
             assumptions.append(PhysicsAssumption(AssumptionStatus.EXCLUDED, "Application DSP and channel synthesis"))
-        if all(not region.loss_model for region in system.regions):
+        if any(region_bulk_loss_factor(region.loss_model) > 0.0 for region in system.regions):
+            assumptions.append(
+                PhysicsAssumption(AssumptionStatus.INCLUDED, "Homogeneous per-region FEM bulk loss")
+            )
+        else:
             assumptions.append(
                 PhysicsAssumption(AssumptionStatus.EXCLUDED, "Region-specific acoustic material loss models")
+            )
+        if any(wall_impedance_parameters(boundary.parameters) is not None for boundary in system.boundaries):
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED,
+                    "Locally reacting rigid-backed Miki porous wall treatments",
+                )
             )
         return tuple(assumptions)

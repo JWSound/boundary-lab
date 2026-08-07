@@ -7,10 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import meshio
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 import blab.ui.system_config as system_config_module
 import blab.ui.system_solve as system_solve_module
+from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.ath import read_surface_physical_names
 from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
@@ -27,16 +28,16 @@ from blab.physical_model import (
     infer_physical_solve_kind,
 )
 from blab.solvers.coupled_backend import CoupledProductionBackend
-from blab.ui.dialogs import MeshDialogEntry, PreferencesDialog
+from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.mesh_assembly import MeshAssemblyService
 from blab.ui.physical_system_migration import seed_exterior_system
 from blab.ui.project_state import ImportedMeshState
-from blab.ui.settings import GuiPreferences
 from blab.ui.system_config import (
     SystemConfigDialog,
     _ComponentDraft,
     _ComponentEditorDialog,
+    _WallImpedanceDialog,
     infer_component_motion_axis,
     inspect_system_meshes,
 )
@@ -742,6 +743,15 @@ def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_pat
 
 def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> None:
     system = _configured_fixture_dialog().physical_system()
+    system = replace(
+        system,
+        regions=tuple(
+            replace(region, loss_model={"bulk_loss_factor": 0.01})
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+            else region
+            for region in system.regions
+        ),
+    )
 
     prepared = prepare_coupled_ui_solve(
         system,
@@ -750,7 +760,6 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
         freq_count=3,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
-        fem_bulk_loss_factor=0.01,
     )
 
     assert prepared.polar_angle_deg.tolist() == [-180.0, -90.0, 0.0, 90.0, 180.0]
@@ -764,7 +773,12 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
     assert prepared.request.solver_options["static_condensation"] is False
     assert prepared.request.solver_options["symmetry"] == "off"
-    assert prepared.request.solver_options["fem_bulk_loss_factor"] == pytest.approx(0.01)
+    interior = next(
+        region
+        for region in prepared.request.compiled_system.regions
+        if region.kind == AcousticRegionKind.BOUNDED_AIR
+    )
+    assert interior.loss_model["bulk_loss_factor"] == pytest.approx(0.01)
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options
     assert prepared.backend_id == "beat_cpu"
@@ -772,12 +786,17 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert points.shape == (10, 3)
 
 
-def test_preferences_dialog_exposes_numeric_fem_bulk_loss_dropdown() -> None:
-    dialog = PreferencesDialog(GuiPreferences(fem_bulk_loss_factor=0.005))
-
-    assert isinstance(dialog.fem_bulk_loss_combo, QComboBox)
-    assert dialog.fem_bulk_loss_combo.currentData() == pytest.approx(0.005)
-    assert [dialog.fem_bulk_loss_combo.itemData(index) for index in range(dialog.fem_bulk_loss_combo.count())] == [
+def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:
+    dialog = _configured_fixture_dialog()
+    bounded_row = next(
+        row
+        for row in range(dialog.regions_table.rowCount())
+        if dialog._region_kind(row) == AcousticRegionKind.BOUNDED_AIR
+    )
+    loss_combo = dialog.regions_table.cellWidget(bounded_row, 4)
+    assert isinstance(loss_combo, QComboBox)
+    assert loss_combo.isEnabled()
+    assert [loss_combo.itemData(index) for index in range(loss_combo.count())] == [
         0.0,
         0.002,
         0.005,
@@ -785,9 +804,47 @@ def test_preferences_dialog_exposes_numeric_fem_bulk_loss_dropdown() -> None:
         0.02,
         0.05,
     ]
+    loss_combo.setCurrentIndex(loss_combo.findData(0.02))
+    unbounded_row = next(
+        row
+        for row in range(dialog.regions_table.rowCount())
+        if dialog._region_kind(row) == AcousticRegionKind.UNBOUNDED_AIR
+    )
+    unbounded_loss_combo = dialog.regions_table.cellWidget(unbounded_row, 4)
+    assert isinstance(unbounded_loss_combo, QComboBox)
+    assert not unbounded_loss_combo.isEnabled()
 
-    dialog.fem_bulk_loss_combo.setCurrentIndex(dialog.fem_bulk_loss_combo.findData(0.02))
-    assert dialog.preferences().fem_bulk_loss_factor == pytest.approx(0.02)
+    wall_row = next(
+        row
+        for row in range(dialog.boundaries_table.rowCount())
+        if dialog.boundaries_table.item(row, 1).text() == "Interior"
+        and dialog.boundaries_table.item(row, 2).text() == "Volume_boundary"
+    )
+    impedance_button = dialog.boundaries_table.cellWidget(wall_row, 4)
+    assignment_combo = dialog.boundaries_table.cellWidget(wall_row, 3)
+    assert isinstance(impedance_button, QPushButton)
+    assert isinstance(assignment_combo, QComboBox)
+    assert impedance_button.isEnabled()
+    assignment_combo.blockSignals(True)
+    assignment_combo.setCurrentIndex(assignment_combo.findData(BoundaryKind.MOVING))
+    dialog._refresh_wall_impedance_button(impedance_button, assignment_combo, True)
+    assert not impedance_button.isEnabled()
+    assignment_combo.setCurrentIndex(assignment_combo.findData(BoundaryKind.RIGID))
+    dialog._refresh_wall_impedance_button(impedance_button, assignment_combo, True)
+    assignment_combo.blockSignals(False)
+    assert impedance_button.isEnabled()
+    impedance_button.setProperty("boundary_parameters", miki_wall_impedance_parameters())
+
+    editor = _WallImpedanceDialog({})
+    assert editor.thickness_spin.value() == pytest.approx(30.0)
+    assert editor.flow_resistivity_spin.value() == pytest.approx(5000.0)
+
+    system = dialog.physical_system()
+    interior = next(region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR)
+    wall = next(boundary for boundary in system.boundaries if boundary.group.name == "Volume_boundary")
+    assert interior.loss_model["bulk_loss_factor"] == pytest.approx(0.02)
+    assert wall.parameters["wall_impedance"]["thickness_m"] == pytest.approx(0.03)
+    assert wall.parameters["wall_impedance"]["flow_resistivity_pa_s_per_m2"] == pytest.approx(5000.0)
 
 
 def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
@@ -870,6 +927,15 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
 )
 def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
     system = _configured_fixture_dialog().physical_system()
+    system = replace(
+        system,
+        regions=tuple(
+            replace(region, loss_model={"bulk_loss_factor": 0.01})
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+            else region
+            for region in system.regions
+        ),
+    )
     prepared = prepare_coupled_ui_solve(
         system,
         freq_min_hz=500.0,
@@ -877,7 +943,6 @@ def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
         freq_count=1,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
-        fem_bulk_loss_factor=0.01,
     )
     backend = CoupledProductionBackend(
         bem_backend="cpu",
@@ -894,7 +959,8 @@ def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
     assert system_result.quantities[0].values.dtype == np.complex64
     assert system_result.diagnostics["precision"] == "float32"
     assert system_result.diagnostics["bem_backend"] == "cpu"
-    assert system_result.diagnostics["fem_bulk_loss_factor"] == pytest.approx(0.01)
+    interior_id = next(region.id for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR)
+    assert system_result.diagnostics["fem_bulk_loss_factors_by_region"][interior_id] == pytest.approx(0.01)
     assert live_result.timings.assembly_s > 0.0
     assert live_result.timings.solve_s > 0.0
     assert live_result.timings.field_s > 0.0

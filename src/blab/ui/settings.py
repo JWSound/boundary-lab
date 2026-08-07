@@ -19,8 +19,6 @@ LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
 }
 BALLOON_ANGLE_PRECISION_MIN_DEG = 0.5
 BALLOON_ANGLE_PRECISION_MAX_DEG = 15.0
-FEM_BULK_LOSS_FACTOR_OPTIONS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05)
-FEM_BULK_LOSS_FACTOR_MAX = 1.0
 
 
 @dataclass
@@ -31,7 +29,6 @@ class GuiPreferences:
     live_plot_streaming: bool = True
     live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
-    fem_bulk_loss_factor: float = 0.0
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
     normalized_channel_correction: bool = True
@@ -52,7 +49,6 @@ class GuiPreferences:
 SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "solve_backend",
     "gmres_tolerance",
-    "fem_bulk_loss_factor",
     "polar_angle_step_deg",
     "polar_observation_distance_m",
     "normalized_channel_correction",
@@ -97,7 +93,6 @@ def project_preferences_from_gui(
         polar_angle_step_deg=preferences.polar_angle_step_deg,
         polar_observation_distance_m=preferences.polar_observation_distance_m,
         normalized_channel_correction=preferences.normalized_channel_correction,
-        fem_bulk_loss_factor=preferences.fem_bulk_loss_factor,
         polar_smoothing=preferences.polar_smoothing,
         horizontal_normalization_angle=preferences.horizontal_normalization_angle,
         vertical_normalization_angle=preferences.vertical_normalization_angle,
@@ -122,7 +117,6 @@ def gui_preferences_with_project_preferences(
         polar_angle_step_deg=project.polar_angle_step_deg,
         polar_observation_distance_m=project.polar_observation_distance_m,
         normalized_channel_correction=project.normalized_channel_correction,
-        fem_bulk_loss_factor=project.fem_bulk_loss_factor,
         polar_smoothing=project.polar_smoothing,
         horizontal_normalization_angle=project.horizontal_normalization_angle,
         vertical_normalization_angle=project.vertical_normalization_angle,
@@ -150,13 +144,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         ),
         live_plot_quality=normalize_live_plot_quality(
             settings_str(settings, "preferences/live_plot_quality", defaults.live_plot_quality)
-        ),
-        fem_bulk_loss_factor=normalize_fem_bulk_loss_factor(
-            settings_float(
-                settings,
-                "preferences/fem_bulk_loss_factor",
-                defaults.fem_bulk_loss_factor,
-            )
         ),
         polar_angle_step_deg=settings_float(
             settings,
@@ -228,10 +215,6 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
     settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)
     settings.setValue("preferences/live_plot_quality", preferences.live_plot_quality)
-    settings.setValue(
-        "preferences/fem_bulk_loss_factor",
-        normalize_fem_bulk_loss_factor(preferences.fem_bulk_loss_factor),
-    )
     settings.setValue("preferences/polar_angle_step_deg", preferences.polar_angle_step_deg)
     settings.setValue(
         "preferences/polar_observation_distance_m",
@@ -326,16 +309,6 @@ def settings_str(settings: QSettings, key: str, default: str) -> str:
 def normalize_live_plot_quality(value: object) -> str:
     quality = str(value or "medium").strip().lower()
     return quality if quality in LIVE_PLOT_QUALITY_ANGLE_SAMPLES else "medium"
-
-
-def normalize_fem_bulk_loss_factor(value: object) -> float:
-    try:
-        loss_factor = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(loss_factor) or not 0.0 <= loss_factor <= FEM_BULK_LOSS_FACTOR_MAX:
-        return 0.0
-    return loss_factor
 
 
 def live_plot_angle_samples(quality: object) -> int:

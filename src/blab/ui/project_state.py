@@ -31,7 +31,6 @@ class ProjectPreferencesState:
     polar_angle_step_deg: float = 10.0
     polar_observation_distance_m: float = 2.0
     normalized_channel_correction: bool = True
-    fem_bulk_loss_factor: float = 0.0
     polar_smoothing: int | None = 48
     horizontal_normalization_angle: float = 10.0
     vertical_normalization_angle: float = 10.0
@@ -73,12 +72,6 @@ class ProjectPreferencesState:
             ),
             normalized_channel_correction=_boolean(
                 payload.get("normalized_channel_correction"), defaults.normalized_channel_correction
-            ),
-            fem_bulk_loss_factor=_finite_float(
-                payload.get("fem_bulk_loss_factor"),
-                defaults.fem_bulk_loss_factor,
-                minimum=0.0,
-                maximum=1.0,
             ),
             polar_smoothing=_optional_int(payload.get("polar_smoothing"), defaults.polar_smoothing),
             horizontal_normalization_angle=_finite_float(

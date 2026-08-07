@@ -35,6 +35,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab.acoustic_materials import (
+    DEFAULT_WALL_LINING_FLOW_RESISTIVITY_PA_S_PER_M2,
+    DEFAULT_WALL_LINING_THICKNESS_M,
+    FEM_BULK_LOSS_FACTOR_OPTIONS,
+    REGION_BULK_LOSS_FACTOR_KEY,
+    miki_wall_impedance_parameters,
+    region_bulk_loss_factor,
+    wall_impedance_parameters,
+)
 from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInference,
@@ -792,6 +801,68 @@ class _ComponentEditorDialog(QDialog):
             spin.setValue(-spin.value())
 
 
+class _WallImpedanceDialog(QDialog):
+    def __init__(self, parameters: dict | None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Wall Impedance")
+        treatment = wall_impedance_parameters(parameters)
+
+        self.enabled_check = QCheckBox("Enable porous wall lining")
+        self.enabled_check.setChecked(treatment is not None)
+        self.thickness_spin = QDoubleSpinBox()
+        self.thickness_spin.setRange(0.1, 1000.0)
+        self.thickness_spin.setDecimals(1)
+        self.thickness_spin.setSingleStep(5.0)
+        self.thickness_spin.setSuffix(" mm")
+        self.thickness_spin.setValue(
+            1000.0
+            * float(
+                DEFAULT_WALL_LINING_THICKNESS_M
+                if treatment is None
+                else treatment["thickness_m"]
+            )
+        )
+        self.flow_resistivity_spin = QDoubleSpinBox()
+        self.flow_resistivity_spin.setRange(1.0, 10_000_000.0)
+        self.flow_resistivity_spin.setDecimals(0)
+        self.flow_resistivity_spin.setSingleStep(500.0)
+        self.flow_resistivity_spin.setGroupSeparatorShown(True)
+        self.flow_resistivity_spin.setSuffix(" Pa·s/m²")
+        self.flow_resistivity_spin.setValue(
+            float(
+                DEFAULT_WALL_LINING_FLOW_RESISTIVITY_PA_S_PER_M2
+                if treatment is None
+                else treatment["flow_resistivity_pa_s_per_m2"]
+            )
+        )
+        self.enabled_check.toggled.connect(self.thickness_spin.setEnabled)
+        self.enabled_check.toggled.connect(self.flow_resistivity_spin.setEnabled)
+        self.thickness_spin.setEnabled(self.enabled_check.isChecked())
+        self.flow_resistivity_spin.setEnabled(self.enabled_check.isChecked())
+
+        note = QLabel("Rigid-backed porous lining using the Miki model. Generic loose polyfill defaults to 30 mm and 5,000 Pa·s/m².")
+        note.setWordWrap(True)
+        form = QFormLayout()
+        form.addRow("Lining thickness", self.thickness_spin)
+        form.addRow("Airflow resistivity", self.flow_resistivity_spin)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addWidget(note)
+        layout.addWidget(self.enabled_check)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    def parameters(self) -> dict:
+        if not self.enabled_check.isChecked():
+            return {}
+        return miki_wall_impedance_parameters(
+            thickness_m=float(self.thickness_spin.value()) / 1000.0,
+            flow_resistivity_pa_s_per_m2=float(self.flow_resistivity_spin.value()),
+        )
+
+
 class SystemConfigDialog(QDialog):
     """Edit regions, boundaries, inferred interfaces, and physical components."""
 
@@ -879,12 +950,14 @@ class SystemConfigDialog(QDialog):
         self.resize(980, 560)
 
     def _build_regions_tab(self) -> None:
-        self.regions_table = QTableWidget(0, 4)
-        self.regions_table.setHorizontalHeaderLabels(["Name", "Type", "Mesh", "Volume Group"])
+        self.regions_table = QTableWidget(0, 5)
+        self.regions_table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"]
+        )
         self.regions_table.verticalHeader().setVisible(False)
         self.regions_table.setAlternatingRowColors(True)
         self.regions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 4):
+        for column in range(1, 5):
             self.regions_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
 
         add_button = QPushButton("Add Region")
@@ -907,14 +980,17 @@ class SystemConfigDialog(QDialog):
         layout.addLayout(row)
 
     def _build_boundaries_tab(self) -> None:
-        self.boundaries_table = QTableWidget(0, 4)
-        self.boundaries_table.setHorizontalHeaderLabels(["Region", "Mesh", "Surface Group", "Assignment"])
+        self.boundaries_table = QTableWidget(0, 5)
+        self.boundaries_table.setHorizontalHeaderLabels(
+            ["Region", "Mesh", "Surface Group", "Assignment", "Wall Impedance"]
+        )
         self.boundaries_table.verticalHeader().setVisible(False)
         self.boundaries_table.setAlternatingRowColors(True)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.boundaries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
             "Classify every surface used by a region. Boundary Lab pairs conforming bounded and unbounded "
             "interface sides."
@@ -1016,6 +1092,7 @@ class SystemConfigDialog(QDialog):
                     mesh_name=mesh_names,
                     volume_group=volume_name,
                     region_id=region.id,
+                    bulk_loss_factor=region_bulk_loss_factor(region.loss_model),
                 )
             return
         exterior_meshes = tuple(mesh.name for mesh in self._meshes if not mesh.has_tetrahedra)
@@ -1024,6 +1101,7 @@ class SystemConfigDialog(QDialog):
             kind=AcousticRegionKind.UNBOUNDED_AIR,
             mesh_name=exterior_meshes,
             volume_group=None,
+            bulk_loss_factor=0.0,
         )
 
     def _restored_region_mesh_name(
@@ -1045,6 +1123,7 @@ class SystemConfigDialog(QDialog):
         mesh_name: str | tuple[str, ...] | None,
         volume_group: str | None,
         region_id: str | None = None,
+        bulk_loss_factor: float = 0.0,
     ) -> None:
         row = self.regions_table.rowCount()
         self.regions_table.insertRow(row)
@@ -1066,8 +1145,26 @@ class SystemConfigDialog(QDialog):
 
         volume_combo = QComboBox()
         self.regions_table.setCellWidget(row, 3, volume_combo)
+        loss_combo = QComboBox()
+        for loss_factor in FEM_BULK_LOSS_FACTOR_OPTIONS:
+            loss_combo.addItem(f"{loss_factor:g}", loss_factor)
+        loss_index = loss_combo.findData(float(bulk_loss_factor))
+        if loss_index < 0:
+            loss_combo.addItem(f"{float(bulk_loss_factor):g} (existing)", float(bulk_loss_factor))
+            loss_index = loss_combo.count() - 1
+        loss_combo.setCurrentIndex(loss_index)
+        loss_combo.setToolTip(
+            "Homogeneous FEM bulk loss for this bounded region; approximate isolated-mode Q is 1/loss factor."
+        )
+        loss_combo.setEnabled(kind == AcousticRegionKind.BOUNDED_AIR)
+        self.regions_table.setCellWidget(row, 4, loss_combo)
         type_combo.currentIndexChanged.connect(lambda _index, r=row: self._refresh_region_volume_combo(r))
         type_combo.currentIndexChanged.connect(self._refresh_interfaces_tab_availability)
+        type_combo.currentIndexChanged.connect(
+            lambda _index, combo=loss_combo, r=row: combo.setEnabled(
+                self._region_kind(r) == AcousticRegionKind.BOUNDED_AIR
+            )
+        )
         type_combo.currentIndexChanged.connect(
             lambda _index, combo=mesh_combo, r=row: combo.set_multiple_enabled(
                 self._region_kind(r) == AcousticRegionKind.UNBOUNDED_AIR
@@ -1089,6 +1186,7 @@ class SystemConfigDialog(QDialog):
             kind=AcousticRegionKind.BOUNDED_AIR,
             mesh_name=None if volume_mesh is None else volume_mesh.name,
             volume_group=None if volume_mesh is None or not volume_mesh.volume_groups else volume_mesh.volume_groups[0],
+            bulk_loss_factor=0.0,
         )
 
     def _remove_selected_regions(self) -> None:
@@ -1134,13 +1232,14 @@ class SystemConfigDialog(QDialog):
         elif self.tabs.widget(index) is self.components_tab:
             self._refresh_components_boundary_choices()
 
-    def _current_boundary_assignments(self) -> dict[tuple[str, str, str], tuple[str, BoundaryKind | None]]:
+    def _current_boundary_assignments(self) -> dict[tuple[str, str, str], tuple[str, BoundaryKind | None, dict]]:
         assignments = {}
         for row in range(self.boundaries_table.rowCount()):
             item = self.boundaries_table.item(row, 0)
             mesh_item = self.boundaries_table.item(row, 1)
             group_item = self.boundaries_table.item(row, 2)
             combo = self.boundaries_table.cellWidget(row, 3)
+            impedance_button = self.boundaries_table.cellWidget(row, 4)
             if item is None or mesh_item is None or group_item is None or not isinstance(combo, QComboBox):
                 continue
             key = (
@@ -1148,7 +1247,12 @@ class SystemConfigDialog(QDialog):
                 str(mesh_item.data(Qt.ItemDataRole.UserRole)),
                 str(group_item.data(Qt.ItemDataRole.UserRole)),
             )
-            assignments[key] = (str(combo.property("boundary_id") or ""), combo.currentData())
+            parameters = (
+                dict(impedance_button.property("boundary_parameters") or {})
+                if isinstance(impedance_button, QPushButton)
+                else {}
+            )
+            assignments[key] = (str(combo.property("boundary_id") or ""), combo.currentData(), parameters)
         return assignments
 
     def _refresh_boundaries(self) -> None:
@@ -1167,14 +1271,15 @@ class SystemConfigDialog(QDialog):
                 for group_name in mesh.surface_groups:
                     key = (region["id"], mesh_id, group_name)
                     existing = self._existing_boundaries.get(key)
-                    boundary_id, selected = current.get(
+                    boundary_id, selected, parameters = current.get(
                         key,
                         (
                             "" if existing is None else existing.id,
                             None if existing is None else existing.kind,
+                            {} if existing is None else dict(existing.parameters),
                         ),
                     )
-                    self._append_boundary_row(mesh_region, mesh, group_name, boundary_id, selected)
+                    self._append_boundary_row(mesh_region, mesh, group_name, boundary_id, selected, parameters)
 
     def _append_boundary_row(
         self,
@@ -1183,6 +1288,7 @@ class SystemConfigDialog(QDialog):
         group_name: str,
         boundary_id: str,
         selected: BoundaryKind | None,
+        parameters: dict,
     ) -> None:
         row = self.boundaries_table.rowCount()
         self.boundaries_table.insertRow(row)
@@ -1208,6 +1314,42 @@ class SystemConfigDialog(QDialog):
         combo.setCurrentIndex(max(index, 0))
         combo.currentIndexChanged.connect(self._invalidate_identified_interfaces)
         self.boundaries_table.setCellWidget(row, 3, combo)
+        impedance_button = QPushButton()
+        impedance_button.setProperty("boundary_parameters", dict(parameters))
+        impedance_button.clicked.connect(
+            lambda _checked=False, button=impedance_button, assignment=combo, bounded=(
+                region["kind"] == AcousticRegionKind.BOUNDED_AIR
+            ): self._edit_wall_impedance(button, assignment, bounded)
+        )
+        combo.currentIndexChanged.connect(
+            lambda _index, button=impedance_button, assignment=combo, bounded=(
+                region["kind"] == AcousticRegionKind.BOUNDED_AIR
+            ): self._refresh_wall_impedance_button(button, assignment, bounded)
+        )
+        self.boundaries_table.setCellWidget(row, 4, impedance_button)
+        self._refresh_wall_impedance_button(
+            impedance_button,
+            combo,
+            region["kind"] == AcousticRegionKind.BOUNDED_AIR,
+        )
+
+    @staticmethod
+    def _refresh_wall_impedance_button(button: QPushButton, assignment: QComboBox, bounded: bool) -> None:
+        treatment = wall_impedance_parameters(dict(button.property("boundary_parameters") or {}))
+        button.setText(
+            "None"
+            if treatment is None
+            else f"{1000.0 * float(treatment['thickness_m']):g} mm / "
+            f"{float(treatment['flow_resistivity_pa_s_per_m2']):,.0f} Pa·s/m²"
+        )
+        button.setEnabled(bounded and assignment.currentData() == BoundaryKind.RIGID)
+
+    def _edit_wall_impedance(self, button: QPushButton, assignment: QComboBox, bounded: bool) -> None:
+        dialog = _WallImpedanceDialog(dict(button.property("boundary_parameters") or {}), self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        button.setProperty("boundary_parameters", dialog.parameters())
+        self._refresh_wall_impedance_button(button, assignment, bounded)
 
     def _invalidate_identified_interfaces(self, _index: int) -> None:
         self._interfaces.clear()
@@ -1222,6 +1364,7 @@ class SystemConfigDialog(QDialog):
             mesh_item = self.boundaries_table.item(row, 1)
             group_item = self.boundaries_table.item(row, 2)
             combo = self.boundaries_table.cellWidget(row, 3)
+            impedance_button = self.boundaries_table.cellWidget(row, 4)
             if (
                 region_item is None
                 or mesh_item is None
@@ -1245,6 +1388,13 @@ class SystemConfigDialog(QDialog):
                     region_id=region_id,
                     group=PhysicalGroupRef(mesh_id=mesh_id, dimension=2, name=group_name),
                     kind=combo.currentData(),
+                    parameters=(
+                        dict(impedance_button.property("boundary_parameters") or {})
+                        if isinstance(impedance_button, QPushButton)
+                        and combo.currentData() == BoundaryKind.RIGID
+                        and impedance_button.isEnabled()
+                        else {}
+                    ),
                 )
             )
         return tuple(boundaries)
@@ -1872,6 +2022,7 @@ class SystemConfigDialog(QDialog):
             name_edit = self.regions_table.cellWidget(row, 0)
             mesh_combo = self.regions_table.cellWidget(row, 2)
             volume_combo = self.regions_table.cellWidget(row, 3)
+            loss_combo = self.regions_table.cellWidget(row, 4)
             if not isinstance(name_edit, QLineEdit) or not isinstance(mesh_combo, _RegionMeshCombo):
                 continue
             name = name_edit.text().strip()
@@ -1901,6 +2052,11 @@ class SystemConfigDialog(QDialog):
                     "mesh_names": mesh_names,
                     "mesh_ids": tuple(resource_ids[mesh_name] for mesh_name in mesh_names),
                     "volume_group": None if volume_group is None else str(volume_group),
+                    "bulk_loss_factor": (
+                        float(loss_combo.currentData())
+                        if kind == AcousticRegionKind.BOUNDED_AIR and isinstance(loss_combo, QComboBox)
+                        else 0.0
+                    ),
                 }
             )
         return tuple(drafts)
@@ -1981,7 +2137,11 @@ class SystemConfigDialog(QDialog):
                     ),
                     sound_speed_m_per_s=343.0 if existing is None else existing.sound_speed_m_per_s,
                     density_kg_per_m3=1.21 if existing is None else existing.density_kg_per_m3,
-                    loss_model={} if existing is None else dict(existing.loss_model),
+                    loss_model=(
+                        {}
+                        if draft["kind"] == AcousticRegionKind.UNBOUNDED_AIR
+                        else {REGION_BULK_LOSS_FACTOR_KEY: draft["bulk_loss_factor"]}
+                    ),
                 )
             )
         return tuple(regions), tuple(resource_by_name.values())
