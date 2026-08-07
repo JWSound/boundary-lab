@@ -331,6 +331,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert 'self.generate_server_access_token_button = QPushButton("Generate")' in dialog_source
     assert 'self.copy_server_access_token_button = QPushButton("Copy")' in dialog_source
     assert '"Server access token",' in solver_config_block
+    assert "Keep this code safe" in solver_config_block
+    assert "operating system credential vault" not in dialog_source
     assert "self.server_access_token_row.setEnabled(uses_remote)" in dialog_source
     assert '"", self.check_server_button' in solver_config_block or "self.check_server_button," in solver_config_block
     assert "self.check_server_button.setEnabled(uses_remote)" in dialog_source

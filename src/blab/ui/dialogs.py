@@ -35,7 +35,7 @@ from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.file_dialogs import FileDialogService
-from blab.ui.server_credentials import load_server_access_token, save_server_access_token
+from blab.ui.server_tokens import load_server_access_token, remember_server_access_token
 from blab.ui.settings import (
     GuiPreferences,
     normalize_live_plot_quality,
@@ -348,7 +348,7 @@ class PreferencesDialog(QDialog):
                     (
                         "Server access token",
                         self.server_access_token_row,
-                        "Optional bearer token for authenticated solve servers. Stored in the operating system credential vault.",
+                        "Optional bearer token for authenticated solve servers. Keep this code safe; Boundary Lab only retains it for the current application session.",
                     ),
                     (
                         "Balloon Sampling",
@@ -452,9 +452,9 @@ class PreferencesDialog(QDialog):
     def _copy_server_access_token(self) -> None:
         QApplication.clipboard().setText(self.server_access_token_edit.text().strip())
 
-    def persist_server_access_token(self) -> bool:
+    def remember_server_access_token(self) -> None:
         url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
-        return save_server_access_token(url, self.server_access_token_edit.text())
+        remember_server_access_token(url, self.server_access_token_edit.text())
 
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:

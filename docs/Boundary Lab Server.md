@@ -39,10 +39,9 @@ an `Authorization: Bearer ...` header. The server never logs the token.
 
 In Boundary Lab, select `BEM Solver: Server` in Preferences, click `Generate`
 beside `Server access token`, and use `Copy` to place the generated token in
-your deployment's secret store. The token is saved by server URL in the
-operating system credential vault. If no compatible credential vault is
-available, Boundary Lab retains it only for the current application session
-and displays a warning.
+your deployment's secret store. Keep a safe copy of the token: Boundary Lab
+retains it only for the current application session and does not store it in
+the operating system credential vault or application settings.
 
 Bearer tokens must be used with HTTPS except for loopback addresses. Boundary
 Lab refuses to send a configured token over remote plain HTTP. An

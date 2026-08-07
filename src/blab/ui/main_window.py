@@ -142,8 +142,8 @@ from blab.ui.result_projection import (
     ResultProjectionService,
     VisualizationProjection,
 )
-from blab.ui.server_credentials import load_server_access_token
 from blab.ui.server_health_worker import ServerHealthCheckWorker
+from blab.ui.server_tokens import load_server_access_token
 from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
@@ -2326,8 +2326,7 @@ class MainWindow(QMainWindow):
             dialog.deleteLater()
             return
 
-        access_token = dialog.server_access_token_edit.text().strip()
-        credential_persisted = dialog.persist_server_access_token()
+        dialog.remember_server_access_token()
         dialog.deleteLater()
         self.preferences = preferences
         if checked_server_health is not None and preferences.solve_backend == "server":
@@ -2349,13 +2348,6 @@ class MainWindow(QMainWindow):
         elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
             self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
-        if access_token and not credential_persisted:
-            QMessageBox.warning(
-                self,
-                "Server access token",
-                "The operating system credential vault is unavailable. "
-                "The server access token will work for this session but could not be saved.",
-            )
 
     @Slot()
     def open_diagnostics(self) -> None:

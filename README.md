@@ -130,9 +130,10 @@ paths.
 
 Server authentication is optional. Set `BLAB_AUTH_TOKEN` on an
 internet-reachable server and configure the same token in Preferences; Boundary
-Lab stores it in the operating system credential vault and sends it as an HTTPS
-bearer token. Unauthenticated HTTP remains available for localhost and trusted
-private networks.
+Lab retains it for the current application session and sends it as an HTTPS
+bearer token. Keep a safe copy because it is not stored after Boundary Lab
+exits. Unauthenticated HTTP remains available for localhost and trusted private
+networks.
 
 For authenticated Docker and Runpod deployment with the BEAT Engine CUDA solver, see
 [Docker](docs/Docker.md).
