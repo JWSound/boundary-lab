@@ -41,7 +41,7 @@
   ],
   "imported_meshes": [
     {
-      "cleaned_file": "",
+      "cleaned_file": null,
       "enabled": true,
       "name": "3WayIntegratedEnclosure",
       "scale_factor": 0.001,

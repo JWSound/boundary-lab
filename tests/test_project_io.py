@@ -1,4 +1,5 @@
 import json
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -246,14 +247,38 @@ def test_legacy_global_fem_loss_migrates_to_each_bounded_region() -> None:
     assert migrated["physical_system"]["regions"][1]["loss_model"] == {}
 
 
-def test_shipped_examples_use_current_schema_without_solver_preference_overrides() -> None:
-    example_paths = sorted((REPO_ROOT / "examples").glob("**/*.blab.json"))
+def _shipped_project_paths() -> list[Path]:
+    return sorted(
+        [
+            *(REPO_ROOT / "examples").glob("**/*.blab.json"),
+            *(REPO_ROOT / "tests" / "fixtures").glob("**/*.blab.json"),
+        ]
+    )
+
+
+def _project_mesh_paths(payload: dict) -> list[str]:
+    paths = []
+    for mesh in payload.get("imported_meshes", []):
+        paths.extend(str(value) for field in ("source_file", "cleaned_file") if (value := mesh.get(field)))
+    for mesh in (payload.get("physical_system") or {}).get("meshes", []):
+        if value := mesh.get("file"):
+            paths.append(str(value))
+    return paths
+
+
+def test_shipped_projects_use_current_schema_and_portable_mesh_paths() -> None:
+    example_paths = _shipped_project_paths()
 
     # Prevent an incorrect working directory from turning this into a vacuous pass.
     assert example_paths
     for example_path in example_paths:
         payload = json.loads(example_path.read_text(encoding="utf-8"))
         assert payload["schema_version"] == PROJECT_SCHEMA_VERSION
+        for mesh_path in _project_mesh_paths(payload):
+            assert not PureWindowsPath(mesh_path).is_absolute(), f"machine-specific path in {example_path}: {mesh_path}"
+            assert not PurePosixPath(mesh_path).is_absolute(), f"machine-specific path in {example_path}: {mesh_path}"
+            assert (example_path.parent / mesh_path).is_file(), f"missing project asset in {example_path}: {mesh_path}"
+
         preferences = payload.get("project_preferences", {})
         assert "solve_backend" not in preferences
         assert "gmres_tolerance" not in preferences

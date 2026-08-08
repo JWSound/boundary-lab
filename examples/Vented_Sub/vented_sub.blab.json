@@ -30,7 +30,7 @@
       "enabled": true,
       "name": "Interior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\Vented_Sub\\Interior.msh",
+      "source_file": "Interior.msh",
       "translation_mm": [
         0,
         0,
@@ -38,11 +38,11 @@
       ]
     },
     {
-      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_3581db0609_interface_conformed.msh",
+      "cleaned_file": "Exterior_interface_conformed.msh",
       "enabled": true,
       "name": "Exterior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\Vented_Sub\\Exterior.msh",
+      "source_file": "Exterior.msh",
       "translation_mm": [
         0,
         0,
@@ -216,7 +216,7 @@
     ],
     "meshes": [
       {
-        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_3581db0609_interface_conformed.msh",
+        "file": "Exterior_interface_conformed.msh",
         "id": "mesh:exterior",
         "name": "Exterior",
         "purpose": "bem_surface",
@@ -228,7 +228,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\Vented_Sub\\Interior.msh",
+        "file": "Interior.msh",
         "id": "mesh:interior",
         "name": "Interior",
         "purpose": "fem_volume",

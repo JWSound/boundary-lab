@@ -30,7 +30,7 @@
       "enabled": true,
       "name": "Frontchamber",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\F2B_FLH\\Frontchamber.msh",
+      "source_file": "Frontchamber.msh",
       "translation_mm": [
         0,
         0,
@@ -42,7 +42,7 @@
       "enabled": true,
       "name": "rearchamber",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\F2B_FLH\\rearchamber.msh",
+      "source_file": "rearchamber.msh",
       "translation_mm": [
         0,
         0,
@@ -50,11 +50,11 @@
       ]
     },
     {
-      "cleaned_file": "E:\\fusiontomsh\\fusiontomsh\\runs\\imported_meshes\\exterior_34bf074c37_interface_conformed.msh",
+      "cleaned_file": "Exterior_interface_conformed.msh",
       "enabled": true,
       "name": "Exterior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\F2B_FLH\\Exterior.msh",
+      "source_file": "Exterior.msh",
       "translation_mm": [
         0,
         0,
@@ -217,7 +217,7 @@
     ],
     "meshes": [
       {
-        "file": "E:\\fusiontomsh\\fusiontomsh\\runs\\imported_meshes\\exterior_34bf074c37_interface_conformed.msh",
+        "file": "Exterior_interface_conformed.msh",
         "id": "mesh:exterior",
         "name": "Exterior",
         "purpose": "bem_surface",
@@ -229,7 +229,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\F2B_FLH\\Frontchamber.msh",
+        "file": "Frontchamber.msh",
         "id": "mesh:frontchamber",
         "name": "Frontchamber",
         "purpose": "fem_volume",
@@ -241,7 +241,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\F2B_FLH\\rearchamber.msh",
+        "file": "rearchamber.msh",
         "id": "mesh:rearchamber",
         "name": "rearchamber",
         "purpose": "fem_volume",

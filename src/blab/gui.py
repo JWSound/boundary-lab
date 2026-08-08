@@ -25,8 +25,8 @@ def _missing_gui_dependency_message(exc: ImportError) -> str:
 
 
 try:
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
+    from PySide6.QtCore import QRect, Qt
+    from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
     from PySide6.QtWidgets import QApplication, QMessageBox, QSplashScreen
 except ImportError as exc:  # pragma: no cover - exercised only by manual GUI launch
     raise SystemExit(
@@ -39,7 +39,12 @@ ICON_PATHS = tuple(APP_ROOT / "assets" / f"{size}.ico" for size in (32, 64, 128,
 STARTUP_TIMEOUT_SECONDS = 45
 SPLASH_TEXT_COLOR = QColor("#1c1c1c")
 SPLASH_TEXT_FONT = QFont("Courier New", 10)
-SPLASH_TEXT_BOTTOM_MARGIN_PX = 15
+SPLASH_TEXT_PANEL_COLOR = QColor(250, 250, 250, 225)
+SPLASH_TEXT_PANEL_BORDER_COLOR = QColor(28, 28, 28, 55)
+SPLASH_TEXT_CONTENT_INSET_PX = 15
+SPLASH_TEXT_HORIZONTAL_PADDING_PX = 10
+SPLASH_TEXT_VERTICAL_PADDING_PX = 5
+SPLASH_ALPHA_VISIBILITY_THRESHOLD = 32
 
 
 class StartupReporter:
@@ -67,7 +72,7 @@ class StartupReporter:
         if self.splash is not None:
             self.splash.showMessage(
                 stage,
-                Qt.AlignBottom | Qt.AlignHCenter,
+                Qt.AlignBottom | Qt.AlignLeft,
                 SPLASH_TEXT_COLOR,
             )
             self.app.processEvents()
@@ -107,15 +112,106 @@ class StartupReporter:
         self._log_file.flush()
 
 
+def _splash_message_anchor_rect(pixmap: QPixmap) -> QRect:
+    """Return the lowest substantial opaque span in a splash pixmap.
+
+    Splash artwork may include transparent padding. Anchoring status text to
+    the widget rectangle would place it in that padding, where it can disappear
+    against the desktop. The lowest visible horizontal run is a useful proxy
+    for the bottom edge of the artwork without coupling the UI to one asset's
+    dimensions.
+    """
+    fallback = pixmap.rect()
+    image = pixmap.toImage()
+    if image.isNull() or not image.hasAlphaChannel():
+        return fallback
+
+    image = image.convertToFormat(QImage.Format_RGBA8888)
+    width = image.width()
+    height = image.height()
+    if width <= 0 or height <= 0:
+        return fallback
+
+    pixels = image.constBits()
+    bytes_per_line = image.bytesPerLine()
+    minimum_run_width = max(8, width // 20)
+
+    for y in range(height - 1, -1, -1):
+        row_offset = y * bytes_per_line
+        longest_start = -1
+        longest_width = 0
+        run_start = -1
+
+        for x in range(width):
+            alpha = pixels[row_offset + x * 4 + 3]
+            if alpha >= SPLASH_ALPHA_VISIBILITY_THRESHOLD:
+                if run_start < 0:
+                    run_start = x
+                continue
+            if run_start >= 0:
+                run_width = x - run_start
+                if run_width > longest_width:
+                    longest_start = run_start
+                    longest_width = run_width
+                run_start = -1
+
+        if run_start >= 0:
+            run_width = width - run_start
+            if run_width > longest_width:
+                longest_start = run_start
+                longest_width = run_width
+
+        if longest_width >= minimum_run_width:
+            return QRect(longest_start, 0, longest_width, y + 1)
+
+    return fallback
+
+
 class BoundaryLabSplashScreen(QSplashScreen):
+    def __init__(self, pixmap: QPixmap, flags=Qt.WindowFlags()):
+        super().__init__(pixmap, flags)
+        self._message_anchor_rect = _splash_message_anchor_rect(pixmap)
+        self._last_message_panel_rect = QRect()
+
     def drawContents(self, painter) -> None:  # noqa: N802 - Qt override
+        message = self.message()
+        if not message:
+            return
+
         painter.setPen(SPLASH_TEXT_COLOR)
         painter.setFont(SPLASH_TEXT_FONT)
-        painter.drawText(
-            self.rect().adjusted(0, 0, 0, -SPLASH_TEXT_BOTTOM_MARGIN_PX),
-            int(Qt.AlignBottom | Qt.AlignHCenter),
-            self.message(),
+        metrics = painter.fontMetrics()
+        available_width = max(1, self._message_anchor_rect.width() - 2 * SPLASH_TEXT_CONTENT_INSET_PX)
+        panel_width = min(
+            metrics.horizontalAdvance(message) + 2 * SPLASH_TEXT_HORIZONTAL_PADDING_PX,
+            available_width,
         )
+        panel_height = metrics.height() + 2 * SPLASH_TEXT_VERTICAL_PADDING_PX
+        panel_left = self._message_anchor_rect.left() + SPLASH_TEXT_CONTENT_INSET_PX
+        panel_bottom = self._message_anchor_rect.bottom() - SPLASH_TEXT_CONTENT_INSET_PX
+        panel_rect = QRect(
+            panel_left,
+            panel_bottom - panel_height + 1,
+            panel_width,
+            panel_height,
+        )
+        self._last_message_panel_rect = panel_rect
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(SPLASH_TEXT_PANEL_BORDER_COLOR)
+        painter.setBrush(SPLASH_TEXT_PANEL_COLOR)
+        painter.drawRoundedRect(panel_rect, 4, 4)
+        painter.setPen(SPLASH_TEXT_COLOR)
+        text_rect = panel_rect.adjusted(
+            SPLASH_TEXT_HORIZONTAL_PADDING_PX,
+            0,
+            -SPLASH_TEXT_HORIZONTAL_PADDING_PX,
+            0,
+        )
+        elided_message = metrics.elidedText(message, Qt.ElideRight, text_rect.width())
+        painter.drawText(text_rect, int(Qt.AlignLeft | Qt.AlignVCenter), elided_message)
+        painter.restore()
 
 
 def _startup_log_path() -> Path:

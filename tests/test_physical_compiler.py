@@ -49,12 +49,13 @@ from blab.system_contract import (
     system_solve_request_from_dict,
     system_solve_request_to_dict,
 )
+from repo_paths import REPO_ROOT
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
 SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "SKRAM"
-SIMPLE_SEALED_FIXTURE_ROOT = FIXTURE_ROOT / "simple_sealed"
+SIMPLE_SEALED_FIXTURE_ROOT = REPO_ROOT / "examples" / "Simple_Sealed"
 
 
 def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:

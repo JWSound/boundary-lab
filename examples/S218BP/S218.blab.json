@@ -30,7 +30,7 @@
       "enabled": true,
       "name": "SideChamber",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\S218BP\\SideChamber.msh",
+      "source_file": "SideChamber.msh",
       "translation_mm": [
         0,
         0,
@@ -38,11 +38,11 @@
       ]
     },
     {
-      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_d31bf34bee_interface_conformed.msh",
+      "cleaned_file": "Exterior_interface_conformed.msh",
       "enabled": true,
       "name": "Exterior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\S218BP\\Exterior.msh",
+      "source_file": "Exterior.msh",
       "translation_mm": [
         0,
         0,
@@ -54,7 +54,7 @@
       "enabled": true,
       "name": "REARCHAMBER",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\S218BP\\REARCHAMBER.msh",
+      "source_file": "REARCHAMBER.msh",
       "translation_mm": [
         0,
         0,
@@ -287,7 +287,7 @@
     ],
     "meshes": [
       {
-        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\exterior_d31bf34bee_interface_conformed.msh",
+        "file": "Exterior_interface_conformed.msh",
         "id": "mesh:exterior",
         "name": "Exterior",
         "purpose": "bem_surface",
@@ -299,7 +299,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\S218BP\\REARCHAMBER.msh",
+        "file": "REARCHAMBER.msh",
         "id": "mesh:rearchamber",
         "name": "REARCHAMBER",
         "purpose": "fem_volume",
@@ -311,7 +311,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\S218BP\\SideChamber.msh",
+        "file": "SideChamber.msh",
         "id": "mesh:sidechamber",
         "name": "SideChamber",
         "purpose": "fem_volume",

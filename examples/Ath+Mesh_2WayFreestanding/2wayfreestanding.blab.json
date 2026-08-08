@@ -23,7 +23,7 @@
   ],
   "imported_meshes": [
     {
-      "cleaned_file": "",
+      "cleaned_file": null,
       "enabled": true,
       "name": "wooferenclosure",
       "scale_factor": 0.001,
