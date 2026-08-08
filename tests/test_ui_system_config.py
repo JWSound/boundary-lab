@@ -40,6 +40,8 @@ from blab.ui.system_config import (
     _WallImpedanceDialog,
     infer_component_motion_axis,
     inspect_system_meshes,
+    interface_bem_mesh_names_for_changes,
+    rebuild_configured_interfaces,
 )
 from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
@@ -744,6 +746,42 @@ def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_pat
             meshio.read(FIXTURE_ROOT / "femvolume.msh"),
             meshio.read(FIXTURE_ROOT / "exterior.msh"),
         )
+
+
+def test_configured_interface_dependencies_identify_the_bem_mesh_to_rebuild(tmp_path: Path) -> None:
+    system = _configured_fixture_dialog(
+        bem_filename="exterior.msh",
+        interface_output_root=tmp_path / "initial",
+    ).physical_system()
+
+    assert interface_bem_mesh_names_for_changes(system, {"Interior"}) == ("Exterior",)
+    assert interface_bem_mesh_names_for_changes(system, {"Exterior"}) == ("Exterior",)
+    assert interface_bem_mesh_names_for_changes(system, {"Unrelated"}) == ()
+
+
+def test_known_interfaces_can_be_rebuilt_headlessly_after_a_mesh_change(tmp_path: Path) -> None:
+    system = _configured_fixture_dialog(
+        bem_filename="exterior.msh",
+        interface_output_root=tmp_path / "initial",
+    ).physical_system()
+    available_meshes = inspect_system_meshes(_fixture_mesh_entries("exterior.msh"))
+
+    result = rebuild_configured_interfaces(
+        system,
+        available_meshes,
+        changed_mesh_names={"Interior"},
+        interface_output_root=tmp_path / "refreshed",
+    )
+
+    rebuilt_path = Path(result.mesh_file_overrides_by_name["Exterior"])
+    assert result.rebuilt_interface_ids == (system.interfaces[0].id,)
+    assert rebuilt_path.is_file()
+    rebuilt_resource = next(mesh for mesh in result.system.meshes if mesh.name == "Exterior")
+    assert rebuilt_resource.file == str(rebuilt_path)
+    validate_conforming_interfaces(
+        meshio.read(FIXTURE_ROOT / "femvolume.msh"),
+        meshio.read(rebuilt_path),
+    )
 
 
 def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> None:

@@ -22,6 +22,7 @@ from blab.ui.dialogs import (
     MeshDialogEntry,
 )
 from blab.ui.main_window.helpers import (
+    _mesh_entries_with_file_overrides,
     _physical_system_preview_metadata,
 )
 from blab.ui.mesh_assembly import (
@@ -34,6 +35,11 @@ from blab.ui.project_state import (
     ImportedMeshState,
     generator_mesh_name,
     replace_generator_document,
+)
+from blab.ui.system_config import (
+    inspect_system_meshes,
+    interface_bem_mesh_names_for_changes,
+    rebuild_configured_interfaces,
 )
 
 
@@ -122,12 +128,38 @@ class MeshWorkflowMixin:
         source_path = Path(mesh.source_file)
         if source_path.suffix.lower() != ".msh" or not source_path.exists():
             return False
-        if self.mesh_service().is_volume_mesh(source_path):
+        fingerprint = self._mesh_source_fingerprint(source_path)
+        if fingerprint is None:
             return False
-        cleaned_path = Path(mesh.cleaned_file) if mesh.cleaned_file else self._cleaned_imported_mesh_path(mesh)
-        if not cleaned_path.exists():
-            return True
-        return source_path.stat().st_mtime_ns > cleaned_path.stat().st_mtime_ns
+        previous = getattr(self, "_imported_mesh_source_fingerprints", {}).get(self._mesh_source_key(source_path))
+        return previous is not None and fingerprint != previous
+
+    @staticmethod
+    def _mesh_source_key(source_path: Path) -> str:
+        return str(source_path.resolve())
+
+    @staticmethod
+    def _mesh_source_fingerprint(source_path: Path) -> tuple[int, int] | None:
+        try:
+            stat = source_path.stat()
+        except OSError:
+            return None
+        return stat.st_mtime_ns, stat.st_size
+
+    def _record_imported_mesh_source_fingerprints(self) -> None:
+        previous = getattr(self, "_imported_mesh_source_fingerprints", {})
+        fingerprints: dict[str, tuple[int, int]] = {}
+        for mesh in self.imported_meshes:
+            source_path = Path(mesh.source_file)
+            if source_path.suffix.lower() != ".msh":
+                continue
+            key = self._mesh_source_key(source_path)
+            fingerprint = self._mesh_source_fingerprint(source_path)
+            if fingerprint is not None:
+                fingerprints[key] = fingerprint
+            elif key in previous:
+                fingerprints[key] = previous[key]
+        self._imported_mesh_source_fingerprints = fingerprints
 
     def _updated_imported_mesh_names(self) -> tuple[str, ...]:
         return tuple(mesh.name for mesh in self.imported_meshes if self._imported_mesh_needs_reload(mesh))
@@ -141,22 +173,62 @@ class MeshWorkflowMixin:
             return
         self._last_imported_mesh_focus_check_at = now
 
-        updated_names = self._updated_imported_mesh_names()
-        if not updated_names:
-            return
-
+        cursor_set = False
         try:
+            updated_names = self._updated_imported_mesh_names()
+            if not updated_names:
+                return
             QApplication.setOverrideCursor(Qt.WaitCursor)
+            cursor_set = True
             self.show_status(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
-            self.imported_meshes = self._clean_imported_meshes(self.imported_meshes)
+            physical_system = self._project_document().physical_system
+            interface_bem_names = set(
+                interface_bem_mesh_names_for_changes(physical_system, set(updated_names))
+            )
+            reload_candidates = tuple(
+                replace(mesh, cleaned_file=None) if mesh.name in interface_bem_names else mesh
+                for mesh in self.imported_meshes
+            )
+            reloaded_meshes = self._clean_imported_meshes(reload_candidates)
+            rebuilt_interface_count = 0
+            if physical_system is not None and interface_bem_names:
+                generated_meshes = tuple(
+                    mesh for mesh in self.mesh_entries_for_symmetry("off") if mesh.locked
+                )
+                available_meshes = inspect_system_meshes((*generated_meshes, *reloaded_meshes))
+                rebuild = rebuild_configured_interfaces(
+                    physical_system,
+                    available_meshes,
+                    changed_mesh_names=set(updated_names),
+                    interface_output_root=self.mesh_service().output_root,
+                    symmetry_mode=self.symmetry,
+                )
+                reloaded_meshes = _mesh_entries_with_file_overrides(
+                    reloaded_meshes,
+                    rebuild.mesh_file_overrides_by_name,
+                )
+                self._project_document().physical_system = rebuild.system
+                rebuilt_interface_count = len(rebuild.rebuilt_interface_ids)
+            self.imported_meshes = reloaded_meshes
+            self._record_imported_mesh_source_fingerprints()
             self.mesh_state_changed.emit("imported_mesh_files_reloaded")
             self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             names = ", ".join(updated_names)
-            self.show_status(f"Reloaded updated mesh file{'s' if len(updated_names) != 1 else ''}: {names}")
+            interface_text = (
+                f"; rebuilt {rebuilt_interface_count} interface"
+                f"{'s' if rebuilt_interface_count != 1 else ''}"
+                if rebuilt_interface_count
+                else ("; interfaces verified" if interface_bem_names else "")
+            )
+            self.show_status(
+                f"Reloaded updated mesh file{'s' if len(updated_names) != 1 else ''}: {names}{interface_text}"
+            )
         except Exception as exc:
+            self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             self.show_status(f"Imported mesh reload failed: {exc}")
         finally:
-            QApplication.restoreOverrideCursor()
+            if cursor_set:
+                QApplication.restoreOverrideCursor()
 
     def _cleaned_imported_mesh_path(self, mesh: MeshDialogEntry) -> Path:
         return self.mesh_service().cleaned_imported_mesh_path(

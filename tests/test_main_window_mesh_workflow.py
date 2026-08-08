@@ -1,12 +1,17 @@
+import os
+from dataclasses import replace
 from pathlib import Path
 
 import meshio
 import numpy as np
+import pytest
 
+import blab.ui.main_window.mesh_workflow as mesh_workflow_module
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
 from blab.generators.ath import ath_source
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.physical_model import (
+    AcousticInterface,
     AcousticRegion,
     AcousticRegionKind,
     Boundary,
@@ -29,6 +34,7 @@ from blab.ui.main_window import (
 from blab.ui.main_window.project_session import ProjectSession
 from blab.ui.main_window.project_workflow import ProjectWorkflowController
 from blab.ui.project_state import ProjectPreferencesState
+from blab.ui.system_config import InterfaceRebuildResult
 from repo_paths import MAIN_WINDOW_PKG
 
 
@@ -60,6 +66,162 @@ def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
         field_data={"SD1D1001": np.array([tag, 2], dtype=np.int32)},
     )
     meshio.write(path, mesh, file_format="gmsh22", binary=False)
+
+
+def _write_tetrahedral_mesh(path: Path) -> None:
+    mesh = meshio.Mesh(
+        points=np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        ),
+        cells=[("tetra", np.array([[0, 1, 2, 3]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([1], dtype=np.int32)]},
+        field_data={"Air": np.array([1, 3], dtype=np.int32)},
+    )
+    meshio.write(path, mesh, file_format="gmsh22", binary=False)
+
+
+@pytest.mark.parametrize("volume_mesh", [False, True], ids=["bem-surface", "fem-volume"])
+def test_focus_reload_detects_changed_surface_and_volume_meshes(
+    main_window,
+    tmp_path: Path,
+    volume_mesh: bool,
+) -> None:
+    source_path = tmp_path / ("interior.msh" if volume_mesh else "exterior.msh")
+    if volume_mesh:
+        _write_tetrahedral_mesh(source_path)
+    else:
+        _write_triangle_mesh(source_path)
+
+    entry = MeshDialogEntry(name="Interior" if volume_mesh else "Exterior", source_file=str(source_path))
+    main_window.imported_meshes = main_window._clean_imported_meshes((entry,))
+    main_window._record_imported_mesh_source_fingerprints()
+    mesh_reasons = []
+    invalidation_reasons = []
+    main_window.mesh_state_changed.connect(mesh_reasons.append)
+    main_window.solve_results_invalidated.connect(invalidation_reasons.append)
+
+    source_path.write_text(source_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    if not volume_mesh:
+        cleaned_path = Path(main_window.imported_meshes[0].cleaned_file)
+        newer = cleaned_path.stat().st_mtime + 2.0
+        os.utime(source_path, (newer, newer))
+
+    assert main_window._updated_imported_mesh_names() == (entry.name,)
+
+    main_window._last_imported_mesh_focus_check_at = 0.0
+    main_window._reload_updated_imported_meshes_on_focus()
+
+    assert mesh_reasons == ["imported_mesh_files_reloaded"]
+    assert invalidation_reasons == ["imported_mesh_files_reloaded"]
+    assert main_window._updated_imported_mesh_names() == ()
+    assert (main_window.imported_meshes[0].cleaned_file is None) is volume_mesh
+
+
+def test_failed_focus_reload_keeps_changed_fingerprint_for_retry(main_window, tmp_path: Path, monkeypatch) -> None:
+    source_path = tmp_path / "interior.msh"
+    _write_tetrahedral_mesh(source_path)
+    main_window.imported_meshes = (MeshDialogEntry(name="Interior", source_file=str(source_path)),)
+    main_window._record_imported_mesh_source_fingerprints()
+    source_path.write_text(source_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    emitted = []
+    invalidated = []
+    main_window.mesh_state_changed.connect(emitted.append)
+    main_window.solve_results_invalidated.connect(invalidated.append)
+    monkeypatch.setattr(
+        main_window,
+        "_clean_imported_meshes",
+        lambda _meshes: (_ for _ in ()).throw(ValueError("mesh is still being written")),
+    )
+
+    main_window._last_imported_mesh_focus_check_at = 0.0
+    main_window._reload_updated_imported_meshes_on_focus()
+
+    assert emitted == []
+    assert invalidated == ["imported_mesh_files_reloaded"]
+    assert main_window._updated_imported_mesh_names() == ("Interior",)
+
+
+def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
+    main_window,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fem_path = tmp_path / "interior.msh"
+    bem_path = tmp_path / "exterior.msh"
+    rebuilt_path = tmp_path / "exterior_interface_conformed.msh"
+    _write_tetrahedral_mesh(fem_path)
+    _write_triangle_mesh(bem_path)
+    _write_triangle_mesh(rebuilt_path)
+    entries = (
+        MeshDialogEntry(name="Interior", source_file=str(fem_path)),
+        MeshDialogEntry(name="Exterior", source_file=str(bem_path)),
+    )
+    main_window.imported_meshes = main_window._clean_imported_meshes(entries)
+    system = PhysicalSystem(
+        id="system",
+        name="System",
+        meshes=(
+            MeshResource("fem", "Interior", str(fem_path), MeshPurpose.FEM_VOLUME),
+            MeshResource("bem", "Exterior", str(bem_path), MeshPurpose.BEM_SURFACE),
+        ),
+        regions=(
+            AcousticRegion("interior", "Interior", AcousticRegionKind.BOUNDED_AIR, ("fem",)),
+            AcousticRegion("exterior", "Exterior", AcousticRegionKind.UNBOUNDED_AIR, ("bem",)),
+        ),
+        boundaries=(
+            Boundary(
+                "fem-interface",
+                "Interface",
+                "interior",
+                PhysicalGroupRef("fem", 2, tag=1),
+                BoundaryKind.INTERFACE,
+            ),
+            Boundary(
+                "bem-interface",
+                "Interface",
+                "exterior",
+                PhysicalGroupRef("bem", 2, tag=2),
+                BoundaryKind.INTERFACE,
+            ),
+        ),
+        interfaces=(AcousticInterface("interface", "Interface", "fem-interface", "bem-interface"),),
+    )
+    rebuilt_system = replace(
+        system,
+        meshes=tuple(
+            replace(mesh, file=str(rebuilt_path)) if mesh.name == "Exterior" else mesh
+            for mesh in system.meshes
+        ),
+    )
+    main_window.project.physical_system = system
+    main_window._record_imported_mesh_source_fingerprints()
+    fem_path.write_text(fem_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    calls = []
+
+    def rebuild_interfaces(current_system, available_meshes, **options):
+        calls.append((current_system, available_meshes, options))
+        return InterfaceRebuildResult(
+            system=rebuilt_system,
+            mesh_file_overrides_by_name={"Exterior": str(rebuilt_path)},
+            rebuilt_interface_ids=("interface",),
+        )
+
+    monkeypatch.setattr(mesh_workflow_module, "rebuild_configured_interfaces", rebuild_interfaces)
+
+    main_window._last_imported_mesh_focus_check_at = 0.0
+    main_window._reload_updated_imported_meshes_on_focus()
+
+    assert len(calls) == 1
+    assert calls[0][2]["changed_mesh_names"] == {"Interior"}
+    assert main_window.project.physical_system == rebuilt_system
+    exterior = next(mesh for mesh in main_window.imported_meshes if mesh.name == "Exterior")
+    assert exterior.cleaned_file == str(rebuilt_path)
 
 
 def test_system_interface_mesh_override_is_persisted_as_imported_cleaned_file(tmp_path: Path) -> None:

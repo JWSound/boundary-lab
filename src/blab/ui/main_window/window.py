@@ -334,6 +334,7 @@ class MainWindow(
         self.balloon_window: QWidget | None = None
         self.channel_config_dialog: ChannelConfigDialog | None = None
         self._last_imported_mesh_focus_check_at = 0.0
+        self._imported_mesh_source_fingerprints: dict[str, tuple[int, int]] = {}
         self._plot_dpi_screen = None
         self._plot_dpi_window_handle = None
         self._plot_dpi_refresh_pending = False

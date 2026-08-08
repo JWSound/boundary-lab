@@ -38,13 +38,16 @@ class StateSyncMixin:
         self.solve_controller.finished.connect(self.solve_workflow._on_solve_finished)
 
     @Slot(str)
-    def _on_mesh_state_changed(self, _reason: str) -> None:
+    def _on_mesh_state_changed(self, reason: str) -> None:
         self._refresh_mesh_preview()
+        if reason in {"mesh_config_changed", "imported_mesh_files_reloaded"}:
+            self._record_imported_mesh_source_fingerprints()
         self.set_system_config_available(self.has_solver_meshes())
 
     @Slot(str)
     def _on_project_state_changed(self, _reason: str) -> None:
         self._refresh_mesh_preview()
+        self._record_imported_mesh_source_fingerprints()
         self.set_system_config_available(self.has_solver_meshes())
 
     @Slot(bool)
