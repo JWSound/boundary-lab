@@ -17,6 +17,7 @@ catch
 end
 
 export BoundaryMesh,
+    combine_boundary_meshes,
     DP0Space,
     P1Space,
     SymmetryTransform,
@@ -214,6 +215,62 @@ function BoundaryMesh(vertices::Vector{SVector{3,T}}, faces::Vector{NTuple{3,Int
     end
 
     return BoundaryMesh{T}(vertices, faces, physical_tags, centroids, normals, areas, face_vertices)
+end
+
+"""
+Combine disconnected boundary-mesh resources into one solver mesh.
+
+Vertices are deliberately not welded: each input retains an independent P1
+topology. Physical tags are remapped per input so equal tag numbers from
+different Gmsh files cannot alias one another. The returned zero-based offsets
+map source-local wire indices into the combined mesh.
+"""
+function combine_boundary_meshes(meshes::AbstractVector{<:BoundaryMesh{T}}) where {T<:AbstractFloat}
+    isempty(meshes) && error("An unbounded region must contain at least one BEM mesh.")
+
+    vertices = SVector{3,T}[]
+    faces = NTuple{3,Int}[]
+    physical_tags = Int[]
+    vertex_offsets = Int[]
+    face_offsets = Int[]
+    physical_tag_maps = Dict{Int,Int}[]
+    next_physical_tag = 1
+
+    for mesh in meshes
+        vertex_offset = length(vertices)
+        push!(vertex_offsets, vertex_offset)
+        push!(face_offsets, length(faces))
+        append!(vertices, mesh.vertices)
+        append!(
+            faces,
+            (
+                (
+                    face[1] + vertex_offset,
+                    face[2] + vertex_offset,
+                    face[3] + vertex_offset,
+                )
+                for face in mesh.faces
+            ),
+        )
+
+        local_tag_map = Dict{Int,Int}()
+        for source_tag in mesh.physical_tags
+            solver_tag = get!(local_tag_map, source_tag) do
+                assigned = next_physical_tag
+                next_physical_tag += 1
+                assigned
+            end
+            push!(physical_tags, solver_tag)
+        end
+        push!(physical_tag_maps, local_tag_map)
+    end
+
+    return (
+        mesh=BoundaryMesh(vertices, faces, physical_tags),
+        vertex_offsets=vertex_offsets,
+        face_offsets=face_offsets,
+        physical_tag_maps=physical_tag_maps,
+    )
 end
 
 build_p1_space(mesh::BoundaryMesh) = P1Space(mesh.faces, length(mesh.vertices))

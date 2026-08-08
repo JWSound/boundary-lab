@@ -48,8 +48,8 @@ The production backend currently accepts a deliberately focused physical
 system:
 
 - one or more bounded-air regions, currently with one FEM mesh each;
-- exactly one unbounded-air region with one BEM mesh;
-- zero or more FEM-BEM interfaces into that exterior mesh;
+- exactly one unbounded-air region with one or more BEM meshes;
+- zero or more FEM-BEM interfaces into those exterior meshes;
 - one or more selected physical volume groups in each bounded region;
 - ideal prescribed-velocity components, linear electrodynamic transducers, or
   both;
@@ -68,6 +68,11 @@ The FEM input must be a Gmsh 4.1 ASCII mesh containing first-order tetrahedra
 and triangular boundary facets. The BEM input must be a Gmsh 2.2 ASCII mesh
 containing first-order triangles. Boundary Lab applies each mesh's scale and
 translation before checking the interface and solving.
+
+When the unbounded region contains several BEM mesh resources, the backend
+combines them into one logical BEM discretization without welding their
+vertices. Disconnected parts therefore remain topologically independent while
+still participating in the same acoustic boundary-integral solve.
 
 Every tagged surface belonging to an active region must have one boundary
 assignment. The System editor offers only `rigid`, `moving`, and `interface`;

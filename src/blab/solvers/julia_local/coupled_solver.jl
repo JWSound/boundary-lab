@@ -37,6 +37,45 @@ function translated_boundary_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
     return BoundaryMesh([vertex + translation for vertex in mesh.vertices], mesh.faces, mesh.physical_tags)
 end
 
+function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:AbstractFloat}
+    mesh_ids = String.(region["mesh_ids"])
+    isempty(mesh_ids) && error("Unbounded region must contain at least one BEM mesh.")
+    resources = [object_by_id(meshes, mesh_id, "mesh") for mesh_id in mesh_ids]
+    all(String(resource["purpose"]) == "bem_surface" for resource in resources) ||
+        error("Unbounded region meshes must be BEM surfaces.")
+    combined = combine_boundary_meshes(
+        [translated_boundary_mesh(resource, T) for resource in resources],
+    )
+    vertex_offset_by_mesh_id = Dict(zip(mesh_ids, combined.vertex_offsets))
+    face_offset_by_mesh_id = Dict(zip(mesh_ids, combined.face_offsets))
+    tag_map_by_mesh_id = Dict(zip(mesh_ids, combined.physical_tag_maps))
+    boundary_tag_by_id = Dict{String,Int}()
+    for boundary in boundaries
+        String(boundary["region_id"]) == String(region["id"]) || continue
+        boundary_id = String(boundary["id"])
+        group = boundary["group"]
+        mesh_id = String(group["mesh_id"])
+        tag_map = get(tag_map_by_mesh_id, mesh_id, nothing)
+        tag_map === nothing && error(
+            "Exterior boundary $(repr(boundary_id)) references mesh " *
+            "$(repr(mesh_id)) outside its unbounded region.",
+        )
+        source_tag = Int(group["tag"])
+        solver_tag = get(tag_map, source_tag, 0)
+        solver_tag > 0 || error(
+            "Exterior boundary $(repr(boundary_id)) tag $source_tag is not " *
+            "present in BEM mesh $(repr(mesh_id)).",
+        )
+        boundary_tag_by_id[boundary_id] = solver_tag
+    end
+    return (
+        mesh=combined.mesh,
+        vertex_offset_by_mesh_id=vertex_offset_by_mesh_id,
+        face_offset_by_mesh_id=face_offset_by_mesh_id,
+        boundary_tag_by_id=boundary_tag_by_id,
+    )
+end
+
 function validate_volume_symmetry_fundamental_domain!(mesh, symmetry_mode; tolerance)
     active_axes = symmetry_mode == :off ? () : symmetry_mode == :x ? (1,) : (1, 2)
     for axis in active_axes
@@ -309,11 +348,14 @@ end
 function combined_interface_map_from_wire(
     interfaces,
     fem_domains,
+    boundaries,
+    bem_domain,
 )
     maps = ConformingInterfaceMap[]
     ranges = UnitRange{Int}[]
     next_interface_dof = 1
     for interface in interfaces
+        interface_id = String(interface["id"])
         bounded_boundary_id = String(interface["bounded_boundary_id"])
         domain_index = get(
             fem_domains.domain_by_boundary_id,
@@ -325,12 +367,24 @@ function combined_interface_map_from_wire(
         )
         domain = fem_domains.domains[domain_index]
         local_map = interface_map_from_wire(interface["topology"], domain.selection)
-        mapped = ConformingInterfaceMap(
-            local_map.fem_vertex_indices .+ domain.vertex_offset,
-            local_map.fem_to_bem_vertex_indices,
-            local_map.fem_face_indices .+ domain.face_offset,
-            local_map.bem_face_indices,
-            local_map.normal_sign,
+        unbounded_boundary = object_by_id(
+            boundaries,
+            String(interface["unbounded_boundary_id"]),
+            "unbounded boundary",
+        )
+        bem_mesh_id = String(unbounded_boundary["group"]["mesh_id"])
+        bem_vertex_offset = get(bem_domain.vertex_offset_by_mesh_id, bem_mesh_id, -1)
+        bem_face_offset = get(bem_domain.face_offset_by_mesh_id, bem_mesh_id, -1)
+        bem_vertex_offset >= 0 && bem_face_offset >= 0 || error(
+            "Interface $(repr(interface_id)) references BEM mesh " *
+            "$(repr(bem_mesh_id)) outside the unbounded region.",
+        )
+        mapped = offset_interface_map(
+            local_map;
+            fem_vertex_offset=domain.vertex_offset,
+            fem_face_offset=domain.face_offset,
+            bem_vertex_offset=bem_vertex_offset,
+            bem_face_offset=bem_face_offset,
         )
         push!(maps, mapped)
         count = length(mapped.fem_vertex_indices)
@@ -575,9 +629,6 @@ function solve_request(request; event_mode=false)
     isempty(bounded_regions) && error("Coupled backend requires at least one bounded region.")
     length(unbounded_regions) == 1 || error("Coupled backend currently requires exactly one unbounded region.")
     unbounded_region = only(unbounded_regions)
-    length(unbounded_region["mesh_ids"]) == 1 || error("Unbounded region must contain exactly one BEM mesh.")
-    bem_resource = object_by_id(meshes, String(only(unbounded_region["mesh_ids"])), "mesh")
-    String(bem_resource["purpose"]) == "bem_surface" || error("Unbounded region mesh must be a BEM surface.")
     reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
     reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
     for region in regions
@@ -629,7 +680,8 @@ function solve_request(request; event_mode=false)
         FloatType,
     )
     fem_mesh = fem_domains.mesh
-    bem_mesh = translated_boundary_mesh(bem_resource, FloatType)
+    bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
+    bem_mesh = bem_domain.mesh
     symmetry_tolerance = max(
         FloatType(1e-9),
         maximum(maximum(abs, vertex) for vertex in fem_mesh.vertices) * FloatType(1e-6),
@@ -647,16 +699,14 @@ function solve_request(request; event_mode=false)
     combined_interfaces = combined_interface_map_from_wire(
         interfaces,
         fem_domains,
+        boundaries,
+        bem_domain,
     )
     interface_map = combined_interfaces.map
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
     sound_speed = FloatType(reference_sound_speed)
     density = FloatType(reference_density)
-    bem_boundary_tag_by_id = Dict(
-        String(boundary["id"]) => Int(boundary["group"]["tag"])
-        for boundary in boundaries
-        if String(boundary["region_id"]) == String(unbounded_region["id"])
-    )
+    bem_boundary_tag_by_id = bem_domain.boundary_tag_by_id
     transducers, transducer_index_by_component_id = electrodynamic_transducers_from_wire(
         components,
         boundaries,

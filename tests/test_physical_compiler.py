@@ -183,6 +183,54 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
 
 
+def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
+    system = _fixture_system()
+    exterior_mesh = next(mesh for mesh in system.meshes if mesh.id == "mesh:bem")
+    second_exterior_mesh = replace(
+        exterior_mesh,
+        id="mesh:bem-phase-plug",
+        name="Disconnected phase plug",
+        translation_m=(0.5, 0.0, 0.0),
+    )
+    second_mesh_boundaries = tuple(
+        replace(
+            boundary,
+            id=f"{boundary.id}-phase-plug",
+            name=f"{boundary.name} phase plug",
+            group=replace(boundary.group, mesh_id=second_exterior_mesh.id),
+            kind=BoundaryKind.RIGID,
+        )
+        for boundary in system.boundaries
+        if boundary.region_id == "region:exterior"
+    )
+    configured = replace(
+        system,
+        meshes=(*system.meshes, second_exterior_mesh),
+        regions=tuple(
+            replace(region, mesh_ids=("mesh:bem", second_exterior_mesh.id))
+            if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+            else region
+            for region in system.regions
+        ),
+        boundaries=(*system.boundaries, *second_mesh_boundaries),
+    )
+    compiled = PhysicalSystemCompiler().compile(configured)
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    exterior = next(
+        region
+        for region in session.request.compiled_system.regions
+        if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+    )
+    assert exterior.mesh_ids == ("mesh:bem", "mesh:bem-phase-plug")
+
+
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
     starts_path = tmp_path / "coupled_cancel_starts.txt"
     fake_solver = tmp_path / "fake_coupled_cancel_worker.py"

@@ -32,6 +32,7 @@ export VolumeMesh,
     sealed_cavity_modes,
     solve_prescribed_velocity_interior,
     build_conforming_interface_map,
+    offset_interface_map,
     assemble_interface_operators,
     assemble_transducer_operators,
     prepare_coupled_cache,
@@ -58,6 +59,22 @@ struct ConformingInterfaceMap
     fem_face_indices::Vector{Int}
     bem_face_indices::Vector{Int}
     normal_sign::Vector{Int}
+end
+
+function offset_interface_map(
+    map::ConformingInterfaceMap;
+    fem_vertex_offset::Int=0,
+    fem_face_offset::Int=0,
+    bem_vertex_offset::Int=0,
+    bem_face_offset::Int=0,
+)
+    return ConformingInterfaceMap(
+        map.fem_vertex_indices .+ fem_vertex_offset,
+        map.fem_to_bem_vertex_indices .+ bem_vertex_offset,
+        map.fem_face_indices .+ fem_face_offset,
+        map.bem_face_indices .+ bem_face_offset,
+        map.normal_sign,
+    )
 end
 
 struct ElectrodynamicTransducer{T<:AbstractFloat}

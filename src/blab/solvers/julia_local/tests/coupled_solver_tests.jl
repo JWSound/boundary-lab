@@ -6,6 +6,49 @@ const COUPLED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..",
 const COUPLED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 
+@testset "disconnected BEM mesh aggregation" begin
+    first = BoundaryMesh(
+        SVector{3,Float64}[
+            SVector(0.0, 0.0, 0.0),
+            SVector(1.0, 0.0, 0.0),
+            SVector(0.0, 1.0, 0.0),
+        ],
+        [(1, 2, 3)],
+        [7],
+    )
+    second = BoundaryMesh(
+        SVector{3,Float64}[
+            SVector(0.0, 0.0, 2.0),
+            SVector(0.0, 1.0, 2.0),
+            SVector(1.0, 0.0, 2.0),
+        ],
+        [(1, 2, 3)],
+        [7],
+    )
+
+    combined = combine_boundary_meshes([first, second])
+
+    @test combined.vertex_offsets == [0, 3]
+    @test combined.face_offsets == [0, 1]
+    @test combined.mesh.faces == [(1, 2, 3), (4, 5, 6)]
+    @test combined.mesh.physical_tags == [1, 2]
+    @test combined.physical_tag_maps == [Dict(7 => 1), Dict(7 => 2)]
+    @test build_p1_space(combined.mesh).global_dof_count == 6
+
+    local_interface = ConformingInterfaceMap([1, 3], [2, 4], [5], [6], [-1])
+    mapped_interface = offset_interface_map(
+        local_interface;
+        fem_vertex_offset=10,
+        fem_face_offset=20,
+        bem_vertex_offset=30,
+        bem_face_offset=40,
+    )
+    @test mapped_interface.fem_vertex_indices == [11, 13]
+    @test mapped_interface.fem_to_bem_vertex_indices == [32, 34]
+    @test mapped_interface.fem_face_indices == [25]
+    @test mapped_interface.bem_face_indices == [46]
+end
+
 function structured_unit_cube(divisions::Int)
     divisions > 0 || error("divisions must be positive")
     points_per_axis = divisions + 1

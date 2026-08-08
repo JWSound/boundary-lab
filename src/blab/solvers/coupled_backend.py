@@ -309,8 +309,8 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError("Coupled solver requires at least one bounded acoustic region.")
     if len(unbounded_regions) != 1:
         raise ValueError("Coupled solver requires exactly one unbounded acoustic region.")
-    if any(len(region.mesh_ids) != 1 for region in system.regions):
-        raise ValueError("Each coupled acoustic region must currently reference exactly one mesh.")
+    if any(len(region.mesh_ids) != 1 for region in bounded_regions):
+        raise ValueError("Each coupled bounded acoustic region must currently reference exactly one FEM mesh.")
     reference_medium = bounded_regions[0]
     mismatched_media = [
         region.id
