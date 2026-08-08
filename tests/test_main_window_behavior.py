@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QDockWidget, QMessageBox, QTabBar  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
+from blab.config import ChannelConfig  # noqa: E402
 from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
@@ -245,6 +246,68 @@ def test_cancelling_refresh_clears_pending_work(main_window, monkeypatch) -> Non
 
     assert calls == []
     assert not main_window._live_plot_refresh_timer.isActive()
+
+
+class _ResynthesizableDatasetStub:
+    supports_channel_resynthesis = True
+    has_balloon_data = True
+
+    def __init__(self) -> None:
+        self.synthesis_calls = []
+
+    def set_channel_synthesis(self, channels, **options) -> None:
+        self.synthesis_calls.append((channels, options))
+
+    def as_balloon_raw_bundle(self):
+        raise AssertionError("closed Balloon windows must not trigger balloon synthesis")
+
+
+class _BalloonWindowStub:
+    def __init__(self, *, visible: bool) -> None:
+        self.visible = visible
+        self.refresh_count = 0
+
+    def isVisible(self) -> bool:  # noqa: N802 - Qt API shape
+        return self.visible
+
+    def refresh_from_latest_results(self) -> None:
+        self.refresh_count += 1
+
+
+def test_channel_apply_resynthesizes_without_refreshing_mesh_or_closed_balloon(main_window, monkeypatch) -> None:
+    dataset = _ResynthesizableDatasetStub()
+    main_window.live_dataset = dataset
+    main_window.balloon_window = _BalloonWindowStub(visible=False)
+    plot_refreshes = []
+    preview_refreshes = []
+    balloon_availability = []
+    monkeypatch.setattr(main_window, "refresh_plots", lambda: plot_refreshes.append(True))
+    monkeypatch.setattr(main_window, "_refresh_mesh_preview", lambda: preview_refreshes.append(True))
+    monkeypatch.setattr(main_window, "set_balloon_plot_available", balloon_availability.append)
+
+    channels = (ChannelConfig(name="main", level_db=-3.0),)
+    main_window._apply_channel_config(channels)
+
+    assert dataset.synthesis_calls == [
+        (channels, {"flat_target_reference_angle_deg": main_window.preferences.horizontal_normalization_angle})
+    ]
+    assert plot_refreshes == [True]
+    assert preview_refreshes == []
+    assert balloon_availability == [True]
+    assert main_window.balloon_window.refresh_count == 0
+
+
+def test_channel_apply_refreshes_an_open_balloon_window(main_window, monkeypatch) -> None:
+    dataset = _ResynthesizableDatasetStub()
+    balloon_window = _BalloonWindowStub(visible=True)
+    main_window.live_dataset = dataset
+    main_window.balloon_window = balloon_window
+    monkeypatch.setattr(main_window, "refresh_plots", lambda: None)
+    monkeypatch.setattr(main_window, "set_balloon_plot_available", lambda _available: None)
+
+    main_window._apply_channel_config((ChannelConfig(name="main", delay_ms=0.5),))
+
+    assert balloon_window.refresh_count == 1
 
 
 # ------------------------------------------------------------------------ DPI refresh

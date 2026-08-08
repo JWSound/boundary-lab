@@ -21,7 +21,6 @@ class StateSyncMixin:
 
     def _connect_state_events(self) -> None:
         self.mesh_state_changed.connect(self._on_mesh_state_changed)
-        self.source_config_changed.connect(self._on_source_config_changed)
         self.project_state_changed.connect(self._on_project_state_changed)
         self.solve_results_invalidated.connect(self._on_solve_results_invalidated)
         self.visualization_settings_changed.connect(self._on_visualization_settings_changed)
@@ -42,10 +41,6 @@ class StateSyncMixin:
     def _on_mesh_state_changed(self, _reason: str) -> None:
         self._refresh_mesh_preview()
         self.set_system_config_available(self.has_solver_meshes())
-
-    @Slot(str)
-    def _on_source_config_changed(self, _reason: str) -> None:
-        self._refresh_mesh_preview()
 
     @Slot(str)
     def _on_project_state_changed(self, _reason: str) -> None:

@@ -5,6 +5,7 @@ import meshio
 import numpy as np
 import pytest
 
+import blab.live as live_module
 from blab.ath import (
     AthProcessRunner,
     ath_mirror_axes_for_result,
@@ -656,6 +657,52 @@ def test_live_dataset_balloon_bundle_does_not_reindex_float32_frequencies() -> N
 
     assert bundle is not None
     assert bundle["spl_norm"].shape == (1, 4)
+
+
+def test_visualization_skips_sphere_synthesis_and_balloon_bundle_synthesizes_once(monkeypatch) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    sphere_points = 4
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["driver"]),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+        sphere_r_distance_m=np.full(sphere_points, 2.0, dtype=np.float32),
+        sphere_theta_polar_rad=np.linspace(0.1, np.pi - 0.1, sphere_points, dtype=np.float32),
+        sphere_phi_azimuth_rad=np.linspace(0.0, 2.0 * np.pi, sphere_points, endpoint=False, dtype=np.float32),
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2]], dtype=np.float32),
+            channel_names=np.array(["main"]),
+            horizontal_pressure=np.ones((1, angles.size), dtype=np.complex64),
+            vertical_pressure=np.ones((1, angles.size), dtype=np.complex64),
+            sphere_pressure=np.ones((1, sphere_points), dtype=np.complex64),
+        )
+    )
+    original_synthesize = live_module.synthesize_channel_basis_spl
+    sphere_arguments = []
+
+    def record_synthesis(**kwargs):
+        sphere_arguments.append(kwargs.get("sphere_pressure"))
+        return original_synthesize(**kwargs)
+
+    monkeypatch.setattr(live_module, "synthesize_channel_basis_spl", record_synthesis)
+
+    assert dataset.has_balloon_data
+    assert dataset.as_visualization_dataset(
+        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
+    ) is not None
+    assert sphere_arguments == [None]
+
+    bundle = dataset.as_balloon_raw_bundle()
+
+    assert bundle is not None
+    assert len(sphere_arguments) == 2
+    assert sphere_arguments[1] is dataset.results[1000.0].sphere_pressure
 
 
 def test_prepare_balloon_data_builds_surface_arrays() -> None:

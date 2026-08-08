@@ -344,7 +344,7 @@ class SolveWorkflowController(QObject):
             self._view.set_plot_exports_available(True)
             self._view.set_polar_export_available(True)
             self._view.set_on_axis_export_available(session.live_dataset.supports_channel_resynthesis)
-            self._view.set_balloon_plot_available(session.live_dataset.as_balloon_raw_bundle() is not None)
+            self._view.set_balloon_plot_available(session.live_dataset.has_balloon_data)
             self._plots.refresh_contour_controls()
             elapsed_text = f" in {elapsed_s:.1f} s"
             if completion.phase == OperationPhase.CANCELLED:

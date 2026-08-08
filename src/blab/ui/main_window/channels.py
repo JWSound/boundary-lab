@@ -9,7 +9,6 @@ from blab.generators.base import GeneratedGeometry
 from blab.ui.dialogs import (
     ChannelConfigDialog,
 )
-from blab.ui.main_window.geometry_store import radiator_channel_assignments
 from blab.ui.project_state import (
     generator_mesh_name,
 )
@@ -91,7 +90,6 @@ class ChannelsMixin:
     def _apply_channel_config(self, channels: tuple[ChannelConfig, ...]) -> None:
         channels = tuple(channels)
         channel_config_changed = channels != self.channel_configs()
-        previous_radiator_assignments = radiator_channel_assignments(self.all_radiators())
         valid_names = {channel.name for channel in channels}
         fallback = channels[0].name
         radiator_assignments_changed = any(radiator.channel not in valid_names for radiator in self.all_radiators())
@@ -108,16 +106,18 @@ class ChannelsMixin:
 
         self._save_channel_config(channels)
         self._geometry_store().reassign_channels(valid_names, fallback)
-        current_radiator_assignments = radiator_channel_assignments(self.all_radiators())
-        radiator_assignments_changed = current_radiator_assignments != previous_radiator_assignments
-        self.source_config_changed.emit("channel_config_changed")
         if can_resynthesize:
             self.live_dataset.set_channel_synthesis(
                 channels,
                 flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
             )
             self.refresh_plots()
-            self.set_balloon_plot_available(self.live_dataset.as_balloon_raw_bundle() is not None)
+            self.set_balloon_plot_available(self.live_dataset.has_balloon_data)
+            balloon_window = self.balloon_window
+            if balloon_window is not None and balloon_window.isVisible():
+                refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
+                if callable(refresh_balloon):
+                    refresh_balloon()
             self.show_status(f"Channel config updated: {len(channels)} channels; plots resynthesized")
         else:
             self.solve_results_invalidated.emit("channel_config_changed")

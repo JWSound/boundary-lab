@@ -100,8 +100,6 @@ class MainWindow(
 ):
     mesh_state_changed = Signal(str)
 
-    source_config_changed = Signal(str)
-
     project_state_changed = Signal(str)
 
     solve_results_invalidated = Signal(str)

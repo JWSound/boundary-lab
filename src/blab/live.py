@@ -61,24 +61,28 @@ class LiveSolveDataset:
         return bool(self.results) and all(result.has_channel_basis for result in self.results.values())
 
     def as_polar_export_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        if not self.results:
-            raise ValueError("No solved polar data available.")
-
-        ordered = self.ordered_results()
-        freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        horizontal = np.vstack([self._synthesized_arrays(item)[0] for item in ordered]).astype(np.float32, copy=False)
-        vertical = np.vstack([self._synthesized_arrays(item)[1] for item in ordered]).astype(np.float32, copy=False)
-        return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
+        freqs, angles, horizontal, vertical, _raw_horizontal, _raw_vertical = self._polar_export_arrays()
+        return freqs, angles, horizontal, vertical
 
     def as_raw_polar_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        freqs, angles, _horizontal, _vertical, raw_horizontal, raw_vertical = self._polar_export_arrays()
+        return freqs, angles, raw_horizontal, raw_vertical
+
+    def _polar_export_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not self.results:
             raise ValueError("No solved polar data available.")
 
         ordered = self.ordered_results()
+        synthesized = [self._synthesized_arrays(item) for item in ordered]
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        horizontal = np.vstack([self._synthesized_arrays(item)[2] for item in ordered]).astype(np.float32, copy=False)
-        vertical = np.vstack([self._synthesized_arrays(item)[3] for item in ordered]).astype(np.float32, copy=False)
-        return freqs, self.polar_angle_deg.astype(np.float32, copy=False), horizontal, vertical
+        angles = self.polar_angle_deg.astype(np.float32, copy=False)
+        horizontal = np.vstack([row[0] for row in synthesized]).astype(np.float32, copy=False)
+        vertical = np.vstack([row[1] for row in synthesized]).astype(np.float32, copy=False)
+        raw_horizontal = np.vstack([row[2] for row in synthesized]).astype(np.float32, copy=False)
+        raw_vertical = np.vstack([row[3] for row in synthesized]).astype(np.float32, copy=False)
+        return freqs, angles, horizontal, vertical, raw_horizontal, raw_vertical
 
     def as_complex_polar_export_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not self.results:
@@ -148,8 +152,7 @@ class LiveSolveDataset:
             self.channel_configs,
             flat_target_reference_angle_deg=prep_cfg.hor_ref_angle,
         )
-        freqs, angles, horizontal, vertical = self.as_polar_export_arrays()
-        _, _, raw_horizontal, raw_vertical = self.as_raw_polar_arrays()
+        freqs, angles, horizontal, vertical, raw_horizontal, raw_vertical = self._polar_export_arrays()
         ordered = self.ordered_results()
         impedance = np.stack([item.impedance for item in ordered], axis=1)
 
@@ -168,26 +171,40 @@ class LiveSolveDataset:
         ) | self._channel_on_axis_dataset(freqs)
 
     def as_balloon_raw_bundle(self) -> dict[str, np.ndarray] | None:
-        if (
-            not self.results
-            or self.sphere_r_distance_m is None
-            or self.sphere_theta_polar_rad is None
-            or self.sphere_phi_azimuth_rad is None
-        ):
+        if not self.has_balloon_data:
             return None
 
         ordered = self.ordered_results()
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        if any(self._synthesized_sphere(item) is None for item in ordered):
-            return None
+        sphere_rows: list[np.ndarray] = []
+        for item in ordered:
+            sphere = self._synthesized_sphere(item)
+            if sphere is None:
+                return None
+            sphere_rows.append(sphere)
 
         return {
             "freq_hz": freqs,
             "r_distance_m": np.asarray(self.sphere_r_distance_m, dtype=np.float32),
             "theta_polar_rad": np.asarray(self.sphere_theta_polar_rad, dtype=np.float32),
             "phi_azimuth_rad": np.asarray(self.sphere_phi_azimuth_rad, dtype=np.float32),
-            "spl_norm": np.vstack([self._synthesized_sphere(item) for item in ordered]).astype(np.float32, copy=False),
+            "spl_norm": np.vstack(sphere_rows).astype(np.float32, copy=False),
         }
+
+    @property
+    def has_balloon_data(self) -> bool:
+        if (
+            not self.results
+            or self.sphere_r_distance_m is None
+            or self.sphere_theta_polar_rad is None
+            or self.sphere_phi_azimuth_rad is None
+        ):
+            return False
+        return all(
+            (result.has_channel_basis and result.sphere_pressure is not None)
+            or result.sphere_spl_norm_db is not None
+            for result in self.results.values()
+        )
 
     def _synthesized_arrays(
         self,
@@ -200,7 +217,6 @@ class LiveSolveDataset:
                 channel_names=result.channel_names,
                 horizontal_pressure=result.horizontal_pressure,
                 vertical_pressure=result.vertical_pressure,
-                sphere_pressure=result.sphere_pressure,
                 channel_configs=self.channel_configs,
                 flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
                 flat_target_enabled=self.flat_target_normalization_enabled,

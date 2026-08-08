@@ -44,6 +44,15 @@ class DialogActionsMixin:
             QMessageBox.warning(self, "No balloon data", "Run a solve before opening the balloon plot.")
             return
 
+        balloon_window = self.balloon_window
+        if balloon_window is not None and balloon_window.isVisible():
+            refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
+            if callable(refresh_balloon):
+                refresh_balloon()
+            balloon_window.raise_()
+            balloon_window.activateWindow()
+            return
+
         self.live_dataset.set_channel_synthesis(
             self.channel_configs(),
             flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
