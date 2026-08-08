@@ -172,7 +172,7 @@ class BalloonPlotWindow(QMainWindow):
         self.protractor_toggle.setChecked(True)
         self.protractor_toggle.toggled.connect(self._on_protractor_toggled)
 
-        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.92, show_colorbar=False)
+        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.83, show_colorbar=False)
         self.slice_plot.setMinimumSize(330, 286)
         self.slice_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 

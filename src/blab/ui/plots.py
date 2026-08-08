@@ -30,11 +30,21 @@ PLOT_TITLE_SIZE = 11
 PLOT_LABEL_SIZE = 9
 PLOT_TICK_SIZE = 9
 PLOT_LEGEND_SIZE = 9
-PLOT_TITLE_PAD = 1
+PLOT_TITLE_PAD = 7
 GRID_LINE_ALPHA = 0.6
+PLOT_LEFT_MARGIN = 0.14
+PLOT_RIGHT_MARGIN = 0.86
+PLOT_TOP_MARGIN = 0.9
+# Shared, so panels in the same units get the same axes height.
+PLOT_BOTTOM_MARGIN = 0.2
+ISOBAR_COLORBAR_GAP = 0.025
+ISOBAR_COLORBAR_WIDTH = 0.025
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
+# Legend baseline, in figure coordinates. Axes-relative placement scales with
+# the axes height and falls off short panels.
+SPINORAMA_LEGEND_BOTTOM = 0.006
 ISOBAR_CROSSHAIR_COLOR = "#101214"
 ISOBAR_CROSSHAIR_LABEL_FACE = "#f8fbff"
 ISOBAR_CROSSHAIR_LABEL_EDGE = "#2868ff"
@@ -282,15 +292,15 @@ class IsobarCanvas(InteractivePlotCanvas):
         self,
         title: str,
         *,
-        left_margin: float = 0.14,
-        right_margin: float = 0.88,
+        left_margin: float | None = None,
+        right_margin: float | None = None,
         show_colorbar: bool = True,
     ):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure, title)
-        self.left_margin = float(left_margin)
-        self.right_margin = float(right_margin)
+        self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)
+        self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)
         self.show_colorbar = bool(show_colorbar)
         self.colors = VisualizerConfig.custom_colors
         self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
@@ -323,7 +333,12 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(left=self.left_margin, right=self.right_margin, top=0.91, bottom=0.2)
+        self.figure.subplots_adjust(
+            left=self.left_margin,
+            right=self.right_margin,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
 
     def _configure_axes(self) -> None:
         self._apply_layout()
@@ -815,7 +830,9 @@ class IsobarCanvas(InteractivePlotCanvas):
         else:
             self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
             self._colorbar_mappable.set_array([])
-            self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
+            self._colorbar_axes = self.figure.add_axes(
+                [self.right_margin + ISOBAR_COLORBAR_GAP, 0.2, ISOBAR_COLORBAR_WIDTH, 0.71]
+            )
             self._colorbar = self.figure.colorbar(
                 self._colorbar_mappable,
                 cax=self._colorbar_axes,
@@ -1157,7 +1174,12 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._series_labels: tuple[str, ...] = ()
         self._plot_state = None
         super().__init__(self.figure, "Acoustic Impedance")
-        self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self._draw_empty()
 
     def _configure_axes(self) -> None:
@@ -1270,7 +1292,12 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._series_labels: tuple[str, ...] = ()
         self._plot_state = None
         super().__init__(self.figure, "On-Axis Frequency Response")
-        self.figure.subplots_adjust(left=0.14, right=0.98, top=0.91, bottom=0.2)
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self._draw_empty()
 
     def _configure_axes(self) -> None:
@@ -1450,7 +1477,12 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(left=0.14, right=0.9, top=0.91, bottom=0.28)
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
 
@@ -1469,6 +1501,8 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self.axes.set_ylabel("SPL (dB)")
         self.di_axes.set_ylabel("DI (dB)")
         apply_audio_frequency_axis(self.axes)
+        self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
+        self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
@@ -1571,11 +1605,18 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
             self.axes.legend(
                 lines,
                 [*labels[0], *labels[1]],
-                loc="upper center",
-                bbox_to_anchor=(0.5, -0.2),
+                loc="lower center",
+                bbox_to_anchor=(0.5, SPINORAMA_LEGEND_BOTTOM),
+                bbox_transform=self.figure.transFigure,
                 ncols=4,
                 borderaxespad=0.0,
                 frameon=False,
+                # Two rows in a fixed-fraction margin; tight spacing suits
+                # short panels.
+                borderpad=0.0,
+                labelspacing=0.25,
+                handlelength=1.6,
+                handletextpad=0.5,
             )
             self._series_labels = labels
 

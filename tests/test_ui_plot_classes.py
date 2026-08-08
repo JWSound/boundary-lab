@@ -39,9 +39,12 @@ def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
 
     assert "tight_layout=True" not in spinorama_block
     assert "subplots_adjust" in spinorama_block
-    assert "left=0.14" in spinorama_block
+    assert "left=PLOT_LEFT_MARGIN" in spinorama_block
+    assert "right=PLOT_RIGHT_MARGIN" in spinorama_block
     assert 'set_label_position("right")' in spinorama_block
-    assert "bbox_to_anchor=(0.5, -0.2)" in spinorama_block
+    assert "bbox_to_anchor=(0.5, SPINORAMA_LEGEND_BOTTOM)" in spinorama_block
+    # Figure coords: an axes-relative drop scales with the axes height.
+    assert "bbox_transform=self.figure.transFigure" in spinorama_block
     assert "SPINORAMA_SPL_LIMITS" in spinorama_block
     assert "SPINORAMA_DI_LIMITS" in spinorama_block
     assert "ncols=4" in spinorama_block
@@ -50,7 +53,7 @@ def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
 def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = source_text("ui", "plots.py")
 
-    assert "PLOT_TITLE_PAD = 1" in plot_source
+    assert "PLOT_TITLE_PAD = 7" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
@@ -288,9 +291,11 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
 def test_isobar_canvas_allows_custom_right_margin() -> None:
     source = source_text("ui", "plots.py")
 
-    assert "left_margin: float = 0.14" in source
-    assert "right_margin: float = 0.88" in source
+    assert "left_margin: float | None = None" in source
+    assert "right_margin: float | None = None" in source
     assert "show_colorbar: bool = True" in source
+    assert "self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)" in source
+    assert "self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)" in source
     assert "left=self.left_margin" in source
     assert "right=self.right_margin" in source
 

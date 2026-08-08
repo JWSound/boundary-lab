@@ -12,6 +12,8 @@ from blab.ui.project_state import ProjectPreferencesState
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
+# A view toggle, so it sits with the window layout, not GuiPreferences.
+EDITOR_SYNTAX_HIGHLIGHTING_KEY = "editor/syntax_highlighting"
 LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
     "low": 180,
     "medium": 250,
@@ -250,6 +252,14 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
         "preferences/balloon_angle_precision_deg",
         preferences.balloon_angle_precision_deg,
     )
+
+
+def load_syntax_highlighting_enabled(settings: QSettings) -> bool:
+    return settings_bool(settings, EDITOR_SYNTAX_HIGHLIGHTING_KEY, True)
+
+
+def save_syntax_highlighting_enabled(settings: QSettings, enabled: bool) -> None:
+    settings.setValue(EDITOR_SYNTAX_HIGHLIGHTING_KEY, bool(enabled))
 
 
 def load_balloon_angle_precision_deg(settings: QSettings, defaults: GuiPreferences) -> float:

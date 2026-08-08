@@ -79,6 +79,7 @@ from blab.ui.result_projection import (
 from blab.ui.settings import (
     SETTINGS_APP,
     SETTINGS_ORG,
+    load_syntax_highlighting_enabled,
     settings_int,
 )
 from blab.ui.simulation_assembler import SimulationAssembler
@@ -282,6 +283,8 @@ class MainWindow(
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.preferences = self._load_preferences()
+        # Needed before the design tabs are built.
+        self.syntax_highlighting_enabled = load_syntax_highlighting_enabled(self.settings)
         self.project_session = ProjectSession()
         self.simulation_assembler = SimulationAssembler()
         self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
@@ -345,6 +348,7 @@ class MainWindow(
         self._live_plot_refresh_timer.timeout.connect(self.flush_live_refresh)
         startup("Building design editor...")
         self.editor_tabs = QTabWidget()
+        self.editor_tabs.setDocumentMode(True)
         self.editor_tabs.setTabsClosable(True)
         self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
         self.editor_tabs.tabCloseRequested.connect(self._remove_generator_document_at)

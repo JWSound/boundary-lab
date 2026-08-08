@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QDockWidget, QMessageBox, QTabBar  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
@@ -141,6 +141,16 @@ def test_every_plot_lives_in_its_own_detachable_dock(main_window) -> None:
     # Docks live in the nested workspace, not directly on the window.
     assert main_window.workspace is not main_window
     assert main_window.workspace.isDockNestingEnabled()
+
+
+def test_dock_title_bar_uses_a_native_raised_frame(main_window) -> None:
+    """The bevel comes from QFrame chrome, not a QSS rule."""
+    for dock in (main_window.editor_dock, main_window.preview_dock, *main_window.plot_docks.values()):
+        title_bar = dock.titleBarWidget()
+        assert isinstance(title_bar, DockTitleBar)
+        assert isinstance(title_bar, QFrame)
+        assert title_bar.frameShape() == QFrame.StyledPanel
+        assert title_bar.frameShadow() == QFrame.Raised
 
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:

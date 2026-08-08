@@ -36,6 +36,17 @@ from blab.ui.plots import (
 )
 
 
+def _framed_dock_content(widget: QWidget) -> QFrame:
+    """Sunken 3D border for dock panels; bare canvases draw none."""
+    frame = QFrame()
+    frame.setFrameShape(QFrame.StyledPanel)
+    frame.setFrameShadow(QFrame.Sunken)
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(2, 2, 2, 2)
+    layout.addWidget(widget)
+    return frame
+
+
 class ViewBuilderMixin:
     """Widget-tree construction: menus, docks, layout, and control factories.
 
@@ -160,7 +171,7 @@ class ViewBuilderMixin:
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
-        dock.setWidget(widget)
+        dock.setWidget(_framed_dock_content(widget))
         dock.setAllowedAreas(Qt.AllDockWidgetAreas)
         dock.setFeatures(
             QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
@@ -184,10 +195,16 @@ class ViewBuilderMixin:
         self.workspace.setDockOptions(
             QMainWindow.AllowNestedDocks | QMainWindow.AllowTabbedDocks | QMainWindow.AnimatedDocks
         )
+        self.syntax_highlighting_action = QAction("Syntax highlighting", self)
+        self.syntax_highlighting_action.setToolTip("Syntax highlighting")
+        self.syntax_highlighting_action.setCheckable(True)
+        self.syntax_highlighting_action.setChecked(self.syntax_highlighting_enabled)
+        self.syntax_highlighting_action.toggled.connect(self.set_syntax_highlighting_enabled)
         self.editor_dock = self._make_panel_dock(
             "ath_editor_dock",
             "Waveguide Design",
             self.editor_container,
+            tool_actions=(self.syntax_highlighting_action,),
         )
         self.show_interior_regions_action = QAction("Show interior regions", self)
         self.show_interior_regions_action.setToolTip("Show interior regions")
@@ -278,6 +295,10 @@ class ViewBuilderMixin:
         layout = QVBoxLayout(central)
         layout.addWidget(self.workspace, stretch=1)
         layout.addWidget(controls)
+        # QLabel is a QFrame, so this gives a sunken text box.
+        self.status_label.setFrameShape(QFrame.StyledPanel)
+        self.status_label.setFrameShadow(QFrame.Sunken)
+        self.status_label.setMargin(4)
         layout.addWidget(self.status_label)
         self.setCentralWidget(central)
         self._refresh_plot_export_icons()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from blab.ui.ath_editor import AthScriptEditor
 from blab.ui.main_window.constants import (
     ADD_DESIGN_TAB_LABEL,
     APP_ROOT,
@@ -22,13 +23,15 @@ from blab.ui.main_window.constants import (
     LIVE_PLOT_REFRESH_INTERVAL_MS,
     SAVE_DARK_ICON,
     SAVE_LIGHT_ICON,
+    SYNTAX_HIGHLIGHT_DARK_ICON,
+    SYNTAX_HIGHLIGHT_LIGHT_ICON,
 )
 from blab.ui.main_window.helpers import (
     _mesh_entries_with_file_overrides,
     _physical_system_preview_metadata,
 )
 from blab.ui.main_window.window import MainWindow
-from blab.ui.main_window_widgets import AthScriptEditor, DockTitleBar, PlotEntry
+from blab.ui.main_window_widgets import DockTitleBar, PlotEntry
 from blab.ui.mesh_assembly import STITCH_FAILURE_MESSAGE, STITCHED_MESH_NAME
 
 __all__ = [
@@ -59,4 +62,6 @@ __all__ = [
     "LIVE_PLOT_REFRESH_INTERVAL_MS",
     "SAVE_DARK_ICON",
     "SAVE_LIGHT_ICON",
+    "SYNTAX_HIGHLIGHT_DARK_ICON",
+    "SYNTAX_HIGHLIGHT_LIGHT_ICON",
 ]

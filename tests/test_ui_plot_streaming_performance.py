@@ -281,3 +281,50 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
+
+
+def test_every_chart_panel_gets_the_same_axes_box() -> None:
+    """The spinorama used to reserve extra bottom margin for its legend."""
+    canvases = (
+        ImpedanceCanvas(),
+        OnAxisResponseCanvas(),
+        SpinoramaCanvas(),
+        IsobarCanvas("Horizontal Isobar"),
+    )
+    boxes = {type(canvas).__name__: canvas.axes.get_position().bounds[1::2] for canvas in canvases}
+
+    assert len(set(boxes.values())) == 1, f"axes boxes disagree: {boxes}"
+
+
+def test_spinorama_legend_clears_the_x_label_at_panel_height() -> None:
+    """Both are sized in points while the margin is a figure fraction, so
+    they collide only on a short panel. Checked at the dock's real height.
+    """
+    canvas = SpinoramaCanvas()
+    canvas.resize(520, 740)
+    canvas.update_curves(_spinorama_curves())
+    figure = canvas.figure
+    figure.canvas.draw()
+
+    to_figure = figure.transFigure.inverted()
+    label_bottom = to_figure.transform_bbox(canvas.axes.xaxis.label.get_window_extent()).y0
+    legend_top = to_figure.transform_bbox(canvas.axes.get_legend().get_window_extent()).y1
+
+    assert legend_top < label_bottom, "legend overlaps the x label"
+    assert legend_top > 0.0, "legend fell off the bottom of the figure"
+
+
+def test_chart_titles_stand_off_the_axes() -> None:
+    """pad=1 sat the title on the top spine."""
+    from blab.ui.plots import PLOT_TITLE_PAD
+
+    assert PLOT_TITLE_PAD >= 5
+
+    canvas = OnAxisResponseCanvas()
+    canvas.resize(520, 740)
+    canvas.figure.canvas.draw()
+
+    to_figure = canvas.figure.transFigure.inverted()
+    title_bottom = to_figure.transform_bbox(canvas.axes.title.get_window_extent()).y0
+
+    assert title_bottom > canvas.axes.get_position().y1

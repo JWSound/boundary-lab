@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QInputDialog,
     QPlainTextEdit,
@@ -16,18 +15,18 @@ from PySide6.QtWidgets import (
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.registry import create_generator
+from blab.ui.ath_editor import AthScriptEditor
 from blab.ui.main_window.constants import (
     ADD_DESIGN_TAB_LABEL,
 )
-from blab.ui.main_window_widgets import (
-    AthScriptEditor,
-)
+from blab.ui.main_window_widgets import TabCloseButton
 from blab.ui.project_state import (
     generator_mesh_name,
     new_generator_document,
     replace_generator_document,
     unique_generator_name,
 )
+from blab.ui.settings import save_syntax_highlighting_enabled
 
 
 class GeneratorDocumentsMixin:
@@ -40,9 +39,10 @@ class GeneratorDocumentsMixin:
         self.editor_tabs.blockSignals(True)
         self.editor_tabs.clear()
         for document in self.generator_documents:
-            editor = AthScriptEditor()
-            editor.setFont(QFont("Consolas", 10))
-            if document.provider_id == ATH_PROVIDER_ID:
+            # Another provider's tab shows JSON, which the Ath rules misread.
+            is_ath = document.provider_id == ATH_PROVIDER_ID
+            editor = AthScriptEditor(highlight_syntax=is_ath and self.syntax_highlighting_enabled)
+            if is_ath:
                 editor.setPlainText(ath_source_text(document))
                 editor.textChanged.connect(
                     lambda document_id=document.id, editor=editor: self._update_generator_source_text(
@@ -55,8 +55,8 @@ class GeneratorDocumentsMixin:
             else:
                 editor.setPlainText(json.dumps(document.source, indent=2, sort_keys=True))
                 editor.setReadOnly(True)
-            self.editor_tabs.addTab(editor, document.name)
-        add_tab = AthScriptEditor()
+            self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
+        add_tab = AthScriptEditor(highlight_syntax=False)
         add_tab.setReadOnly(True)
         add_tab.configDropped.connect(lambda path: self.import_config_path(Path(path)))
         add_index = self.editor_tabs.addTab(add_tab, ADD_DESIGN_TAB_LABEL)
@@ -66,6 +66,28 @@ class GeneratorDocumentsMixin:
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
         self.editor_tabs.blockSignals(False)
+
+    def _install_tab_close_button(self, index: int, name: str) -> None:
+        button = TabCloseButton(f"Close {name}")
+        # Resolved on click: removing a tab renumbers the rest.
+        button.clicked.connect(lambda: self._remove_generator_document_at(self._tab_index_of_close_button(button)))
+        self.editor_tabs.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, button)
+
+    def _tab_index_of_close_button(self, button: TabCloseButton) -> int:
+        tab_bar = self.editor_tabs.tabBar()
+        for index in range(tab_bar.count()):
+            if tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is button:
+                return index
+        return -1
+
+    @Slot(bool)
+    def set_syntax_highlighting_enabled(self, enabled: bool) -> None:
+        self.syntax_highlighting_enabled = bool(enabled)
+        save_syntax_highlighting_enabled(self.settings, self.syntax_highlighting_enabled)
+        for index, document in enumerate(self.generator_documents):
+            editor = self.editor_tabs.widget(index)
+            if document.provider_id == ATH_PROVIDER_ID and isinstance(editor, AthScriptEditor):
+                editor.set_syntax_highlighting_enabled(self.syntax_highlighting_enabled)
 
     def active_generator_document_index(self) -> int:
         for index, document in enumerate(self.generator_documents):
