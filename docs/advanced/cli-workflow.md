@@ -39,7 +39,33 @@ Useful options include:
 - `--spherical-sampling`
 - `--spherical-sampling-points`
 
-For multi-mesh and multi-radiator TOML config files, see [solver-configuration.md](solver-configuration.md).
+The legacy solve CLI accepts a TOML file for multi-mesh, multi-radiator
+exterior-BEM jobs. Paths are resolved relative to the TOML file. For example:
+
+```toml
+[[meshes]]
+name = "cabinet"
+file = "cabinet.msh"
+scale_factor = 0.001
+translation_m = [0.0, 0.0, 0.0]
+
+[[radiators]]
+name = "woofer"
+mesh = "cabinet"
+tag = 2
+channel = "main"
+velocity_offset_db = 0.0
+
+[radiators.hpf]
+filter = "butterworth"
+order = 2
+frequency_hz = 80.0
+```
+
+Each radiator requires `name` and integer physical `tag`; `mesh` is required
+when more than one configured mesh could contain that tag. Optional radiator
+fields are `channel`, `velocity_offset_db`, `level_db`, `polarity`, `delay_ms`,
+`hpf`, and `lpf`.
 
 ## Prepare Visualization Data
 
@@ -63,4 +89,6 @@ This writes:
 
 ## Notes
 
-The CLI path is useful for scripted workflows and regression checks. It does not expose the full GUI project workflow or live plot update behavior.
+The CLI path is useful for scripted exterior-BEM workflows and regression
+checks. It does not load `.blab.json` physical systems, run coupled FEM-BEM
+models, or expose the GUI's live plot behavior.

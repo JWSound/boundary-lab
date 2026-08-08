@@ -70,9 +70,10 @@ containing first-order triangles. Boundary Lab applies each mesh's scale and
 translation before checking the interface and solving.
 
 Every tagged surface belonging to an active region must have one boundary
-assignment. The application rejects `unused` surfaces, and the coupled backend
-supports only `rigid`, `moving`, and `interface` assignments. A source used by
-an ideal prescribed-velocity component must act on a moving FEM boundary. An
+assignment. The System editor offers only `rigid`, `moving`, and `interface`;
+new surfaces and legacy `unused` assignments default to `rigid`. The coupled
+backend supports those same three assignments. A source used by an ideal
+prescribed-velocity component must act on a moving FEM boundary. An
 electrodynamic component may couple the same rigid-body degree of freedom to
 moving boundaries in several FEM regions, as well as to BEM moving boundaries.
 The independently meshed front and rear diaphragm surfaces do not need a
@@ -105,18 +106,19 @@ derivative. Differing fluids are rejected.
    `rigid` for the remaining walls.
 4. In **Interfaces**, use **Build/Identify Interfaces** to create and validate
    every FEM-to-BEM port connection.
-5. In **Components**, attach an ideal prescribed-velocity component to each
-   moving FEM boundary and assign its application channel.
+5. In **Components**, attach prescribed-velocity or electrodynamic components
+   to the appropriate moving boundaries, enter any relative surface-velocity
+   offsets and transducer parameters, and assign application channels.
 6. Set **FEM Bulk Loss Factor** on any bounded region that requires volume
    damping, and optionally configure **Wall Impedance** on bounded rigid
    surfaces. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in
-   Preferences, then choose full, X-half, or XY-quarter symmetry in Mesh Config.
+   Preferences, then choose full, X-half, or XY-quarter symmetry in **Meshes**.
 7. Run the normal application solve.
 
-The current System editor exposes only prescribed-velocity components.
-Electrodynamic component validation, serialization, and CPU/CUDA solving are
-implemented in the backend contract, but application-side T/S entry controls
-are deferred to the next UI phase.
+The component editor accepts direct Re, Le, Bl, Mmd, Cms, and Rms values for an
+electrodynamic transducer, plus an automatic or manual motion axis. Component
+symmetry completion and physical-driver count are inferred from moving-surface
+adjacency to the active symmetry planes rather than selected manually.
 
 The physical-system compiler resolves group names to Gmsh tags, checks boundary
 coverage and model relationships, and records explicit interface vertex, face,
@@ -137,6 +139,10 @@ The FEM boundary facets are authoritative. If an imported BEM interface does
 not conform, **Build/Identify Interfaces** writes a derived Gmsh 2.2 BEM mesh
 and stores that derived mesh in project state. It does not modify the original
 mesh or retetrahedralize the FEM volume.
+
+Boundary Lab also monitors enabled imported source meshes when the application
+regains focus. If either side of a configured interface changes, it verifies
+the dependency and rebuilds the derived conforming BEM mesh when required.
 
 There are two conformance cases:
 

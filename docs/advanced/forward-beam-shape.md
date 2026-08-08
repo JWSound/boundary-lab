@@ -7,6 +7,8 @@ The Forward Beam Shape plot is a diagnostic view in the balloon plot window. It 
 
 The goal is to describe how the forward beam shape changes with frequency. It is not a replacement for the full balloon, isobar, or polar views. It is a compact shape descriptor that makes broad trends easier to see, especially for horns, waveguides, and other non-axisymmetric radiators.
 
+<img src="../../assets/forwardbeamshape.png" alt="Forward Beam Shape plot" width="600">
+
 ## What The Plot Shows
 
 The left axis shows the fitted superellipse exponent `p` for the front-facing `-6 dB` contour:
@@ -132,7 +134,7 @@ Boundary Lab estimates the horizontal and vertical extents from the `-6 dB` cros
 The exponent `p` is then found by minimizing mean squared radial error:
 
 $$
-\operatorname*{arg\ min}_{p}
+\operatorname{argmin}_{p}
 \frac{1}{N}\sum_i
 \left(r_i - r_{model}(\psi_i)\right)^2.
 $$

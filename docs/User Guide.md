@@ -1,205 +1,332 @@
 # Main Window
 
-The main window is divided into 3 panes in the default view:
+The main window is a dockable workspace containing:
 
-- Waveguide design editor on the left
-- 3D viewport in the middle
-- Directivity plots on the right
+- the waveguide design editor;
+- the 3D mesh preview;
+- horizontal and vertical isobars, acoustic impedance, on-axis response, and
+  spinorama plots;
+- the command strip and status readout.
 
-<img src="../assets/mainwindow.png" alt="Script Editor" width="500">
+<img src="../assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Each panel can be resized, moved, or dragged out of the main window. If a panel is closed, it can be reopened from the View menu at the top of the window.
-
-The command strip along the bottom of the window contains geometry generation, solve controls, mesh/source/channel configuration, and frequency range settings.
+Panels can be resized, rearranged, floated, or closed. Reopen a closed panel
+from the **View** menu.
 
 ## Waveguide Design Editor
-The waveguide design panel contains the editor supplied by the design's geometry-generator provider. The bundled Ath provider uses a text editor for Ath `.cfg` input. Existing Ath files can be imported or exported using the File menu.
 
-<img src="../assets/scripteditor.png" alt="Script Editor" width="300">
+The waveguide design panel contains the editor supplied by the active geometry
+provider. The bundled Ath provider edits Ath `.cfg` text. Use **File > Import
+Waveguide Design...** and **Export Waveguide Design...** to exchange the active
+design with other tools.
 
-Waveguide designs can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a design, double click its tab. Multiple designs can be combined in complex multiway projects or used to compare variations by enabling and disabling their generated meshes in `Mesh Config`.
+<img src="../assets/scripteditor.png" alt="Ath waveguide design editor" width="300">
 
-## 3D Viewport
+Use the tab controls to add, remove, and rename designs. Double-click a tab to
+rename it. Each enabled design contributes its generated mesh to the project,
+which makes it possible to assemble multiway models or compare alternatives.
 
-The 3d viewport contains all active mesh files in the project. Surfaces are color coded as blue for driven and grey for rigid. Hovering over the meshes displays the mesh name, surface name, surface index, and number of elements for that surface group. The bottom right of the 3D viewport displays the total element count for all active meshes.
+## 3D Mesh Preview
 
-<img src="../assets/3dviewport.png" alt="plot viewer" width="300">
+The preview displays every enabled generated and imported mesh. Rigid surfaces
+are gray, moving surfaces are blue, and FEM-BEM interface surfaces are green.
+Mirrored images are shaded darker when X or XY symmetry is active. Hover over a
+surface to see its mesh name, physical-group name and tag, and element count.
+The lower-right readout reports the active element count and model dimensions.
 
-The viewport displays a yellow line for the on-axis vector, a blue line for the vertical axis, and a red line for the horizontal axis emanating from the origin. All directivity calculations are performed relative to the origin, with the on-axis direction facing along the +z axis. Use the mesh config window to move the active mesh files in 3D space so that the appropriate location for the origin is used.
+<img src="../assets/3dviewport.png" alt="3D mesh preview" width="500">
+
+The red, blue, and yellow axes represent X, Y, and Z. The acoustic reference
+axis is +Z, and observation points are positioned relative to the global
+origin. Use **Meshes** to change a mesh's scale or XYZ translation.
+
+For a coupled system, the two buttons in the preview title bar can isolate the
+bounded interior or unbounded exterior region. They are disabled when the
+project does not contain the corresponding region type.
 
 ## Plot Views
-Plots are displayed when selected from the `view` menu. Results are streamed in realtime to the plots as solves are ran.
 
-<img src="../assets/plotviewer.png" alt="Script Editor" width="300">
+Plots are enabled from the **View** menu and update as frequencies complete
+when live plot streaming is enabled. Use the save button in a plot's title bar
+to export that plot as a PNG. Horizontal and vertical isobars also provide
+buttons to capture and clear contour overlays.
+
+<img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
+
+All five plot types share the same mouse interactions:
+
+- Press and drag the left mouse button to position a crosshair. The crosshair
+  remains after release; double-click the plot to remove it.
+- Hold the right mouse button to show the previous completed solve. Releasing
+  the button or moving the pointer outside the plot restores the current solve.
+
+The comparison gesture becomes available after a new solve has replaced a
+previous completed result. Multi-curve plots report the raw cursor coordinates
+rather than snapping to one curve.
 
 ## Menu Bar
+
 ### File Menu
 
-- `New Project`: clears the editor, mesh setup, source setup, preview, and solved data.
-- `Save Project`: saves the current project to the active `.blab.json` file.
-- `Save Project As`: chooses a new `.blab.json` path.
-- `Load Project`: loads editor text, mesh configuration, and the physical system.
-- `Import Waveguide Design`: imports a source file supported by the active design provider. The bundled Ath provider accepts `.cfg` files.
-- `Export Waveguide Design`: exports the active provider's editable source.
-- `Export Plot`: exports generated plot panels as PNG files.
-- `Export Polar Data`: exports solved horizontal and vertical polar text files. Channel-basis solves export frequency, normalized SPL, and relative phase.
+<img src="../assets/filemenu.png" alt="File menu" width="250">
 
-Project files do not store solved results or solver-backend preferences. Reproducibility-related application preferences may be stored and are offered for application when a project is opened.
+- **New Project** clears the current design, mesh, physical-system, channel,
+  and solved-result state after prompting for unsaved changes.
+- **Save Project** writes to the active `.blab.json` path.
+- **Save Project As** selects a new project path.
+- **Open Project** loads a `.blab.json` project.
+- **Open Recent** lists recently opened projects and can clear that history.
+- **Import/Export Waveguide Design** reads or writes the active provider's
+  editable design source.
+- **Export Polar Data** writes horizontal and vertical response text files.
+- **Export On-Axis Data** writes SPL and phase for each solved channel.
+
+All application file and directory pickers share one last-used directory. It
+is remembered between application sessions, falls back to an existing folder
+if the saved location disappears, and changes only after a selection is
+accepted.
+
+Project files do not contain solved results or solver-backend choices. They do
+contain reproducibility-related observation and visualization preferences; on
+open, Boundary Lab asks before applying values that differ from the current
+application settings.
 
 ### View Menu
 
-The View menu enables/disables various plots that are displayed in the plot viewer pane of the main window. It also opens the balloon plot viewer in a new window. The balloon plot viewer can only be opened once there is a completed or stopped solve.
+<img src="../assets/viewmenu.png" alt="View menu" width="260">
 
-## Edit/Preferences Menu
+The View menu shows or hides the design editor, mesh preview, and five plot
+panels. **Balloon Plot** opens its own window and is enabled only when the
+current solve contains spherical samples.
 
-The preferences menu contains various application-level settings for Boundary Lab. The default values for these settings can be used for most projects.
+### Edit and About Menus
 
-<img src="../assets/preferences.png" alt="preferences" width="500">
+**Edit > Preferences** opens application and solve preferences. **About**
+contains diagnostic information, donation information, and the bundled help
+guide.
+
+## Preferences
+
+<img src="../assets/preferences.png" alt="Preferences window" width="700">
 
 ### Solver Config
-- `GMRES Tolerance`: sets the threshold for how accurate the BEM solution needs to be at each frequency being solved. Lower values (moving the 1 to the right) increase solve times but may produce more accurate results. High values (moving the 1 to the left) decrease solve accuracy but also decrease solve times.
-- `Burton Miller Formulation`: enable/disable the Burton-Miller formulation to prevent the exterior Helmholtz boundary integral equation from becoming unreliable at certain frequencies due to fictitious cavity resonances. Not always required but turning this feature on can reduce polar irregularities with certain meshes- especially ones having enclosed volumes. Turning this feature off can typically decrease solve times by 30-40%.
-- `Balloon Sampling`: Enable or disable spherical sampling needed to generate balloon plots. This feature generates a 2 meter diameter grid of sampling points around the origin according to a Fibonacci spherical sampling sequence to approximate equal point spacing. Enabling/disabling this feature typically has a minimal (<3%) impact on performance.
-- `Balloon Angle Precision`: Drives the number of points generated for the spherical balloon plot sampler. More points produce more detailed balloon plots, but slightly increase run times. The default value of 2.5 degrees produces 6,500 points in a sphere around the origin to sample from.
+
+- **BEM Solver** selects Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine
+  ROCm, or Bempp OpenCL CPU. ROCm is currently a placeholder. Coupled systems
+  require the local BEAT Engine CPU or CUDA backend.
+- **Solve Server URL** and **Check Server** configure and query a remote
+  exterior-BEM server. A successful health check also updates advertised
+  capabilities such as symmetry support.
+- **Server access token** is an optional bearer token for an authenticated
+  server. Generate or paste it, copy it into the deployment's secret store,
+  and keep it safe. Boundary Lab retains it only for the current application
+  session.
+- **Balloon Sampling** requests Fibonacci-sphere observation points during the
+  solve. Without these samples, the Balloon Plot action remains unavailable.
+- **Balloon Angle Precision** controls the approximate angular spacing and,
+  consequently, the number of solved balloon vertices. The default 2.5-degree
+  spacing produces approximately 6,600 points.
 
 ### Observation Config
-- `Polar Angle Step`: The number of degrees between each observation point that generates the horizontal/vertical polar plots. A step angle of 5 degrees evaluates 72 points across a 360 degree arc on each axis. If you intend to view the Spinorama-style plot, ensure this value is set to max 10 degrees. Changing this value has extremely little impact on solve times (<1%).
-- `Polar Observation Distance`: Set the distance from the origin for the field point sampling positions. Default is 2 meters.
-- `Normalization Angles`: Set the polar normalization angles used to offset SPL values in polar directivity plots and balloon plots.
-- `Spin Horizontal/Vertical Ref Angle`: Set the reference axis angles used by the spinorama-style reference-axis and listening-window curves. These angles do not renormalize the polar data used for early reflections or sound power.
-- `Polar Smoothing`: Set the smoothing scale for polar directivity plots, spinorama-style plots, and balloon plots.
-- `SPL Min`: Set the minimum clipped SPL value for generating polar directivity & balloon plots. Simulated SPL values below this are clipped to this value as the floor.
-- `SPL Max`: Set the maximum clipped SPL values for generating polar directivity & balloon plots. Simulated SPL values above this are clipped to this value as a ceiling.
+
+- **Polar Angle Step** controls the solved horizontal and vertical observation
+  spacing. Spinorama processing requires 10-degree spacing or finer.
+- **Polar Observation Distance** sets the observation radius from the origin.
+- **Normalized Channel Correction** applies a per-channel reference-axis
+  magnitude correction before channel gain, delay, polarity, and crossover
+  filtering.
+- **Horizontal/Vertical Normalization Angle** chooses the reference angle used
+  for directivity normalization in each plane.
+- **Spin Horizontal/Vertical Ref Angle** chooses the reference axes for the
+  spinorama on-axis and listening-window curves without changing the early
+  reflections or sound-power data.
+- **Polar Smoothing** applies fractional-octave smoothing to directivity,
+  spinorama, and balloon presentation data.
+- **SPL Min/Max** set the displayed and exported directivity clipping range.
+- **Isobar Contour Step** selects stepped isobar colors. Set it to 0 dB for a
+  smoothly interpolated color map.
 
 ### Mesh Config
-- `Stitch Tolerance`: Set the search distance for nearby open edges when combining multiple mesh files in the same project.
-- `Symmetry`: Enable half or quarter symmetry that mirrors all active meshes along the X or X/Y axes for significantly faster solving. Supported by the BEAT Engine CUDA and BEAT Engine CPU solvers. Mirrored mesh elements are shaded darker in the 3d viewport.
+
+**Stitch Tolerance** is the maximum distance used when joining adjacent mesh
+parts for an exterior region whose stitching option is enabled in **System >
+Regions**.
 
 ### Application
-- `Theme`: Boundary Lab visual UI theme.
-- `BEM Solver`: Set the solver backend to either use a built-in application solver, or a server-based backend.
-    1. **Server** - Use whatever solver is configured on the remote server via the HTTP streaming API.
-    2. **BEAT Engine (CUDA)** - Use the Julia-based CUDA solver. BEAT Engine is short for Boundary Element Acoustic Toolkit Engine. Requires Julia and an NVIDIA GPU with a working CUDA-capable driver.
-    3. **BEAT Engine (CPU)** - Use the Julia-based CPU solver path. Uses the local CPU BLAS/LAPACK stack and supports BEAT Engine X/XY symmetry acceleration.
-    4. **Bempp (OpenCL CPU)** - Use the bempp-cl OpenCL solver backend. Requires an OpenCL runtime to be installed.
 
-Coupled FEM–BEM physical systems currently require **BEAT Engine (CPU)** or
-**BEAT Engine (CUDA)**. Both application paths use single precision. CUDA
-assembles BEM operators and evaluates the exterior field on the GPU. It also
-factors an exact Schur-condensed acoustic or electrodynamic system on the GPU,
-retaining port and diaphragm surface nodes while eliminating FEM volume
-interiors. The double-precision coupled CPU
-backend is reserved for internal correctness validation. See
-[Coupled Solver](Coupled%20Solver.md) for the current formulation and component
-support.
-
-- `Solve Server URL`: The address and port of the server if using a server-based solver backend. Boundary Lab silently checks this URL on startup when `BEM Solver` is already set to `Server`; use `Check Server` to query server health manually and update advertised feature availability, including BEAT Engine server-side symmetry support. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for server setup and API details. 
+- **Theme** selects the system, light, or dark appearance.
+- **Live Plot Streaming** enables plot refreshes while a solve is running.
+- **Live Plot Quality** selects the interpolation density used for those live
+  updates. Completed solves are rendered at final quality.
 
 ## Command Strip
-The command strip is located along the bottom of the main window and includes controls to generate geometry, run solves, and configure the project parameters.
+
+The command strip contains geometry generation and solve controls, entry points
+for project configuration, logarithmic frequency-range controls, and the
+current status message.
 
 <img src="../assets/commandstrip.png" alt="Command strip" width="800">
 
 ### Generate
 
-Click `Generate` to run the active waveguide design through its geometry provider. With the bundled Ath provider, Boundary Lab writes a temporary `.cfg`, runs `ath/ath.exe`, cleans the generated mesh, and loads it into the preview.
+**Generate (F7)** runs the active design through its geometry provider. With
+Ath, Boundary Lab stages the `.cfg`, runs `ath.exe` (through Wine when needed),
+cleans the generated surface mesh, and loads it into the project and preview.
+Managed generated artifacts are stored below `runs/generated_geometry`.
 
-Ath outputs are written under:
+### Solve and Stop
 
-```text
-runs/generated_geometry
-```
+**Solve (F5)** infers the numerical path from **System > Regions**:
 
-### Solve
-Initiates the boundary element method (BEM) solver against the current project as it is represented in the 3d viewport and configurations.
+- one unbounded exterior and no bounded regions uses exterior BEM;
+- one or more bounded FEM regions plus one unbounded exterior uses the coupled
+  FEM-BEM path.
 
-Note - the first time solve after opening Boundary Lab will typically take longer as the tool loads backend libraries and initializes OpenCL caches. Subsequent solves utilize the OpenCL warmed caches for faster runtimes.
+**Stop (Shift+F5)** requests cooperative cancellation. A backend may finish
+the in-flight frequency before stopping; completed frequencies remain
+available for plotting and export. BEAT Engine CPU and CUDA keep a persistent
+Julia worker between solves, including after ordinary cancellation, so later
+solves can reuse the initialized process.
 
-### Solve/Stop
-Click `Solve` to start the BEM sweep. Enabled plots update in realtime as each frequency completes. Click `Stop` to stop after the current in-flight frequency finishes; completed frequencies remain available for plotting/export.
+## Meshes
 
-### Mesh Config
-`Mesh Config` lists meshes produced by waveguide designs and any imported `.msh` files.
+The **Meshes** window lists generated geometry and imported `.msh` files.
 
-<img src="../assets/meshconfig.png" alt="mesh config" width="500">
+<img src="../assets/mesheswindow.png" alt="Meshes window" width="700">
 
-Generated meshes are visible as locked-name rows at the top of the mesh config window.
+Generated rows are locked to their design documents. Imported rows can be
+enabled, disabled, renamed, removed, scaled, translated, or replaced. **Replace
+.msh** is available for one selected imported row and preserves that row's
+identity so region, boundary, interface, and component references continue to
+work when the replacement retains the same physical-group names. `.msh` files
+may also be dragged into the table.
 
-Imported `.msh` rows can be enabled/disabled, renamed, removed, scaled, and translated.
+Choose **Off**, **X**, or **XY** symmetry here. Reduced meshes must lie in the
+positive-X, or positive-X/positive-Y, fundamental domain. Symmetry is available
+for local BEAT Engine CPU/CUDA and for servers that advertise support.
 
-When imported meshes are enabled, they are included in the preview and solve. If mesh stitching is enabled in Mesh Config, Boundary Lab can stitch the active generated/imported meshes before solving. The stitching toggle is saved with the project.
+When the application regains focus, it checks enabled imported source files
+for external changes. Changed BEM and FEM meshes are reloaded automatically.
+If a configured interface depends on a changed mesh, Boundary Lab verifies the
+pair and rebuilds the derived conforming BEM interface mesh when necessary.
 
-### Channel Config
-`Channel Config` is used to define the channels present in the loudspeaker. It is only used when solving multiway loudspeaker projects where the effects of source-source interference patterns are important. Changes to the channel config affect all sources allocated to that channel.
+## Channels
 
-<img src="../assets/channelconfig.png" alt="channel config" width="500">
+Channels apply post-solve synthesis to independently solved component bases.
+They are useful for multiway interference and crossover studies.
 
-- `Name`: Double click to define the channel name
-- `Level dB`: apply a level offset to this channel
-- `Polarity`: sets the channel polarity
-- `Delay ms`: sets the delay for this channel in milliseconds
-- `HPF/LPF Type`: Sets acoustic highpass/lowpass filters for this channel. Reference the Model Assumptions help article for more information about how Boundary Lab applies crossover filters
-- `HPF/LPF Frequency`: Set the frequency of the highpass/lowpass filters
+<img src="../assets/channelconfig.png" alt="Channels window" width="600">
 
-### System
+- **Name** identifies the channel used by components.
+- **Level dB**, **Polarity**, and **Delay ms** apply complex channel weights.
+- **HPF/LPF Type** and **Frequency** define idealized analog crossover transfer
+  functions.
 
-`System` is the source and acoustic-region editor for both exterior BEM and
-coupled BEM/FEM projects. Assign every mesh surface as Rigid, Moving, or an
-Interface, then attach moving surfaces to prescribed-velocity or
-electrodynamic components.
+Applying channel changes resynthesizes existing basis results without running
+the acoustic solver again. The ordinary plots refresh immediately; balloon
+data is resynthesized only while its window is open.
 
-On the **Regions** tab, **FEM Bulk Loss Factor** is editable for each bounded
-interior region. The available values are `0`, `0.002`, `0.005`, `0.01`,
-`0.02`, and `0.05`; `0` is lossless. For an isolated lightly damped cavity mode,
-the approximate acoustic Q is `1 / loss factor`. This phenomenological volume
-loss is independent of the wall-lining model and can differ between interior
-chambers.
+## System
 
-On the **Boundaries** tab, a bounded-interior surface assigned **Rigid** can
-also have **Wall Impedance** enabled. The editor accepts porous-lining thickness
-in millimetres and airflow resistivity in Pa·s/m², defaulting to 30 mm and
-5,000 Pa·s/m². Boundary Lab treats the layer as locally reacting porous
-material against a rigid backing using the Miki empirical model. Leave wall
-impedance disabled for an acoustically hard wall.
+The **System** window is the physical-model editor for both exterior BEM and
+coupled FEM-BEM projects. Every active surface defaults to **Rigid** and can be
+changed to **Moving** or **Interface**. The UI has no unassigned or unused
+surface state.
 
-Each component surface has a relative-velocity value in dB. This can represent
-a dome and surround as one source while tapering motion toward the rigid frame.
-All surfaces default to Rigid. ATH-generated driver groups are automatically
-seeded as prescribed-velocity components.
+### Regions
 
-For electrodynamic components in X or XY symmetry models, the Components tab
-automatically determines whether each driver is complete or cut by an active
-symmetry plane. It uses moving-surface perimeter edges on the reduced solve
-mesh and displays the resulting number of represented physical drivers; no
-manual component-symmetry selection is required.
+<img src="../assets/regionswindow.png" alt="System Regions tab" width="700">
 
-An exterior region can use multiple meshes. Select `Stitch exterior region
-meshes` when those meshes are adjoining parts of one continuous BEM surface;
-leave them separate for disconnected closed bodies.
+Create exactly one **Unbounded Exterior** region and assign its BEM surface
+mesh or meshes. Add a **Bounded Interior** for each FEM chamber, choose its
+tetrahedral mesh and physical volume group, and optionally select a homogeneous
+FEM bulk-loss factor. If the exterior uses adjoining parts of one continuous
+surface, enable **Stitch exterior region meshes**; leave it off for disconnected
+closed bodies.
 
-### Frequency Controls
-The frequency controls set the minimum, maximum, and number of frequencies that will be solved when clicking "Solved". The solver automatically uses logarithmic spacing according to the min/max/number.
+An exterior-only system supports prescribed-velocity components. Adding a
+bounded region selects the coupled path and enables the Interfaces tab.
+
+### Boundaries
+
+<img src="../assets/boundarieswindow.png" alt="System Boundaries tab" width="700">
+
+Classify each region surface as **Rigid**, **Moving**, or **Interface**. A
+bounded rigid surface may additionally use a rigid-backed porous lining via
+**Wall Impedance**. The Miki model accepts lining thickness and airflow
+resistivity; disabling it restores the hard-wall condition.
+
+Moving boundaries must be owned by exactly one component. An FEM and BEM port
+mouth uses two interface boundary assignments, one in each acoustic region.
+
+### Interfaces
+
+<img src="../assets/interfaceswindow.png" alt="System Interfaces tab" width="700">
+
+**Build/Identify Interfaces** pairs configured bounded and unbounded interface
+surfaces, makes the BEM side conform to the authoritative FEM boundary facets
+when needed, and validates node, face, and normal-orientation mappings. The
+original imported files are not overwritten. Multiple tagged openings may
+share the same surrounding BEM surface. This tab is disabled when no bounded
+FEM region exists.
+
+### Components
+
+<img src="../assets/componentswindow.png" alt="System Components tab" width="700">
+
+Components own one or more moving boundaries and route their solved reference
+response to an application channel. The editor supports **Prescribed Velocity**
+and **Electrodynamic Transducer** components.
+
+<img src="../assets/componenteditorwindow.png" alt="Component editor" width="500">
+
+Each selected surface has a **Relative Velocity** in dB, allowing a dome and
+surround to share a component while using different motion amplitudes.
+Ath-generated driver groups are initially seeded as prescribed-velocity
+components.
+
+Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters
+with a 2.83 V reference excitation. Their rigid-translation motion axis can be
+inferred from the selected surface normals or entered manually. In a symmetry
+model, Boundary Lab also infers whether moving surfaces are cut by the active
+planes and reports how many distinct components exist in the fully mirrored
+system; there is no manual component-symmetry multiplier.
+
+See [Physical System Model](Physical%20System%20Model.md) for the object model
+and [Coupled Solver](Coupled%20Solver.md) for numerical requirements and
+limitations.
+
+## Frequency Controls
+
+Set **Min Hz**, **Max Hz**, and **Frequencies** before solving. Boundary Lab
+uses logarithmic spacing between the normalized minimum and maximum values.
 
 ## Balloon Plot
 
-After a solve with spherical sampling enabled, open:
+After a solve with spherical sampling enabled, choose **View > Balloon Plot**.
 
-View > Balloon Plot
+<img src="../assets/balloon.png" alt="3D directivity balloon" width="500">
 
-<img src="../assets/balloon.png" alt="balloon plot" width="500">
+The viewer includes:
 
-The viewer comprises:
+- a rotatable and zoomable 3D directivity balloon whose vertices are the
+  original Fibonacci-sphere solve samples;
+- a frequency slider, SPL color scale, and 6 dB surface contours that update
+  while the slider is dragged;
+- horizontal, vertical, and on-axis guides;
+- a rotatable polar protractor with 30-degree spokes and 6 dB rings;
+- radar and isobar slice plots for the current frequency and slice angle;
+- the Forward Beam Shape diagnostic plot.
 
-- rotatable/zoomable 3D directivity balloon
-- frequency picker
-- SPL color legend
-- 6 dB contour lines drawn on the surface of the balloon
-- horizontal, vertical, and on-axis guide lines
-- rotatable polar protractor with 30 degree angle spokes and 6 dB rings
-- radar directivity plot for the current frequency and protractor angle
-- isobar slice rendering for the current polar protractor angle
-- An experimental forward beam shape plot
+The viewer includes every frequency completed before the solve ended. Use its
+**File > Export Balloon Data** action to write `metadata.json`, `topology.npz`,
+`spl_db.npy`, and `radius_norm.npy`. The schema preserves the original sample
+directions, shared triangle topology, frequency axis, normalized SPL, and
+normalized radius values; XYZ surface positions can be reconstructed from the
+documented direction and radius mapping. Guide geometry, contours, and slice
+plots are not included.
 
-The balloon viewer uses the frequencies that completed before the solve ended.
+<img src="../assets/forwardbeamshape.png" alt="Forward Beam Shape plot" width="500">
 
-Use `File > Export Balloon Data` in the balloon plot window to export a fixed-topology balloon dataset for external visualization tools. The export folder contains metadata, shared surface topology, normalized SPL values, normalized radius values, and per-frequency XYZ positions for the balloon surface only. It does not include contour lines, guide axes, protractor geometry, or radar/isobar plots.
+See [Forward Beam Shape Plot](advanced/forward-beam-shape.md) for the meaning
+and limitations of that diagnostic.

@@ -3,6 +3,9 @@
 The BEAT Engine CPU backend is a hardware-agnostic Julia/OpenBLAS solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs operator assembly, dense solve, and field evaluation on the host.
 
 The application exposes this path as `BEAT Engine (CPU)` / `beat_cpu`.
+Its coupled FEM-BEM execution path is described separately in [Coupled
+Solver](../Coupled%20Solver.md); the sections below focus on BEM operator and
+field work shared with exterior solves.
 
 ## CPU Solve Path
 
@@ -109,10 +112,6 @@ Useful scripts:
 - `src/blab/solvers/julia_local/scripts/benchmark_cpu.jl`: CPU timing benchmark, including fixed and wavelength regular quadrature modes.
 - `src/blab/solvers/julia_local/scripts/benchmark_cpu_blas.jl`: synthetic or real-system dense LU thread-scaling benchmark.
 - `src/blab/solvers/julia_local/scripts/compare_cpu_quadrature.jl`: fixed-reference versus candidate comparison artifact generator with operator, pressure, field, and SPL error metrics.
-
-The current warm-run baseline, bottleneck analysis, and ranked optimization
-backlog are recorded in
-[BEAT Engine CPU Performance Baseline](beat-engine-CPU-performance-2026-07-23.md).
 
 Example comparison:
 

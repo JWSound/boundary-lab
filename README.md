@@ -1,8 +1,8 @@
 # Boundary Lab
 
-<img src="assets/mainwindow.png" alt="Script Editor" width="500">
+<img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based Multiphysics acoustic solver tool for loudspeaker design. It generates or imports loudspeaker surface meshes, solves coupled or exterior domain acoustic radiation, and shows SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots inside the desktop application. Ath is the currently bundled geometry-generator provider.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM or coupled FEM-BEM-LEM solving from the configured physical system, and presents SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots in the desktop application. Ath is the bundled geometry-generator provider.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -10,12 +10,13 @@ Boundary Lab is a GUI-based Multiphysics acoustic solver tool for loudspeaker de
 
 - Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) generator
 - 3D mesh viewport for generated geometry and imported `.msh` files
-- Multi-mesh and multi-radiator BEM and coupled FEM+BEM+LEM solves
-- Source controls for level, polarity, delay, and HPF/LPF crossover shaping
-- Live horizontal/vertical directivity, on-axis response, spinorama, and impedance plots
-- Polar magnitude/phase exporting into .txt files
-- 3D balloon plot viewer with spherical sampling
-- Project save/load with readable `.blab.json` files
+- Physical-system editor for exterior BEM and coupled FEM-BEM-LEM models
+- Prescribed-velocity and linear electrodynamic transducer components
+- Channel controls for level, polarity, delay, and HPF/LPF crossover shaping
+- Live horizontal/vertical directivity, on-axis response, spinorama, and radiation-impedance plots
+- Plot-image, polar-data, on-axis channel-data, and balloon-data export
+- 3D balloon viewer built directly from Fibonacci-sphere solve samples
+- Project save/load with readable, backward-compatible `.blab.json` files
 
 ## Base Requirements
 
@@ -28,13 +29,13 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable solver backends in the application preferences menu. Solve speed is dependant on hardware GPU-based solving is generally the fastest option with 30-40x speed gains over CPU-based solving if Nvidia hardware is available. Coupled physics solving is only supported via the BEAT Engine solver.
+The application offers three local production backends: BEAT Engine CUDA, BEAT Engine CPU, and Bempp OpenCL CPU. It can also submit exterior BEM jobs to a Boundary Lab server. The ROCm selector is visible for forward compatibility, but that backend is not yet implemented. Performance depends strongly on the mesh and hardware; CUDA is generally the fastest choice on a supported NVIDIA GPU. Coupled physical systems require the local BEAT Engine CPU or CUDA backend.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
-* NVIDIA Maxwell-generation or newer GPU
-* Latest NVIDIA Studio/Game Ready driver recommended
-* [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
+- NVIDIA Maxwell-generation or newer GPU
+- Latest NVIDIA Studio/Game Ready driver recommended
+- [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
 To prepare the Julia environment, from the repository root run:
 
@@ -55,12 +56,10 @@ GPU solving VRAM requirements scale quadratically with mesh element count. Below
 | 15,000 | ~8-12 GB |
 | 20,000 | ~14-20 GB |
 
-##
-
 ### BEAT Engine CPU Solver Requirements
 
-* Intel, AMD, or ARM CPU
-* [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
+- Intel, AMD, or ARM CPU
+- [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
 To prepare the Julia environment, from the repository root run:
 
@@ -68,16 +67,12 @@ To prepare the Julia environment, from the repository root run:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-##
-
 ### Bempp CPU Solver Requirements
 
-* Intel or AMD CPU
-* An OpenCL runtime
+- Intel or AMD CPU
+- An OpenCL runtime
 
 The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
-
-##
 
 ## Application Installation
 
@@ -111,7 +106,7 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes generated files into:
+On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes its raw generated files into:
 
 ```text
 runs/ath_output
@@ -158,6 +153,8 @@ For authenticated Docker and Runpod deployment with the BEAT Engine CUDA solver,
 ## Documentation
 
 - [User Guide](docs/User%20Guide.md)
+- [Physical System Model](docs/Physical%20System%20Model.md)
+- [Coupled Solver](docs/Coupled%20Solver.md)
 - [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
 - [CUDA Server Docker Image](docs/Docker.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
@@ -166,3 +163,4 @@ For authenticated Docker and Runpod deployment with the BEAT Engine CUDA solver,
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
 - [BEAT Engine CUDA](docs/advanced/beat-engine-CUDA.md)
+- [Forward Beam Shape plot](docs/advanced/forward-beam-shape.md)

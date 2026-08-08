@@ -83,7 +83,9 @@ Server-side symmetry depends on the configured server solver:
 - `bempp_cpu` does not support symmetry acceleration.
 - `beat_rocm` advertises the BEAT Engine shape but is not numerically implemented yet.
 
-The GUI uses the checked server health payload to decide whether the Mesh Config symmetry control is enabled while the selected BEM Solver is `Server`.
+The GUI uses the checked server health payload to decide whether the symmetry
+control in the **Meshes** window is enabled while the selected BEM Solver is
+`Server`.
 
 For symmetry solves, the GUI still prepares and uploads the reduced-domain mesh files. The server does not need access to the client's original local paths.
 

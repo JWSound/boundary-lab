@@ -1,8 +1,11 @@
 # BEAT Engine CUDA
 
-The BEAT Engine CUDA backend is an Nvidia GPU-accelerated Julia solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs regular-pair assembly, singular corrections, dense solve, and field evaluation with CUDA.jl.
+The BEAT Engine CUDA backend is an NVIDIA GPU-accelerated Julia solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs regular-pair assembly, singular corrections, dense solve, and field evaluation with CUDA.jl.
 
 The application exposes this path as `BEAT Engine (CUDA)` / `beat_cuda`.
+Its coupled FEM-BEM execution path, including FEM static condensation, is
+described separately in [Coupled Solver](../Coupled%20Solver.md); the sections
+below focus on BEM operator and field work shared with exterior solves.
 
 ## CUDA Operator Assembly
 

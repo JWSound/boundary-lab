@@ -1,6 +1,6 @@
 # Project Files
 
-Boundary Lab project files use readable JSON and the `.blab.json` extension.
+Boundary Lab project files use the `.blab.json` extension.
 
 Project files store:
 
@@ -57,6 +57,19 @@ copying that value to every bounded acoustic region.
 If the project references imported mesh files, those paths are expected to exist on the local machine.
 Relative mesh and generated-output paths are resolved from the project file's directory, which keeps bundled samples portable.
 
+The application uses one shared last-used directory for open, save, import,
+export, and directory-selection dialogs. The directory is stored in QSettings
+between sessions, is updated only after the user accepts a selection, and
+falls back to an existing home or working directory if the remembered path is
+no longer available.
+
+Enabled imported `.msh` sources are checked when the application regains
+focus. If an external tool has changed a BEM or FEM file, Boundary Lab reloads
+it. Configured interfaces that depend on the changed mesh are then verified
+and, when necessary, rebuilt from the refreshed FEM boundary facets. The
+**Replace .msh** action provides an explicit alternative for imported rows and
+preserves downstream references when physical-group names remain compatible.
+
 ## Conforming FEM and BEM Interfaces
 
 Coupled FEM–BEM models require both meshes to use the same nodes and triangle
@@ -82,7 +95,8 @@ for the initial direct FEM–BEM backend and its supported outputs.
 
 ## Exporting Plot Images
 
-Users can export any of the rendered plots as .png images.
+Use the save button in any plot panel's title bar to export its current figure
+as a `.png` image. Isobar exports are prepared at final interpolation quality.
 
 ## Exporting Polar Data
 
@@ -91,3 +105,19 @@ Users can export simulated polar data as individual .txt files per angle sampled
 ## Exporting On-Axis Data
 
 Users can export each solved channel's on-axis response as a tab-separated .txt file containing frequency in Hz, SPL in dB, and phase in degrees. Single-channel solves use a save-file dialog. Multi-channel solves use a directory picker and write one file per channel; the combined system response is not exported. The files use the original solved frequency samples and can be imported into tools such as REW and VituixCAD.
+
+## Exporting Balloon Data
+
+The balloon viewer exports a schema-versioned directory containing:
+
+- `metadata.json`, including coordinate conventions, array shapes, and radius
+  reconstruction rules;
+- `topology.npz`, containing frequency, angular and Cartesian sample
+  directions, and the shared triangular topology;
+- `spl_db.npy`, with shape `(frequency, point)`;
+- `radius_norm.npy`, with the same shape and values clipped to the configured
+  balloon dB range.
+
+The point order is the original solver Fibonacci-sample order. The export does
+not contain contour actors, axes, protractor geometry, or radar/isobar slice
+plots.

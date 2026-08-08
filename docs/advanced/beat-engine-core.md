@@ -1,8 +1,18 @@
 # BEAT Engine Core
 
-Boundary Lab's BEAT Engine, short for Boundary Element Acoustic Toolkit Engine, is a local direct dense BEM solver used through `src/blab/solvers/beat_engine_backend.py`. The Python side stages mesh assets and request JSON, while `src/blab/solvers/julia_local/solver.jl` owns the numerical solve. `BeatEngineCore.jl` provides shared mesh, quadrature, formulation, symmetry, Burton-Miller, and field-evaluation utilities used by both BEAT Engine CPU and BEAT Engine CUDA.
+Boundary Lab's BEAT Engine, short for Boundary Element Acoustic Toolkit Engine,
+is the Julia solver stack used for local exterior BEM and coupled FEM-BEM-LEM
+solves. The Python side stages mesh assets and request JSON, while
+`src/blab/solvers/julia_local/solver.jl` owns the numerical solve.
+`BeatEngineCore.jl` provides shared BEM mesh, quadrature, formulation,
+symmetry, Burton-Miller, and field-evaluation utilities used by both BEAT Engine
+CPU and BEAT Engine CUDA.
 
-BEAT Engine solves exterior acoustic radiation from prescribed normal velocity on tagged radiator surfaces. It currently uses single precision (`Float32`) for local solves.
+This page describes the shared exterior-BEM core and its prescribed normal
+velocity path. The FEM assembly, interface transfer, electrodynamic equations,
+and coupled block systems are documented in [Coupled
+Solver](../Coupled%20Solver.md). Local production solves use single precision
+(`Float32/ComplexF32`).
 
 Backend-specific details live in:
 

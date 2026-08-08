@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from scripts.build_help_pdf import GENERATED_NOTE, build_combined_markdown, discover_markdown_docs
+from scripts.build_help_pdf import (
+    GENERATED_NOTE,
+    _normalize_math_expression,
+    _plain_math_expression,
+    build_combined_markdown,
+    discover_markdown_docs,
+)
 
 
 def test_help_pdf_docs_use_stable_guide_order(tmp_path: Path) -> None:
@@ -42,3 +48,27 @@ def test_help_pdf_combined_markdown_normalizes_images_and_math(tmp_path: Path) -
     ) in markdown
     assert "`k = omega / c`" in markdown
     assert "```math\nq = dp/dn\n```" in markdown
+
+
+def test_help_pdf_math_normalization_and_matrix_fallback_are_readable() -> None:
+    assert _normalize_math_expression(r"\mathbf n\mathbin{\cdot}\mathbf d") == (
+        r"\mathbf{n}\cdot\mathbf{d}"
+    )
+
+    fallback = _plain_math_expression(
+        "\\begin{bmatrix}\nA_F & 0 "
+        + r"\\"
+        + "\n0 & A_B\n\\end{bmatrix}"
+        + "\\begin{bmatrix}\np_F "
+        + r"\\"
+        + "\np_B\n\\end{bmatrix}"
+        + " = \\begin{bmatrix}\nf_v "
+        + r"\\"
+        + "\n0\n\\end{bmatrix}."
+    )
+
+    assert [" ".join(line.split()) for line in fallback.splitlines()] == [
+        "[ A_F 0 [ p_F [ f_v",
+        "0 A_B ] p_B ] = 0 ].",
+    ]
+    assert "\\begin" not in fallback

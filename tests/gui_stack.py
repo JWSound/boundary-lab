@@ -66,8 +66,8 @@ QT_DEPENDENT_IMPORTS = (
     PYSIDE6_MODULE,
     "blab.ui",
     "pyvistaqt",
-    # scripts/build_help_pdf.py renders through QtWebEngine, so its test needs
-    # Qt without ever naming it.
+    # scripts/build_help_pdf.py renders through Qt's GUI/PDF stack, so its test
+    # needs Qt without ever naming it.
     "build_help_pdf",
 )
 

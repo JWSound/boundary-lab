@@ -47,9 +47,11 @@ The main application exposes the physical model through a tabbed **System**
 window:
 
 - **Regions** assigns a name, bounded-interior or unbounded-exterior type,
-  mesh, and (for bounded regions) physical volume group.
-- **Boundaries** assigns each tagged surface as rigid, moving, interface, or
-  unused.
+  mesh, and (for bounded regions) physical volume group. It also owns the
+  exterior-region mesh-stitching choice.
+- **Boundaries** assigns each tagged surface as rigid, moving, or interface.
+  New surfaces default to rigid, and legacy unused assignments migrate to
+  rigid when loaded into the editor.
 - **Interfaces** uses **Build/Identify Interfaces** to match bounded and
   unbounded interface sides. When an imported BEM interface is meshed
   differently, Boundary Lab writes a derived BEM mesh whose interface nodes and
@@ -57,12 +59,22 @@ window:
   Curved interface interiors are supported when the FEM and BEM perimeters
   describe the same planar opening; the surrounding planar BEM surface may be
   split across multiple Gmsh geometrical entities.
-- **Components** attaches prescribed-velocity components to moving boundaries
-  and assigns their application channel.
+- **Components** attaches prescribed-velocity or electrodynamic components to
+  moving boundaries, sets per-surface relative velocity, and assigns an
+  application channel.
 
-The existing **Meshes** window remains responsible for mesh import, scale, and
-translation. Tetrahedral imports bypass the legacy surface cleaner so their
-volume connectivity and physical groups are preserved.
+The **Meshes** window remains responsible for mesh import or replacement,
+scale, translation, and global symmetry. Tetrahedral imports bypass the
+surface-only BEM cleaner so their volume connectivity and physical groups are
+preserved. Replacing an imported row preserves its mesh identity, which keeps
+downstream references intact when the replacement uses the same physical-group
+names.
+
+The application infers the solve kind from the authored regions. Exactly one
+unbounded region with no bounded regions is an exterior BEM system; adding one
+or more bounded regions selects the coupled FEM-BEM path and enables the
+Interfaces tab. Exterior-only systems currently accept prescribed-velocity
+components, while coupled systems may also use electrodynamic transducers.
 
 Component-to-channel routing is stored as application project state, not in the
 physical system or compiled solver contract. The coupled solver returns one
@@ -103,19 +115,22 @@ boundary assignments.
 A boundary assigns a physical role to one tagged surface group on one mesh. It
 always belongs to exactly one region.
 
-The initial boundary roles are:
+The model schema defines these boundary roles:
 
 - `rigid`: zero normal surface velocity.
 - `moving`: motion is supplied by a component.
 - `interface`: acoustic state is coupled to another region through an
   interface.
 - `impedance`: pressure and normal velocity obey a surface-impedance model.
-- `unused`: the surface is deliberately excluded from the active physical
-  model.
+- `unused`: a compatibility/future-facing schema value that is not offered by
+  the current System editor. Existing unused assignments are presented and
+  saved as `rigid`.
 
-These are model-level roles. A solver backend must declare which roles it
-supports; including a future-facing role in the schema does not imply that the
-current numerical backend can solve it.
+These are model-level roles. The current UI creates `rigid`, `moving`, and
+`interface` assignments; it represents the supported Miki wall treatment as
+parameters on a rigid boundary rather than as a generic `impedance` role. A
+solver backend must declare which roles it supports, so a future-facing schema
+value does not imply that the current numerical backend can solve it.
 
 The coupled backend additionally supports a locally reacting porous lining on
 a bounded region's `rigid` boundary. It remains a rigid boundary assignment and
@@ -242,7 +257,7 @@ boundary must be owned by exactly one component so that two devices cannot
 silently prescribe incompatible motion on the same surface.
 
 Each moving boundary may also have a positive relative motion weight. The
-System editor displays this value in dB while the physical model stores its
+component editor displays this value in dB while the physical model stores its
 linear amplitude in `boundary_motion_weights`. A dome, inner surround, and
 outer surround can therefore share one component while using progressively
 lower surface velocity. Electrodynamic coupling applies the same weight to

@@ -26,6 +26,7 @@ _HTML_IMG_RE = re.compile(r"<img\s+([^>]*?)\s*/?>", re.IGNORECASE)
 _HTML_ATTR_RE = re.compile(r"""([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*["']([^"']*)["']""")
 _MATH_BLOCK_RE = re.compile(r"^\$\$\s*\n(.*?)\n\$\$\s*$", re.MULTILINE | re.DOTALL)
 _INLINE_MATH_RE = re.compile(r"(?<!\$)\$([^$\n]+)\$(?!\$)")
+_MATRIX_RE = re.compile(r"\\begin\{bmatrix\}(.*?)\\end\{bmatrix\}", re.DOTALL)
 
 MAX_IMAGE_WIDTH_PT = 200
 MAX_IMAGE_HEIGHT_PT = 200
@@ -180,7 +181,27 @@ class MathRenderer:
         figure.patch.set_alpha(0)
         FigureCanvasAgg(figure)
         figure.text(0.5, 0.5, f"${normalized}$", ha="center", va="center", fontsize=EQUATION_FONT_SIZE_PT)
-        figure.savefig(output_path, transparent=True, bbox_inches="tight", pad_inches=0.08)
+        try:
+            figure.savefig(output_path, transparent=True, bbox_inches="tight", pad_inches=0.08)
+        except ValueError:
+            # Matplotlib mathtext intentionally supports only a LaTeX subset
+            # (notably excluding matrix environments). Keep the guide build
+            # reproducible and the equation readable when a source document
+            # uses a construct outside that subset.
+            fallback = _plain_math_expression(expression)
+            line_count = max(1, fallback.count("\n") + 1)
+            figure.clear()
+            figure.set_size_inches(8.0, max(1.2, 0.27 * line_count + 0.4))
+            figure.text(
+                0.5,
+                0.5,
+                fallback,
+                ha="center",
+                va="center",
+                family="monospace",
+                fontsize=11,
+            )
+            figure.savefig(output_path, transparent=True, bbox_inches="tight", pad_inches=0.08)
         image_width_px = QImage(str(output_path)).width()
         width_pt = min(MAX_EQUATION_WIDTH_PT, max(1, round(image_width_px * 72 / EQUATION_RENDER_DPI)))
         return RenderedEquation(output_path, width_pt)
@@ -261,7 +282,83 @@ def _math_block_as_image(match: re.Match[str], renderer: MathRenderer) -> str:
 
 def _normalize_math_expression(expression: str) -> str:
     normalized = " ".join(line.strip() for line in expression.strip().splitlines() if line.strip())
-    return normalized.replace(r"\lVert", r"\Vert").replace(r"\rVert", r"\Vert")
+    normalized = normalized.replace(r"\lVert", r"\Vert").replace(r"\rVert", r"\Vert")
+    normalized = normalized.replace(r"\mathbin{\cdot}", r"\cdot")
+    return re.sub(r"\\mathbf\s+([A-Za-z])", r"\\mathbf{\1}", normalized)
+
+
+def _plain_math_expression(expression: str) -> str:
+    """Return a readable text fallback for unsupported display math."""
+
+    matrix_matches = list(_MATRIX_RE.finditer(expression))
+    if matrix_matches:
+        return _plain_matrix_equation(expression, matrix_matches)
+    return _plain_math_text(expression)
+
+
+def _plain_matrix_equation(expression: str, matches: list[re.Match[str]]) -> str:
+    matrices = [_plain_matrix(match.group(1)) for match in matches]
+    separators = []
+    for left, right in zip(matches, matches[1:]):
+        gap = expression[left.end() : right.start()]
+        separators.append(" = " if "=" in gap else "   ")
+
+    height = max(len(matrix) for matrix in matrices)
+    widths = [max(len(line) for line in matrix) for matrix in matrices]
+    rendered = []
+    for row in range(height):
+        parts = []
+        for index, matrix in enumerate(matrices):
+            parts.append((matrix[row] if row < len(matrix) else "").ljust(widths[index]))
+            if index < len(separators):
+                separator = separators[index]
+                parts.append(separator if separator.strip() != "=" or row == height // 2 else " " * len(separator))
+        rendered.append("".join(parts).rstrip())
+
+    suffix = expression[matches[-1].end() :].strip()
+    if suffix:
+        rendered[-1] += suffix
+    return "\n".join(rendered)
+
+
+def _plain_matrix(body: str) -> list[str]:
+    rows = [row.strip() for row in body.strip().split(r"\\") if row.strip()]
+    cells = [[_plain_math_text(cell.strip()) for cell in row.split("&")] for row in rows]
+    column_count = max(len(row) for row in cells)
+    widths = [
+        max(len(row[column]) if column < len(row) else 0 for row in cells)
+        for column in range(column_count)
+    ]
+    content = [
+        "  ".join(
+            (row[column] if column < len(row) else "").rjust(widths[column])
+            for column in range(column_count)
+        )
+        for row in cells
+    ]
+    if len(content) == 1:
+        return [f"[ {content[0]} ]"]
+    return [
+        ("[ " if index == 0 else "  ") + line + (" ]" if index == len(content) - 1 else "")
+        for index, line in enumerate(content)
+    ]
+
+
+def _plain_math_text(expression: str) -> str:
+    plain = expression.strip()
+    plain = plain.replace(r"\\", "\n").replace("&", "   ")
+    plain = plain.replace(r"\,", " ").replace(r"\left", "").replace(r"\right", "")
+    for command, replacement in (
+        (r"\rho", "rho"),
+        (r"\omega", "omega"),
+        (r"\Gamma", "Gamma"),
+        (r"\sum", "sum"),
+        (r"\int", "integral"),
+        (r"\cdot", "*"),
+    ):
+        plain = plain.replace(command, replacement)
+    plain = re.sub(r"\\(?:mathrm|mathbf|mathsf)\{([^{}]*)\}", r"\1", plain)
+    return plain
 
 
 def _centered_image_tag(
