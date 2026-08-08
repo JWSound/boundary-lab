@@ -1,4 +1,5 @@
 [deps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CUDSS = "45b445bb-4962-46a0-9369-b4df9d0f772e"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"

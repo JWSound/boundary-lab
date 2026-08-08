@@ -18,6 +18,12 @@ ENV PYTHONUNBUFFERED=1 \
     BLAB_JULIA_CPU_TARGET=generic,+aes \
     BLAB_WARM_SOLVER=off \
     BLAB_MAX_RUNNING_JOBS=1 \
+    BLAB_MAX_QUEUED_JOBS=4 \
+    BLAB_MAX_REQUEST_MB=20 \
+    BLAB_MAX_ASSET_MB=14 \
+    BLAB_MAX_FREQUENCIES=1000 \
+    BLAB_JOB_RETENTION_HOURS=24 \
+    BLAB_EVENT_STREAM_WINDOW_SECONDS=25 \
     BLAB_LOG_LEVEL=INFO \
     BLAB_ARTIFACT_DIR=/data/server_jobs
 
@@ -60,6 +66,6 @@ VOLUME ["/data"]
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5m --retries=3 \
-    CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"BLAB_SERVER_PORT\", \"8765\")}/health', timeout=3).read()" || exit 1
+    CMD python3 -c "import os, urllib.request; token=os.environ.get('BLAB_AUTH_TOKEN',''); headers={'Authorization':f'Bearer {token}'} if token else {}; req=urllib.request.Request(f'http://127.0.0.1:{os.environ.get(\"BLAB_SERVER_PORT\", \"8765\")}/health',headers=headers); urllib.request.urlopen(req,timeout=3).read()" || exit 1
 
 ENTRYPOINT ["blab-server-cuda"]

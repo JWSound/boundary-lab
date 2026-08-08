@@ -1,1 +1,1 @@
-"""Qt user interface components for the Ath4 live BEM solver."""
+"""Qt user interface components for Boundary Lab."""

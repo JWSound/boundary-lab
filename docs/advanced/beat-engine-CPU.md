@@ -3,6 +3,9 @@
 The BEAT Engine CPU backend is a hardware-agnostic Julia/OpenBLAS solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs operator assembly, dense solve, and field evaluation on the host.
 
 The application exposes this path as `BEAT Engine (CPU)` / `beat_cpu`.
+Its coupled FEM-BEM execution path is described separately in [Coupled
+Solver](../Coupled%20Solver.md); the sections below focus on BEM operator and
+field work shared with exterior solves.
 
 ## CPU Solve Path
 
@@ -92,11 +95,22 @@ Field evaluation is usually not the dominant CPU cost compared with dense operat
 
 `BeatEngineCpuSolve.jl` forms the Burton-Miller system on host matrices and calls Julia's dense solve path. Runtime depends heavily on BLAS/LAPACK performance and P1 unknown count. Symmetry can reduce solve cost significantly because dense solve complexity scales roughly as \(O(N_p^3)\).
 
+The CPU backend selects the BLAS thread count from the P1 unknown count:
+
+- up to 768 P1 unknowns: 1 BLAS thread
+- 769 to 2,048: up to 4 BLAS threads
+- 2,049 to 4,096: up to 8 BLAS threads
+- above 4,096: all available Julia threads
+
+Set `BLAB_BEAT_CPU_BLAS_THREADS` to `auto` or a positive integer to override
+the policy. Explicit values are capped at the Julia thread count.
+
 ## CPU Benchmark And Comparison Scripts
 
 Useful scripts:
 
 - `src/blab/solvers/julia_local/scripts/benchmark_cpu.jl`: CPU timing benchmark, including fixed and wavelength regular quadrature modes.
+- `src/blab/solvers/julia_local/scripts/benchmark_cpu_blas.jl`: synthetic or real-system dense LU thread-scaling benchmark.
 - `src/blab/solvers/julia_local/scripts/compare_cpu_quadrature.jl`: fixed-reference versus candidate comparison artifact generator with operator, pressure, field, and SPL error metrics.
 
 Example comparison:

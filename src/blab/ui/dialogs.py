@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,11 +30,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.config import ChannelConfig, CrossoverConfig
+from blab.paths import APP_ROOT
 from blab.solvers.http_server import query_server_health
 from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
-from blab.ui.settings import GuiPreferences, normalize_live_plot_quality
+from blab.ui.file_dialogs import FileDialogService
+from blab.ui.server_tokens import load_server_access_token, remember_server_access_token
+from blab.ui.settings import (
+    GuiPreferences,
+    normalize_live_plot_quality,
+)
 
 CROSSOVER_TYPE_OPTIONS = [
     ("Off", None),
@@ -45,7 +52,6 @@ CROSSOVER_TYPE_OPTIONS = [
     ("Linkwitz-Riley 4th", ("linkwitz_riley", 4)),
     ("Linkwitz-Riley 6th", ("linkwitz_riley", 6)),
 ]
-APP_ROOT = Path(__file__).resolve().parents[3]
 DONATE_QR_PATH = APP_ROOT / "assets" / "donateqr.png"
 INFO_ICON_PATH = APP_ROOT / "assets" / "info-16.ico"
 DONATE_URL = "https://www.paypal.com/donate/?hosted_button_id=ZVC2HAFBJNPDW"
@@ -190,8 +196,24 @@ class PreferencesDialog(QDialog):
         self.solve_server_url_edit.setText(preferences.solve_server_url)
         self.server_health_payload: dict | None = None
         self.server_health_url: str | None = None
+        self.server_health_access_token: str | None = None
         self.check_server_button = QPushButton("Check Server")
         self.check_server_button.clicked.connect(self._check_server)
+        self.server_access_token_edit = QLineEdit()
+        self.server_access_token_edit.setEchoMode(QLineEdit.Password)
+        self.server_access_token_edit.setPlaceholderText("Optional")
+        self.server_access_token_edit.setText(load_server_access_token(preferences.solve_server_url))
+        self.generate_server_access_token_button = QPushButton("Generate")
+        self.generate_server_access_token_button.clicked.connect(self._generate_server_access_token)
+        self.copy_server_access_token_button = QPushButton("Copy")
+        self.copy_server_access_token_button.clicked.connect(self._copy_server_access_token)
+        self.server_access_token_row = QWidget()
+        server_access_token_layout = QHBoxLayout(self.server_access_token_row)
+        server_access_token_layout.setContentsMargins(0, 0, 0, 0)
+        server_access_token_layout.setSpacing(6)
+        server_access_token_layout.addWidget(self.server_access_token_edit, 1)
+        server_access_token_layout.addWidget(self.generate_server_access_token_button)
+        server_access_token_layout.addWidget(self.copy_server_access_token_button)
 
         self.polar_step_spin = QDoubleSpinBox()
         self.polar_step_spin.setRange(0.5, 90.0)
@@ -215,6 +237,7 @@ class PreferencesDialog(QDialog):
             uses_remote = backend_info(backend_id).capabilities.is_remote
             self.solve_server_url_edit.setEnabled(uses_remote)
             self.check_server_button.setEnabled(uses_remote)
+            self.server_access_token_row.setEnabled(uses_remote)
 
         update_backend_fields(backend_label)
         self.solve_backend_combo.currentTextChanged.connect(update_backend_fields)
@@ -323,6 +346,11 @@ class PreferencesDialog(QDialog):
                         "Query the configured solve server and update advertised capabilities.",
                     ),
                     (
+                        "Server access token",
+                        self.server_access_token_row,
+                        "Optional bearer token for authenticated solve servers. Keep this code safe; Boundary Lab only retains it for the current application session.",
+                    ),
+                    (
                         "Balloon Sampling",
                         self.spherical_sampling_check,
                         "Gather spherical observation data for 3d ballon viewer",
@@ -394,15 +422,20 @@ class PreferencesDialog(QDialog):
     def _check_server(self) -> None:
         url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
         try:
-            payload = query_server_health(url)
+            payload = query_server_health(
+                url,
+                access_token=self.server_access_token_edit.text().strip(),
+            )
         except Exception as exc:
             self.server_health_payload = None
             self.server_health_url = None
+            self.server_health_access_token = None
             QMessageBox.warning(self, "Check Server", f"Failed to connect to solve server:\n{exc}")
             return
 
         self.server_health_payload = payload
         self.server_health_url = url.rstrip("/")
+        self.server_health_access_token = self.server_access_token_edit.text().strip()
         capabilities = payload.get("capabilities", {}) if isinstance(payload.get("capabilities", {}), dict) else {}
         capability_lines = [
             f"Solver: {payload.get('solver_label') or payload.get('solver') or 'Unknown'}",
@@ -412,6 +445,16 @@ class PreferencesDialog(QDialog):
             f"Channel resynthesis: {'yes' if capabilities.get('supports_channel_resynthesis') else 'no'}",
         ]
         QMessageBox.information(self, "Check Server", "Solve server is reachable.\n\n" + "\n".join(capability_lines))
+
+    def _generate_server_access_token(self) -> None:
+        self.server_access_token_edit.setText(secrets.token_urlsafe(32))
+
+    def _copy_server_access_token(self) -> None:
+        QApplication.clipboard().setText(self.server_access_token_edit.text().strip())
+
+    def remember_server_access_token(self) -> None:
+        url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
+        remember_server_access_token(url, self.server_access_token_edit.text())
 
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
@@ -509,11 +552,13 @@ class MeshConfigDialog(QDialog):
         stitch_imported_meshes: bool = False,
         symmetry: str = "off",
         symmetry_enabled: bool = True,
+        file_dialog_service: FileDialogService | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Mesh Config")
+        self.setWindowTitle("Meshes")
         self._meshes = list(meshes)
+        self.file_dialogs = file_dialog_service or FileDialogService()
 
         self.table = MeshDropTable(0, 7)
         self.table.setHorizontalHeaderLabels(["Enabled", "Name", "Mesh File", "Scale", "X mm", "Y mm", "Z mm"])
@@ -534,9 +579,12 @@ class MeshConfigDialog(QDialog):
         self.z_widgets: list[QSpinBox] = []
 
         self.add_button = QPushButton("Import .msh")
+        self.replace_button = QPushButton("Replace .msh")
+        self.replace_button.setEnabled(False)
         self.remove_button = QPushButton("Remove")
-        self.stitch_imported_meshes_check = QCheckBox("Stitch Imported Meshes")
-        self.stitch_imported_meshes_check.setChecked(stitch_imported_meshes)
+        # Kept as a compatibility input while project files migrate; the control now
+        # belongs to the exterior region in the System editor.
+        self._stitch_imported_meshes = bool(stitch_imported_meshes)
         self.symmetry_combo = QComboBox()
         self.symmetry_options = {
             "Off": "off",
@@ -552,14 +600,15 @@ class MeshConfigDialog(QDialog):
         self.symmetry_combo.setCurrentText(current_label)
         self.symmetry_combo.setEnabled(symmetry_enabled)
         self.add_button.clicked.connect(self._add_mesh)
+        self.replace_button.clicked.connect(self._replace_mesh)
         self.remove_button.clicked.connect(self._remove_selected_meshes)
+        self.table.itemSelectionChanged.connect(self._update_replace_button)
         self.table.meshFilesDropped.connect(self._add_mesh_paths)
 
         button_row = QHBoxLayout()
         button_row.addWidget(self.add_button)
+        button_row.addWidget(self.replace_button)
         button_row.addWidget(self.remove_button)
-        button_row.addSpacing(16)
-        button_row.addWidget(self.stitch_imported_meshes_check)
         button_row.addSpacing(16)
         button_row.addWidget(QLabel("Symmetry"))
         button_row.addWidget(self.symmetry_combo)
@@ -579,16 +628,23 @@ class MeshConfigDialog(QDialog):
         self.resize(820, 360)
 
     def stitch_imported_meshes(self) -> bool:
-        return bool(self.stitch_imported_meshes_check.isChecked())
+        return self._stitch_imported_meshes
 
     def symmetry(self) -> str:
         return self.symmetry_options.get(self.symmetry_combo.currentText(), "off")
+
+    def replaced_mesh_names(self) -> tuple[str, ...]:
+        return tuple(
+            self.name_items[row].text().strip()
+            for row in range(self.table.rowCount())
+            if bool(self.file_items[row].data(int(Qt.ItemDataRole.UserRole) + 1))
+        )
 
     def accept(self) -> None:
         try:
             self.meshes()
         except ValueError as exc:
-            QMessageBox.warning(self, "Mesh config", str(exc))
+            QMessageBox.warning(self, "Meshes", str(exc))
             return
         super().accept()
 
@@ -609,6 +665,8 @@ class MeshConfigDialog(QDialog):
 
         file_item = QTableWidgetItem(mesh.source_file)
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
+        file_item.setData(Qt.ItemDataRole.UserRole, mesh.cleaned_file)
+        file_item.setData(int(Qt.ItemDataRole.UserRole) + 1, False)
         self.table.setItem(row, 2, file_item)
         self.file_items.append(file_item)
 
@@ -635,16 +693,14 @@ class MeshConfigDialog(QDialog):
             widgets.append(spin)
 
     def _add_mesh(self) -> None:
-        path_text, _ = QFileDialog.getOpenFileName(
+        path = self.file_dialogs.open_file(
             self,
             "Import mesh",
-            str(Path.cwd()),
             "Gmsh mesh files (*.msh)",
         )
-        if not path_text:
+        if path is None:
             return
 
-        path = Path(path_text)
         self._add_mesh_paths([path])
 
     def _add_mesh_paths(self, paths: list[Path]) -> None:
@@ -654,6 +710,36 @@ class MeshConfigDialog(QDialog):
             return
         for path in paths:
             self._append_mesh_path(path)
+
+    def _replace_mesh(self) -> None:
+        row = self._selected_replaceable_row()
+        if row is None:
+            return
+        path = self.file_dialogs.open_file(
+            self,
+            "Replace mesh",
+            "Gmsh mesh files (*.msh)",
+        )
+        if path is None:
+            return
+        if path.suffix.lower() != ".msh":
+            QMessageBox.warning(self, "Unsupported mesh", "Only .msh mesh files can be imported.")
+            return
+        self.file_items[row].setText(str(path))
+        self.file_items[row].setData(Qt.ItemDataRole.UserRole, None)
+        self.file_items[row].setData(int(Qt.ItemDataRole.UserRole) + 1, True)
+
+    def _selected_replaceable_row(self) -> int | None:
+        rows = {index.row() for index in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            return None
+        row = next(iter(rows))
+        if not bool(self.name_items[row].flags() & Qt.ItemIsEditable):
+            return None
+        return row
+
+    def _update_replace_button(self) -> None:
+        self.replace_button.setEnabled(self._selected_replaceable_row() is not None)
 
     def _append_mesh_path(self, path: Path) -> None:
         self._append_row(
@@ -667,7 +753,7 @@ class MeshConfigDialog(QDialog):
     def _remove_selected_meshes(self) -> None:
         rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
         for row in rows:
-            if self.name_items[row].text().strip() == "ath":
+            if not bool(self.name_items[row].flags() & Qt.ItemIsEditable):
                 continue
             self.table.removeRow(row)
             del self.enabled_widgets[row]
@@ -682,11 +768,11 @@ class MeshConfigDialog(QDialog):
         sanitized = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in base_name).strip("_")
         name = sanitized or "mesh"
         used = {item.text().strip() for item in self.name_items}
-        if name not in used and name != "ath":
+        if name not in used:
             return name
 
         suffix = 2
-        while f"{name}_{suffix}" in used or f"{name}_{suffix}" == "ath":
+        while f"{name}_{suffix}" in used:
             suffix += 1
         return f"{name}_{suffix}"
 
@@ -697,13 +783,7 @@ class MeshConfigDialog(QDialog):
             name = self.name_items[row].text().strip()
             if not name:
                 raise ValueError("Each imported mesh must have a name.")
-            is_ath_row = name == "ath"
-            if is_ath_row and row != 0:
-                raise ValueError("'ath' is reserved for the default Ath mesh.")
-            if name == "ath" and row == 0:
-                pass
-            elif name == "ath":
-                raise ValueError("'ath' is reserved for the default Ath mesh.")
+            is_generated_row = not bool(self.name_items[row].flags() & Qt.ItemIsEditable)
             if ":" in name:
                 raise ValueError("Mesh names cannot contain ':'.")
             if name in seen_names:
@@ -722,16 +802,14 @@ class MeshConfigDialog(QDialog):
                         float(int(self.z_widgets[row].value())),
                     ),
                     enabled=bool(self.enabled_widgets[row].isChecked()),
-                    locked=is_ath_row,
+                    locked=is_generated_row,
                 )
             )
         return tuple(meshes)
 
     def _cleaned_file_for_row(self, row: int) -> str | None:
-        for mesh in self._meshes:
-            if mesh.source_file == self.file_items[row].text():
-                return mesh.cleaned_file
-        return None
+        value = self.file_items[row].data(Qt.ItemDataRole.UserRole)
+        return None if value is None else str(value)
 
 
 class ChannelConfigDialog(QDialog):
@@ -912,107 +990,3 @@ class ChannelConfigDialog(QDialog):
                 )
             )
         return tuple(channels)
-
-
-class SourceConfigDialog(QDialog):
-    def __init__(
-        self,
-        surface_tags: dict[str, tuple[str, int]],
-        radiators: tuple[RadiatorConfig, ...],
-        channels: tuple[ChannelConfig, ...],
-        parent: QWidget | None = None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Source Config")
-        self.surface_items = sorted(surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0]))
-        self.radiators_by_key = {(radiator.mesh, radiator.tag): radiator for radiator in radiators}
-        self.channel_names = tuple(channel.name for channel in channels) or ("main",)
-
-        self.table = QTableWidget(len(self.surface_items), 5)
-        self.table.setHorizontalHeaderLabels(
-            [
-                "Surface",
-                "Tag",
-                "Mode",
-                "Channel",
-                "Velocity Offset dB",
-            ]
-        )
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 5):
-            self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-
-        self.mode_widgets: list[QComboBox] = []
-        self.channel_widgets: list[QComboBox] = []
-        self.velocity_widgets: list[QDoubleSpinBox] = []
-
-        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
-            radiator = self.radiators_by_key.get((mesh_name, tag))
-
-            name_item = QTableWidgetItem(surface_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 0, name_item)
-
-            tag_item = QTableWidgetItem(str(tag))
-            tag_item.setFlags(tag_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(row, 1, tag_item)
-
-            mode_combo = QComboBox()
-            mode_combo.addItems(["Rigid", "Driven"])
-            mode_combo.setCurrentText("Driven" if radiator is not None else "Rigid")
-            self.table.setCellWidget(row, 2, mode_combo)
-            self.mode_widgets.append(mode_combo)
-
-            channel_combo = QComboBox()
-            channel_combo.addItems(self.channel_names)
-            channel_combo.setCurrentText(
-                radiator.channel
-                if radiator is not None and radiator.channel in self.channel_names
-                else self.channel_names[0]
-            )
-            self.table.setCellWidget(row, 3, channel_combo)
-            self.channel_widgets.append(channel_combo)
-
-            velocity_spin = QDoubleSpinBox()
-            velocity_spin.setRange(-120.0, 60.0)
-            velocity_spin.setDecimals(2)
-            velocity_spin.setSingleStep(0.5)
-            velocity_spin.setValue(0.0 if radiator is None else float(radiator.velocity_offset_db))
-            self.table.setCellWidget(row, 4, velocity_spin)
-            self.velocity_widgets.append(velocity_spin)
-
-            mode_combo.currentTextChanged.connect(
-                lambda mode, row=row: self._set_drive_controls_enabled(row, mode == "Driven")
-            )
-            self._set_drive_controls_enabled(row, radiator is not None)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.table)
-        layout.addWidget(buttons)
-        self.resize(860, min(520, 160 + 34 * max(1, len(self.surface_items))))
-
-    def _set_drive_controls_enabled(self, row: int, enabled: bool) -> None:
-        self.channel_widgets[row].setEnabled(enabled)
-        self.velocity_widgets[row].setEnabled(enabled)
-
-    def radiators(self) -> tuple[RadiatorConfig, ...]:
-        radiators = []
-        for row, (surface_name, (mesh_name, tag)) in enumerate(self.surface_items):
-            if self.mode_widgets[row].currentText() != "Driven":
-                continue
-            radiators.append(
-                RadiatorConfig(
-                    name=surface_name,
-                    mesh=mesh_name,
-                    tag=tag,
-                    channel=str(self.channel_widgets[row].currentText()),
-                    velocity_offset_db=float(self.velocity_widgets[row].value()),
-                )
-            )
-        return tuple(radiators)

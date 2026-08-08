@@ -5,6 +5,7 @@ import meshio
 import numpy as np
 import pytest
 
+import blab.live as live_module
 from blab.ath import (
     AthProcessRunner,
     ath_mirror_axes_for_result,
@@ -19,9 +20,9 @@ from blab.ath import (
     write_ath_gmsh_path,
     write_ath_output_root,
 )
-from blab.balloon import BalloonPrepConfig, _grid_spl_surface, prepare_balloon_data
+from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
 from blab.config import ChannelConfig
-from blab.exporting import export_balloon_data, export_polar_text_files
+from blab.exporting import export_balloon_data, export_on_axis_text_files, export_polar_text_files
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -658,108 +659,165 @@ def test_live_dataset_balloon_bundle_does_not_reindex_float32_frequencies() -> N
     assert bundle["spl_norm"].shape == (1, 4)
 
 
+def test_visualization_skips_sphere_synthesis_and_balloon_bundle_synthesizes_once(monkeypatch) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    sphere_points = 4
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["driver"]),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+        sphere_r_distance_m=np.full(sphere_points, 2.0, dtype=np.float32),
+        sphere_theta_polar_rad=np.linspace(0.1, np.pi - 0.1, sphere_points, dtype=np.float32),
+        sphere_phi_azimuth_rad=np.linspace(0.0, 2.0 * np.pi, sphere_points, endpoint=False, dtype=np.float32),
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2]], dtype=np.float32),
+            channel_names=np.array(["main"]),
+            horizontal_pressure=np.ones((1, angles.size), dtype=np.complex64),
+            vertical_pressure=np.ones((1, angles.size), dtype=np.complex64),
+            sphere_pressure=np.ones((1, sphere_points), dtype=np.complex64),
+        )
+    )
+    original_synthesize = live_module.synthesize_channel_basis_spl
+    sphere_arguments = []
+
+    def record_synthesis(**kwargs):
+        sphere_arguments.append(kwargs.get("sphere_pressure"))
+        return original_synthesize(**kwargs)
+
+    monkeypatch.setattr(live_module, "synthesize_channel_basis_spl", record_synthesis)
+
+    assert dataset.has_balloon_data
+    assert (
+        dataset.as_visualization_dataset(PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None))
+        is not None
+    )
+    assert sphere_arguments == [None]
+
+    bundle = dataset.as_balloon_raw_bundle()
+
+    assert bundle is not None
+    assert len(sphere_arguments) == 2
+    assert sphere_arguments[1] is dataset.results[1000.0].sphere_pressure
+
+
 def test_prepare_balloon_data_builds_surface_arrays() -> None:
-    theta_values = np.linspace(0.05, np.pi - 0.05, 8, dtype=np.float32)
-    phi_values = np.linspace(0.0, 2.0 * np.pi, 16, endpoint=False, dtype=np.float32)
-    theta, phi = np.meshgrid(theta_values, phi_values, indexing="ij")
-    spl = -12.0 + 12.0 * np.cos(theta.ravel()) ** 2
+    theta, phi = _fibonacci_angles(32)
+    spl = -12.0 + 12.0 * np.cos(theta) ** 2
     raw = {
         "freq_hz": np.array([500.0], dtype=np.float32),
         "r_distance_m": np.full(theta.size, 2.0, dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl[np.newaxis, :].astype(np.float32),
     }
 
-    prepared = prepare_balloon_data(raw, BalloonPrepConfig(theta_samples=10, phi_samples=12))
+    prepared = prepare_balloon_data(raw)
 
-    assert prepared["balloon_x"].shape == (1, 10, 12)
-    assert prepared["balloon_surface_spl"].shape == (1, 10, 12)
+    assert prepared["directions_xyz"].shape == (32, 3)
+    assert prepared["triangle_indices"].shape == (60, 3)
+    assert prepared["balloon_surface_spl"].shape == (1, 32)
     assert float(prepared["balloon_surface_spl"].max()) <= 0.0
-
-
-def test_prepare_balloon_data_matches_griddata_surface_interpolation() -> None:
-    theta, phi = np.meshgrid(
-        np.linspace(0.0, np.pi, 6, dtype=np.float32),
-        np.linspace(0.0, 2.0 * np.pi, 8, dtype=np.float32),
-        indexing="ij",
+    edges = np.sort(
+        prepared["triangle_indices"][:, ((0, 1), (1, 2), (2, 0))].reshape(-1, 2),
+        axis=1,
     )
-    spl = (-12.0 + 3.0 * np.cos(theta.ravel()) + 2.0 * np.sin(phi.ravel())).astype(np.float32)
+    _, edge_counts = np.unique(edges, axis=0, return_counts=True)
+    assert np.all(edge_counts == 2)
+
+
+def test_balloon_surface_sampler_is_exact_at_solved_vertices() -> None:
+    theta, phi = _fibonacci_angles(64)
+    values = (-20.0 + np.arange(64, dtype=np.float32) / 8.0)[np.newaxis, :]
+    prepared = prepare_balloon_data(
+        {
+            "freq_hz": np.array([1000.0], dtype=np.float32),
+            "theta_polar_rad": theta,
+            "phi_azimuth_rad": phi,
+            "spl_norm": values,
+        }
+    )
+    sampler = BalloonSurfaceSampler(prepared["directions_xyz"], prepared["triangle_indices"])
+
+    sampled = sampler.interpolate(prepared["balloon_surface_spl"], prepared["directions_xyz"])
+
+    np.testing.assert_allclose(sampled, prepared["balloon_surface_spl"], atol=1e-5)
+
+
+def test_prepare_balloon_data_preserves_solved_vertex_values() -> None:
+    theta, phi = _fibonacci_angles(48)
+    spl = (-12.0 + 3.0 * np.cos(theta) + 2.0 * np.sin(phi)).astype(np.float32)
     raw = {
         "freq_hz": np.array([1000.0], dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl[np.newaxis, :],
     }
 
-    prepared = prepare_balloon_data(raw, BalloonPrepConfig(theta_samples=9, phi_samples=11, min_db=-30.0))
-    expected = _grid_spl_surface(
-        raw["theta_polar_rad"],
-        raw["phi_azimuth_rad"],
-        spl,
-        prepared["theta_grid_rad"],
-        prepared["phi_grid_rad"],
-        -30.0,
-    )
+    prepared = prepare_balloon_data(raw, BalloonPrepConfig(min_db=-30.0))
 
-    np.testing.assert_allclose(prepared["balloon_surface_spl"][0], expected, atol=1e-5)
+    np.testing.assert_array_equal(prepared["balloon_surface_spl"][0], np.clip(spl, -30.0, 0.0))
 
 
 def test_export_balloon_data_writes_fixed_topology_artifact(tmp_path: Path) -> None:
-    theta, phi = np.meshgrid(
-        np.linspace(0.0, np.pi, 5, dtype=np.float32),
-        np.linspace(0.0, 2.0 * np.pi, 7, dtype=np.float32),
-        indexing="ij",
-    )
+    theta, phi = _fibonacci_angles(35)
     spl = np.stack(
         [
-            -30.0 + 30.0 * np.cos(theta.ravel()) ** 2,
-            -24.0 + 24.0 * np.sin(theta.ravel()) ** 2,
+            -30.0 + 30.0 * np.cos(theta) ** 2,
+            -24.0 + 24.0 * np.sin(theta) ** 2,
         ],
         axis=0,
     ).astype(np.float32)
     raw = {
         "freq_hz": np.array([500.0, 1000.0], dtype=np.float32),
-        "theta_polar_rad": theta.ravel().astype(np.float32),
-        "phi_azimuth_rad": phi.ravel().astype(np.float32),
+        "theta_polar_rad": theta,
+        "phi_azimuth_rad": phi,
         "spl_norm": spl,
     }
     prepared = prepare_balloon_data(
         raw,
-        BalloonPrepConfig(theta_samples=5, phi_samples=7, min_db=-30.0, max_db=0.0),
+        BalloonPrepConfig(min_db=-30.0, max_db=0.0),
     )
 
     result = export_balloon_data(prepared, tmp_path)
 
     assert result.frequency_count == 2
     assert result.point_count == 35
-    assert result.quad_count == 24
+    assert result.triangle_count == 66
     assert {path.name for path in result.files} == {
         "metadata.json",
         "topology.npz",
         "spl_db.npy",
         "radius_norm.npy",
-        "positions_xyz.npy",
     }
 
     metadata = json.loads((tmp_path / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["schema_version"] == 1
-    assert metadata["point_order"].startswith("row-major")
-    assert metadata["array_shapes"]["positions_xyz"] == ["frequency", "theta", "phi", "xyz"]
+    assert metadata["schema_version"] == 2
+    assert metadata["point_order"] == "original solver Fibonacci sample order"
+    assert metadata["array_shapes"]["directions_xyz"] == ["point", "xyz"]
 
     with np.load(tmp_path / "topology.npz") as topology:
         assert topology["directions_xyz"].shape == (35, 3)
-        assert topology["quad_indices"].shape == (24, 4)
-        np.testing.assert_array_equal(topology["quad_indices"][0], [0, 1, 8, 7])
+        assert topology["triangle_indices"].shape == (66, 3)
         np.testing.assert_allclose(topology["freq_hz"], [500.0, 1000.0])
 
     spl_db = np.load(tmp_path / "spl_db.npy")
     radius_norm = np.load(tmp_path / "radius_norm.npy")
-    positions = np.load(tmp_path / "positions_xyz.npy")
-    assert spl_db.shape == (2, 5, 7)
-    assert radius_norm.shape == (2, 5, 7)
-    assert positions.shape == (2, 5, 7, 3)
+    assert spl_db.shape == (2, 35)
+    assert radius_norm.shape == (2, 35)
     np.testing.assert_allclose(radius_norm, np.clip((spl_db + 30.0) / 30.0, 0.0, 1.0), atol=1e-6)
+
+
+def _fibonacci_angles(count: int) -> tuple[np.ndarray, np.ndarray]:
+    indices = np.arange(count, dtype=float)
+    z = 1.0 - 2.0 * (indices + 0.5) / count
+    phi = indices * np.pi * (3.0 - np.sqrt(5.0))
+    return np.arccos(z).astype(np.float32), phi.astype(np.float32)
 
 
 def test_export_polar_text_files_writes_one_file_per_plane_angle(tmp_path: Path) -> None:
@@ -827,3 +885,72 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
     assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
         "1000.000000\t0.000\t-90.000",
     ]
+
+
+def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+    )
+    for freq_hz, pressure in ((1000.0, 1.0 + 0.0j), (200.0, 0.0 + 1.0j)):
+        channel_pressure = np.full((1, 3), pressure, dtype=np.complex64)
+        dataset.add(
+            FrequencyResult(
+                freq_hz=freq_hz,
+                horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+                vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+                impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+                channel_names=np.array(["main"]),
+                horizontal_pressure=channel_pressure,
+                vertical_pressure=channel_pressure.copy(),
+            )
+        )
+
+    written = export_on_axis_text_files(dataset, tmp_path / "selected-response")
+
+    assert written == [tmp_path / "selected-response.txt"]
+    assert written[0].read_text(encoding="utf-8").splitlines() == [
+        "200.000000\t93.979\t90.000",
+        "1000.000000\t93.979\t0.000",
+    ]
+
+
+def test_export_on_axis_text_files_writes_only_individual_channels_with_safe_names(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    channel_names = np.array(["LF/woofer", "LF:woofer"])
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="LF/woofer"), ChannelConfig(name="LF:woofer")),
+        flat_target_normalization_enabled=False,
+    )
+    horizontal_pressure = np.array(
+        [
+            [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j],
+            [0.0 - 1.0j, 0.0 - 1.0j, 0.0 - 1.0j],
+        ],
+        dtype=np.complex64,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.ones((2, 2), dtype=np.float32),
+            channel_names=channel_names,
+            horizontal_pressure=horizontal_pressure,
+            vertical_pressure=horizontal_pressure.copy(),
+        )
+    )
+
+    written = export_on_axis_text_files(dataset, tmp_path / "channels")
+
+    assert [path.name for path in written] == ["on_axis_LF_woofer.txt", "on_axis_LF_woofer_2.txt"]
+    assert written[0].read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t93.979\t0.000",
+    ]
+    assert written[1].read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t93.979\t-90.000",
+    ]
+    assert len(list((tmp_path / "channels").glob("*.txt"))) == 2

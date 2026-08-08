@@ -1,26 +1,76 @@
 # Model Assumptions
 
-Boundary lab is a BEM-only solver application. As a result, it is important to define what it can and cannot accomplish in the context of loudspeaker design. The fundamental use-case of Boundary Lab is to answer the question:
+Boundary Lab is a frequency-domain linear-acoustics application for predicting
+loudspeaker radiation. It supports two physical-system topologies:
 
-"Given a loudspeaker enclosure and/or waveguide design, what is the resultant normalized directivity produced by the radiating elements contained in the device"
+- an unbounded exterior region only, solved with BEM;
+- one or more bounded tetrahedral air regions coupled to an unbounded exterior
+  BEM region, with optional lumped electrodynamic transducer equations.
 
-Or:
+The application infers the path from the regions configured in the **System**
+window. It is intended to answer questions about acoustic response,
+directivity, source interaction, enclosure and port behavior, and linear
+transducer loading. It is not a general structural, thermal, or nonlinear
+finite-element package.
 
-"Given a multiway loudspeaker enclosure, what is the resultant normalized directivity produced by all radiating elements assuming idealized analog crossover transfer functions, plus user-defined gain, polarity, and delay"
+## Physical System and Boundary Conditions
 
-## Source Definition & Driving Model
-The application allows for two types of boundaries to be defined:
+Every active mesh surface belongs to an acoustic region and is classified as:
 
-1. `Rigid`: An infinitely rigid reflective surface with zero normal velocity.
-2. `Driven`: A surface with prescribed normal velocity according to an idealized radiator model.
+1. **Rigid**: zero normal surface velocity. A bounded rigid wall may optionally
+   use the supported locally reacting Miki porous-lining treatment.
+2. **Moving**: motion is supplied by one prescribed-velocity or
+   electrodynamic component.
+3. **Interface**: pressure and normal flux are transferred between a bounded
+   FEM region and the exterior BEM region.
 
-Because each driven source is an idealized model of a perfect radiator, it is important to denote that Boundary Lab does not support electroacoustic modeling of loudspeaker transducers. It does not model diaphragm breakup, suspension compliance, motor force factor, voice-coil impedance, or other transducer behavior. External Lumped Element tools or more advanced FEA tools are preferred for electroacoustic transducer modelling and to simulate internal enclosure, port, suspension, motor, and diaphragm resonances, while Boundary Lab can supplement these tools to perform the directivity analysis.
+The UI defaults every surface to Rigid and does not provide an unassigned or
+unused state. This prevents an omitted assignment from silently behaving as an
+opening.
 
-### Normalized Channel Transfer Function
-Despite each source being driven according to an idealized source, the resultant non-normalized reference-axis frequency response is not necessarily flat. This can introduce complexities when modeling crossover slopes since the acoustic targets are not adhered to. To combat this, Boundary Lab computes a per-channel reference-axis magnitude correction from the unit-velocity response of that channel, then applies the user-defined channel gain, polarity, delay, and crossover filters. This correction flattens the isolated channel magnitude target **before** crossover shaping; it does not apply a complex phase inverse and does not guarantee that the final summed multiway response is flat.
+An exterior-only model accepts prescribed-velocity components. A coupled model
+may use prescribed-velocity components, linear electrodynamic transducers, or
+both. A component can own several moving surface groups, and each group can
+have a relative velocity weight. This supports idealized motion profiles such
+as a dome and surround moving at different amplitudes.
 
-## Boundary Integral Equation Model
-Boundary Lab solves the exterior acoustic Helmholtz problem in the frequency domain. For each solved frequency, the acoustic pressure `p` outside the mesh is assumed to satisfy:
+Prescribed-velocity components use a canonical 1 m/s normal-velocity basis.
+Electrodynamic components use a canonical 2.83 V basis and a single rigid-body
+translation degree of freedom with direct Re, Le, Bl, Mmd, Cms, and Rms
+parameters. Their front and rear acoustic surfaces may belong to different
+regions and do not need matching meshes.
+
+The electrodynamic model includes linear motor force, back EMF, mechanical
+mass, compliance, damping, voice-coil inductance, and reciprocal acoustic
+loading. It does not model cone breakup, nonlinear or position-dependent motor
+parameters, thermal compression, suspension nonlinearities, or flexible
+enclosure structures. See [Coupled Solver](Coupled%20Solver.md) for the precise
+supported contract and limitations.
+
+## Linear Excitation Bases and Channel Synthesis
+
+The acoustic solver computes an independent complex reference response for
+each active excitation port. Application channels then combine those bases and
+apply level, polarity, delay, and idealized analog HPF/LPF transfer functions.
+Because this synthesis is linear and occurs after the physical solve, ordinary
+channel edits can reuse completed basis data without rerunning BEM or FEM.
+
+When **Normalized Channel Correction** is enabled, Boundary Lab evaluates each
+channel's isolated response at the configured horizontal reference angle and
+applies a real magnitude correction before the channel controls. This makes
+the isolated channel magnitude target flat before crossover shaping. It is not
+a complex phase inverse, does not remove propagation or transducer phase, and
+does not guarantee that a summed multiway response will be flat.
+
+Passive electrical networks, amplifier source-impedance interaction, feedback
+control, and level-dependent processing would alter the physical solve rather
+than act as ordinary post-solve channel weights. They are not part of the
+current application model.
+
+## Exterior Boundary Integral Model
+
+In the unbounded region, acoustic pressure satisfies the frequency-domain
+Helmholtz equation:
 
 $$
 \nabla^2 p + k^2 p = 0
@@ -28,94 +78,132 @@ $$
 
 where:
 
-- `k = \omega / c`
-- `\omega = 2 \pi f`
-- `c` is the speed of sound
+- `k = omega / c`;
+- `omega = 2 pi f`;
+- `c` is the sound speed.
 
-The mesh surface is treated as the boundary of the exterior acoustic domain. Boundary Lab uses a Neumann boundary condition, meaning the normal pressure gradient is prescribed from the configured surface velocity:
+The exterior mesh is the boundary of the acoustic domain. Prescribed outward
+normal velocity is converted to Neumann data using the solver's
+`exp(-i omega t)` convention:
 
 $$
 q = \frac{\partial p}{\partial n} = i \rho \omega v_n
 $$
 
-where:
+where `rho` is fluid density. Rigid surfaces use `v_n = 0`; moving surfaces use
+the component velocity projected onto the face normal. Interface surfaces in a
+coupled system receive their normal derivative from the FEM-BEM solution.
 
-- `q` is the boundary Neumann data
-- `rho` is air density
-- `v_n` is the prescribed outward normal surface velocity
+Boundary pressure is represented with continuous first-order (`P1`) basis
+functions and boundary velocity/flux with discontinuous constant (`DP0`) basis
+functions. BEAT Engine assembles dense Galerkin operators and uses direct dense
+linear algebra. The Bempp backend uses Bempp-cl operators and GMRES.
 
-Rigid surfaces use `v_n = 0`. Driven surfaces use the configured ideal velocity drive, including per-radiator velocity offset and any channel gain, polarity, delay, crossover filtering, and flat-target magnitude correction.
-
-### Discretization
-The solver uses Bempp-cl boundary element spaces:
-
-- Boundary pressure `p` is represented with continuous linear `P1` basis functions.
-- Boundary velocity/flux `q` is represented with discontinuous constant `DP0` basis functions.
-
-At each frequency, Boundary Lab assembles Helmholtz boundary operators on these spaces and solves for the unknown boundary pressure coefficients. The solve is performed with GMRES using the configured solver tolerance.
-
-### Classical Exterior Neumann Form
-When Burton-Miller is disabled, Boundary Lab solves the classical exterior Neumann boundary integral equation:
+The classical exterior Neumann equation can be written as:
 
 $$
-(K - \frac{1}{2} I) p = S q
+\left(K - \frac{1}{2} I\right) p = S q
 $$
 
-where:
+with single-layer operator `S`, double-layer operator `K`, identity `I`,
+unknown boundary pressure `p`, and prescribed Neumann data `q`. This classical
+form can become unreliable at fictitious interior resonances. Boundary Lab's
+Burton-Miller combined-field path adds the hypersingular and adjoint
+double-layer equations to suppress those artifacts, at additional assembly
+cost. The shared BEAT Engine implementation is described in [BEAT Engine
+Core](advanced/beat-engine-core.md).
 
-- `S` is the single-layer boundary operator
-- `K` is the double-layer boundary operator
-- `I` is the identity operator
-- `p` is the unknown boundary pressure
-- `q` is the prescribed Neumann boundary data
-
-This corresponds to the exterior representation used later for field evaluation:
+After solving the boundary pressure, exterior pressure at observation point
+`x` is evaluated from the representation formula:
 
 $$
 p(x) = D[p](x) - S[q](x)
 $$
 
-where `D[p]` is the double-layer potential and `S[q]` is the single-layer potential evaluated at observation point `x`.
+where `D` and `S` are the double- and single-layer potentials.
 
-### Burton-Miller Formulation
-The classical exterior Helmholtz integral equation can become unreliable at fictitious interior resonance frequencies. Boundary Lab can use a Burton-Miller combined-field formulation to reduce these irregular-frequency artifacts.
+## Coupled FEM-BEM Model
 
-When Burton-Miller is enabled, Boundary Lab assembles the double-layer, single-layer, hypersingular, and adjoint double-layer operators:
+Each bounded region uses first-order pressure FEM on selected tetrahedral
+volume groups. Rigid boundaries contribute the natural zero-normal-velocity
+condition; moving boundaries contribute prescribed or component-coupled loads.
+An interface enforces pressure continuity and normal-flux conservation between
+its FEM boundary facets and the conforming BEM surface facets.
 
-- `K`: double-layer boundary operator
-- `S`: single-layer boundary operator
-- `W`: hypersingular boundary operator
-- `K'`: adjoint double-layer boundary operator
+The current coupled model assumes linear pressure acoustics and the same
+density and sound speed in every participating acoustic region. Each bounded
+region may have its own homogeneous bulk-loss factor. Bounded rigid walls may
+also use the supported locally reacting, rigid-backed Miki porous treatment;
+this is not a thermoviscous boundary-layer model.
 
-The coupling factor is:
+The coupled application path requires BEAT Engine CPU or CUDA. CPU solves the
+full monolithic dense coupled system. CUDA exactly eliminates eligible FEM
+interior degrees of freedom with a Schur complement, solves the retained
+interface, moving-surface, BEM, and transducer system on the GPU, and then
+reconstructs the eliminated FEM pressure. These are algebraically different
+execution strategies for the same linear model.
+
+## Symmetry
+
+X symmetry uses a positive-X half model; XY symmetry uses a
+positive-X/positive-Y quarter model. The active mesh must lie in that
+fundamental domain. BEAT Engine includes reflected BEM source contributions
+and evaluates the full observation field from the reduced solve.
+
+Boundary Lab determines separately whether each component and FEM-BEM
+interface is actually cut by an active symmetry plane. For an electrodynamic
+component, selected moving-surface perimeter adjacency determines its surface
+completion factor and the number of distinct physical components represented
+by symmetry images. These values are inferred from topology rather than chosen
+from a manual multiplier.
+
+Symmetry assumes the omitted geometry and excitation are exact mirror images.
+It is therefore invalid for asymmetric geometry, material properties,
+component parameters, or drive conditions.
+
+## SPL, Directivity, and Balloon Data
+
+Complex pressure magnitude is converted to sound-pressure level with:
 
 $$
-\alpha = \frac{i}{k}
+\mathrm{SPL} = 20\log_{10}\left(\frac{|p|}{20 \times 10^{-6}}\right)
 $$
 
-Using Bempp-cl sign conventions, the implemented linear system is:
+On-axis plots and on-axis text exports retain absolute SPL for each solved
+channel basis after the selected channel correction. Directivity plots are
+normalized during visualization to their configured reference angles and then
+optionally smoothed and clipped to the selected display range. Polar exports
+contain normalized magnitude and relative phase.
 
-$$
-\left(\frac{1}{2} I - K - \alpha(-W_\mathrm{bempp})\right)p
-=
-\left(-S - \alpha\left(K' + \frac{1}{2} I\right)\right)q
-$$
+When Balloon Sampling is enabled, the solver evaluates approximately
+equal-area Fibonacci-sphere directions. Those solved points are used directly
+as balloon vertices, and a shared spherical triangulation supplies the display
+and export topology. The balloon mesh therefore scales with the requested
+sampling precision without first interpolating onto a separate latitude and
+longitude grid. Slice plots still interpolate the spherical data along their
+requested great-circle directions.
 
-The code explicitly applies the `-W_bempp` term because Bempp-cl's hypersingular operator has the opposite sign from the convention used in the Burton-Miller equation implemented here.
+## Practical Limitations
 
-The practical effect is that Boundary Lab combines the pressure equation with its normal derivative equation. This suppresses the fictitious cavity resonances that can appear in the classical exterior Neumann formulation, especially on closed or nearly closed loudspeaker enclosure meshes. Burton-Miller typically increases solve cost because it requires the additional hypersingular and adjoint double-layer operators.
+Results remain subject to mesh resolution, geometry and physical-group
+quality, interface conformity, numerical precision, observation distance, and
+the assumptions above. Dense BEM storage and factorization grow rapidly with
+boundary size; fine meshes should be tested at a few representative
+frequencies before committing to a long sweep.
 
-### Field Evaluation and SPL Output
-After solving for boundary pressure, Boundary Lab evaluates the acoustic pressure at polar and spherical observation points using:
+Boundary Lab currently does not provide:
 
-$$
-p(x) = D[p](x) - S[q](x)
-$$
+- structural diaphragm, suspension, or enclosure-panel FEM;
+- nonlinear, transient, thermal, or level-dependent behavior;
+- automatic conversion from a conventional T/S set containing Mms to the
+  direct Mmd parameter used by the electrodynamic model;
+- passive-radiator components;
+- arbitrary surface impedance functions or spatially varying volume loss;
+- multiple unbounded exterior regions or different fluids within one coupled
+  system;
+- iterative, fast-multipole, or distributed coupled solving.
 
-The complex pressure magnitude is converted to SPL with:
-
-$$
-\mathrm{SPL} = 20\log_{10}\left(\frac{|p(x)|}{20 \times 10^{-6}}\right)
-$$
-
-The raw solver output is normalized to the horizontal on-axis response. Plotting and export paths can then re-normalize the horizontal and vertical planes to the configured reference angles for directivity visualization.
+Use measurement or a suitable structural/electroacoustic tool where these
+effects dominate, and treat Boundary Lab's result as the prediction of the
+configured linear acoustic model rather than the complete behavior of a real
+loudspeaker.

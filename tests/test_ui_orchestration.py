@@ -136,3 +136,12 @@ def test_result_projection_returns_typed_plot_models() -> None:
     assert projection.isobar.horizontal_db.shape == (3, 1)
     assert projection.impedance.radiator_names.tolist() == ["driver"]
     assert projection.response.freq_hz.tolist() == [1000.0]
+
+    snapshot = projection.snapshot()
+    projection.isobar.horizontal_db[0, 0] = 99.0
+    projection.impedance.real[0, 0] = 99.0
+    projection.response.horizontal_spl_db[0, 0] = 99.0
+
+    assert snapshot.isobar.horizontal_db[0, 0] != 99.0
+    assert snapshot.impedance.real[0, 0] != 99.0
+    assert snapshot.response.horizontal_spl_db[0, 0] != 99.0

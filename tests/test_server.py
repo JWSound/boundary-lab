@@ -1,5 +1,8 @@
+import json
+import threading
 import time
 from pathlib import Path
+from urllib import error, request
 
 import numpy as np
 
@@ -10,10 +13,12 @@ from blab.server import (
     BackendServerSolver,
     BlabServer,
     JobOrchestrator,
+    JobQueueFullError,
     _build_arg_parser,
     normalize_server_solver_id,
 )
-from blab.solvers.base import SolveMetadata
+from blab.solvers.base import SolveMetadata, SolveRequest
+from blab.solvers.http_server import HttpServerSession
 
 
 class FakeSolver:
@@ -137,6 +142,12 @@ def test_server_parser_accepts_backend_solver_options() -> None:
     assert args.log_level == "DEBUG"
     assert args.warm_solver == "tiny"
     assert args.julia_sysimage == "blab-beat-cuda.so"
+    assert args.max_request_mb == 20
+    assert args.max_asset_mb == 14
+    assert args.max_frequencies == 1000
+    assert args.max_queued_jobs == 4
+    assert args.job_retention_hours == 24
+    assert args.event_stream_window_seconds == 25
     assert _build_arg_parser().parse_args([]).solver == "bempp_cpu"
     assert normalize_server_solver_id("bempp_cpu") == "bempp_cpu"
     assert normalize_server_solver_id("local") == "bempp_cpu"
@@ -236,3 +247,197 @@ def test_server_health_reports_bempp_cpu_as_public_solver_name(tmp_path: Path) -
     finally:
         orchestrator.shutdown()
         server.server_close()
+
+
+def _start_test_server(
+    tmp_path: Path,
+    *,
+    access_token: str = "",
+    max_request_bytes: int = 20 * 1024 * 1024,
+    event_stream_window_seconds: float = 25.0,
+    solver_factory=FakeSolver,
+) -> tuple[JobOrchestrator, BlabServer, threading.Thread, str]:
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        artifact_root=tmp_path,
+        solver_factory=solver_factory,
+    )
+    server = BlabServer(
+        ("127.0.0.1", 0),
+        orchestrator,
+        solver_id="beat_cpu",
+        access_token=access_token,
+        max_request_bytes=max_request_bytes,
+        event_stream_window_seconds=event_stream_window_seconds,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    return orchestrator, server, thread, f"http://{host}:{port}"
+
+
+def _stop_test_server(orchestrator: JobOrchestrator, server: BlabServer, thread: threading.Thread) -> None:
+    server.shutdown()
+    thread.join(timeout=2.0)
+    orchestrator.shutdown()
+    server.server_close()
+
+
+def test_server_authentication_is_optional_and_protects_health_when_enabled(tmp_path: Path) -> None:
+    orchestrator, server, thread, server_url = _start_test_server(tmp_path, access_token="correct-token")
+    try:
+        try:
+            request.urlopen(f"{server_url}/health", timeout=2)
+        except error.HTTPError as exc:
+            assert exc.code == 401
+            assert exc.headers["WWW-Authenticate"] == "Bearer"
+        else:
+            raise AssertionError("authenticated server accepted a request without a token")
+
+        health_request = request.Request(
+            f"{server_url}/health",
+            headers={"Authorization": "Bearer correct-token"},
+        )
+        with request.urlopen(health_request, timeout=2) as response:
+            assert json.loads(response.read())["status"] == "ok"
+    finally:
+        _stop_test_server(orchestrator, server, thread)
+
+    orchestrator, server, thread, server_url = _start_test_server(tmp_path / "open")
+    try:
+        with request.urlopen(f"{server_url}/health", timeout=2) as response:
+            assert json.loads(response.read())["status"] == "ok"
+    finally:
+        _stop_test_server(orchestrator, server, thread)
+
+
+def test_server_rejects_oversized_request_before_reading_json(tmp_path: Path) -> None:
+    orchestrator, server, thread, server_url = _start_test_server(
+        tmp_path,
+        access_token="correct-token",
+        max_request_bytes=16,
+    )
+    oversized = request.Request(
+        f"{server_url}/jobs",
+        data=b"{" + (b" " * 32) + b"}",
+        headers={
+            "Authorization": "Bearer correct-token",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        try:
+            request.urlopen(oversized, timeout=2)
+        except error.HTTPError as exc:
+            assert exc.code == 413
+        else:
+            raise AssertionError("server accepted an oversized request")
+    finally:
+        _stop_test_server(orchestrator, server, thread)
+
+
+def test_orchestrator_enforces_asset_frequency_and_queue_limits(tmp_path: Path) -> None:
+    class BlockingSolver(FakeSolver):
+        def solve_stream(self, frequencies, *, stop_requested=None):
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if stop_requested is not None and stop_requested():
+                    return
+                time.sleep(0.01)
+            yield from super().solve_stream(frequencies, stop_requested=stop_requested)
+
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        max_queued_jobs=0,
+        max_asset_bytes=4,
+        max_frequencies=2,
+        artifact_root=tmp_path,
+        solver_factory=BlockingSolver,
+    )
+    try:
+        try:
+            orchestrator.submit(SimulationConfig(mesh_file="mesh.msh"), np.array([1.0, 2.0, 3.0]))
+        except ValueError as exc:
+            assert "server limit is 2" in str(exc)
+        else:
+            raise AssertionError("orchestrator accepted too many frequencies")
+
+        asset = {
+            "original_path": "mesh.msh",
+            "filename": "mesh.msh",
+            "content_base64": "MTIzNDU=",
+        }
+        try:
+            orchestrator.submit(
+                SimulationConfig(mesh_file="mesh.msh"),
+                np.array([1000.0]),
+                assets=[asset],
+            )
+        except ValueError as exc:
+            assert "Uploaded assets exceed" in str(exc)
+        else:
+            raise AssertionError("orchestrator accepted oversized decoded assets")
+
+        first = orchestrator.submit(SimulationConfig(mesh_file="mesh.msh"), np.array([1000.0]))
+        try:
+            orchestrator.submit(SimulationConfig(mesh_file="mesh.msh"), np.array([2000.0]))
+        except JobQueueFullError:
+            pass
+        else:
+            raise AssertionError("orchestrator accepted a job beyond queue capacity")
+        orchestrator.cancel(first.job_id)
+    finally:
+        orchestrator.shutdown()
+
+
+def test_orchestrator_purges_expired_job_state_and_artifacts(tmp_path: Path) -> None:
+    orchestrator = JobOrchestrator(
+        max_running_jobs=1,
+        artifact_root=tmp_path,
+        job_retention_hours=1,
+        solver_factory=FakeSolver,
+    )
+    try:
+        job = orchestrator.submit(SimulationConfig(mesh_file="mesh.msh"), np.array([1000.0]))
+        completed = _wait_for_terminal(orchestrator, job.job_id)
+        assert completed.artifact_dir.exists()
+        assert completed.finished_at is not None
+
+        purged = orchestrator.purge_expired_jobs(now=completed.finished_at + 3601)
+
+        assert purged == 1
+        assert orchestrator.get(job.job_id) is None
+        assert not completed.artifact_dir.exists()
+    finally:
+        orchestrator.shutdown()
+
+
+def test_http_client_reconnects_between_bounded_event_stream_windows(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "mesh.msh"
+    mesh_path.write_text("mesh", encoding="utf-8")
+
+    class SlowSolver(FakeSolver):
+        def solve_stream(self, frequencies, *, stop_requested=None):
+            time.sleep(0.08)
+            yield from super().solve_stream(frequencies, stop_requested=stop_requested)
+
+    orchestrator, server, thread, server_url = _start_test_server(
+        tmp_path / "jobs",
+        access_token="correct-token",
+        event_stream_window_seconds=0.02,
+        solver_factory=SlowSolver,
+    )
+    try:
+        session = HttpServerSession(
+            SolveRequest(
+                SimulationConfig(mesh_file=str(mesh_path)),
+                np.array([1000.0], dtype=np.float32),
+            ),
+            server_url,
+            "correct-token",
+        )
+        results = list(session.solve_stream())
+        assert [result.freq_hz for result in results] == [1000.0]
+    finally:
+        _stop_test_server(orchestrator, server, thread)

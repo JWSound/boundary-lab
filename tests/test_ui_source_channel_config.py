@@ -110,6 +110,33 @@ def test_apply_saved_imported_source_config_ignores_generated_meshes() -> None:
     )
 
 
+def test_imported_source_assignment_follows_surface_name_when_tag_changes() -> None:
+    radiators = apply_saved_imported_source_config(
+        surface_tags={"cabinet:woofer": ("cabinet", 17)},
+        generated_mesh_names=set(),
+        existing_radiators=(
+            RadiatorConfig(
+                name="cabinet:woofer",
+                mesh="cabinet",
+                tag=7,
+                channel="LF",
+                velocity_offset_db=-1.5,
+            ),
+        ),
+        config_by_name={},
+    )
+
+    assert radiators == (
+        RadiatorConfig(
+            name="cabinet:woofer",
+            mesh="cabinet",
+            tag=17,
+            channel="LF",
+            velocity_offset_db=-1.5,
+        ),
+    )
+
+
 def test_channels_for_solver_radiators_adds_missing_channel_names() -> None:
     channels = channels_for_solver_radiators(
         (ChannelConfig(name="LF"),),

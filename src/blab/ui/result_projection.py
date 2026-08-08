@@ -51,6 +51,14 @@ class ImpedanceProjection:
     real: np.ndarray
     imaginary: np.ndarray
 
+    def snapshot(self) -> ImpedanceProjection:
+        return ImpedanceProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            radiator_names=np.asarray(self.radiator_names).copy(),
+            real=np.asarray(self.real).copy(),
+            imaginary=np.asarray(self.imaginary).copy(),
+        )
+
 
 @dataclass(frozen=True)
 class PolarResponseProjection:
@@ -63,12 +71,35 @@ class PolarResponseProjection:
     spin_horizontal_reference_angle_deg: float
     spin_vertical_reference_angle_deg: float
 
+    def snapshot(self) -> PolarResponseProjection:
+        return PolarResponseProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            angle_deg=np.asarray(self.angle_deg).copy(),
+            horizontal_spl_db=np.asarray(self.horizontal_spl_db).copy(),
+            vertical_spl_db=np.asarray(self.vertical_spl_db).copy(),
+            channel_on_axis_names=(
+                None if self.channel_on_axis_names is None else np.asarray(self.channel_on_axis_names).copy()
+            ),
+            channel_on_axis_spl_db=(
+                None if self.channel_on_axis_spl_db is None else np.asarray(self.channel_on_axis_spl_db).copy()
+            ),
+            spin_horizontal_reference_angle_deg=self.spin_horizontal_reference_angle_deg,
+            spin_vertical_reference_angle_deg=self.spin_vertical_reference_angle_deg,
+        )
+
 
 @dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
     response: PolarResponseProjection
+
+    def snapshot(self) -> VisualizationProjection:
+        return VisualizationProjection(
+            isobar=self.isobar.snapshot(),
+            impedance=self.impedance.snapshot(),
+            response=self.response.snapshot(),
+        )
 
 
 class ResultProjectionService:

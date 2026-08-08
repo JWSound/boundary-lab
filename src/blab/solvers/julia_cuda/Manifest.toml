@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "495b377dba16689d8cf70431a3ad985f514062a8"
+project_hash = "5080e8e3d61c8d9f57f2d8e340046de5560425b5"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -122,6 +122,18 @@ deps = ["Artifacts", "CUDA_Driver_jll", "JLLWrappers", "LazyArtifacts", "Libdl",
 git-tree-sha1 = "a648a4cb5c2e5ae8bf2f6ff1f6985f4c6ede2e8d"
 uuid = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
 version = "0.23.0+0"
+
+[[deps.CUDSS]]
+deps = ["CEnum", "CUDACore", "CUDA_Runtime_Discovery", "CUDSS_jll", "GPUToolbox", "LinearAlgebra", "SparseArrays", "cuSPARSE"]
+git-tree-sha1 = "f182dd6a2070b86ee5f36a1aaecd7639e21a04e3"
+uuid = "45b445bb-4962-46a0-9369-b4df9d0f772e"
+version = "0.8.0"
+
+[[deps.CUDSS_jll]]
+deps = ["Artifacts", "CUDA_Runtime_jll", "CompilerSupportLibraries_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "TOML"]
+git-tree-sha1 = "caa47c37bffb10f51566653a04b408d0276cdbc7"
+uuid = "4889d778-9329-5762-9fec-0578a5d30366"
+version = "0.8.0+0"
 
 [[deps.CUPTI]]
 deps = ["CEnum", "CUDACore", "CUDA_Runtime_Discovery", "CUDA_Runtime_jll", "GPUToolbox"]

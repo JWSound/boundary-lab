@@ -59,3 +59,6 @@ src/blab/solvers/julia_local/results/
 src/blab/solvers/julia_local/runs/
 src/blab/solvers/julia_local/test_meshes/staged_symmetry/
 LocalPreferences.toml
+boundary_lab_gpu_choice.txt
+boundary_lab_gpu_choice.cmd
+boundary_lab_bem_fem_lem_architecture.md

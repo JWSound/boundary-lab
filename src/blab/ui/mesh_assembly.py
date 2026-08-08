@@ -60,6 +60,12 @@ class MeshAssemblyService:
             if not source_path.exists():
                 raise FileNotFoundError(f"Imported mesh not found: {source_path}")
 
+            if self.is_volume_mesh(source_path):
+                # The legacy cleaner is intentionally a surface-mesh operation.
+                # Preserve FEM volume connectivity and all embedded physical groups.
+                cleaned_meshes.append(replace(mesh, cleaned_file=None))
+                continue
+
             cleaned_path = Path(mesh.cleaned_file) if mesh.cleaned_file else self.cleaned_imported_mesh_path(mesh)
             if not cleaned_path.exists() or source_path.stat().st_mtime > cleaned_path.stat().st_mtime:
                 cleaned_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,6 +80,11 @@ class MeshAssemblyService:
             cleaned_meshes.append(replace(mesh, cleaned_file=str(cleaned_path)))
         return tuple(cleaned_meshes)
 
+    @staticmethod
+    def is_volume_mesh(path: str | Path) -> bool:
+        mesh = meshio.read(Path(path))
+        return any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
+
     def prepare(
         self,
         *,
@@ -87,21 +98,42 @@ class MeshAssemblyService:
         cleaned_imported = self.clean_imported_meshes(imported_meshes)
         imported_configs = tuple(self._imported_mesh_config(mesh) for mesh in cleaned_imported if mesh.enabled)
         candidates = (*generated_mesh_configs, *imported_configs)
-        if stitch_imported_meshes and len(candidates) > 1:
-            stitched = self._stitched_mesh_config(candidates, stitch_tolerance_mm, symmetry)
-            mesh_configs = (stitched,)
-            resolved_radiators = self.radiators_for_stitched_mesh(candidates, radiators)
-        else:
-            mesh_configs = candidates
-            resolved_radiators = radiators
+        mesh_configs, resolved_radiators = self.prepare_mesh_configs(
+            tuple(candidates),
+            radiators,
+            stitch_meshes_enabled=stitch_imported_meshes,
+            stitch_tolerance_mm=stitch_tolerance_mm,
+            symmetry=symmetry,
+        )
         surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
         return PreparedMeshAssembly(
             imported_meshes=cleaned_imported,
-            source_mesh_configs=candidates,
+            source_mesh_configs=tuple(candidates),
             mesh_configs=mesh_configs,
             radiators=resolved_radiators,
             surface_tags_by_mesh=surface_tags_by_mesh,
         )
+
+    def prepare_mesh_configs(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        radiators: tuple[RadiatorConfig, ...],
+        *,
+        stitch_meshes_enabled: bool,
+        stitch_tolerance_mm: float,
+        symmetry: str,
+    ) -> tuple[tuple[MeshConfig, ...], tuple[RadiatorConfig, ...]]:
+        """Apply optional region assembly to already materialized mesh resources."""
+
+        candidates = tuple(mesh_configs)
+        if stitch_meshes_enabled and len(candidates) > 1:
+            stitched = self._stitched_mesh_config(candidates, stitch_tolerance_mm, symmetry)
+            resolved_meshes = (stitched,)
+            resolved_radiators = self.radiators_for_stitched_mesh(candidates, radiators)
+        else:
+            resolved_meshes = candidates
+            resolved_radiators = radiators
+        return resolved_meshes, resolved_radiators
 
     def cleaned_imported_mesh_path(self, mesh: ImportedMeshState) -> Path:
         source_path = Path(mesh.source_file)

@@ -4,32 +4,16 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from blab.ath import AthRunResult
 from blab.config import SimulationConfig
+from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
-from blab.ui.ath_worker import AthGenerationWorker
+from blab.ui.generator_worker import GeneratorWorker
 from blab.ui.solve_worker import SolveWorker
-
-
-@dataclass(frozen=True)
-class GeometryRequest:
-    ath_exe: Path
-    config_text: str
-    run_root: Path
-    case_name: str
-    script_id: str
-    mesh_name: str
-
-
-@dataclass(frozen=True)
-class GeometryCompleted:
-    request: GeometryRequest
-    result: AthRunResult
+from blab.ui.system_solve import CoupledSolveWorker, CoupledUiSolveRequest
 
 
 @dataclass(frozen=True)
@@ -38,6 +22,7 @@ class SolveRequest:
     ordered_frequencies: np.ndarray
     backend_id: str
     server_url: str
+    server_access_token: str = ""
     worker_count: int = 1
 
 
@@ -52,9 +37,9 @@ class GeometryController(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.state = OperationState()
-        self._request: GeometryRequest | None = None
+        self._request: GenerationRequest | None = None
         self._thread: QThread | None = None
-        self._worker: AthGenerationWorker | None = None
+        self._worker: GeneratorWorker | None = None
         self._failed = False
         self._cancelled = False
         self.last_error: str | None = None
@@ -63,7 +48,7 @@ class GeometryController(QObject):
     def active(self) -> bool:
         return self.state.active
 
-    def start(self, request: GeometryRequest) -> bool:
+    def start(self, request: GenerationRequest) -> bool:
         if self.active:
             return False
         self._request = request
@@ -72,12 +57,7 @@ class GeometryController(QObject):
         self.last_error = None
         self._set_state(OperationPhase.RUNNING, "Generating geometry")
         thread = QThread(self)
-        worker = AthGenerationWorker(
-            ath_exe=request.ath_exe,
-            config_text=request.config_text,
-            run_root=request.run_root,
-            case_name=request.case_name,
-        )
+        worker = GeneratorWorker(request)
         self._thread = thread
         self._worker = worker
         worker.moveToThread(thread)
@@ -101,9 +81,9 @@ class GeometryController(QObject):
             self._worker.stop()
 
     @Slot(object)
-    def _on_generated(self, result: AthRunResult) -> None:
+    def _on_generated(self, result: GeneratedGeometry) -> None:
         if self._request is not None:
-            self.completed.emit(GeometryCompleted(self._request, result))
+            self.completed.emit(GenerationCompleted(self._request, result))
 
     @Slot(str)
     def _on_status(self, message: str) -> None:
@@ -149,7 +129,7 @@ class SolveController(QObject):
         super().__init__(parent)
         self.state = OperationState()
         self._thread: QThread | None = None
-        self._worker: SolveWorker | None = None
+        self._worker: SolveWorker | CoupledSolveWorker | None = None
         self._started_at: float | None = None
         self._expected_count = 0
         self._solved_count = 0
@@ -162,10 +142,14 @@ class SolveController(QObject):
     def active(self) -> bool:
         return self.state.active
 
-    def start(self, request: SolveRequest) -> bool:
+    def start(self, request: SolveRequest | CoupledUiSolveRequest) -> bool:
         if self.active:
             return False
-        self._expected_count = int(request.ordered_frequencies.size)
+        self._expected_count = (
+            len(request.request.frequencies_hz)
+            if isinstance(request, CoupledUiSolveRequest)
+            else int(request.ordered_frequencies.size)
+        )
         self._solved_count = 0
         self._failed = False
         self._cancelled = False
@@ -174,13 +158,17 @@ class SolveController(QObject):
         self._started_at = time.perf_counter()
         self._set_state(OperationPhase.RUNNING, "Initializing solver")
         thread = QThread(self)
-        worker = SolveWorker(
-            request.config,
-            request.ordered_frequencies,
-            worker_count=request.worker_count,
-            backend_id=request.backend_id,
-            server_url=request.server_url,
-        )
+        if isinstance(request, CoupledUiSolveRequest):
+            worker = CoupledSolveWorker(request)
+        else:
+            worker = SolveWorker(
+                request.config,
+                request.ordered_frequencies,
+                worker_count=request.worker_count,
+                backend_id=request.backend_id,
+                server_url=request.server_url,
+                server_access_token=request.server_access_token,
+            )
         self._thread = thread
         self._worker = worker
         worker.moveToThread(thread)

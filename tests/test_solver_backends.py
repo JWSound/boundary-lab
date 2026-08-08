@@ -17,7 +17,13 @@ from blab.solvers.beat_engine_backend import (
     shutdown_beat_engine_workers,
 )
 from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
-from blab.solvers.http_server import HttpServerBackend, HttpServerSession, server_health_supports_symmetry
+from blab.solvers.http_server import (
+    HttpServerBackend,
+    HttpServerSession,
+    _authorization_headers,
+    query_server_health,
+    server_health_supports_symmetry,
+)
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
@@ -82,10 +88,12 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     server_backend = create_backend(
         "server",
         server_url="http://example.test",
+        server_access_token="test-token",
         julia_executable="ignored",
     )
     assert server_backend.backend_id == "server"
     assert server_backend.capabilities.is_remote is True
+    assert server_backend.access_token == "test-token"
 
     julia_backend = create_backend("julia_local")
     assert julia_backend.backend_id == "beat_cuda"
@@ -118,6 +126,29 @@ def test_server_health_supports_symmetry_reads_capability_payload() -> None:
     assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": True}}) is True
     assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": False}}) is False
     assert server_health_supports_symmetry({}) is False
+
+
+def test_server_token_is_not_sent_over_remote_plain_http() -> None:
+    try:
+        query_server_health("http://solver.example", access_token="secret")
+    except RuntimeError as exc:
+        assert "Refusing to send" in str(exc)
+    else:
+        raise AssertionError("client should reject bearer tokens over remote plain HTTP")
+
+
+def test_server_requests_use_application_user_agent() -> None:
+    headers = _authorization_headers("secret")
+
+    assert headers["User-Agent"].startswith("BoundaryLab/")
+    assert headers["Authorization"] == "Bearer secret"
+
+
+def test_server_requests_use_application_user_agent_without_authentication() -> None:
+    headers = _authorization_headers("")
+
+    assert headers["User-Agent"].startswith("BoundaryLab/")
+    assert "Authorization" not in headers
 
 
 def test_bempp_backend_rejects_symmetry() -> None:

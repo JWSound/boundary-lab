@@ -1,6 +1,6 @@
 module BeatEngineCore
 
-using Base.Threads, LinearAlgebra, StaticArrays
+using Base.Threads, LinearAlgebra, SparseArrays, StaticArrays
 
 const CUDA_MODULE = try
     @eval import CUDA
@@ -17,6 +17,7 @@ catch
 end
 
 export BoundaryMesh,
+    combine_boundary_meshes,
     DP0Space,
     P1Space,
     SymmetryTransform,
@@ -24,11 +25,17 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    build_cuda_sparse_scatter_cache,
+    release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
+    release_cuda_sparse_scatter_cache!,
+    scatter_cuda_sparse_to_dense!,
     build_rocm_regular_assembly_cache,
     build_rocm_field_evaluation_cache,
     build_field_evaluation_cache,
+    build_beat_cpu_assembly_cache,
     build_singular_correction_cache,
     assemble_regular_galerkin_operators_cpu,
     assemble_regular_galerkin_operators_cuda_regular,
@@ -51,7 +58,10 @@ export BoundaryMesh,
     release_operator_storage!,
     surface_curls,
     scatter_element_block!,
+    burton_miller_neumann_matrices,
     build_burton_miller_neumann_cpu_system,
+    beat_cpu_blas_thread_count,
+    configure_beat_cpu_blas_threads!,
     solve_burton_miller_neumann_cpu_system,
     solve_burton_miller_neumann_cpu,
     solve_burton_miller_neumann,
@@ -205,6 +215,62 @@ function BoundaryMesh(vertices::Vector{SVector{3,T}}, faces::Vector{NTuple{3,Int
     end
 
     return BoundaryMesh{T}(vertices, faces, physical_tags, centroids, normals, areas, face_vertices)
+end
+
+"""
+Combine disconnected boundary-mesh resources into one solver mesh.
+
+Vertices are deliberately not welded: each input retains an independent P1
+topology. Physical tags are remapped per input so equal tag numbers from
+different Gmsh files cannot alias one another. The returned zero-based offsets
+map source-local wire indices into the combined mesh.
+"""
+function combine_boundary_meshes(meshes::AbstractVector{<:BoundaryMesh{T}}) where {T<:AbstractFloat}
+    isempty(meshes) && error("An unbounded region must contain at least one BEM mesh.")
+
+    vertices = SVector{3,T}[]
+    faces = NTuple{3,Int}[]
+    physical_tags = Int[]
+    vertex_offsets = Int[]
+    face_offsets = Int[]
+    physical_tag_maps = Dict{Int,Int}[]
+    next_physical_tag = 1
+
+    for mesh in meshes
+        vertex_offset = length(vertices)
+        push!(vertex_offsets, vertex_offset)
+        push!(face_offsets, length(faces))
+        append!(vertices, mesh.vertices)
+        append!(
+            faces,
+            (
+                (
+                    face[1] + vertex_offset,
+                    face[2] + vertex_offset,
+                    face[3] + vertex_offset,
+                )
+                for face in mesh.faces
+            ),
+        )
+
+        local_tag_map = Dict{Int,Int}()
+        for source_tag in mesh.physical_tags
+            solver_tag = get!(local_tag_map, source_tag) do
+                assigned = next_physical_tag
+                next_physical_tag += 1
+                assigned
+            end
+            push!(physical_tags, solver_tag)
+        end
+        push!(physical_tag_maps, local_tag_map)
+    end
+
+    return (
+        mesh=BoundaryMesh(vertices, faces, physical_tags),
+        vertex_offsets=vertex_offsets,
+        face_offsets=face_offsets,
+        physical_tag_maps=physical_tag_maps,
+    )
 end
 
 build_p1_space(mesh::BoundaryMesh) = P1Space(mesh.faces, length(mesh.vertices))
@@ -837,7 +903,9 @@ function assemble_regular_galerkin_operators(
     accelerator_quadrature::Bool=true,
     timing=nothing,
     singular_cache=nothing,
+    cpu_cache=nothing,
     device_singular_cache=nothing,
+    device_image_singular_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if backend == :cpu
@@ -853,6 +921,7 @@ function assemble_regular_galerkin_operators(
             threaded=threaded,
             timing=timing,
             singular_cache=singular_cache,
+            cpu_cache=cpu_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -874,6 +943,7 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             cuda_singular_cache=device_singular_cache,
+            cuda_image_singular_cache=device_image_singular_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -918,6 +988,18 @@ function build_cuda_burton_miller_identity_cache(args...; kwargs...)
     error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
 end
 
+function build_cuda_sparse_scatter_cache(args...; kwargs...)
+    error("CUDA sparse scatter cache requested, but CUDA.jl is not loaded.")
+end
+
+function scatter_cuda_sparse_to_dense!(args...; kwargs...)
+    error("CUDA sparse scatter requested, but CUDA.jl is not loaded.")
+end
+
+function release_cuda_sparse_scatter_cache!(args...; kwargs...)
+    error("CUDA sparse scatter cache release requested, but CUDA.jl is not loaded.")
+end
+
 function release_cuda_burton_miller_identity_cache!(cache::CudaBurtonMillerIdentityCache)
     cuda = cuda_module()
     cuda.unsafe_free!(cache.identity_p1_p1)
@@ -955,21 +1037,38 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
     )
 end
 
+function _cuda_burton_miller_rhs(operators, identity_cache::CudaBurtonMillerIdentityCache, d_q_neumann, coupling::Complex{T}) where {T<:AbstractFloat}
+    d_rhs = similar(d_q_neumann, size(operators.single_layer, 1))
+    mul!(d_rhs, operators.single_layer, d_q_neumann, -one(Complex{T}), zero(Complex{T}))
+    mul!(d_rhs, operators.adjoint_double_layer, d_q_neumann, -coupling, one(Complex{T}))
+    mul!(d_rhs, identity_cache.identity_p1_dp0, d_q_neumann, -T(0.5) * coupling, one(Complex{T}))
+    return d_rhs
+end
+
+_cuda_use_matrix_free_burton_miller_rhs(operators) = size(operators.single_layer, 1) > 768
+
 function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMillerIdentityCache, q_neumann, k::T) where {T<:AbstractFloat}
     get(operators, :on_gpu, false) || error("Cached CUDA solve requires GPU-resident operators.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     coupling = Complex{T}(0, 1) / k
-    d_q_neumann = d_lhs = d_rhs = d_pressure = nothing
+    d_q_neumann = d_lhs = d_rhs_operator = d_rhs = d_pressure = nothing
     pressure = nothing
     try
         d_q_neumann = cuda.CuArray(q_neumann)
         d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
-        d_rhs = (-operators.single_layer .- coupling .* (operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0)) * d_q_neumann
+        if _cuda_use_matrix_free_burton_miller_rhs(operators)
+            d_rhs = _cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
+        else
+            d_rhs_operator = -operators.single_layer .- coupling .* (
+                operators.adjoint_double_layer .+ Complex{T}(0.5) .* identity_cache.identity_p1_dp0
+            )
+            d_rhs = d_rhs_operator * d_q_neumann
+        end
         d_pressure = d_lhs \ d_rhs
         pressure = Complex{T}.(Array(d_pressure))
     finally
-        for item in (d_q_neumann, d_lhs, d_rhs, d_pressure)
+        for item in (d_q_neumann, d_lhs, d_rhs_operator, d_rhs, d_pressure)
             item === nothing && continue
             cuda.unsafe_free!(item)
         end

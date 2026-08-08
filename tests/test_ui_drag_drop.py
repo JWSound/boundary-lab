@@ -1,16 +1,12 @@
 import os
 from pathlib import Path
 
-import pytest
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pytest.importorskip("PySide6")
-
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QApplication, QTabWidget
 
 from blab.ui.dialogs import MeshDropTable
-from blab.ui.main_window import ADD_SCRIPT_TAB_LABEL, AthScriptEditor, MainWindow
+from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, AthScriptEditor, MainWindow
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -50,15 +46,37 @@ def test_mesh_drop_table_filters_msh_paths(tmp_path: Path) -> None:
     assert MeshDropTable._msh_drop_paths(_DropEvent([cfg_path])) == []
 
 
-def test_empty_script_tabs_keep_add_drop_target() -> None:
+def test_dropping_a_config_on_a_tab_reaches_the_project_workflow(main_window, tmp_path: Path) -> None:
+    """The drop handlers are wired to the window, not to the controller.
+
+    Nothing else covers this path, and it is only reachable by dragging a file
+    onto a tab — so when the import moved to a controller, the stale call it
+    left behind would have raised AttributeError in front of a user rather
+    than in the suite.
+    """
+    from blab.generators.ath import ath_source_text
+
+    cfg_path = tmp_path / "dropped.cfg"
+    cfg_path.write_text("Source.Shape = 1;\n", encoding="utf-8")
+
+    main_window.import_config_path(cfg_path)
+
+    # A fresh project already has an active design, so the drop replaces its
+    # source rather than adding a second one.
+    active = main_window.active_generator_document()
+    assert active is not None
+    assert "Source.Shape = 1;" in ath_source_text(active)
+
+
+def test_empty_design_tabs_keep_add_drop_target() -> None:
     window = MainWindow.__new__(MainWindow)
     window.editor_tabs = QTabWidget()
-    window.ath_scripts = ()
-    window.active_ath_script_id = None
+    window.generator_documents = ()
+    window.active_generator_document_id = None
 
-    window._rebuild_ath_script_tabs()
+    window.rebuild_generator_document_tabs()
 
     assert window.editor_tabs.count() == 1
-    assert window.editor_tabs.tabText(0) == ADD_SCRIPT_TAB_LABEL
+    assert window.editor_tabs.tabText(0) == ADD_DESIGN_TAB_LABEL
     assert isinstance(window.editor_tabs.widget(0), AthScriptEditor)
     assert window.editor_tabs.widget(0).isReadOnly()

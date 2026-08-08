@@ -1,7 +1,7 @@
 """
-Clean surface .msh files from Ath4 for BEMPP workflows.
+Clean generated surface .msh files for BEM workflows.
 
-1) Mirrors Ath quadrant-14 half meshes across X=0 and preserves surface tags.
+1) Mirrors reduced meshes across requested symmetry planes and preserves surface tags.
 2) Merges coincident (or near-coincident) vertices within a tolerance.
 3) Rebuilds triangle connectivity.
 4) Removes collapsed and duplicate triangles.

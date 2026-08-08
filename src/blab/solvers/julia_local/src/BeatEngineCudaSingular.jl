@@ -295,6 +295,9 @@ function _free_cuda_image_singular_correction_cache!(cache::CudaImageSingularCor
     return nothing
 end
 
+release_cuda_image_singular_correction_cache!(cache::CudaImageSingularCorrectionCache) =
+    _free_cuda_image_singular_correction_cache!(cache)
+
 function _cuda_duffy_blocks_kernel!(
     slp_values,
     adjoint_values,
@@ -1009,17 +1012,24 @@ function add_image_singular_corrections_cuda_compact!(
     element_indices,
     symmetry_mode::Symbol;
     cuda_regular_cache=nothing,
+    cuda_image_singular_cache=nothing,
     timing=nothing,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA image singular correction scatter requested, but CUDA.functional() is false.")
     normalized_symmetry_mode(symmetry_mode) == :off && return 0
 
-    cuda_cache = _cuda_timed_stage!(timing, "image_singular_correction_cuda_cache_build") do
-        build_cuda_image_singular_correction_cache(mesh, p1_space, dp0_space, singular_order, element_indices, symmetry_mode)
+    owns_cache = cuda_image_singular_cache === nothing
+    cuda_cache = if owns_cache
+        _cuda_timed_stage!(timing, "image_singular_correction_cuda_cache_build") do
+            build_cuda_image_singular_correction_cache(mesh, p1_space, dp0_space, singular_order, element_indices, symmetry_mode)
+        end
+    else
+        timing !== nothing && (timing["image_singular_correction_cuda_cache_build"] = 0.0)
+        cuda_image_singular_cache
     end
     pair_count = cuda_cache.pair_count
     if pair_count == 0
-        _free_cuda_image_singular_correction_cache!(cuda_cache)
+        owns_cache && _free_cuda_image_singular_correction_cache!(cuda_cache)
         return 0
     end
 
@@ -1186,6 +1196,6 @@ function add_image_singular_corrections_cuda_compact!(
     CUDA.unsafe_free!(dlp_im)
     CUDA.unsafe_free!(hyp_re)
     CUDA.unsafe_free!(hyp_im)
-    _free_cuda_image_singular_correction_cache!(cuda_cache)
+    owns_cache && _free_cuda_image_singular_correction_cache!(cuda_cache)
     return pair_count
 end

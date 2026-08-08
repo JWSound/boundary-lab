@@ -1,4 +1,4 @@
-"""PyVista mesh preview widget for Ath-generated and imported meshes."""
+"""PyVista preview widget for generated and imported meshes."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import numpy as np
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
-from blab.ath import AthRunResult, read_surface_physical_names
+from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
+from blab.generators.base import GeneratedGeometry
 from blab.ui.theme import themed_content_background
 
 try:  # pragma: no cover - optional visual dependency
@@ -37,6 +38,18 @@ DRIVEN_COLOR = "#3292bf"
 DRIVEN_MIRROR_COLOR = "#236787"
 DRIVEN_EDGE_COLOR = "#20343c"
 DRIVEN_MIRROR_EDGE_COLOR = "#1b2c33"
+INTERFACE_COLOR = "#1cad0c"
+INTERFACE_MIRROR_COLOR = "#116b07"
+INTERFACE_EDGE_COLOR = "#155b0d"
+INTERFACE_MIRROR_EDGE_COLOR = "#0b3506"
+PREVIEW_REGION_ALL = "all"
+PREVIEW_REGION_INTERIOR = "interior"
+PREVIEW_REGION_EXTERIOR = "exterior"
+PREVIEW_REGION_MODES = {
+    PREVIEW_REGION_ALL,
+    PREVIEW_REGION_INTERIOR,
+    PREVIEW_REGION_EXTERIOR,
+}
 
 
 class MeshPreview(QWidget):
@@ -45,6 +58,8 @@ class MeshPreview(QWidget):
         self._hover_picker = None
         self._hover_observer = None
         self._actor_surface_labels: dict[str, str] = {}
+        self._mesh_region_actors: list[tuple[object, str | None]] = []
+        self._region_visibility_mode = PREVIEW_REGION_ALL
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         if QtInteractor is None:
@@ -84,6 +99,7 @@ class MeshPreview(QWidget):
             viewer.set_background(themed_content_background(self.palette()))
 
     def clear(self) -> None:
+        self._mesh_region_actors = []
         if self.viewer is None:
             return
         self.viewer.clear()
@@ -91,11 +107,18 @@ class MeshPreview(QWidget):
         self.hover_label.setText("")
         self._set_total_element_count(0)
 
-    def load_ath_result(self, result: AthRunResult) -> None:
+    def set_region_visibility_mode(self, mode: str) -> None:
+        normalized = str(mode).strip().lower()
+        if normalized not in PREVIEW_REGION_MODES:
+            raise ValueError(f"Unsupported preview region visibility mode {mode!r}.")
+        self._region_visibility_mode = normalized
+        self._apply_region_visibility()
+
+    def load_generated_geometry(self, result: GeneratedGeometry) -> None:
         self.load_mesh_configs(
-            (MeshConfig(name="ath", file=str(result.solver_msh_path), scale_factor=0.001),),
-            driven_surfaces={("ath", radiator.tag) for radiator in result.radiators},
-            surface_tags_by_mesh={"ath": read_surface_physical_names(result.solver_msh_path)},
+            (MeshConfig(name="waveguide", file=str(result.solver_mesh_path), scale_factor=0.001),),
+            driven_surfaces={("waveguide", radiator.tag) for radiator in result.radiators},
+            surface_tags_by_mesh={"waveguide": read_surface_physical_names(result.solver_mesh_path)},
         )
 
     def load_msh(
@@ -112,6 +135,7 @@ class MeshPreview(QWidget):
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
         self.viewer.clear()
         self._actor_surface_labels = {}
+        self._mesh_region_actors = []
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
         self._set_total_element_count(
@@ -169,6 +193,8 @@ class MeshPreview(QWidget):
         *,
         driven_surfaces: set[tuple[str, int]] | None = None,
         surface_tags_by_mesh: dict[str, dict[str, int]] | None = None,
+        interface_surfaces: set[tuple[str, int]] | None = None,
+        mesh_regions: dict[str, str] | None = None,
         symmetry: str = "off",
     ) -> None:
         if self.viewer is None:
@@ -176,6 +202,7 @@ class MeshPreview(QWidget):
         camera_position = self._camera_position()
         self.viewer.clear()
         self._actor_surface_labels = {}
+        self._mesh_region_actors = []
         self.hover_label.setText("")
         total_elements = 0
         preview_points = []
@@ -185,7 +212,9 @@ class MeshPreview(QWidget):
             mesh_elements, mesh_points = self._add_msh_mesh(
                 mesh_cfg,
                 driven_surfaces=driven_surfaces or set(),
+                interface_surfaces=interface_surfaces or set(),
                 surface_tags=(surface_tags_by_mesh or {}).get(mesh_cfg.name, {}),
+                mesh_region=(mesh_regions or {}).get(mesh_cfg.name),
                 symmetry=symmetry,
             )
             total_elements += mesh_elements
@@ -199,6 +228,7 @@ class MeshPreview(QWidget):
         )
         if preview_points:
             self._add_orientation_guides(display_points)
+        self._apply_region_visibility(render=False)
         self._restore_camera_or_reset(camera_position)
 
     def _add_msh_mesh(
@@ -206,7 +236,9 @@ class MeshPreview(QWidget):
         mesh_cfg: MeshConfig,
         *,
         driven_surfaces: set[tuple[str, int]],
+        interface_surfaces: set[tuple[str, int]],
         surface_tags: dict[str, int],
+        mesh_region: str | None,
         symmetry: str,
     ) -> tuple[int, np.ndarray]:
         mesh = meshio.read(mesh_cfg.file)
@@ -232,6 +264,7 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
+            self._register_mesh_actor(actor, mesh_region)
             for mirror_label, mirror_points, mirror_triangles, _source_indices in mirrored_images:
                 if not mirror_triangles.size:
                     continue
@@ -248,6 +281,7 @@ class MeshPreview(QWidget):
                     None,
                     int(mirror_triangles.shape[0]),
                 )
+                self._register_mesh_actor(actor, mesh_region)
             return base_count, _preview_points_with_images(points, mirrored_images)
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
@@ -258,11 +292,17 @@ class MeshPreview(QWidget):
                 continue
 
             is_driven = (mesh_cfg.name, int(tag)) in driven_surfaces
+            is_interface = (mesh_cfg.name, int(tag)) in interface_surfaces
+            color, edge_color = _surface_preview_colors(
+                is_driven=is_driven,
+                is_interface=is_interface,
+                mirrored=False,
+            )
             actor = self.viewer.add_mesh(
                 _triangles_to_polydata(points, tag_triangles),
-                color=DRIVEN_COLOR if is_driven else RIGID_COLOR,
+                color=color,
                 show_edges=True,
-                edge_color=DRIVEN_EDGE_COLOR if is_driven else RIGID_EDGE_COLOR,
+                edge_color=edge_color,
                 smooth_shading=False,
             )
             surface_name = names_by_tag.get(int(tag), f"Tag {int(tag)}")
@@ -272,15 +312,21 @@ class MeshPreview(QWidget):
                 int(tag),
                 int(tag_triangles.shape[0]),
             )
+            self._register_mesh_actor(actor, mesh_region)
             for mirror_label, mirror_points, mirror_triangles, source_indices in mirrored_images:
                 mirror_tag_triangles = mirror_triangles[physical_tags[source_indices] == tag]
                 if not mirror_tag_triangles.size:
                     continue
+                mirror_color, mirror_edge_color = _surface_preview_colors(
+                    is_driven=is_driven,
+                    is_interface=is_interface,
+                    mirrored=True,
+                )
                 actor = self.viewer.add_mesh(
                     _triangles_to_polydata(mirror_points, mirror_tag_triangles),
-                    color=DRIVEN_MIRROR_COLOR if is_driven else RIGID_MIRROR_COLOR,
+                    color=mirror_color,
                     show_edges=True,
-                    edge_color=DRIVEN_MIRROR_EDGE_COLOR if is_driven else RIGID_MIRROR_EDGE_COLOR,
+                    edge_color=mirror_edge_color,
                     smooth_shading=False,
                 )
                 self._actor_surface_labels[_vtk_actor_address(actor)] = _surface_hover_label(
@@ -289,7 +335,20 @@ class MeshPreview(QWidget):
                     int(tag),
                     int(mirror_tag_triangles.shape[0]),
                 )
+                self._register_mesh_actor(actor, mesh_region)
         return base_count, _preview_points_with_images(points, mirrored_images)
+
+    def _register_mesh_actor(self, actor: object, mesh_region: str | None) -> None:
+        self._mesh_region_actors.append((actor, mesh_region))
+
+    def _apply_region_visibility(self, *, render: bool = True) -> None:
+        if self.viewer is None:
+            return
+        for actor, mesh_region in self._mesh_region_actors:
+            visible = _actor_visible_for_region(mesh_region, self._region_visibility_mode)
+            actor.SetVisibility(visible)
+        if render:
+            self.viewer.render()
 
     def _set_total_element_count(
         self,
@@ -428,6 +487,31 @@ def _vtk_actor_address(actor) -> str:
     if hasattr(actor, "GetAddressAsString"):
         return actor.GetAddressAsString("")
     return str(id(actor))
+
+
+def _surface_preview_colors(
+    *,
+    is_driven: bool,
+    is_interface: bool,
+    mirrored: bool,
+) -> tuple[str, str]:
+    if is_interface:
+        if mirrored:
+            return INTERFACE_MIRROR_COLOR, INTERFACE_MIRROR_EDGE_COLOR
+        return INTERFACE_COLOR, INTERFACE_EDGE_COLOR
+    if is_driven:
+        if mirrored:
+            return DRIVEN_MIRROR_COLOR, DRIVEN_MIRROR_EDGE_COLOR
+        return DRIVEN_COLOR, DRIVEN_EDGE_COLOR
+    if mirrored:
+        return RIGID_MIRROR_COLOR, RIGID_MIRROR_EDGE_COLOR
+    return RIGID_COLOR, RIGID_EDGE_COLOR
+
+
+def _actor_visible_for_region(mesh_region: str | None, visibility_mode: str) -> bool:
+    if visibility_mode == PREVIEW_REGION_ALL or mesh_region is None:
+        return True
+    return mesh_region == visibility_mode
 
 
 def _surface_hover_label(mesh_name: str | None, surface_name: str, tag: int | None, element_count: int) -> str:

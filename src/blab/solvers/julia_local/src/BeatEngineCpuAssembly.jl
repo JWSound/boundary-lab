@@ -1,7 +1,8 @@
-function _beat_cpu_green(radius::T, k::T) where {T<:AbstractFloat}
+@inline function _beat_cpu_green(radius::T, inv_radius::T, k::T) where {T<:AbstractFloat}
     phase = k * radius
-    scale = inv(T(4.0) * T(pi) * radius)
-    return Complex{T}(cos(phase) * scale, sin(phase) * scale)
+    scale = inv(T(4.0) * T(pi)) * inv_radius
+    sine, cosine = sincos(phase)
+    return Complex{T}(cosine * scale, sine * scale)
 end
 
 struct BeatCpuElementData{T<:AbstractFloat}
@@ -21,8 +22,25 @@ struct BeatCpuRegularQuadratureData{T<:AbstractFloat}
 end
 
 struct BeatCpuImageSingularCache{T<:AbstractFloat}
-    pairs_by_test::Vector{Vector{Any}}
+    pairs_by_test::Vector{Vector{SingularCorrectionPair{T}}}
+    rules::Vector{DuffyRule{T}}
     pair_count::Int
+end
+
+struct BeatCpuAssemblyCache{T<:AbstractFloat}
+    indices::Vector{Int}
+    elements::Vector{BeatCpuElementData{T}}
+    regular_quadrature::Vector{BeatCpuRegularQuadratureData{T}}
+    threaded_enabled::Bool
+    color_groups::Vector{Vector{Int}}
+    image_transforms::Vector{SymmetryTransform}
+    image_elements::Vector{Vector{BeatCpuElementData{T}}}
+    image_quadrature::Vector{Vector{BeatCpuRegularQuadratureData{T}}}
+    image_singular_caches::Vector{BeatCpuImageSingularCache{T}}
+    adjacent_pairs::Int
+    symmetry_mode::Symbol
+    singular_order::Int
+    rule::TriangleRule{T}
 end
 
 function _beat_cpu_element_data(mesh::BoundaryMesh{T}, p1_space::P1Space, dp0_space::DP0Space) where {T<:AbstractFloat}
@@ -150,7 +168,6 @@ function _beat_cpu_accumulate_pair!(
     test_points,
     trial_points,
     weights,
-    scale::Complex{T}=one(Complex{T}),
 ) where {T<:AbstractFloat}
     curl_products = MMatrix{3,3,T,9}(undef)
     for local_row in 1:3
@@ -169,10 +186,11 @@ function _beat_cpu_accumulate_pair!(
         radius = norm(r_vec)
         radius == zero(T) && continue
 
-        green = _beat_cpu_green(radius, k)
-        grad_scale = green * Complex{T}(-inv(radius), k)
-        trial_dot = dot(r_vec, trial_normal) / radius
-        test_dot = -dot(r_vec, test_normal) / radius
+        inv_radius = inv(radius)
+        green = _beat_cpu_green(radius, inv_radius, k)
+        grad_scale = green * Complex{T}(-inv_radius, k)
+        trial_dot = dot(r_vec, trial_normal) * inv_radius
+        test_dot = -dot(r_vec, test_normal) * inv_radius
         double_value = grad_scale * trial_dot
         adjoint_value = grad_scale * test_dot
         weight = weights[q] * jac_scale
@@ -180,15 +198,15 @@ function _beat_cpu_accumulate_pair!(
         for local_row in 1:3
             row = rows[local_row]
             test_value = test_basis[local_row]
-            single_layer[row, dp0_col] += scale * test_value * green * weight
-            adjoint_double_layer[row, dp0_col] += scale * test_value * adjoint_value * weight
+            single_layer[row, dp0_col] += test_value * green * weight
+            adjoint_double_layer[row, dp0_col] += test_value * adjoint_value * weight
 
             for local_col in 1:3
                 col = p1_cols[local_col]
                 trial_value = trial_basis[local_col]
                 basis_product = test_value * trial_value
-                double_layer[row, col] += scale * basis_product * double_value * weight
-                hypersingular[row, col] += scale * (
+                double_layer[row, col] += basis_product * double_value * weight
+                hypersingular[row, col] += (
                     curl_products[local_row, local_col] -
                     k2 * basis_product * normal_product
                 ) * green * weight
@@ -211,8 +229,66 @@ function _beat_cpu_accumulate_regular_pair!(
     normal_product::T,
     jac_scale::T,
     k::T,
-    scale::Complex{T}=one(Complex{T}),
 ) where {T<:AbstractFloat}
+    return _beat_cpu_accumulate_regular_pair_signed!(
+        single_layer,
+        double_layer,
+        adjoint_double_layer,
+        hypersingular,
+        test_data,
+        trial_data,
+        test_quad,
+        trial_quad,
+        normal_product,
+        jac_scale,
+        k,
+        Val(false),
+    )
+end
+
+function _beat_cpu_subtract_regular_pair!(
+    single_layer,
+    double_layer,
+    adjoint_double_layer,
+    hypersingular,
+    test_data::BeatCpuElementData{T},
+    trial_data::BeatCpuElementData{T},
+    test_quad::BeatCpuRegularQuadratureData{T},
+    trial_quad::BeatCpuRegularQuadratureData{T},
+    normal_product::T,
+    jac_scale::T,
+    k::T,
+) where {T<:AbstractFloat}
+    return _beat_cpu_accumulate_regular_pair_signed!(
+        single_layer,
+        double_layer,
+        adjoint_double_layer,
+        hypersingular,
+        test_data,
+        trial_data,
+        test_quad,
+        trial_quad,
+        normal_product,
+        jac_scale,
+        k,
+        Val(true),
+    )
+end
+
+function _beat_cpu_accumulate_regular_pair_signed!(
+    single_layer,
+    double_layer,
+    adjoint_double_layer,
+    hypersingular,
+    test_data::BeatCpuElementData{T},
+    trial_data::BeatCpuElementData{T},
+    test_quad::BeatCpuRegularQuadratureData{T},
+    trial_quad::BeatCpuRegularQuadratureData{T},
+    normal_product::T,
+    jac_scale::T,
+    k::T,
+    ::Val{subtract},
+) where {T<:AbstractFloat,subtract}
     single_block = MVector{3,Complex{T}}(undef)
     adjoint_block = MVector{3,Complex{T}}(undef)
     double_block = MMatrix{3,3,Complex{T},9}(undef)
@@ -241,8 +317,8 @@ function _beat_cpu_accumulate_regular_pair!(
             radius = norm(r_vec)
             radius == zero(T) && continue
 
-            green = _beat_cpu_green(radius, k)
             inv_radius = inv(radius)
+            green = _beat_cpu_green(radius, inv_radius, k)
             grad_scale = green * Complex{T}(-inv_radius, k)
             trial_dot = dot(r_vec, trial_data.normal) * inv_radius
             test_dot = -dot(r_vec, test_data.normal) * inv_radius
@@ -255,14 +331,14 @@ function _beat_cpu_accumulate_regular_pair!(
 
             for local_row in 1:3
                 test_value = test_basis[local_row]
-                single_block[local_row] += scale * test_value * weighted_green
-                adjoint_block[local_row] += scale * test_value * weighted_adjoint
+                single_block[local_row] += test_value * weighted_green
+                adjoint_block[local_row] += test_value * weighted_adjoint
 
                 for local_col in 1:3
                     trial_value = trial_basis[local_col]
                     basis_product = test_value * trial_value
-                    double_block[local_row, local_col] += scale * basis_product * weighted_double
-                    hyper_block[local_row, local_col] += scale * (
+                    double_block[local_row, local_col] += basis_product * weighted_double
+                    hyper_block[local_row, local_col] += (
                         curl_products[local_row, local_col] -
                         k2 * basis_product * normal_product
                     ) * weighted_green
@@ -273,13 +349,23 @@ function _beat_cpu_accumulate_regular_pair!(
 
     for local_row in 1:3
         row = test_data.p1_dofs[local_row]
-        single_layer[row, trial_data.dp0_dof] += single_block[local_row]
-        adjoint_double_layer[row, trial_data.dp0_dof] += adjoint_block[local_row]
+        if subtract
+            single_layer[row, trial_data.dp0_dof] -= single_block[local_row]
+            adjoint_double_layer[row, trial_data.dp0_dof] -= adjoint_block[local_row]
+        else
+            single_layer[row, trial_data.dp0_dof] += single_block[local_row]
+            adjoint_double_layer[row, trial_data.dp0_dof] += adjoint_block[local_row]
+        end
 
         for local_col in 1:3
             col = trial_data.p1_dofs[local_col]
-            double_layer[row, col] += double_block[local_row, local_col]
-            hypersingular[row, col] += hyper_block[local_row, local_col]
+            if subtract
+                double_layer[row, col] -= double_block[local_row, local_col]
+                hypersingular[row, col] -= hyper_block[local_row, local_col]
+            else
+                double_layer[row, col] += double_block[local_row, local_col]
+                hypersingular[row, col] += hyper_block[local_row, local_col]
+            end
         end
     end
 
@@ -413,7 +499,7 @@ function _beat_cpu_image_singular_cache(
     )
     rules = DuffyRule{T}[]
     rule_indices_by_key = Dict{NTuple{5,Int},Int}()
-    pairs_by_test = [Any[] for _ in eachindex(mesh.faces)]
+    pairs_by_test = [SingularCorrectionPair{T}[] for _ in eachindex(mesh.faces)]
     pair_count = 0
 
     for (test_index, trial_index) in image_singular_candidates(mesh, element_indices, transform; tolerance=tolerance)
@@ -424,17 +510,62 @@ function _beat_cpu_image_singular_cache(
         rule_index = rule_for_singular_orientation!(rules, rule_indices_by_key, base_rules, info)
         test_normal = mesh.normals[test_index]
         trial_normal = reflect_normal(transform, mesh.normals[trial_index])
-        push!(pairs_by_test[test_index], (
-            test_index=test_index,
-            trial_index=trial_index,
-            rule=rules[rule_index],
-            jac_scale=(T(2.0) * mesh.areas[test_index]) * (T(2.0) * mesh.areas[trial_index]),
-            normal_product=dot(test_normal, trial_normal),
-        ))
+        push!(
+            pairs_by_test[test_index],
+            SingularCorrectionPair(
+                test_index,
+                trial_index,
+                rule_index,
+                (T(2.0) * mesh.areas[test_index]) * (T(2.0) * mesh.areas[trial_index]),
+                dot(test_normal, trial_normal),
+            ),
+        )
         pair_count += 1
     end
 
-    return BeatCpuImageSingularCache{T}(pairs_by_test, pair_count)
+    return BeatCpuImageSingularCache{T}(pairs_by_test, rules, pair_count)
+end
+
+function build_beat_cpu_assembly_cache(
+    mesh::BoundaryMesh{T},
+    p1_space::P1Space,
+    dp0_space::DP0Space,
+    rule::TriangleRule{T};
+    singular_order::Int=2,
+    element_indices=eachindex(mesh.faces),
+    threaded::Bool=true,
+    symmetry_mode::Symbol=:off,
+) where {T<:AbstractFloat}
+    normalized_mode = normalized_symmetry_mode(symmetry_mode)
+    indices = collect(element_indices)
+    elements = _beat_cpu_element_data(mesh, p1_space, dp0_space)
+    regular_quadrature = _beat_cpu_regular_quadrature_data(mesh, rule)
+    threaded_enabled = threaded && Threads.nthreads() > 1
+    color_groups = threaded_enabled ? _beat_cpu_element_color_groups(mesh, indices) : [indices]
+    image_transforms = SymmetryTransform[symmetry_image_transforms(normalized_mode)...]
+    image_elements = Vector{BeatCpuElementData{T}}[]
+    image_quadrature = Vector{BeatCpuRegularQuadratureData{T}}[]
+    image_singular_caches = BeatCpuImageSingularCache{T}[]
+    for transform in image_transforms
+        push!(image_elements, _beat_cpu_reflect_element_data(elements, transform))
+        push!(image_quadrature, _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform))
+        push!(image_singular_caches, _beat_cpu_image_singular_cache(mesh, singular_order, indices, transform))
+    end
+    return BeatCpuAssemblyCache(
+        indices,
+        elements,
+        regular_quadrature,
+        threaded_enabled,
+        color_groups,
+        image_transforms,
+        image_elements,
+        image_quadrature,
+        image_singular_caches,
+        count_adjacent_pairs(mesh, indices),
+        normalized_mode,
+        singular_order,
+        rule,
+    )
 end
 
 function _beat_cpu_accumulate_image_singular_delta_test!(
@@ -445,15 +576,15 @@ function _beat_cpu_accumulate_image_singular_delta_test!(
     elements,
     image_elements,
     pairs,
+    rules,
     k::T,
     regular_quadrature,
     image_quadrature,
 ) where {T<:AbstractFloat}
-    minus_one = Complex{T}(-1, 0)
-
     for pair in pairs
         test_data = elements[pair.test_index]
         trial_data = image_elements[pair.trial_index]
+        duffy = rules[pair.rule_index]
         _beat_cpu_accumulate_pair!(
             single_layer,
             double_layer,
@@ -471,11 +602,11 @@ function _beat_cpu_accumulate_image_singular_delta_test!(
             pair.normal_product,
             pair.jac_scale,
             k,
-            pair.rule.test_points,
-            pair.rule.trial_points,
-            pair.rule.weights,
+            duffy.test_points,
+            duffy.trial_points,
+            duffy.weights,
         )
-        _beat_cpu_accumulate_regular_pair!(
+        _beat_cpu_subtract_regular_pair!(
             single_layer,
             double_layer,
             adjoint_double_layer,
@@ -487,7 +618,6 @@ function _beat_cpu_accumulate_image_singular_delta_test!(
             pair.normal_product,
             T(4.0) * test_data.area * trial_data.area,
             k,
-            minus_one,
         )
     end
 
@@ -515,28 +645,39 @@ function assemble_regular_galerkin_operators_cpu(
     threaded::Bool=true,
     timing=nothing,
     singular_cache=nothing,
+    cpu_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     symmetry_mode = normalized_symmetry_mode(symmetry_mode)
 
-    indices = collect(element_indices)
+    if cpu_cache !== nothing
+        cpu_cache.symmetry_mode == symmetry_mode || error("CPU assembly cache symmetry mode does not match the requested mode.")
+        cpu_cache.singular_order == singular_order || error("CPU assembly cache singular order does not match the requested order.")
+        cpu_cache.rule == rule || error("CPU assembly cache quadrature rule does not match the requested rule.")
+    end
+
+    indices = cpu_cache === nothing ? collect(element_indices) : cpu_cache.indices
     p1_count = p1_space.global_dof_count
     dp0_count = dp0_space.global_dof_count
     single_layer = zeros(Complex{T}, p1_count, dp0_count)
     double_layer = zeros(Complex{T}, p1_count, p1_count)
     adjoint_double_layer = zeros(Complex{T}, p1_count, dp0_count)
     hypersingular = zeros(Complex{T}, p1_count, p1_count)
-    elements = _beat_cpu_element_data(mesh, p1_space, dp0_space)
-    regular_quadrature = _beat_cpu_regular_quadrature_data(mesh, rule)
-    adjacent_pairs = count_adjacent_pairs(mesh, indices)
+    elements = cpu_cache === nothing ? _beat_cpu_element_data(mesh, p1_space, dp0_space) : cpu_cache.elements
+    regular_quadrature = cpu_cache === nothing ? _beat_cpu_regular_quadrature_data(mesh, rule) : cpu_cache.regular_quadrature
+    adjacent_pairs = cpu_cache === nothing ? count_adjacent_pairs(mesh, indices) : cpu_cache.adjacent_pairs
     regular_pairs = length(indices) * length(indices) - adjacent_pairs
-    threaded_enabled = threaded && Threads.nthreads() > 1
+    threaded_enabled = cpu_cache === nothing ? threaded && Threads.nthreads() > 1 : cpu_cache.threaded_enabled
     color_groups = Vector{Vector{Int}}()
     color_build_elapsed = @elapsed begin
-        color_groups = threaded_enabled ? _beat_cpu_element_color_groups(mesh, indices) : [indices]
+        color_groups = if cpu_cache === nothing
+            threaded_enabled ? _beat_cpu_element_color_groups(mesh, indices) : [indices]
+        else
+            cpu_cache.color_groups
+        end
     end
     timing !== nothing && (timing["regular_operator_cpu_color_build"] = color_build_elapsed)
-    image_transforms = symmetry_image_transforms(symmetry_mode)
+    image_transforms = cpu_cache === nothing ? collect(symmetry_image_transforms(symmetry_mode)) : cpu_cache.image_transforms
 
     regular_elapsed = @elapsed begin
         if threaded_enabled
@@ -571,9 +712,13 @@ function assemble_regular_galerkin_operators_cpu(
             end
         end
 
-        for transform in image_transforms
-            image_elements = _beat_cpu_reflect_element_data(elements, transform)
-            image_quadrature = _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform)
+        for (transform_index, transform) in enumerate(image_transforms)
+            image_elements = cpu_cache === nothing ?
+                _beat_cpu_reflect_element_data(elements, transform) :
+                cpu_cache.image_elements[transform_index]
+            image_quadrature = cpu_cache === nothing ?
+                _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform) :
+                cpu_cache.image_quadrature[transform_index]
             if threaded_enabled
                 for group in color_groups
                     Threads.@threads for group_index in eachindex(group)
@@ -660,12 +805,18 @@ function assemble_regular_galerkin_operators_cpu(
     image_singular_pairs = 0
     image_singular_elapsed = @elapsed begin
         if !skip_singular
-            for transform in image_transforms
-                image_cache = _beat_cpu_image_singular_cache(mesh, singular_order, indices, transform)
+            for (transform_index, transform) in enumerate(image_transforms)
+                image_cache = cpu_cache === nothing ?
+                    _beat_cpu_image_singular_cache(mesh, singular_order, indices, transform) :
+                    cpu_cache.image_singular_caches[transform_index]
                 image_singular_pairs += image_cache.pair_count
                 image_cache.pair_count == 0 && continue
-                image_elements = _beat_cpu_reflect_element_data(elements, transform)
-                image_quadrature = _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform)
+                image_elements = cpu_cache === nothing ?
+                    _beat_cpu_reflect_element_data(elements, transform) :
+                    cpu_cache.image_elements[transform_index]
+                image_quadrature = cpu_cache === nothing ?
+                    _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform) :
+                    cpu_cache.image_quadrature[transform_index]
                 if threaded_enabled
                     for group in color_groups
                         Threads.@threads for group_index in eachindex(group)
@@ -678,6 +829,7 @@ function assemble_regular_galerkin_operators_cpu(
                                 elements,
                                 image_elements,
                                 image_cache.pairs_by_test[test_index],
+                                image_cache.rules,
                                 k,
                                 regular_quadrature,
                                 image_quadrature,
@@ -694,6 +846,7 @@ function assemble_regular_galerkin_operators_cpu(
                             elements,
                             image_elements,
                             image_cache.pairs_by_test[test_index],
+                            image_cache.rules,
                             k,
                             regular_quadrature,
                             image_quadrature,

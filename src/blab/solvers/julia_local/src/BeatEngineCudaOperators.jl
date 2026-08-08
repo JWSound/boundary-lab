@@ -15,6 +15,77 @@ function _complex_cpu_matrix(real_part, imag_part, ::Type{T}) where {T}
     return Complex{T}.(Array(real_part), Array(imag_part))
 end
 
+struct CudaSparseScatterCache{R,C,V}
+    rows::R
+    columns::C
+    values::V
+end
+
+function build_cuda_sparse_scatter_cache(matrix::SparseMatrixCSC)
+    CUDA.functional() || error("CUDA sparse scatter cache requested, but CUDA.functional() is false.")
+    rows, columns, values = findnz(matrix)
+    return CudaSparseScatterCache(
+        CuArray(Int32.(rows)),
+        CuArray(Int32.(columns)),
+        CuArray(values),
+    )
+end
+
+function _cuda_sparse_scatter_kernel!(
+    destination,
+    rows,
+    columns,
+    values,
+    row_offset::Int32,
+    column_offset::Int32,
+    alpha,
+    add::Bool,
+)
+    index = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if index <= length(values)
+        row = rows[index] + row_offset
+        column = columns[index] + column_offset
+        value = alpha * values[index]
+        if add
+            destination[row, column] += value
+        else
+            destination[row, column] = value
+        end
+    end
+    return
+end
+
+function scatter_cuda_sparse_to_dense!(
+    destination,
+    cache::CudaSparseScatterCache;
+    row_offset::Integer=0,
+    column_offset::Integer=0,
+    alpha=one(eltype(destination)),
+    add::Bool=false,
+)
+    isempty(cache.values) && return destination
+    threads = 256
+    blocks = cld(length(cache.values), threads)
+    CUDA.@cuda threads=threads blocks=blocks _cuda_sparse_scatter_kernel!(
+        destination,
+        cache.rows,
+        cache.columns,
+        cache.values,
+        Int32(row_offset),
+        Int32(column_offset),
+        convert(eltype(destination), alpha),
+        add,
+    )
+    return destination
+end
+
+function release_cuda_sparse_scatter_cache!(cache::CudaSparseScatterCache)
+    CUDA.unsafe_free!(cache.rows)
+    CUDA.unsafe_free!(cache.columns)
+    CUDA.unsafe_free!(cache.values)
+    return nothing
+end
+
 function _apply_p1_row_weights!(matrix, weights)
     matrix .*= reshape(weights, :, 1)
     return nothing

@@ -1,0 +1,653 @@
+{
+  "active_generator_document_id": "da196123f001",
+  "channel_config_by_name": {
+    "HF": {
+      "delay_ms": 0.0,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1600.0,
+        "order": 4,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    },
+    "LF": {
+      "delay_ms": -0.15,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 360.0,
+        "order": 6,
+        "type": "lowpass"
+      },
+      "polarity": -1
+    },
+    "MF": {
+      "delay_ms": 0.1,
+      "hpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 360.0,
+        "order": 6,
+        "type": "highpass"
+      },
+      "level_db": 0.0,
+      "lpf": {
+        "filter": "linkwitz_riley",
+        "frequency_hz": 1600.0,
+        "order": 4,
+        "type": "lowpass"
+      },
+      "polarity": -1
+    }
+  },
+  "component_channel_by_id": {
+    "component:10rs430": "LF",
+    "component:5ccn125d": "MF",
+    "component:radiator-1": "HF"
+  },
+  "generator_documents": [
+    {
+      "artifact": null,
+      "id": "da196123f001",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        0
+      ],
+      "name": "waveguide",
+      "provider_id": "ath",
+      "provider_schema_version": 1,
+      "source": {
+        "format": "ath_cfg",
+        "text": ""
+      }
+    }
+  ],
+  "imported_meshes": [
+    {
+      "cleaned_file": "exteriorBEM_interface_conformed.msh",
+      "enabled": true,
+      "name": "exteriorBEM",
+      "scale_factor": 0.001,
+      "source_file": "exteriorBEM.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "sideportFEM",
+      "scale_factor": 0.001,
+      "source_file": "sideportFEM.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "waveguidthroatFEM",
+      "scale_factor": 0.001,
+      "source_file": "waveguidthroatFEM.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "SealedVolumeFEM",
+      "scale_factor": 0.001,
+      "source_file": "SealedVolumeFEM.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "physical_system": {
+    "boundaries": [
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "Front",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:front",
+        "kind": "rigid",
+        "name": "Front",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "SAWMOD BEM:1:enclosure (1) (1)",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:sawmod-bem-1-enclosure-1-1",
+        "kind": "rigid",
+        "name": "SAWMOD BEM:1:enclosure (1) (1)",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "frontinterface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:frontinterface",
+        "kind": "interface",
+        "name": "frontinterface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "sideinterface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:sideinterface",
+        "kind": "interface",
+        "name": "sideinterface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "topinterface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:topinterface",
+        "kind": "interface",
+        "name": "topinterface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:curvedinterfacebem",
+          "name": "wginterface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:wginterface",
+        "kind": "interface",
+        "name": "wginterface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:waveguidthroatfem",
+          "name": "FEMVolume (1) (1)_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:femvolume-1-1-_boundary",
+        "kind": "rigid",
+        "name": "FEMVolume (1) (1)_boundary",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:waveguidthroatfem",
+          "name": "HF",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:hf",
+        "kind": "moving",
+        "name": "HF",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:waveguidthroatfem",
+          "name": "INTERFACE",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:interface",
+        "kind": "interface",
+        "name": "INTERFACE",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:waveguidthroatfem",
+          "name": "MF",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:mf",
+        "kind": "moving",
+        "name": "MF",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sideportfem-2",
+          "name": "Frontinterface",
+          "tag": null
+        },
+        "id": "boundary:region-side-slot:frontinterface",
+        "kind": "interface",
+        "name": "Frontinterface",
+        "parameters": {},
+        "region_id": "region:side-slot"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sideportfem-2",
+          "name": "LF",
+          "tag": null
+        },
+        "id": "boundary:region-side-slot:lf",
+        "kind": "moving",
+        "name": "LF",
+        "parameters": {},
+        "region_id": "region:side-slot"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sideportfem-2",
+          "name": "SideInterface",
+          "tag": null
+        },
+        "id": "boundary:region-side-slot:sideinterface",
+        "kind": "interface",
+        "name": "SideInterface",
+        "parameters": {},
+        "region_id": "region:side-slot"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sideportfem-2",
+          "name": "SidePort_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-side-slot:sideport_boundary",
+        "kind": "rigid",
+        "name": "SidePort_boundary",
+        "parameters": {},
+        "region_id": "region:side-slot"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sideportfem-2",
+          "name": "Topinterface",
+          "tag": null
+        },
+        "id": "boundary:region-side-slot:topinterface",
+        "kind": "interface",
+        "name": "Topinterface",
+        "parameters": {},
+        "region_id": "region:side-slot"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sealedvolumefem",
+          "name": "LF",
+          "tag": null
+        },
+        "id": "boundary:region-sealedmainchamber:lf",
+        "kind": "moving",
+        "name": "LF",
+        "parameters": {},
+        "region_id": "region:sealedmainchamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:sealedvolumefem",
+          "name": "Sealedvolume_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-sealedmainchamber:sealedvolume_boundary",
+        "kind": "rigid",
+        "name": "Sealedvolume_boundary",
+        "parameters": {},
+        "region_id": "region:sealedmainchamber"
+      }
+    ],
+    "components": [
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:hf"
+        ],
+        "id": "component:radiator-1",
+        "kind": "electrodynamic_transducer",
+        "name": "DH450-8",
+        "parameters": {
+          "bl_n_per_a": 1.9,
+          "cms_m_per_n": 0.000125,
+          "fractional_symmetry_axes": [
+            "x",
+            "y"
+          ],
+          "le_h": 0.00016,
+          "mmd_kg": 2.9999999999999997e-05,
+          "motion_axis": [
+            0.0,
+            0.0,
+            1.0
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 1,
+          "re_ohm": 5.8,
+          "rms_n_s_per_m": 0.05,
+          "surface_completion_factor": 4,
+          "symmetry_role": "fractional_driver"
+        }
+      },
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:mf"
+        ],
+        "id": "component:5ccn125d",
+        "kind": "electrodynamic_transducer",
+        "name": "5CCN125D",
+        "parameters": {
+          "bl_n_per_a": 10.6,
+          "cms_m_per_n": 0.0003,
+          "fractional_symmetry_axes": [
+            "y"
+          ],
+          "le_h": 2.9999999999999997e-05,
+          "mmd_kg": 0.0072,
+          "motion_axis": [
+            -0.9135452493092732,
+            0.0,
+            0.40673711099979293
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 2,
+          "re_ohm": 5.4,
+          "rms_n_s_per_m": 1.6,
+          "surface_completion_factor": 2,
+          "symmetry_role": "fractional_driver"
+        }
+      },
+      {
+        "boundary_ids": [
+          "boundary:region-side-slot:lf",
+          "boundary:region-sealedmainchamber:lf"
+        ],
+        "id": "component:10rs430",
+        "kind": "electrodynamic_transducer",
+        "name": "10RS430",
+        "parameters": {
+          "bl_n_per_a": 18.0,
+          "boundary_motion_weights": {
+            "boundary:region-sealedmainchamber:lf": 1.0,
+            "boundary:region-side-slot:lf": 1.0
+          },
+          "cms_m_per_n": 0.00036,
+          "fractional_symmetry_axes": [
+            "y"
+          ],
+          "le_h": 0.00078,
+          "mmd_kg": 0.0643,
+          "motion_axis": [
+            0.9999999999955,
+            0.0,
+            2.9999999999865e-06
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 2,
+          "re_ohm": 6.8,
+          "rms_n_s_per_m": 1.4,
+          "surface_completion_factor": 2,
+          "symmetry_role": "fractional_driver"
+        }
+      }
+    ],
+    "excitation_ports": [
+      {
+        "component_id": "component:radiator-1",
+        "id": "excitation:component-radiator-1",
+        "kind": "voltage",
+        "name": "DH450-8 voltage"
+      },
+      {
+        "component_id": "component:5ccn125d",
+        "id": "excitation:component-5ccn125d",
+        "kind": "voltage",
+        "name": "5CCN125D voltage"
+      },
+      {
+        "component_id": "component:10rs430",
+        "id": "excitation:component-10rs430",
+        "kind": "voltage",
+        "name": "10RS430 voltage"
+      }
+    ],
+    "id": "system:loudspeaker",
+    "interfaces": [
+      {
+        "bounded_boundary_id": "boundary:region-interior-air-1:interface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:interface-wginterface",
+        "name": "INTERFACE / wginterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:wginterface"
+      },
+      {
+        "bounded_boundary_id": "boundary:region-side-slot:frontinterface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:frontinterface-frontinterface",
+        "name": "Frontinterface / frontinterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:frontinterface"
+      },
+      {
+        "bounded_boundary_id": "boundary:region-side-slot:sideinterface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:sideinterface-sideinterface",
+        "name": "SideInterface / sideinterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:sideinterface"
+      },
+      {
+        "bounded_boundary_id": "boundary:region-side-slot:topinterface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:topinterface-topinterface",
+        "name": "Topinterface / topinterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:topinterface"
+      }
+    ],
+    "meshes": [
+      {
+        "file": "exteriorBEM_interface_conformed.msh",
+        "id": "mesh:curvedinterfacebem",
+        "name": "exteriorBEM",
+        "purpose": "bem_surface",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "waveguidthroatFEM.msh",
+        "id": "mesh:waveguidthroatfem",
+        "name": "waveguidthroatFEM",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "sideportFEM.msh",
+        "id": "mesh:sideportfem-2",
+        "name": "sideportFEM",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "SealedVolumeFEM.msh",
+        "id": "mesh:sealedvolumefem",
+        "name": "SealedVolumeFEM",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "metadata": {
+      "component_editor": {
+        "component:10rs430": {
+          "motion_axis_mode": "automatic"
+        },
+        "component:5ccn125d": {
+          "motion_axis_mode": "automatic"
+        },
+        "component:radiator-1": {
+          "motion_axis_mode": "manual"
+        }
+      }
+    },
+    "model_version": 1,
+    "name": "Loudspeaker System",
+    "regions": [
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:exterior-air",
+        "kind": "unbounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:curvedinterfacebem"
+        ],
+        "name": "Exterior Air",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": []
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:interior-air-1",
+        "kind": "bounded_air",
+        "loss_model": {
+          "bulk_loss_factor": 0.02
+        },
+        "mesh_ids": [
+          "mesh:waveguidthroatfem"
+        ],
+        "name": "Waveguide Throat",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:waveguidthroatfem",
+            "name": "FEMVolume (1) (1)",
+            "tag": null
+          }
+        ]
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:side-slot",
+        "kind": "bounded_air",
+        "loss_model": {
+          "bulk_loss_factor": 0.02
+        },
+        "mesh_ids": [
+          "mesh:sideportfem-2"
+        ],
+        "name": "Side Slot",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:sideportfem-2",
+            "name": "SidePort",
+            "tag": null
+          }
+        ]
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:sealedmainchamber",
+        "kind": "bounded_air",
+        "loss_model": {
+          "bulk_loss_factor": 0.02
+        },
+        "mesh_ids": [
+          "mesh:sealedvolumefem"
+        ],
+        "name": "SealedMainChamber",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:sealedvolumefem",
+            "name": "Sealedvolume",
+            "tag": null
+          }
+        ]
+      }
+    ]
+  },
+  "project_preferences": {
+    "balloon_angle_precision_deg": 2.5,
+    "freq_count": 200,
+    "freq_max_hz": 20000,
+    "freq_min_hz": 20,
+    "horizontal_normalization_angle": 10.0,
+    "isobar_contour_step_db": 3.0,
+    "normalized_channel_correction": true,
+    "polar_angle_step_deg": 1.0,
+    "polar_observation_distance_m": 3.0,
+    "polar_smoothing": null,
+    "spherical_sampling_enabled": true,
+    "spin_horizontal_reference_angle": 0.0,
+    "spin_vertical_reference_angle": 0.0,
+    "spl_max_db": 0.0,
+    "spl_min_db": -30.0,
+    "stitch_tolerance_mm": 3.0,
+    "vertical_normalization_angle": 10.0
+  },
+  "schema_version": 7,
+  "stitch_exterior_meshes": true,
+  "symmetry": "xy"
+}

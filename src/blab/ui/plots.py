@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from matplotlib.backend_bases import MouseButton
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -28,11 +30,21 @@ PLOT_TITLE_SIZE = 11
 PLOT_LABEL_SIZE = 9
 PLOT_TICK_SIZE = 9
 PLOT_LEGEND_SIZE = 9
-PLOT_TITLE_PAD = 1
+PLOT_TITLE_PAD = 7
 GRID_LINE_ALPHA = 0.6
+PLOT_LEFT_MARGIN = 0.14
+PLOT_RIGHT_MARGIN = 0.86
+PLOT_TOP_MARGIN = 0.9
+# Shared, so panels in the same units get the same axes height.
+PLOT_BOTTOM_MARGIN = 0.2
+ISOBAR_COLORBAR_GAP = 0.025
+ISOBAR_COLORBAR_WIDTH = 0.025
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
+# Legend baseline, in figure coordinates. Axes-relative placement scales with
+# the axes height and falls off short panels.
+SPINORAMA_LEGEND_BOTTOM = 0.006
 ISOBAR_CROSSHAIR_COLOR = "#101214"
 ISOBAR_CROSSHAIR_LABEL_FACE = "#f8fbff"
 ISOBAR_CROSSHAIR_LABEL_EDGE = "#2868ff"
@@ -111,23 +123,187 @@ def _grid_bracket(values: np.ndarray, target: float) -> tuple[int, int, float]:
     return left, right, float(np.clip(fraction, 0.0, 1.0))
 
 
-class IsobarCanvas(FigureCanvas):
+class InteractivePlotCanvas(FigureCanvas):
+    """Shared mouse lifecycle for plot crosshairs and solve comparisons."""
+
+    def __init__(self, figure: Figure, title: str) -> None:
+        self.title = title
+        self._comparison_plot: Any | None = None
+        self._comparison_restore_plot: Any | None = None
+        self._comparison_active = False
+        self._crosshair_visible = False
+        self._crosshair_dragging = False
+        self._crosshair_background = None
+        super().__init__(figure)
+        self._connect_interaction_events()
+
+    def _connect_interaction_events(self) -> None:
+        self.mpl_connect("button_press_event", self._on_crosshair_button_press)
+        self.mpl_connect("button_release_event", self._on_crosshair_button_release)
+        self.mpl_connect("motion_notify_event", self._on_crosshair_motion)
+        self.mpl_connect("draw_event", self._on_crosshair_draw)
+        self.mpl_connect("button_press_event", self._on_comparison_button_press)
+        self.mpl_connect("button_release_event", self._on_comparison_button_release)
+        self.mpl_connect("figure_leave_event", self._on_figure_leave)
+
+    def _interactive_axes(self) -> tuple[object, ...]:
+        return (self.axes,)
+
+    def _event_is_in_plot(self, event) -> bool:
+        return any(event.inaxes is axes for axes in self._interactive_axes())
+
+    def _set_comparison_plot_state(self, state: Any) -> None:
+        self._comparison_plot = state
+        self.setToolTip("Hold the right mouse button over the plot to view the previous completed solve.")
+
+    def clear_comparison_plot(self) -> None:
+        self._end_comparison()
+        self._comparison_plot = None
+        self._comparison_restore_plot = None
+        self.setToolTip("")
+
+    def _defer_current_plot_state(self, state: Any) -> bool:
+        if not self._comparison_active:
+            return False
+        self._comparison_restore_plot = state
+        return True
+
+    def _reset_comparison_interaction(self) -> None:
+        self._comparison_restore_plot = None
+        self._comparison_active = False
+
+    def _current_plot_state(self) -> Any | None:
+        raise NotImplementedError
+
+    def _apply_plot_state(self, state: Any) -> None:
+        raise NotImplementedError
+
+    def _on_comparison_button_press(self, event) -> None:
+        if not self._event_is_in_plot(event) or event.button != MouseButton.RIGHT:
+            return
+        if self._comparison_active or self._comparison_plot is None:
+            return
+        current_plot = self._current_plot_state()
+        if current_plot is None:
+            return
+        self._comparison_restore_plot = current_plot
+        self._apply_plot_state(self._comparison_plot)
+        self._comparison_active = True
+        self.axes.set_title(f"{self.title} - Previous Solve", pad=PLOT_TITLE_PAD)
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _on_comparison_button_release(self, event) -> None:
+        if event.button == MouseButton.RIGHT:
+            self._end_comparison()
+
+    def _end_comparison(self) -> None:
+        if not self._comparison_active:
+            return
+        restore_plot = self._comparison_restore_plot
+        self._comparison_restore_plot = None
+        self._comparison_active = False
+        if restore_plot is not None:
+            self._apply_plot_state(restore_plot)
+        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _on_figure_leave(self, event) -> None:
+        del event
+        self._crosshair_dragging = False
+        self._end_comparison()
+
+    def _on_crosshair_button_press(self, event) -> None:
+        if not self._event_is_in_plot(event) or event.button != MouseButton.LEFT:
+            return
+        if getattr(event, "dblclick", False):
+            self._hide_crosshair()
+            return
+        if not self._has_crosshair_data():
+            return
+        self._crosshair_dragging = True
+        self._set_crosshair_from_event(event)
+
+    def _on_crosshair_button_release(self, event) -> None:
+        if event.button == MouseButton.LEFT:
+            self._crosshair_dragging = False
+
+    def _on_crosshair_motion(self, event) -> None:
+        if not self._crosshair_dragging or not self._event_is_in_plot(event):
+            return
+        self._set_crosshair_from_event(event)
+
+    def _on_crosshair_draw(self, event) -> None:
+        if event.canvas is not self:
+            return
+        try:
+            self._crosshair_background = self.copy_from_bbox(self.figure.bbox)
+        except Exception:
+            self._crosshair_background = None
+        if self._crosshair_visible:
+            self._draw_crosshair_overlay()
+
+    def _invalidate_crosshair_background(self) -> None:
+        self._crosshair_background = None
+
+    def _draw_crosshair_overlay(self) -> bool:
+        if self._crosshair_background is None:
+            return False
+        try:
+            self.restore_region(self._crosshair_background)
+            for artist in self._crosshair_artists():
+                if artist is not None and artist.get_visible():
+                    artist.axes.draw_artist(artist)
+            self.blit(self.figure.bbox)
+            self.flush_events()
+            return True
+        except Exception:
+            self._crosshair_background = None
+            return False
+
+    def _hide_crosshair(self) -> None:
+        self._crosshair_visible = False
+        self._crosshair_dragging = False
+        self._set_crosshair_artist_visibility(False)
+        if not self._draw_crosshair_overlay():
+            self.draw_idle()
+
+    def _set_crosshair_artist_visibility(self, visible: bool) -> None:
+        for artist in self._crosshair_artists():
+            if artist is not None:
+                artist.set_visible(visible)
+
+    def _has_crosshair_data(self) -> bool:
+        raise NotImplementedError
+
+    def _set_crosshair_from_event(self, event) -> None:
+        raise NotImplementedError
+
+    def _crosshair_artists(self) -> tuple[object, ...]:
+        raise NotImplementedError
+
+    def _redraw_crosshair(self) -> None:
+        raise NotImplementedError
+
+
+class IsobarCanvas(InteractivePlotCanvas):
     def __init__(
         self,
         title: str,
         *,
-        left_margin: float = 0.14,
-        right_margin: float = 0.88,
+        left_margin: float | None = None,
+        right_margin: float | None = None,
         show_colorbar: bool = True,
     ):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
-        super().__init__(self.figure)
-        self.title = title
-        self.left_margin = float(left_margin)
-        self.right_margin = float(right_margin)
+        super().__init__(self.figure, title)
+        self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)
+        self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)
         self.show_colorbar = bool(show_colorbar)
         self.colors = VisualizerConfig.custom_colors
+        self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
         self._mesh_artist = None
         self._image_artist = None
         self._line_artist = None
@@ -135,6 +311,7 @@ class IsobarCanvas(FigureCanvas):
         self._colorbar = None
         self._colorbar_axes = None
         self._colorbar_mappable = None
+        self._colorbar_state: tuple[float, float, float] | None = None
         self._mesh_freqs_hz: np.ndarray | None = None
         self._mesh_angles_deg: np.ndarray | None = None
         self._mesh_values_db: np.ndarray | None = None
@@ -143,34 +320,8 @@ class IsobarCanvas(FigureCanvas):
         self._mesh_render_mode: str | None = None
         self._mesh_contour_step_db: float | None = None
         self._x_axis_mode = "frequency"
+        self._axis_configuration_mode: str | None = None
         self._captured_contours: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None
-        self._comparison_plot: (
-            tuple[
-                np.ndarray,
-                np.ndarray,
-                np.ndarray,
-                float,
-                float,
-                str,
-                float,
-            ]
-            | None
-        ) = None
-        self._comparison_restore_plot: (
-            tuple[
-                np.ndarray,
-                np.ndarray,
-                np.ndarray,
-                float,
-                float,
-                str,
-                float,
-            ]
-            | None
-        ) = None
-        self._comparison_active = False
-        self._crosshair_visible = False
-        self._crosshair_dragging = False
         self._crosshair_freq_hz: float | None = None
         self._crosshair_angle_deg: float | None = None
         self._crosshair_vline = None
@@ -178,14 +329,16 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_freq_label = None
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
-        self._crosshair_background = None
         self._apply_layout()
-        self._connect_crosshair_events()
-        self._connect_comparison_events()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(left=self.left_margin, right=self.right_margin, top=0.91, bottom=0.2)
+        self.figure.subplots_adjust(
+            left=self.left_margin,
+            right=self.right_margin,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
 
     def _configure_axes(self) -> None:
         self._apply_layout()
@@ -200,6 +353,7 @@ class IsobarCanvas(FigureCanvas):
         self.axes.set_yticks(np.arange(-180, 181, 45))
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+        self._axis_configuration_mode = self._x_axis_mode
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
@@ -213,8 +367,7 @@ class IsobarCanvas(FigureCanvas):
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
         self._crosshair_background = None
-        self._comparison_active = False
-        self._comparison_restore_plot = None
+        self._reset_comparison_interaction()
         self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
@@ -228,16 +381,6 @@ class IsobarCanvas(FigureCanvas):
         self._redraw_crosshair()
         self.draw_idle()
 
-    def _connect_crosshair_events(self) -> None:
-        self.mpl_connect("button_press_event", self._on_crosshair_button_press)
-        self.mpl_connect("button_release_event", self._on_crosshair_button_release)
-        self.mpl_connect("motion_notify_event", self._on_crosshair_motion)
-        self.mpl_connect("draw_event", self._on_crosshair_draw)
-
-    def _connect_comparison_events(self) -> None:
-        self.mpl_connect("button_press_event", self._on_comparison_button_press)
-        self.mpl_connect("button_release_event", self._on_comparison_button_release)
-
     def set_comparison_plot(
         self,
         freqs_hz: np.ndarray,
@@ -249,22 +392,17 @@ class IsobarCanvas(FigureCanvas):
         shading: str = FINAL_ISOBAR_SHADING,
         contour_step_db: float = 3.0,
     ) -> None:
-        self._comparison_plot = (
-            np.asarray(freqs_hz, dtype=np.float32).copy(),
-            np.asarray(angles_deg, dtype=np.float32).copy(),
-            np.asarray(values_db, dtype=np.float32).copy(),
-            float(clip_min_db),
-            float(clip_max_db),
-            str(shading or FINAL_ISOBAR_SHADING),
-            max(0.0, float(contour_step_db)),
+        self._set_comparison_plot_state(
+            (
+                np.asarray(freqs_hz, dtype=np.float32).copy(),
+                np.asarray(angles_deg, dtype=np.float32).copy(),
+                np.asarray(values_db, dtype=np.float32).copy(),
+                float(clip_min_db),
+                float(clip_max_db),
+                str(shading or FINAL_ISOBAR_SHADING),
+                max(0.0, float(contour_step_db)),
+            )
         )
-        self.setToolTip("Hold the right mouse button over the plot to view the previous completed solve.")
-
-    def clear_comparison_plot(self) -> None:
-        self._comparison_plot = None
-        self._comparison_restore_plot = None
-        self._comparison_active = False
-        self.setToolTip("")
 
     def _current_plot_state(
         self,
@@ -302,39 +440,6 @@ class IsobarCanvas(FigureCanvas):
             contour_step_db=contour_step_db,
         )
 
-    def _on_comparison_button_press(self, event) -> None:
-        if event.inaxes is not self.axes or event.button != MouseButton.RIGHT:
-            return
-        if self._comparison_active or self._comparison_plot is None:
-            return
-        current_plot = self._current_plot_state()
-        if current_plot is None:
-            return
-        self._comparison_restore_plot = current_plot
-        self._comparison_active = True
-        self._apply_plot_state(self._comparison_plot)
-        self.axes.set_title(f"{self.title} - Previous Solve", pad=PLOT_TITLE_PAD)
-        self.draw_idle()
-
-    def _on_comparison_button_release(self, event) -> None:
-        if event.button != MouseButton.RIGHT or not self._comparison_active:
-            return
-        restore_plot = self._comparison_restore_plot
-        self._comparison_restore_plot = None
-        self._comparison_active = False
-        if restore_plot is not None:
-            self._apply_plot_state(restore_plot)
-
-    def _on_crosshair_draw(self, event) -> None:
-        if event.canvas is not self:
-            return
-        try:
-            self._crosshair_background = self.copy_from_bbox(self.figure.bbox)
-        except Exception:
-            self._crosshair_background = None
-        if self._crosshair_visible:
-            self._draw_crosshair_overlay()
-
     def _crosshair_artists(self) -> tuple[object, ...]:
         return (
             self._crosshair_vline,
@@ -344,24 +449,6 @@ class IsobarCanvas(FigureCanvas):
             self._crosshair_db_label,
         )
 
-    def _invalidate_crosshair_background(self) -> None:
-        self._crosshair_background = None
-
-    def _draw_crosshair_overlay(self) -> bool:
-        if self._crosshair_background is None:
-            return False
-        try:
-            self.restore_region(self._crosshair_background)
-            for artist in self._crosshair_artists():
-                if artist is not None and artist.get_visible():
-                    self.axes.draw_artist(artist)
-            self.blit(self.figure.bbox)
-            self.flush_events()
-            return True
-        except Exception:
-            self._crosshair_background = None
-            return False
-
     def _has_crosshair_data(self) -> bool:
         return (
             self._mesh_freqs_hz is not None
@@ -370,26 +457,6 @@ class IsobarCanvas(FigureCanvas):
             and self._mesh_freqs_hz.size > 0
             and self._mesh_angles_deg.size > 0
         )
-
-    def _on_crosshair_button_press(self, event) -> None:
-        if event.inaxes is not self.axes or event.button != MouseButton.LEFT:
-            return
-        if getattr(event, "dblclick", False):
-            self._hide_crosshair()
-            return
-        if not self._has_crosshair_data():
-            return
-        self._crosshair_dragging = True
-        self._set_crosshair_from_event(event)
-
-    def _on_crosshair_button_release(self, event) -> None:
-        del event
-        self._crosshair_dragging = False
-
-    def _on_crosshair_motion(self, event) -> None:
-        if not self._crosshair_dragging or event.inaxes is not self.axes:
-            return
-        self._set_crosshair_from_event(event)
 
     def _set_crosshair_from_event(self, event) -> None:
         if event.xdata is None or event.ydata is None:
@@ -429,24 +496,6 @@ class IsobarCanvas(FigureCanvas):
         self._redraw_crosshair()
         if not self._draw_crosshair_overlay():
             self.draw_idle()
-
-    def _hide_crosshair(self) -> None:
-        self._crosshair_visible = False
-        self._crosshair_dragging = False
-        self._set_crosshair_artist_visibility(False)
-        if not self._draw_crosshair_overlay():
-            self.draw_idle()
-
-    def _set_crosshair_artist_visibility(self, visible: bool) -> None:
-        for artist in (
-            self._crosshair_vline,
-            self._crosshair_hline,
-            self._crosshair_freq_label,
-            self._crosshair_angle_label,
-            self._crosshair_db_label,
-        ):
-            if artist is not None:
-                artist.set_visible(visible)
 
     def _ensure_crosshair_artists(self) -> None:
         if self._crosshair_vline is None:
@@ -592,6 +641,10 @@ class IsobarCanvas(FigureCanvas):
         self._remove_artist("_image_artist")
 
     def _remove_colorbar(self) -> None:
+        if self._colorbar is None and self._colorbar_axes is None:
+            self._colorbar_mappable = None
+            self._colorbar_state = None
+            return
         if self._colorbar is not None:
             try:
                 self._colorbar.remove()
@@ -605,6 +658,7 @@ class IsobarCanvas(FigureCanvas):
         self._colorbar = None
         self._colorbar_axes = None
         self._colorbar_mappable = None
+        self._colorbar_state = None
         self._apply_layout()
 
     def _remove_contour_artist(self) -> None:
@@ -723,7 +777,7 @@ class IsobarCanvas(FigureCanvas):
         )
 
     def _isobar_colormap(self):
-        return LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
+        return self._colormap
 
     def _color_boundaries(self, clip_min_db: float, clip_max_db: float, contour_step_db: float) -> np.ndarray:
         if contour_step_db <= 0.0 or clip_max_db <= clip_min_db:
@@ -763,18 +817,29 @@ class IsobarCanvas(FigureCanvas):
         norm,
     ) -> None:
         if not self.show_colorbar:
-            self._remove_colorbar()
+            if self._colorbar is not None or self._colorbar_axes is not None:
+                self._remove_colorbar()
             return
-        self._remove_colorbar()
-        self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
-        self._colorbar_mappable.set_array([])
-        self._colorbar_axes = self.figure.add_axes([self.right_margin + 0.025, 0.2, 0.025, 0.71])
-        self._colorbar = self.figure.colorbar(
-            self._colorbar_mappable,
-            cax=self._colorbar_axes,
-        )
+        state = (float(clip_min_db), float(clip_max_db), float(contour_step_db))
+        if self._colorbar is not None and self._colorbar_mappable is not None:
+            if self._colorbar_state == state:
+                return
+            self._colorbar_mappable.set_cmap(cmap)
+            self._colorbar_mappable.set_norm(norm)
+            self._colorbar.update_normal(self._colorbar_mappable)
+        else:
+            self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
+            self._colorbar_mappable.set_array([])
+            self._colorbar_axes = self.figure.add_axes(
+                [self.right_margin + ISOBAR_COLORBAR_GAP, 0.2, ISOBAR_COLORBAR_WIDTH, 0.71]
+            )
+            self._colorbar = self.figure.colorbar(
+                self._colorbar_mappable,
+                cax=self._colorbar_axes,
+            )
         self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
         self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
+        self._colorbar_state = state
 
     def _image_from_values(
         self,
@@ -804,6 +869,17 @@ class IsobarCanvas(FigureCanvas):
         shading = str(shading or LIVE_ISOBAR_SHADING)
         contour_step_db = max(0.0, float(contour_step_db))
         render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"
+        state = (
+            freqs_hz.copy(),
+            angles_deg.copy(),
+            clipped.copy(),
+            float(clip_min_db),
+            float(clip_max_db),
+            shading,
+            contour_step_db,
+        )
+        if self._defer_current_plot_state(state):
+            return
         self._invalidate_crosshair_background()
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
@@ -898,42 +974,270 @@ class IsobarCanvas(FigureCanvas):
             self._mesh_contour_step_db = None
             self._remove_colorbar()
 
-        if self._colorbar is None:
+        if self._axis_configuration_mode != self._x_axis_mode:
             self._configure_axes()
-        else:
-            self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
-            self.axes.set_xlabel("Frequency (Hz)")
-            self.axes.set_ylabel("Angle (deg)")
-            if self._x_axis_mode == "log_image":
-                apply_log_image_frequency_axis(self.axes)
-            else:
-                apply_audio_frequency_axis(self.axes)
-            self.axes.set_ylim(-180, 180)
-            self.axes.set_yticks(np.arange(-180, 181, 45))
-            self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-            apply_compact_plot_text(self.axes)
-        self._redraw_captured_contours()
+            self._redraw_captured_contours()
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
 
 
-class ImpedanceCanvas(FigureCanvas):
+class RawCoordinatePlotCanvas(InteractivePlotCanvas):
+    """Shared raw-coordinate crosshair overlay for Cartesian line plots."""
+
+    def __init__(self, figure: Figure, title: str, *, secondary_axes=None) -> None:
+        self.secondary_axes = secondary_axes
+        self._crosshair_freq_hz: float | None = None
+        self._crosshair_y_value: float | None = None
+        self._crosshair_vline = None
+        self._crosshair_hline = None
+        self._crosshair_freq_label = None
+        self._crosshair_y_label = None
+        self._crosshair_secondary_label = None
+        super().__init__(figure, title)
+
+    def _interactive_axes(self) -> tuple[object, ...]:
+        if self.secondary_axes is None:
+            return (self.axes,)
+        return (self.axes, self.secondary_axes)
+
+    def _has_crosshair_data(self) -> bool:
+        state = getattr(self, "_plot_state", None)
+        if state is None:
+            return False
+        freqs_hz = state.freq_hz if isinstance(state, SpinoramaCurves) else state[0]
+        return np.asarray(freqs_hz).size > 0
+
+    def _set_crosshair_from_event(self, event) -> None:
+        if event.xdata is None or event.ydata is None or event.inaxes is None:
+            return
+        display_x, display_y = event.inaxes.transData.transform((float(event.xdata), float(event.ydata)))
+        freq_hz, y_value = self.axes.transData.inverted().transform((display_x, display_y))
+        self._set_crosshair_position(float(freq_hz), float(y_value))
+
+    def _clamp_crosshair_position(self, freq_hz: float, y_value: float) -> tuple[float, float]:
+        x_min, x_max = sorted(float(value) for value in self.axes.get_xlim())
+        y_min, y_max = sorted(float(value) for value in self.axes.get_ylim())
+        return float(np.clip(freq_hz, x_min, x_max)), float(np.clip(y_value, y_min, y_max))
+
+    def _set_crosshair_position(self, freq_hz: float, y_value: float) -> None:
+        if not self._has_crosshair_data():
+            return
+        self._crosshair_freq_hz, self._crosshair_y_value = self._clamp_crosshair_position(freq_hz, y_value)
+        self._crosshair_visible = True
+        self._redraw_crosshair()
+        if not self._draw_crosshair_overlay():
+            self.draw_idle()
+
+    def _crosshair_artists(self) -> tuple[object, ...]:
+        return (
+            self._crosshair_vline,
+            self._crosshair_hline,
+            self._crosshair_freq_label,
+            self._crosshair_y_label,
+            self._crosshair_secondary_label,
+        )
+
+    def _reset_crosshair_artists(self) -> None:
+        self._crosshair_vline = None
+        self._crosshair_hline = None
+        self._crosshair_freq_label = None
+        self._crosshair_y_label = None
+        self._crosshair_secondary_label = None
+        self._crosshair_background = None
+
+    def _ensure_crosshair_artists(self) -> None:
+        if self._crosshair_vline is None:
+            self._crosshair_vline = self.axes.axvline(
+                AUDIO_FREQ_MIN_HZ,
+                color=ISOBAR_CROSSHAIR_COLOR,
+                linewidth=0.9,
+                alpha=0.9,
+                zorder=9,
+                visible=False,
+            )
+        if self._crosshair_hline is None:
+            self._crosshair_hline = self.axes.axhline(
+                0.0,
+                color=ISOBAR_CROSSHAIR_COLOR,
+                linewidth=0.9,
+                alpha=0.9,
+                zorder=9,
+                visible=False,
+            )
+        if self._crosshair_freq_label is None:
+            self._crosshair_freq_label = self.axes.text(
+                AUDIO_FREQ_MIN_HZ,
+                -0.075,
+                "",
+                transform=self.axes.get_xaxis_transform(),
+                ha="center",
+                va="top",
+                color=ISOBAR_CROSSHAIR_LABEL_EDGE,
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    "boxstyle": "square,pad=0.12",
+                    "facecolor": ISOBAR_CROSSHAIR_LABEL_FACE,
+                    "edgecolor": ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    "linewidth": 0.8,
+                },
+                clip_on=False,
+                zorder=10,
+                visible=False,
+            )
+        if self._crosshair_y_label is None:
+            self._crosshair_y_label = self.axes.text(
+                -0.01,
+                0.0,
+                "",
+                transform=self.axes.get_yaxis_transform(),
+                ha="right",
+                va="center",
+                color=ISOBAR_CROSSHAIR_LABEL_EDGE,
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    "boxstyle": "square,pad=0.12",
+                    "facecolor": ISOBAR_CROSSHAIR_LABEL_FACE,
+                    "edgecolor": ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    "linewidth": 0.8,
+                },
+                clip_on=False,
+                zorder=10,
+                visible=False,
+            )
+        if self.secondary_axes is not None and self._crosshair_secondary_label is None:
+            self._crosshair_secondary_label = self.secondary_axes.text(
+                1.01,
+                0.0,
+                "",
+                transform=self.secondary_axes.get_yaxis_transform(),
+                ha="left",
+                va="center",
+                color=ISOBAR_CROSSHAIR_LABEL_EDGE,
+                fontsize=PLOT_TICK_SIZE,
+                bbox={
+                    "boxstyle": "square,pad=0.12",
+                    "facecolor": ISOBAR_CROSSHAIR_LABEL_FACE,
+                    "edgecolor": ISOBAR_CROSSHAIR_LABEL_EDGE,
+                    "linewidth": 0.8,
+                },
+                clip_on=False,
+                zorder=10,
+                visible=False,
+            )
+        for artist in self._crosshair_artists():
+            if artist is not None:
+                artist.set_animated(True)
+
+    def _redraw_crosshair(self) -> None:
+        if not self._crosshair_visible or self._crosshair_freq_hz is None or self._crosshair_y_value is None:
+            self._set_crosshair_artist_visibility(False)
+            return
+        if not self._has_crosshair_data():
+            self._set_crosshair_artist_visibility(False)
+            return
+        freq_hz, y_value = self._clamp_crosshair_position(
+            self._crosshair_freq_hz,
+            self._crosshair_y_value,
+        )
+        self._ensure_crosshair_artists()
+        self._crosshair_vline.set_xdata([freq_hz, freq_hz])
+        self._crosshair_hline.set_ydata([y_value, y_value])
+        self._crosshair_freq_label.set_position((freq_hz, -0.075))
+        self._crosshair_freq_label.set_text(_format_isobar_crosshair_frequency(freq_hz))
+        self._crosshair_y_label.set_position((-0.01, y_value))
+        self._crosshair_y_label.set_text(self._format_crosshair_y(y_value))
+        if self._crosshair_secondary_label is not None:
+            secondary_y = self._secondary_y_value(freq_hz, y_value)
+            self._crosshair_secondary_label.set_position((1.01, secondary_y))
+            self._crosshair_secondary_label.set_text(self._format_secondary_crosshair_y(secondary_y))
+        self._set_crosshair_artist_visibility(True)
+
+    def _secondary_y_value(self, freq_hz: float, y_value: float) -> float:
+        if self.secondary_axes is None:
+            return y_value
+        display_point = self.axes.transData.transform((freq_hz, y_value))
+        return float(self.secondary_axes.transData.inverted().transform(display_point)[1])
+
+    def _format_crosshair_y(self, value: float) -> str:
+        return f"{value:.3g}"
+
+    def _format_secondary_crosshair_y(self, value: float) -> str:
+        return f"{value:.1f}"
+
+
+class ImpedanceCanvas(RawCoordinatePlotCanvas):
     def __init__(self):
-        self.figure = Figure(figsize=(6.5, 3.0), dpi=100, tight_layout=True)
+        self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
-        super().__init__(self.figure)
+        self._lines: list[object] = []
+        self._series_labels: tuple[str, ...] = ()
+        self._plot_state = None
+        super().__init__(self.figure, "Acoustic Impedance")
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self._draw_empty()
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
+    def _configure_axes(self) -> None:
+        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+
+    def _draw_empty(self) -> None:
+        clear_plot_axes(self.axes)
+        self._lines = []
+        self._series_labels = ()
+        self._plot_state = None
+        self._reset_crosshair_artists()
+        self._reset_comparison_interaction()
+        self._configure_axes()
+        self._redraw_crosshair()
         self.draw_idle()
+
+    def set_comparison_plot(
+        self,
+        freqs_hz: np.ndarray,
+        radiator_names: np.ndarray,
+        impedance_real: np.ndarray,
+        impedance_imag: np.ndarray,
+    ) -> None:
+        self._set_comparison_plot_state(
+            self._normalized_plot_state(freqs_hz, radiator_names, impedance_real, impedance_imag)
+        )
+
+    def _normalized_plot_state(
+        self,
+        freqs_hz: np.ndarray,
+        radiator_names: np.ndarray,
+        impedance_real: np.ndarray,
+        impedance_imag: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        real = np.asarray(impedance_real, dtype=np.float32)
+        imaginary = np.asarray(impedance_imag, dtype=np.float32)
+        if real.ndim == 1:
+            real = real[np.newaxis, :]
+            imaginary = imaginary[np.newaxis, :]
+        return (
+            np.asarray(freqs_hz, dtype=np.float32).copy(),
+            np.asarray(radiator_names).copy(),
+            real.copy(),
+            imaginary.copy(),
+        )
+
+    def _current_plot_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        if self._plot_state is None:
+            return None
+        return tuple(values.copy() for values in self._plot_state)
+
+    def _apply_plot_state(self, state: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]) -> None:
+        self.update_plot(*state)
 
     def update_plot(
         self,
@@ -942,43 +1246,135 @@ class ImpedanceCanvas(FigureCanvas):
         impedance_real: np.ndarray,
         impedance_imag: np.ndarray,
     ) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
+        state = self._normalized_plot_state(freqs_hz, radiator_names, impedance_real, impedance_imag)
+        if self._defer_current_plot_state(state):
+            return
+        freqs_hz, radiator_names, impedance_real, impedance_imag = state
+        self._plot_state = state
+        self._invalidate_crosshair_background()
 
-        if impedance_real.ndim == 1:
-            impedance_real = impedance_real[np.newaxis, :]
-            impedance_imag = impedance_imag[np.newaxis, :]
-
+        labels: list[str] = []
         for index in range(impedance_real.shape[0]):
             name = str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
-            self.axes.plot(freqs_hz, impedance_real[index], linewidth=1.5, label=f"{name} Z real")
-            self.axes.plot(freqs_hz, impedance_imag[index], linewidth=1.5, linestyle="--", label=f"{name} Z imag")
+            labels.extend((f"{name} Z real", f"{name} Z imag"))
+        series_labels = tuple(labels)
+        if series_labels != self._series_labels:
+            for line in self._lines:
+                line.remove()
+            self._lines = []
+            for index in range(impedance_real.shape[0]):
+                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=series_labels[index * 2])
+                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=series_labels[index * 2 + 1])
+                self._lines.extend((real_line, imag_line))
+            legend = self.axes.get_legend()
+            if legend is not None:
+                legend.remove()
+            if self._lines:
+                self.axes.legend(loc="best")
+            self._series_labels = series_labels
 
-        self.axes.legend(loc="best")
+        for index in range(impedance_real.shape[0]):
+            self._lines[index * 2].set_data(freqs_hz, impedance_real[index])
+            self._lines[index * 2 + 1].set_data(freqs_hz, impedance_imag[index])
+        self.axes.relim()
+        self.axes.autoscale_view(scalex=False, scaley=True)
         apply_compact_plot_text(self.axes)
+        if self._crosshair_visible:
+            self._redraw_crosshair()
         self.draw_idle()
 
 
-class OnAxisResponseCanvas(FigureCanvas):
+class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
     def __init__(self):
-        self.figure = Figure(figsize=(6.5, 3.0), dpi=100, tight_layout=True)
+        self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
-        super().__init__(self.figure)
+        self._lines: list[object] = []
+        self._series_labels: tuple[str, ...] = ()
+        self._plot_state = None
+        super().__init__(self.figure, "On-Axis Frequency Response")
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self._draw_empty()
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
+    def _configure_axes(self) -> None:
+        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
+
+    def _draw_empty(self) -> None:
+        clear_plot_axes(self.axes)
+        self._lines = []
+        self._series_labels = ()
+        self._plot_state = None
+        self._reset_crosshair_artists()
+        self._reset_comparison_interaction()
+        self._configure_axes()
+        self._redraw_crosshair()
         self.draw_idle()
+
+    def _format_crosshair_y(self, value: float) -> str:
+        return f"{value:.1f} dB"
+
+    def set_comparison_plot(
+        self,
+        freqs_hz: np.ndarray,
+        angles_deg: np.ndarray,
+        horizontal_spl_db: np.ndarray,
+        channel_names: np.ndarray | None = None,
+        channel_on_axis_spl_db: np.ndarray | None = None,
+    ) -> None:
+        self._set_comparison_plot_state(
+            self._normalized_plot_state(
+                freqs_hz,
+                angles_deg,
+                horizontal_spl_db,
+                channel_names,
+                channel_on_axis_spl_db,
+            )
+        )
+
+    def _normalized_plot_state(
+        self,
+        freqs_hz: np.ndarray,
+        angles_deg: np.ndarray,
+        horizontal_spl_db: np.ndarray,
+        channel_names: np.ndarray | None,
+        channel_on_axis_spl_db: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+        return (
+            np.asarray(freqs_hz, dtype=np.float32).copy(),
+            np.asarray(angles_deg, dtype=np.float32).copy(),
+            np.asarray(horizontal_spl_db, dtype=np.float32).copy(),
+            None if channel_names is None else np.asarray(channel_names).copy(),
+            None if channel_on_axis_spl_db is None else np.asarray(channel_on_axis_spl_db, dtype=np.float32).copy(),
+        )
+
+    def _current_plot_state(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None] | None:
+        if self._plot_state is None:
+            return None
+        freqs_hz, angles_deg, horizontal_spl_db, channel_names, channel_on_axis_spl_db = self._plot_state
+        return (
+            freqs_hz.copy(),
+            angles_deg.copy(),
+            horizontal_spl_db.copy(),
+            None if channel_names is None else channel_names.copy(),
+            None if channel_on_axis_spl_db is None else channel_on_axis_spl_db.copy(),
+        )
+
+    def _apply_plot_state(
+        self,
+        state: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None],
+    ) -> None:
+        self.update_plot(*state)
 
     def update_plot(
         self,
@@ -988,13 +1384,18 @@ class OnAxisResponseCanvas(FigureCanvas):
         channel_names: np.ndarray | None = None,
         channel_on_axis_spl_db: np.ndarray | None = None,
     ) -> None:
-        clear_plot_axes(self.axes)
-        self.axes.set_title("On-Axis Frequency Response", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("SPL (dB)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-
+        state = self._normalized_plot_state(
+            freqs_hz,
+            angles_deg,
+            horizontal_spl_db,
+            channel_names,
+            channel_on_axis_spl_db,
+        )
+        if self._defer_current_plot_state(state):
+            return
+        freqs_hz, angles_deg, horizontal_spl_db, channel_names, channel_on_axis_spl_db = state
+        self._plot_state = state
+        self._invalidate_crosshair_background()
         if freqs_hz.size:
             on_axis = np.asarray(
                 [
@@ -1007,21 +1408,32 @@ class OnAxisResponseCanvas(FigureCanvas):
                 ],
                 dtype=float,
             )
-            self.axes.plot(freqs_hz, on_axis, linewidth=2.0, color="#1f77b4", label="Sum")
+            series: list[tuple[str, np.ndarray]] = [("Sum", on_axis)]
             if channel_names is not None and channel_on_axis_spl_db is not None:
                 names = np.asarray(channel_names)
                 channel_curves = np.asarray(channel_on_axis_spl_db, dtype=float)
                 for index, name in enumerate(names):
                     if index >= channel_curves.shape[0]:
                         continue
-                    self.axes.plot(
-                        freqs_hz,
-                        channel_curves[index],
-                        linewidth=1.1,
-                        linestyle="--",
-                        alpha=0.85,
-                        label=str(name),
-                    )
+                    series.append((str(name), channel_curves[index]))
+            labels = tuple(name for name, _values in series)
+            if labels != self._series_labels:
+                for line in self._lines:
+                    line.remove()
+                self._lines = []
+                for index, label in enumerate(labels):
+                    if index == 0:
+                        (line,) = self.axes.plot([], [], linewidth=2.0, color="#1f77b4", label=label)
+                    else:
+                        (line,) = self.axes.plot([], [], linewidth=1.1, linestyle="--", alpha=0.85, label=label)
+                    self._lines.append(line)
+                legend = self.axes.get_legend()
+                if legend is not None:
+                    legend.remove()
+                self.axes.legend(loc="best")
+                self._series_labels = labels
+            for line, (_label, values) in zip(self._lines, series, strict=True):
+                line.set_data(freqs_hz, values)
             finite = on_axis[np.isfinite(on_axis)]
             if channel_on_axis_spl_db is not None:
                 channel_finite = np.asarray(channel_on_axis_spl_db, dtype=float)
@@ -1031,39 +1443,103 @@ class OnAxisResponseCanvas(FigureCanvas):
             if finite.size:
                 ymax = float(np.ceil(np.max(finite) / 5.0) * 5.0)
                 self.axes.set_ylim(ymax - ON_AXIS_DB_SPAN, ymax)
-            self.axes.legend(loc="best")
 
         apply_compact_plot_text(self.axes)
+        if self._crosshair_visible:
+            self._redraw_crosshair()
         self.draw_idle()
 
 
-class SpinoramaCanvas(FigureCanvas):
+def _snapshot_spinorama_curves(curves: SpinoramaCurves) -> SpinoramaCurves:
+    return SpinoramaCurves(
+        freq_hz=np.asarray(curves.freq_hz).copy(),
+        on_axis_db=np.asarray(curves.on_axis_db).copy(),
+        listening_window_db=np.asarray(curves.listening_window_db).copy(),
+        early_reflections_db=np.asarray(curves.early_reflections_db).copy(),
+        sound_power_db=np.asarray(curves.sound_power_db).copy(),
+        estimated_in_room_db=np.asarray(curves.estimated_in_room_db).copy(),
+        early_reflections_di_db=np.asarray(curves.early_reflections_di_db).copy(),
+        sound_power_di_db=np.asarray(curves.sound_power_di_db).copy(),
+    )
+
+
+class SpinoramaCanvas(RawCoordinatePlotCanvas):
     def __init__(self):
         self.figure = Figure(figsize=(6.5, 3.9), dpi=100)
         self.axes = self.figure.add_subplot(111)
         self.di_axes = self.axes.twinx()
-        super().__init__(self.figure)
+        self._spl_lines: dict[str, object] = {}
+        self._di_lines: dict[str, object] = {}
+        self._series_labels: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
+        self._plot_state = None
+        super().__init__(self.figure, "Spinorama", secondary_axes=self.di_axes)
         self._apply_layout()
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(left=0.14, right=0.9, top=0.91, bottom=0.28)
+        self.figure.subplots_adjust(
+            left=PLOT_LEFT_MARGIN,
+            right=PLOT_RIGHT_MARGIN,
+            top=PLOT_TOP_MARGIN,
+            bottom=PLOT_BOTTOM_MARGIN,
+        )
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
         clear_plot_axes(self.di_axes)
+        self._spl_lines = {}
+        self._di_lines = {}
+        self._series_labels = ((), ())
+        self._plot_state = None
+        self._reset_crosshair_artists()
+        self._reset_comparison_interaction()
         self._apply_layout()
-        # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
+        self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         self.di_axes.set_ylabel("DI (dB)")
         apply_audio_frequency_axis(self.axes)
+        self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
+        self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
+        self._redraw_crosshair()
         self.draw_idle()
+
+    def _format_crosshair_y(self, value: float) -> str:
+        return f"{value:.1f} dB SPL"
+
+    def _format_secondary_crosshair_y(self, value: float) -> str:
+        return f"{value:.1f} dB DI"
+
+    def set_comparison_plot(
+        self,
+        freqs_hz: np.ndarray,
+        angles_deg: np.ndarray,
+        horizontal_spl_db: np.ndarray,
+        vertical_spl_db: np.ndarray,
+        *,
+        horizontal_reference_angle_deg: float = 0.0,
+        vertical_reference_angle_deg: float = 0.0,
+    ) -> None:
+        curves = compute_spinorama_from_planes(
+            freq_hz=freqs_hz,
+            polar_angle_deg=angles_deg,
+            horizontal_spl_db=horizontal_spl_db,
+            vertical_spl_db=vertical_spl_db,
+            horizontal_reference_angle_deg=horizontal_reference_angle_deg,
+            vertical_reference_angle_deg=vertical_reference_angle_deg,
+        )
+        self._set_comparison_plot_state(_snapshot_spinorama_curves(curves))
+
+    def _current_plot_state(self) -> SpinoramaCurves | None:
+        return None if self._plot_state is None else _snapshot_spinorama_curves(self._plot_state)
+
+    def _apply_plot_state(self, state: SpinoramaCurves) -> None:
+        self.update_curves(state)
 
     def update_plot(
         self,
@@ -1086,16 +1562,12 @@ class SpinoramaCanvas(FigureCanvas):
         self.update_curves(curves)
 
     def update_curves(self, curves: SpinoramaCurves) -> None:
-        clear_plot_axes(self.axes)
-        clear_plot_axes(self.di_axes)
-        self._apply_layout()
-        # self.axes.set_title("Spinorama", pad=PLOT_TITLE_PAD)
-        self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("SPL (dB)")
-        self.di_axes.set_ylabel("DI (dB)")
-        apply_audio_frequency_axis(self.axes)
-        self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
-
+        state = _snapshot_spinorama_curves(curves)
+        if self._defer_current_plot_state(state):
+            return
+        curves = state
+        self._plot_state = state
+        self._invalidate_crosshair_background()
         colors = {
             "On Axis": "#1f77b4",
             "Listen. Wind.": "#2ca02c",
@@ -1105,33 +1577,59 @@ class SpinoramaCanvas(FigureCanvas):
             "ERDI": "#8c564b",
             "SPDI": "#17becf",
         }
-        for name, values in curves.spl_curves():
-            self.axes.plot(curves.freq_hz, values, linewidth=1.5, label=name, color=colors.get(name))
-
-        for name, values in curves.di_curves():
-            self.di_axes.plot(
-                curves.freq_hz,
-                values,
-                linewidth=1.2,
-                linestyle="--",
-                label=name,
-                color=colors.get(name),
+        spl_curves = curves.spl_curves()
+        di_curves = curves.di_curves()
+        labels = (tuple(name for name, _values in spl_curves), tuple(name for name, _values in di_curves))
+        if labels != self._series_labels:
+            for line in (*self._spl_lines.values(), *self._di_lines.values()):
+                line.remove()
+            self._spl_lines = {
+                name: self.axes.plot([], [], linewidth=1.5, label=name, color=colors.get(name))[0]
+                for name, _values in spl_curves
+            }
+            self._di_lines = {
+                name: self.di_axes.plot(
+                    [],
+                    [],
+                    linewidth=1.2,
+                    linestyle="--",
+                    label=name,
+                    color=colors.get(name),
+                )[0]
+                for name, _values in di_curves
+            }
+            legend = self.axes.get_legend()
+            if legend is not None:
+                legend.remove()
+            lines = [*self._spl_lines.values(), *self._di_lines.values()]
+            self.axes.legend(
+                lines,
+                [*labels[0], *labels[1]],
+                loc="lower center",
+                bbox_to_anchor=(0.5, SPINORAMA_LEGEND_BOTTOM),
+                bbox_transform=self.figure.transFigure,
+                ncols=4,
+                borderaxespad=0.0,
+                frameon=False,
+                # Two rows in a fixed-fraction margin; tight spacing suits
+                # short panels.
+                borderpad=0.0,
+                labelspacing=0.25,
+                handlelength=1.6,
+                handletextpad=0.5,
             )
+            self._series_labels = labels
+
+        for name, values in spl_curves:
+            self._spl_lines[name].set_data(curves.freq_hz, values)
+        for name, values in di_curves:
+            self._di_lines[name].set_data(curves.freq_hz, values)
 
         self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
         self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
 
-        lines, labels = self.axes.get_legend_handles_labels()
-        di_lines, di_labels = self.di_axes.get_legend_handles_labels()
-        self.axes.legend(
-            lines + di_lines,
-            labels + di_labels,
-            loc="upper center",
-            bbox_to_anchor=(0.5, -0.2),
-            ncols=4,
-            borderaxespad=0.0,
-            frameon=False,
-        )
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
+        if self._crosshair_visible:
+            self._redraw_crosshair()
         self.draw_idle()

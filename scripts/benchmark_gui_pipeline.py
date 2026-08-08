@@ -139,14 +139,22 @@ def _collect_julia_results(
         flat_target_normalization_enabled=not args.no_flat_target,
         spherical_sampling_enabled=args.sphere_points > 0,
         spherical_sampling_points=max(1, args.sphere_points),
+        symmetry=args.symmetry,
     )
     backend = create_backend(
-        "julia_local",
+        args.solver_backend,
         julia_executable=args.julia_executable,
         julia_threads=args.julia_threads,
         persistent_worker=not args.no_persistent_worker,
     )
-    session = backend.create_session(SolveRequest(config, frequencies))
+    request = SolveRequest(config, frequencies)
+    for warmup_index in range(args.solver_warmups):
+        print(f"Solver warmup {warmup_index + 1}/{args.solver_warmups}")
+        warmup_session = backend.create_session(request)
+        for _ in warmup_session.solve_stream():
+            pass
+
+    session = backend.create_session(request)
     metadata = session.metadata
 
     results: list[FrequencyResult] = []
@@ -161,8 +169,22 @@ def _collect_julia_results(
         last = now
         results.append(result)
 
+    solver_wall_s = time.perf_counter() - started
+    stage_samples = {
+        "assembly": [result.timings.assembly_s for result in results],
+        "solve": [result.timings.solve_s for result in results],
+        "field": [result.timings.field_s for result in results],
+    }
+    stage_stats = {name: asdict(_stats(samples)) for name, samples in stage_samples.items()}
+    timed_stage_total_s = sum(stats["total_s"] for stats in stage_stats.values())
     extra = {
-        "solver_wall_s": time.perf_counter() - started,
+        "backend": args.solver_backend,
+        "symmetry": args.symmetry,
+        "warmups": args.solver_warmups,
+        "solver_wall_s": solver_wall_s,
+        "solver_stages": stage_stats,
+        "solver_timed_stages_total_s": timed_stage_total_s,
+        "solver_wall_overhead_s": max(0.0, solver_wall_s - timed_stage_total_s),
         "yield_interval": asdict(_stats(yield_intervals)),
         "result_wait": asdict(_stats(result_parse_and_wait)),
     }
@@ -398,6 +420,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mesh", type=Path, default=DEFAULT_SAMPLE_MESH)
     parser.add_argument("--tag", type=int, default=2)
     parser.add_argument("--scale-factor", type=float, default=0.001)
+    parser.add_argument(
+        "--solver-backend",
+        choices=("beat_cpu", "beat_cuda"),
+        default="beat_cpu",
+        help="BEAT Engine backend used by --mode julia (default: beat_cpu).",
+    )
+    parser.add_argument("--symmetry", choices=("off", "x", "xy"), default="off")
+    parser.add_argument(
+        "--solver-warmups",
+        type=int,
+        default=1,
+        help="Whole-job warmups before measured Julia collection (1-3).",
+    )
     parser.add_argument("--julia-executable", default=DEFAULT_JULIA_EXE)
     parser.add_argument("--julia-threads", default="auto")
     parser.add_argument("--no-persistent-worker", action="store_true")
@@ -408,6 +443,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not 1 <= args.solver_warmups <= 3:
+        raise SystemExit("--solver-warmups must be between 1 and 3.")
     refresh_every = max(1, int(args.refresh_every))
     cfg = _prep_config(args)
 
@@ -462,6 +499,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     if collection:
         print(f"solver_wall={collection['solver_wall_s']:.3f} s")
+        for stage_name, stage_stats in collection["solver_stages"].items():
+            _print_stats(f"solver {stage_name}", stage_stats)
+        print(f"solver wall overhead   {collection['solver_wall_overhead_s']:8.3f} s")
         _print_stats("solver yield interval", collection["yield_interval"])
     print()
     _print_stats("add result", replay["add_result"])

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from pathlib import Path
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -17,7 +16,6 @@ from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient,
 from PySide6.QtWidgets import (
     QCheckBox,
     QDockWidget,
-    QFileDialog,
     QFrame,
     QGridLayout,
     QLabel,
@@ -34,10 +32,17 @@ from scipy.interpolate import LinearNDInterpolator
 from scipy.optimize import minimize_scalar
 from scipy.spatial import Delaunay
 
-from blab.balloon import BalloonPrepConfig, prepare_balloon_data
+from blab.balloon import (
+    BalloonPrepConfig,
+    BalloonSurfaceSampler,
+    balloon_surface_points,
+    prepare_balloon_data,
+)
 from blab.exporting import export_balloon_data, export_plot_png
+from blab.paths import APP_ROOT
 from blab.plotting import VisualizerConfig
 from blab.postprocess import _fractional_octave_smooth, _interpolate_isobar_heatmap
+from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window_widgets import DockTitleBar
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -52,7 +57,7 @@ from blab.ui.plots import (
     clear_plot_axes,
 )
 from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
-from blab.ui.theme import APP_ROOT, themed_content_background
+from blab.ui.theme import themed_content_background
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
 HORIZONTAL_ANGLE_SCALAR_NAME = "Horizontal Angle (deg)"
@@ -84,6 +89,7 @@ class BalloonPlotWindow(QMainWindow):
         max_db: float,
         polar_smoothing: int | float | None = 24,
         raw_balloon_data_provider: Callable[[], dict[str, np.ndarray] | None] | None = None,
+        file_dialog_service: FileDialogService | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -111,6 +117,9 @@ class BalloonPlotWindow(QMainWindow):
         self._polar_smoothing = polar_smoothing
         self._mesh_actor = None
         self._balloon_mesh = None
+        self._surface_sampler: BalloonSurfaceSampler | None = None
+        self._prepared_geometry_signature: str | None = None
+        self._mesh_geometry_signature: str | None = None
         self._contour_actors = []
         self._guide_actors_added = False
         self._protractor_actors = []
@@ -120,6 +129,7 @@ class BalloonPlotWindow(QMainWindow):
         self._slice_plot_high_res = False
         self._wavefront_shape_summary_cache = None
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.file_dialogs = file_dialog_service or FileDialogService(self.settings)
 
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("File")
@@ -162,7 +172,7 @@ class BalloonPlotWindow(QMainWindow):
         self.protractor_toggle.setChecked(True)
         self.protractor_toggle.toggled.connect(self._on_protractor_toggled)
 
-        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.92, show_colorbar=False)
+        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.83, show_colorbar=False)
         self.slice_plot.setMinimumSize(330, 286)
         self.slice_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -334,6 +344,13 @@ class BalloonPlotWindow(QMainWindow):
             self._raw_balloon_data,
             BalloonPrepConfig(min_db=self._min_db, max_db=self._max_db),
         )
+        geometry_signature = _balloon_geometry_signature(self._raw_balloon_data)
+        if self._surface_sampler is None or geometry_signature != self._prepared_geometry_signature:
+            self._surface_sampler = BalloonSurfaceSampler(
+                self._prepared["directions_xyz"],
+                self._prepared["triangle_indices"],
+            )
+        self._prepared_geometry_signature = geometry_signature
         self._min_db = float(self._prepared["min_db"])
         self._max_db = float(self._prepared["max_db"])
         self.spl_legend.set_range(self._min_db, self._max_db)
@@ -360,23 +377,22 @@ class BalloonPlotWindow(QMainWindow):
 
     @Slot()
     def _export_balloon_data(self) -> None:
-        output_text = QFileDialog.getExistingDirectory(
+        output_dir = self.file_dialogs.select_directory(
             self,
             "Export balloon data",
-            str(Path.cwd()),
         )
-        if not output_text:
+        if output_dir is None:
             return
 
         try:
             prepared = self._prepared_balloon_data()
-            result = export_balloon_data(prepared, output_text)
+            result = export_balloon_data(prepared, output_dir)
             QMessageBox.information(
                 self,
                 "Balloon data exported",
                 (
                     f"Exported {result.frequency_count} frequencies, "
-                    f"{result.point_count} points, and {result.quad_count} quads to:\n"
+                    f"{result.point_count} points, and {result.triangle_count} triangles to:\n"
                     f"{result.output_dir}"
                 ),
             )
@@ -401,16 +417,15 @@ class BalloonPlotWindow(QMainWindow):
             QMessageBox.warning(self, "No plot data", "Run a solve before saving a plot image.")
             return
 
-        path_text, _ = QFileDialog.getSaveFileName(
+        output_path = self.file_dialogs.save_file(
             self,
             "Save plot image",
-            str(Path.cwd() / "balloon_isobar_slice.png"),
             "PNG images (*.png);;All files (*)",
+            "balloon_isobar_slice.png",
         )
-        if not path_text:
+        if output_path is None:
             return
 
-        output_path = Path(path_text)
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".png")
         try:
@@ -425,16 +440,15 @@ class BalloonPlotWindow(QMainWindow):
             QMessageBox.warning(self, "No plot data", "Run a solve before saving a plot image.")
             return
 
-        path_text, _ = QFileDialog.getSaveFileName(
+        output_path = self.file_dialogs.save_file(
             self,
             "Save plot image",
-            str(Path.cwd() / "forward_beam_shape.png"),
             "PNG images (*.png);;All files (*)",
+            "forward_beam_shape.png",
         )
-        if not path_text:
+        if output_path is None:
             return
 
-        output_path = Path(path_text)
         if output_path.suffix == "":
             output_path = output_path.with_suffix(".png")
         try:
@@ -473,37 +487,57 @@ class BalloonPlotWindow(QMainWindow):
         if index < 0 or self._prepared is None:
             return
 
-        x = self._prepared["balloon_x"][index]
-        y = self._prepared["balloon_y"][index]
-        z = self._prepared["balloon_z"][index]
         spl = self._prepared["balloon_surface_spl"][index]
-        mesh = self._pv.StructuredGrid(x, y, z)
-        mesh[SPL_SCALAR_NAME] = spl.ravel(order="F")
-        mesh[HORIZONTAL_ANGLE_SCALAR_NAME], mesh[VERTICAL_ANGLE_SCALAR_NAME] = _balloon_angle_arrays(
-            self._prepared["theta_grid_rad"],
-            self._prepared["phi_grid_rad"],
+        directions = self._prepared["directions_xyz"]
+        triangles = self._prepared["triangle_indices"]
+        points = balloon_surface_points(directions, spl, self._min_db)
+        topology_matches = (
+            self._balloon_mesh is not None
+            and self._mesh_geometry_signature == self._prepared_geometry_signature
+            and self._balloon_mesh.n_points == directions.shape[0]
+            and self._balloon_mesh.n_cells == triangles.shape[0]
         )
+
+        if topology_matches:
+            mesh = self._balloon_mesh
+            mesh.points = points
+            mesh[SPL_SCALAR_NAME] = spl
+            if "Normals" in mesh.point_data:
+                mesh.compute_normals(cell_normals=False, point_normals=True, inplace=True)
+            mesh.Modified()
+        else:
+            faces = np.column_stack(
+                (np.full(triangles.shape[0], 3, dtype=np.int32), triangles.astype(np.int32, copy=False))
+            ).ravel()
+            mesh = self._pv.PolyData(points, faces)
+            mesh[SPL_SCALAR_NAME] = spl
+            mesh[HORIZONTAL_ANGLE_SCALAR_NAME], mesh[VERTICAL_ANGLE_SCALAR_NAME] = _balloon_angle_arrays(
+                self._prepared["theta_polar_rad"],
+                self._prepared["phi_azimuth_rad"],
+            )
+            self._mesh_geometry_signature = self._prepared_geometry_signature
 
         self.hover_label.setText("")
 
-        if self._mesh_actor is not None:
+        if not topology_matches and self._mesh_actor is not None:
             try:
                 self.plotter.remove_actor(self._mesh_actor, render=False)
             except Exception:
                 pass
         self._balloon_mesh = mesh
-        self._mesh_actor = self.plotter.add_mesh(
-            mesh,
-            scalars=SPL_SCALAR_NAME,
-            cmap="turbo",
-            clim=(self._min_db, self._max_db),
-            smooth_shading=True,
-            show_scalar_bar=False,
-            ambient=0.45,
-            diffuse=0.9,
-            specular=0.18,
-            specular_power=24,
-        )
+        if not topology_matches:
+            self._mesh_actor = self.plotter.add_mesh(
+                mesh,
+                scalars=SPL_SCALAR_NAME,
+                cmap="turbo",
+                clim=(self._min_db, self._max_db),
+                smooth_shading=True,
+                show_scalar_bar=False,
+                ambient=0.45,
+                diffuse=0.9,
+                specular=0.18,
+                specular_power=24,
+            )
 
         self._refresh_spl_contours()
         if not self._guide_actors_added:
@@ -557,6 +591,7 @@ class BalloonPlotWindow(QMainWindow):
         freqs_hz, angles_deg, values_db = _balloon_isobar_slice(
             self._prepared,
             float(self.protractor_angle_slider.value()),
+            sampler=self._surface_sampler,
             clip_min_db=self._min_db,
             angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if final_resolution else LIVE_ISOBAR_ANGLE_SAMPLES,
             freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if final_resolution else LIVE_ISOBAR_FREQ_SAMPLES,
@@ -588,6 +623,7 @@ class BalloonPlotWindow(QMainWindow):
             self._prepared,
             frequency_index,
             float(self.protractor_angle_slider.value()),
+            sampler=self._surface_sampler,
         )
         self.radar_plot.update_plot(angles_deg, values_db)
 
@@ -795,6 +831,15 @@ def _balloon_raw_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:
     return digest.hexdigest()
 
 
+def _balloon_geometry_signature(raw_balloon_data: dict[str, np.ndarray]) -> str:
+    digest = hashlib.blake2b(digest_size=16)
+    for key in ("theta_polar_rad", "phi_azimuth_rad"):
+        array = np.ascontiguousarray(np.asarray(raw_balloon_data.get(key), dtype=np.float32))
+        digest.update(str(array.shape).encode("ascii"))
+        digest.update(array.view(np.uint8))
+    return digest.hexdigest()
+
+
 def _format_frequency(freq_hz: float) -> str:
     if freq_hz >= 1000.0:
         return f"{_format_decimal(freq_hz / 1000.0)} kHz"
@@ -843,12 +888,13 @@ def _balloon_isobar_slice(
     prepared: dict[str, np.ndarray],
     azimuth_deg: float,
     *,
+    sampler: BalloonSurfaceSampler | None = None,
     clip_min_db: float | None = None,
     angle_samples: int | None = None,
     freq_samples: int | None = None,
     octave_smoothing: int | float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg)
+    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg, sampler=sampler)
     values_db = _fractional_octave_smooth(values_db.astype(float, copy=False), freqs_hz.astype(float), octave_smoothing)
     if clip_min_db is not None:
         values_db = np.maximum(values_db, float(clip_min_db))
@@ -871,8 +917,10 @@ def _balloon_radar_slice(
     prepared: dict[str, np.ndarray],
     frequency_index: int,
     azimuth_deg: float,
+    *,
+    sampler: BalloonSurfaceSampler | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg)
+    freqs_hz, angles_deg, values_db = _balloon_raw_slice(prepared, azimuth_deg, sampler=sampler)
     del freqs_hz
     index = int(np.clip(frequency_index, 0, values_db.shape[1] - 1))
     return angles_deg, values_db[:, index].astype(np.float32, copy=False)
@@ -881,37 +929,32 @@ def _balloon_radar_slice(
 def _balloon_raw_slice(
     prepared: dict[str, np.ndarray],
     azimuth_deg: float,
+    *,
+    sampler: BalloonSurfaceSampler | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     freqs_hz = np.asarray(prepared["freq_hz"], dtype=np.float32)
     spl = np.asarray(prepared["balloon_surface_spl"], dtype=np.float32)
-    theta_grid = np.asarray(prepared["theta_grid_rad"], dtype=float)
-    phi_grid = np.asarray(prepared["phi_grid_rad"], dtype=float)
-
-    if spl.ndim != 3 or theta_grid.ndim != 2 or phi_grid.ndim != 2:
-        raise ValueError("Prepared balloon data must contain 3D SPL and 2D angle grids.")
-    if spl.shape[1:] != theta_grid.shape or theta_grid.shape != phi_grid.shape:
-        raise ValueError("Prepared balloon SPL and angle grids must have matching surface shapes.")
-
-    theta_values = theta_grid[:, 0]
-    phi_values = phi_grid[0, :]
-    theta_deg = np.rad2deg(theta_values).astype(np.float32)
-    azimuth_rad = np.deg2rad(float(azimuth_deg) % 360.0)
-    opposite_azimuth_rad = (azimuth_rad + np.pi) % (2.0 * np.pi)
-    positive_phi_index = _nearest_periodic_angle_index(phi_values, azimuth_rad)
-    negative_phi_index = _nearest_periodic_angle_index(phi_values, opposite_azimuth_rad)
-
-    positive_values = spl[:, :, positive_phi_index]
-    negative_values = spl[:, 1:, negative_phi_index][:, ::-1]
-    angles_deg = np.concatenate((-theta_deg[1:][::-1], theta_deg)).astype(np.float32, copy=False)
-    values_db = np.concatenate((negative_values, positive_values), axis=1).T.astype(np.float32, copy=False)
+    directions = np.asarray(prepared["directions_xyz"], dtype=np.float32)
+    triangles = np.asarray(prepared["triangle_indices"], dtype=np.int32)
+    if spl.ndim != 2 or spl.shape != (freqs_hz.size, directions.shape[0]):
+        raise ValueError("Prepared balloon SPL must have shape (frequency, point).")
+    active_sampler = sampler or BalloonSurfaceSampler(directions, triangles)
+    angles_rad, query_directions = _balloon_slice_query_directions(directions.shape[0], azimuth_deg)
+    values_db = active_sampler.interpolate(spl, query_directions).T.astype(np.float32, copy=False)
+    angles_deg = np.rad2deg(angles_rad).astype(np.float32, copy=False)
     return freqs_hz, angles_deg, values_db
 
 
-def _nearest_periodic_angle_index(angles_rad: np.ndarray, target_rad: float) -> int:
-    wrapped_angles = np.mod(np.asarray(angles_rad, dtype=float), 2.0 * np.pi)
-    target = float(target_rad) % (2.0 * np.pi)
-    delta = np.abs((wrapped_angles - target + np.pi) % (2.0 * np.pi) - np.pi)
-    return int(np.argmin(delta))
+def _balloon_slice_query_directions(point_count: int, azimuth_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    approximate_spacing = np.sqrt((4.0 * np.pi) / max(int(point_count), 1))
+    half_count = max(2, int(np.ceil(np.pi / approximate_spacing)))
+    signed_angles = np.linspace(-np.pi, np.pi, 2 * half_count + 1, dtype=float)
+    azimuth = np.deg2rad(float(azimuth_deg))
+    meridian_axis = np.array([np.cos(azimuth), np.sin(azimuth), 0.0], dtype=float)
+    directions = np.sin(signed_angles)[:, np.newaxis] * meridian_axis[np.newaxis, :] + np.cos(signed_angles)[
+        :, np.newaxis
+    ] * np.array([[0.0, 0.0, 1.0]])
+    return signed_angles, directions
 
 
 def _protractor_line_specs(
@@ -1058,8 +1101,8 @@ def _wavefront_shape_summary(
 ) -> dict[str, np.ndarray]:
     freqs_hz = np.asarray(prepared["freq_hz"], dtype=np.float32)
     spl = np.asarray(prepared["balloon_surface_spl"], dtype=np.float32)
-    theta_grid = np.asarray(prepared["theta_grid_rad"], dtype=float)
-    phi_grid = np.asarray(prepared["phi_grid_rad"], dtype=float)
+    theta = np.asarray(prepared["theta_polar_rad"], dtype=float)
+    phi = np.asarray(prepared["phi_azimuth_rad"], dtype=float)
 
     shape = (freqs_hz.size,)
     result = {
@@ -1072,10 +1115,10 @@ def _wavefront_shape_summary(
         "directivity_index_db": _spherical_directivity_index_db(prepared, raw_balloon_data),
         "valid": np.zeros(shape, dtype=bool),
     }
-    if spl.ndim != 3 or spl.shape[0] != freqs_hz.size or spl.shape[1:] != theta_grid.shape:
+    if spl.ndim != 2 or spl.shape != (freqs_hz.size, theta.size) or theta.shape != phi.shape:
         return result
 
-    horizontal_deg, vertical_deg, front_mask = _front_angle_meshes(theta_grid, phi_grid)
+    horizontal_deg, vertical_deg, front_mask = _front_angle_meshes(theta, phi)
     geometry = _front_tangent_geometry(horizontal_deg, vertical_deg, front_mask)
     if geometry is None:
         return result
@@ -1134,23 +1177,10 @@ def _spherical_directivity_index_from_prepared(
     freqs_hz: np.ndarray,
 ) -> np.ndarray:
     spl = np.asarray(prepared.get("balloon_surface_spl"), dtype=float)
-    theta_grid = np.asarray(prepared.get("theta_grid_rad"), dtype=float)
-    phi_grid = np.asarray(prepared.get("phi_grid_rad"), dtype=float)
     output = np.full(freqs_hz.shape, np.nan, dtype=np.float32)
-    if spl.ndim != 3 or spl.shape[0] != freqs_hz.size or spl.shape[1:] != theta_grid.shape:
+    if spl.ndim != 2 or spl.shape[0] != freqs_hz.size or spl.shape[1] == 0:
         return output
-
-    if phi_grid.ndim == 2 and phi_grid.shape[1] >= 2 and np.isclose(phi_grid[0, -1] - phi_grid[0, 0], 2.0 * np.pi):
-        spl = spl[:, :, :-1]
-        theta_grid = theta_grid[:, :-1]
-
-    weights = np.sin(theta_grid)
-    weights = np.where(np.isfinite(weights) & (weights > 0.0), weights, 0.0)
-    weight_sum = float(np.sum(weights))
-    if weight_sum <= 0.0:
-        return output
-
-    energy_mean = np.sum(_db_to_energy(spl) * weights[np.newaxis, :, :], axis=(1, 2)) / weight_sum
+    energy_mean = np.mean(_db_to_energy(spl), axis=1)
     return _directivity_index_from_energy_mean(energy_mean)
 
 
@@ -1243,18 +1273,6 @@ def _front_angle_meshes(theta_rad: np.ndarray, phi_rad: np.ndarray) -> tuple[np.
         & (np.abs(vertical) <= WAVEFRONT_MAX_FRONT_ANGLE_DEG)
     )
     return horizontal, vertical, front_mask
-
-
-def _front_tangent_interpolator(
-    horizontal_deg: np.ndarray,
-    vertical_deg: np.ndarray,
-    spl_db: np.ndarray,
-    front_mask: np.ndarray,
-):
-    geometry = _front_tangent_geometry(horizontal_deg, vertical_deg, front_mask)
-    if geometry is None:
-        return None
-    return geometry.interpolator(spl_db)
 
 
 def _axis_tangent_extent_from_rays(

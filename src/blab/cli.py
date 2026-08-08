@@ -6,6 +6,7 @@ from importlib import import_module
 
 COMMAND_MODULES = {
     "clean": "blab.mesh_clean",
+    "conform-interface": "blab.interface_conform",
     "gui": "blab.gui",
     "server": "blab.server",
     "solve": "blab.solver",
@@ -17,7 +18,7 @@ COMMAND_MODULES = {
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="blab",
-        description="Run Boundary Lab mesh cleaning, solving, preparation, and plotting commands.",
+        description="Run Boundary Lab mesh preparation, solving, postprocessing, and plotting commands.",
     )
     parser.add_argument("command", choices=tuple(COMMAND_MODULES), help="Workflow command to run")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded to the command")

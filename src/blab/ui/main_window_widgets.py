@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QDockWidget, QHBoxLayout, QLabel, QPlainTextEdit, QToolButton, QWidget
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPalette
+from PySide6.QtWidgets import (
+    QDockWidget,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QStyle,
+    QStyleOptionToolButton,
+    QStylePainter,
+    QToolButton,
+    QWidget,
+)
 
 from blab.live import FrequencyResult
-from blab.ui.drag_drop import local_drop_paths
 from blab.ui.result_projection import VisualizationProjection
 
 
@@ -29,43 +37,64 @@ def format_frequency_solve_timings(result: FrequencyResult) -> str:
     return f"Assembly {timings.assembly_s:.2f}s | Solve {timings.solve_s:.2f}s | Field {timings.field_s:.2f}s"
 
 
-class AthScriptEditor(QPlainTextEdit):
-    configDropped = Signal(object)
+def _dock_close_button_glyph() -> tuple[str, QFont | None]:
+    """The classic Win2000 close mark, or a plain "x" when Marlett is absent."""
+    if "Marlett" in QFontDatabase.families():
+        return "r", QFont("Marlett")
+    return "x", None
 
-    def __init__(self, parent: QWidget | None = None):
+
+# Fixed so the button count can't change the bar height.
+DOCK_TITLE_BAR_HEIGHT = 26
+
+TAB_CLOSE_GLYPH_WEIGHT = 0.55
+TAB_CLOSE_BUTTON_FALLBACK_PX = 16
+
+
+def dimmed_button_text_color(palette: QPalette, weight: float = TAB_CLOSE_GLYPH_WEIGHT) -> QColor:
+    """Blend button text toward the button face."""
+    text = palette.color(QPalette.ButtonText)
+    face = palette.color(QPalette.Button)
+    return QColor(
+        round(face.red() + (text.red() - face.red()) * weight),
+        round(face.green() + (text.green() - face.green()) * weight),
+        round(face.blue() + (text.blue() - face.blue()) * weight),
+    )
+
+
+class TabCloseButton(QToolButton):
+    """Tab close control, using the classic dock glyph.
+
+    Replaces Qt's ``SP_TabCloseButton``, a fixed red-orange bitmap that
+    ignores the palette.
+    """
+
+    def __init__(self, tooltip: str, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setObjectName("athScriptEditor")
-        self.setAcceptDrops(True)
+        self.setObjectName("tabCloseButton")
+        self.setAutoRaise(True)
+        self.setToolTip(tooltip)
+        self.setFocusPolicy(Qt.NoFocus)
+        glyph, glyph_font = _dock_close_button_glyph()
+        self.setText(glyph)
+        if glyph_font is not None:
+            self.setFont(glyph_font)
+        # Qt's own size, so the swap keeps the tab height.
+        style = self.style()
+        width = style.pixelMetric(QStyle.PM_TabCloseIndicatorWidth, None, self) or TAB_CLOSE_BUTTON_FALLBACK_PX
+        height = style.pixelMetric(QStyle.PM_TabCloseIndicatorHeight, None, self) or TAB_CLOSE_BUTTON_FALLBACK_PX
+        self.setFixedSize(width, height)
 
-    def dragEnterEvent(self, event) -> None:
-        if self._cfg_drop_path(event) is not None:
-            event.acceptProposedAction()
-            return
-        super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event) -> None:
-        if self._cfg_drop_path(event) is not None:
-            event.acceptProposedAction()
-            return
-        super().dragMoveEvent(event)
-
-    def dropEvent(self, event) -> None:
-        path = self._cfg_drop_path(event)
-        if path is None:
-            super().dropEvent(event)
-            return
-        event.acceptProposedAction()
-        self.configDropped.emit(path)
-
-    @staticmethod
-    def _cfg_drop_path(event) -> Path | None:
-        for path in local_drop_paths(event):
-            if path.suffix.lower() == ".cfg":
-                return path
-        return None
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        painter = QStylePainter(self)
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        # Recoloured per paint, so theme switches need no rewiring.
+        option.palette.setColor(QPalette.ButtonText, dimmed_button_text_color(self.palette()))
+        painter.drawComplexControl(QStyle.CC_ToolButton, option)
 
 
-class DockTitleBar(QWidget):
+class DockTitleBar(QFrame):
     def __init__(
         self,
         title: str,
@@ -75,12 +104,18 @@ class DockTitleBar(QWidget):
         tool_actions: tuple[QAction, ...] = (),
     ):
         super().__init__(dock)
+        self.setObjectName("dockTitleBar")
+        # QFrame paints the bevel; a QSS rule only ever showed under grab().
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Raised)
+        self.setFixedHeight(DOCK_TITLE_BAR_HEIGHT)
         self.dock = dock
         self.tool_buttons: list[QToolButton] = []
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 2, 2)
         layout.setSpacing(4)
         label = QLabel(title)
+        label.setObjectName("dockTitleBarLabel")
         for action in (*(() if save_action is None else (save_action,)), *tool_actions):
             button = QToolButton()
             button.setAutoRaise(True)
@@ -88,14 +123,23 @@ class DockTitleBar(QWidget):
             button.setToolTip(action.toolTip())
             self.tool_buttons.append(button)
         close_button = QToolButton()
+        close_button.setObjectName("dockTitleBarCloseButton")
         close_button.setAutoRaise(True)
-        close_button.setText("x")
+        glyph, glyph_font = _dock_close_button_glyph()
+        close_button.setText(glyph)
+        if glyph_font is not None:
+            close_button.setFont(glyph_font)
         close_button.setToolTip(f"Close {title}")
         close_button.clicked.connect(dock.close)
         layout.addWidget(label, 1)
         for button in self.tool_buttons:
             layout.addWidget(button)
         layout.addWidget(close_button)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt override
+        # QDockWidget lays out using sizeHint(), not setFixedHeight(); override both.
+        hint = super().sizeHint()
+        return QSize(hint.width(), DOCK_TITLE_BAR_HEIGHT)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt override
         self.dock.setFloating(not self.dock.isFloating())
@@ -112,8 +156,10 @@ class DockTitleBar(QWidget):
 
 
 __all__ = [
-    "AthScriptEditor",
+    "TAB_CLOSE_GLYPH_WEIGHT",
     "DockTitleBar",
     "PlotEntry",
+    "TabCloseButton",
+    "dimmed_button_text_color",
     "format_frequency_solve_timings",
 ]

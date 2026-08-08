@@ -1,5 +1,5 @@
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -11,6 +11,7 @@ from blab.ui.project_io import (
     read_project_file,
     write_project_file,
 )
+from repo_paths import REPO_ROOT
 
 
 def test_project_path_gets_default_suffix() -> None:
@@ -20,14 +21,17 @@ def test_project_path_gets_default_suffix() -> None:
 
 def test_project_file_round_trip(tmp_path) -> None:
     payload = build_project_payload(
-        ath_config_text="Ath config text",
-        ath_mesh={
-            "name": "ath",
-            "source_file": "C:/meshes/ath.msh",
-            "cleaned_file": None,
-            "translation_mm": [1, 2, 3],
-            "enabled": True,
-        },
+        generator_documents=[
+            {
+                "id": "design1",
+                "name": "waveguide",
+                "provider_id": "ath",
+                "provider_schema_version": 1,
+                "source": {"format": "ath_cfg", "text": "Ath config text"},
+                "artifact": None,
+            }
+        ],
+        active_generator_document_id="design1",
         imported_meshes=[
             {
                 "name": "enclosure",
@@ -55,6 +59,7 @@ def test_project_file_round_trip(tmp_path) -> None:
                 "lpf": {},
             }
         },
+        component_channel_by_id={"component:woofer": "tweeter"},
     )
 
     project_path = write_project_file(tmp_path / "test_project", payload)
@@ -63,7 +68,20 @@ def test_project_file_round_trip(tmp_path) -> None:
     assert project_path.name == "test_project.blab.json"
     assert loaded == payload
     assert loaded["symmetry"] == "xy"
+    assert loaded["component_channel_by_id"] == {"component:woofer": "tweeter"}
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
+
+
+def test_pending_legacy_source_configuration_can_coexist_with_partial_physical_system() -> None:
+    payload = build_project_payload(
+        generator_documents=[],
+        active_generator_document_id=None,
+        imported_meshes=[],
+        source_config_by_name={"speaker:driver": {"driven": True}},
+        physical_system={"model_version": 1},
+    )
+
+    assert payload["source_config_by_name"] == {"speaker:driver": {"driven": True}}
 
 
 def test_project_file_rejects_unknown_schema(tmp_path) -> None:
@@ -90,10 +108,6 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
         json.dumps(
             {
                 "schema_version": PROJECT_SCHEMA_VERSION,
-                "ath_mesh": {
-                    "source_file": "ath/source.msh",
-                    "cleaned_file": "ath/cleaned.msh",
-                },
                 "imported_meshes": [
                     {
                         "name": "cabinet",
@@ -101,14 +115,19 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
                         "cleaned_file": None,
                     }
                 ],
-                "ath_scripts": [
+                "generator_documents": [
                     {
                         "id": "abc",
-                        "name": "ath",
-                        "output_dir": "runs/case",
-                        "msh_path": "runs/case/case.msh",
-                        "cleaned_msh_path": "",
-                        "config_path": "runs/case/config.txt",
+                        "name": "waveguide",
+                        "provider_id": "ath",
+                        "provider_schema_version": 1,
+                        "source": {"format": "ath_cfg", "text": ""},
+                        "artifact": {
+                            "output_dir": "runs/case",
+                            "mesh_path": "runs/case/case.msh",
+                            "cleaned_mesh_path": "",
+                            "source_path": "runs/case/config.txt",
+                        },
                     }
                 ],
             }
@@ -118,14 +137,13 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
 
     loaded = read_project_file(project_path)
 
-    assert loaded["ath_mesh"]["source_file"] == str((project_dir / "ath/source.msh").resolve())
-    assert loaded["ath_mesh"]["cleaned_file"] == str((project_dir / "ath/cleaned.msh").resolve())
     assert loaded["imported_meshes"][0]["source_file"] == str((project_dir / "meshes/cabinet.msh").resolve())
     assert loaded["imported_meshes"][0]["cleaned_file"] is None
-    assert loaded["ath_scripts"][0]["output_dir"] == str((project_dir / "runs/case").resolve())
-    assert loaded["ath_scripts"][0]["msh_path"] == str((project_dir / "runs/case/case.msh").resolve())
-    assert loaded["ath_scripts"][0]["cleaned_msh_path"] == ""
-    assert loaded["ath_scripts"][0]["config_path"] == str((project_dir / "runs/case/config.txt").resolve())
+    artifact = loaded["generator_documents"][0]["artifact"]
+    assert artifact["output_dir"] == str((project_dir / "runs/case").resolve())
+    assert artifact["mesh_path"] == str((project_dir / "runs/case/case.msh").resolve())
+    assert artifact["cleaned_mesh_path"] == ""
+    assert artifact["source_path"] == str((project_dir / "runs/case/config.txt").resolve())
 
 
 def test_project_migration_rejects_non_integer_schema() -> None:
@@ -137,13 +155,60 @@ def test_schema_v1_migrates_without_application_preference_override() -> None:
     migrated = migrate_project_payload({"schema_version": 1, "ath_config_text": "legacy"})
 
     assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert migrated["generator_documents"][0]["provider_id"] == "ath"
+    assert migrated["generator_documents"][0]["source"] == {"format": "ath_cfg", "text": "legacy"}
     assert "project_preferences" not in migrated
+
+
+def test_schema_v2_migrates_every_ath_script_to_generator_document() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 2,
+            "active_ath_script_id": "second",
+            "ath_scripts": [
+                {"id": "first", "name": "hf", "config_text": "first config"},
+                {"id": "second", "name": "lf", "config_text": "second config"},
+            ],
+        }
+    )
+
+    assert migrated["active_generator_document_id"] == "second"
+    assert [document["provider_id"] for document in migrated["generator_documents"]] == ["ath", "ath"]
+    assert [document["source"]["text"] for document in migrated["generator_documents"]] == [
+        "first config",
+        "second config",
+    ]
+
+
+def test_schema_v3_migrates_without_inventing_a_physical_system() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 3,
+            "generator_documents": [],
+            "imported_meshes": [],
+        }
+    )
+
+    assert migrated["schema_version"] == PROJECT_SCHEMA_VERSION
+    assert "physical_system" not in migrated
+
+
+def test_legacy_stitch_setting_migrates_to_exterior_region_name() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 5,
+            "stitch_imported_meshes": True,
+        }
+    )
+
+    assert migrated["stitch_exterior_meshes"] is True
+    assert "stitch_imported_meshes" not in migrated
 
 
 def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     payload = build_project_payload(
-        ath_config_text="",
-        ath_mesh={},
+        generator_documents=[],
+        active_generator_document_id=None,
         imported_meshes=[],
         source_config_by_name={},
         project_preferences={
@@ -151,6 +216,7 @@ def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
             "solve_backend": "bempp",
             "gmres_tolerance": 1e-8,
             "use_burton_miller": False,
+            "fem_bulk_loss_factor": 0.02,
         },
     )
 
@@ -159,13 +225,62 @@ def test_project_preferences_are_optional_and_drop_solver_settings() -> None:
     assert "solve_backend" not in saved_preferences
     assert "gmres_tolerance" not in saved_preferences
     assert "use_burton_miller" not in saved_preferences
+    assert "fem_bulk_loss_factor" not in saved_preferences
 
 
-def test_shipped_examples_do_not_request_preference_overrides() -> None:
-    example_paths = sorted(Path("examples").glob("**/*.blab.json"))
+def test_legacy_global_fem_loss_migrates_to_each_bounded_region() -> None:
+    migrated = migrate_project_payload(
+        {
+            "schema_version": 6,
+            "project_preferences": {"fem_bulk_loss_factor": 0.02},
+            "physical_system": {
+                "regions": [
+                    {"id": "interior", "kind": "bounded_air", "loss_model": {}},
+                    {"id": "exterior", "kind": "unbounded_air", "loss_model": {}},
+                ]
+            },
+        }
+    )
 
+    assert "fem_bulk_loss_factor" not in migrated["project_preferences"]
+    assert migrated["physical_system"]["regions"][0]["loss_model"] == {"bulk_loss_factor": 0.02}
+    assert migrated["physical_system"]["regions"][1]["loss_model"] == {}
+
+
+def _shipped_project_paths() -> list[Path]:
+    return sorted(
+        [
+            *(REPO_ROOT / "examples").glob("**/*.blab.json"),
+            *(REPO_ROOT / "tests" / "fixtures").glob("**/*.blab.json"),
+        ]
+    )
+
+
+def _project_mesh_paths(payload: dict) -> list[str]:
+    paths = []
+    for mesh in payload.get("imported_meshes", []):
+        paths.extend(str(value) for field in ("source_file", "cleaned_file") if (value := mesh.get(field)))
+    for mesh in (payload.get("physical_system") or {}).get("meshes", []):
+        if value := mesh.get("file"):
+            paths.append(str(value))
+    return paths
+
+
+def test_shipped_projects_use_current_schema_and_portable_mesh_paths() -> None:
+    example_paths = _shipped_project_paths()
+
+    # Prevent an incorrect working directory from turning this into a vacuous pass.
     assert example_paths
     for example_path in example_paths:
         payload = json.loads(example_path.read_text(encoding="utf-8"))
         assert payload["schema_version"] == PROJECT_SCHEMA_VERSION
-        assert "project_preferences" not in payload
+        for mesh_path in _project_mesh_paths(payload):
+            assert not PureWindowsPath(mesh_path).is_absolute(), f"machine-specific path in {example_path}: {mesh_path}"
+            assert not PurePosixPath(mesh_path).is_absolute(), f"machine-specific path in {example_path}: {mesh_path}"
+            assert (example_path.parent / mesh_path).is_file(), f"missing project asset in {example_path}: {mesh_path}"
+
+        preferences = payload.get("project_preferences", {})
+        assert "solve_backend" not in preferences
+        assert "gmres_tolerance" not in preferences
+        assert "use_burton_miller" not in preferences
+        assert "fem_bulk_loss_factor" not in preferences
