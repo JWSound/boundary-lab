@@ -22,9 +22,7 @@ design with other tools.
 
 <img src="../assets/scripteditor.png" alt="Ath waveguide design editor" width="300">
 
-Use the tab controls to add, remove, and rename designs. Double-click a tab to
-rename it. Each enabled design contributes its generated mesh to the project,
-which makes it possible to assemble multiway models or compare alternatives.
+Ath scripts can be added, removed, and renamed using the tab controls at the top of the editor pane. To rename a script, double click its tab. Multi-script workflows can be useful for complex multiway designs (see /examples/MultiAth+Mesh_3WayIntegrated), or workflows where you might be comparing outputs on the same script with different values by copy/pasting it into multiple script tabs and enabling/disabling them in the `Mesh Config` window.
 
 ## 3D Mesh Preview
 
