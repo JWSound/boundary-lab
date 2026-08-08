@@ -182,9 +182,7 @@ class MeshWorkflowMixin:
             cursor_set = True
             self.show_status(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
             physical_system = self._project_document().physical_system
-            interface_bem_names = set(
-                interface_bem_mesh_names_for_changes(physical_system, set(updated_names))
-            )
+            interface_bem_names = set(interface_bem_mesh_names_for_changes(physical_system, set(updated_names)))
             reload_candidates = tuple(
                 replace(mesh, cleaned_file=None) if mesh.name in interface_bem_names else mesh
                 for mesh in self.imported_meshes
@@ -192,9 +190,7 @@ class MeshWorkflowMixin:
             reloaded_meshes = self._clean_imported_meshes(reload_candidates)
             rebuilt_interface_count = 0
             if physical_system is not None and interface_bem_names:
-                generated_meshes = tuple(
-                    mesh for mesh in self.mesh_entries_for_symmetry("off") if mesh.locked
-                )
+                generated_meshes = tuple(mesh for mesh in self.mesh_entries_for_symmetry("off") if mesh.locked)
                 available_meshes = inspect_system_meshes((*generated_meshes, *reloaded_meshes))
                 rebuild = rebuild_configured_interfaces(
                     physical_system,
@@ -215,8 +211,7 @@ class MeshWorkflowMixin:
             self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             names = ", ".join(updated_names)
             interface_text = (
-                f"; rebuilt {rebuilt_interface_count} interface"
-                f"{'s' if rebuilt_interface_count != 1 else ''}"
+                f"; rebuilt {rebuilt_interface_count} interface{'s' if rebuilt_interface_count != 1 else ''}"
                 if rebuilt_interface_count
                 else ("; interfaces verified" if interface_bem_names else "")
             )
@@ -404,15 +399,11 @@ class MeshWorkflowMixin:
             if not mesh_configs:
                 self.clear_mesh_preview()
                 return
-            interface_surfaces, component_surfaces, mesh_regions, _has_interior = (
-                _physical_system_preview_metadata(
-                    self._project_document().physical_system,
-                    assembly.surface_tags_by_mesh,
-                )
+            interface_surfaces, component_surfaces, mesh_regions, _has_interior = _physical_system_preview_metadata(
+                self._project_document().physical_system,
+                assembly.surface_tags_by_mesh,
             )
-            driven_surfaces = {
-                (radiator.mesh, radiator.tag) for radiator in assembly.radiators
-            } | component_surfaces
+            driven_surfaces = {(radiator.mesh, radiator.tag) for radiator in assembly.radiators} | component_surfaces
             self.show_mesh_preview(
                 mesh_configs,
                 driven_surfaces=driven_surfaces,
@@ -436,15 +427,11 @@ class MeshWorkflowMixin:
             surface_tags_by_mesh = {
                 mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
             }
-            interface_surfaces, component_surfaces, mesh_regions, _has_interior = (
-                _physical_system_preview_metadata(
-                    self._project_document().physical_system,
-                    surface_tags_by_mesh,
-                )
+            interface_surfaces, component_surfaces, mesh_regions, _has_interior = _physical_system_preview_metadata(
+                self._project_document().physical_system,
+                surface_tags_by_mesh,
             )
-            driven_surfaces = {
-                (radiator.mesh, radiator.tag) for radiator in self.all_radiators()
-            } | component_surfaces
+            driven_surfaces = {(radiator.mesh, radiator.tag) for radiator in self.all_radiators()} | component_surfaces
             self.show_mesh_preview(
                 mesh_configs,
                 driven_surfaces=driven_surfaces,

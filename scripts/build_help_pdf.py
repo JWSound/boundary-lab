@@ -325,15 +325,9 @@ def _plain_matrix(body: str) -> list[str]:
     rows = [row.strip() for row in body.strip().split(r"\\") if row.strip()]
     cells = [[_plain_math_text(cell.strip()) for cell in row.split("&")] for row in rows]
     column_count = max(len(row) for row in cells)
-    widths = [
-        max(len(row[column]) if column < len(row) else 0 for row in cells)
-        for column in range(column_count)
-    ]
+    widths = [max(len(row[column]) if column < len(row) else 0 for row in cells) for column in range(column_count)]
     content = [
-        "  ".join(
-            (row[column] if column < len(row) else "").rjust(widths[column])
-            for column in range(column_count)
-        )
+        "  ".join((row[column] if column < len(row) else "").rjust(widths[column]) for column in range(column_count))
         for row in cells
     ]
     if len(content) == 1:

@@ -79,9 +79,8 @@ class StateSyncMixin:
         if not hasattr(self, "show_interior_regions_action"):
             return
         system = getattr(self._project_document(), "physical_system", None)
-        has_interior_region = (
-            system is not None
-            and any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
+        has_interior_region = system is not None and any(
+            region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions
         )
         self.show_interior_regions_action.setEnabled(has_interior_region)
         self.show_exterior_region_action.setEnabled(has_interior_region)

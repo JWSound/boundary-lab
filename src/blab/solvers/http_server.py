@@ -151,8 +151,7 @@ class HttpServerSession:
                     raise RuntimeError(f"Server event stream could not reconnect: {exc}") from exc
                 delay_s = min(float(consecutive_errors), 5.0)
                 self._emit_status(
-                    f"Server event stream interrupted; reconnecting in {delay_s:g}s "
-                    f"({consecutive_errors}/5)..."
+                    f"Server event stream interrupted; reconnecting in {delay_s:g}s ({consecutive_errors}/5)..."
                 )
                 time.sleep(delay_s)
             finally:

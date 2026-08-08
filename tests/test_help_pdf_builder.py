@@ -51,9 +51,7 @@ def test_help_pdf_combined_markdown_normalizes_images_and_math(tmp_path: Path) -
 
 
 def test_help_pdf_math_normalization_and_matrix_fallback_are_readable() -> None:
-    assert _normalize_math_expression(r"\mathbf n\mathbin{\cdot}\mathbf d") == (
-        r"\mathbf{n}\cdot\mathbf{d}"
-    )
+    assert _normalize_math_expression(r"\mathbf n\mathbin{\cdot}\mathbf d") == (r"\mathbf{n}\cdot\mathbf{d}")
 
     fallback = _plain_math_expression(
         "\\begin{bmatrix}\nA_F & 0 "

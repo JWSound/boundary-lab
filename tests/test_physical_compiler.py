@@ -225,9 +225,7 @@ def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
     exterior = next(
-        region
-        for region in session.request.compiled_system.regions
-        if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+        region for region in session.request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
     )
     assert exterior.mesh_ids == ("mesh:bem", "mesh:bem-phase-plug")
 
@@ -349,7 +347,9 @@ def test_coupled_backend_accepts_region_fem_bulk_loss_and_wall_impedance() -> No
 
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
-    interior = next(region for region in session.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR)
+    interior = next(
+        region for region in session.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
+    )
     wall = next(boundary for boundary in session.request.compiled_system.boundaries if boundary.id == "boundary:wall")
     assert interior.loss_model["bulk_loss_factor"] == pytest.approx(0.01)
     assert wall.parameters["wall_impedance"]["thickness_m"] == pytest.approx(0.03)
@@ -365,9 +365,7 @@ def test_coupled_backend_rejects_unsupported_physical_roles_before_starting_juli
     unsupported = replace(
         compiled,
         boundaries=tuple(
-            replace(boundary, kind=BoundaryKind.IMPEDANCE)
-            if boundary.id == wall.id
-            else boundary
+            replace(boundary, kind=BoundaryKind.IMPEDANCE) if boundary.id == wall.id else boundary
             for boundary in compiled.boundaries
         ),
     )
@@ -400,10 +398,7 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
-    assert (
-        "Linear single-axis rigid-body electrodynamic transducers with dry moving mass"
-        in assumptions
-    )
+    assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
 @pytest.mark.parametrize(
@@ -441,9 +436,7 @@ def test_coupled_backend_rejects_incomplete_or_mms_transducer_parameters(
 ) -> None:
     system = _electrodynamic_fixture_system()
     component = replace(system.components[0], parameters=parameters)
-    compiled = PhysicalSystemCompiler().compile(
-        replace(system, components=(component,))
-    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
@@ -540,13 +533,7 @@ def test_skram_multi_chamber_model_compiles_with_shared_fractional_driver(
     )
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
-    assert len(
-        [
-            region
-            for region in compiled.regions
-            if region.kind == AcousticRegionKind.BOUNDED_AIR
-        ]
-    ) == 2
+    assert len([region for region in compiled.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]) == 2
     assert len(compiled.interfaces) == 2
     assert compiled.components[0].boundary_ids == (
         "boundary:front-radiator",
@@ -621,9 +608,7 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia electrodynamic integration.",
 )
 def test_coupled_reference_backend_solves_bidirectional_electrodynamic_fixture() -> None:
-    compiled = PhysicalSystemCompiler().compile(
-        _bidirectional_electrodynamic_fixture_system()
-    )
+    compiled = PhysicalSystemCompiler().compile(_bidirectional_electrodynamic_fixture_system())
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
@@ -656,9 +641,10 @@ def test_coupled_reference_backend_solves_bidirectional_electrodynamic_fixture()
     velocity = quantities["output:velocity"].values[0, 0]
     current = quantities["output:current"].values[0, 0]
     electrical_impedance = 6.0 - 1j * 2.0 * np.pi * 500.0 * 0.0005
-    electrical_residual = abs(
-        electrical_impedance * current + 7.0 * velocity - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-    ) / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    electrical_residual = (
+        abs(electrical_impedance * current + 7.0 * velocity - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V)
+        / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    )
 
     assert quantities["output:velocity"].unit == "m/s"
     assert quantities["output:current"].unit == "A"
@@ -728,9 +714,7 @@ def test_coupled_reference_backend_solves_sealed_zero_interface_fixture() -> Non
     reason="Set BLAB_RUN_COUPLED_CUDA=1 to run electrodynamic CPU/CUDA parity.",
 )
 def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
-    compiled = PhysicalSystemCompiler().compile(
-        _bidirectional_electrodynamic_fixture_system()
-    )
+    compiled = PhysicalSystemCompiler().compile(_bidirectional_electrodynamic_fixture_system())
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(500.0,),
@@ -770,9 +754,7 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
     cuda_quantities = {quantity.id: quantity.values for quantity in cuda_result.quantities}
     for quantity_id in cpu_quantities:
         scale = max(float(np.linalg.norm(cpu_quantities[quantity_id])), np.finfo(float).eps)
-        relative_error = float(
-            np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])
-        ) / scale
+        relative_error = float(np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])) / scale
         assert relative_error < 5e-3, (
             quantity_id,
             relative_error,
@@ -832,9 +814,7 @@ def test_coupled_sealed_zero_interface_cuda_matches_cpu() -> None:
     cuda_quantities = {quantity.id: quantity.values for quantity in cuda_result.quantities}
     for quantity_id in cpu_quantities:
         scale = max(float(np.linalg.norm(cpu_quantities[quantity_id])), np.finfo(float).eps)
-        relative_error = float(
-            np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])
-        ) / scale
+        relative_error = float(np.linalg.norm(cuda_quantities[quantity_id] - cpu_quantities[quantity_id])) / scale
         assert relative_error < 5e-3, (quantity_id, relative_error)
     assert cpu_result.diagnostics["interface_count"] == 0
     assert cuda_result.diagnostics["interface_count"] == 0
@@ -934,11 +914,10 @@ def test_skram_multi_chamber_cuda_condensed_solve(tmp_path: Path) -> None:
     velocity = quantities["output:velocity"].values[0, 0]
     current = quantities["output:current"].values[0, 0]
     electrical_impedance = 6.0 - 1j * 2.0 * np.pi * 200.0 * 0.0005
-    electrical_residual = abs(
-        electrical_impedance * current
-        + 7.0 * velocity
-        - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-    ) / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    electrical_residual = (
+        abs(electrical_impedance * current + 7.0 * velocity - DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V)
+        / DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
+    )
 
     assert np.isfinite(velocity)
     assert np.isfinite(current)
@@ -1057,11 +1036,7 @@ def _electrodynamic_fixture_system() -> PhysicalSystem:
 
 def _bidirectional_electrodynamic_fixture_system() -> PhysicalSystem:
     system = _electrodynamic_fixture_system()
-    exterior_boundary = next(
-        boundary
-        for boundary in system.boundaries
-        if boundary.id == "boundary:exterior"
-    )
+    exterior_boundary = next(boundary for boundary in system.boundaries if boundary.id == "boundary:exterior")
     moving_exterior = replace(exterior_boundary, kind=BoundaryKind.MOVING)
     component = replace(
         system.components[0],
@@ -1070,8 +1045,7 @@ def _bidirectional_electrodynamic_fixture_system() -> PhysicalSystem:
     return replace(
         system,
         boundaries=tuple(
-            moving_exterior if boundary.id == moving_exterior.id else boundary
-            for boundary in system.boundaries
+            moving_exterior if boundary.id == moving_exterior.id else boundary for boundary in system.boundaries
         ),
         components=(component,),
     )
@@ -1082,9 +1056,7 @@ def _sealed_electrodynamic_fixture_system() -> PhysicalSystem:
     return replace(
         system,
         boundaries=tuple(
-            replace(boundary, kind=BoundaryKind.RIGID)
-            if boundary.kind == BoundaryKind.INTERFACE
-            else boundary
+            replace(boundary, kind=BoundaryKind.RIGID) if boundary.kind == BoundaryKind.INTERFACE else boundary
             for boundary in system.boundaries
         ),
         interfaces=(),

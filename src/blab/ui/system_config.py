@@ -190,9 +190,7 @@ class _RegionMeshCombo(QComboBox):
         for mesh_name in self._mesh_names:
             item = QListWidgetItem(mesh_name)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if mesh_name in previous else Qt.CheckState.Unchecked
-            )
+            item.setCheckState(Qt.CheckState.Checked if mesh_name in previous else Qt.CheckState.Unchecked)
             mesh_list.addItem(item)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -212,11 +210,7 @@ class _RegionMeshCombo(QComboBox):
 
     def _set_summary_item(self, selected: tuple[str, ...]) -> None:
         summary_index = next(
-            (
-                index
-                for index in range(self.count())
-                if isinstance(self.itemData(index), tuple)
-            ),
+            (index for index in range(self.count()) if isinstance(self.itemData(index), tuple)),
             -1,
         )
         label = ", ".join(selected)
@@ -251,9 +245,7 @@ def infer_component_motion_axis(
     if not boundaries:
         raise ValueError("Select at least one moving boundary before inferring its motion axis.")
     symmetry_axes = tuple(str(axis).strip().lower() for axis in fractional_symmetry_axes)
-    if len(symmetry_axes) != len(set(symmetry_axes)) or any(
-        axis not in {"x", "y"} for axis in symmetry_axes
-    ):
+    if len(symmetry_axes) != len(set(symmetry_axes)) or any(axis not in {"x", "y"} for axis in symmetry_axes):
         raise ValueError("Fractional symmetry axes must be unique axis names chosen from X and Y.")
     cache = {} if mesh_cache is None else mesh_cache
     tensors = []
@@ -340,9 +332,7 @@ def _boundary_normal_tensor(mesh: meshio.Mesh, boundary: Boundary) -> tuple[np.n
     if boundary.group.name is not None:
         field = mesh.field_data.get(boundary.group.name)
         if field is None:
-            raise ValueError(
-                f"Mesh '{boundary.group.mesh_id}' does not contain surface group '{boundary.group.name}'."
-            )
+            raise ValueError(f"Mesh '{boundary.group.mesh_id}' does not contain surface group '{boundary.group.name}'.")
         tag, dimension = map(int, np.asarray(field).tolist())
         if dimension != 2:
             raise ValueError(f"Physical group '{boundary.group.name}' is not a surface group.")
@@ -532,9 +522,7 @@ def rebuild_configured_interfaces(
                 "requires an imported BEM mesh."
             )
         if available.has_tetrahedra:
-            raise InterfaceConformError(
-                f"Interface rebuild target '{bem_resource.name}' contains FEM volume elements."
-            )
+            raise InterfaceConformError(f"Interface rebuild target '{bem_resource.name}' contains FEM volume elements.")
 
         bem_mesh = transformed(bem_resource)
         rebuilt = False
@@ -576,9 +564,7 @@ def rebuild_configured_interfaces(
                     bem_interface_name=interface_bem_name,
                     merge_tolerance=1e-8,
                     symmetry_mode=normalized_symmetry,
-                    protected_bem_interface_names=tuple(
-                        name for name in protected_names if name != interface_bem_name
-                    ),
+                    protected_bem_interface_names=tuple(name for name in protected_names if name != interface_bem_name),
                 )
                 rebuilt = True
                 rebuilt_interface_ids.append(interface.id)
@@ -699,9 +685,7 @@ class _ComponentEditorDialog(QDialog):
                 Qt.CheckState.Checked if boundary.id in draft.boundary_ids else Qt.CheckState.Unchecked
             )
             self.boundary_table.setItem(row, 0, use_item)
-            name_item = QTableWidgetItem(
-                boundary.name + (" (assigned to another component)" if unavailable else "")
-            )
+            name_item = QTableWidgetItem(boundary.name + (" (assigned to another component)" if unavailable else ""))
             region_item = QTableWidgetItem(region_name)
             for display_item in (name_item, region_item):
                 display_item.setFlags(display_item.flags() & ~Qt.ItemIsEditable)
@@ -780,9 +764,7 @@ class _ComponentEditorDialog(QDialog):
         transducer_layout.addLayout(transducer_form)
         transducer_layout.addLayout(axis_form)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
 
@@ -831,9 +813,7 @@ class _ComponentEditorDialog(QDialog):
         if kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
             symmetry_inference = self._infer_component_symmetry()
             if symmetry_inference is None:
-                raise ValueError(
-                    self._symmetry_inference_error or "Component symmetry could not be inferred."
-                )
+                raise ValueError(self._symmetry_inference_error or "Component symmetry could not be inferred.")
             parameters = {}
             for key, label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
                 text = self.parameter_edits[key].text().strip()
@@ -921,8 +901,7 @@ class _ComponentEditorDialog(QDialog):
     def _selected_boundaries_changed(self, item: QTableWidgetItem) -> None:
         if item.column() == 0:
             self.boundary_weight_spins[item.row()].setEnabled(
-                bool(item.flags() & Qt.ItemFlag.ItemIsEnabled)
-                and item.checkState() == Qt.CheckState.Checked
+                bool(item.flags() & Qt.ItemFlag.ItemIsEnabled) and item.checkState() == Qt.CheckState.Checked
             )
         self._infer_component_symmetry()
         if self.axis_mode_combo.currentData() == "automatic":
@@ -1017,12 +996,7 @@ class _WallImpedanceDialog(QDialog):
         self.thickness_spin.setSingleStep(5.0)
         self.thickness_spin.setSuffix(" mm")
         self.thickness_spin.setValue(
-            1000.0
-            * float(
-                DEFAULT_WALL_LINING_THICKNESS_M
-                if treatment is None
-                else treatment["thickness_m"]
-            )
+            1000.0 * float(DEFAULT_WALL_LINING_THICKNESS_M if treatment is None else treatment["thickness_m"])
         )
         self.flow_resistivity_spin = QDoubleSpinBox()
         self.flow_resistivity_spin.setRange(1.0, 10_000_000.0)
@@ -1042,7 +1016,9 @@ class _WallImpedanceDialog(QDialog):
         self.thickness_spin.setEnabled(self.enabled_check.isChecked())
         self.flow_resistivity_spin.setEnabled(self.enabled_check.isChecked())
 
-        note = QLabel("Rigid-backed porous lining approximation. Generic loose polyfill defaults to 30 mm and 5,000 Pa·s/m².")
+        note = QLabel(
+            "Rigid-backed porous lining approximation. Generic loose polyfill defaults to 30 mm and 5,000 Pa·s/m²."
+        )
         note.setWordWrap(True)
         form = QFormLayout()
         form.addRow("Lining thickness", self.thickness_spin)
@@ -1088,8 +1064,7 @@ class SystemConfigDialog(QDialog):
         self._meshes = tuple(meshes)
         self._mesh_by_name = {mesh.name: mesh for mesh in meshes}
         self._symmetry_analysis_mesh_by_name = {
-            mesh.name: mesh
-            for mesh in (meshes if symmetry_analysis_meshes is None else symmetry_analysis_meshes)
+            mesh.name: mesh for mesh in (meshes if symmetry_analysis_meshes is None else symmetry_analysis_meshes)
         }
         self._initial_system = system
         self._channel_names = channel_names or ("main",)
@@ -1153,9 +1128,7 @@ class SystemConfigDialog(QDialog):
 
     def _build_regions_tab(self) -> None:
         self.regions_table = QTableWidget(0, 5)
-        self.regions_table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"]
-        )
+        self.regions_table.setHorizontalHeaderLabels(["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"])
         self.regions_table.verticalHeader().setVisible(False)
         self.regions_table.setAlternatingRowColors(True)
         self.regions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -1194,8 +1167,7 @@ class SystemConfigDialog(QDialog):
         self.boundaries_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.boundaries_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         note = QLabel(
-            "Classify every surface used by a region. Boundary Lab auto-detects interface pairs when "
-            "assigned here."
+            "Classify every surface used by a region. Boundary Lab auto-detects interface pairs when assigned here."
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(self.boundaries_tab)
@@ -1227,9 +1199,7 @@ class SystemConfigDialog(QDialog):
 
     def _build_components_tab(self) -> None:
         self.components_table = QTableWidget(0, 5)
-        self.components_table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Moving Boundaries", "Symmetry", "Channel"]
-        )
+        self.components_table.setHorizontalHeaderLabels(["Name", "Type", "Moving Boundaries", "Symmetry", "Channel"])
         self.components_table.verticalHeader().setVisible(False)
         self.components_table.setAlternatingRowColors(True)
         self.components_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1266,9 +1236,7 @@ class SystemConfigDialog(QDialog):
             resources = {mesh.id: mesh for mesh in self._initial_system.meshes}
             for region in self._initial_system.regions:
                 region_resources = tuple(
-                    resource
-                    for mesh_id in region.mesh_ids
-                    if (resource := resources.get(mesh_id)) is not None
+                    resource for mesh_id in region.mesh_ids if (resource := resources.get(mesh_id)) is not None
                 )
                 volume_name = region.volume_groups[0].name if region.volume_groups else None
                 mesh_names = tuple(
@@ -1401,8 +1369,7 @@ class SystemConfigDialog(QDialog):
 
     def _refresh_interfaces_tab_availability(self, _index: int = -1) -> None:
         has_bounded_region = any(
-            self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR
-            for row in range(self.regions_table.rowCount())
+            self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR for row in range(self.regions_table.rowCount())
         )
         tab_index = self.tabs.indexOf(self.interfaces_tab)
         self.tabs.setTabEnabled(tab_index, has_bounded_region)
@@ -1519,14 +1486,14 @@ class SystemConfigDialog(QDialog):
         impedance_button = QPushButton()
         impedance_button.setProperty("boundary_parameters", dict(parameters))
         impedance_button.clicked.connect(
-            lambda _checked=False, button=impedance_button, assignment=combo, bounded=(
-                region["kind"] == AcousticRegionKind.BOUNDED_AIR
-            ): self._edit_wall_impedance(button, assignment, bounded)
+            lambda _checked=False, button=impedance_button, assignment=combo, bounded=(region["kind"] == AcousticRegionKind.BOUNDED_AIR): (
+                self._edit_wall_impedance(button, assignment, bounded)
+            )
         )
         combo.currentIndexChanged.connect(
-            lambda _index, button=impedance_button, assignment=combo, bounded=(
-                region["kind"] == AcousticRegionKind.BOUNDED_AIR
-            ): self._refresh_wall_impedance_button(button, assignment, bounded)
+            lambda _index, button=impedance_button, assignment=combo, bounded=(region["kind"] == AcousticRegionKind.BOUNDED_AIR): (
+                self._refresh_wall_impedance_button(button, assignment, bounded)
+            )
         )
         self.boundaries_table.setCellWidget(row, 4, impedance_button)
         self._refresh_wall_impedance_button(
@@ -1637,8 +1604,7 @@ class SystemConfigDialog(QDialog):
                                 protected_bem_interface_names=tuple(
                                     str(other.group.name)
                                     for other in unbounded
-                                    if other.id != bem_boundary.id
-                                    and other.group.name is not None
+                                    if other.id != bem_boundary.id and other.group.name is not None
                                 ),
                             )
                         )
@@ -1914,11 +1880,7 @@ class SystemConfigDialog(QDialog):
         self._render_components_table()
 
     def _moving_boundaries(self) -> tuple[Boundary, ...]:
-        return tuple(
-            boundary
-            for boundary in self._collect_boundaries()
-            if boundary.kind == BoundaryKind.MOVING
-        )
+        return tuple(boundary for boundary in self._collect_boundaries() if boundary.kind == BoundaryKind.MOVING)
 
     def _refresh_components_boundary_choices(self) -> None:
         self._render_components_table()
@@ -1998,9 +1960,7 @@ class SystemConfigDialog(QDialog):
             symmetry_summary = "Handled by acoustic symmetry"
             if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
                 selected = tuple(
-                    boundaries[boundary_id]
-                    for boundary_id in draft.boundary_ids
-                    if boundary_id in boundaries
+                    boundaries[boundary_id] for boundary_id in draft.boundary_ids if boundary_id in boundaries
                 )
                 try:
                     inference = infer_component_symmetry(
@@ -2070,9 +2030,7 @@ class SystemConfigDialog(QDialog):
         else:
             self._component_drafts[row] = updated
         self._render_components_table()
-        self.components_table.selectRow(
-            len(self._component_drafts) - 1 if row is None else row
-        )
+        self.components_table.selectRow(len(self._component_drafts) - 1 if row is None else row)
 
     def _symmetry_analysis_resources_by_id(
         self,
@@ -2103,9 +2061,7 @@ class SystemConfigDialog(QDialog):
             if draft.kind != ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
                 continue
             selected = tuple(
-                boundaries_by_id[boundary_id]
-                for boundary_id in draft.boundary_ids
-                if boundary_id in boundaries_by_id
+                boundaries_by_id[boundary_id] for boundary_id in draft.boundary_ids if boundary_id in boundaries_by_id
             )
             inference = infer_component_symmetry(
                 selected,
@@ -2113,11 +2069,7 @@ class SystemConfigDialog(QDialog):
                 self._symmetry_mode,
                 mesh_cache=self._motion_axis_mesh_cache,
             )
-            parameters = {
-                key: value
-                for key, value in draft.parameters.items()
-                if key not in SYMMETRY_PARAMETER_KEYS
-            }
+            parameters = {key: value for key, value in draft.parameters.items() if key not in SYMMETRY_PARAMETER_KEYS}
             parameters.update(inference.parameters())
             draft.parameters = parameters
 
@@ -2151,8 +2103,7 @@ class SystemConfigDialog(QDialog):
             for boundary_id in draft.boundary_ids:
                 if boundary_id not in moving_boundaries:
                     raise ValueError(
-                        f"Component '{name}' references a boundary that is missing or no longer moving: "
-                        f"{boundary_id}."
+                        f"Component '{name}' references a boundary that is missing or no longer moving: {boundary_id}."
                     )
                 if boundary_id in used_boundaries:
                     raise ValueError("Each moving boundary can belong to only one component.")
@@ -2187,9 +2138,7 @@ class SystemConfigDialog(QDialog):
                 else ExcitationPortKind.NORMAL_VELOCITY
             )
             default_port_name = (
-                f"{name} voltage"
-                if port_kind == ExcitationPortKind.VOLTAGE
-                else f"{name} unit normal velocity"
+                f"{name} voltage" if port_kind == ExcitationPortKind.VOLTAGE else f"{name} unit normal velocity"
             )
             ports.append(
                 ExcitationPort(
@@ -2272,9 +2221,7 @@ class SystemConfigDialog(QDialog):
 
     def _meshes_for_region_draft(self, region: dict) -> tuple[AvailableSystemMesh, ...]:
         return tuple(
-            mesh
-            for mesh_name in region["mesh_names"]
-            if (mesh := self._mesh_by_name.get(mesh_name)) is not None
+            mesh for mesh_name in region["mesh_names"] if (mesh := self._mesh_by_name.get(mesh_name)) is not None
         )
 
     def _collect_regions_and_resources(self) -> tuple[tuple[AcousticRegion, ...], tuple[MeshResource, ...]]:
@@ -2355,9 +2302,7 @@ class SystemConfigDialog(QDialog):
         components, ports, component_channels = self._collect_components(boundaries)
         if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
             unsupported = [
-                component.name
-                for component in components
-                if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+                component.name for component in components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
             ]
             if unsupported:
                 raise ValueError(
@@ -2374,9 +2319,7 @@ class SystemConfigDialog(QDialog):
         system_name = self._initial_system.name if self._initial_system is not None else "Loudspeaker System"
         metadata = {} if self._initial_system is None else dict(self._initial_system.metadata)
         metadata[_COMPONENT_UI_METADATA_KEY] = {
-            draft.id: {"motion_axis_mode": draft.motion_axis_mode}
-            for draft in self._component_drafts
-            if draft.id
+            draft.id: {"motion_axis_mode": draft.motion_axis_mode} for draft in self._component_drafts if draft.id
         }
         return PhysicalSystem(
             id=system_id,

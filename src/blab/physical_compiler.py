@@ -135,9 +135,7 @@ class PhysicalSystemCompiler:
                     f"Could not infer symmetry for component '{component.name}': {exc}"
                 ) from exc
             parameters = {
-                key: value
-                for key, value in component.parameters.items()
-                if key not in SYMMETRY_PARAMETER_KEYS
+                key: value for key, value in component.parameters.items() if key not in SYMMETRY_PARAMETER_KEYS
             }
             parameters.update(inference.parameters())
             compiled.append(replace(component, parameters=parameters))
@@ -669,10 +667,7 @@ class PhysicalSystemCompiler:
             assumptions.append(
                 PhysicsAssumption(AssumptionStatus.INCLUDED, "Conforming bidirectional FEM-BEM interfaces")
             )
-        if any(
-            component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-            for component in system.components
-        ):
+        if any(component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER for component in system.components):
             assumptions.append(
                 PhysicsAssumption(
                     AssumptionStatus.INCLUDED,
@@ -697,9 +692,7 @@ class PhysicalSystemCompiler:
             )
             assumptions.append(PhysicsAssumption(AssumptionStatus.EXCLUDED, "Application DSP and channel synthesis"))
         if any(region_bulk_loss_factor(region.loss_model) > 0.0 for region in system.regions):
-            assumptions.append(
-                PhysicsAssumption(AssumptionStatus.INCLUDED, "Homogeneous per-region FEM bulk loss")
-            )
+            assumptions.append(PhysicsAssumption(AssumptionStatus.INCLUDED, "Homogeneous per-region FEM bulk loss"))
         else:
             assumptions.append(
                 PhysicsAssumption(AssumptionStatus.EXCLUDED, "Region-specific acoustic material loss models")

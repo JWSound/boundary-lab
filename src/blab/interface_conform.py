@@ -112,9 +112,7 @@ def conform_bem_interface_to_fem(
     fem_interface_tag = _physical_surface_tag(fem_mesh, fem_interface_name)
     bem_interface_tag = _physical_surface_tag(bem_mesh, bem_interface_name)
     protected_bem_tags = {
-        _physical_surface_tag(bem_mesh, name)
-        for name in protected_bem_interface_names
-        if name != bem_interface_name
+        _physical_surface_tag(bem_mesh, name) for name in protected_bem_interface_names if name != bem_interface_name
     }
     fem_data = _triangle_data(fem_mesh, require_geometrical=False)
     bem_data = _triangle_data(bem_mesh, require_geometrical=True)
@@ -141,9 +139,7 @@ def conform_bem_interface_to_fem(
     if resolved_geometry_tolerance <= 0.0:
         raise InterfaceConformError("geometry_tolerance must be greater than zero.")
     resolved_seam_tolerance = (
-        max(interface_diameter * 5e-5, merge_tolerance)
-        if seam_tolerance is None
-        else float(seam_tolerance)
+        max(interface_diameter * 5e-5, merge_tolerance) if seam_tolerance is None else float(seam_tolerance)
     )
     if resolved_seam_tolerance <= 0.0:
         raise InterfaceConformError("seam_tolerance must be greater than zero.")
@@ -241,9 +237,7 @@ def conform_bem_interface_to_fem(
         np.asarray(sorted(protected_bem_tags), dtype=bem_data.physical_tags.dtype),
     )
     adjacent_mask = (
-        (~bem_interface_mask)
-        & (~protected_mask)
-        & (triangle_plane_deviation <= resolved_geometry_tolerance)
+        (~bem_interface_mask) & (~protected_mask) & (triangle_plane_deviation <= resolved_geometry_tolerance)
     )
     if not np.any(adjacent_mask):
         raise InterfaceConformError(
@@ -311,9 +305,7 @@ def conform_bem_interface_to_fem(
         )
 
     deviation_function = (
-        _symmetric_open_polyline_deviation
-        if interface_symmetry_axes
-        else _symmetric_polyline_deviation
+        _symmetric_open_polyline_deviation if interface_symmetry_axes else _symmetric_polyline_deviation
     )
     interface_boundary_deviation = deviation_function(
         fem_mesh.points[fem_opening_path],
@@ -701,11 +693,7 @@ def _perimeter_symmetry_axes(
     loop = np.asarray(perimeter, dtype=np.int64)
     edges = np.column_stack((loop, np.roll(loop, -1)))
     coordinates = np.asarray(points, dtype=float)
-    return tuple(
-        axis
-        for axis in active_axes
-        if np.any(np.max(np.abs(coordinates[edges, axis]), axis=1) <= tolerance)
-    )
+    return tuple(axis for axis in active_axes if np.any(np.max(np.abs(coordinates[edges, axis]), axis=1) <= tolerance))
 
 
 def _validate_positive_symmetry_domain(
@@ -981,10 +969,7 @@ def _discrete_path_correspondence(
 
     def path_edges(vertex_count: int) -> set[tuple[int, int]]:
         stop = vertex_count if closed else vertex_count - 1
-        return {
-            tuple(sorted((index, (index + 1) % vertex_count)))
-            for index in range(stop)
-        }
+        return {tuple(sorted((index, (index + 1) % vertex_count))) for index in range(stop)}
 
     mapped_first_edges = {
         tuple(sorted((int(first_to_second[start]), int(first_to_second[end]))))
@@ -1012,9 +997,7 @@ def _replace_bem_interface_directly(
     old_bem_interface = bem_data.triangles[bem_interface_mask]
     fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
     old_interface_normal = _surface_normal(bem_mesh.points, old_bem_interface)
-    interface_orientation_flipped = bool(
-        np.dot(fem_interface_normal, old_interface_normal) < 0.0
-    )
+    interface_orientation_flipped = bool(np.dot(fem_interface_normal, old_interface_normal) < 0.0)
     copied_interface = np.asarray(fem_interface, dtype=np.int64).copy()
     if interface_orientation_flipped:
         copied_interface = copied_interface[:, [0, 2, 1]]
@@ -1037,9 +1020,7 @@ def _replace_bem_interface_directly(
         appended_start + len(appended_fem_vertices),
         dtype=np.int64,
     )
-    combined_points = np.vstack(
-        (combined_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices])
-    )
+    combined_points = np.vstack((combined_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices]))
     copied_interface = fem_vertex_map[copied_interface]
     combined_triangles = np.vstack(
         (
@@ -1053,9 +1034,7 @@ def _replace_bem_interface_directly(
             np.full(len(copied_interface), bem_interface_tag, dtype=np.int32),
         )
     )
-    interface_geometrical_tag = int(
-        np.min(bem_data.geometrical_tags[bem_interface_mask])
-    )
+    interface_geometrical_tag = int(np.min(bem_data.geometrical_tags[bem_interface_mask]))
     combined_geometrical = np.concatenate(
         (
             bem_data.geometrical_tags[keep_mask],
@@ -1078,10 +1057,7 @@ def _replace_bem_interface_directly(
             "gmsh:physical": [combined_physical],
             "gmsh:geometrical": [combined_geometrical],
         },
-        field_data={
-            name: np.asarray(value).copy()
-            for name, value in bem_mesh.field_data.items()
-        },
+        field_data={name: np.asarray(value).copy() for name, value in bem_mesh.field_data.items()},
     )
     return output_mesh, interface_orientation_flipped
 
@@ -1337,10 +1313,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         "--seam-tol",
         type=float,
         default=None,
-        help=(
-            "Maximum targeted curved-seam snap in mesh units "
-            "(default: 0.005%% of interface diameter)"
-        ),
+        help=("Maximum targeted curved-seam snap in mesh units (default: 0.005%% of interface diameter)"),
     )
     parser.add_argument(
         "--symmetry",

@@ -951,10 +951,9 @@ def _balloon_slice_query_directions(point_count: int, azimuth_deg: float) -> tup
     signed_angles = np.linspace(-np.pi, np.pi, 2 * half_count + 1, dtype=float)
     azimuth = np.deg2rad(float(azimuth_deg))
     meridian_axis = np.array([np.cos(azimuth), np.sin(azimuth), 0.0], dtype=float)
-    directions = (
-        np.sin(signed_angles)[:, np.newaxis] * meridian_axis[np.newaxis, :]
-        + np.cos(signed_angles)[:, np.newaxis] * np.array([[0.0, 0.0, 1.0]])
-    )
+    directions = np.sin(signed_angles)[:, np.newaxis] * meridian_axis[np.newaxis, :] + np.cos(signed_angles)[
+        :, np.newaxis
+    ] * np.array([[0.0, 0.0, 1.0]])
     return signed_angles, directions
 
 

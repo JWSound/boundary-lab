@@ -15,7 +15,6 @@ def main_window_source(*stems: str) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
-
 def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> None:
     source = source_text("ui", "plots.py")
 

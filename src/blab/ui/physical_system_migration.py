@@ -101,9 +101,7 @@ def seed_exterior_system(
                     boundary_ids=(boundary_id,),
                     parameters={
                         "motion_profile": "uniform",
-                        "boundary_motion_weights": {
-                            boundary_id: float(10.0 ** (radiator.velocity_offset_db / 20.0))
-                        },
+                        "boundary_motion_weights": {boundary_id: float(10.0 ** (radiator.velocity_offset_db / 20.0))},
                     },
                 )
             )
@@ -147,11 +145,7 @@ def _radiators_by_mesh_tag(
 
 def _surface_tags_by_name(path: Path) -> dict[str, int]:
     mesh = meshio.read(path)
-    return {
-        str(name): int(np.asarray(raw)[0])
-        for name, raw in mesh.field_data.items()
-        if int(np.asarray(raw)[1]) == 2
-    }
+    return {str(name): int(np.asarray(raw)[0]) for name, raw in mesh.field_data.items() if int(np.asarray(raw)[1]) == 2}
 
 
 def _slug(value: str) -> str:

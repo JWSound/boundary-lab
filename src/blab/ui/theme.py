@@ -60,10 +60,11 @@ def themed_content_background(palette: QPalette) -> str:
 
 
 def _refresh_theme_widgets(app: QApplication) -> None:
-    style = app.style()
-    for widget in app.allWidgets():
-        style.unpolish(widget)
-        style.polish(widget)
+    # QApplication propagates StyleChange and PaletteChange when the style,
+    # palette, or application stylesheet changes. Manually unpolishing every
+    # widget is redundant and can touch native widgets that are pending
+    # deletion, which is unsafe during a global theme switch.
+    for widget in app.topLevelWidgets():
         widget.update()
     app.processEvents()
 

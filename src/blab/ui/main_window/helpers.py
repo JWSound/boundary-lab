@@ -19,10 +19,7 @@ def _mesh_entries_with_file_overrides(
     meshes: tuple[MeshDialogEntry, ...],
     overrides_by_name: dict[str, str],
 ) -> tuple[MeshDialogEntry, ...]:
-    return tuple(
-        replace(mesh, cleaned_file=overrides_by_name.get(mesh.name, mesh.cleaned_file))
-        for mesh in meshes
-    )
+    return tuple(replace(mesh, cleaned_file=overrides_by_name.get(mesh.name, mesh.cleaned_file)) for mesh in meshes)
 
 
 def _physical_system_preview_metadata(
@@ -35,8 +32,7 @@ def _physical_system_preview_metadata(
     meshes_by_id = {mesh.id: mesh for mesh in system.meshes}
     boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
     mesh_regions = {
-        mesh.name: "interior" if mesh.purpose == MeshPurpose.FEM_VOLUME else "exterior"
-        for mesh in system.meshes
+        mesh.name: "interior" if mesh.purpose == MeshPurpose.FEM_VOLUME else "exterior" for mesh in system.meshes
     }
     has_interior_region = any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
 

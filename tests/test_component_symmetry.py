@@ -27,8 +27,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
             "x",
             ("x",),
             1,
-            "Moving surface(s) sliced along the x axis. "
-            "Detected 1 distinct component in the fully mirrored system.",
+            "Moving surface(s) sliced along the x axis. Detected 1 distinct component in the fully mirrored system.",
         ),
         (
             "xy",
@@ -41,8 +40,7 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
             "xy",
             ("y",),
             2,
-            "Moving surface(s) sliced along the y axis. "
-            "Detected 2 distinct components in the fully mirrored system.",
+            "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system.",
         ),
         (
             "xy",
@@ -144,9 +142,7 @@ def test_front_and_rear_driver_surfaces_infer_one_shared_x_cut_driver() -> None:
 def test_adjacent_surface_groups_are_unioned_before_perimeter_classification() -> None:
     resource = MeshResource("mesh", "mesh", "unused.msh", MeshPurpose.FEM_VOLUME)
     mesh = meshio.Mesh(
-        points=np.asarray(
-            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0))
-        ),
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0))),
         cells=[("triangle", np.asarray(((0, 1, 2), (0, 2, 3)), dtype=np.int64))],
         cell_data={"gmsh:physical": [np.asarray((2, 3), dtype=np.int32)]},
         field_data={"Dome": np.asarray((2, 2)), "Surround": np.asarray((3, 2))},

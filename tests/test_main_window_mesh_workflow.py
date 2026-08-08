@@ -50,7 +50,6 @@ def main_window_source(*stems: str) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
-
 def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
     mesh = meshio.Mesh(
         points=np.array(
@@ -195,8 +194,7 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
     rebuilt_system = replace(
         system,
         meshes=tuple(
-            replace(mesh, file=str(rebuilt_path)) if mesh.name == "Exterior" else mesh
-            for mesh in system.meshes
+            replace(mesh, file=str(rebuilt_path)) if mesh.name == "Exterior" else mesh for mesh in system.meshes
         ),
     )
     main_window.project.physical_system = system

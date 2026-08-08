@@ -272,9 +272,7 @@ class _CoupledBackend:
         solver_options = dict(request.solver_options)
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
-        solver_options["transducer_reference_voltage_v"] = (
-            DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-        )
+        solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         if self.bem_backend != "cuda":
             solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
@@ -296,15 +294,9 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
     symmetry_factors = {"off": 1, "x": 2, "xy": 4}
     if symmetry_mode not in symmetry_factors:
-        raise ValueError(
-            f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy."
-        )
-    bounded_regions = [
-        region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
-    ]
-    unbounded_regions = [
-        region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
-    ]
+        raise ValueError(f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+    bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
+    unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
     if not bounded_regions:
         raise ValueError("Coupled solver requires at least one bounded acoustic region.")
     if len(unbounded_regions) != 1:
@@ -338,8 +330,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     ]
     if unsupported_boundaries:
         raise ValueError(
-            "Coupled solver does not support the boundary assignments used by: "
-            + ", ".join(unsupported_boundaries)
+            "Coupled solver does not support the boundary assignments used by: " + ", ".join(unsupported_boundaries)
         )
     region_by_id = {region.id: region for region in system.regions}
     parameterized_boundaries = [
@@ -349,8 +340,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     ]
     if parameterized_boundaries:
         raise ValueError(
-            "Coupled solver does not support the boundary parameters used by: "
-            + ", ".join(parameterized_boundaries)
+            "Coupled solver does not support the boundary parameters used by: " + ", ".join(parameterized_boundaries)
         )
     for boundary in system.boundaries:
         treatment = wall_impedance_parameters(boundary.parameters)
@@ -374,9 +364,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
     }
     unsupported_components = [
-        component.id
-        for component in system.components
-        if component.kind not in supported_component_kinds
+        component.id for component in system.components if component.kind not in supported_component_kinds
     ]
     if unsupported_components:
         raise ValueError(
@@ -389,13 +377,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             _validate_electrodynamic_component(
                 component,
                 symmetry_factor=symmetry_factors[symmetry_mode],
-                active_symmetry_axes=(
-                    ()
-                    if symmetry_mode == "off"
-                    else ("x",)
-                    if symmetry_mode == "x"
-                    else ("x", "y")
-                ),
+                active_symmetry_axes=(() if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")),
             )
             continue
         unsupported_parameters = set(component.parameters) - {
@@ -434,14 +416,11 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
 def _validate_boundary_motion_weights(component) -> None:
     raw_weights = component.parameters.get("boundary_motion_weights", {})
     if not isinstance(raw_weights, dict):
-        raise ValueError(
-            f"Component '{component.id}' boundary_motion_weights must be an object."
-        )
+        raise ValueError(f"Component '{component.id}' boundary_motion_weights must be an object.")
     unknown = sorted(set(raw_weights) - set(component.boundary_ids))
     if unknown:
         raise ValueError(
-            f"Component '{component.id}' has motion weights for unrelated boundaries: "
-            + ", ".join(unknown)
+            f"Component '{component.id}' has motion weights for unrelated boundaries: " + ", ".join(unknown)
         )
     for boundary_id, value in raw_weights.items():
         if (
@@ -451,9 +430,10 @@ def _validate_boundary_motion_weights(component) -> None:
             or float(value) <= 0.0
         ):
             raise ValueError(
-                f"Component '{component.id}' motion weight for '{boundary_id}' "
-                "must be finite and greater than zero."
+                f"Component '{component.id}' motion weight for '{boundary_id}' must be finite and greater than zero."
             )
+
+
 def _validate_electrodynamic_component(
     component,
     *,
@@ -465,18 +445,12 @@ def _validate_electrodynamic_component(
     missing = sorted(ELECTRODYNAMIC_REQUIRED_PARAMETERS - parameter_names)
     if missing:
         raise ValueError(
-            f"Electrodynamic component '{component.id}' is missing required parameters: "
-            + ", ".join(missing)
+            f"Electrodynamic component '{component.id}' is missing required parameters: " + ", ".join(missing)
         )
-    unsupported = sorted(
-        parameter_names
-        - ELECTRODYNAMIC_REQUIRED_PARAMETERS
-        - ELECTRODYNAMIC_OPTIONAL_PARAMETERS
-    )
+    unsupported = sorted(parameter_names - ELECTRODYNAMIC_REQUIRED_PARAMETERS - ELECTRODYNAMIC_OPTIONAL_PARAMETERS)
     if unsupported:
         raise ValueError(
-            f"Electrodynamic component '{component.id}' has unsupported parameters: "
-            + ", ".join(unsupported)
+            f"Electrodynamic component '{component.id}' has unsupported parameters: " + ", ".join(unsupported)
         )
 
     positive = ("re_ohm", "bl_n_per_a", "mmd_kg", "cms_m_per_n")
@@ -484,26 +458,18 @@ def _validate_electrodynamic_component(
     for name in (*positive, *nonnegative):
         value = parameters[name]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise ValueError(
-                f"Electrodynamic component '{component.id}' parameter '{name}' must be a finite number."
-            )
+            raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must be a finite number.")
         if name in positive and float(value) <= 0.0:
-            raise ValueError(
-                f"Electrodynamic component '{component.id}' parameter '{name}' must be greater than zero."
-            )
+            raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must be greater than zero.")
         if name in nonnegative and float(value) < 0.0:
-            raise ValueError(
-                f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative."
-            )
+            raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative.")
 
     raw_axis = parameters["motion_axis"]
     if (
         not isinstance(raw_axis, (list, tuple))
         or len(raw_axis) != 3
         or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
             for value in raw_axis
         )
         or math.sqrt(sum(float(value) ** 2 for value in raw_axis)) <= 0.0
@@ -533,9 +499,7 @@ def _validate_electrodynamic_component(
         ("physical_driver_orbit_count", orbit_count),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value not in {1, 2, 4}:
-            raise ValueError(
-                f"Electrodynamic component '{component.id}' {name} must be one of 1, 2, or 4."
-            )
+            raise ValueError(f"Electrodynamic component '{component.id}' {name} must be one of 1, 2, or 4.")
     expected_role = "fractional_driver" if completion_factor > 1 else "complete_representative"
     if symmetry_role != expected_role:
         raise ValueError(
@@ -566,16 +530,11 @@ def _validate_electrodynamic_component(
     axis_norm = math.sqrt(sum(float(value) ** 2 for value in raw_axis))
     normalized_axis = tuple(float(value) / axis_norm for value in raw_axis)
     axis_indices = {"x": 0, "y": 1}
-    incompatible_axes = [
-        axis
-        for axis in fractional_axes
-        if abs(normalized_axis[axis_indices[axis]]) > 1e-8
-    ]
+    incompatible_axes = [axis for axis in fractional_axes if abs(normalized_axis[axis_indices[axis]]) > 1e-8]
     if incompatible_axes:
         raise ValueError(
             f"Electrodynamic component '{component.id}' motion_axis must lie in each symmetry "
-            "plane that cuts the same physical driver; incompatible: "
-            + ", ".join(incompatible_axes)
+            "plane that cuts the same physical driver; incompatible: " + ", ".join(incompatible_axes)
         )
     if completion_factor * orbit_count != symmetry_factor:
         raise ValueError(
@@ -586,13 +545,9 @@ def _validate_electrodynamic_component(
 
     raw_signs = parameters.get("boundary_motion_signs", {})
     if not isinstance(raw_signs, dict):
-        raise ValueError(
-            f"Electrodynamic component '{component.id}' boundary_motion_signs must be an object."
-        )
+        raise ValueError(f"Electrodynamic component '{component.id}' boundary_motion_signs must be an object.")
     if not all(isinstance(boundary_id, str) for boundary_id in raw_signs):
-        raise ValueError(
-            f"Electrodynamic component '{component.id}' boundary_motion_signs keys must be boundary IDs."
-        )
+        raise ValueError(f"Electrodynamic component '{component.id}' boundary_motion_signs keys must be boundary IDs.")
     component_boundaries = set(component.boundary_ids)
     unknown_boundaries = sorted(set(raw_signs) - component_boundaries)
     if unknown_boundaries:
@@ -603,8 +558,7 @@ def _validate_electrodynamic_component(
     for boundary_id, sign in raw_signs.items():
         if isinstance(sign, bool) or not isinstance(sign, (int, float)) or float(sign) not in {-1.0, 1.0}:
             raise ValueError(
-                f"Electrodynamic component '{component.id}' motion sign for '{boundary_id}' "
-                "must be -1 or +1."
+                f"Electrodynamic component '{component.id}' motion sign for '{boundary_id}' must be -1 or +1."
             )
 
 
@@ -652,9 +606,7 @@ class CoupledProductionBackend(_CoupledBackend):
         normalized_bem_backend = str(bem_backend).strip().lower()
         resolved_threads = (4 if normalized_bem_backend == "cuda" else 8) if julia_threads is None else julia_threads
         julia_project = (
-            DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-            if normalized_bem_backend == "cuda"
-            else DEFAULT_COUPLED_CPU_PROJECT
+            DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_bem_backend == "cuda" else DEFAULT_COUPLED_CPU_PROJECT
         )
         super().__init__(
             julia_executable=julia_executable,

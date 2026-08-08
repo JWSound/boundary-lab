@@ -65,9 +65,7 @@ class GeometryStore:
             mesh_name = generator_mesh_name(document)
             updated = [replace(radiator, mesh=mesh_name) for radiator in radiators if radiator.mesh == mesh_name]
             self.generated_by_document_id[document.id] = replace(result, radiators=tuple(updated))
-        self.imported_radiators = tuple(
-            radiator for radiator in radiators if radiator.mesh not in generated_mesh_names
-        )
+        self.imported_radiators = tuple(radiator for radiator in radiators if radiator.mesh not in generated_mesh_names)
 
     def clear_imported_radiators(self) -> None:
         self.imported_radiators = ()

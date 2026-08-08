@@ -136,6 +136,7 @@ def test_imported_source_assignment_follows_surface_name_when_tag_changes() -> N
         ),
     )
 
+
 def test_channels_for_solver_radiators_adds_missing_channel_names() -> None:
     channels = channels_for_solver_radiators(
         (ChannelConfig(name="LF"),),

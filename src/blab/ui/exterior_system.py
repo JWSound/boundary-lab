@@ -34,20 +34,15 @@ def exterior_bem_inputs(
     if infer_physical_solve_kind(system) != PhysicalSolveKind.EXTERIOR_BEM:
         raise ValueError("Exterior BEM inputs require an exterior-only physical system.")
     unsupported = [
-        component.name
-        for component in system.components
-        if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+        component.name for component in system.components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
     ]
     if unsupported:
         raise ValueError(
-            "Exterior-only systems currently support prescribed-velocity components only: "
-            + ", ".join(unsupported)
+            "Exterior-only systems currently support prescribed-velocity components only: " + ", ".join(unsupported)
         )
 
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry_mode)
-    exterior = next(
-        region for region in compiled.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
-    )
+    exterior = next(region for region in compiled.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR)
     meshes_by_id = {mesh.id: mesh for mesh in compiled.meshes}
     boundaries_by_id = {boundary.id: boundary for boundary in compiled.boundaries}
     channels = component_channel_by_id or {}
@@ -76,9 +71,7 @@ def exterior_bem_inputs(
                 )
             weight = float(weights.get(boundary_id, 1.0))
             if not math.isfinite(weight) or weight <= 0.0:
-                raise ValueError(
-                    f"Component '{component.name}' has an invalid motion weight for '{boundary.name}'."
-                )
+                raise ValueError(f"Component '{component.name}' has an invalid motion weight for '{boundary.name}'.")
             mesh = meshes_by_id[boundary.group.mesh_id]
             group_name = boundary.group.name or boundary.name
             radiators.append(

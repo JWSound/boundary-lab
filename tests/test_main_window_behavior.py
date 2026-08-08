@@ -42,7 +42,13 @@ def test_every_bundled_resource_path_actually_exists() -> None:
     runtime_created = {"APP_ROOT", "ASSETS_DIR", "GENERATED_GEOMETRY_ROOT", "ATH_BUNDLE_DIR", "GMSH_BUNDLE_EXE"}
 
     missing = []
-    for module_name in ("blab.gui", "blab.ui.dialogs", "blab.ui.theme", "blab.ui.balloon", "blab.ui.main_window.constants"):
+    for module_name in (
+        "blab.gui",
+        "blab.ui.dialogs",
+        "blab.ui.theme",
+        "blab.ui.balloon",
+        "blab.ui.main_window.constants",
+    ):
         module = importlib.import_module(module_name)
         for attribute in dir(module):
             if attribute in runtime_created:
@@ -597,9 +603,7 @@ def test_no_module_derives_its_own_app_root() -> None:
         for path in scanned
         # paths.py owns the anchor. Standalone dev scripts under scripts/ resolve
         # to their own directory to find sibling fixtures, not to the repo root.
-        if path.name != "paths.py"
-        and "scripts" not in path.parts
-        and anchor.search(path.read_text(encoding="utf-8"))
+        if path.name != "paths.py" and "scripts" not in path.parts and anchor.search(path.read_text(encoding="utf-8"))
     )
 
     assert offenders == [], f"these must import APP_ROOT from blab.paths instead: {offenders}"

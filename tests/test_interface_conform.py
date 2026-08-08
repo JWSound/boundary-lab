@@ -23,9 +23,7 @@ CONFORMING_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "exterior_conf
 SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
 CURVED_FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceFEM.msh"
 CURVED_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceBEM.msh"
-NONPLANAR_MULTISURFACE_FIXTURE_ROOT = (
-    REPOSITORY_ROOT / "tests" / "fixtures" / "nonplanar_multisurface_interface"
-)
+NONPLANAR_MULTISURFACE_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "nonplanar_multisurface_interface"
 
 
 def test_direct_seam_match_requires_identical_edge_connectivity() -> None:
@@ -243,12 +241,7 @@ def test_nonplanar_multisurface_interface_with_near_matching_seam_is_welded_dire
     bem_loop = _boundary_loops(bem_interface)[0]
     plane_origin, plane_normal = _best_fit_plane(bem_mesh.points[bem_loop])
     interface_plane_deviation = float(
-        np.max(
-            np.abs(
-                (bem_mesh.points[np.unique(bem_interface)] - plane_origin)
-                @ plane_normal
-            )
-        )
+        np.max(np.abs((bem_mesh.points[np.unique(bem_interface)] - plane_origin) @ plane_normal))
     )
     assert interface_plane_deviation > 1e-3
 

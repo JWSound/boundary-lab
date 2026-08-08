@@ -693,9 +693,10 @@ def test_visualization_skips_sphere_synthesis_and_balloon_bundle_synthesizes_onc
     monkeypatch.setattr(live_module, "synthesize_channel_basis_spl", record_synthesis)
 
     assert dataset.has_balloon_data
-    assert dataset.as_visualization_dataset(
-        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
-    ) is not None
+    assert (
+        dataset.as_visualization_dataset(PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None))
+        is not None
+    )
     assert sphere_arguments == [None]
 
     bundle = dataset.as_balloon_raw_bundle()

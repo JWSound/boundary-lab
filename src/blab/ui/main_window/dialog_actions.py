@@ -270,9 +270,7 @@ class DialogActionsMixin:
     def open_system_config(self) -> None:
         try:
             meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
-            symmetry_analysis_meshes = inspect_system_meshes(
-                self.mesh_entries_for_symmetry(self.symmetry)
-            )
+            symmetry_analysis_meshes = inspect_system_meshes(self.mesh_entries_for_symmetry(self.symmetry))
         except Exception as exc:
             QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
             return

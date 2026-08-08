@@ -152,8 +152,7 @@ def infer_physical_solve_kind(system: PhysicalSystem) -> PhysicalSolveKind:
     unbounded_count = sum(region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in system.regions)
     if unbounded_count != 1:
         raise ValueError(
-            "A physical system must contain exactly one unbounded exterior acoustic region; "
-            f"found {unbounded_count}."
+            f"A physical system must contain exactly one unbounded exterior acoustic region; found {unbounded_count}."
         )
     if bounded_count == 0:
         if system.interfaces:

@@ -57,7 +57,9 @@ class ComponentSymmetryInference:
     def summary(self) -> str:
         component_label = "component" if self.physical_driver_orbit_count == 1 else "components"
         if self.symmetry_mode == "off":
-            return "Moving surface(s) not sliced along a symmetry axis. Detected 1 distinct component in the full system."
+            return (
+                "Moving surface(s) not sliced along a symmetry axis. Detected 1 distinct component in the full system."
+            )
         if self.fractional_symmetry_axes:
             axes = " and ".join(self.fractional_symmetry_axes)
             axis_label = "axis" if len(self.fractional_symmetry_axes) == 1 else "axes"
@@ -112,9 +114,7 @@ def infer_component_symmetry(
     for resource_id, resource_boundaries in boundaries_by_resource.items():
         resource = resources_by_id.get(resource_id)
         if resource is None:
-            raise ComponentSymmetryInferenceError(
-                f"Moving surfaces reference unavailable mesh '{resource_id}'."
-            )
+            raise ComponentSymmetryInferenceError(f"Moving surfaces reference unavailable mesh '{resource_id}'.")
         mesh = cache.get(resource_id)
         if mesh is None:
             mesh = _transformed_mesh(resource)
@@ -128,11 +128,7 @@ def infer_component_symmetry(
             patch_vertices = np.unique(patch.reshape(-1))
             patch_points = points[patch_vertices]
             diameter = float(np.linalg.norm(np.ptp(patch_points, axis=0)))
-            tolerance = (
-                max(1e-9, diameter * 1e-7)
-                if tolerance_m is None
-                else float(tolerance_m)
-            )
+            tolerance = max(1e-9, diameter * 1e-7) if tolerance_m is None else float(tolerance_m)
             axes = []
             for axis in active_axes:
                 axis_index = _AXIS_INDEX[axis]
@@ -148,9 +144,7 @@ def infer_component_symmetry(
                         "plane, so its physical multiplicity is ambiguous."
                     )
                 if len(perimeter):
-                    on_plane = (
-                        np.max(np.abs(points[perimeter, axis_index]), axis=1) <= tolerance
-                    )
+                    on_plane = np.max(np.abs(points[perimeter, axis_index]), axis=1) <= tolerance
                     count = int(np.count_nonzero(on_plane))
                 else:
                     count = 0
@@ -166,8 +160,7 @@ def infer_component_symmetry(
     distinct_axes = set(patch_axes)
     if len(distinct_axes) != 1:
         details = ", ".join(
-            "none" if not axes else "+".join(axis.upper() for axis in axes)
-            for axes in sorted(distinct_axes)
+            "none" if not axes else "+".join(axis.upper() for axis in axes) for axes in sorted(distinct_axes)
         )
         raise ComponentSymmetryInferenceError(
             "Disconnected moving-surface patches infer inconsistent symmetry cuts "
@@ -211,14 +204,11 @@ def _boundary_surface_tag(mesh: meshio.Mesh, boundary: Boundary) -> int:
         field = mesh.field_data.get(boundary.group.name)
         if field is None:
             raise ComponentSymmetryInferenceError(
-                f"Mesh '{boundary.group.mesh_id}' does not contain surface group "
-                f"'{boundary.group.name}'."
+                f"Mesh '{boundary.group.mesh_id}' does not contain surface group '{boundary.group.name}'."
             )
         tag, dimension = map(int, np.asarray(field).tolist())
         if dimension != 2:
-            raise ComponentSymmetryInferenceError(
-                f"Physical group '{boundary.group.name}' is not a surface group."
-            )
+            raise ComponentSymmetryInferenceError(f"Physical group '{boundary.group.name}' is not a surface group.")
         return tag
     if boundary.group.tag is not None:
         return int(boundary.group.tag)
@@ -230,9 +220,7 @@ def _boundary_surface_tag(mesh: meshio.Mesh, boundary: Boundary) -> int:
 def _triangles_for_tags(mesh: meshio.Mesh, tags: set[int], mesh_name: str) -> np.ndarray:
     physical_blocks = mesh.cell_data.get("gmsh:physical")
     if physical_blocks is None:
-        raise ComponentSymmetryInferenceError(
-            f"Mesh '{mesh_name}' has no physical surface tags."
-        )
+        raise ComponentSymmetryInferenceError(f"Mesh '{mesh_name}' has no physical surface tags.")
     selected = []
     for index, block in enumerate(mesh.cells):
         if block.type not in {"triangle", "triangle3"}:
@@ -240,15 +228,11 @@ def _triangles_for_tags(mesh: meshio.Mesh, tags: set[int], mesh_name: str) -> np
         triangles = np.asarray(block.data, dtype=np.int64)[:, :3]
         physical = np.asarray(physical_blocks[index], dtype=np.int64)
         if len(physical) != len(triangles):
-            raise ComponentSymmetryInferenceError(
-                f"Mesh '{mesh_name}' has inconsistent triangle physical tags."
-            )
+            raise ComponentSymmetryInferenceError(f"Mesh '{mesh_name}' has inconsistent triangle physical tags.")
         selected.append(triangles[np.isin(physical, tuple(tags))])
     triangles = [block for block in selected if len(block)]
     if not triangles:
-        raise ComponentSymmetryInferenceError(
-            f"Selected moving surfaces on mesh '{mesh_name}' contain no triangles."
-        )
+        raise ComponentSymmetryInferenceError(f"Selected moving surfaces on mesh '{mesh_name}' contain no triangles.")
     return np.vstack(triangles)
 
 

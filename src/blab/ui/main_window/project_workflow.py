@@ -174,8 +174,7 @@ class ProjectWorkflowController(QObject):
         project.project_preferences = project_preferences
         return build_project_payload(
             generator_documents=[
-                generator_document_to_payload(document, absolute_paths=True)
-                for document in project.generator_documents
+                generator_document_to_payload(document, absolute_paths=True) for document in project.generator_documents
             ],
             active_generator_document_id=project.active_generator_document_id,
             imported_meshes=self._imported_meshes_payload(),

@@ -162,13 +162,7 @@ def _run_mode(
         for key in detail_keys:
             detail_totals[key] += float(timings.get(key, 0.0))
         measured_s += assembly_s + solve_s + field_s + setup_s
-        print(
-            f"{result.freq_hz:8.1f} Hz"
-            f"  {assembly_s:10.3f}s"
-            f"  {solve_s:8.3f}s"
-            f"  {field_s:8.3f}s"
-            f"  {setup_s:8.3f}s"
-        )
+        print(f"{result.freq_hz:8.1f} Hz  {assembly_s:10.3f}s  {solve_s:8.3f}s  {field_s:8.3f}s  {setup_s:8.3f}s")
     print(f"reported stages={measured_s:.3f}s  process startup/JIT/serialization={wall_s - measured_s:.3f}s")
     print(
         "assembly detail: "

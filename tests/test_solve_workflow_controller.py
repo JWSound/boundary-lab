@@ -153,9 +153,7 @@ def test_solving_without_a_mesh_warns_instead_of_starting(controller) -> None:
 
     controller.start_solve()
 
-    assert controller.view.warnings == [
-        ("No mesh", "Enable at least one generated or imported mesh before solving.")
-    ]
+    assert controller.view.warnings == [("No mesh", "Enable at least one generated or imported mesh before solving.")]
     assert controller.solve.started == []
 
 

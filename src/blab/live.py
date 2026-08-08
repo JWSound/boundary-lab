@@ -201,8 +201,7 @@ class LiveSolveDataset:
         ):
             return False
         return all(
-            (result.has_channel_basis and result.sphere_pressure is not None)
-            or result.sphere_spl_norm_db is not None
+            (result.has_channel_basis and result.sphere_pressure is not None) or result.sphere_spl_norm_db is not None
             for result in self.results.values()
         )
 

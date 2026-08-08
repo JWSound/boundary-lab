@@ -218,8 +218,7 @@ class JobOrchestrator:
             capacity = self.max_running_jobs + self.max_queued_jobs
             if active_count + self._submitting_count >= capacity:
                 raise JobQueueFullError(
-                    f"Server job capacity is full ({self.max_running_jobs} running, "
-                    f"{self.max_queued_jobs} queued)."
+                    f"Server job capacity is full ({self.max_running_jobs} running, {self.max_queued_jobs} queued)."
                 )
             self._submitting_count += 1
 
@@ -287,9 +286,7 @@ class JobOrchestrator:
             except Exception as exc:
                 raise ValueError(f"Asset {original_path} is not valid base64.") from exc
             if total_bytes + len(data) > self.max_asset_bytes:
-                raise ValueError(
-                    f"Uploaded assets exceed the server limit of {self.max_asset_bytes / MEBIBYTE:g} MiB."
-                )
+                raise ValueError(f"Uploaded assets exceed the server limit of {self.max_asset_bytes / MEBIBYTE:g} MiB.")
 
             staged_path = asset_dir / filename
             staged_path.write_bytes(data)
@@ -311,9 +308,7 @@ class JobOrchestrator:
             expired = [
                 job
                 for job in self._jobs.values()
-                if job.status in TERMINAL_STATES
-                and job.finished_at is not None
-                and job.finished_at <= cutoff
+                if job.status in TERMINAL_STATES and job.finished_at is not None and job.finished_at <= cutoff
             ]
             for job in expired:
                 self._jobs.pop(job.job_id, None)

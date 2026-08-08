@@ -258,9 +258,7 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
 
     unsupported = replace(
         system,
-        components=(
-            replace(system.components[0], kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
-        ),
+        components=(replace(system.components[0], kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),),
     )
     with pytest.raises(ValueError, match="prescribed-velocity components only"):
         exterior_bem_inputs(unsupported, component_channel_by_id=channels)
@@ -438,8 +436,7 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
 
     assert not hasattr(editor, "symmetry_combo")
     assert editor.symmetry_inference_label.text() == (
-        "Moving surface(s) sliced along the y axis. "
-        "Detected 2 distinct components in the fully mirrored system."
+        "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system."
     )
     assert all(spin.decimals() == 3 for spin in editor.axis_spins)
     assert all(spin.singleStep() == pytest.approx(0.005) for spin in editor.axis_spins)
@@ -487,9 +484,7 @@ def test_component_editor_persists_per_surface_velocity_weights() -> None:
     editor.boundary_weight_spins[0].setValue(-12.0)
     updated = editor.component_draft()
 
-    assert updated.parameters["boundary_motion_weights"][boundary.id] == pytest.approx(
-        10.0 ** (-12.0 / 20.0)
-    )
+    assert updated.parameters["boundary_motion_weights"][boundary.id] == pytest.approx(10.0 ** (-12.0 / 20.0))
 
 
 def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
@@ -817,9 +812,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.request.solver_options["static_condensation"] is False
     assert prepared.request.solver_options["symmetry"] == "off"
     interior = next(
-        region
-        for region in prepared.request.compiled_system.regions
-        if region.kind == AcousticRegionKind.BOUNDED_AIR
+        region for region in prepared.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     )
     assert interior.loss_model["bulk_loss_factor"] == pytest.approx(0.01)
     assert "precision" not in prepared.request.solver_options
