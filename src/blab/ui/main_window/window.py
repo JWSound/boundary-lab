@@ -341,6 +341,7 @@ class MainWindow(
         self._plot_dpi_screen = None
         self._plot_dpi_window_handle = None
         self._plot_dpi_refresh_pending = False
+        self._plot_activation_refresh_pending = False
         self._live_plot_refresh_dirty = False
         self._live_plot_refresh_timer = QTimer(self)
         self._live_plot_refresh_timer.setSingleShot(True)

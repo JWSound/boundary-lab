@@ -83,6 +83,8 @@ class PlotPresenterMixin:
         window = self.windowHandle()
         screen = None if window is None else window.screen()
         for entry in self.plot_entries:
+            if not self._plot_entry_is_actively_visible(entry):
+                continue
             canvas = entry.widget
             if screen is not None and hasattr(canvas, "_update_screen"):
                 canvas._update_screen(screen)
@@ -265,12 +267,18 @@ class PlotPresenterMixin:
         return not entry.widget.visibleRegion().isEmpty()
 
     def refresh_plots(self, *, active_only: bool = False) -> VisualizationProjection | None:
+        # A tab-covered QDockWidget isVisible() and isHidden() == False even
+        # though its canvas has no visible region and may still be only a few
+        # pixels high. Drawing Matplotlib text at that transient geometry can
+        # fail in FreeType, and leaves the tab with a partially drawn figure.
+        # All redraws therefore target canvases that Qt is actually exposing;
+        # covered tabs are refreshed when their dock becomes active.
         visible_entries = [
             entry
             for entry in self.plot_entries
             if (dock := self.plot_docks.get(entry.plot_id)) is not None
             and not dock.isHidden()
-            and (not active_only or self._plot_entry_is_actively_visible(entry))
+            and self._plot_entry_is_actively_visible(entry)
         ]
         if not visible_entries:
             return None

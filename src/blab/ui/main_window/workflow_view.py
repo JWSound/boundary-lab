@@ -222,7 +222,7 @@ class PlotPresenter(Protocol):
     """
 
     def refresh_plots(self, *, active_only: bool = False):
-        """Recompute and redraw. ``active_only`` skips plots that are off screen."""
+        """Recompute and redraw canvases that are actually exposed on screen."""
 
     def clear_plots(self) -> None:
         """Drop all plotted data, leaving empty axes."""

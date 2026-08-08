@@ -327,6 +327,12 @@ def test_dpi_refresh_redraws_canvases_without_recomputing_plots(main_window, mon
     drawn: list[str] = []
     for entry in main_window.plot_entries:
         monkeypatch.setattr(entry.widget, "draw_idle", lambda pid=entry.plot_id: drawn.append(pid))
+    active_plot_id = main_window.plot_entries[0].plot_id
+    monkeypatch.setattr(
+        main_window,
+        "_plot_entry_is_actively_visible",
+        lambda entry: entry.plot_id == active_plot_id,
+    )
 
     refreshed: list[bool] = []
     monkeypatch.setattr(main_window, "refresh_plots", lambda **kw: refreshed.append(True))
@@ -334,7 +340,7 @@ def test_dpi_refresh_redraws_canvases_without_recomputing_plots(main_window, mon
     main_window._plot_dpi_refresh_pending = True
     main_window._refresh_plot_canvas_dpi()
 
-    assert sorted(drawn) == sorted(e.plot_id for e in main_window.plot_entries)
+    assert drawn == [active_plot_id]
     assert refreshed == [], "a DPI change must not re-run the plot pipeline"
     assert main_window._plot_dpi_refresh_pending is False
 

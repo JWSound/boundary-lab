@@ -90,6 +90,52 @@ def test_live_plot_refresh_flushes_only_actively_visible_entries() -> None:
     )
 
 
+def test_final_plot_refresh_skips_tab_covered_canvases() -> None:
+    dataset = object()
+    updates = []
+    active = SimpleNamespace(plot_id="active", update=lambda value: updates.append(("active", value)))
+    covered = SimpleNamespace(plot_id="covered", update=lambda value: updates.append(("covered", value)))
+    dock = SimpleNamespace(isHidden=lambda: False)
+    window = SimpleNamespace(
+        plot_entries=(active, covered),
+        plot_docks={"active": dock, "covered": dock},
+        _plot_entry_is_actively_visible=lambda entry: entry.plot_id == "active",
+        _use_final_isobar_resolution=True,
+        prepared_live_dataset=lambda **_options: dataset,
+    )
+
+    result = MainWindow.refresh_plots(window, active_only=False)
+
+    assert result is dataset
+    assert updates == [("active", dataset)]
+
+
+def test_activated_plot_refresh_uses_cached_solve_after_geometry_is_visible() -> None:
+    refresh_calls = []
+    contour_calls = []
+    active = SimpleNamespace(plot_id="on_axis_frequency_response")
+    covered = SimpleNamespace(plot_id="spinorama")
+    window = SimpleNamespace(
+        _plot_activation_refresh_pending=True,
+        plot_entries=(active, covered),
+        _plot_entry_is_actively_visible=lambda entry: entry is active,
+        solve_controller=SimpleNamespace(active=False),
+        preferences=SimpleNamespace(live_plot_streaming=True),
+        refresh_plots=lambda **options: refresh_calls.append(options),
+        request_live_refresh=lambda: None,
+        _use_final_isobar_resolution=True,
+        _final_isobar_plots_rendered=False,
+        refresh_contour_controls=lambda: contour_calls.append(True),
+    )
+
+    MainWindow._refresh_visible_plots(window)
+
+    assert window._plot_activation_refresh_pending is False
+    assert refresh_calls == [{"active_only": True}]
+    assert window._final_isobar_plots_rendered is False
+    assert contour_calls == [True]
+
+
 def test_isobar_canvas_reuses_mesh_colorbar_and_colormap() -> None:
     canvas = IsobarCanvas("Horizontal")
     freqs = np.asarray([100.0, 1000.0, 10000.0], dtype=np.float32)
