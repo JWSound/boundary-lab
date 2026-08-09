@@ -12,11 +12,23 @@ from PySide6.QtCore import QObject, Signal, Slot
 from blab.config import normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.physical_compiler import PhysicalSystemCompiler
-from blab.physical_model import BoundaryKind, PhysicalSystem
+from blab.physical_model import BoundaryKind, ComponentKind, PhysicalSystem
+from blab.solve_results import (
+    DIAPHRAGM_VELOCITY_ID,
+    HORIZONTAL_POLAR_DOMAIN_ID,
+    HORIZONTAL_POLAR_PRESSURE_ID,
+    SPHERE_DOMAIN_ID,
+    SPHERE_PRESSURE_ID,
+    TRANSDUCER_DOMAIN_ID,
+    VERTICAL_POLAR_DOMAIN_ID,
+    VERTICAL_POLAR_PRESSURE_ID,
+    VOICE_COIL_CURRENT_ID,
+    ResultDomain,
+)
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.solvers.registry import normalize_backend_id
-from blab.system_contract import OutputRequest, SystemFrequencyResult, SystemSolveRequest
+from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +43,7 @@ class CoupledUiSolveRequest:
     horizontal_count: int
     vertical_count: int
     sphere_metadata: dict[str, np.ndarray] | None = None
+    result_domains: tuple[ResultDomain, ...] = ()
 
 
 def prepare_coupled_ui_solve(
@@ -64,13 +77,60 @@ def prepare_coupled_ui_solve(
         step_deg=float(polar_angle_step_deg),
     )
     point_blocks = [horizontal, vertical]
+    observation_domains = [
+        {
+            "id": HORIZONTAL_POLAR_DOMAIN_ID,
+            "quantity_id": HORIZONTAL_POLAR_PRESSURE_ID,
+            "offset": 0,
+            "count": len(horizontal),
+        },
+        {
+            "id": VERTICAL_POLAR_DOMAIN_ID,
+            "quantity_id": VERTICAL_POLAR_PRESSURE_ID,
+            "offset": len(horizontal),
+            "count": len(vertical),
+        },
+    ]
+    result_domains = [
+        ResultDomain(
+            id=HORIZONTAL_POLAR_DOMAIN_ID,
+            kind="polar_observation",
+            dimensions=("observation",),
+            coordinates={"points_m": horizontal, "angle_deg": angles},
+            metadata={"plane": "horizontal"},
+        ),
+        ResultDomain(
+            id=VERTICAL_POLAR_DOMAIN_ID,
+            kind="polar_observation",
+            dimensions=("observation",),
+            coordinates={"points_m": vertical, "angle_deg": angles},
+            metadata={"plane": "vertical"},
+        ),
+    ]
     sphere_metadata = None
     if spherical_sampling_enabled:
         sphere, sphere_metadata = _fibonacci_sphere_points(
             max(int(spherical_sampling_points), 1),
             float(observation_distance_m),
         )
+        sphere_offset = sum(len(block) for block in point_blocks)
         point_blocks.append(sphere)
+        observation_domains.append(
+            {
+                "id": SPHERE_DOMAIN_ID,
+                "quantity_id": SPHERE_PRESSURE_ID,
+                "offset": sphere_offset,
+                "count": len(sphere),
+            }
+        )
+        result_domains.append(
+            ResultDomain(
+                id=SPHERE_DOMAIN_ID,
+                kind="spherical_observation",
+                dimensions=("observation",),
+                coordinates={"points_m": sphere, **sphere_metadata},
+            )
+        )
     points = np.vstack(point_blocks)
 
     components = {component.id: component for component in compiled.components}
@@ -88,17 +148,51 @@ def prepare_coupled_ui_solve(
     normalized_backend_id = normalize_backend_id(backend_id)
     if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
         raise ValueError("Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences.")
+    outputs = [
+        OutputRequest(
+            id="ui:exterior-pressure",
+            quantity="exterior_pressure",
+            options={
+                "points_m": points.tolist(),
+                "observation_domains": observation_domains,
+            },
+        )
+    ]
+    transducers = [
+        component for component in compiled.components if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+    ]
+    if transducers:
+        result_domains.append(
+            ResultDomain(
+                id=TRANSDUCER_DOMAIN_ID,
+                kind="component_collection",
+                dimensions=("transducer",),
+                coordinates={
+                    "component_id": np.asarray([component.id for component in transducers]),
+                    "name": np.asarray([component.name for component in transducers]),
+                },
+            )
+        )
+        outputs.extend(
+            [
+                OutputRequest(
+                    id=DIAPHRAGM_VELOCITY_ID,
+                    quantity="diaphragm_velocity",
+                    target_ids=(TRANSDUCER_DOMAIN_ID,),
+                ),
+                OutputRequest(
+                    id=VOICE_COIL_CURRENT_ID,
+                    quantity="voice_coil_current",
+                    target_ids=(TRANSDUCER_DOMAIN_ID,),
+                ),
+            ]
+        )
+
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
         excitation_port_ids=port_ids,
-        outputs=(
-            OutputRequest(
-                id="ui:exterior-pressure",
-                quantity="exterior_pressure",
-                options={"points_m": points.tolist()},
-            ),
-        ),
+        outputs=tuple(outputs),
         solver_options={
             "quadrature_order": 2,
             "singular_order": 2,
@@ -117,6 +211,7 @@ def prepare_coupled_ui_solve(
         horizontal_count=len(horizontal),
         vertical_count=len(vertical),
         sphere_metadata=sphere_metadata,
+        result_domains=tuple(result_domains),
     )
 
 
@@ -125,6 +220,7 @@ class CoupledSolveWorker(QObject):
 
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
+    system_result_ready = Signal(object)
     status = Signal(str)
     failed = Signal(str)
     finished = Signal()
@@ -152,7 +248,9 @@ class CoupledSolveWorker(QObject):
                 self.prepared.sphere_metadata,
             )
             for result in session.solve_stream(stop_requested=lambda: self._stop):
-                self.result_ready.emit(self._to_live_result(result))
+                canonical_result = self._canonical_result(result)
+                self.system_result_ready.emit(canonical_result)
+                self.result_ready.emit(self._to_live_result(canonical_result))
         except Exception as exc:
             if not self._stop:
                 self.failed.emit(str(exc))
@@ -170,20 +268,11 @@ class CoupledSolveWorker(QObject):
         LOGGER.info("Coupled solver backend status: %s", message)
 
     def _to_live_result(self, result: SystemFrequencyResult) -> FrequencyResult:
-        quantity = next(
-            (item for item in result.quantities if item.id == "ui:exterior-pressure"),
-            None,
-        )
-        if quantity is None:
-            raise ValueError("Coupled solver result did not contain exterior pressure.")
-        pressure = np.asarray(quantity.values, dtype=np.complex64)
-        if pressure.ndim != 2:
-            raise ValueError("Coupled exterior pressure must have shape (excitation, observation).")
-        horizontal_end = self.prepared.horizontal_count
-        vertical_end = horizontal_end + self.prepared.vertical_count
-        horizontal = pressure[:, :horizontal_end]
-        vertical = pressure[:, horizontal_end:vertical_end]
-        sphere = pressure[:, vertical_end:] if pressure.shape[1] > vertical_end else None
+        result = self._canonical_result(result)
+        horizontal = self._pressure_values(result, HORIZONTAL_POLAR_PRESSURE_ID)
+        vertical = self._pressure_values(result, VERTICAL_POLAR_PRESSURE_ID)
+        sphere_quantity = next((item for item in result.quantities if item.id == SPHERE_PRESSURE_ID), None)
+        sphere = None if sphere_quantity is None else np.asarray(sphere_quantity.values, dtype=np.complex64)
         channel_names, horizontal, vertical, sphere = self._combine_channel_rows(
             horizontal,
             vertical,
@@ -230,6 +319,49 @@ class CoupledSolveWorker(QObject):
             ),
             diagnostics=SolverDiagnostics(message=diagnostic_message),
         )
+
+    def _canonical_result(self, result: SystemFrequencyResult) -> SystemFrequencyResult:
+        """Split the compact solver field block into named observation quantities."""
+
+        combined = next((item for item in result.quantities if item.id == "ui:exterior-pressure"), None)
+        if combined is None:
+            return result
+        pressure = np.asarray(combined.values)
+        if pressure.ndim != 2:
+            raise ValueError("Coupled exterior pressure must have shape (excitation, observation).")
+        output = next(item for item in self.prepared.request.outputs if item.id == "ui:exterior-pressure")
+        domains = output.options.get("observation_domains", ())
+        quantities = [item for item in result.quantities if item.id != combined.id]
+        for domain in domains:
+            offset = int(domain["offset"])
+            count = int(domain["count"])
+            quantities.append(
+                QuantityResult(
+                    id=str(domain["quantity_id"]),
+                    quantity=combined.quantity,
+                    unit=combined.unit,
+                    values=pressure[:, offset : offset + count],
+                    target_id=str(domain["id"]),
+                    axes=combined.axes,
+                    metadata={"source_output_id": combined.id},
+                )
+            )
+        return SystemFrequencyResult(
+            freq_hz=result.freq_hz,
+            quantities=tuple(quantities),
+            excitation_port_ids=result.excitation_port_ids,
+            diagnostics=result.diagnostics,
+        )
+
+    @staticmethod
+    def _pressure_values(result: SystemFrequencyResult, quantity_id: str) -> np.ndarray:
+        quantity = next((item for item in result.quantities if item.id == quantity_id), None)
+        if quantity is None:
+            raise ValueError(f"Coupled solver result did not contain {quantity_id!r}.")
+        pressure = np.asarray(quantity.values, dtype=np.complex64)
+        if pressure.ndim != 2:
+            raise ValueError(f"Coupled pressure quantity {quantity_id!r} must have two dimensions.")
+        return pressure
 
     def _combine_channel_rows(
         self,

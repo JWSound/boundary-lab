@@ -120,6 +120,7 @@ class GeometryController(QObject):
 class SolveController(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
+    system_result_ready = Signal(object)
     status = Signal(str)
     failed = Signal(str)
     finished = Signal(object)
@@ -175,6 +176,8 @@ class SolveController(QObject):
         thread.started.connect(worker.run)
         worker.initialized.connect(self.initialized)
         worker.result_ready.connect(self._on_result)
+        if hasattr(worker, "system_result_ready"):
+            worker.system_result_ready.connect(self._on_system_result)
         worker.status.connect(self._on_status)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)
@@ -196,6 +199,10 @@ class SolveController(QObject):
     def _on_result(self, result: object) -> None:
         self._solved_count += 1
         self.result_ready.emit(result)
+
+    @Slot(object)
+    def _on_system_result(self, result: object) -> None:
+        self.system_result_ready.emit(result)
 
     @Slot(str)
     def _on_status(self, message: str) -> None:

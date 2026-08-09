@@ -19,12 +19,20 @@ from PySide6.QtCore import QObject, Signal, Slot
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
+    build_log_frequencies,
 )
 from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.solve_results import (
+    SolvedSystemBuilder,
+    SolveProvenance,
+    legacy_result_domains,
+    legacy_result_to_system_result,
+)
 from blab.symmetry import SymmetryValidationError
+from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
 from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.main_window.solve_session import SolveSession
@@ -251,6 +259,17 @@ class SolveWorkflowController(QObject):
             return
 
         self._begin_run("Initializing coupled solver...")
+        self._session.result_builder = SolvedSystemBuilder(
+            frequencies_hz=prepared.request.frequencies_hz,
+            excitation_ids=prepared.request.excitation_port_ids,
+            provenance=SolveProvenance(
+                backend_id=prepared.backend_id,
+                solve_kind="coupled_bem_fem",
+                solver_options=dict(prepared.request.solver_options),
+            ),
+            domains=prepared.result_domains,
+            compiled_system=prepared.request.compiled_system,
+        )
         self._solve_controller.start(prepared)
 
     # -- cancelling ---------------------------------------------------------
@@ -304,6 +323,25 @@ class SolveWorkflowController(QObject):
         if live_dataset is None:
             return
         live_dataset.add(result)
+        if self._session.result_builder is None:
+            canonical = legacy_result_to_system_result(result)
+            frequencies = self._view.frequency_range().normalized()
+            self._session.result_builder = SolvedSystemBuilder(
+                frequencies_hz=build_log_frequencies(
+                    float(frequencies.min_hz),
+                    float(frequencies.max_hz),
+                    int(frequencies.count),
+                ),
+                excitation_ids=canonical.excitation_port_ids,
+                provenance=SolveProvenance(
+                    backend_id=self._read_preferences().solve_backend,
+                    solve_kind="exterior_bem",
+                ),
+                domains=legacy_result_domains(live_dataset),
+            )
+            self._session.result_builder.add(canonical)
+        elif self._session.result_builder.compiled_system is None:
+            self._session.result_builder.add(legacy_result_to_system_result(result))
         self._view.show_status(
             f"Solved {live_dataset.solved_count}/{self._view.frequency_range().count} "
             f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
@@ -311,6 +349,13 @@ class SolveWorkflowController(QObject):
         if not self._read_preferences().live_plot_streaming:
             return
         self._plots.request_live_refresh()
+
+    @Slot(object)
+    def _on_system_frequency_result(self, result: SystemFrequencyResult) -> None:
+        builder = self._session.result_builder
+        if builder is None:
+            raise RuntimeError("Received a physical-system result before its result builder was initialized.")
+        builder.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:
@@ -322,6 +367,7 @@ class SolveWorkflowController(QObject):
         self._plots.cancel_live_refresh()
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session
+        session.finalize_results(status=completion.phase.value)
         elapsed_s = completion.elapsed_s
         if session.has_solved_data():
             solved_count = session.solved_count

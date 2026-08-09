@@ -22,6 +22,7 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.live import (
     LiveSolveDataset,
 )
+from blab.solve_results import SolvedSystem
 from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
@@ -169,6 +170,12 @@ class MainWindow(
     @live_dataset.setter
     def live_dataset(self, value: LiveSolveDataset | None) -> None:
         self._solve_session().live_dataset = value
+
+    @property
+    def solved_system(self) -> SolvedSystem | None:
+        """Canonical raw result snapshot for the most recent solve."""
+
+        return self._solve_session().solved_system
 
     @property
     def _use_final_isobar_resolution(self) -> bool:

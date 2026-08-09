@@ -43,11 +43,11 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
     resources = [object_by_id(meshes, mesh_id, "mesh") for mesh_id in mesh_ids]
     all(String(resource["purpose"]) == "bem_surface" for resource in resources) ||
         error("Unbounded region meshes must be BEM surfaces.")
-    combined = combine_boundary_meshes(
-        [translated_boundary_mesh(resource, T) for resource in resources],
-    )
+    translated_meshes = [translated_boundary_mesh(resource, T) for resource in resources]
+    combined = combine_boundary_meshes(translated_meshes)
     vertex_offset_by_mesh_id = Dict(zip(mesh_ids, combined.vertex_offsets))
     face_offset_by_mesh_id = Dict(zip(mesh_ids, combined.face_offsets))
+    vertex_count_by_mesh_id = Dict(zip(mesh_ids, [length(mesh.vertices) for mesh in translated_meshes]))
     tag_map_by_mesh_id = Dict(zip(mesh_ids, combined.physical_tag_maps))
     boundary_tag_by_id = Dict{String,Int}()
     for boundary in boundaries
@@ -72,6 +72,7 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
         mesh=combined.mesh,
         vertex_offset_by_mesh_id=vertex_offset_by_mesh_id,
         face_offset_by_mesh_id=face_offset_by_mesh_id,
+        vertex_count_by_mesh_id=vertex_count_by_mesh_id,
         boundary_tag_by_id=boundary_tag_by_id,
     )
 end
@@ -920,7 +921,17 @@ function solve_request(request; event_mode=false)
                         rows([solution.bem_pressure for solution in solutions], FloatType),
                         "Pa",
                         ["excitation", "bem_node"],
-                        metadata=Dict("mesh_id" => String(bem_resource["id"])),
+                        metadata=Dict(
+                            "mesh_ids" => String.(unbounded_region["mesh_ids"]),
+                            "vertex_offsets" => [
+                                bem_domain.vertex_offset_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                            "vertex_counts" => [
+                                bem_domain.vertex_count_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                        ),
                     ),
                 )
             elseif quantity == "interface_normal_derivative"
@@ -1027,7 +1038,14 @@ function solve_request(request; event_mode=false)
                         rows(pressures, FloatType),
                         "Pa",
                         ["excitation", "observation"],
-                        metadata=Dict("points_m" => raw_points),
+                        metadata=Dict(
+                            "points_m" => raw_points,
+                            "observation_domains" => get(
+                                options,
+                                "observation_domains",
+                                Any[],
+                            ),
+                        ),
                     ),
                 )
                 field_s += (time_ns() - field_started) / 1.0e9

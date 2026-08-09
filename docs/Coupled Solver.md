@@ -489,10 +489,19 @@ specialized callers:
 | `voice_coil_current` | A | excitation, transducer |
 | `exterior_pressure` | Pa | excitation, observation |
 
-The main application path currently requests only `exterior_pressure` and does
-not yet project transducer velocity, current, or derived electrical impedance
-into its plots. Impedance fields in the legacy live-result shape remain
+The main application path always requests `exterior_pressure`. For systems
+containing electrodynamic transducers it also retains `diaphragm_velocity` and
+`voice_coil_current`, from which diaphragm excursion and electrical input
+impedance can be derived. These raw complex quantities are assembled into the
+in-memory solved-system model even though dedicated reporting plots have not
+yet been added. Impedance fields in the legacy live-plot shape remain
 unavailable.
+
+The solved-system model keeps the original excitation-port basis and stores
+frequency-invariant observation coordinates separately from the quantity
+arrays. Channel grouping and plot normalization remain presentation steps, so
+they do not destroy component-level physical results. Solved-system data is
+currently session-only and is not written into `.blab.json` project files.
 
 ## Diagnostics
 

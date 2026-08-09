@@ -28,6 +28,7 @@ from blab.physical_model import (
     infer_physical_solve_kind,
 )
 from blab.solvers.coupled_backend import CoupledProductionBackend
+from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.mesh_assembly import MeshAssemblyService
@@ -638,6 +639,12 @@ def test_electrodynamic_component_collection_uses_voltage_port_and_preserves_aut
     session = CoupledProductionBackend(bem_backend="cpu", persistent_worker=False).create_system_session(
         prepared.request
     )
+    assert [output.id for output in prepared.request.outputs] == [
+        "ui:exterior-pressure",
+        "mechanical:diaphragm-velocity",
+        "electrical:voice-coil-current",
+    ]
+    assert prepared.result_domains[-1].id == "components:electrodynamic-transducers"
     assert session.request.solver_options["transducer_reference_voltage_v"] == pytest.approx(2.83)
 
 
@@ -820,6 +827,37 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.backend_id == "beat_cpu"
     points = np.asarray(prepared.request.outputs[0].options["points_m"])
     assert points.shape == (10, 3)
+    observation_domains = prepared.request.outputs[0].options["observation_domains"]
+    assert [domain["id"] for domain in observation_domains] == [
+        "observation:horizontal-polar",
+        "observation:vertical-polar",
+    ]
+    assert {domain.id for domain in prepared.result_domains} == {
+        "observation:horizontal-polar",
+        "observation:vertical-polar",
+    }
+
+    raw_result = SystemFrequencyResult(
+        freq_hz=500.0,
+        excitation_port_ids=prepared.request.excitation_port_ids,
+        quantities=(
+            QuantityResult(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.arange(10, dtype=np.float32).reshape(1, 10).astype(np.complex64),
+            ),
+        ),
+    )
+    worker = CoupledSolveWorker(prepared)
+    canonical = worker._canonical_result(raw_result)
+    canonical_by_id = {quantity.id: quantity for quantity in canonical.quantities}
+
+    assert canonical_by_id["acoustic:pressure:horizontal-polar"].target_id == ("observation:horizontal-polar")
+    assert canonical_by_id["acoustic:pressure:horizontal-polar"].values.tolist() == [[0.0, 1.0, 2.0, 3.0, 4.0]]
+    assert canonical_by_id["acoustic:pressure:vertical-polar"].values.tolist() == [[5.0, 6.0, 7.0, 8.0, 9.0]]
+    assert worker._to_live_result(raw_result).horizontal_pressure.shape == (1, 5)
 
 
 def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:
