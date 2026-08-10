@@ -60,6 +60,20 @@ def test_project_file_round_trip(tmp_path) -> None:
             }
         },
         component_channel_by_id={"component:woofer": "tweeter"},
+        observation_planes=[
+            {
+                "id": "plane:interior",
+                "name": "Interior Slice",
+                "center_m": [0.0, 0.0, 0.1],
+                "orientation_wxyz": [1.0, 0.0, 0.0, 0.0],
+                "width_m": 0.2,
+                "height_m": 0.1,
+                "resolution_m": 0.005,
+                "type": "interior",
+                "display": "spl",
+                "interior_rendering": "smooth_field",
+            }
+        ],
     )
 
     project_path = write_project_file(tmp_path / "test_project", payload)
@@ -69,6 +83,7 @@ def test_project_file_round_trip(tmp_path) -> None:
     assert loaded == payload
     assert loaded["symmetry"] == "xy"
     assert loaded["component_channel_by_id"] == {"component:woofer": "tweeter"}
+    assert loaded["observation_planes"][0]["id"] == "plane:interior"
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
 
 

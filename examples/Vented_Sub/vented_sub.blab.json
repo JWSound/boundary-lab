@@ -304,7 +304,7 @@
     "stitch_tolerance_mm": 3.0,
     "vertical_normalization_angle": 10.0
   },
-  "schema_version": 7,
+  "schema_version": 8,
   "stitch_exterior_meshes": false,
   "symmetry": "xy"
 }

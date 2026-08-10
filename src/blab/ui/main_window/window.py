@@ -39,6 +39,7 @@ from blab.ui.main_window.generator_documents import GeneratorDocumentsMixin
 from blab.ui.main_window.geometry_store import GeometryStore
 from blab.ui.main_window.geometry_workflow import GeometryWorkflowController
 from blab.ui.main_window.mesh_workflow import MeshWorkflowMixin
+from blab.ui.main_window.observation_planes import ObservationPlaneController
 from blab.ui.main_window.panels import PanelVisibilityMixin
 from blab.ui.main_window.plot_presenter import PlotPresenterMixin
 from blab.ui.main_window.preferences import PreferencesMixin
@@ -367,6 +368,13 @@ class MainWindow(
         from blab.ui.mesh_preview import MeshPreview
 
         self.preview = MeshPreview()
+        self.observation_plane_controller = ObservationPlaneController(
+            self,
+            window=self,
+            preview=self.preview,
+            project=self._project_document,
+            show_status=self.show_status,
+        )
         if self.has_solver_meshes():
             startup("Loading mesh preview...")
             self._refresh_mesh_preview()

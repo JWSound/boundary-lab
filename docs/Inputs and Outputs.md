@@ -10,6 +10,7 @@ Project files store:
 - whether the exterior region's mesh parts should be stitched into one solve mesh
 - an editable physical-system graph for exterior BEM and coupled BEM/FEM models
 - application-side component-to-channel routing for excitation responses
+- authored observation planes, including their transform, size, sampling resolution, and display settings
 
 Project files do not store:
 
@@ -22,7 +23,7 @@ Project files do not store:
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "active_generator_document_id": "design1",
   "generator_documents": [
     {
@@ -40,7 +41,8 @@ Project files do not store:
   "imported_meshes": [],
   "stitch_exterior_meshes": false,
   "physical_system": {},
-  "component_channel_by_id": {}
+  "component_channel_by_id": {},
+  "observation_planes": []
 }
 ```
 

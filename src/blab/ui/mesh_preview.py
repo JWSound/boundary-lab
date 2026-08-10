@@ -6,12 +6,13 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry
+from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
 
 try:  # pragma: no cover - optional visual dependency
@@ -53,6 +54,11 @@ PREVIEW_REGION_MODES = {
 
 
 class MeshPreview(QWidget):
+    newObservationPlaneRequested = Signal(object)
+    observationPlaneChanged = Signal(object)
+    observationPlanePropertiesRequested = Signal(str)
+    observationPlaneDeleteRequested = Signal(str)
+
     def __init__(self):
         super().__init__()
         self._hover_picker = None
@@ -60,6 +66,7 @@ class MeshPreview(QWidget):
         self._actor_surface_labels: dict[str, str] = {}
         self._mesh_region_actors: list[tuple[object, str | None]] = []
         self._region_visibility_mode = PREVIEW_REGION_ALL
+        self._observation_editor = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         if QtInteractor is None:
@@ -86,6 +93,11 @@ class MeshPreview(QWidget):
         status_row.addWidget(self.total_elements_label)
         layout.addLayout(status_row)
         self._refresh_viewer_theme()
+        self._observation_editor = ObservationPlaneViewport(self.viewer, vtk, self)
+        self._observation_editor.newPlaneRequested.connect(self.newObservationPlaneRequested.emit)
+        self._observation_editor.planeChanged.connect(self.observationPlaneChanged.emit)
+        self._observation_editor.propertiesRequested.connect(self.observationPlanePropertiesRequested.emit)
+        self._observation_editor.deleteRequested.connect(self.observationPlaneDeleteRequested.emit)
         self._install_hover_picker()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -106,6 +118,17 @@ class MeshPreview(QWidget):
         self._actor_surface_labels = {}
         self.hover_label.setText("")
         self._set_total_element_count(0)
+        self._restore_observation_plane_scene(np.empty((0, 3)))
+
+    def set_observation_planes(self, planes, *, selected_id: str | None = None) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_planes(tuple(planes), selected_id=selected_id)
+
+    def _restore_observation_plane_scene(self, points: np.ndarray) -> None:
+        if self._observation_editor is None:
+            return
+        self._observation_editor.set_scene_bounds(points)
+        self._observation_editor.scene_cleared()
 
     def set_region_visibility_mode(self, mode: str) -> None:
         normalized = str(mode).strip().lower()
@@ -138,6 +161,7 @@ class MeshPreview(QWidget):
         self._mesh_region_actors = []
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
+        self._restore_observation_plane_scene(display_points)
         self._set_total_element_count(
             int(triangles.shape[0]),
             dimensions_mm=_dimensions_lwh_mm(display_points),
@@ -221,6 +245,7 @@ class MeshPreview(QWidget):
             preview_points.append(mesh_points)
 
         display_points = np.vstack(preview_points) if preview_points else np.empty((0, 3))
+        self._restore_observation_plane_scene(display_points)
         self._set_total_element_count(
             total_elements,
             mirrored=mirrored,

@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from blab.observation_planes import observation_planes_from_payload
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 7
+PROJECT_SCHEMA_VERSION = 8
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -28,6 +29,7 @@ PROJECT_PAYLOAD_KEYS = (
     "project_preferences",
     "physical_system",
     "component_channel_by_id",
+    "observation_planes",
 )
 
 
@@ -147,6 +149,9 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
             str(component_id): str(channel_name)
             for component_id, channel_name in _dict_or_empty(payload.get("component_channel_by_id")).items()
         },
+        "observation_planes": [
+            plane.to_payload() for plane in observation_planes_from_payload(payload.get("observation_planes"))
+        ],
     }
     if payload.get("project_preferences") is not None:
         preferences = ProjectPreferencesState.from_payload(payload["project_preferences"])
@@ -296,6 +301,7 @@ def build_project_payload(
     project_preferences: dict[str, Any] | None = None,
     physical_system: dict[str, Any] | None = None,
     component_channel_by_id: dict[str, str] | None = None,
+    observation_planes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": PROJECT_SCHEMA_VERSION,
@@ -306,6 +312,9 @@ def build_project_payload(
         "symmetry": _normalize_symmetry(symmetry),
         "channel_config_by_name": channel_config_by_name or {},
         "component_channel_by_id": component_channel_by_id or {},
+        "observation_planes": [
+            plane.to_payload() for plane in observation_planes_from_payload(observation_planes or [])
+        ],
     }
     if project_preferences is not None:
         normalized_preferences = ProjectPreferencesState.from_payload(project_preferences)

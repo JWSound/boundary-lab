@@ -18,6 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.generators.ath import ath_source_text, with_ath_source_text
+from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
@@ -187,6 +188,7 @@ class ProjectWorkflowController(QObject):
                 None if project.physical_system is None else physical_system_to_dict(project.physical_system)
             ),
             component_channel_by_id=project.component_channel_by_id,
+            observation_planes=[plane.to_payload() for plane in project.observation_planes],
         )
 
     def canonical_project_payload(self) -> dict:
@@ -380,6 +382,7 @@ class ProjectWorkflowController(QObject):
             component_channel_by_id={
                 str(component_id): str(channel_name) for component_id, channel_name in component_channels.items()
             },
+            observation_planes=observation_planes_from_payload(payload.get("observation_planes")),
         )
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:

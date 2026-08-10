@@ -445,9 +445,15 @@ class ViewBuilderMixin:
 
     def clear_mesh_preview(self) -> None:
         self.preview.clear()
+        controller = getattr(self, "observation_plane_controller", None)
+        if controller is not None:
+            controller.sync_view()
 
     def show_mesh_preview(self, meshes, **options) -> None:
         self.preview.load_mesh_configs(meshes, **options)
+        controller = getattr(self, "observation_plane_controller", None)
+        if controller is not None:
+            controller.sync_view()
 
     def set_preview_region_mode(self, mode: str) -> None:
         self.preview.set_region_visibility_mode(mode)

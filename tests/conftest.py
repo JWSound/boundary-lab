@@ -63,14 +63,22 @@ def qapp():
 
 def _stub_mesh_preview_class():
     """Stand-in for the VTK mesh preview, which cannot get a GL context offscreen."""
+    from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QWidget
 
     class StubMeshPreview(QWidget):
+        newObservationPlaneRequested = Signal(object)
+        observationPlaneChanged = Signal(object)
+        observationPlanePropertiesRequested = Signal(str)
+        observationPlaneDeleteRequested = Signal(str)
+
         def __init__(self, *args, **kwargs):
             super().__init__()
             self.region_visibility_mode: str | None = None
             self.loaded: list[tuple] = []
             self.clear_count = 0
+            self.observation_planes = ()
+            self.selected_observation_plane_id = None
 
         def clear(self) -> None:
             self.clear_count += 1
@@ -81,6 +89,10 @@ def _stub_mesh_preview_class():
 
         def set_region_visibility_mode(self, mode) -> None:
             self.region_visibility_mode = mode
+
+        def set_observation_planes(self, planes, *, selected_id=None) -> None:
+            self.observation_planes = tuple(planes)
+            self.selected_observation_plane_id = selected_id
 
     return StubMeshPreview
 
