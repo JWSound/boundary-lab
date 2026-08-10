@@ -134,6 +134,10 @@ class MeshPreview(QWidget):
         if self._observation_editor is not None:
             self._observation_editor.set_animation(plane_id, enabled)
 
+    def set_observation_plane_active(self, plane_id: str | None) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_active_plane(plane_id)
+
     def _set_observation_clip_active(self, active: bool) -> None:
         self._observation_clip_active = bool(active)
         self._apply_region_visibility(render=False)

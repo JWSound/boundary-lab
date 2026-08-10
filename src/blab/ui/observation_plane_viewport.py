@@ -46,11 +46,26 @@ class _DragState:
 
 
 @dataclass
-class _AnimationFieldState:
+class _ActiveFieldState:
     plane_id: str
     mesh: object
     pressure: np.ndarray
     association: str
+    actor: object | None = None
+
+
+@dataclass(frozen=True)
+class _SmoothFieldGeometry:
+    mesh: object
+    source_node_ids: np.ndarray
+    interpolation_weights: np.ndarray
+    clipped: object
+
+
+@dataclass(frozen=True)
+class _ElementFieldGeometry:
+    mesh: object
+    source_tetrahedron_ids: np.ndarray
 
 
 class ObservationPlaneViewport(QObject):
@@ -68,6 +83,7 @@ class ObservationPlaneViewport(QObject):
         self.vtk = vtk_module
         self._planes: tuple[ObservationPlane, ...] = ()
         self._selected_id: str | None = None
+        self._active_id: str | None = None
         self._mode: str | None = None
         self._drag: _DragState | None = None
         self._plane_actor_ids: dict[str, str] = {}
@@ -78,14 +94,14 @@ class ObservationPlaneViewport(QObject):
         self._rotation_angle_deg: float | None = None
         self._field_results: InteriorFieldResults | None = None
         self._field_message: str | None = None
-        self._field_cache: dict[tuple[object, ...], tuple[object, ...]] = {}
+        self._field_cache: dict[tuple[str, str], tuple[tuple[object, ...], object]] = {}
         self._field_generation = 0
         self._scalar_bar_titles: set[str] = set()
         self._clip_active = False
         self._animation_plane_id: str | None = None
         self._animation_phase_deg = 0.0
         self._animation_updated_at = time.monotonic()
-        self._animation_field: _AnimationFieldState | None = None
+        self._active_field: _ActiveFieldState | None = None
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(50)
         self._animation_timer.timeout.connect(self._advance_animation)
@@ -129,17 +145,42 @@ class ObservationPlaneViewport(QObject):
 
     def set_planes(self, planes: tuple[ObservationPlane, ...], *, selected_id: str | None = None) -> None:
         validated = tuple(plane.validated() for plane in planes)
-        if validated != self._planes:
-            self._field_cache.clear()
+        previous_planes = self._planes
+        previous_selected_id = self._selected_id
         self._planes = validated
         available_ids = {plane.id for plane in self._planes}
+        if self._active_id not in available_ids:
+            self._active_id = None
+        for cache_key in tuple(self._field_cache):
+            if cache_key[1] not in available_ids:
+                self._field_cache.pop(cache_key, None)
         if selected_id is not None:
             self._selected_id = selected_id if selected_id in available_ids else None
         elif self._selected_id not in available_ids:
             self._selected_id = None
         if self._selected_id is None:
             self._mode = None
+        result_update = _result_selection_update(
+            previous_planes,
+            self._planes,
+            previous_selected_id,
+            self._selected_id,
+        )
+        if result_update == "state_only":
+            return
+        if result_update == "field" and self._update_active_field(self._selected_plane()):
+            return
         self._render()
+
+    def set_active_plane(self, plane_id: str | None) -> None:
+        available_ids = {plane.id for plane in self._planes}
+        updated = plane_id if plane_id in available_ids else None
+        if updated == self._active_id:
+            return
+        previous_field_id = self._field_plane_id()
+        self._active_id = updated
+        if self._field_plane_id() != previous_field_id:
+            self._render()
 
     def set_field_results(self, results: InteriorFieldResults | None) -> None:
         if results is self._field_results:
@@ -153,10 +194,14 @@ class ObservationPlaneViewport(QObject):
 
     def set_animation(self, plane_id: str | None, enabled: bool) -> None:
         if not enabled or plane_id is None or self._field_results is None:
+            if self._animation_plane_id is None and not self._animation_timer.isActive():
+                return
             self._animation_plane_id = None
             self._animation_timer.stop()
             self._animation_phase_deg = 0.0
             self._render()
+            return
+        if self._animation_plane_id == str(plane_id) and self._animation_timer.isActive():
             return
         self._animation_plane_id = str(plane_id)
         self._animation_phase_deg = 0.0
@@ -430,15 +475,23 @@ class ObservationPlaneViewport(QObject):
     def _replace_selected(self, updated: ObservationPlane) -> None:
         updated = updated.validated()
         self._planes = tuple(updated if plane.id == updated.id else plane for plane in self._planes)
-        self._field_cache.clear()
+        for cache_key in (("smooth", updated.id), ("element", updated.id)):
+            self._field_cache.pop(cache_key, None)
         self._render()
 
     def _selected_plane(self) -> ObservationPlane | None:
         return next((plane for plane in self._planes if plane.id == self._selected_id), None)
 
+    def _field_plane_id(self) -> str | None:
+        return self._active_id or self._selected_id
+
+    def _field_plane(self) -> ObservationPlane | None:
+        field_id = self._field_plane_id()
+        return next((plane for plane in self._planes if plane.id == field_id), None)
+
     def _render(self) -> None:
         self._remove_actors()
-        self._animation_field = None
+        self._active_field = None
         self._plane_actor_ids.clear()
         self._tool_actor_controls.clear()
         self._field_message = None
@@ -446,10 +499,11 @@ class ObservationPlaneViewport(QObject):
             self._set_clip_active(False)
             self.viewer.render()
             return
+        field_plane_id = self._field_plane_id()
         for plane in self._planes:
             selected = plane.id == self._selected_id
-            field_selected = (
-                selected
+            field_visible = (
+                plane.id == field_plane_id
                 and self._field_results is not None
                 and plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
             )
@@ -459,8 +513,8 @@ class ObservationPlaneViewport(QObject):
                 mesh,
                 name=name,
                 color=PLANE_COLOR,
-                opacity=1.0 if field_selected else 0.32 if selected else 0.18,
-                style="wireframe" if field_selected else "surface",
+                opacity=1.0 if field_visible else 0.32 if selected else 0.18,
+                style="wireframe" if field_visible else "surface",
                 show_edges=True,
                 edge_color=SELECTED_EDGE_COLOR if selected else UNSELECTED_EDGE_COLOR,
                 line_width=3.0 if selected else 1.5,
@@ -470,9 +524,11 @@ class ObservationPlaneViewport(QObject):
             self._actor_names.add(name)
             self._plane_actor_ids[_vtk_actor_address(actor)] = plane.id
         selected = self._selected_plane()
+        field_plane = self._field_plane()
         clip_active = False
+        if field_plane is not None:
+            clip_active = self._add_interior_field(field_plane)
         if selected is not None:
-            clip_active = self._add_interior_field(selected)
             self._add_help_text(selected)
             if self._mode == "move":
                 self._add_move_gizmo(selected)
@@ -505,34 +561,13 @@ class ObservationPlaneViewport(QObject):
         results = self._field_results
         if (
             results is None
-            or self._drag is not None
+            or (self._drag is not None and self._drag.original.id == plane.id)
             or plane.plane_type not in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
         ):
             return False
         try:
-            pressure = results.pressure(plane.frequency_hz, plane.response_id)
-            points, tetrahedra, pressure = _expanded_fem_field(
-                results.points_m,
-                results.tetrahedra,
-                pressure,
-                results.symmetry,
-            )
-            if plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD:
-                mesh, complex_values = self._element_field_mesh(plane, points, tetrahedra, pressure)
-                self._add_colored_field_actor(
-                    mesh,
-                    complex_values,
-                    plane,
-                    association="cell",
-                    name=f"observation-plane:field:element:{plane.id}",
-                )
-            else:
-                mesh, complex_values, clipped = self._smooth_field_mesh(
-                    plane,
-                    points,
-                    tetrahedra,
-                    pressure,
-                )
+            mesh, complex_values, association, clipped = self._field_mesh_and_pressure(plane)
+            if clipped is not None:
                 clip_name = f"observation-plane:field:clip:{plane.id}"
                 self.viewer.add_mesh(
                     clipped,
@@ -546,53 +581,110 @@ class ObservationPlaneViewport(QObject):
                     render=False,
                 )
                 self._actor_names.add(clip_name)
-                self._add_colored_field_actor(
-                    mesh,
-                    complex_values,
-                    plane,
-                    association="point",
-                    name=f"observation-plane:field:smooth:{plane.id}",
-                )
+            self._add_colored_field_actor(
+                mesh,
+                complex_values,
+                plane,
+                association=association,
+                name=f"observation-plane:field:{plane.interior_rendering.value}:{plane.id}",
+            )
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             self._field_message = f"Interior field unavailable: {exc}"
             return False
         return True
+
+    def _field_mesh_and_pressure(
+        self,
+        plane: ObservationPlane,
+    ) -> tuple[object, np.ndarray, str, object | None]:
+        results = self._field_results
+        if results is None:
+            raise ValueError("No interior field results are available.")
+        pressure = results.pressure(plane.frequency_hz, plane.response_id)
+        if plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD:
+            geometry = self._element_field_mesh(
+                plane,
+                results.points_m,
+                results.tetrahedra,
+                results.symmetry,
+            )
+            source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
+            values = source_pressure[geometry.source_tetrahedron_ids]
+            return geometry.mesh, values, "cell", None
+        geometry = self._smooth_field_mesh(
+            plane,
+            results.points_m,
+            results.tetrahedra,
+            results.symmetry,
+        )
+        values = np.sum(
+            pressure[geometry.source_node_ids] * geometry.interpolation_weights,
+            axis=1,
+        )
+        return geometry.mesh, values, "point", geometry.clipped
 
     def _smooth_field_mesh(
         self,
         plane: ObservationPlane,
         points: np.ndarray,
         tetrahedra: np.ndarray,
-        pressure: np.ndarray,
-    ) -> tuple[object, np.ndarray, object]:
-        key = (self._field_generation, "smooth", plane)
+        symmetry: str,
+    ) -> _SmoothFieldGeometry:
+        signature = _field_geometry_signature(self._field_generation, plane, symmetry, smooth=True)
+        key = ("smooth", plane.id)
         cached = self._field_cache.get(key)
-        if cached is not None:
-            return cached[0], np.asarray(cached[1]), cached[2]
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         pv = __import__("pyvista")
-        volume = _fem_unstructured_grid(pv, points, tetrahedra, pressure)
+        expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+            points,
+            tetrahedra,
+            symmetry,
+        )
+        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
         plane_mesh = _sample_plane_polydata(pv, plane)
+        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
+            expanded_tetrahedra.shape[0],
+            dtype=np.int64,
+        )
         sampled = plane_mesh.sample(volume)
-        valid = np.asarray(sampled.point_data.get("vtkValidPointMask", np.ones(sampled.n_points)), dtype=bool)
+        valid = np.asarray(sampled.point_data["vtkValidPointMask"], dtype=bool)
         faces = np.asarray(sampled.faces).reshape(-1, 5)[:, 1:]
         valid_cells = np.all(valid[faces], axis=1)
         if not np.any(valid_cells):
             raise ValueError("The observation plane does not intersect the bounded FEM region.")
         sampled = sampled.extract_cells(valid_cells)
-        sampled_pressure = np.asarray(sampled.point_data["pressure_real"]) + 1j * np.asarray(
-            sampled.point_data["pressure_imag"]
+        sampled_cell_ids = np.asarray(
+            sampled.point_data["_observation_plane_source_tetrahedron"],
+            dtype=np.int64,
         )
-        _remove_internal_pressure_arrays(sampled)
-        axis_u, axis_v, normal = plane.local_axes
-        del axis_u, axis_v
+        for internal_name in (
+            "_observation_plane_source_tetrahedron",
+            "vtkValidPointMask",
+            "vtkGhostType",
+        ):
+            if internal_name in sampled.point_data:
+                del sampled.point_data[internal_name]
+        expanded_node_ids = expanded_tetrahedra[sampled_cell_ids]
+        interpolation_weights = _tetrahedral_interpolation_weights(
+            np.asarray(sampled.points),
+            expanded_points[expanded_node_ids],
+        )
+        sampled_source_node_ids = source_node_ids[expanded_node_ids]
+        del volume.cell_data["_observation_plane_source_tetrahedron"]
+        _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
             origin=np.asarray(plane.center_m),
             invert=plane.invert_clip_side,
         )
-        _remove_internal_pressure_arrays(clipped)
-        result = (sampled, sampled_pressure, clipped)
-        self._field_cache[key] = result
+        result = _SmoothFieldGeometry(
+            mesh=sampled,
+            source_node_ids=sampled_source_node_ids,
+            interpolation_weights=interpolation_weights,
+            clipped=clipped,
+        )
+        self._field_cache[key] = (signature, result)
         return result
 
     def _element_field_mesh(
@@ -600,29 +692,40 @@ class ObservationPlaneViewport(QObject):
         plane: ObservationPlane,
         points: np.ndarray,
         tetrahedra: np.ndarray,
-        pressure: np.ndarray,
-    ) -> tuple[object, np.ndarray]:
-        key = (self._field_generation, "element", plane)
+        symmetry: str,
+    ) -> _ElementFieldGeometry:
+        signature = _field_geometry_signature(self._field_generation, plane, symmetry, smooth=False)
+        key = ("element", plane.id)
         cached = self._field_cache.get(key)
-        if cached is not None:
-            return cached[0], np.asarray(cached[1])
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         pv = __import__("pyvista")
-        volume = _fem_unstructured_grid(pv, points, tetrahedra, pressure)
-        cell_pressure = np.mean(pressure[tetrahedra], axis=1)
-        volume.cell_data["pressure_real"] = np.real(cell_pressure)
-        volume.cell_data["pressure_imag"] = np.imag(cell_pressure)
+        expanded_points, expanded_tetrahedra, _source_node_ids = _expanded_fem_geometry(
+            points,
+            tetrahedra,
+            symmetry,
+        )
+        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
+        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
+            expanded_tetrahedra.shape[0],
+            dtype=np.int64,
+        )
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
             origin=np.asarray(plane.center_m),
             invert=plane.invert_clip_side,
         )
-        clipped_pressure = np.asarray(clipped.cell_data["pressure_real"]) + 1j * np.asarray(
-            clipped.cell_data["pressure_imag"]
+        clipped_source_ids = np.asarray(
+            clipped.cell_data["_observation_plane_source_tetrahedron"],
+            dtype=np.int64,
         )
-        _remove_internal_pressure_arrays(clipped)
-        result = (clipped, clipped_pressure)
-        self._field_cache[key] = result
+        del clipped.cell_data["_observation_plane_source_tetrahedron"]
+        result = _ElementFieldGeometry(
+            mesh=clipped,
+            source_tetrahedron_ids=clipped_source_ids % np.asarray(tetrahedra).shape[0],
+        )
+        self._field_cache[key] = (signature, result)
         return result
 
     def _add_colored_field_actor(
@@ -640,7 +743,7 @@ class ObservationPlaneViewport(QObject):
             mesh.cell_data[FIELD_SCALAR_NAME] = projection.values
         else:
             mesh.point_data[FIELD_SCALAR_NAME] = projection.values
-        self.viewer.add_mesh(
+        actor = self.viewer.add_mesh(
             mesh,
             name=name,
             scalars=FIELD_SCALAR_NAME,
@@ -657,18 +760,44 @@ class ObservationPlaneViewport(QObject):
             scalar_bar_args={"title": projection.title, "vertical": True},
             render=False,
         )
-        if phase is not None:
-            self._animation_field = _AnimationFieldState(
-                plane_id=plane.id,
-                mesh=mesh,
-                pressure=np.asarray(pressure),
-                association=association,
-            )
+        self._active_field = _ActiveFieldState(
+            plane_id=plane.id,
+            mesh=mesh,
+            pressure=np.asarray(pressure),
+            association=association,
+            actor=actor,
+        )
         self._scalar_bar_titles.add(projection.title)
         self._actor_names.add(name)
 
+    def _update_active_field(self, plane: ObservationPlane | None) -> bool:
+        """Refresh frequency-dependent scalars without replacing scene actors."""
+
+        state = self._active_field
+        if plane is None or state is None or state.plane_id != plane.id:
+            return False
+        try:
+            mesh, pressure, association, _clipped = self._field_mesh_and_pressure(plane)
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return False
+        if mesh is not state.mesh or association != state.association:
+            return False
+        phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+        projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+        if not _update_mesh_scalars(mesh, association, projection.values):
+            return False
+        state.pressure = np.asarray(pressure)
+        mapper = state.actor.GetMapper() if state.actor is not None and hasattr(state.actor, "GetMapper") else None
+        if mapper is not None:
+            mapper.SetScalarRange(*projection.clim)
+        self.viewer.render()
+        return True
+
     def _advance_animation(self) -> None:
-        plane = self._selected_plane()
+        plane = next(
+            (candidate for candidate in self._planes if candidate.id == self._animation_plane_id),
+            None,
+        )
         if plane is None or self._animation_plane_id != plane.id or self._field_results is None:
             self.set_animation(None, False)
             return
@@ -682,21 +811,13 @@ class ObservationPlaneViewport(QObject):
     def _update_animation_frame(self, plane: ObservationPlane) -> bool:
         """Update only the animated scalar array while preserving scene actors."""
 
-        state = self._animation_field
+        state = self._active_field
         if state is None or state.plane_id != plane.id:
             return False
         phase_rad = math.radians(self._animation_phase_deg)
         values = np.real(state.pressure) * math.cos(phase_rad) + np.imag(state.pressure) * math.sin(phase_rad)
-        attributes = state.mesh.cell_data if state.association == "cell" else state.mesh.point_data
-        current = attributes.get(FIELD_SCALAR_NAME)
-        if current is None or np.shape(current) != np.shape(values):
+        if not _update_mesh_scalars(state.mesh, state.association, values):
             return False
-        np.copyto(current, values, casting="unsafe")
-        vtk_array = getattr(current, "VTKObject", None)
-        if vtk_array is not None:
-            vtk_array.Modified()
-        if hasattr(state.mesh, "Modified"):
-            state.mesh.Modified()
         self.viewer.render()
         return True
 
@@ -937,15 +1058,70 @@ def _relative_rotation_text(angle_deg: float) -> str:
     return f"Relative rotation: {float(angle_deg):+.1f}°"
 
 
-def _expanded_fem_field(
+def _result_selection_update(
+    previous: tuple[ObservationPlane, ...],
+    current: tuple[ObservationPlane, ...],
+    previous_selected_id: str | None,
+    selected_id: str | None,
+) -> str | None:
+    """Classify a plane update that can preserve the existing viewport actors."""
+
+    if previous_selected_id != selected_id or len(previous) != len(current):
+        return None
+    if selected_id is None:
+        return "state_only" if previous == current else None
+    field_changed = False
+    state_changed = False
+    for old, new in zip(previous, current, strict=True):
+        if old.id != new.id:
+            return None
+        if old.id != selected_id:
+            if old != new:
+                return None
+            continue
+        comparable = replace(
+            new,
+            frequency_hz=old.frequency_hz,
+            response_id=old.response_id,
+            animation_speed_hz=old.animation_speed_hz,
+        )
+        if comparable != old:
+            return None
+        field_changed = old.frequency_hz != new.frequency_hz or old.response_id != new.response_id
+        state_changed = old.animation_speed_hz != new.animation_speed_hz
+    if field_changed:
+        return "field"
+    if state_changed or previous == current:
+        return "state_only"
+    return None
+
+
+def _field_geometry_signature(
+    generation: int,
+    plane: ObservationPlane,
+    symmetry: str,
+    *,
+    smooth: bool,
+) -> tuple[object, ...]:
+    return (
+        generation,
+        str(symmetry),
+        plane.center_m,
+        plane.orientation_wxyz,
+        plane.width_m,
+        plane.height_m,
+        plane.resolution_m if smooth else None,
+        plane.invert_clip_side,
+    )
+
+
+def _expanded_fem_geometry(
     points: np.ndarray,
     tetrahedra: np.ndarray,
-    pressure: np.ndarray,
     symmetry: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     points = np.asarray(points, dtype=float)
     tetrahedra = np.asarray(tetrahedra, dtype=np.int64)
-    pressure = np.asarray(pressure)
     signs = [(1.0, 1.0, 1.0)]
     if symmetry in {"x", "xy"}:
         signs.append((-1.0, 1.0, 1.0))
@@ -953,24 +1129,42 @@ def _expanded_fem_field(
         signs.extend(((1.0, -1.0, 1.0), (-1.0, -1.0, 1.0)))
     point_blocks = []
     tetrahedron_blocks = []
-    pressure_blocks = []
     for image_index, image_signs in enumerate(signs):
         point_blocks.append(points * np.asarray(image_signs, dtype=float))
         tetrahedron_blocks.append(tetrahedra + image_index * points.shape[0])
-        pressure_blocks.append(pressure)
     return (
         np.vstack(point_blocks),
         np.vstack(tetrahedron_blocks),
-        np.concatenate(pressure_blocks),
+        np.tile(np.arange(points.shape[0], dtype=np.int64), len(signs)),
     )
 
 
-def _fem_unstructured_grid(pv, points: np.ndarray, tetrahedra: np.ndarray, pressure: np.ndarray):
+def _expanded_fem_field(
+    points: np.ndarray,
+    tetrahedra: np.ndarray,
+    pressure: np.ndarray,
+    symmetry: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+        points,
+        tetrahedra,
+        symmetry,
+    )
+    return expanded_points, expanded_tetrahedra, np.asarray(pressure)[source_node_ids]
+
+
+def _fem_unstructured_grid(
+    pv,
+    points: np.ndarray,
+    tetrahedra: np.ndarray,
+    pressure: np.ndarray | None = None,
+):
     cells = np.column_stack((np.full(tetrahedra.shape[0], 4, dtype=np.int64), tetrahedra)).reshape(-1)
     cell_types = np.full(tetrahedra.shape[0], int(pv.CellType.TETRA), dtype=np.uint8)
     grid = pv.UnstructuredGrid(cells, cell_types, points)
-    grid.point_data["pressure_real"] = np.real(pressure)
-    grid.point_data["pressure_imag"] = np.imag(pressure)
+    if pressure is not None:
+        grid.point_data["pressure_real"] = np.real(pressure)
+        grid.point_data["pressure_imag"] = np.imag(pressure)
     return grid
 
 
@@ -980,29 +1174,49 @@ def _sample_plane_polydata(pv, plane: ObservationPlane):
     u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
     v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
     center = np.asarray(plane.center_m, dtype=float)
-    points = np.asarray([center + axis_u * u_value + axis_v * v_value for v_value in v_values for u_value in u_values])
-    faces = []
-    for y_index in range(y_count - 1):
-        row = y_index * x_count
-        next_row = (y_index + 1) * x_count
-        for x_index in range(x_count - 1):
-            faces.extend(
-                (
-                    4,
-                    row + x_index,
-                    row + x_index + 1,
-                    next_row + x_index + 1,
-                    next_row + x_index,
-                )
-            )
-    return pv.PolyData(points, np.asarray(faces, dtype=np.int64))
+    u_grid, v_grid = np.meshgrid(u_values, v_values)
+    points = center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
+    lower_left = (
+        np.arange(y_count - 1, dtype=np.int64)[:, np.newaxis] * x_count + np.arange(x_count - 1, dtype=np.int64)
+    ).reshape(-1)
+    faces = np.column_stack(
+        (
+            np.full(lower_left.size, 4, dtype=np.int64),
+            lower_left,
+            lower_left + 1,
+            lower_left + x_count + 1,
+            lower_left + x_count,
+        )
+    ).reshape(-1)
+    return pv.PolyData(points, faces)
 
 
-def _remove_internal_pressure_arrays(mesh) -> None:
-    for data in (mesh.point_data, mesh.cell_data):
-        for name in ("pressure_real", "pressure_imag", "vtkValidPointMask"):
-            if name in data:
-                del data[name]
+def _tetrahedral_interpolation_weights(sample_points: np.ndarray, tetrahedron_points: np.ndarray) -> np.ndarray:
+    origins = tetrahedron_points[:, 0]
+    matrices = np.stack(
+        (
+            tetrahedron_points[:, 1] - origins,
+            tetrahedron_points[:, 2] - origins,
+            tetrahedron_points[:, 3] - origins,
+        ),
+        axis=2,
+    )
+    coefficients = np.linalg.solve(matrices, (sample_points - origins)[..., np.newaxis])[..., 0]
+    return np.column_stack((1.0 - np.sum(coefficients, axis=1), coefficients))
+
+
+def _update_mesh_scalars(mesh, association: str, values: np.ndarray) -> bool:
+    attributes = mesh.cell_data if association == "cell" else mesh.point_data
+    current = attributes.get(FIELD_SCALAR_NAME)
+    if current is None or np.shape(current) != np.shape(values):
+        return False
+    np.copyto(current, values, casting="unsafe")
+    vtk_array = getattr(current, "VTKObject", None)
+    if vtk_array is not None:
+        vtk_array.Modified()
+    if hasattr(mesh, "Modified"):
+        mesh.Modified()
+    return True
 
 
 def _camera_position_snapshot(viewer):

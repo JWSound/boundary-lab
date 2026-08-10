@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -52,12 +52,14 @@ class ObservationPlanePropertiesDialog(QDialog):
     """Edit authoring and future result-display properties for one plane."""
 
     previewChanged = Signal(object, bool)
+    activeChanged = Signal(str, bool)
 
     def __init__(
         self,
         plane: ObservationPlane,
         parent: QWidget | None = None,
         *,
+        active: bool = False,
         solved_frequencies_hz: tuple[float, ...] = (),
         response_options: tuple[tuple[str, str], ...] = (),
     ) -> None:
@@ -78,6 +80,10 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.type_combo.addItem(label, value.value)
         self._select_data(self.type_combo, self._plane.plane_type.value)
         form.addRow("Type", self.type_combo)
+
+        self.active_check = QCheckBox("Keep this plane's cut and results visible")
+        self.active_check.setChecked(bool(active))
+        form.addRow("Active", self.active_check)
 
         size_row = QHBoxLayout()
         self.width_spin = _millimetre_spin(self._plane.width_m * 1000.0)
@@ -162,6 +168,12 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.height_spin.valueChanged.connect(self._refresh_point_count)
         self.resolution_spin.valueChanged.connect(self._refresh_point_count)
         self.frequency_slider.valueChanged.connect(self._refresh_frequency_label)
+        self._frequency_preview_timer = QTimer(self)
+        self._frequency_preview_timer.setSingleShot(True)
+        self._frequency_preview_timer.setInterval(16)
+        self._frequency_preview_timer.timeout.connect(self._emit_preview)
+        self.frequency_slider.valueChanged.connect(self._schedule_frequency_preview)
+        self.active_check.toggled.connect(self._emit_active)
         self.animate_button.toggled.connect(self._refresh_animation_controls)
         preview_controls = (
             self.name_edit.textChanged,
@@ -172,7 +184,6 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.display_combo.currentIndexChanged,
             self.rendering_combo.currentIndexChanged,
             self.invert_clip_check.toggled,
-            self.frequency_slider.valueChanged,
             self.response_combo.currentIndexChanged,
             self.animate_button.toggled,
             self.animation_speed_slider.valueChanged,
@@ -264,6 +275,11 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._refresh_frequency_label()
         self._refresh_animation_controls()
 
+    def set_active(self, active: bool) -> None:
+        blocker = QSignalBlocker(self.active_check)
+        self.active_check.setChecked(bool(active))
+        del blocker
+
     def _refresh_dependent_controls(self) -> None:
         supports_interior = self.type_combo.currentData() in {
             ObservationPlaneType.INTERIOR.value,
@@ -316,8 +332,24 @@ class ObservationPlanePropertiesDialog(QDialog):
 
     def _emit_preview(self, *_args) -> None:
         if self._preview_ready:
+            self._frequency_preview_timer.stop()
             self.setWindowTitle(f"{self.plane.name} Properties")
             self.previewChanged.emit(self.plane, self.animate_button.isChecked())
+
+    def _schedule_frequency_preview(self, *_args) -> None:
+        if self._preview_ready and not self._frequency_preview_timer.isActive():
+            self._frequency_preview_timer.start()
+
+    def _emit_active(self, active: bool) -> None:
+        self.activeChanged.emit(self._plane.id, bool(active))
+
+    def accept(self) -> None:
+        self._frequency_preview_timer.stop()
+        super().accept()
+
+    def reject(self) -> None:
+        self._frequency_preview_timer.stop()
+        super().reject()
 
     @staticmethod
     def _select_data(combo: QComboBox, value: str) -> None:

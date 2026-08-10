@@ -34,12 +34,16 @@ class ObservationPlaneController(QObject):
         self._show_status = show_status
         self._field_results = field_results or (lambda: None)
         self._dialogs: dict[str, ObservationPlanePropertiesDialog] = {}
+        self._active_plane_id: str | None = None
         preview.newObservationPlaneRequested.connect(self.create_plane)
         preview.observationPlaneChanged.connect(self.update_plane)
         preview.observationPlanePropertiesRequested.connect(self.open_properties)
         preview.observationPlaneDeleteRequested.connect(self.delete_plane)
 
     def sync_view(self, *, selected_id: str | None = None) -> None:
+        available_ids = {plane.id for plane in self._project().observation_planes}
+        if self._active_plane_id not in available_ids:
+            self._active_plane_id = None
         results = self._field_results()
         if hasattr(self._preview, "set_observation_plane_results"):
             self._preview.set_observation_plane_results(results)
@@ -47,7 +51,10 @@ class ObservationPlaneController(QObject):
         responses = () if results is None else results.response_options
         for dialog in self._dialogs.values():
             dialog.set_solved_results(frequencies, responses)
+            dialog.set_active(dialog.plane.id == self._active_plane_id)
         self._preview.set_observation_planes(self._project().observation_planes, selected_id=selected_id)
+        if hasattr(self._preview, "set_observation_plane_active"):
+            self._preview.set_observation_plane_active(self._active_plane_id)
 
     @Slot(object)
     def create_plane(self, placement: object) -> None:
@@ -105,11 +112,13 @@ class ObservationPlaneController(QObject):
         dialog = ObservationPlanePropertiesDialog(
             plane,
             self._window,
+            active=plane.id == self._active_plane_id,
             solved_frequencies_hz=(() if results is None else tuple(float(value) for value in results.frequencies_hz)),
             response_options=(() if results is None else results.response_options),
         )
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.previewChanged.connect(self._preview_properties)
+        dialog.activeChanged.connect(self.set_active_plane)
         dialog.accepted.connect(lambda plane_id=plane_id, dialog=dialog: self._accept_properties(plane_id, dialog))
         dialog.rejected.connect(lambda plane_id=plane_id: self._reject_properties(plane_id))
         self._dialogs[plane_id] = dialog
@@ -140,6 +149,17 @@ class ObservationPlaneController(QObject):
         if hasattr(self._preview, "set_observation_plane_animation"):
             self._preview.set_observation_plane_animation(updated.id, animate)
 
+    @Slot(str, bool)
+    def set_active_plane(self, plane_id: str, active: bool) -> None:
+        if active and self._find(plane_id) is not None:
+            self._active_plane_id = plane_id
+        elif not active and self._active_plane_id == plane_id:
+            self._active_plane_id = None
+        for candidate_id, dialog in self._dialogs.items():
+            dialog.set_active(candidate_id == self._active_plane_id)
+        if hasattr(self._preview, "set_observation_plane_active"):
+            self._preview.set_observation_plane_active(self._active_plane_id)
+
     @Slot(str)
     def delete_plane(self, plane_id: str) -> None:
         plane = self._find(plane_id)
@@ -147,6 +167,8 @@ class ObservationPlaneController(QObject):
             return
         project = self._project()
         project.observation_planes = tuple(item for item in project.observation_planes if item.id != plane_id)
+        if self._active_plane_id == plane_id:
+            self._active_plane_id = None
         dialog = self._dialogs.get(plane_id)
         if dialog is not None:
             dialog.reject()

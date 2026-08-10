@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from PySide6.QtTest import QTest
 
 from blab.observation_planes import (
     InteriorRenderingMode,
@@ -110,6 +111,7 @@ def test_properties_dialog_disables_result_controls_without_solved_data(qapp) ->
         assert not dialog.response_combo.isEnabled()
         assert not dialog.animate_button.isEnabled()
         assert dialog.frequency_label.text() == "No solved plane data available"
+        assert not dialog.active_check.isChecked()
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -131,7 +133,18 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         assert dialog.plane.frequency_hz == 1000.0
         assert dialog.animate_button.isEnabled()
         dialog.frequency_slider.setValue(2)
+        qapp.processEvents()
+        QTest.qWait(20)
+        qapp.processEvents()
         assert previews[-1][0].frequency_hz == 10_000.0
+        previews.clear()
+        dialog.frequency_slider.setValue(0)
+        dialog.frequency_slider.setValue(1)
+        dialog.frequency_slider.setValue(2)
+        QTest.qWait(20)
+        qapp.processEvents()
+        assert len(previews) == 1
+        assert previews[0][0].frequency_hz == 10_000.0
         dialog.animate_button.setChecked(True)
         assert dialog.animation_speed_slider.isEnabled()
         assert previews[-1][1]
@@ -142,6 +155,26 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         assert not dialog.frequency_slider.isEnabled()
         assert not dialog.animate_button.isEnabled()
         assert not dialog.animation_speed_slider.isEnabled()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_properties_dialog_reports_active_state_without_changing_plane_model(qapp) -> None:
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    plane = new_observation_plane("Plane")
+    dialog = ObservationPlanePropertiesDialog(plane, active=True)
+    changes = []
+    dialog.activeChanged.connect(lambda plane_id, active: changes.append((plane_id, active)))
+    try:
+        assert dialog.active_check.isChecked()
+        dialog.active_check.setChecked(False)
+        assert changes == [(plane.id, False)]
+        dialog.set_active(True)
+        assert dialog.active_check.isChecked()
+        assert changes == [(plane.id, False)]
+        assert dialog.plane == plane
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -257,7 +290,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
     from blab.ui.observation_plane_viewport import (
         FIELD_SCALAR_NAME,
         ObservationPlaneViewport,
-        _AnimationFieldState,
+        _ActiveFieldState,
     )
 
     plane = new_observation_plane("Animated")
@@ -268,7 +301,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
     viewer = SimpleNamespace(render_calls=0)
     viewer.render = lambda: setattr(viewer, "render_calls", viewer.render_calls + 1)
     editor = SimpleNamespace(
-        _animation_field=_AnimationFieldState(plane.id, mesh, pressure, association),
+        _active_field=_ActiveFieldState(plane.id, mesh, pressure, association),
         _animation_phase_deg=90.0,
         viewer=viewer,
     )
@@ -277,6 +310,45 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
 
     assert updated
     np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, 1.0], atol=1e-12)
+    assert viewer.render_calls == 1
+
+
+def test_frequency_update_reuses_active_field_actor_and_updates_scalar_range() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import (
+        FIELD_SCALAR_NAME,
+        ObservationPlaneViewport,
+        _ActiveFieldState,
+    )
+
+    class Mapper:
+        scalar_range = None
+
+        def SetScalarRange(self, minimum, maximum) -> None:  # noqa: N802 - VTK-compatible stub
+            self.scalar_range = (minimum, maximum)
+
+    mapper = Mapper()
+    actor = SimpleNamespace(GetMapper=lambda: mapper)
+    plane = replace(new_observation_plane("Frequency"), display=ObservationPlaneDisplay.REAL_PRESSURE)
+    mesh = pv.PolyData(np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+    mesh.point_data[FIELD_SCALAR_NAME] = np.zeros(2)
+    pressure = np.asarray([2.0 + 1.0j, -1.0 - 3.0j])
+    viewer = SimpleNamespace(render_calls=0)
+    viewer.render = lambda: setattr(viewer, "render_calls", viewer.render_calls + 1)
+    editor = SimpleNamespace(
+        _active_field=_ActiveFieldState(plane.id, mesh, np.zeros(2), "point", actor),
+        _field_mesh_and_pressure=lambda _plane: (mesh, pressure, "point", None),
+        _animation_plane_id=None,
+        _animation_phase_deg=0.0,
+        viewer=viewer,
+    )
+
+    updated = ObservationPlaneViewport._update_active_field(editor, plane)
+
+    assert updated
+    np.testing.assert_allclose(mesh.point_data[FIELD_SCALAR_NAME], [2.0, -1.0])
+    assert mapper.scalar_range == (-2.0, 2.0)
     assert viewer.render_calls == 1
 
 
@@ -311,27 +383,131 @@ def test_smooth_and_element_fields_interpolate_and_clip_a_tetrahedron() -> None:
     )
     editor_stub = SimpleNamespace(_field_generation=1, _field_cache={})
 
-    sampled, sampled_pressure, clipped = ObservationPlaneViewport._smooth_field_mesh(
+    smooth = ObservationPlaneViewport._smooth_field_mesh(
         editor_stub,
         plane,
         points,
         tetrahedra,
-        pressure,
+        "off",
     )
-    element_mesh, element_pressure = ObservationPlaneViewport._element_field_mesh(
+    element = ObservationPlaneViewport._element_field_mesh(
         editor_stub,
         replace(plane, interior_rendering=InteriorRenderingMode.ELEMENT_FIELD),
         points,
         tetrahedra,
-        pressure,
+        "off",
+    )
+    sampled_pressure = np.sum(
+        pressure[smooth.source_node_ids] * smooth.interpolation_weights,
+        axis=1,
+    )
+    source_pressure = np.mean(pressure[tetrahedra], axis=1)
+    element_pressure = source_pressure[element.source_tetrahedron_ids]
+
+    assert smooth.mesh.n_cells == 4
+    assert smooth.mesh.n_points == 9
+    np.testing.assert_allclose(sampled_pressure[4], 2.2, rtol=1e-6)
+    assert smooth.clipped.n_cells > 0
+    assert element.mesh.n_cells > 0
+    np.testing.assert_allclose(element_pressure, 2.5)
+
+    cached_smooth = ObservationPlaneViewport._smooth_field_mesh(
+        editor_stub,
+        replace(plane, frequency_hz=1000.0, response_id="channel:main"),
+        points,
+        tetrahedra,
+        "off",
+    )
+    cached_element = ObservationPlaneViewport._element_field_mesh(
+        editor_stub,
+        replace(
+            plane,
+            interior_rendering=InteriorRenderingMode.ELEMENT_FIELD,
+            frequency_hz=1000.0,
+            response_id="channel:main",
+        ),
+        points,
+        tetrahedra,
+        "off",
+    )
+    assert cached_smooth is smooth
+    assert cached_element is element
+
+
+def test_result_selection_changes_use_fast_viewport_update() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    original = replace(new_observation_plane("Slice"), frequency_hz=100.0)
+    updated = replace(original, frequency_hz=200.0)
+    calls = []
+    editor = SimpleNamespace(
+        _planes=(original,),
+        _selected_id=original.id,
+        _active_id=None,
+        _field_cache={},
+        _mode=None,
+        _selected_plane=lambda: updated,
+        _update_active_field=lambda plane: calls.append(("field", plane.frequency_hz)) or True,
+        _render=lambda: calls.append(("render", None)),
     )
 
-    assert sampled.n_cells == 4
-    assert sampled.n_points == 9
-    np.testing.assert_allclose(sampled_pressure[4], 2.2, rtol=1e-6)
-    assert clipped.n_cells > 0
-    assert element_mesh.n_cells > 0
-    np.testing.assert_allclose(element_pressure, 2.5)
+    ObservationPlaneViewport.set_planes(editor, (updated,), selected_id=updated.id)
+
+    assert calls == [("field", 200.0)]
+
+    speed_only = replace(updated, animation_speed_hz=2.0)
+    ObservationPlaneViewport.set_planes(editor, (speed_only,), selected_id=speed_only.id)
+    assert calls == [("field", 200.0)]
+
+
+def test_active_plane_remains_field_plane_after_camera_deselect() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = new_observation_plane("Pinned")
+    renders = []
+    editor = SimpleNamespace(
+        _planes=(plane,),
+        _selected_id=plane.id,
+        _active_id=None,
+        _mode=None,
+        _drag=None,
+        _rotation_angle_deg=None,
+        _render=lambda: renders.append(True),
+    )
+    editor._field_plane_id = lambda: ObservationPlaneViewport._field_plane_id(editor)
+
+    ObservationPlaneViewport.set_active_plane(editor, plane.id)
+    assert not renders  # Pinning the already displayed plane needs no redraw.
+    ObservationPlaneViewport._select(editor, None)
+
+    assert editor._selected_id is None
+    assert ObservationPlaneViewport._field_plane(editor) is plane
+    assert len(renders) == 1
+
+
+def test_active_plane_animation_continues_without_selection(monkeypatch) -> None:
+    import blab.ui.observation_plane_viewport as viewport_module
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = replace(new_observation_plane("Pinned"), animation_speed_hz=2.0)
+    updates = []
+    editor = SimpleNamespace(
+        _planes=(plane,),
+        _selected_id=None,
+        _active_id=plane.id,
+        _animation_plane_id=plane.id,
+        _field_results=object(),
+        _animation_updated_at=10.0,
+        _animation_phase_deg=0.0,
+        _update_animation_frame=lambda candidate: updates.append(candidate.id) or True,
+        set_animation=lambda *_args: pytest.fail("active animation should not stop"),
+    )
+    monkeypatch.setattr(viewport_module.time, "monotonic", lambda: 10.25)
+
+    ObservationPlaneViewport._advance_animation(editor)
+
+    assert updates == [plane.id]
+    assert editor._animation_phase_deg == 180.0
 
 
 def test_viewport_uses_a_shared_camera_foreground_renderer_for_gizmos(qapp) -> None:
@@ -455,3 +631,25 @@ def test_properties_window_is_modeless_and_commits_or_reverts_live_preview(main_
     qapp.processEvents()
     assert main_window.project.observation_planes[0].name == "Accepted Slice"
     assert main_window.preview.observation_planes[0].name == "Accepted Slice"
+
+
+def test_properties_active_toggle_is_exclusive_and_session_scoped(main_window) -> None:
+    main_window.preview.newObservationPlaneRequested.emit({})
+    main_window.preview.newObservationPlaneRequested.emit({})
+    first, second = main_window.project.observation_planes
+    controller = main_window.observation_plane_controller
+
+    main_window.preview.observationPlanePropertiesRequested.emit(first.id)
+    first_dialog = controller._dialogs[first.id]
+    first_dialog.active_check.setChecked(True)
+    assert controller._active_plane_id == first.id
+    assert main_window.preview.active_observation_plane_id == first.id
+
+    main_window.preview.observationPlanePropertiesRequested.emit(second.id)
+    second_dialog = controller._dialogs[second.id]
+    second_dialog.active_check.setChecked(True)
+    assert controller._active_plane_id == second.id
+    assert main_window.preview.active_observation_plane_id == second.id
+    assert not first_dialog.active_check.isChecked()
+    assert second_dialog.active_check.isChecked()
+    assert not hasattr(first, "active")
