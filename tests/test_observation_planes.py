@@ -236,6 +236,49 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     np.testing.assert_allclose(animated.values, [0.0, 1.0], atol=1e-12)
     assert animated.clim == (-1.0, 1.0)
 
+    stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
+    at_zero = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.SPL,
+        animation_phase_deg=0.0,
+    )
+    at_ninety = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.SPL,
+        animation_phase_deg=90.0,
+    )
+    assert at_zero.clim == at_ninety.clim == (-2.0, 2.0)
+
+
+@pytest.mark.parametrize("association", ["point", "cell"])
+def test_animation_frame_updates_scalars_without_rebuilding_scene(association: str) -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import (
+        FIELD_SCALAR_NAME,
+        ObservationPlaneViewport,
+        _AnimationFieldState,
+    )
+
+    plane = new_observation_plane("Animated")
+    pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
+    mesh = pv.PolyData(np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+    attributes = mesh.cell_data if association == "cell" else mesh.point_data
+    attributes[FIELD_SCALAR_NAME] = np.asarray([2.0, 0.0])
+    viewer = SimpleNamespace(render_calls=0)
+    viewer.render = lambda: setattr(viewer, "render_calls", viewer.render_calls + 1)
+    editor = SimpleNamespace(
+        _animation_field=_AnimationFieldState(plane.id, mesh, pressure, association),
+        _animation_phase_deg=90.0,
+        viewer=viewer,
+    )
+
+    updated = ObservationPlaneViewport._update_animation_frame(editor, plane)
+
+    assert updated
+    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, 1.0], atol=1e-12)
+    assert viewer.render_calls == 1
+
 
 def test_fem_field_expands_pressure_with_symmetry_images() -> None:
     from blab.ui.observation_plane_viewport import _expanded_fem_field

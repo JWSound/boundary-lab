@@ -201,7 +201,10 @@ def project_field_scalars(
     pressure = np.asarray(pressure)
     if animation_phase_deg is not None:
         values = np.real(pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg))))
-        limit = _finite_abs_max(values)
+        # Keep the animation scale stable for the entire cycle.  The complex
+        # magnitude is the maximum instantaneous amplitude each sample can
+        # reach, so its global maximum is a phase-independent symmetric limit.
+        limit = _finite_abs_max(np.abs(pressure))
         return FieldScalarProjection(values, "Instantaneous Pressure (Pa)", "coolwarm", (-limit, limit))
     display = ObservationPlaneDisplay(display)
     if display == ObservationPlaneDisplay.SPL:

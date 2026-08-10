@@ -45,6 +45,14 @@ class _DragState:
     fallback_screen_direction: np.ndarray | None = None
 
 
+@dataclass
+class _AnimationFieldState:
+    plane_id: str
+    mesh: object
+    pressure: np.ndarray
+    association: str
+
+
 class ObservationPlaneViewport(QObject):
     """Own plane actors and translate Qt input into pure plane-model updates."""
 
@@ -77,6 +85,7 @@ class ObservationPlaneViewport(QObject):
         self._animation_plane_id: str | None = None
         self._animation_phase_deg = 0.0
         self._animation_updated_at = time.monotonic()
+        self._animation_field: _AnimationFieldState | None = None
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(50)
         self._animation_timer.timeout.connect(self._advance_animation)
@@ -429,6 +438,7 @@ class ObservationPlaneViewport(QObject):
 
     def _render(self) -> None:
         self._remove_actors()
+        self._animation_field = None
         self._plane_actor_ids.clear()
         self._tool_actor_controls.clear()
         self._field_message = None
@@ -647,6 +657,13 @@ class ObservationPlaneViewport(QObject):
             scalar_bar_args={"title": projection.title, "vertical": True},
             render=False,
         )
+        if phase is not None:
+            self._animation_field = _AnimationFieldState(
+                plane_id=plane.id,
+                mesh=mesh,
+                pressure=np.asarray(pressure),
+                association=association,
+            )
         self._scalar_bar_titles.add(projection.title)
         self._actor_names.add(name)
 
@@ -659,7 +676,29 @@ class ObservationPlaneViewport(QObject):
         elapsed = max(now - self._animation_updated_at, 0.0)
         self._animation_updated_at = now
         self._animation_phase_deg = (self._animation_phase_deg + 360.0 * plane.animation_speed_hz * elapsed) % 360.0
-        self._render()
+        if not self._update_animation_frame(plane):
+            self.set_animation(None, False)
+
+    def _update_animation_frame(self, plane: ObservationPlane) -> bool:
+        """Update only the animated scalar array while preserving scene actors."""
+
+        state = self._animation_field
+        if state is None or state.plane_id != plane.id:
+            return False
+        phase_rad = math.radians(self._animation_phase_deg)
+        values = np.real(state.pressure) * math.cos(phase_rad) + np.imag(state.pressure) * math.sin(phase_rad)
+        attributes = state.mesh.cell_data if state.association == "cell" else state.mesh.point_data
+        current = attributes.get(FIELD_SCALAR_NAME)
+        if current is None or np.shape(current) != np.shape(values):
+            return False
+        np.copyto(current, values, casting="unsafe")
+        vtk_array = getattr(current, "VTKObject", None)
+        if vtk_array is not None:
+            vtk_array.Modified()
+        if hasattr(state.mesh, "Modified"):
+            state.mesh.Modified()
+        self.viewer.render()
+        return True
 
     def _add_help_text(self, plane: ObservationPlane) -> None:
         mode = f"\nMode: {self._mode.title()}" if self._mode else ""
