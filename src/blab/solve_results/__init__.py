@@ -6,9 +6,12 @@ from blab.solve_results.derived import (
     pressure_spl_db,
     velocity_to_excursion,
 )
+from blab.solve_results.fem import fem_volume_result_domain
 from blab.solve_results.legacy import legacy_result_domains, legacy_result_to_system_result
 from blab.solve_results.model import (
     DIAPHRAGM_VELOCITY_ID,
+    FEM_NODAL_PRESSURE_ID,
+    FEM_VOLUME_DOMAIN_ID,
     HORIZONTAL_POLAR_DOMAIN_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
     RADIATION_IMPEDANCE_ID,
@@ -29,6 +32,8 @@ from blab.solve_results.model import (
 __all__ = [
     "RESULT_MODEL_VERSION",
     "DIAPHRAGM_VELOCITY_ID",
+    "FEM_NODAL_PRESSURE_ID",
+    "FEM_VOLUME_DOMAIN_ID",
     "HORIZONTAL_POLAR_DOMAIN_ID",
     "HORIZONTAL_POLAR_PRESSURE_ID",
     "RADIATION_IMPEDANCE_ID",
@@ -44,6 +49,7 @@ __all__ = [
     "SolvedSystem",
     "SolvedSystemBuilder",
     "electrical_input_impedance",
+    "fem_volume_result_domain",
     "legacy_result_domains",
     "legacy_result_to_system_result",
     "phase_deg",

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDialog, QWidget
 
 from blab.observation_planes import ObservationPlane, new_observation_plane
 from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+from blab.ui.observation_plane_results import InteriorFieldResults
 from blab.ui.project_state import ProjectDocument
 
 
@@ -23,18 +24,22 @@ class ObservationPlaneController(QObject):
         preview,
         project: Callable[[], ProjectDocument],
         show_status: Callable[[str], None],
+        field_results: Callable[[], InteriorFieldResults | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._window = window
         self._preview = preview
         self._project = project
         self._show_status = show_status
+        self._field_results = field_results or (lambda: None)
         preview.newObservationPlaneRequested.connect(self.create_plane)
         preview.observationPlaneChanged.connect(self.update_plane)
         preview.observationPlanePropertiesRequested.connect(self.open_properties)
         preview.observationPlaneDeleteRequested.connect(self.delete_plane)
 
     def sync_view(self, *, selected_id: str | None = None) -> None:
+        if hasattr(self._preview, "set_observation_plane_results"):
+            self._preview.set_observation_plane_results(self._field_results())
         self._preview.set_observation_planes(self._project().observation_planes, selected_id=selected_id)
 
     @Slot(object)
@@ -75,12 +80,33 @@ class ObservationPlaneController(QObject):
         plane = self._find(plane_id)
         if plane is None:
             return
-        dialog = ObservationPlanePropertiesDialog(plane, self._window)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        results = self._field_results()
+        dialog = ObservationPlanePropertiesDialog(
+            plane,
+            self._window,
+            solved_frequencies_hz=(() if results is None else tuple(float(value) for value in results.frequencies_hz)),
+            response_options=(() if results is None else results.response_options),
+        )
+        dialog.previewChanged.connect(self._preview_properties)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        if hasattr(self._preview, "set_observation_plane_animation"):
+            self._preview.set_observation_plane_animation(None, False)
+        if not accepted:
+            self.sync_view(selected_id=plane.id)
             return
         updated = dialog.plane
         self.update_plane(updated)
         self.sync_view(selected_id=updated.id)
+
+    @Slot(object, bool)
+    def _preview_properties(self, updated: object, animate: bool) -> None:
+        if not isinstance(updated, ObservationPlane):
+            return
+        project = self._project()
+        preview_planes = tuple(updated if plane.id == updated.id else plane for plane in project.observation_planes)
+        self._preview.set_observation_planes(preview_planes, selected_id=updated.id)
+        if hasattr(self._preview, "set_observation_plane_animation"):
+            self._preview.set_observation_plane_animation(updated.id, animate)
 
     @Slot(str)
     def delete_plane(self, plane_id: str) -> None:

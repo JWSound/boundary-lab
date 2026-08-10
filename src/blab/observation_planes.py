@@ -56,6 +56,7 @@ class ObservationPlane:
     interior_rendering: InteriorRenderingMode = InteriorRenderingMode.SMOOTH_FIELD
     invert_clip_side: bool = False
     response_id: str = "system"
+    frequency_hz: float | None = None
     animation_speed_hz: float = 1.0
 
     def validated(self) -> ObservationPlane:
@@ -73,6 +74,9 @@ class ObservationPlane:
         if not identifier:
             raise ValueError("Observation plane id must not be empty.")
         speed = _positive_finite(self.animation_speed_hz, label="animation_speed_hz", minimum=0.01)
+        frequency = None
+        if self.frequency_hz is not None:
+            frequency = _positive_finite(self.frequency_hz, label="frequency_hz", minimum=1e-9)
         return replace(
             self,
             id=identifier,
@@ -87,6 +91,7 @@ class ObservationPlane:
             interior_rendering=InteriorRenderingMode(self.interior_rendering),
             invert_clip_side=bool(self.invert_clip_side),
             response_id=str(self.response_id).strip() or "system",
+            frequency_hz=frequency,
             animation_speed_hz=speed,
         )
 
@@ -143,6 +148,7 @@ class ObservationPlane:
             "interior_rendering": plane.interior_rendering.value,
             "invert_clip_side": plane.invert_clip_side,
             "response_id": plane.response_id,
+            "frequency_hz": plane.frequency_hz,
             "animation_speed_hz": plane.animation_speed_hz,
         }
 
@@ -166,6 +172,7 @@ class ObservationPlane:
                 ),
                 invert_clip_side=bool(payload.get("invert_clip_side", False)),
                 response_id=str(payload.get("response_id", "system")),
+                frequency_hz=(None if payload.get("frequency_hz") is None else float(payload["frequency_hz"])),
                 animation_speed_hz=float(payload.get("animation_speed_hz", 1.0)),
             ).validated()
         except (TypeError, ValueError):

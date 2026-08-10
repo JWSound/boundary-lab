@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -51,6 +51,8 @@ INTERIOR_RENDERING_LABELS = {
 class ObservationPlanePropertiesDialog(QDialog):
     """Edit authoring and future result-display properties for one plane."""
 
+    previewChanged = Signal(object, bool)
+
     def __init__(
         self,
         plane: ObservationPlane,
@@ -62,6 +64,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         super().__init__(parent)
         self._plane = plane.validated()
         self._solved_frequencies_hz = tuple(float(value) for value in solved_frequencies_hz)
+        self._preview_ready = False
         self.setWindowTitle(f"{self._plane.name} Properties")
         self.setMinimumWidth(410)
 
@@ -113,6 +116,13 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.frequency_slider = QSlider(Qt.Horizontal)
         self.frequency_slider.setRange(0, max(len(self._solved_frequencies_hz) - 1, 0))
         self.frequency_slider.setEnabled(bool(self._solved_frequencies_hz))
+        if self._solved_frequencies_hz and self._plane.frequency_hz is not None:
+            self.frequency_slider.setValue(
+                min(
+                    range(len(self._solved_frequencies_hz)),
+                    key=lambda index: abs(self._solved_frequencies_hz[index] - self._plane.frequency_hz),
+                )
+            )
         self.frequency_label = QLabel("No solved plane data available")
         frequency_row = QVBoxLayout()
         frequency_row.addWidget(self.frequency_slider)
@@ -129,7 +139,7 @@ class ObservationPlanePropertiesDialog(QDialog):
 
         self.animate_button = QPushButton("Animate Phase")
         self.animate_button.setCheckable(True)
-        self.animate_button.setEnabled(False)
+        self.animate_button.setEnabled(bool(self._solved_frequencies_hz))
         self.animation_speed_slider = QSlider(Qt.Horizontal)
         self.animation_speed_slider.setRange(1, 40)
         self.animation_speed_slider.setValue(round(self._plane.animation_speed_hz * 10.0))
@@ -152,9 +162,28 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.height_spin.valueChanged.connect(self._refresh_point_count)
         self.resolution_spin.valueChanged.connect(self._refresh_point_count)
         self.frequency_slider.valueChanged.connect(self._refresh_frequency_label)
+        self.animate_button.toggled.connect(self._refresh_animation_controls)
+        preview_controls = (
+            self.name_edit.textChanged,
+            self.type_combo.currentIndexChanged,
+            self.width_spin.valueChanged,
+            self.height_spin.valueChanged,
+            self.resolution_spin.valueChanged,
+            self.display_combo.currentIndexChanged,
+            self.rendering_combo.currentIndexChanged,
+            self.invert_clip_check.toggled,
+            self.frequency_slider.valueChanged,
+            self.response_combo.currentIndexChanged,
+            self.animate_button.toggled,
+            self.animation_speed_slider.valueChanged,
+        )
+        for signal in preview_controls:
+            signal.connect(self._emit_preview)
         self._refresh_dependent_controls()
         self._refresh_point_count()
         self._refresh_frequency_label()
+        self._refresh_animation_controls()
+        self._preview_ready = True
 
     @property
     def plane(self) -> ObservationPlane:
@@ -169,6 +198,7 @@ class ObservationPlanePropertiesDialog(QDialog):
             interior_rendering=InteriorRenderingMode(self.rendering_combo.currentData()),
             invert_clip_side=self.invert_clip_check.isChecked(),
             response_id=str(self.response_combo.currentData() or "system"),
+            frequency_hz=self._selected_frequency_hz(),
             animation_speed_hz=self.animation_speed_slider.value() / 10.0,
         ).validated()
 
@@ -212,6 +242,19 @@ class ObservationPlanePropertiesDialog(QDialog):
             return
         index = min(self.frequency_slider.value(), len(self._solved_frequencies_hz) - 1)
         self.frequency_label.setText(f"{self._solved_frequencies_hz[index]:g} Hz")
+
+    def _selected_frequency_hz(self) -> float | None:
+        if not self._solved_frequencies_hz:
+            return None
+        index = min(self.frequency_slider.value(), len(self._solved_frequencies_hz) - 1)
+        return self._solved_frequencies_hz[index]
+
+    def _refresh_animation_controls(self) -> None:
+        self.animation_speed_slider.setEnabled(bool(self._solved_frequencies_hz) and self.animate_button.isChecked())
+
+    def _emit_preview(self, *_args) -> None:
+        if self._preview_ready:
+            self.previewChanged.emit(self.plane, self.animate_button.isChecked())
 
     @staticmethod
     def _select_data(combo: QComboBox, value: str) -> None:

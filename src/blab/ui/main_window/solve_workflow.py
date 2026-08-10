@@ -253,6 +253,7 @@ class SolveWorkflowController(QObject):
                 component_channel_by_id=project.component_channel_by_id,
                 backend_id=preferences.solve_backend,
                 symmetry_mode=project.symmetry,
+                observation_planes=project.observation_planes,
             )
         except Exception as exc:
             self._view.warn("Coupled solve", str(exc))
@@ -368,6 +369,9 @@ class SolveWorkflowController(QObject):
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session
         session.finalize_results(status=completion.phase.value)
+        observation_planes = getattr(self._view, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()
         elapsed_s = completion.elapsed_s
         if session.has_solved_data():
             solved_count = session.solved_count

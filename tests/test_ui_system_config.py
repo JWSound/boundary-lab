@@ -15,6 +15,7 @@ from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.ath import read_surface_physical_names
 from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
+from blab.observation_planes import new_observation_plane
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticRegionKind,
@@ -27,6 +28,7 @@ from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.solve_results import FEM_NODAL_PRESSURE_ID, FEM_VOLUME_DOMAIN_ID
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
@@ -805,6 +807,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
         freq_count=3,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
+        observation_planes=(new_observation_plane("Interior Slice"),),
     )
 
     assert prepared.polar_angle_deg.tolist() == [-180.0, -90.0, 0.0, 90.0, 180.0]
@@ -835,7 +838,16 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert {domain.id for domain in prepared.result_domains} == {
         "observation:horizontal-polar",
         "observation:vertical-polar",
+        FEM_VOLUME_DOMAIN_ID,
     }
+    fem_domain = next(domain for domain in prepared.result_domains if domain.id == FEM_VOLUME_DOMAIN_ID)
+    assert fem_domain.coordinates["points_m"].shape == (842, 3)
+    assert fem_domain.topology["tetrahedra"].shape == (2925, 4)
+    assert fem_domain.metadata["node_offsets"] == [0]
+    assert fem_domain.metadata["node_counts"] == [842]
+    fem_output = next(output for output in prepared.request.outputs if output.id == FEM_NODAL_PRESSURE_ID)
+    assert fem_output.quantity == "fem_nodal_pressure"
+    assert fem_output.target_ids == (FEM_VOLUME_DOMAIN_ID,)
 
     raw_result = SystemFrequencyResult(
         freq_hz=500.0,

@@ -11,10 +11,13 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.config import normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
+from blab.observation_planes import ObservationPlane, ObservationPlaneType
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import BoundaryKind, ComponentKind, PhysicalSystem
 from blab.solve_results import (
     DIAPHRAGM_VELOCITY_ID,
+    FEM_NODAL_PRESSURE_ID,
+    FEM_VOLUME_DOMAIN_ID,
     HORIZONTAL_POLAR_DOMAIN_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
     SPHERE_DOMAIN_ID,
@@ -24,6 +27,7 @@ from blab.solve_results import (
     VERTICAL_POLAR_PRESSURE_ID,
     VOICE_COIL_CURRENT_ID,
     ResultDomain,
+    fem_volume_result_domain,
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 from blab.solvers.coupled_backend import CoupledProductionBackend
@@ -59,6 +63,7 @@ def prepare_coupled_ui_solve(
     component_channel_by_id: dict[str, str] | None = None,
     backend_id: str = "beat_cpu",
     symmetry_mode: str = "off",
+    observation_planes: tuple[ObservationPlane, ...] = (),
 ) -> CoupledUiSolveRequest:
     """Compile an editable system and request the field points used by current plots."""
 
@@ -158,6 +163,18 @@ def prepare_coupled_ui_solve(
             },
         )
     ]
+    if any(
+        plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
+        for plane in observation_planes
+    ):
+        outputs.append(
+            OutputRequest(
+                id=FEM_NODAL_PRESSURE_ID,
+                quantity="fem_nodal_pressure",
+                target_ids=(FEM_VOLUME_DOMAIN_ID,),
+            )
+        )
+        result_domains.append(fem_volume_result_domain(compiled))
     transducers = [
         component for component in compiled.components if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
     ]

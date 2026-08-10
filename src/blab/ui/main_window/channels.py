@@ -118,6 +118,9 @@ class ChannelsMixin:
                 refresh_balloon = getattr(balloon_window, "refresh_from_latest_results", None)
                 if callable(refresh_balloon):
                     refresh_balloon()
+            observation_planes = getattr(self, "observation_plane_controller", None)
+            if observation_planes is not None:
+                observation_planes.sync_view()
             self.show_status(f"Channel config updated: {len(channels)} channels; plots resynthesized")
         else:
             self.solve_results_invalidated.emit("channel_config_changed")

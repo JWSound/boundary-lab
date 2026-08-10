@@ -79,6 +79,8 @@ def _stub_mesh_preview_class():
             self.clear_count = 0
             self.observation_planes = ()
             self.selected_observation_plane_id = None
+            self.observation_plane_results = None
+            self.observation_plane_animation = (None, False)
 
         def clear(self) -> None:
             self.clear_count += 1
@@ -93,6 +95,12 @@ def _stub_mesh_preview_class():
         def set_observation_planes(self, planes, *, selected_id=None) -> None:
             self.observation_planes = tuple(planes)
             self.selected_observation_plane_id = selected_id
+
+        def set_observation_plane_results(self, results) -> None:
+            self.observation_plane_results = results
+
+        def set_observation_plane_animation(self, plane_id, enabled) -> None:
+            self.observation_plane_animation = (plane_id, bool(enabled))
 
     return StubMeshPreview
 

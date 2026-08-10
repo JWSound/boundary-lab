@@ -111,6 +111,9 @@ class PlotPresenterMixin:
     def clear_plots(self) -> None:
         self.cancel_live_refresh()
         self._solve_session().begin()
+        observation_planes = getattr(self, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self.set_plot_exports_available(False)

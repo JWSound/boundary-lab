@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -30,6 +31,7 @@ def test_observation_plane_round_trip_preserves_authoring_and_display_state() ->
         interior_rendering=InteriorRenderingMode.ELEMENT_FIELD,
         invert_clip_side=True,
         response_id="channel:woofer",
+        frequency_hz=1234.0,
         animation_speed_hz=1.5,
     ).validated()
 
@@ -111,6 +113,166 @@ def test_properties_dialog_disables_result_controls_without_solved_data(qapp) ->
     finally:
         dialog.close()
         dialog.deleteLater()
+
+
+def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    plane = replace(new_observation_plane("Plane"), frequency_hz=900.0)
+    dialog = ObservationPlanePropertiesDialog(
+        plane,
+        solved_frequencies_hz=(100.0, 1000.0, 10_000.0),
+        response_options=(("system", "System Response"), ("channel:main", "Channel: main")),
+    )
+    previews = []
+    dialog.previewChanged.connect(lambda updated, animate: previews.append((updated, animate)))
+    try:
+        assert dialog.frequency_slider.value() == 1
+        assert dialog.plane.frequency_hz == 1000.0
+        assert dialog.animate_button.isEnabled()
+        dialog.frequency_slider.setValue(2)
+        assert previews[-1][0].frequency_hz == 10_000.0
+        dialog.animate_button.setChecked(True)
+        assert dialog.animation_speed_slider.isEnabled()
+        assert previews[-1][1]
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_interior_field_results_synthesize_system_and_channel_responses() -> None:
+    from blab.config import ChannelConfig
+    from blab.solve_results import (
+        FEM_NODAL_PRESSURE_ID,
+        FEM_VOLUME_DOMAIN_ID,
+        ResultDomain,
+        SolvedQuantity,
+        SolvedSystem,
+        SolveProvenance,
+    )
+    from blab.ui.observation_plane_results import interior_field_results_from_solved_system
+
+    pressure = SolvedQuantity(
+        id=FEM_NODAL_PRESSURE_ID,
+        quantity="fem_nodal_pressure",
+        unit="Pa",
+        dimensions=("frequency", "excitation", "fem_node"),
+        values=np.asarray([[[1.0] * 4, [2.0] * 4]], dtype=np.complex64),
+        domain_id=FEM_VOLUME_DOMAIN_ID,
+        available_frequency_mask=np.asarray([True]),
+    )
+    domain = ResultDomain(
+        id=FEM_VOLUME_DOMAIN_ID,
+        kind="fem_volume",
+        dimensions=("fem_node",),
+        coordinates={"points_m": np.eye(4, 3)},
+        topology={"tetrahedra": np.asarray([[0, 1, 2, 3]])},
+    )
+    compiled = SimpleNamespace(
+        excitation_ports=(
+            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+        )
+    )
+    solved = SolvedSystem(
+        run_id="run",
+        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
+        frequencies_hz=np.asarray([1000.0]),
+        excitation_ids=("port:woofer", "port:tweeter"),
+        domains={FEM_VOLUME_DOMAIN_ID: domain},
+        quantities={FEM_NODAL_PRESSURE_ID: pressure},
+        completion_mask=np.asarray([True]),
+        diagnostics_by_frequency=({},),
+        status="completed",
+        compiled_system=compiled,
+    )
+
+    results = interior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low"), ChannelConfig(name="high", level_db=-6.0206)),
+    )
+
+    assert results is not None
+    assert results.response_options == (
+        ("system", "System Response"),
+        ("channel:low", "Channel: low"),
+        ("channel:high", "Channel: high"),
+    )
+    np.testing.assert_allclose(results.pressure(1000.0, "system"), 2.0, rtol=1e-5)
+    np.testing.assert_allclose(results.pressure(1000.0, "channel:low"), 1.0)
+    np.testing.assert_allclose(results.pressure(1000.0, "channel:high"), 1.0, rtol=1e-5)
+
+
+def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
+    from blab.ui.observation_plane_results import project_field_scalars
+
+    pressure = np.asarray([1.0 + 0.0j, 0.0 + 1.0j])
+    normalized = project_field_scalars(pressure, ObservationPlaneDisplay.NORMALIZED_SPL)
+    animated = project_field_scalars(
+        pressure,
+        ObservationPlaneDisplay.SPL,
+        animation_phase_deg=90.0,
+    )
+
+    assert normalized.clim == (-40.0, 0.0)
+    np.testing.assert_allclose(normalized.values, [0.0, 0.0])
+    np.testing.assert_allclose(animated.values, [0.0, 1.0], atol=1e-12)
+    assert animated.clim == (-1.0, 1.0)
+
+
+def test_fem_field_expands_pressure_with_symmetry_images() -> None:
+    from blab.ui.observation_plane_viewport import _expanded_fem_field
+
+    points, tetrahedra, pressure = _expanded_fem_field(
+        np.asarray([[1.0, 2.0, 3.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 3.0]]),
+        np.asarray([[0, 1, 2, 3]]),
+        np.asarray([1.0, 2.0, 3.0, 4.0]),
+        "xy",
+    )
+
+    assert points.shape == (16, 3)
+    assert tetrahedra.tolist() == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]]
+    assert pressure.tolist() == [1.0, 2.0, 3.0, 4.0] * 4
+    np.testing.assert_allclose(points[4], [-1.0, 2.0, 3.0])
+
+
+def test_smooth_and_element_fields_interpolate_and_clip_a_tetrahedron() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    points = np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    tetrahedra = np.asarray([[0, 1, 2, 3]])
+    pressure = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.complex64)
+    plane = replace(
+        new_observation_plane("Slice"),
+        center_m=(0.2, 0.2, 0.2),
+        width_m=0.2,
+        height_m=0.2,
+        resolution_m=0.1,
+    )
+    editor_stub = SimpleNamespace(_field_generation=1, _field_cache={})
+
+    sampled, sampled_pressure, clipped = ObservationPlaneViewport._smooth_field_mesh(
+        editor_stub,
+        plane,
+        points,
+        tetrahedra,
+        pressure,
+    )
+    element_mesh, element_pressure = ObservationPlaneViewport._element_field_mesh(
+        editor_stub,
+        replace(plane, interior_rendering=InteriorRenderingMode.ELEMENT_FIELD),
+        points,
+        tetrahedra,
+        pressure,
+    )
+
+    assert sampled.n_cells == 4
+    assert sampled.n_points == 9
+    np.testing.assert_allclose(sampled_pressure[4], 2.2, rtol=1e-6)
+    assert clipped.n_cells > 0
+    assert element_mesh.n_cells > 0
+    np.testing.assert_allclose(element_pressure, 2.5)
 
 
 def test_viewport_uses_a_shared_camera_foreground_renderer_for_gizmos(qapp) -> None:

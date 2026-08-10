@@ -66,6 +66,7 @@ class MeshPreview(QWidget):
         self._actor_surface_labels: dict[str, str] = {}
         self._mesh_region_actors: list[tuple[object, str | None]] = []
         self._region_visibility_mode = PREVIEW_REGION_ALL
+        self._observation_clip_active = False
         self._observation_editor = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -98,6 +99,7 @@ class MeshPreview(QWidget):
         self._observation_editor.planeChanged.connect(self.observationPlaneChanged.emit)
         self._observation_editor.propertiesRequested.connect(self.observationPlanePropertiesRequested.emit)
         self._observation_editor.deleteRequested.connect(self.observationPlaneDeleteRequested.emit)
+        self._observation_editor.clipStateChanged.connect(self._set_observation_clip_active)
         self._install_hover_picker()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -123,6 +125,18 @@ class MeshPreview(QWidget):
     def set_observation_planes(self, planes, *, selected_id: str | None = None) -> None:
         if self._observation_editor is not None:
             self._observation_editor.set_planes(tuple(planes), selected_id=selected_id)
+
+    def set_observation_plane_results(self, results) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_field_results(results)
+
+    def set_observation_plane_animation(self, plane_id: str | None, enabled: bool) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_animation(plane_id, enabled)
+
+    def _set_observation_clip_active(self, active: bool) -> None:
+        self._observation_clip_active = bool(active)
+        self._apply_region_visibility(render=False)
 
     def _restore_observation_plane_scene(self, points: np.ndarray) -> None:
         if self._observation_editor is None:
@@ -371,6 +385,8 @@ class MeshPreview(QWidget):
             return
         for actor, mesh_region in self._mesh_region_actors:
             visible = _actor_visible_for_region(mesh_region, self._region_visibility_mode)
+            if self._observation_clip_active and mesh_region == PREVIEW_REGION_INTERIOR:
+                visible = False
             actor.SetVisibility(visible)
         if render:
             self.viewer.render()
