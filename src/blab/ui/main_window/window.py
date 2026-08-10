@@ -369,6 +369,7 @@ class MainWindow(
         from blab.ui.mesh_preview import MeshPreview
 
         self.preview = MeshPreview()
+        self._apply_field_preferences()
         self.observation_plane_controller = ObservationPlaneController(
             self,
             window=self,
@@ -510,6 +511,7 @@ class MainWindow(
 
     def _set_preferences(self, preferences) -> None:
         self.preferences = preferences
+        self._apply_field_preferences()
 
     @Slot()
     def new_project(self) -> None:

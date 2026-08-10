@@ -24,6 +24,7 @@ from blab.ui.observation_plane_results import (
     ObservationFieldResults,
     project_field_scalars,
 )
+from blab.ui.settings import field_cache_size_bytes, field_translation_interval_ms
 
 LOGGER = logging.getLogger("blab.runtime")
 
@@ -36,8 +37,6 @@ ANGLE_ACTOR_NAME = "observation-plane:rotation-angle"
 FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
 ROTATION_SNAP_DEG = 5.0
-EXTERIOR_RESULT_CACHE_MAX_BYTES = 128 * 1024 * 1024
-EXTERIOR_INTERACTIVE_REFRESH_MS = 80
 
 
 @dataclass
@@ -118,12 +117,13 @@ class ObservationPlaneViewport(QObject):
         self._active_field: _ActiveFieldState | None = None
         self._exterior_results: OrderedDict[tuple[object, ...], np.ndarray] = OrderedDict()
         self._exterior_result_bytes = 0
+        self._exterior_result_cache_max_bytes = field_cache_size_bytes(None)
         self._exterior_pending: set[tuple[object, ...]] = set()
         self._exterior_failures: dict[tuple[object, ...], str] = {}
         self._exterior_request_meshes: dict[tuple[object, ...], object] = {}
         self._exterior_refresh_timer = QTimer(self)
         self._exterior_refresh_timer.setSingleShot(True)
-        self._exterior_refresh_timer.setInterval(EXTERIOR_INTERACTIVE_REFRESH_MS)
+        self._exterior_refresh_timer.setInterval(field_translation_interval_ms(None))
         self._exterior_refresh_timer.timeout.connect(self._request_current_exterior_field)
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(50)
@@ -141,6 +141,17 @@ class ObservationPlaneViewport(QObject):
     @property
     def selected_id(self) -> str | None:
         return self._selected_id
+
+    def set_field_preferences(self, *, cache_size_mb: object, translation_target_fps: object) -> None:
+        self._exterior_result_cache_max_bytes = field_cache_size_bytes(cache_size_mb)
+        self._trim_exterior_result_cache()
+        self._exterior_refresh_timer.setInterval(field_translation_interval_ms(translation_target_fps))
+        LOGGER.info(
+            "Field preferences updated: cache_mb=%d translation_fps=%.1f interval_ms=%d",
+            self._exterior_result_cache_max_bytes // (1024 * 1024),
+            1000.0 / self._exterior_refresh_timer.interval(),
+            self._exterior_refresh_timer.interval(),
+        )
 
     def set_scene_bounds(self, points: np.ndarray) -> None:
         finite = np.asarray(points, dtype=float)
@@ -202,7 +213,7 @@ class ObservationPlaneViewport(QObject):
             self._active_id,
         )
         if geometry_update is not None and self._preview_exterior_geometry(geometry_update):
-            self._exterior_refresh_timer.start()
+            self._schedule_exterior_refresh()
             return
         self._render()
 
@@ -249,9 +260,7 @@ class ObservationPlaneViewport(QObject):
         self._exterior_results[key] = values
         self._exterior_result_bytes += int(values.nbytes)
         self._exterior_results.move_to_end(key)
-        while self._exterior_result_bytes > EXTERIOR_RESULT_CACHE_MAX_BYTES and len(self._exterior_results) > 1:
-            _discarded_key, discarded = self._exterior_results.popitem(last=False)
-            self._exterior_result_bytes -= int(discarded.nbytes)
+        self._trim_exterior_result_cache()
         mesh = self._exterior_request_meshes.pop(key, None)
         plane = self._field_plane()
         if plane is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
@@ -270,6 +279,11 @@ class ObservationPlaneViewport(QObject):
             values.shape[0],
         )
         self._apply_exterior_field_result(plane, key, values, mesh=mesh)
+
+    def _trim_exterior_result_cache(self) -> None:
+        while self._exterior_result_bytes > self._exterior_result_cache_max_bytes and len(self._exterior_results) > 1:
+            _discarded_key, discarded = self._exterior_results.popitem(last=False)
+            self._exterior_result_bytes -= int(discarded.nbytes)
 
     def set_exterior_field_failed(self, key: tuple[object, ...], message: str) -> None:
         self._exterior_pending.discard(key)
@@ -591,7 +605,7 @@ class ObservationPlaneViewport(QObject):
                     and self._drag is not None
                     and self._drag.mode != "size"
                 ):
-                    self._exterior_refresh_timer.start()
+                    self._schedule_exterior_refresh()
                 return
         self._render()
 
@@ -858,6 +872,10 @@ class ObservationPlaneViewport(QObject):
         plane = self._field_plane()
         if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
             self._request_exterior_field_for_plane(plane)
+
+    def _schedule_exterior_refresh(self) -> None:
+        if not self._exterior_refresh_timer.isActive():
+            self._exterior_refresh_timer.start()
 
     def _apply_exterior_field_result(
         self,

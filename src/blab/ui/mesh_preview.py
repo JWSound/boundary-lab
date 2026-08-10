@@ -134,6 +134,13 @@ class MeshPreview(QWidget):
         if self._observation_editor is not None:
             self._observation_editor.set_field_results(results)
 
+    def set_observation_plane_field_preferences(self, *, cache_size_mb: object, translation_target_fps: object) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_field_preferences(
+                cache_size_mb=cache_size_mb,
+                translation_target_fps=translation_target_fps,
+            )
+
     def set_observation_plane_animation(self, plane_id: str | None, enabled: bool) -> None:
         if self._observation_editor is not None:
             self._observation_editor.set_animation(plane_id, enabled)

@@ -21,6 +21,10 @@ LIVE_PLOT_QUALITY_ANGLE_SAMPLES = {
 }
 BALLOON_ANGLE_PRECISION_MIN_DEG = 0.5
 BALLOON_ANGLE_PRECISION_MAX_DEG = 15.0
+FIELD_CACHE_SIZE_MIN_MB = 16
+FIELD_CACHE_SIZE_MAX_MB = 4096
+FIELD_TRANSLATION_TARGET_FPS_MIN = 1.0
+FIELD_TRANSLATION_TARGET_FPS_MAX = 60.0
 
 
 @dataclass
@@ -46,6 +50,8 @@ class GuiPreferences:
     stitch_tolerance_mm: float = 2.0
     spherical_sampling_enabled: bool = False
     balloon_angle_precision_deg: float = 2.5
+    field_cache_size_mb: int = 128
+    field_translation_target_fps: float = 12.5
 
 
 SOLVE_AFFECTING_PREFERENCE_FIELDS = (
@@ -208,6 +214,20 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
             defaults.spherical_sampling_enabled,
         ),
         balloon_angle_precision_deg=load_balloon_angle_precision_deg(settings, defaults),
+        field_cache_size_mb=normalize_field_cache_size_mb(
+            settings_int(
+                settings,
+                "preferences/field_cache_size_mb",
+                defaults.field_cache_size_mb,
+            )
+        ),
+        field_translation_target_fps=normalize_field_translation_target_fps(
+            settings_float(
+                settings,
+                "preferences/field_translation_target_fps",
+                defaults.field_translation_target_fps,
+            )
+        ),
     )
 
 
@@ -251,6 +271,14 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue(
         "preferences/balloon_angle_precision_deg",
         preferences.balloon_angle_precision_deg,
+    )
+    settings.setValue(
+        "preferences/field_cache_size_mb",
+        normalize_field_cache_size_mb(preferences.field_cache_size_mb),
+    )
+    settings.setValue(
+        "preferences/field_translation_target_fps",
+        normalize_field_translation_target_fps(preferences.field_translation_target_fps),
     )
 
 
@@ -297,7 +325,7 @@ def settings_bool(settings: QSettings, key: str, default: bool) -> bool:
 def settings_int(settings: QSettings, key: str, default: int) -> int:
     try:
         return int(settings.value(key, default))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return default
 
 
@@ -337,6 +365,35 @@ def normalize_balloon_angle_precision_deg(value: object) -> float:
     if not math.isfinite(angle_deg):
         angle_deg = 2.5
     return min(max(angle_deg, BALLOON_ANGLE_PRECISION_MIN_DEG), BALLOON_ANGLE_PRECISION_MAX_DEG)
+
+
+def normalize_field_cache_size_mb(value: object) -> int:
+    try:
+        size_mb = int(value)
+    except (OverflowError, TypeError, ValueError):
+        size_mb = GuiPreferences.field_cache_size_mb
+    return min(max(size_mb, FIELD_CACHE_SIZE_MIN_MB), FIELD_CACHE_SIZE_MAX_MB)
+
+
+def normalize_field_translation_target_fps(value: object) -> float:
+    try:
+        target_fps = float(value)
+    except (TypeError, ValueError):
+        target_fps = GuiPreferences.field_translation_target_fps
+    if not math.isfinite(target_fps):
+        target_fps = GuiPreferences.field_translation_target_fps
+    return min(
+        max(target_fps, FIELD_TRANSLATION_TARGET_FPS_MIN),
+        FIELD_TRANSLATION_TARGET_FPS_MAX,
+    )
+
+
+def field_cache_size_bytes(value: object) -> int:
+    return normalize_field_cache_size_mb(value) * 1024 * 1024
+
+
+def field_translation_interval_ms(value: object) -> int:
+    return max(1, int(round(1000.0 / normalize_field_translation_target_fps(value))))
 
 
 def balloon_sampling_points(angle_precision_deg: object) -> int:

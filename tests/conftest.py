@@ -83,6 +83,7 @@ def _stub_mesh_preview_class():
             self.observation_plane_results = None
             self.observation_plane_animation = (None, False)
             self.active_observation_plane_id = None
+            self.observation_plane_field_preferences = None
 
         def clear(self) -> None:
             self.clear_count += 1
@@ -100,6 +101,9 @@ def _stub_mesh_preview_class():
 
         def set_observation_plane_results(self, results) -> None:
             self.observation_plane_results = results
+
+        def set_observation_plane_field_preferences(self, *, cache_size_mb, translation_target_fps) -> None:
+            self.observation_plane_field_preferences = (cache_size_mb, translation_target_fps)
 
         def set_observation_plane_animation(self, plane_id, enabled) -> None:
             self.observation_plane_animation = (plane_id, bool(enabled))

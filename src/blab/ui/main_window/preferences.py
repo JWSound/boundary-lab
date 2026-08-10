@@ -58,6 +58,15 @@ class PreferencesMixin:
         apply_application_theme(self.preferences.theme)
         self._refresh_plot_export_icons()
 
+    def _apply_field_preferences(self) -> None:
+        preview = getattr(self, "preview", None)
+        setter = getattr(preview, "set_observation_plane_field_preferences", None)
+        if setter is not None:
+            setter(
+                cache_size_mb=self.preferences.field_cache_size_mb,
+                translation_target_fps=self.preferences.field_translation_target_fps,
+            )
+
     def _refresh_plot_export_icons(self) -> None:
         if not hasattr(self, "export_plot_actions") and not hasattr(self, "show_interior_regions_action"):
             return
@@ -181,6 +190,7 @@ class PreferencesMixin:
         dialog.remember_server_access_token()
         dialog.deleteLater()
         self.preferences = preferences
+        self._apply_field_preferences()
         if checked_server_health is not None and preferences.solve_backend == "server":
             self.backend_health.cache(checked_server_health, preferences.solve_server_url)
         elif (

@@ -380,6 +380,24 @@ def test_no_confirmation_when_there_is_nothing_solved_to_lose(main_window, messa
 # --------------------------------------------------------------- unsaved project guard
 
 
+def test_field_preferences_are_applied_to_the_preview(main_window) -> None:
+    from dataclasses import replace
+
+    assert main_window.preview.observation_plane_field_preferences == (
+        main_window.preferences.field_cache_size_mb,
+        main_window.preferences.field_translation_target_fps,
+    )
+
+    updated = replace(
+        main_window.preferences,
+        field_cache_size_mb=512,
+        field_translation_target_fps=20.0,
+    )
+    main_window._set_preferences(updated)
+
+    assert main_window.preview.observation_plane_field_preferences == (512, 20.0)
+
+
 def test_startup_leaves_a_clean_untitled_project(main_window) -> None:
     assert main_window.project_path is None
     assert main_window._project_clean_payload is not None

@@ -575,6 +575,61 @@ def test_exterior_boundary_mask_is_cached_with_viewport_geometry() -> None:
     assert second is first
 
 
+def test_field_preferences_resize_result_cache_and_translation_timer() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    class Timer:
+        interval_ms = 0
+        active = False
+        starts = 0
+
+        def setInterval(self, interval_ms) -> None:  # noqa: N802 - Qt-compatible stub
+            self.interval_ms = interval_ms
+
+        def interval(self) -> int:
+            return self.interval_ms
+
+        def isActive(self) -> bool:  # noqa: N802 - Qt-compatible stub
+            return self.active
+
+        def start(self) -> None:
+            self.starts += 1
+            self.active = True
+
+    item_size = 10 * 1024 * 1024
+    timer = Timer()
+    editor = SimpleNamespace(
+        _exterior_results=OrderedDict(
+            (
+                (("old",), SimpleNamespace(nbytes=item_size)),
+                (("new",), SimpleNamespace(nbytes=item_size)),
+            )
+        ),
+        _exterior_result_bytes=2 * item_size,
+        _exterior_result_cache_max_bytes=128 * 1024 * 1024,
+        _exterior_refresh_timer=timer,
+    )
+    editor._trim_exterior_result_cache = MethodType(ObservationPlaneViewport._trim_exterior_result_cache, editor)
+
+    ObservationPlaneViewport.set_field_preferences(
+        editor,
+        cache_size_mb=16,
+        translation_target_fps=25.0,
+    )
+
+    assert tuple(editor._exterior_results) == (("new",),)
+    assert editor._exterior_result_bytes == item_size
+    assert editor._exterior_result_cache_max_bytes == 16 * 1024 * 1024
+    assert timer.interval_ms == 40
+
+    ObservationPlaneViewport._schedule_exterior_refresh(editor)
+    ObservationPlaneViewport._schedule_exterior_refresh(editor)
+    assert timer.starts == 1
+    timer.active = False
+    ObservationPlaneViewport._schedule_exterior_refresh(editor)
+    assert timer.starts == 2
+
+
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
     from blab.ui.observation_plane_results import project_field_scalars
 
