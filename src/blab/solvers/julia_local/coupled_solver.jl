@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using JSON, LinearAlgebra, SparseArrays, StaticArrays
+using JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
@@ -152,6 +152,374 @@ end
 function rows(vectors, ::Type{T}) where {T<:AbstractFloat}
     isempty(vectors) && return zeros(Complex{T}, 0, 0)
     return reduce(vcat, (reshape(Complex{T}.(values), 1, :) for values in vectors))
+end
+
+function exterior_quadrature_selection(options, mesh::BoundaryMesh{T}, frequency_hz::T, sound_speed::T, base_order::Int, backend::Symbol) where {T<:AbstractFloat}
+    default_mode = backend == :cpu ? "wavelength" : "fixed"
+    mode = lowercase(String(get(options, "regular_quadrature_mode", default_mode)))
+    mode in ("fixed", "wavelength") || error(
+        "Unsupported regular quadrature mode: $mode. Expected fixed or wavelength.",
+    )
+    backend == :cpu || mode == "fixed" || error(
+        "Wavelength-driven regular quadrature is currently available only on the CPU backend.",
+    )
+    if mode == "fixed"
+        return (order=base_order, mode=mode, mesh_stat=nothing, area=nothing, length=nothing, kh=nothing)
+    end
+    mesh_stat = lowercase(String(get(options, "wavelength_mesh_stat", "p90")))
+    areas = collect(Float64.(mesh.areas))
+    area = if mesh_stat == "median"
+        median(areas)
+    elseif mesh_stat == "p75"
+        quantile(areas, 0.75)
+    elseif mesh_stat == "p90"
+        quantile(areas, 0.90)
+    elseif mesh_stat == "max"
+        maximum(areas)
+    else
+        error("Unsupported wavelength mesh stat: $mesh_stat.")
+    end
+    element_length = sqrt(area)
+    kh = Float64(2pi * frequency_hz / sound_speed) * element_length
+    q1_cutoff = Float64(get(options, "wavelength_kh_q1_max", 0.0))
+    q2_cutoff = Float64(get(options, "wavelength_kh_q2_max", 2.0))
+    q1_cutoff >= 0.0 || error("wavelength_kh_q1_max must be non-negative.")
+    q2_cutoff > q1_cutoff || error("wavelength_kh_q2_max must exceed wavelength_kh_q1_max.")
+    order = kh <= q1_cutoff ? 1 : kh <= q2_cutoff ? 2 : base_order
+    return (order=order, mode=mode, mesh_stat=mesh_stat, area=area, length=element_length, kh=kh)
+end
+
+function exterior_excitations(ports, components, boundaries, boundary_tag_by_id, exterior_region, ::Type{T}) where {T<:AbstractFloat}
+    excitations = NamedTuple[]
+    for port_id in String.(ports)
+        port = object_by_id(components.ports, port_id, "excitation port")
+        String(port["kind"]) == "normal_velocity" || error(
+            "Exterior excitation port $port_id must be a normal-velocity port.",
+        )
+        component = object_by_id(components.items, String(port["component_id"]), "component")
+        String(component["kind"]) == "ideal_velocity_source" || error(
+            "Exterior excitation port $port_id must reference an ideal velocity source.",
+        )
+        parameters = get(component, "parameters", Dict{String,Any}())
+        raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
+        tags = Int[]
+        amplitudes = T[]
+        for boundary_id in String.(component["boundary_ids"])
+            boundary = object_by_id(boundaries, boundary_id, "boundary")
+            String(boundary["region_id"]) == String(exterior_region["id"]) || error(
+                "Exterior component $(repr(String(component["id"]))) references a boundary outside its region.",
+            )
+            String(boundary["kind"]) == "moving" || continue
+            tag = get(boundary_tag_by_id, boundary_id, 0)
+            tag > 0 || error("Exterior moving boundary $boundary_id did not resolve to a BEM tag.")
+            amplitude = T(get(raw_weights, boundary_id, 1.0))
+            isfinite(amplitude) && amplitude > zero(T) || error(
+                "Exterior boundary motion weights must be finite and positive.",
+            )
+            push!(tags, tag)
+            push!(amplitudes, amplitude)
+        end
+        isempty(tags) && error(
+            "Exterior component $(repr(String(component["id"]))) has no moving boundaries.",
+        )
+        push!(excitations, (port_id=port_id, component_id=String(component["id"]), tags=tags, amplitudes=amplitudes))
+    end
+    return excitations
+end
+
+function exterior_neumann(mesh, excitation, density::T, omega::T) where {T<:AbstractFloat}
+    values = zeros(Complex{T}, length(mesh.faces))
+    for (tag, amplitude) in zip(excitation.tags, excitation.amplitudes)
+        for face_index in eachindex(mesh.faces)
+            mesh.physical_tags[face_index] == tag || continue
+            values[face_index] = Complex{T}(0, density * omega * amplitude)
+        end
+    end
+    return values
+end
+
+function exterior_field(points, mesh, pressure, neumann, wavenumber, cache, backend)
+    return backend == :cuda ?
+           evaluate_galerkin_field_cuda(points, mesh, pressure, neumann, wavenumber, cache) :
+           evaluate_galerkin_field_cpu(points, mesh, pressure, neumann, wavenumber, cache)
+end
+
+function exterior_component_impedance(mesh, pressure, excitation, symmetry_mode, ::Type{T}) where {T<:AbstractFloat}
+    force = zero(Complex{T})
+    selected_tags = Set(excitation.tags)
+    for face_index in eachindex(mesh.faces)
+        mesh.physical_tags[face_index] in selected_tags || continue
+        face = mesh.faces[face_index]
+        average_pressure = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / T(3)
+        force += average_pressure * T(mesh.areas[face_index])
+    end
+    force *= T(symmetry_reduction_factor(symmetry_mode)) * T(10)
+    return Complex{T}(real(force) / T(2), -imag(force) / T(2))
+end
+
+function solve_exterior_request(request, system, unbounded_region; event_mode=false)
+    meshes = system["meshes"]
+    boundaries = system["boundaries"]
+    components = system["components"]
+    port_objects = system["excitation_ports"]
+    options = get(request, "solver_options", Dict{String,Any}())
+    precision_name = lowercase(String(get(options, "precision", "float32")))
+    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
+                error("Exterior precision must be float32 or float64.")
+    backend = Symbol(lowercase(String(get(options, "bem_backend", "cpu"))))
+    backend in (:cpu, :cuda) || error("Exterior BEM backend must be cpu or cuda.")
+    symmetry_mode = BeatEngineCore.normalized_symmetry_mode(get(options, "symmetry", "off"))
+    sound_speed = FloatType(unbounded_region["sound_speed_m_per_s"])
+    density = FloatType(unbounded_region["density_kg_per_m3"])
+    sound_speed > zero(FloatType) && density > zero(FloatType) || error(
+        "Exterior sound speed and density must be positive.",
+    )
+    mesh_setup_started = time_ns()
+    bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
+    mesh = bem_domain.mesh
+    validate_symmetry_fundamental_domain!(mesh, symmetry_mode)
+    excitation_port_ids = String.(request["excitation_port_ids"])
+    excitations = exterior_excitations(
+        excitation_port_ids,
+        (ports=port_objects, items=components),
+        boundaries,
+        bem_domain.boundary_tag_by_id,
+        unbounded_region,
+        FloatType,
+    )
+    mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
+    p1_space = build_p1_space(mesh)
+    dp0_space = build_dp0_space(mesh)
+    base_order = Int(get(options, "quadrature_order", 4))
+    singular_order = Int(get(options, "singular_order", 4))
+    base_rule = triangle_rule(FloatType, base_order)
+    singular_cache = build_singular_correction_cache(mesh, singular_order)
+    identity_p1_p1 = assemble_l2_identity_matrix(
+        mesh, p1_space, dp0_space, base_rule, :p1, :p1; symmetry_mode=symmetry_mode,
+    )
+    identity_p1_dp0 = assemble_l2_identity_matrix(
+        mesh, p1_space, dp0_space, base_rule, :p1, :dp0; symmetry_mode=symmetry_mode,
+    )
+    cpu_field_cache = build_field_evaluation_cache(mesh, base_rule; symmetry_mode=symmetry_mode)
+    device_cache = backend == :cuda ? build_cuda_regular_assembly_cache(mesh, base_rule) : nothing
+    field_cache = backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
+    device_singular_cache = backend == :cuda ?
+                            BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space) :
+                            nothing
+    device_image_singular_cache = backend == :cuda && symmetry_mode != :off ?
+                                  build_cuda_image_singular_correction_cache(
+        mesh, p1_space, dp0_space, singular_order, eachindex(mesh.faces), symmetry_mode,
+    ) : nothing
+    cuda_identity_cache = backend == :cuda ?
+                          build_cuda_burton_miller_identity_cache(
+        identity_p1_p1, identity_p1_dp0, FloatType,
+    ) : nothing
+    cpu_blas_threads = backend == :cpu ?
+                       configure_beat_cpu_blas_threads!(p1_space.global_dof_count) :
+                       BLAS.get_num_threads()
+    rule_cache = Dict{Int,Any}(base_order => base_rule)
+    identity_cache = Dict{Int,Any}(base_order => (identity_p1_p1, identity_p1_dp0))
+    cpu_field_cache_by_order = Dict{Int,Any}(base_order => cpu_field_cache)
+    cpu_assembly_cache_by_order = Dict{Int,Any}()
+    outputs = get(request, "outputs", Any[])
+    cancel_path = get(request, "cancel_path", nothing)
+    cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
+    solved_count = 0
+    try
+        for (frequency_index, raw_frequency) in enumerate(request["frequencies_hz"])
+            cancel_requested() && return (cancelled=true, solved_count=solved_count)
+            frequency_hz = FloatType(raw_frequency)
+            omega = FloatType(2pi) * frequency_hz
+            wavenumber = omega / sound_speed
+            selection = exterior_quadrature_selection(
+                options, mesh, frequency_hz, sound_speed, base_order, backend,
+            )
+            rule = backend == :cpu ? get!(rule_cache, selection.order) do
+                triangle_rule(FloatType, selection.order)
+            end : base_rule
+            selected_identity = backend == :cpu ? get!(identity_cache, selection.order) do
+                (
+                    assemble_l2_identity_matrix(
+                        mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=symmetry_mode,
+                    ),
+                    assemble_l2_identity_matrix(
+                        mesh, p1_space, dp0_space, rule, :p1, :dp0; symmetry_mode=symmetry_mode,
+                    ),
+                )
+            end : (identity_p1_p1, identity_p1_dp0)
+            selected_field_cache = backend == :cpu ? get!(cpu_field_cache_by_order, selection.order) do
+                build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode)
+            end : field_cache
+            selected_cpu_cache = backend == :cpu ? get!(cpu_assembly_cache_by_order, selection.order) do
+                build_beat_cpu_assembly_cache(
+                    mesh,
+                    p1_space,
+                    dp0_space,
+                    rule;
+                    singular_order=singular_order,
+                    symmetry_mode=symmetry_mode,
+                )
+            end : nothing
+            assembly_started = time_ns()
+            operators = assemble_regular_galerkin_operators(
+                mesh,
+                p1_space,
+                dp0_space,
+                wavenumber,
+                rule;
+                skip_singular=false,
+                singular_order=singular_order,
+                backend=backend,
+                device_cache=device_cache,
+                return_device=backend == :cuda,
+                accelerator_quadrature=backend == :cuda,
+                singular_cache=singular_cache,
+                cpu_cache=selected_cpu_cache,
+                device_singular_cache=device_singular_cache,
+                device_image_singular_cache=device_image_singular_cache,
+                symmetry_mode=symmetry_mode,
+            )
+            assembly_s = (time_ns() - assembly_started) / 1.0e9
+            solve_started = time_ns()
+            cpu_system = backend == :cpu ? build_burton_miller_neumann_cpu_system(
+                operators, selected_identity[1], selected_identity[2], wavenumber,
+            ) : nothing
+            pressures = Vector{Vector{Complex{FloatType}}}()
+            neumann_values = Vector{Vector{Complex{FloatType}}}()
+            for excitation in excitations
+                neumann = exterior_neumann(mesh, excitation, density, omega)
+                pressure = backend == :cpu ?
+                           solve_burton_miller_neumann_cpu_system(cpu_system, neumann, FloatType) :
+                           solve_burton_miller_neumann(
+                    operators, cuda_identity_cache, neumann, wavenumber,
+                )
+                push!(pressures, Complex{FloatType}.(pressure))
+                push!(neumann_values, neumann)
+            end
+            solve_s = (time_ns() - solve_started) / 1.0e9
+            quantities = Dict{String,Any}[]
+            field_s = 0.0
+            for output in outputs
+                quantity = String(output["quantity"])
+                if quantity == "exterior_pressure"
+                    field_started = time_ns()
+                    raw_points = get(get(output, "options", Dict{String,Any}()), "points_m", Any[])
+                    isempty(raw_points) && error("exterior_pressure output requires options.points_m.")
+                    points = [SVector{3,FloatType}(FloatType.(point)) for point in raw_points]
+                    values = [
+                        exterior_field(
+                            points,
+                            mesh,
+                            pressure,
+                            neumann,
+                            wavenumber,
+                            selected_field_cache,
+                            backend,
+                        ) for (pressure, neumann) in zip(pressures, neumann_values)
+                    ]
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(values, FloatType),
+                            "Pa",
+                            ["excitation", "observation"],
+                            metadata=Dict("points_m" => raw_points),
+                        ),
+                    )
+                    field_s += (time_ns() - field_started) / 1.0e9
+                elseif quantity == "bem_boundary_pressure"
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(pressures, FloatType),
+                            "Pa",
+                            ["excitation", "bem_node"],
+                        ),
+                    )
+                elseif quantity == "bem_boundary_neumann"
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(neumann_values, FloatType),
+                            "Pa/m",
+                            ["excitation", "bem_face"],
+                        ),
+                    )
+                elseif quantity == "radiation_impedance"
+                    impedance_by_component = Complex{FloatType}[]
+                    pressure_by_component = Dict(
+                        excitation.component_id => pressure
+                        for (excitation, pressure) in zip(excitations, pressures)
+                    )
+                    excitation_by_component = Dict(
+                        excitation.component_id => excitation for excitation in excitations
+                    )
+                    for component in components
+                        component_id = String(component["id"])
+                        push!(
+                            impedance_by_component,
+                            exterior_component_impedance(
+                                mesh,
+                                pressure_by_component[component_id],
+                                excitation_by_component[component_id],
+                                symmetry_mode,
+                                FloatType,
+                            ),
+                        )
+                    end
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            impedance_by_component,
+                            "Pa*s/m^3",
+                            ["radiator"],
+                        ),
+                    )
+                else
+                    error("Unsupported exterior output quantity: $quantity")
+                end
+            end
+            diagnostics = Dict{String,Any}(
+                "precision" => precision_name,
+                "bem_backend" => String(backend),
+                "symmetry" => String(symmetry_mode),
+                "formulation" => "exterior_burton_miller_neumann",
+                "linear_solver" => backend == :cpu ? "cpu_dense_lu" : "cuda_dense_lu",
+                "bounded_region_count" => 0,
+                "interface_count" => 0,
+                "regular_quadrature_mode" => selection.mode,
+                "regular_quadrature_order" => selection.order,
+                "blas_threads" => cpu_blas_threads,
+                "timings" => Dict(
+                    "assembly_s" => assembly_s,
+                    "solve_s" => solve_s,
+                    "field_s" => field_s,
+                    "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
+                    "cache_setup_s" => 0.0,
+                ),
+            )
+            result = Dict(
+                "schema_version" => 1,
+                "freq_hz" => frequency_hz,
+                "excitation_port_ids" => excitation_port_ids,
+                "quantities" => quantities,
+                "diagnostics" => diagnostics,
+            )
+            println(JSON.json(event_mode ? Dict("type" => "result", "result" => result) : result))
+            flush(stdout)
+            release_operator_storage!(operators)
+            solved_count = frequency_index
+        end
+    finally
+        cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
+        device_image_singular_cache === nothing ||
+            release_cuda_image_singular_correction_cache!(device_image_singular_cache)
+    end
+    return (cancelled=cancel_requested(), solved_count=solved_count)
 end
 
 function per_interface_errors(
@@ -632,9 +1000,14 @@ function solve_request(request; event_mode=false)
 
     bounded_regions = [region for region in regions if String(region["kind"]) == "bounded_air"]
     unbounded_regions = [region for region in regions if String(region["kind"]) == "unbounded_air"]
-    isempty(bounded_regions) && error("Coupled backend requires at least one bounded region.")
     length(unbounded_regions) == 1 || error("Coupled backend currently requires exactly one unbounded region.")
     unbounded_region = only(unbounded_regions)
+    isempty(bounded_regions) && return solve_exterior_request(
+        request,
+        system,
+        unbounded_region;
+        event_mode=event_mode,
+    )
     reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
     reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
     for region in regions

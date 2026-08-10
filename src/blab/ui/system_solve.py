@@ -1,4 +1,4 @@
-"""Application adapter from coupled-system results to the existing live plots."""
+"""Application adapter from physical-system results to the existing live plots."""
 
 from __future__ import annotations
 
@@ -13,7 +13,13 @@ from blab.config import normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.observation_planes import ObservationPlane, ObservationPlaneType
 from blab.physical_compiler import PhysicalSystemCompiler
-from blab.physical_model import BoundaryKind, ComponentKind, PhysicalSystem
+from blab.physical_model import (
+    BoundaryKind,
+    ComponentKind,
+    PhysicalSolveKind,
+    PhysicalSystem,
+    infer_physical_solve_kind,
+)
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -23,6 +29,8 @@ from blab.solve_results import (
     FEM_VOLUME_DOMAIN_ID,
     HORIZONTAL_POLAR_DOMAIN_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
+    RADIATION_IMPEDANCE_ID,
+    RADIATOR_DOMAIN_ID,
     SPHERE_DOMAIN_ID,
     SPHERE_PRESSURE_ID,
     TRANSDUCER_DOMAIN_ID,
@@ -34,7 +42,7 @@ from blab.solve_results import (
     fem_volume_result_domain,
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
-from blab.solvers.coupled_backend import CoupledProductionBackend
+from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 
@@ -42,9 +50,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class CoupledUiSolveRequest:
+class SystemUiSolveRequest:
     request: SystemSolveRequest
     backend_id: str
+    solve_kind: PhysicalSolveKind
     polar_angle_deg: np.ndarray
     excitation_channel_names: np.ndarray
     excitation_component_names: np.ndarray
@@ -54,7 +63,7 @@ class CoupledUiSolveRequest:
     result_domains: tuple[ResultDomain, ...] = ()
 
 
-def prepare_coupled_ui_solve(
+def prepare_system_ui_solve(
     system: PhysicalSystem,
     *,
     freq_min_hz: float,
@@ -68,13 +77,14 @@ def prepare_coupled_ui_solve(
     backend_id: str = "beat_cpu",
     symmetry_mode: str = "off",
     observation_planes: tuple[ObservationPlane, ...] = (),
-) -> CoupledUiSolveRequest:
-    """Compile an editable system and request the field points used by current plots."""
+) -> SystemUiSolveRequest:
+    """Compile an editable physical system and request the fields used by the UI."""
 
     symmetry = normalize_symmetry(symmetry_mode)
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
+    solve_kind = infer_physical_solve_kind(system)
     frequencies = build_log_frequencies(
         float(min(freq_min_hz, freq_max_hz)),
         float(max(freq_min_hz, freq_max_hz)),
@@ -116,6 +126,18 @@ def prepare_coupled_ui_solve(
             metadata={"plane": "vertical"},
         ),
     ]
+    if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+        result_domains.append(
+            ResultDomain(
+                id=RADIATOR_DOMAIN_ID,
+                kind="component_collection",
+                dimensions=("radiator",),
+                coordinates={
+                    "component_id": np.asarray([component.id for component in compiled.components]),
+                    "name": np.asarray([component.name for component in compiled.components]),
+                },
+            )
+        )
     sphere_metadata = None
     if spherical_sampling_enabled:
         sphere, sphere_metadata = _fibonacci_sphere_points(
@@ -156,7 +178,7 @@ def prepare_coupled_ui_solve(
 
     normalized_backend_id = normalize_backend_id(backend_id)
     if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Coupled systems require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences.")
+        raise ValueError("Physical-system solves require BEAT Engine (CPU) or BEAT Engine (CUDA) in Preferences.")
     outputs = [
         OutputRequest(
             id="ui:exterior-pressure",
@@ -167,6 +189,14 @@ def prepare_coupled_ui_solve(
             },
         )
     ]
+    if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+        outputs.append(
+            OutputRequest(
+                id=RADIATION_IMPEDANCE_ID,
+                quantity="radiation_impedance",
+                target_ids=(RADIATOR_DOMAIN_ID,),
+            )
+        )
     retain_interior_field = any(
         plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
         for plane in observation_planes
@@ -175,6 +205,8 @@ def prepare_coupled_ui_solve(
         plane.plane_type in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}
         for plane in observation_planes
     )
+    if solve_kind == PhysicalSolveKind.EXTERIOR_BEM and retain_interior_field:
+        raise ValueError("Exterior-only systems support Exterior observation planes only.")
     if retain_exterior_field:
         outputs.extend(
             (
@@ -230,23 +262,25 @@ def prepare_coupled_ui_solve(
             ]
         )
 
+    is_coupled = solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
         excitation_port_ids=port_ids,
         outputs=tuple(outputs),
         solver_options={
-            "quadrature_order": 2,
-            "singular_order": 2,
+            "quadrature_order": 2 if is_coupled else 4,
+            "singular_order": 2 if is_coupled else 4,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
-            "static_condensation": normalized_backend_id == "beat_cuda",
+            "static_condensation": is_coupled and normalized_backend_id == "beat_cuda",
             "symmetry": symmetry,
         },
     )
-    return CoupledUiSolveRequest(
+    return SystemUiSolveRequest(
         request=request,
         backend_id=normalized_backend_id,
+        solve_kind=solve_kind,
         polar_angle_deg=angles,
         excitation_channel_names=np.asarray(channel_names),
         excitation_component_names=np.asarray(component_names),
@@ -257,8 +291,45 @@ def prepare_coupled_ui_solve(
     )
 
 
-class CoupledSolveWorker(QObject):
-    """Run the selected FP32 production backend and emit legacy-shaped live results."""
+def prepare_coupled_ui_solve(*args, **kwargs) -> SystemUiSolveRequest:
+    """Compatibility name for callers that predate exterior system solves."""
+
+    return prepare_system_ui_solve(*args, **kwargs)
+
+
+def supports_exterior_system_protocol(
+    system: PhysicalSystem,
+    *,
+    backend_id: str,
+    stitch_exterior_meshes: bool,
+) -> bool:
+    """Return whether an exterior project can use the local system worker."""
+
+    if stitch_exterior_meshes or normalize_backend_id(backend_id) not in {"beat_cpu", "beat_cuda"}:
+        return False
+    try:
+        if infer_physical_solve_kind(system) != PhysicalSolveKind.EXTERIOR_BEM:
+            return False
+    except ValueError:
+        return False
+    if any(boundary.kind not in {BoundaryKind.RIGID, BoundaryKind.MOVING} for boundary in system.boundaries):
+        return False
+    if any(boundary.parameters for boundary in system.boundaries):
+        return False
+    if any(region.loss_model for region in system.regions):
+        return False
+    for component in system.components:
+        if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE:
+            return False
+        if component.parameters.get("motion_profile", "uniform") != "uniform":
+            return False
+        if set(component.parameters) - {"motion_profile", "boundary_motion_weights"}:
+            return False
+    return True
+
+
+class SystemSolveWorker(QObject):
+    """Run the selected physical-system backend and emit legacy-shaped live results."""
 
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
@@ -267,7 +338,7 @@ class CoupledSolveWorker(QObject):
     failed = Signal(str)
     finished = Signal()
 
-    def __init__(self, prepared: CoupledUiSolveRequest):
+    def __init__(self, prepared: SystemUiSolveRequest):
         super().__init__()
         self.prepared = prepared
         self._stop = False
@@ -278,7 +349,7 @@ class CoupledSolveWorker(QObject):
         try:
             request = replace(self.prepared.request, status_callback=self._log_backend_status)
             bem_backend = "cuda" if self.prepared.backend_id == "beat_cuda" else "cpu"
-            backend = CoupledProductionBackend(
+            backend = PhysicalSystemProductionBackend(
                 bem_backend=bem_backend,
                 julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
             )
@@ -307,7 +378,7 @@ class CoupledSolveWorker(QObject):
 
     @staticmethod
     def _log_backend_status(message: str) -> None:
-        LOGGER.info("Coupled solver backend status: %s", message)
+        LOGGER.info("Physical-system solver backend status: %s", message)
 
     def _to_live_result(self, result: SystemFrequencyResult) -> FrequencyResult:
         result = self._canonical_result(result)
@@ -322,11 +393,7 @@ class CoupledSolveWorker(QObject):
         )
         angle_count = self.prepared.polar_angle_deg.size
         placeholder = np.zeros(angle_count, dtype=np.float32)
-        impedance = np.full(
-            (self.prepared.excitation_component_names.size, 2),
-            np.nan,
-            dtype=np.float32,
-        )
+        impedance = self._impedance_values(result)
         residual = result.diagnostics.get("relative_residual")
         continuity = result.diagnostics.get("pressure_continuity_error")
         diagnostic_message = (
@@ -402,7 +469,7 @@ class CoupledSolveWorker(QObject):
             raise ValueError(f"Coupled solver result did not contain {quantity_id!r}.")
         pressure = np.asarray(quantity.values, dtype=np.complex64)
         if pressure.ndim != 2:
-            raise ValueError(f"Coupled pressure quantity {quantity_id!r} must have two dimensions.")
+            raise ValueError(f"System pressure quantity {quantity_id!r} must have two dimensions.")
         return pressure
 
     def _combine_channel_rows(
@@ -428,6 +495,19 @@ class CoupledSolveWorker(QObject):
             np.vstack(grouped_vertical),
             None if sphere is None else np.vstack(grouped_sphere),
         )
+
+    def _impedance_values(self, result: SystemFrequencyResult) -> np.ndarray:
+        quantity = next((item for item in result.quantities if item.id == RADIATION_IMPEDANCE_ID), None)
+        if quantity is None:
+            return np.full(
+                (self.prepared.excitation_component_names.size, 2),
+                np.nan,
+                dtype=np.float32,
+            )
+        values = np.asarray(quantity.values, dtype=np.complex64)
+        if values.shape != (self.prepared.excitation_component_names.size,):
+            raise ValueError("Radiation impedance does not align with the physical components.")
+        return np.column_stack((values.real, values.imag)).astype(np.float32, copy=False)
 
 
 def _polar_observation_points(
@@ -467,7 +547,15 @@ def _fibonacci_sphere_points(
 
 
 __all__ = [
+    "SystemSolveWorker",
+    "SystemUiSolveRequest",
+    "prepare_system_ui_solve",
+    "supports_exterior_system_protocol",
     "CoupledSolveWorker",
     "CoupledUiSolveRequest",
     "prepare_coupled_ui_solve",
 ]
+
+
+CoupledUiSolveRequest = SystemUiSolveRequest
+CoupledSolveWorker = SystemSolveWorker

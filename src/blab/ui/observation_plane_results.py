@@ -1,4 +1,4 @@
-"""Projection of canonical coupled results into observation-plane fields."""
+"""Projection of canonical physical-system results into observation-plane fields."""
 
 from __future__ import annotations
 
@@ -241,7 +241,7 @@ def exterior_field_results_from_solved_system(
     flat_target_enabled: bool = False,
     flat_target_reference_angle_deg: float = 0.0,
 ) -> ExteriorFieldResults | None:
-    if solved is None or solved.provenance.solve_kind != "coupled_bem_fem":
+    if solved is None or solved.provenance.solve_kind not in {"coupled_bem_fem", "exterior_bem"}:
         return None
     traces = bem_boundary_traces_from_solved_system(solved)
     if traces is None:

@@ -13,7 +13,7 @@ from blab.generators.base import GeneratedGeometry, GenerationCompleted, Generat
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
 from blab.ui.generator_worker import GeneratorWorker
 from blab.ui.solve_worker import SolveWorker
-from blab.ui.system_solve import CoupledSolveWorker, CoupledUiSolveRequest
+from blab.ui.system_solve import SystemSolveWorker, SystemUiSolveRequest
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,7 @@ class SolveController(QObject):
         super().__init__(parent)
         self.state = OperationState()
         self._thread: QThread | None = None
-        self._worker: SolveWorker | CoupledSolveWorker | None = None
+        self._worker: SolveWorker | SystemSolveWorker | None = None
         self._started_at: float | None = None
         self._expected_count = 0
         self._solved_count = 0
@@ -143,12 +143,12 @@ class SolveController(QObject):
     def active(self) -> bool:
         return self.state.active
 
-    def start(self, request: SolveRequest | CoupledUiSolveRequest) -> bool:
+    def start(self, request: SolveRequest | SystemUiSolveRequest) -> bool:
         if self.active:
             return False
         self._expected_count = (
             len(request.request.frequencies_hz)
-            if isinstance(request, CoupledUiSolveRequest)
+            if isinstance(request, SystemUiSolveRequest)
             else int(request.ordered_frequencies.size)
         )
         self._solved_count = 0
@@ -159,8 +159,8 @@ class SolveController(QObject):
         self._started_at = time.perf_counter()
         self._set_state(OperationPhase.RUNNING, "Initializing solver")
         thread = QThread(self)
-        if isinstance(request, CoupledUiSolveRequest):
-            worker = CoupledSolveWorker(request)
+        if isinstance(request, SystemUiSolveRequest):
+            worker = SystemSolveWorker(request)
         else:
             worker = SolveWorker(
                 request.config,

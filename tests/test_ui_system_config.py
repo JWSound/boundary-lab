@@ -34,6 +34,8 @@ from blab.solve_results import (
     BEM_BOUNDARY_PRESSURE_ID,
     FEM_NODAL_PRESSURE_ID,
     FEM_VOLUME_DOMAIN_ID,
+    RADIATION_IMPEDANCE_ID,
+    RADIATOR_DOMAIN_ID,
 )
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
@@ -271,6 +273,104 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
     )
     with pytest.raises(ValueError, match="prescribed-velocity components only"):
         exterior_bem_inputs(unsupported, component_channel_by_id=channels)
+
+
+def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    tags = read_surface_physical_names(Path(bem.file))
+    group_name, tag = next(iter(tags.items()))
+    system, channels = seed_exterior_system(
+        (bem,),
+        (RadiatorConfig(name=f"{bem.name}:{group_name}", mesh=bem.name, tag=tag, channel="High"),),
+    )
+    exterior_plane = replace(
+        new_observation_plane("Exterior Field"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+    )
+
+    prepared = system_solve_module.prepare_system_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        component_channel_by_id=channels,
+        backend_id="beat_cpu",
+        observation_planes=(exterior_plane,),
+    )
+
+    outputs = {output.id: output for output in prepared.request.outputs}
+    domains = {domain.id: domain for domain in prepared.result_domains}
+    assert prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM
+    assert prepared.excitation_channel_names.tolist() == ["High"]
+    assert prepared.request.solver_options["quadrature_order"] == 4
+    assert prepared.request.solver_options["singular_order"] == 4
+    assert prepared.request.solver_options["static_condensation"] is False
+    assert outputs[RADIATION_IMPEDANCE_ID].quantity == "radiation_impedance"
+    assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID} <= outputs.keys()
+    assert {RADIATOR_DOMAIN_ID, BEM_BOUNDARY_DOMAIN_ID} <= domains.keys()
+    assert system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="beat_cpu",
+        stitch_exterior_meshes=False,
+    )
+    assert not system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="beat_cpu",
+        stitch_exterior_meshes=True,
+    )
+    assert not system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="bempp_cpu",
+        stitch_exterior_meshes=False,
+    )
+
+
+def test_system_worker_projects_exterior_radiation_impedance_to_live_result() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    tags = read_surface_physical_names(Path(bem.file))
+    group_name, tag = next(iter(tags.items()))
+    system, channels = seed_exterior_system(
+        (bem,),
+        (RadiatorConfig(name=f"{bem.name}:{group_name}", mesh=bem.name, tag=tag, channel="main"),),
+    )
+    prepared = system_solve_module.prepare_system_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        component_channel_by_id=channels,
+        backend_id="beat_cpu",
+    )
+    point_count = prepared.horizontal_count + prepared.vertical_count
+    result = SystemFrequencyResult(
+        freq_hz=500.0,
+        excitation_port_ids=prepared.request.excitation_port_ids,
+        quantities=(
+            QuantityResult(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.ones((1, point_count), dtype=np.complex64),
+            ),
+            QuantityResult(
+                id=RADIATION_IMPEDANCE_ID,
+                quantity="radiation_impedance",
+                unit="Pa*s/m^3",
+                target_id=RADIATOR_DOMAIN_ID,
+                axes=("radiator",),
+                values=np.asarray([2.5 - 1.25j], dtype=np.complex64),
+            ),
+        ),
+    )
+
+    live = system_solve_module.SystemSolveWorker(prepared)._to_live_result(result)
+
+    assert live.impedance.tolist() == [[2.5, -1.25]]
 
 
 def test_saved_unused_boundary_is_presented_and_collected_as_rigid() -> None:
@@ -1057,7 +1157,7 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
             request.status_callback("initializing coupled backend detail")
             return Session(request)
 
-    monkeypatch.setattr(system_solve_module, "CoupledProductionBackend", Backend)
+    monkeypatch.setattr(system_solve_module, "PhysicalSystemProductionBackend", Backend)
     worker = CoupledSolveWorker(prepared)
     statuses = []
     worker.status.connect(statuses.append)

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from blab.acoustic_materials import miki_wall_impedance_parameters
+from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.interface_conform import conform_bem_interface_to_fem
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import (
@@ -28,8 +29,10 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
+from blab.solvers.base import SolveRequest
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    BeatEngineCpuBackend,
     shutdown_beat_engine_workers,
 )
 from blab.solvers.coupled_backend import (
@@ -605,6 +608,91 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia exterior-system integration.",
+)
+def test_system_backend_solves_exterior_fixture_and_returns_retained_bem_traces() -> None:
+    compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:exterior-radiator",),
+        outputs=(
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
+            OutputRequest(id="output:impedance", quantity="radiation_impedance"),
+        ),
+        solver_options={"quadrature_order": 4, "singular_order": 4},
+    )
+    results = list(
+        CoupledReferenceBackend(julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"))
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert result.excitation_port_ids == request.excitation_port_ids
+    assert quantities["output:field"].values.shape == (1, 1)
+    assert quantities["output:bem"].values.shape == (1, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (1, 2424)
+    assert quantities["output:impedance"].values.shape == (1,)
+    assert np.all(np.isfinite(quantities["output:field"].values))
+    assert np.all(np.isfinite(quantities["output:impedance"].values))
+    assert result.diagnostics["bounded_region_count"] == 0
+    assert result.diagnostics["formulation"] == "exterior_burton_miller_neumann"
+
+    radiator_boundary = next(
+        boundary for boundary in compiled.boundaries if boundary.id == "boundary:exterior-radiator"
+    )
+    legacy_config = SimulationConfig(
+        mesh_file=str(BEM_FIXTURE),
+        meshes=(
+            MeshConfig(
+                name="Exterior boundary",
+                file=str(BEM_FIXTURE),
+                scale_factor=0.001,
+            ),
+        ),
+        radiators=(
+            RadiatorConfig(
+                name="Exterior boundary:Interface",
+                mesh="Exterior boundary",
+                tag=radiator_boundary.group.tag,
+                channel="main",
+            ),
+        ),
+        channels=(ChannelConfig(name="main"),),
+        distance=0.2,
+        step_size=180.0,
+        flat_target_normalization_enabled=False,
+    )
+    legacy_result = next(
+        BeatEngineCpuBackend(julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"))
+        .create_session(SolveRequest(legacy_config, np.asarray([500.0], dtype=np.float32)))
+        .solve_stream()
+    )
+    np.testing.assert_allclose(
+        quantities["output:field"].values[0, 0],
+        legacy_result.horizontal_pressure[0, 1],
+        rtol=2e-3,
+        atol=2e-4,
+    )
+    np.testing.assert_allclose(
+        quantities["output:impedance"].values[0],
+        complex(*legacy_result.impedance[0]),
+        rtol=2e-3,
+        atol=2e-4,
+    )
 
 
 @pytest.mark.skipif(
@@ -1529,6 +1617,62 @@ def _fixture_system() -> PhysicalSystem:
                 id="excitation:radiator",
                 name="Radiator unit normal velocity",
                 component_id="component:radiator",
+                kind=ExcitationPortKind.NORMAL_VELOCITY,
+            ),
+        ),
+    )
+
+
+def _exterior_fixture_system() -> PhysicalSystem:
+    component = PhysicalComponent(
+        id="component:exterior-radiator",
+        name="Exterior radiator",
+        kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+        boundary_ids=("boundary:exterior-radiator",),
+        parameters={"motion_profile": "uniform", "boundary_motion_weights": {"boundary:exterior-radiator": 1.0}},
+    )
+    return PhysicalSystem(
+        id="system:exterior-fixture",
+        name="Exterior BEM fixture",
+        meshes=(
+            MeshResource(
+                id="mesh:bem",
+                name="Exterior boundary",
+                file=str(BEM_FIXTURE),
+                purpose=MeshPurpose.BEM_SURFACE,
+                scale_to_m=0.001,
+            ),
+        ),
+        regions=(
+            AcousticRegion(
+                id="region:exterior",
+                name="Exterior air",
+                kind=AcousticRegionKind.UNBOUNDED_AIR,
+                mesh_ids=("mesh:bem",),
+            ),
+        ),
+        boundaries=(
+            Boundary(
+                id="boundary:exterior-wall",
+                name="Exterior box",
+                region_id="region:exterior",
+                group=PhysicalGroupRef(mesh_id="mesh:bem", dimension=2, name="ExteriorBox"),
+                kind=BoundaryKind.RIGID,
+            ),
+            Boundary(
+                id="boundary:exterior-radiator",
+                name="Radiator",
+                region_id="region:exterior",
+                group=PhysicalGroupRef(mesh_id="mesh:bem", dimension=2, name="Interface"),
+                kind=BoundaryKind.MOVING,
+            ),
+        ),
+        components=(component,),
+        excitation_ports=(
+            ExcitationPort(
+                id="excitation:exterior-radiator",
+                name="Exterior unit velocity",
+                component_id=component.id,
                 kind=ExcitationPortKind.NORMAL_VELOCITY,
             ),
         ),

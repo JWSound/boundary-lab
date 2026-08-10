@@ -389,7 +389,7 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     )
     solved = SolvedSystem(
         run_id="run",
-        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
+        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="exterior_bem"),
         frequencies_hz=np.asarray([1000.0, 100.0]),
         excitation_ids=("port:woofer", "port:tweeter"),
         domains={BEM_BOUNDARY_DOMAIN_ID: domain},

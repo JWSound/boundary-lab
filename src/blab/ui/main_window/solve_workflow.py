@@ -60,7 +60,10 @@ from blab.ui.system_config import (
     inspect_system_meshes,
     sync_physical_system_meshes,
 )
-from blab.ui.system_solve import prepare_coupled_ui_solve
+from blab.ui.system_solve import (
+    prepare_system_ui_solve,
+    supports_exterior_system_protocol,
+)
 
 
 class SolveWorkflowController(QObject):
@@ -206,6 +209,28 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
+            if supports_exterior_system_protocol(
+                system,
+                backend_id=preferences.solve_backend,
+                stitch_exterior_meshes=project.stitch_imported_meshes,
+            ):
+                frequencies = self._view.frequency_range()
+                prepared = prepare_system_ui_solve(
+                    system,
+                    freq_min_hz=float(frequencies.min_hz),
+                    freq_max_hz=float(frequencies.max_hz),
+                    freq_count=frequencies.count,
+                    observation_distance_m=preferences.polar_observation_distance_m,
+                    polar_angle_step_deg=preferences.polar_angle_step_deg,
+                    spherical_sampling_enabled=preferences.spherical_sampling_enabled,
+                    spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
+                    component_channel_by_id=project.component_channel_by_id,
+                    backend_id=preferences.solve_backend,
+                    symmetry_mode=symmetry,
+                    observation_planes=project.observation_planes,
+                )
+                self._start_prepared_system_solve(prepared, "Initializing exterior solver...")
+                return
             inputs = exterior_bem_inputs(
                 system,
                 component_channel_by_id=project.component_channel_by_id,
@@ -241,7 +266,7 @@ class SolveWorkflowController(QObject):
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
             coupled_frequencies = self._view.frequency_range()
-            prepared = prepare_coupled_ui_solve(
+            prepared = prepare_system_ui_solve(
                 system,
                 freq_min_hz=float(coupled_frequencies.min_hz),
                 freq_max_hz=float(coupled_frequencies.max_hz),
@@ -259,13 +284,16 @@ class SolveWorkflowController(QObject):
             self._view.warn("Coupled solve", str(exc))
             return
 
-        self._begin_run("Initializing coupled solver...")
+        self._start_prepared_system_solve(prepared, "Initializing coupled solver...")
+
+    def _start_prepared_system_solve(self, prepared, status: str) -> None:
+        self._begin_run(status)
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
             excitation_ids=prepared.request.excitation_port_ids,
             provenance=SolveProvenance(
                 backend_id=prepared.backend_id,
-                solve_kind="coupled_bem_fem",
+                solve_kind=prepared.solve_kind.value,
                 solver_options=dict(prepared.request.solver_options),
             ),
             domains=prepared.result_domains,

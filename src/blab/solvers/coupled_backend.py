@@ -268,7 +268,7 @@ class _CoupledBackend:
         self.bem_backend = normalized_bem_backend
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
-        validate_coupled_capabilities(request)
+        validate_system_capabilities(request)
         solver_options = dict(request.solver_options)
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
@@ -411,6 +411,73 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             "Coupled solver received excitation ports incompatible with their components: "
             + ", ".join(unsupported_ports)
         )
+
+
+def validate_system_capabilities(request: SystemSolveRequest) -> None:
+    """Dispatch validation according to the acoustic-region topology."""
+
+    bounded_regions = [
+        region for region in request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
+    ]
+    if bounded_regions:
+        validate_coupled_capabilities(request)
+        return
+    validate_exterior_capabilities(request)
+
+
+def validate_exterior_capabilities(request: SystemSolveRequest) -> None:
+    """Reject physical-model features unsupported by the BEAT BEM-only branch."""
+
+    system = request.compiled_system
+    unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
+    if len(unbounded_regions) != 1:
+        raise ValueError("Exterior solver requires exactly one unbounded acoustic region.")
+    if system.interfaces:
+        raise ValueError("Exterior-only systems cannot contain FEM-BEM interfaces.")
+    requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
+    if requested_symmetry not in {"off", "x", "xy"}:
+        raise ValueError(f"Unsupported exterior symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+    unsupported_boundaries = [
+        boundary.id for boundary in system.boundaries if boundary.kind not in {BoundaryKind.RIGID, BoundaryKind.MOVING}
+    ]
+    if unsupported_boundaries:
+        raise ValueError(
+            "Exterior solver supports rigid and prescribed-moving boundaries only: " + ", ".join(unsupported_boundaries)
+        )
+    parameterized_boundaries = [boundary.id for boundary in system.boundaries if boundary.parameters]
+    if parameterized_boundaries:
+        raise ValueError(
+            "Exterior solver does not support boundary parameters on: " + ", ".join(parameterized_boundaries)
+        )
+    unsupported_components = [
+        component.id for component in system.components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+    ]
+    if unsupported_components:
+        raise ValueError(
+            "Exterior solver supports prescribed-velocity components only: " + ", ".join(unsupported_components)
+        )
+    for component in system.components:
+        _validate_boundary_motion_weights(component)
+        unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
+        if unsupported_parameters:
+            raise ValueError(
+                f"Exterior solver does not support component parameters on '{component.id}': "
+                + ", ".join(sorted(unsupported_parameters))
+            )
+        if component.parameters.get("motion_profile", "uniform") != "uniform":
+            raise ValueError(f"Exterior component '{component.id}' must use uniform prescribed motion.")
+    components_by_id = {component.id: component for component in system.components}
+    incompatible_ports = [
+        port.id
+        for port in system.excitation_ports
+        if port.kind != ExcitationPortKind.NORMAL_VELOCITY
+        or components_by_id[port.component_id].kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+    ]
+    if incompatible_ports:
+        raise ValueError("Exterior solver received incompatible excitation ports: " + ", ".join(incompatible_ports))
+    lossy_regions = [region.id for region in system.regions if region.loss_model]
+    if lossy_regions:
+        raise ValueError("Exterior solver does not support region loss models on: " + ", ".join(lossy_regions))
 
 
 def _validate_boundary_motion_weights(component) -> None:
@@ -588,8 +655,8 @@ class CoupledReferenceBackend(_CoupledBackend):
         )
 
 
-class CoupledProductionBackend(_CoupledBackend):
-    """FP32 coupled backend used by interactive BEAT Engine CPU/CUDA solves."""
+class PhysicalSystemProductionBackend(_CoupledBackend):
+    """FP32 physical-system backend for exterior and coupled BEAT solves."""
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"
@@ -617,3 +684,6 @@ class CoupledProductionBackend(_CoupledBackend):
             precision="float32",
             bem_backend=normalized_bem_backend,
         )
+
+
+CoupledProductionBackend = PhysicalSystemProductionBackend

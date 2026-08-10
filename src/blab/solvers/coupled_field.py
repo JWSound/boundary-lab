@@ -42,7 +42,7 @@ def evaluate_bem_field(
 
     normalized_backend = normalize_backend_id(backend_id)
     if normalized_backend not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Retained coupled BEM fields require the BEAT Engine CPU or CUDA backend.")
+        raise ValueError("Retained BEM fields require the BEAT Engine CPU or CUDA backend.")
     julia_project = (
         DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_backend == "beat_cuda" else DEFAULT_COUPLED_CPU_PROJECT
     )
