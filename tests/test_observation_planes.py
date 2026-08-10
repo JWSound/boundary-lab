@@ -180,6 +180,70 @@ def test_properties_dialog_reports_active_state_without_changing_plane_model(qap
         dialog.deleteLater()
 
 
+def test_frequency_sweep_oscillates_across_sorted_solved_frequencies(qapp, monkeypatch) -> None:
+    import blab.ui.observation_plane_dialog as dialog_module
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    clock = [10.0]
+    monkeypatch.setattr(dialog_module.time, "monotonic", lambda: clock[0])
+    plane = replace(new_observation_plane("Sweep"), frequency_hz=100.0)
+    dialog = ObservationPlanePropertiesDialog(
+        plane,
+        solved_frequencies_hz=(800.0, 200.0, 100.0, 400.0),
+    )
+    previews = []
+    dialog.previewChanged.connect(lambda updated, animate: previews.append((updated, animate)))
+    try:
+        dialog.frequency_sweep_speed_slider.setValue(10)
+        dialog.frequency_sweep_button.setChecked(True)
+        assert dialog._frequency_sweep_timer.isActive()
+        assert dialog.frequency_sweep_speed_slider.isEnabled()
+
+        clock[0] = 10.1
+        dialog._advance_frequency_sweep()
+        assert dialog.frequency_slider.value() == 1
+        assert dialog.frequency_label.text() == "200 Hz"
+        QTest.qWait(20)
+        qapp.processEvents()
+        assert previews[-1][0].frequency_hz == 200.0
+
+        clock[0] = 10.3
+        dialog._advance_frequency_sweep()
+        assert dialog.frequency_slider.value() == 3
+        assert dialog._frequency_sweep_direction == -1.0
+
+        clock[0] = 10.4
+        dialog._advance_frequency_sweep()
+        assert dialog.frequency_slider.value() == 2
+        assert dialog.frequency_label.text() == "400 Hz"
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_frequency_sweep_and_phase_animation_are_mutually_exclusive(qapp) -> None:
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    dialog = ObservationPlanePropertiesDialog(
+        new_observation_plane("Sweep"),
+        solved_frequencies_hz=(100.0, 200.0),
+    )
+    try:
+        dialog.frequency_sweep_button.setChecked(True)
+        dialog.animate_button.setChecked(True)
+        assert dialog.animate_button.isChecked()
+        assert not dialog.frequency_sweep_button.isChecked()
+        assert not dialog._frequency_sweep_timer.isActive()
+
+        dialog.frequency_sweep_button.setChecked(True)
+        assert dialog.frequency_sweep_button.isChecked()
+        assert not dialog.animate_button.isChecked()
+        assert dialog._frequency_sweep_timer.isActive()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_interior_field_results_synthesize_system_and_channel_responses() -> None:
     from blab.config import ChannelConfig
     from blab.solve_results import (
@@ -447,6 +511,7 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
         _field_cache={},
         _mode=None,
         _selected_plane=lambda: updated,
+        _field_plane=lambda: updated,
         _update_active_field=lambda plane: calls.append(("field", plane.frequency_hz)) or True,
         _render=lambda: calls.append(("render", None)),
     )
@@ -458,6 +523,13 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
     speed_only = replace(updated, animation_speed_hz=2.0)
     ObservationPlaneViewport.set_planes(editor, (speed_only,), selected_id=speed_only.id)
     assert calls == [("field", 200.0)]
+
+    active_update = replace(speed_only, frequency_hz=300.0)
+    editor._selected_id = None
+    editor._active_id = speed_only.id
+    editor._field_plane = lambda: active_update
+    ObservationPlaneViewport.set_planes(editor, (active_update,))
+    assert calls == [("field", 200.0), ("field", 300.0)]
 
 
 def test_active_plane_remains_field_plane_after_camera_deselect() -> None:
@@ -644,6 +716,8 @@ def test_properties_active_toggle_is_exclusive_and_session_scoped(main_window) -
     first_dialog.active_check.setChecked(True)
     assert controller._active_plane_id == first.id
     assert main_window.preview.active_observation_plane_id == first.id
+    first_dialog.name_edit.setText("Pinned Plane")
+    assert main_window.preview.selected_observation_plane_id is None
 
     main_window.preview.observationPlanePropertiesRequested.emit(second.id)
     second_dialog = controller._dialogs[second.id]

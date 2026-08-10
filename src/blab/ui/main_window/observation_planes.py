@@ -132,12 +132,12 @@ class ObservationPlaneController(QObject):
         if updated.id == plane_id and self._store_plane(updated):
             self._show_status(f"Updated {updated.name}")
         self._stop_animation()
-        self.sync_view(selected_id=plane_id)
+        self.sync_view(selected_id=None if plane_id == self._active_plane_id else plane_id)
 
     def _reject_properties(self, plane_id: str) -> None:
         self._dialogs.pop(plane_id, None)
         self._stop_animation()
-        self.sync_view(selected_id=plane_id)
+        self.sync_view(selected_id=None if plane_id == self._active_plane_id else plane_id)
 
     @Slot(object, bool)
     def _preview_properties(self, updated: object, animate: bool) -> None:
@@ -145,7 +145,8 @@ class ObservationPlaneController(QObject):
             return
         project = self._project()
         preview_planes = tuple(updated if plane.id == updated.id else plane for plane in project.observation_planes)
-        self._preview.set_observation_planes(preview_planes, selected_id=updated.id)
+        selected_id = None if updated.id == self._active_plane_id else updated.id
+        self._preview.set_observation_planes(preview_planes, selected_id=selected_id)
         if hasattr(self._preview, "set_observation_plane_animation"):
             self._preview.set_observation_plane_animation(updated.id, animate)
 

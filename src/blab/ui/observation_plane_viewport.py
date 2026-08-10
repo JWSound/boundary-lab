@@ -165,10 +165,11 @@ class ObservationPlaneViewport(QObject):
             self._planes,
             previous_selected_id,
             self._selected_id,
+            self._active_id,
         )
         if result_update == "state_only":
             return
-        if result_update == "field" and self._update_active_field(self._selected_plane()):
+        if result_update == "field" and self._update_active_field(self._field_plane()):
             return
         self._render()
 
@@ -1063,19 +1064,21 @@ def _result_selection_update(
     current: tuple[ObservationPlane, ...],
     previous_selected_id: str | None,
     selected_id: str | None,
+    active_id: str | None,
 ) -> str | None:
     """Classify a plane update that can preserve the existing viewport actors."""
 
     if previous_selected_id != selected_id or len(previous) != len(current):
         return None
-    if selected_id is None:
+    field_plane_id = active_id or selected_id
+    if field_plane_id is None:
         return "state_only" if previous == current else None
     field_changed = False
     state_changed = False
     for old, new in zip(previous, current, strict=True):
         if old.id != new.id:
             return None
-        if old.id != selected_id:
+        if old.id != field_plane_id:
             if old != new:
                 return None
             continue

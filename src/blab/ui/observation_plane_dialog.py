@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
@@ -46,6 +47,8 @@ INTERIOR_RENDERING_LABELS = {
     InteriorRenderingMode.SMOOTH_FIELD: "Smooth Field",
     InteriorRenderingMode.ELEMENT_FIELD: "Element Field",
 }
+FREQUENCY_SWEEP_INTERVAL_MS = 50
+DEFAULT_FREQUENCY_SWEEP_SPEED = 5
 
 
 class ObservationPlanePropertiesDialog(QDialog):
@@ -155,6 +158,19 @@ class ObservationPlanePropertiesDialog(QDialog):
         animation_row.addWidget(QLabel("Speed"))
         animation_row.addWidget(self.animation_speed_slider, 1)
         results_form.addRow("Phase", animation_row)
+
+        self.frequency_sweep_button = QPushButton("Sweep Frequency")
+        self.frequency_sweep_button.setCheckable(True)
+        self.frequency_sweep_button.setEnabled(len(self._solved_frequencies_hz) > 1)
+        self.frequency_sweep_speed_slider = QSlider(Qt.Horizontal)
+        self.frequency_sweep_speed_slider.setRange(1, 40)
+        self.frequency_sweep_speed_slider.setValue(DEFAULT_FREQUENCY_SWEEP_SPEED)
+        self.frequency_sweep_speed_slider.setEnabled(False)
+        sweep_row = QHBoxLayout()
+        sweep_row.addWidget(self.frequency_sweep_button)
+        sweep_row.addWidget(QLabel("Steps/s"))
+        sweep_row.addWidget(self.frequency_sweep_speed_slider, 1)
+        results_form.addRow("Frequency sweep", sweep_row)
         layout.addWidget(results_group)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -173,8 +189,17 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._frequency_preview_timer.setInterval(16)
         self._frequency_preview_timer.timeout.connect(self._emit_preview)
         self.frequency_slider.valueChanged.connect(self._schedule_frequency_preview)
+        self._frequency_sweep_timer = QTimer(self)
+        self._frequency_sweep_timer.setInterval(FREQUENCY_SWEEP_INTERVAL_MS)
+        self._frequency_sweep_timer.timeout.connect(self._advance_frequency_sweep)
+        self._frequency_sweep_position = float(self.frequency_slider.value())
+        self._frequency_sweep_direction = 1.0
+        self._frequency_sweep_updated_at = time.monotonic()
+        self.frequency_slider.sliderPressed.connect(self._stop_frequency_sweep)
         self.active_check.toggled.connect(self._emit_active)
         self.animate_button.toggled.connect(self._refresh_animation_controls)
+        self.frequency_sweep_button.toggled.connect(self._refresh_frequency_sweep_controls)
+        self.frequency_sweep_speed_slider.valueChanged.connect(self._reset_frequency_sweep_clock)
         preview_controls = (
             self.name_edit.textChanged,
             self.type_combo.currentIndexChanged,
@@ -194,6 +219,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._refresh_point_count()
         self._refresh_frequency_label()
         self._refresh_animation_controls()
+        self._refresh_frequency_sweep_controls()
         self._preview_ready = True
 
     @property
@@ -272,8 +298,12 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.animate_button.setChecked(False)
             del animation_blocker
         self.animate_button.setEnabled(bool(self._solved_frequencies_hz))
+        if len(self._solved_frequencies_hz) < 2:
+            self._stop_frequency_sweep()
+        self.frequency_sweep_button.setEnabled(len(self._solved_frequencies_hz) > 1)
         self._refresh_frequency_label()
         self._refresh_animation_controls()
+        self._refresh_frequency_sweep_controls()
 
     def set_active(self, active: bool) -> None:
         blocker = QSignalBlocker(self.active_check)
@@ -328,7 +358,56 @@ class ObservationPlanePropertiesDialog(QDialog):
         return self._solved_frequencies_hz[index]
 
     def _refresh_animation_controls(self) -> None:
+        if self.animate_button.isChecked() and self.frequency_sweep_button.isChecked():
+            self.frequency_sweep_button.setChecked(False)
         self.animation_speed_slider.setEnabled(bool(self._solved_frequencies_hz) and self.animate_button.isChecked())
+
+    def _refresh_frequency_sweep_controls(self) -> None:
+        available = len(self._solved_frequencies_hz) > 1
+        checked = available and self.frequency_sweep_button.isChecked()
+        self.frequency_sweep_speed_slider.setEnabled(checked)
+        if not checked:
+            self._frequency_sweep_timer.stop()
+            return
+        if self.animate_button.isChecked():
+            self.animate_button.setChecked(False)
+        self._frequency_sweep_position = float(self.frequency_slider.value())
+        maximum = len(self._solved_frequencies_hz) - 1
+        self._frequency_sweep_direction = -1.0 if self._frequency_sweep_position >= maximum else 1.0
+        self._frequency_sweep_updated_at = time.monotonic()
+        self._frequency_sweep_timer.start()
+
+    def _advance_frequency_sweep(self) -> None:
+        if not self.frequency_sweep_button.isChecked() or len(self._solved_frequencies_hz) < 2:
+            self._stop_frequency_sweep()
+            return
+        now = time.monotonic()
+        elapsed = max(now - self._frequency_sweep_updated_at, 0.0)
+        self._frequency_sweep_updated_at = now
+        maximum = float(len(self._solved_frequencies_hz) - 1)
+        period = 2.0 * maximum
+        phase = (
+            self._frequency_sweep_position
+            if self._frequency_sweep_direction > 0.0
+            else period - self._frequency_sweep_position
+        )
+        phase = (phase + self.frequency_sweep_speed_slider.value() * elapsed) % period
+        if phase < maximum:
+            position = phase
+            self._frequency_sweep_direction = 1.0
+        else:
+            position = period - phase
+            self._frequency_sweep_direction = -1.0
+        self._frequency_sweep_position = position
+        self.frequency_slider.setValue(int(round(position)))
+
+    def _reset_frequency_sweep_clock(self, *_args) -> None:
+        self._frequency_sweep_updated_at = time.monotonic()
+
+    def _stop_frequency_sweep(self) -> None:
+        self._frequency_sweep_timer.stop()
+        if self.frequency_sweep_button.isChecked():
+            self.frequency_sweep_button.setChecked(False)
 
     def _emit_preview(self, *_args) -> None:
         if self._preview_ready:
@@ -345,10 +424,12 @@ class ObservationPlanePropertiesDialog(QDialog):
 
     def accept(self) -> None:
         self._frequency_preview_timer.stop()
+        self._frequency_sweep_timer.stop()
         super().accept()
 
     def reject(self) -> None:
         self._frequency_preview_timer.stop()
+        self._frequency_sweep_timer.stop()
         super().reject()
 
     @staticmethod
