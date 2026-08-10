@@ -102,6 +102,7 @@ class ObservationPlaneViewport(QObject):
         self._tool_actor_controls: dict[str, tuple[str, int]] = {}
         self._actor_names: set[str] = set()
         self._tool_actors: list[object] = []
+        self._tool_actor_by_control: dict[tuple[str, int], object] = {}
         self._scene_bounds: tuple[float, float, float, float, float, float] | None = None
         self._rotation_angle_deg: float | None = None
         self._field_results: ObservationFieldResults | None = None
@@ -253,21 +254,31 @@ class ObservationPlaneViewport(QObject):
             LOGGER.info("Discarded stale exterior field result: key=%s", key)
             self._exterior_request_meshes.pop(key, None)
             return
-        previous = self._exterior_results.pop(key, None)
-        if previous is not None:
-            self._exterior_result_bytes -= int(previous.nbytes)
         values = np.asarray(pressure, dtype=np.complex64)
-        self._exterior_results[key] = values
-        self._exterior_result_bytes += int(values.nbytes)
-        self._exterior_results.move_to_end(key)
-        self._trim_exterior_result_cache()
         mesh = self._exterior_request_meshes.pop(key, None)
         plane = self._field_plane()
-        if plane is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
-            return
-        try:
-            current_key = self._exterior_key_for_plane(plane)
-        except (KeyError, TypeError, ValueError):
+        current_key = None
+        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+            try:
+                current_key = self._exterior_key_for_plane(plane)
+            except (KeyError, TypeError, ValueError):
+                current_key = None
+        if (
+            current_key is not None
+            and key != current_key
+            and self._can_stream_exterior_field_result(plane, key, current_key)
+        ):
+            current_mesh = self._exterior_plane_mesh(plane)
+            if self._apply_exterior_field_result(plane, key, values, mesh=current_mesh):
+                LOGGER.info(
+                    "Applied lagged exterior field result: plane=%s frequency_hz=%s points=%d",
+                    plane.id,
+                    key[8] if len(key) > 8 else plane.frequency_hz,
+                    values.shape[0],
+                )
+                return
+        self._cache_exterior_field_result(key, values)
+        if current_key is None:
             return
         if key != current_key:
             LOGGER.info("Cached non-current exterior field result: plane=%s", key[2] if len(key) > 2 else "unknown")
@@ -279,6 +290,29 @@ class ObservationPlaneViewport(QObject):
             values.shape[0],
         )
         self._apply_exterior_field_result(plane, key, values, mesh=mesh)
+
+    def _cache_exterior_field_result(self, key: tuple[object, ...], values: np.ndarray) -> None:
+        previous = self._exterior_results.pop(key, None)
+        if previous is not None:
+            self._exterior_result_bytes -= int(previous.nbytes)
+        self._exterior_results[key] = values
+        self._exterior_result_bytes += int(values.nbytes)
+        self._exterior_results.move_to_end(key)
+        self._trim_exterior_result_cache()
+
+    def _can_stream_exterior_field_result(
+        self,
+        plane: ObservationPlane,
+        completed_key: tuple[object, ...],
+        current_key: tuple[object, ...],
+    ) -> bool:
+        drag = self._drag
+        return bool(
+            drag is not None
+            and drag.mode in {"move", "rotate"}
+            and drag.original.id == plane.id
+            and _exterior_field_keys_stream_compatible(completed_key, current_key)
+        )
 
     def _trim_exterior_result_cache(self) -> None:
         while self._exterior_result_bytes > self._exterior_result_cache_max_bytes and len(self._exterior_results) > 1:
@@ -1197,6 +1231,25 @@ class ObservationPlaneViewport(QObject):
         return True
 
     def _refresh_interactive_tools(self, plane: ObservationPlane) -> None:
+        control_count = 4 if self._mode == "size" else 3 if self._mode in {"move", "rotate"} else 0
+        expected = {(self._mode, control) for control in range(control_count)}
+        if set(self._tool_actor_by_control) != expected:
+            self._clear_interactive_tools()
+            if self._mode == "move":
+                self._add_move_gizmo(plane)
+            elif self._mode == "rotate":
+                self._add_rotation_gizmo(plane)
+            elif self._mode == "size":
+                self._add_size_handles(plane)
+            return
+        if self._mode == "move":
+            self._update_move_gizmo(plane)
+        elif self._mode == "rotate":
+            self._update_rotation_gizmo(plane)
+        elif self._mode == "size":
+            self._update_size_handles(plane)
+
+    def _clear_interactive_tools(self) -> None:
         if self._foreground_renderer is not None:
             for actor in self._tool_actors:
                 self._foreground_renderer.RemoveActor(actor)
@@ -1209,13 +1262,8 @@ class ObservationPlaneViewport(QObject):
                 pass
             self._actor_names.discard(name)
         self._tool_actors.clear()
+        self._tool_actor_by_control.clear()
         self._tool_actor_controls.clear()
-        if self._mode == "move":
-            self._add_move_gizmo(plane)
-        elif self._mode == "rotate":
-            self._add_rotation_gizmo(plane)
-        elif self._mode == "size":
-            self._add_size_handles(plane)
 
     def _remove_active_field_actor(self) -> None:
         state = self._active_field
@@ -1290,26 +1338,37 @@ class ObservationPlaneViewport(QObject):
         self._actor_names.add(ANGLE_ACTOR_NAME)
 
     def _add_move_gizmo(self, plane: ObservationPlane) -> None:
-        center = np.asarray(plane.center_m)
-        scale = self._tool_scale(plane)
-        for axis_index, (axis, color) in enumerate(zip(plane.local_axes, AXIS_COLORS, strict=True)):
-            mesh = __import__("pyvista").Arrow(
-                start=center,
-                direction=axis,
-                scale=scale,
+        pv = __import__("pyvista")
+        for axis_index, color in enumerate(AXIS_COLORS):
+            mesh = pv.Arrow(
+                start=(0.0, 0.0, 0.0),
+                direction=(1.0, 0.0, 0.0),
+                scale=1.0,
                 tip_radius=0.12,
                 shaft_radius=0.035,
             )
             self._add_tool_actor(mesh, "move", axis_index, color=color)
+        self._update_move_gizmo(plane)
+
+    def _update_move_gizmo(self, plane: ObservationPlane) -> None:
+        center = np.asarray(plane.center_m)
+        axes = plane.local_axes
+        scale = self._tool_scale(plane)
+        for axis_index, axis in enumerate(axes):
+            tangent = axes[(axis_index + 1) % 3]
+            basis = np.column_stack((axis, tangent, np.cross(axis, tangent)))
+            self._set_tool_actor_transform(("move", axis_index), center, basis, scale)
 
     def _add_rotation_gizmo(self, plane: ObservationPlane) -> None:
         pv = __import__("pyvista")
-        center = np.asarray(plane.center_m)
-        radius = self._tool_scale(plane) * 0.8
-        axes = plane.local_axes
-        for axis_index, (axis, color) in enumerate(zip(axes, AXIS_COLORS, strict=True)):
-            polar = axes[(axis_index + 1) % 3] * radius
-            ring = pv.CircularArcFromNormal(center=center, normal=axis, polar=polar, angle=360.0, resolution=120)
+        for axis_index, color in enumerate(AXIS_COLORS):
+            ring = pv.CircularArcFromNormal(
+                center=(0.0, 0.0, 0.0),
+                normal=(0.0, 0.0, 1.0),
+                polar=(1.0, 0.0, 0.0),
+                angle=360.0,
+                resolution=120,
+            )
             self._add_tool_actor(
                 ring,
                 "rotate",
@@ -1318,15 +1377,31 @@ class ObservationPlaneViewport(QObject):
                 line_width=5.0,
                 render_lines_as_tubes=True,
             )
+        self._update_rotation_gizmo(plane)
+
+    def _update_rotation_gizmo(self, plane: ObservationPlane) -> None:
+        center = np.asarray(plane.center_m)
+        radius = self._tool_scale(plane) * 0.8
+        axes = plane.local_axes
+        for axis_index, axis in enumerate(axes):
+            polar = axes[(axis_index + 1) % 3]
+            tangent = np.cross(axis, polar)
+            basis = np.column_stack((polar, tangent, axis))
+            self._set_tool_actor_transform(("rotate", axis_index), center, basis, radius)
 
     def _add_size_handles(self, plane: ObservationPlane) -> None:
         pv = __import__("pyvista")
+        for corner_index in range(4):
+            handle = pv.Sphere(radius=1.0, center=(0.0, 0.0, 0.0), theta_resolution=16, phi_resolution=12)
+            self._add_tool_actor(handle, "size", corner_index, color=SELECTED_EDGE_COLOR)
+        self._update_size_handles(plane)
+
+    def _update_size_handles(self, plane: ObservationPlane) -> None:
         radius = self._tool_scale(plane) * 0.075
         for corner_index, corner in enumerate(plane.corners_m):
-            handle = pv.Sphere(radius=radius, center=corner, theta_resolution=16, phi_resolution=12)
-            self._add_tool_actor(handle, "size", corner_index, color=SELECTED_EDGE_COLOR)
+            self._set_tool_actor_transform(("size", corner_index), corner, np.eye(3), radius)
 
-    def _add_tool_actor(self, mesh, mode: str, control: int, **options) -> None:
+    def _add_tool_actor(self, mesh, mode: str, control: int, **options):
         name = f"observation-plane:tool:{mode}:{control}"
         actor = self.viewer.add_mesh(mesh, name=name, pickable=True, render=False, **options)
         if self._foreground_renderer is not None:
@@ -1335,6 +1410,29 @@ class ObservationPlaneViewport(QObject):
             self._tool_actors.append(actor)
         self._actor_names.add(name)
         self._tool_actor_controls[_vtk_actor_address(actor)] = (mode, control)
+        self._tool_actor_by_control[(mode, control)] = actor
+        return actor
+
+    def _set_tool_actor_transform(
+        self,
+        control: tuple[str, int],
+        center: np.ndarray,
+        basis: np.ndarray,
+        scale: float,
+    ) -> None:
+        actor = self._tool_actor_by_control.get(control)
+        if actor is None:
+            return
+        matrix = self.vtk.vtkMatrix4x4()
+        matrix.Identity()
+        transform = np.asarray(basis, dtype=float) * float(scale)
+        translation = np.asarray(center, dtype=float)
+        for row in range(3):
+            for column in range(3):
+                matrix.SetElement(row, column, float(transform[row, column]))
+            matrix.SetElement(row, 3, float(translation[row]))
+        actor.SetUserMatrix(matrix)
+        actor.Modified()
 
     def _tool_scale(self, plane: ObservationPlane) -> float:
         return max(min(plane.width_m, plane.height_m) * 0.4, self._default_size() * 0.15, 0.005)
@@ -1350,6 +1448,7 @@ class ObservationPlaneViewport(QObject):
             for actor in self._tool_actors:
                 self._foreground_renderer.RemoveActor(actor)
         self._tool_actors.clear()
+        self._tool_actor_by_control.clear()
         for name in tuple(self._actor_names):
             try:
                 self.viewer.remove_actor(name, render=False)
@@ -1637,6 +1736,18 @@ def _exterior_field_key(
         float(frequency_hz),
         plane.response_id,
     )
+
+
+def _exterior_field_keys_stream_compatible(
+    completed: tuple[object, ...],
+    current: tuple[object, ...],
+) -> bool:
+    """Match field identity and grid topology while allowing a lagged rigid transform."""
+
+    if len(completed) != 10 or len(current) != 10:
+        return False
+    compatible_indices = (0, 1, 2, 5, 6, 7, 8, 9)
+    return all(completed[index] == current[index] for index in compatible_indices)
 
 
 def _expanded_fem_geometry(

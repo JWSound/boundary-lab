@@ -498,6 +498,84 @@ def test_exterior_frequency_update_uses_cached_field_without_interior_sampling()
     assert applied == [(plane, key, pressure)]
 
 
+def test_exterior_move_stream_applies_compatible_lagged_result_without_caching() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _DragState, _exterior_field_key
+
+    original = replace(
+        new_observation_plane("Exterior"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+        frequency_hz=1000.0,
+        width_m=0.1,
+        height_m=0.1,
+        resolution_m=0.1,
+    )
+    current = replace(original, center_m=(0.05, 0.0, 0.0))
+    completed_key = _exterior_field_key(7, "run", original, 1000.0)
+    current_key = _exterior_field_key(7, "run", current, 1000.0)
+    requested_mesh = object()
+    current_mesh = SimpleNamespace(n_points=4)
+    pressure = np.arange(4, dtype=np.complex64)
+    applied = []
+    editor = SimpleNamespace(
+        _field_generation=7,
+        _exterior_pending={completed_key},
+        _exterior_failures={},
+        _exterior_request_meshes={completed_key: requested_mesh},
+        _drag=_DragState(original, "move", 0),
+        _field_plane=lambda: current,
+        _exterior_key_for_plane=lambda _plane: current_key,
+        _exterior_plane_mesh=lambda _plane: current_mesh,
+        _apply_exterior_field_result=lambda plane, key, values, *, mesh: applied.append(
+            (plane, key, values, mesh)
+        )
+        or True,
+        _cache_exterior_field_result=lambda *_args: pytest.fail(
+            "lagged interactive fields must not enter the exact-position cache"
+        ),
+    )
+    editor._can_stream_exterior_field_result = MethodType(
+        ObservationPlaneViewport._can_stream_exterior_field_result,
+        editor,
+    )
+
+    ObservationPlaneViewport.set_exterior_field_result(editor, completed_key, pressure)
+
+    assert editor._exterior_pending == set()
+    assert editor._exterior_request_meshes == {}
+    assert len(applied) == 1
+    assert applied[0][0] is current
+    assert applied[0][1] == completed_key
+    assert applied[0][2] is pressure
+    assert applied[0][3] is current_mesh
+
+
+def test_exterior_stream_compatibility_ignores_only_rigid_transform() -> None:
+    from blab.ui.observation_plane_viewport import _exterior_field_key, _exterior_field_keys_stream_compatible
+
+    original = replace(
+        new_observation_plane("Exterior"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+        frequency_hz=1000.0,
+    )
+    moved = replace(original, center_m=(1.0, 2.0, 3.0))
+    resized = replace(moved, width_m=moved.width_m * 2.0)
+    changed_response = replace(moved, response_id="channel:high")
+    original_key = _exterior_field_key(3, "run", original, 1000.0)
+
+    assert _exterior_field_keys_stream_compatible(
+        original_key,
+        _exterior_field_key(3, "run", moved, 1000.0),
+    )
+    assert not _exterior_field_keys_stream_compatible(
+        original_key,
+        _exterior_field_key(3, "run", resized, 1000.0),
+    )
+    assert not _exterior_field_keys_stream_compatible(
+        original_key,
+        _exterior_field_key(3, "run", changed_response, 1000.0),
+    )
+
+
 def test_exterior_geometry_preview_moves_existing_field_in_place() -> None:
     import pyvista as pv
 
@@ -974,6 +1052,48 @@ def test_viewport_uses_a_shared_camera_foreground_renderer_for_gizmos(qapp) -> N
     finally:
         viewer.close()
         viewer.deleteLater()
+
+
+def test_move_gizmo_refresh_reuses_actor_instances_and_updates_transforms() -> None:
+    import vtk
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = replace(new_observation_plane("Plane"), center_m=(1.0, 2.0, 3.0))
+    actors = {("move", index): vtk.vtkActor() for index in range(3)}
+    editor = SimpleNamespace(
+        _mode="move",
+        _tool_actor_by_control=actors,
+        vtk=vtk,
+        _tool_scale=lambda _plane: 0.25,
+        _clear_interactive_tools=lambda: pytest.fail("existing gizmos must not be rebuilt"),
+        _add_move_gizmo=lambda _plane: pytest.fail("existing gizmos must not be rebuilt"),
+    )
+    editor._set_tool_actor_transform = MethodType(ObservationPlaneViewport._set_tool_actor_transform, editor)
+    editor._update_move_gizmo = MethodType(ObservationPlaneViewport._update_move_gizmo, editor)
+
+    original_actor_ids = {control: id(actor) for control, actor in actors.items()}
+    ObservationPlaneViewport._refresh_interactive_tools(editor, plane)
+
+    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
+    x_matrix = actors[("move", 0)].GetUserMatrix()
+    np.testing.assert_allclose(
+        [x_matrix.GetElement(row, 3) for row in range(3)],
+        plane.center_m,
+    )
+    np.testing.assert_allclose(
+        [x_matrix.GetElement(row, 0) for row in range(3)],
+        np.asarray(plane.local_axes[0]) * 0.25,
+    )
+
+    moved = replace(plane, center_m=(-1.0, 0.5, 4.0))
+    ObservationPlaneViewport._refresh_interactive_tools(editor, moved)
+    assert {control: id(actor) for control, actor in actors.items()} == original_actor_ids
+    x_matrix = actors[("move", 0)].GetUserMatrix()
+    np.testing.assert_allclose(
+        [x_matrix.GetElement(row, 3) for row in range(3)],
+        moved.center_m,
+    )
 
 
 def test_properties_dialog_warns_above_point_budget_and_disables_resolution_for_element_field(qapp) -> None:
