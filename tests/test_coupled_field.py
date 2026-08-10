@@ -29,14 +29,35 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
 
     class Worker:
         def submit(self, request_path, *, operation):
-            submissions.append((json.loads(request_path.read_text(encoding="utf-8")), operation))
+            payload = json.loads(request_path.read_text(encoding="utf-8"))
+            arrays = payload["binary_arrays"]
+            decoded = {
+                name: field_module._read_binary_array(request_path.parent, descriptor)
+                for name, descriptor in arrays.items()
+            }
+            array_path = request_path.with_name(arrays["points_m"]["file"])
+            submissions.append(
+                (
+                    payload,
+                    decoded,
+                    request_path.stat().st_size,
+                    array_path.stat().st_size,
+                    operation,
+                )
+            )
+            result = np.asarray([1.0 - 1.0j, 2.0 - 2.0j], dtype=np.complex64)
+            result_path = request_path.with_name(payload["binary_result_file"])
+            result.tofile(result_path)
             yield {
                 "type": "field_result",
-                "values": {
+                "values_binary": {
+                    "file": result_path.name,
+                    "offset": 0,
+                    "nbytes": result.nbytes,
                     "dtype": "complex64",
                     "shape": [2],
-                    "real": [1.0, 2.0],
-                    "imag": [-1.0, -2.0],
+                    "order": "C",
+                    "byte_order": "little",
                 },
             }
             yield {"type": "completed"}
@@ -46,14 +67,30 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
     values = evaluate_bem_field(_request(), backend_id="beat_cpu")
 
     np.testing.assert_allclose(values, [1.0 - 1.0j, 2.0 - 2.0j])
-    payload, operation = submissions[0]
+    payload, decoded, request_json_size, array_file_size, operation = submissions[0]
     assert operation == "bem_field"
     assert payload["bem_backend"] == "cpu"
     assert payload["precision"] == "float32"
     assert payload["symmetry"] == "x"
     assert payload["domain_key"] == "run:test"
-    assert payload["boundary_triangles"] == [[0, 1, 2]]
-    assert payload["boundary_pressure"]["shape"] == [3]
+    assert payload["binary_array_schema_version"] == 1
+    assert "points_m" not in payload
+    assert "boundary_pressure" not in payload
+    arrays = payload["binary_arrays"]
+    assert set(arrays) == {
+        "points_m",
+        "boundary_points_m",
+        "boundary_triangles",
+        "boundary_pressure",
+        "boundary_normal_derivative",
+    }
+    np.testing.assert_array_equal(decoded["boundary_triangles"], [[0, 1, 2]])
+    np.testing.assert_allclose(
+        decoded["boundary_pressure"],
+        np.full(3, 1.0 + 2.0j, dtype=np.complex64),
+    )
+    assert array_file_size == sum(item["nbytes"] for item in arrays.values())
+    assert request_json_size < 2_000
 
 
 def test_exterior_field_service_coalesces_queued_requests(qapp, monkeypatch) -> None:

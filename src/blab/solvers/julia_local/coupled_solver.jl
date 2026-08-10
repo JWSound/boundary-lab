@@ -1202,14 +1202,82 @@ function reclaim_accelerator_memory_after_failure()
     return nothing
 end
 
-function complex_vector_from_wire(raw, ::Type{T}) where {T<:AbstractFloat}
-    shape = Int.(raw["shape"])
-    length(shape) == 1 || error("Retained BEM traces must be one-dimensional arrays.")
-    real_values = T.(raw["real"])
-    imag_values = T.(raw["imag"])
-    length(real_values) == only(shape) == length(imag_values) ||
-        error("Retained BEM trace wire values do not match their declared shape.")
-    return complex.(real_values, imag_values)
+function binary_dtype_name(::Type{Float32})
+    return "float32"
+end
+
+function binary_dtype_name(::Type{Float64})
+    return "float64"
+end
+
+function binary_dtype_name(::Type{Int64})
+    return "int64"
+end
+
+function binary_dtype_name(::Type{ComplexF32})
+    return "complex64"
+end
+
+function binary_dtype_name(::Type{ComplexF64})
+    return "complex128"
+end
+
+function read_field_binary_array(request, request_path, name, ::Type{T}) where {T}
+    Int(get(request, "binary_array_schema_version", 0)) == 1 ||
+        error("Unsupported BEM field binary-array schema.")
+    arrays = get(request, "binary_arrays", nothing)
+    arrays isa AbstractDict || error("BEM field request is missing binary-array metadata.")
+    descriptor = get(arrays, name, nothing)
+    descriptor isa AbstractDict || error("BEM field request is missing binary array $(repr(name)).")
+    String(get(descriptor, "dtype", "")) == binary_dtype_name(T) ||
+        error("BEM field binary array $(repr(name)) has the wrong data type.")
+    String(get(descriptor, "order", "")) == "C" ||
+        error("BEM field binary array $(repr(name)) must use row-major order.")
+    String(get(descriptor, "byte_order", "")) == "little" ||
+        error("BEM field binary array $(repr(name)) must use little-endian byte order.")
+    shape = Int.(get(descriptor, "shape", Int[]))
+    all(>=(0), shape) || error("BEM field binary array $(repr(name)) has an invalid shape.")
+    count = prod(shape)
+    offset = Int(get(descriptor, "offset", -1))
+    nbytes = Int(get(descriptor, "nbytes", -1))
+    offset >= 0 || error("BEM field binary array $(repr(name)) has an invalid offset.")
+    nbytes == count * sizeof(T) ||
+        error("BEM field binary array $(repr(name)) has inconsistent byte metadata.")
+    filename = String(get(descriptor, "file", ""))
+    !isempty(filename) && basename(filename) == filename ||
+        error("BEM field binary array $(repr(name)) has an invalid file path.")
+    path = joinpath(dirname(request_path), filename)
+    isfile(path) || error("BEM field binary array file does not exist: $filename")
+    filesize(path) >= offset + nbytes ||
+        error("BEM field binary array $(repr(name)) is incomplete.")
+    values = Vector{T}(undef, count)
+    open(path, "r") do io
+        seek(io, offset)
+        read!(io, values)
+    end
+    return values, shape
+end
+
+function write_field_binary_result(request, request_path, values)
+    filename = String(get(request, "binary_result_file", ""))
+    !isempty(filename) && basename(filename) == filename ||
+        error("BEM field request has an invalid binary result path.")
+    scalar_type = typeof(real(zero(eltype(values))))
+    scalar_type in (Float32, Float64) || error("Unsupported BEM field result precision: $scalar_type")
+    array = Complex{scalar_type}.(values)
+    path = joinpath(dirname(request_path), filename)
+    open(path, "w") do io
+        write(io, array)
+    end
+    return Dict(
+        "file" => filename,
+        "offset" => 0,
+        "nbytes" => sizeof(eltype(array)) * length(array),
+        "dtype" => binary_dtype_name(eltype(array)),
+        "shape" => collect(size(array)),
+        "order" => "C",
+        "byte_order" => "little",
+    )
 end
 
 function release_bem_field_evaluation_cache!(cache_key::String)
@@ -1238,7 +1306,13 @@ function release_all_bem_field_evaluation_caches!()
     return nothing
 end
 
-function retained_bem_field_evaluation_cache(request, ::Type{T}, backend, symmetry) where {T<:AbstractFloat}
+function retained_bem_field_evaluation_cache(
+    request,
+    request_path,
+    ::Type{T},
+    backend,
+    symmetry,
+) where {T<:AbstractFloat}
     domain_key = strip(String(get(request, "domain_key", "")))
     isempty(domain_key) && error("Exterior field request is missing its domain cache key.")
     quadrature_order = Int(get(request, "quadrature_order", 2))
@@ -1250,13 +1324,35 @@ function retained_bem_field_evaluation_cache(request, ::Type{T}, backend, symmet
         return cached
     end
 
-    vertices = [SVector{3,T}(T.(point)) for point in request["boundary_points_m"]]
+    vertex_values, vertex_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_points_m",
+        Float32,
+    )
+    length(vertex_shape) == 2 && vertex_shape[2] == 3 ||
+        error("BEM boundary points must have shape (bem_node, 3).")
+    vertices = [
+        SVector{3,T}(
+            T(vertex_values[3 * index - 2]),
+            T(vertex_values[3 * index - 1]),
+            T(vertex_values[3 * index]),
+        ) for index in 1:vertex_shape[1]
+    ]
+    face_values, face_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_triangles",
+        Int64,
+    )
+    length(face_shape) == 2 && face_shape[2] == 3 ||
+        error("BEM boundary triangles must have shape (bem_face, 3).")
     faces = [
         (
-            Int(face[1]) + 1,
-            Int(face[2]) + 1,
-            Int(face[3]) + 1,
-        ) for face in request["boundary_triangles"]
+            Int(face_values[3 * index - 2]) + 1,
+            Int(face_values[3 * index - 1]) + 1,
+            Int(face_values[3 * index]) + 1,
+        ) for index in 1:face_shape[1]
     ]
     mesh = BoundaryMesh(vertices, faces, ones(Int, length(faces)))
     rule = triangle_rule(T, quadrature_order)
@@ -1271,25 +1367,48 @@ function retained_bem_field_evaluation_cache(request, ::Type{T}, backend, symmet
     return entry
 end
 
-function evaluate_bem_field_request(request)
+function evaluate_bem_field_request(request, request_path)
     precision_name = lowercase(String(get(request, "precision", "float32")))
     FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
                 error("Exterior field precision must be float32 or float64.")
     backend = Symbol(lowercase(String(get(request, "bem_backend", "cpu"))))
     backend in (:cpu, :cuda) || error("Exterior field backend must be cpu or cuda.")
     symmetry = BeatEngineCore.normalized_symmetry_mode(get(request, "symmetry", "off"))
-    retained = retained_bem_field_evaluation_cache(request, FloatType, backend, symmetry)
+    retained = retained_bem_field_evaluation_cache(request, request_path, FloatType, backend, symmetry)
     mesh = retained.mesh
-    pressure = complex_vector_from_wire(request["boundary_pressure"], FloatType)
-    normal_derivative = complex_vector_from_wire(
-        request["boundary_normal_derivative"],
-        FloatType,
+    pressure, pressure_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_pressure",
+        Complex{FloatType},
     )
+    normal_derivative, normal_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_normal_derivative",
+        Complex{FloatType},
+    )
+    length(pressure_shape) == 1 || error("Retained BEM pressure must be one-dimensional.")
+    length(normal_shape) == 1 || error("Retained BEM normal derivative must be one-dimensional.")
     length(pressure) == length(mesh.vertices) ||
         error("Retained BEM pressure does not align with boundary vertices.")
     length(normal_derivative) == length(mesh.faces) ||
         error("Retained BEM normal derivative does not align with boundary faces.")
-    points = [SVector{3,FloatType}(FloatType.(point)) for point in request["points_m"]]
+    point_values, point_shape = read_field_binary_array(
+        request,
+        request_path,
+        "points_m",
+        Float32,
+    )
+    length(point_shape) == 2 && point_shape[2] == 3 ||
+        error("Exterior evaluation points must have shape (point, 3).")
+    points = [
+        SVector{3,FloatType}(
+            FloatType(point_values[3 * index - 2]),
+            FloatType(point_values[3 * index - 1]),
+            FloatType(point_values[3 * index]),
+        ) for index in 1:point_shape[1]
+    ]
     frequency_hz = FloatType(request["frequency_hz"])
     sound_speed = FloatType(request["sound_speed_m_per_s"])
     frequency_hz > zero(FloatType) || error("Exterior field frequency must be positive.")
@@ -1326,12 +1445,16 @@ function run_worker()
             request = JSON.parse(read(request_path, String))
             operation = String(get(submission, "operation", "solve"))
             if operation == "bem_field"
-                values = evaluate_bem_field_request(request)
+                values = evaluate_bem_field_request(request, request_path)
                 println(
                     JSON.json(
                         Dict(
                             "type" => "field_result",
-                            "values" => complex_array_wire(values),
+                            "values_binary" => write_field_binary_result(
+                                request,
+                                request_path,
+                                values,
+                            ),
                         ),
                     ),
                 )

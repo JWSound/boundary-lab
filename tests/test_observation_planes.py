@@ -449,7 +449,7 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
         _active_field=None,
         _field_message=None,
         _exterior_plane_mesh=lambda _plane: mesh,
-        _masked_exterior_pressure=lambda _plane, _mesh, pressure: pressure,
+        _exterior_pressure_for_display=lambda _plane, _mesh, pressure: pressure,
         _add_colored_field_actor=lambda *args, **kwargs: rendered.append((args, kwargs)),
         exteriorFieldRequested=SimpleNamespace(emit=lambda task: requested.append(task)),
     )
@@ -573,6 +573,41 @@ def test_exterior_boundary_mask_is_cached_with_viewport_geometry() -> None:
 
     assert first.tolist() == [True, False]
     assert second is first
+
+
+def test_exterior_boundary_mask_is_deferred_until_interaction_finishes() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _DragState
+
+    plane = replace(new_observation_plane("Exterior"), plane_type=ObservationPlaneType.EXTERIOR)
+    pressure = np.asarray([1.0 + 2.0j, 3.0 + 4.0j], dtype=np.complex64)
+    masked = np.asarray([np.nan + 1j * np.nan, 3.0 + 4.0j], dtype=np.complex64)
+    calls = []
+    editor = SimpleNamespace(
+        _drag=_DragState(plane, "move", 0),
+        _masked_exterior_pressure=lambda candidate, mesh, values: calls.append(
+            (candidate, mesh, values)
+        )
+        or masked,
+    )
+
+    interactive = ObservationPlaneViewport._exterior_pressure_for_display(
+        editor,
+        plane,
+        object(),
+        pressure,
+    )
+    assert interactive is pressure
+    assert calls == []
+
+    editor._drag = None
+    final = ObservationPlaneViewport._exterior_pressure_for_display(
+        editor,
+        plane,
+        object(),
+        pressure,
+    )
+    assert final is masked
+    assert len(calls) == 1
 
 
 def test_field_preferences_resize_result_cache_and_translation_timer() -> None:

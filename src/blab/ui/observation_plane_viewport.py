@@ -791,7 +791,7 @@ class ObservationPlaneViewport(QObject):
                 return False
             if pressure.shape != (mesh.n_points,):
                 raise ValueError("Evaluated exterior pressure does not align with the plane sample grid.")
-            pressure = self._masked_exterior_pressure(plane, mesh, pressure)
+            pressure = self._exterior_pressure_for_display(plane, mesh, pressure)
             self._add_colored_field_actor(
                 mesh,
                 pressure,
@@ -888,7 +888,7 @@ class ObservationPlaneViewport(QObject):
         mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
         if pressure.shape != (mesh.n_points,):
             return False
-        pressure = self._masked_exterior_pressure(plane, mesh, pressure)
+        pressure = self._exterior_pressure_for_display(plane, mesh, pressure)
         state = self._active_field
         if (
             state is not None
@@ -920,6 +920,17 @@ class ObservationPlaneViewport(QObject):
         )
         self.viewer.render()
         return True
+
+    def _exterior_pressure_for_display(
+        self,
+        plane: ObservationPlane,
+        plane_mesh,
+        pressure: np.ndarray,
+    ) -> np.ndarray:
+        drag = self._drag
+        if drag is not None and drag.original.id == plane.id:
+            return np.asarray(pressure)
+        return self._masked_exterior_pressure(plane, plane_mesh, pressure)
 
     def _masked_exterior_pressure(self, plane: ObservationPlane, plane_mesh, pressure: np.ndarray) -> np.ndarray:
         results = None if self._field_results is None else self._field_results.exterior
