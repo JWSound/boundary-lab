@@ -147,6 +147,9 @@ def interior_field_results_from_solved_system(
     frequency_indices = np.flatnonzero(availability)
     if not frequency_indices.size:
         return None
+    frequency_indices = frequency_indices[
+        np.argsort(np.asarray(solved.frequencies_hz)[frequency_indices], kind="stable")
+    ]
 
     component_channels = component_channel_by_id or {}
     component_by_port: dict[str, str] = {}

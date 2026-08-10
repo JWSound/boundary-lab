@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -63,7 +63,7 @@ class ObservationPlanePropertiesDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._plane = plane.validated()
-        self._solved_frequencies_hz = tuple(float(value) for value in solved_frequencies_hz)
+        self._solved_frequencies_hz = tuple(sorted(float(value) for value in solved_frequencies_hz))
         self._preview_ready = False
         self.setWindowTitle(f"{self._plane.name} Properties")
         self.setMinimumWidth(410)
@@ -202,6 +202,68 @@ class ObservationPlanePropertiesDialog(QDialog):
             animation_speed_hz=self.animation_speed_slider.value() / 10.0,
         ).validated()
 
+    def update_geometry(self, plane: ObservationPlane) -> None:
+        """Merge viewport-authored geometry without discarding pending properties."""
+
+        plane = plane.validated()
+        if plane.id != self._plane.id:
+            return
+        self._plane = replace(
+            self._plane,
+            center_m=plane.center_m,
+            orientation_wxyz=plane.orientation_wxyz,
+            width_m=plane.width_m,
+            height_m=plane.height_m,
+        )
+        width_blocker = QSignalBlocker(self.width_spin)
+        height_blocker = QSignalBlocker(self.height_spin)
+        self.width_spin.setValue(plane.width_m * 1000.0)
+        self.height_spin.setValue(plane.height_m * 1000.0)
+        del width_blocker, height_blocker
+        self._refresh_point_count()
+
+    def set_solved_results(
+        self,
+        frequencies_hz: tuple[float, ...],
+        response_options: tuple[tuple[str, str], ...],
+    ) -> None:
+        """Refresh result controls while this modeless editor remains open."""
+
+        current_frequency = self._selected_frequency_hz()
+        current_response = str(self.response_combo.currentData() or self._plane.response_id)
+        self._solved_frequencies_hz = tuple(sorted(float(value) for value in frequencies_hz))
+
+        frequency_blocker = QSignalBlocker(self.frequency_slider)
+        self.frequency_slider.setRange(0, max(len(self._solved_frequencies_hz) - 1, 0))
+        self.frequency_slider.setEnabled(bool(self._solved_frequencies_hz))
+        if self._solved_frequencies_hz:
+            target = self._plane.frequency_hz if current_frequency is None else current_frequency
+            self.frequency_slider.setValue(
+                0
+                if target is None
+                else min(
+                    range(len(self._solved_frequencies_hz)),
+                    key=lambda index: abs(self._solved_frequencies_hz[index] - target),
+                )
+            )
+        del frequency_blocker
+
+        response_blocker = QSignalBlocker(self.response_combo)
+        self.response_combo.clear()
+        for response_id, label in response_options or (("system", "System Response"),):
+            self.response_combo.addItem(label, response_id)
+        self._select_data(self.response_combo, current_response)
+        self.response_combo.setEnabled(bool(self._solved_frequencies_hz))
+        del response_blocker
+
+        if not self._solved_frequencies_hz:
+            animation_blocker = QSignalBlocker(self.animate_button)
+            self.animate_button.setChecked(False)
+            del animation_blocker
+        self.animate_button.setEnabled(bool(self._solved_frequencies_hz))
+        self._refresh_frequency_label()
+        self._refresh_animation_controls()
+
     def _refresh_dependent_controls(self) -> None:
         supports_interior = self.type_combo.currentData() in {
             ObservationPlaneType.INTERIOR.value,
@@ -254,6 +316,7 @@ class ObservationPlanePropertiesDialog(QDialog):
 
     def _emit_preview(self, *_args) -> None:
         if self._preview_ready:
+            self.setWindowTitle(f"{self.plane.name} Properties")
             self.previewChanged.emit(self.plane, self.animate_button.isChecked())
 
     @staticmethod

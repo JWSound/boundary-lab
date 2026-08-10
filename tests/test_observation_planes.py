@@ -121,7 +121,7 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
     plane = replace(new_observation_plane("Plane"), frequency_hz=900.0)
     dialog = ObservationPlanePropertiesDialog(
         plane,
-        solved_frequencies_hz=(100.0, 1000.0, 10_000.0),
+        solved_frequencies_hz=(10_000.0, 100.0, 1000.0),
         response_options=(("system", "System Response"), ("channel:main", "Channel: main")),
     )
     previews = []
@@ -135,6 +135,13 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         dialog.animate_button.setChecked(True)
         assert dialog.animation_speed_slider.isEnabled()
         assert previews[-1][1]
+        dialog.set_solved_results((500.0, 50.0), (("system", "System Response"),))
+        assert dialog._solved_frequencies_hz == (50.0, 500.0)
+        assert dialog.plane.frequency_hz == 500.0
+        dialog.set_solved_results((), ())
+        assert not dialog.frequency_slider.isEnabled()
+        assert not dialog.animate_button.isEnabled()
+        assert not dialog.animation_speed_slider.isEnabled()
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -157,9 +164,15 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
         quantity="fem_nodal_pressure",
         unit="Pa",
         dimensions=("frequency", "excitation", "fem_node"),
-        values=np.asarray([[[1.0] * 4, [2.0] * 4]], dtype=np.complex64),
+        values=np.asarray(
+            [
+                [[1.0] * 4, [2.0] * 4],
+                [[10.0] * 4, [20.0] * 4],
+            ],
+            dtype=np.complex64,
+        ),
         domain_id=FEM_VOLUME_DOMAIN_ID,
-        available_frequency_mask=np.asarray([True]),
+        available_frequency_mask=np.asarray([True, True]),
     )
     domain = ResultDomain(
         id=FEM_VOLUME_DOMAIN_ID,
@@ -177,12 +190,12 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     solved = SolvedSystem(
         run_id="run",
         provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
-        frequencies_hz=np.asarray([1000.0]),
+        frequencies_hz=np.asarray([1000.0, 100.0]),
         excitation_ids=("port:woofer", "port:tweeter"),
         domains={FEM_VOLUME_DOMAIN_ID: domain},
         quantities={FEM_NODAL_PRESSURE_ID: pressure},
-        completion_mask=np.asarray([True]),
-        diagnostics_by_frequency=({},),
+        completion_mask=np.asarray([True, True]),
+        diagnostics_by_frequency=({}, {}),
         status="completed",
         compiled_system=compiled,
     )
@@ -194,6 +207,8 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     )
 
     assert results is not None
+    assert results.frequencies_hz.tolist() == [100.0, 1000.0]
+    assert results.frequency_indices.tolist() == [1, 0]
     assert results.response_options == (
         ("system", "System Response"),
         ("channel:low", "Channel: low"),
@@ -202,6 +217,7 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     np.testing.assert_allclose(results.pressure(1000.0, "system"), 2.0, rtol=1e-5)
     np.testing.assert_allclose(results.pressure(1000.0, "channel:low"), 1.0)
     np.testing.assert_allclose(results.pressure(1000.0, "channel:high"), 1.0, rtol=1e-5)
+    np.testing.assert_allclose(results.pressure(100.0, "system"), 20.0, rtol=1e-5)
 
 
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
@@ -367,3 +383,32 @@ def test_viewport_transform_and_delete_update_project_model(main_window) -> None
     main_window.preview.observationPlaneDeleteRequested.emit(original.id)
     assert main_window.project.observation_planes == ()
     assert main_window.preview.observation_planes == ()
+
+
+def test_properties_window_is_modeless_and_commits_or_reverts_live_preview(main_window, qapp) -> None:
+    main_window.preview.newObservationPlaneRequested.emit({})
+    original = main_window.project.observation_planes[0]
+    controller = main_window.observation_plane_controller
+
+    main_window.preview.observationPlanePropertiesRequested.emit(original.id)
+    dialog = controller._dialogs[original.id]
+    assert dialog.isVisible()
+    assert not dialog.isModal()
+    main_window.preview.observationPlanePropertiesRequested.emit(original.id)
+    assert controller._dialogs[original.id] is dialog
+
+    dialog.name_edit.setText("Accepted Slice")
+    assert main_window.preview.observation_planes[0].name == "Accepted Slice"
+    assert main_window.project.observation_planes[0].name == original.name
+    dialog.accept()
+    qapp.processEvents()
+    assert main_window.project.observation_planes[0].name == "Accepted Slice"
+
+    main_window.preview.observationPlanePropertiesRequested.emit(original.id)
+    dialog = controller._dialogs[original.id]
+    dialog.name_edit.setText("Rejected Slice")
+    assert main_window.preview.observation_planes[0].name == "Rejected Slice"
+    dialog.reject()
+    qapp.processEvents()
+    assert main_window.project.observation_planes[0].name == "Accepted Slice"
+    assert main_window.preview.observation_planes[0].name == "Accepted Slice"
