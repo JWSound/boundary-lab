@@ -15,7 +15,7 @@ from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.ath import read_surface_physical_names
 from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
-from blab.observation_planes import new_observation_plane
+from blab.observation_planes import ObservationPlaneType, new_observation_plane
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticRegionKind,
@@ -28,7 +28,13 @@ from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
-from blab.solve_results import FEM_NODAL_PRESSURE_ID, FEM_VOLUME_DOMAIN_ID
+from blab.solve_results import (
+    BEM_BOUNDARY_DOMAIN_ID,
+    BEM_BOUNDARY_NEUMANN_ID,
+    BEM_BOUNDARY_PRESSURE_ID,
+    FEM_NODAL_PRESSURE_ID,
+    FEM_VOLUME_DOMAIN_ID,
+)
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
@@ -870,6 +876,63 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert canonical_by_id["acoustic:pressure:horizontal-polar"].values.tolist() == [[0.0, 1.0, 2.0, 3.0, 4.0]]
     assert canonical_by_id["acoustic:pressure:vertical-polar"].values.tolist() == [[5.0, 6.0, 7.0, 8.0, 9.0]]
     assert worker._to_live_result(raw_result).horizontal_pressure.shape == (1, 5)
+
+
+def test_coupled_ui_request_retains_bem_traces_for_exterior_analysis() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    exterior_plane = replace(
+        new_observation_plane("Exterior Field"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+    )
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(exterior_plane,),
+    )
+
+    outputs = {output.id: output for output in prepared.request.outputs}
+    domains = {domain.id: domain for domain in prepared.result_domains}
+    assert outputs[BEM_BOUNDARY_PRESSURE_ID].quantity == "bem_boundary_pressure"
+    assert outputs[BEM_BOUNDARY_PRESSURE_ID].target_ids == (BEM_BOUNDARY_DOMAIN_ID,)
+    assert outputs[BEM_BOUNDARY_NEUMANN_ID].quantity == "bem_boundary_neumann"
+    assert outputs[BEM_BOUNDARY_NEUMANN_ID].target_ids == (BEM_BOUNDARY_DOMAIN_ID,)
+    assert FEM_NODAL_PRESSURE_ID not in outputs
+
+    domain = domains[BEM_BOUNDARY_DOMAIN_ID]
+    node_count = domain.coordinates["points_m"].shape[0]
+    face_count = domain.topology["triangles"].shape[0]
+    assert node_count == sum(domain.metadata["node_counts"])
+    assert face_count == sum(domain.metadata["face_counts"])
+    assert domain.metadata["pressure_space"] == "P1"
+    assert domain.metadata["normal_derivative_space"] == "DP0"
+
+
+def test_combined_plane_requests_both_fem_and_bem_spatial_fields() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    combined_plane = replace(
+        new_observation_plane("Combined Field"),
+        plane_type=ObservationPlaneType.COMBINED,
+    )
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(combined_plane,),
+    )
+
+    output_ids = {output.id for output in prepared.request.outputs}
+    domain_ids = {domain.id for domain in prepared.result_domains}
+    assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID, FEM_NODAL_PRESSURE_ID} <= output_ids
+    assert {BEM_BOUNDARY_DOMAIN_ID, FEM_VOLUME_DOMAIN_ID} <= domain_ids
 
 
 def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:

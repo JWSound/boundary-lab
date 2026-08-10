@@ -6,8 +6,11 @@ import numpy as np
 import pytest
 
 from blab.live import LiveSolveDataset
-from blab.physical_model import ExcitationPortKind
+from blab.physical_model import AcousticRegionKind, ExcitationPortKind, MeshPurpose
 from blab.solve_results import (
+    BEM_BOUNDARY_DOMAIN_ID,
+    BEM_BOUNDARY_NEUMANN_ID,
+    BEM_BOUNDARY_PRESSURE_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
     VOICE_COIL_CURRENT_ID,
     ResultDomain,
@@ -15,6 +18,8 @@ from blab.solve_results import (
     SolvedSystem,
     SolvedSystemBuilder,
     SolveProvenance,
+    bem_boundary_result_domain,
+    bem_boundary_traces_from_solved_system,
     electrical_input_impedance,
     legacy_result_domains,
     legacy_result_to_system_result,
@@ -82,6 +87,155 @@ def test_builder_rejects_quantity_shape_changes_between_frequencies() -> None:
 
     with pytest.raises(ValueError, match="changed shape or semantics"):
         builder.add(_pressure_result(1000.0, [1.0 + 0.0j, 2.0 + 0.0j]))
+
+
+def test_builder_finalization_freezes_and_transfers_quantity_buffers() -> None:
+    builder = SolvedSystemBuilder(
+        frequencies_hz=(100.0,),
+        excitation_ids=("port:driver",),
+        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
+    )
+    builder.add(_pressure_result(100.0, [1.0 + 2.0j]))
+    source_buffer = builder._quantities[HORIZONTAL_POLAR_PRESSURE_ID].values
+
+    solved = builder.finalize(status="completed")
+
+    assert np.shares_memory(solved.quantity(HORIZONTAL_POLAR_PRESSURE_ID).values, source_buffer)
+    assert not source_buffer.flags.writeable
+    with pytest.raises(RuntimeError, match="finalized"):
+        builder.add(_pressure_result(100.0, [2.0 + 3.0j]))
+
+
+def test_bem_boundary_domain_matches_solver_mesh_concatenation(tmp_path) -> None:
+    mesh_a = tmp_path / "a.msh"
+    mesh_b = tmp_path / "b.msh"
+    mesh_a.write_text(
+        """$MeshFormat
+2.2 0 8
+$EndMeshFormat
+$Nodes
+3
+10 0 0 0
+20 1 0 0
+30 0 1 0
+$EndNodes
+$Elements
+1
+1 2 2 7 1 10 20 30
+$EndElements
+""",
+        encoding="utf-8",
+    )
+    mesh_b.write_text(
+        """$MeshFormat
+2.2 0 8
+$EndMeshFormat
+$Nodes
+3
+4 0 0 0
+8 0 1 0
+12 0 0 1
+$EndNodes
+$Elements
+1
+1 2 2 9 1 12 4 8
+$EndElements
+""",
+        encoding="utf-8",
+    )
+    system = SimpleNamespace(
+        regions=(
+            SimpleNamespace(
+                id="region:exterior",
+                kind=AcousticRegionKind.UNBOUNDED_AIR,
+                mesh_ids=("mesh:a", "mesh:b"),
+            ),
+        ),
+        meshes=(
+            SimpleNamespace(
+                id="mesh:a",
+                purpose=MeshPurpose.BEM_SURFACE,
+                file=str(mesh_a),
+                scale_to_m=2.0,
+                translation_m=(1.0, 0.0, 0.0),
+            ),
+            SimpleNamespace(
+                id="mesh:b",
+                purpose=MeshPurpose.BEM_SURFACE,
+                file=str(mesh_b),
+                scale_to_m=1.0,
+                translation_m=(0.0, 2.0, 0.0),
+            ),
+        ),
+    )
+
+    domain = bem_boundary_result_domain(system, symmetry="xy")
+
+    assert domain.id == BEM_BOUNDARY_DOMAIN_ID
+    assert domain.metadata["mesh_ids"] == ["mesh:a", "mesh:b"]
+    assert domain.metadata["node_offsets"] == [0, 3]
+    assert domain.metadata["face_offsets"] == [0, 1]
+    assert domain.metadata["node_counts"] == [3, 3]
+    assert domain.metadata["face_counts"] == [1, 1]
+    assert domain.metadata["symmetry"] == "xy"
+    assert domain.topology["triangles"].tolist() == [[0, 1, 2], [5, 3, 4]]
+    assert domain.topology["source_physical_tag"].tolist() == [7, 9]
+    np.testing.assert_allclose(domain.coordinates["points_m"][0], [1.0, 0.0, 0.0])
+    np.testing.assert_allclose(domain.coordinates["points_m"][4], [0.0, 3.0, 0.0])
+
+
+def test_bem_boundary_trace_view_validates_and_sorts_available_results() -> None:
+    domain = ResultDomain(
+        id=BEM_BOUNDARY_DOMAIN_ID,
+        kind="bem_boundary",
+        dimensions=("bem_node", "bem_face"),
+        coordinates={"points_m": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])},
+        topology={"triangles": np.asarray([[0, 1, 0]])},
+        metadata={"symmetry": "x"},
+    )
+    builder = SolvedSystemBuilder(
+        frequencies_hz=(1000.0, 100.0),
+        excitation_ids=("port:a", "port:b"),
+        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
+        domains=(domain,),
+    )
+    for frequency, value in ((100.0, 1.0), (1000.0, 10.0)):
+        builder.add(
+            SystemFrequencyResult(
+                freq_hz=frequency,
+                excitation_port_ids=("port:a", "port:b"),
+                quantities=(
+                    QuantityResult(
+                        id=BEM_BOUNDARY_PRESSURE_ID,
+                        quantity="bem_boundary_pressure",
+                        unit="Pa",
+                        target_id=BEM_BOUNDARY_DOMAIN_ID,
+                        axes=("excitation", "bem_node"),
+                        values=np.full((2, 2), value, dtype=np.complex64),
+                    ),
+                    QuantityResult(
+                        id=BEM_BOUNDARY_NEUMANN_ID,
+                        quantity="bem_boundary_neumann",
+                        unit="Pa/m",
+                        target_id=BEM_BOUNDARY_DOMAIN_ID,
+                        axes=("excitation", "bem_face"),
+                        values=np.full((2, 1), value * 1j, dtype=np.complex64),
+                    ),
+                ),
+            )
+        )
+
+    solved = builder.finalize(status="completed")
+    traces = bem_boundary_traces_from_solved_system(solved)
+
+    assert traces is not None
+    assert traces.frequencies_hz.tolist() == [100.0, 1000.0]
+    assert traces.frequency_indices.tolist() == [1, 0]
+    assert traces.symmetry == "x"
+    pressure, normal_derivative = traces.excitation_basis(100.0)
+    np.testing.assert_allclose(pressure, 1.0)
+    np.testing.assert_allclose(normal_derivative, 1.0j)
+    assert traces.trace_storage_nbytes == 96
 
 
 def test_legacy_result_adapter_preserves_complex_pressure_and_impedance() -> None:

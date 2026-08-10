@@ -484,6 +484,7 @@ specialized callers:
 |---|---:|---|
 | `fem_nodal_pressure` | Pa | excitation, FEM node |
 | `bem_boundary_pressure` | Pa | excitation, BEM node |
+| `bem_boundary_neumann` | Pa/m | excitation, BEM face |
 | `interface_normal_derivative` | Pa/m | excitation, interface node |
 | `diaphragm_velocity` | m/s | excitation, transducer |
 | `voice_coil_current` | A | excitation, transducer |
@@ -496,6 +497,12 @@ impedance can be derived. These raw complex quantities are assembled into the
 in-memory solved-system model even though dedicated reporting plots have not
 yet been added. Impedance fields in the legacy live-plot shape remain
 unavailable.
+
+When an exterior or combined observation plane is declared, the application
+also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.
+Together with the frequency-invariant boundary mesh domain, these traces are
+sufficient to evaluate additional exterior field points after the solve
+without retaining the coupled matrices or factorization.
 
 The solved-system model keeps the original excitation-port basis and stores
 frequency-invariant observation coordinates separately from the quantity

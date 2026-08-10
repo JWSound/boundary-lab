@@ -1,5 +1,10 @@
 """Canonical in-memory models for completed and streaming solve results."""
 
+from blab.solve_results.bem import (
+    BemBoundaryTraces,
+    bem_boundary_result_domain,
+    bem_boundary_traces_from_solved_system,
+)
 from blab.solve_results.derived import (
     electrical_input_impedance,
     phase_deg,
@@ -9,6 +14,9 @@ from blab.solve_results.derived import (
 from blab.solve_results.fem import fem_volume_result_domain
 from blab.solve_results.legacy import legacy_result_domains, legacy_result_to_system_result
 from blab.solve_results.model import (
+    BEM_BOUNDARY_DOMAIN_ID,
+    BEM_BOUNDARY_NEUMANN_ID,
+    BEM_BOUNDARY_PRESSURE_ID,
     DIAPHRAGM_VELOCITY_ID,
     FEM_NODAL_PRESSURE_ID,
     FEM_VOLUME_DOMAIN_ID,
@@ -31,6 +39,10 @@ from blab.solve_results.model import (
 
 __all__ = [
     "RESULT_MODEL_VERSION",
+    "BEM_BOUNDARY_DOMAIN_ID",
+    "BEM_BOUNDARY_NEUMANN_ID",
+    "BEM_BOUNDARY_PRESSURE_ID",
+    "BemBoundaryTraces",
     "DIAPHRAGM_VELOCITY_ID",
     "FEM_NODAL_PRESSURE_ID",
     "FEM_VOLUME_DOMAIN_ID",
@@ -49,6 +61,8 @@ __all__ = [
     "SolvedSystem",
     "SolvedSystemBuilder",
     "electrical_input_impedance",
+    "bem_boundary_result_domain",
+    "bem_boundary_traces_from_solved_system",
     "fem_volume_result_domain",
     "legacy_result_domains",
     "legacy_result_to_system_result",

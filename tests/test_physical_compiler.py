@@ -574,6 +574,7 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
         outputs=(
             OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
             OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
             OutputRequest(id="output:interface", quantity="interface_normal_derivative"),
             OutputRequest(
                 id="output:field",
@@ -594,6 +595,9 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     quantities = {quantity.id: quantity for quantity in result.quantities}
     assert quantities["output:fem"].values.shape == (1, 842)
     assert quantities["output:bem"].values.shape == (1, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (1, 2424)
+    assert quantities["output:bem-neumann"].unit == "Pa/m"
+    assert quantities["output:bem-neumann"].axes == ("excitation", "bem_face")
     assert quantities["output:interface"].values.shape == (1, 106)
     assert quantities["output:field"].values.shape == (1, 1)
     assert quantities["output:fem"].values.dtype == np.complex128

@@ -26,10 +26,13 @@ SPHERE_DOMAIN_ID = "observation:sphere"
 RADIATOR_DOMAIN_ID = "components:radiators"
 TRANSDUCER_DOMAIN_ID = "components:electrodynamic-transducers"
 FEM_VOLUME_DOMAIN_ID = "domain:fem-volume"
+BEM_BOUNDARY_DOMAIN_ID = "domain:bem-boundary"
 HORIZONTAL_POLAR_PRESSURE_ID = "acoustic:pressure:horizontal-polar"
 VERTICAL_POLAR_PRESSURE_ID = "acoustic:pressure:vertical-polar"
 SPHERE_PRESSURE_ID = "acoustic:pressure:sphere"
 FEM_NODAL_PRESSURE_ID = "acoustic:pressure:fem-nodes"
+BEM_BOUNDARY_PRESSURE_ID = "acoustic:pressure:bem-boundary"
+BEM_BOUNDARY_NEUMANN_ID = "acoustic:normal-derivative:bem-boundary"
 RADIATION_IMPEDANCE_ID = "acoustic:radiation-impedance"
 DIAPHRAGM_VELOCITY_ID = "mechanical:diaphragm-velocity"
 VOICE_COIL_CURRENT_ID = "electrical:voice-coil-current"
@@ -169,6 +172,7 @@ class SolvedSystemBuilder:
         self.completion_mask = np.zeros(frequencies.size, dtype=bool)
         self.diagnostics_by_frequency: list[dict[str, Any] | None] = [None] * frequencies.size
         self._quantities: dict[str, _QuantityBuffer] = {}
+        self._finalized = False
 
     @property
     def solved_count(self) -> int:
@@ -177,6 +181,8 @@ class SolvedSystemBuilder:
     def add(self, result: SystemFrequencyResult) -> int:
         """Add or replace one streamed result and return its canonical index."""
 
+        if self._finalized:
+            raise RuntimeError("A finalized solved-system builder cannot accept more results.")
         validate_system_frequency_result(result)
         if tuple(result.excitation_port_ids) != self.excitation_ids:
             raise ValueError(
@@ -207,6 +213,24 @@ class SolvedSystemBuilder:
         return frequency_index
 
     def snapshot(self, *, status: str) -> SolvedSystem:
+        """Return an independent immutable copy while leaving the builder usable."""
+
+        return self._solved_system(status=status, copy_values=True)
+
+    def finalize(self, *, status: str) -> SolvedSystem:
+        """Transfer the accumulated arrays into an immutable solved-system view.
+
+        Finalization freezes the builder's existing NumPy buffers instead of
+        duplicating every spatial field.  The builder becomes read-only after
+        this call, so those shared buffers cannot subsequently be modified.
+        """
+
+        if self._finalized:
+            raise RuntimeError("A solved-system builder may only be finalized once.")
+        self._finalized = True
+        return self._solved_system(status=status, copy_values=False)
+
+    def _solved_system(self, *, status: str, copy_values: bool) -> SolvedSystem:
         quantities: dict[str, SolvedQuantity] = {}
         for quantity_id, buffer in self._quantities.items():
             specification = buffer.specification
@@ -215,19 +239,22 @@ class SolvedSystemBuilder:
                 quantity=specification.quantity,
                 unit=specification.unit,
                 dimensions=("frequency", *specification.axes),
-                values=_readonly_array(buffer.values),
+                values=_readonly_array(buffer.values, copy_values=copy_values),
                 domain_id=specification.target_id,
                 metadata=copy.deepcopy(specification.metadata),
-                available_frequency_mask=_readonly_array(buffer.available_frequency_mask),
+                available_frequency_mask=_readonly_array(
+                    buffer.available_frequency_mask,
+                    copy_values=copy_values,
+                ),
             )
         return SolvedSystem(
             run_id=self.run_id,
             provenance=self.provenance,
-            frequencies_hz=_readonly_array(self.frequencies_hz),
+            frequencies_hz=_readonly_array(self.frequencies_hz, copy_values=copy_values),
             excitation_ids=self.excitation_ids,
             domains=dict(self.domains),
             quantities=quantities,
-            completion_mask=_readonly_array(self.completion_mask),
+            completion_mask=_readonly_array(self.completion_mask, copy_values=copy_values),
             diagnostics_by_frequency=tuple(copy.deepcopy(self.diagnostics_by_frequency)),
             status=str(status),
             compiled_system=self.compiled_system,

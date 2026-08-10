@@ -79,5 +79,6 @@ class SolveSession:
         if builder is None or builder.solved_count == 0:
             self.solved_system = None
             return None
-        self.solved_system = builder.snapshot(status=status)
+        self.solved_system = builder.finalize(status=status)
+        self.result_builder = None
         return self.solved_system

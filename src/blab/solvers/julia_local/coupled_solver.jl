@@ -48,6 +48,7 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
     vertex_offset_by_mesh_id = Dict(zip(mesh_ids, combined.vertex_offsets))
     face_offset_by_mesh_id = Dict(zip(mesh_ids, combined.face_offsets))
     vertex_count_by_mesh_id = Dict(zip(mesh_ids, [length(mesh.vertices) for mesh in translated_meshes]))
+    face_count_by_mesh_id = Dict(zip(mesh_ids, [length(mesh.faces) for mesh in translated_meshes]))
     tag_map_by_mesh_id = Dict(zip(mesh_ids, combined.physical_tag_maps))
     boundary_tag_by_id = Dict{String,Int}()
     for boundary in boundaries
@@ -73,6 +74,7 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
         vertex_offset_by_mesh_id=vertex_offset_by_mesh_id,
         face_offset_by_mesh_id=face_offset_by_mesh_id,
         vertex_count_by_mesh_id=vertex_count_by_mesh_id,
+        face_count_by_mesh_id=face_count_by_mesh_id,
         boundary_tag_by_id=boundary_tag_by_id,
     )
 end
@@ -929,6 +931,27 @@ function solve_request(request; event_mode=false)
                             ],
                             "vertex_counts" => [
                                 bem_domain.vertex_count_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                        ),
+                    ),
+                )
+            elseif quantity == "bem_boundary_neumann"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows([solution.bem_neumann for solution in solutions], FloatType),
+                        "Pa/m",
+                        ["excitation", "bem_face"],
+                        metadata=Dict(
+                            "mesh_ids" => String.(unbounded_region["mesh_ids"]),
+                            "face_offsets" => [
+                                bem_domain.face_offset_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                            "face_counts" => [
+                                bem_domain.face_count_by_mesh_id[String(mesh_id)]
                                 for mesh_id in unbounded_region["mesh_ids"]
                             ],
                         ),

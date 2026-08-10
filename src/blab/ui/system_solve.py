@@ -15,6 +15,9 @@ from blab.observation_planes import ObservationPlane, ObservationPlaneType
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import BoundaryKind, ComponentKind, PhysicalSystem
 from blab.solve_results import (
+    BEM_BOUNDARY_DOMAIN_ID,
+    BEM_BOUNDARY_NEUMANN_ID,
+    BEM_BOUNDARY_PRESSURE_ID,
     DIAPHRAGM_VELOCITY_ID,
     FEM_NODAL_PRESSURE_ID,
     FEM_VOLUME_DOMAIN_ID,
@@ -27,6 +30,7 @@ from blab.solve_results import (
     VERTICAL_POLAR_PRESSURE_ID,
     VOICE_COIL_CURRENT_ID,
     ResultDomain,
+    bem_boundary_result_domain,
     fem_volume_result_domain,
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
@@ -163,10 +167,31 @@ def prepare_coupled_ui_solve(
             },
         )
     ]
-    if any(
+    retain_interior_field = any(
         plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
         for plane in observation_planes
-    ):
+    )
+    retain_exterior_field = any(
+        plane.plane_type in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}
+        for plane in observation_planes
+    )
+    if retain_exterior_field:
+        outputs.extend(
+            (
+                OutputRequest(
+                    id=BEM_BOUNDARY_PRESSURE_ID,
+                    quantity="bem_boundary_pressure",
+                    target_ids=(BEM_BOUNDARY_DOMAIN_ID,),
+                ),
+                OutputRequest(
+                    id=BEM_BOUNDARY_NEUMANN_ID,
+                    quantity="bem_boundary_neumann",
+                    target_ids=(BEM_BOUNDARY_DOMAIN_ID,),
+                ),
+            )
+        )
+        result_domains.append(bem_boundary_result_domain(compiled, symmetry=symmetry))
+    if retain_interior_field:
         outputs.append(
             OutputRequest(
                 id=FEM_NODAL_PRESSURE_ID,
