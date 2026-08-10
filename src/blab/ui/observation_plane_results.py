@@ -106,6 +106,10 @@ class ExteriorFieldResults:
     def response_options(self) -> tuple[tuple[str, str], ...]:
         return _response_options(self.channel_names_by_excitation)
 
+    def resolved_frequency(self, frequency_hz: float | None) -> float:
+        index = _nearest_frequency_index(self.frequencies_hz, frequency_hz, label="Exterior field")
+        return float(self.frequencies_hz[index])
+
     def boundary_response(
         self,
         frequency_hz: float | None,

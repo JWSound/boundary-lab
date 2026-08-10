@@ -16,6 +16,7 @@ from blab.solvers.registry import normalize_backend_id
 
 @dataclass(frozen=True)
 class BemFieldEvaluationRequest:
+    domain_key: str
     points_m: np.ndarray
     boundary_points_m: np.ndarray
     boundary_triangles: np.ndarray
@@ -90,7 +91,11 @@ def _evaluation_payload(request: BemFieldEvaluationRequest, *, backend_id: str) 
     dtype = np.result_type(pressure.dtype, normal.dtype)
     if dtype not in {np.dtype(np.complex64), np.dtype(np.complex128)}:
         dtype = np.dtype(np.complex64)
+    domain_key = str(request.domain_key).strip()
+    if not domain_key:
+        raise ValueError("Exterior field requests require a non-empty domain cache key.")
     return {
+        "domain_key": domain_key,
         "points_m": points.tolist(),
         "boundary_points_m": boundary_points.tolist(),
         "boundary_triangles": triangles.tolist(),

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import replace
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -426,6 +427,7 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
         backend_id="beat_cpu",
         sound_speed_m_per_s=343.0,
         traces=traces,
+        resolved_frequency=lambda _frequency: 1000.0,
         boundary_response=lambda *_args: (
             1000.0,
             np.ones(3, dtype=np.complex64),
@@ -442,11 +444,17 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
         _exterior_results={},
         _exterior_failures={},
         _exterior_pending=set(),
+        _exterior_request_meshes={},
+        _active_field=None,
         _field_message=None,
         _exterior_plane_mesh=lambda _plane: mesh,
-        _exterior_boundary_mask=lambda *_args: np.zeros(4, dtype=bool),
         _add_colored_field_actor=lambda *args, **kwargs: rendered.append((args, kwargs)),
         exteriorFieldRequested=SimpleNamespace(emit=lambda task: requested.append(task)),
+    )
+    editor._exterior_key_for_plane = MethodType(ObservationPlaneViewport._exterior_key_for_plane, editor)
+    editor._request_exterior_field_for_plane = MethodType(
+        ObservationPlaneViewport._request_exterior_field_for_plane,
+        editor,
     )
 
     assert not ObservationPlaneViewport._add_exterior_field(editor, plane)
@@ -459,6 +467,69 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
     editor._exterior_results[task.key] = np.arange(4, dtype=np.complex64)
     assert ObservationPlaneViewport._add_exterior_field(editor, plane)
     np.testing.assert_allclose(rendered[0][0][1], np.arange(4))
+
+
+def test_exterior_frequency_update_uses_cached_field_without_interior_sampling() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _ActiveFieldState
+
+    plane = replace(new_observation_plane("Exterior"), plane_type=ObservationPlaneType.EXTERIOR)
+    key = ("field",)
+    pressure = np.asarray([1.0 + 2.0j], dtype=np.complex64)
+    applied = []
+    editor = SimpleNamespace(
+        _active_field=_ActiveFieldState(plane.id, SimpleNamespace(), np.zeros(1), "point"),
+        _exterior_results=OrderedDict(((key, pressure),)),
+        _exterior_key_for_plane=lambda _plane: key,
+        _apply_exterior_field_result=lambda candidate, candidate_key, values: applied.append(
+            (candidate, candidate_key, values)
+        )
+        or True,
+        _field_mesh_and_pressure=lambda _plane: pytest.fail("exterior updates must not sample the FEM field"),
+    )
+
+    assert ObservationPlaneViewport._update_active_field(editor, plane)
+    assert applied == [(plane, key, pressure)]
+
+
+def test_exterior_geometry_preview_moves_existing_field_in_place() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _ActiveFieldState
+
+    original = replace(
+        new_observation_plane("Exterior"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+        width_m=0.1,
+        height_m=0.1,
+        resolution_m=0.1,
+    )
+    updated = replace(original, center_m=(0.2, -0.1, 0.3))
+    outline = pv.PolyData(original.corners_m, np.asarray((4, 0, 1, 2, 3)))
+    field = pv.PolyData(original.corners_m)
+    pressure = np.arange(4, dtype=np.complex64)
+    renders = []
+    state = _ActiveFieldState(
+        original.id,
+        field,
+        pressure,
+        "point",
+        plane=original,
+        sample_shape=(2, 2),
+    )
+    editor = SimpleNamespace(
+        _active_field=state,
+        _plane_meshes={original.id: outline},
+        _rotation_angle_deg=None,
+        _refresh_interactive_tools=lambda _plane: None,
+        viewer=SimpleNamespace(render=lambda: renders.append(True)),
+    )
+
+    assert ObservationPlaneViewport._preview_exterior_geometry(editor, updated)
+    np.testing.assert_allclose(outline.points, updated.corners_m)
+    np.testing.assert_allclose(np.mean(field.points, axis=0), updated.center_m)
+    assert state.pressure is pressure
+    assert state.plane is updated
+    assert renders == [True]
 
 
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:

@@ -33,6 +33,8 @@ ANGLE_ACTOR_NAME = "observation-plane:rotation-angle"
 FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
 ROTATION_SNAP_DEG = 5.0
+EXTERIOR_RESULT_CACHE_MAX_BYTES = 128 * 1024 * 1024
+EXTERIOR_INTERACTIVE_REFRESH_MS = 80
 
 
 @dataclass
@@ -55,6 +57,9 @@ class _ActiveFieldState:
     pressure: np.ndarray
     association: str
     actor: object | None = None
+    actor_name: str = ""
+    plane: ObservationPlane | None = None
+    sample_shape: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -91,6 +96,7 @@ class ObservationPlaneViewport(QObject):
         self._mode: str | None = None
         self._drag: _DragState | None = None
         self._plane_actor_ids: dict[str, str] = {}
+        self._plane_meshes: dict[str, object] = {}
         self._tool_actor_controls: dict[str, tuple[str, int]] = {}
         self._actor_names: set[str] = set()
         self._tool_actors: list[object] = []
@@ -108,8 +114,14 @@ class ObservationPlaneViewport(QObject):
         self._animation_updated_at = time.monotonic()
         self._active_field: _ActiveFieldState | None = None
         self._exterior_results: OrderedDict[tuple[object, ...], np.ndarray] = OrderedDict()
+        self._exterior_result_bytes = 0
         self._exterior_pending: set[tuple[object, ...]] = set()
         self._exterior_failures: dict[tuple[object, ...], str] = {}
+        self._exterior_request_meshes: dict[tuple[object, ...], object] = {}
+        self._exterior_refresh_timer = QTimer(self)
+        self._exterior_refresh_timer.setSingleShot(True)
+        self._exterior_refresh_timer.setInterval(EXTERIOR_INTERACTIVE_REFRESH_MS)
+        self._exterior_refresh_timer.timeout.connect(self._request_current_exterior_field)
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(50)
         self._animation_timer.timeout.connect(self._advance_animation)
@@ -179,6 +191,16 @@ class ObservationPlaneViewport(QObject):
             return
         if result_update == "field" and self._update_active_field(self._field_plane()):
             return
+        geometry_update = _exterior_geometry_update(
+            previous_planes,
+            self._planes,
+            previous_selected_id,
+            self._selected_id,
+            self._active_id,
+        )
+        if geometry_update is not None and self._preview_exterior_geometry(geometry_update):
+            self._exterior_refresh_timer.start()
+            return
         self._render()
 
     def set_active_plane(self, plane_id: str | None) -> None:
@@ -201,8 +223,11 @@ class ObservationPlaneViewport(QObject):
         self._field_generation += 1
         self._field_cache.clear()
         self._exterior_results.clear()
+        self._exterior_result_bytes = 0
         self._exterior_pending.clear()
         self._exterior_failures.clear()
+        self._exterior_request_meshes.clear()
+        self._exterior_refresh_timer.stop()
         if results is None:
             self.set_animation(None, False)
         self._render()
@@ -210,19 +235,49 @@ class ObservationPlaneViewport(QObject):
     def set_exterior_field_result(self, key: tuple[object, ...], pressure: np.ndarray) -> None:
         self._exterior_pending.discard(key)
         self._exterior_failures.pop(key, None)
-        self._exterior_results[key] = np.asarray(pressure, dtype=np.complex64)
+        if not key or key[0] != self._field_generation:
+            self._exterior_request_meshes.pop(key, None)
+            return
+        previous = self._exterior_results.pop(key, None)
+        if previous is not None:
+            self._exterior_result_bytes -= int(previous.nbytes)
+        values = np.asarray(pressure, dtype=np.complex64)
+        self._exterior_results[key] = values
+        self._exterior_result_bytes += int(values.nbytes)
         self._exterior_results.move_to_end(key)
-        while len(self._exterior_results) > 16:
-            self._exterior_results.popitem(last=False)
-        self._render()
+        while self._exterior_result_bytes > EXTERIOR_RESULT_CACHE_MAX_BYTES and len(self._exterior_results) > 1:
+            _discarded_key, discarded = self._exterior_results.popitem(last=False)
+            self._exterior_result_bytes -= int(discarded.nbytes)
+        mesh = self._exterior_request_meshes.pop(key, None)
+        plane = self._field_plane()
+        if plane is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
+            return
+        try:
+            current_key = self._exterior_key_for_plane(plane)
+        except (KeyError, TypeError, ValueError):
+            return
+        if key != current_key:
+            return
+        self._apply_exterior_field_result(plane, key, values, mesh=mesh)
 
     def set_exterior_field_failed(self, key: tuple[object, ...], message: str) -> None:
         self._exterior_pending.discard(key)
+        self._exterior_request_meshes.pop(key, None)
+        if not key or key[0] != self._field_generation:
+            return
         self._exterior_failures[key] = str(message)
-        self._render()
+        plane = self._field_plane()
+        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+            try:
+                current_key = self._exterior_key_for_plane(plane)
+            except (KeyError, TypeError, ValueError):
+                return
+            if key == current_key and self._active_field is None:
+                self._render()
 
     def discard_exterior_field_request(self, key: tuple[object, ...]) -> None:
         self._exterior_pending.discard(key)
+        self._exterior_request_meshes.pop(key, None)
 
     def set_animation(self, plane_id: str | None, enabled: bool) -> None:
         if not enabled or plane_id is None or self._field_results is None:
@@ -268,9 +323,18 @@ class ObservationPlaneViewport(QObject):
                 return False
             self._drag = None
             self._rotation_angle_deg = None
-            self._render()
+            self._exterior_refresh_timer.stop()
+            if ANGLE_ACTOR_NAME in self._actor_names:
+                self.viewer.remove_actor(ANGLE_ACTOR_NAME, render=False)
+                self._actor_names.discard(ANGLE_ACTOR_NAME)
             plane = self._selected_plane()
             if plane is not None:
+                if plane.plane_type == ObservationPlaneType.EXTERIOR and self._field_plane_id() == plane.id:
+                    self._refresh_interactive_tools(plane)
+                    self._request_exterior_field_for_plane(plane)
+                    self.viewer.render()
+                else:
+                    self._render()
                 self.planeChanged.emit(plane)
             return True
         return False
@@ -509,6 +573,15 @@ class ObservationPlaneViewport(QObject):
         self._planes = tuple(updated if plane.id == updated.id else plane for plane in self._planes)
         for cache_key in (("smooth", updated.id), ("element", updated.id)):
             self._field_cache.pop(cache_key, None)
+        if updated.plane_type == ObservationPlaneType.EXTERIOR:
+            if self._preview_exterior_geometry(updated):
+                if (
+                    self._field_plane_id() == updated.id
+                    and self._drag is not None
+                    and self._drag.mode != "size"
+                ):
+                    self._exterior_refresh_timer.start()
+                return
         self._render()
 
     def _selected_plane(self) -> ObservationPlane | None:
@@ -525,6 +598,7 @@ class ObservationPlaneViewport(QObject):
         self._remove_actors()
         self._active_field = None
         self._plane_actor_ids.clear()
+        self._plane_meshes.clear()
         self._tool_actor_controls.clear()
         self._field_message = None
         if not self._planes:
@@ -549,6 +623,7 @@ class ObservationPlaneViewport(QObject):
                 )
             )
             mesh = _plane_polydata(plane)
+            self._plane_meshes[plane.id] = mesh
             name = f"observation-plane:{plane.id}"
             actor = self.viewer.add_mesh(
                 mesh,
@@ -674,49 +749,23 @@ class ObservationPlaneViewport(QObject):
             return False
         if (
             results is None
-            or (self._drag is not None and self._drag.original.id == plane.id)
             or plane.plane_type != ObservationPlaneType.EXTERIOR
         ):
             return False
         try:
-            frequency, boundary_pressure, boundary_normal = results.boundary_response(
-                plane.frequency_hz,
-                plane.response_id,
-            )
             mesh = self._exterior_plane_mesh(plane)
-            key = _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
+            key = self._exterior_key_for_plane(plane)
             pressure = self._exterior_results.get(key)
             if pressure is None:
                 failure = self._exterior_failures.get(key)
                 if failure is not None:
                     self._field_message = f"Exterior field unavailable: {failure}"
                     return False
-                if key not in self._exterior_pending:
-                    self._exterior_pending.add(key)
-                    self.exteriorFieldRequested.emit(
-                        ExteriorFieldTask(
-                            key=key,
-                            backend_id=results.backend_id,
-                            request=BemFieldEvaluationRequest(
-                                points_m=np.asarray(mesh.points),
-                                boundary_points_m=results.traces.points_m,
-                                boundary_triangles=results.traces.triangles,
-                                boundary_pressure=boundary_pressure,
-                                boundary_normal_derivative=boundary_normal,
-                                frequency_hz=frequency,
-                                sound_speed_m_per_s=results.sound_speed_m_per_s,
-                                symmetry=results.traces.symmetry,
-                            ),
-                        )
-                    )
+                self._request_exterior_field_for_plane(plane, mesh=mesh)
                 self._field_message = "Evaluating exterior field..."
                 return False
             if pressure.shape != (mesh.n_points,):
                 raise ValueError("Evaluated exterior pressure does not align with the plane sample grid.")
-            boundary_mask = self._exterior_boundary_mask(plane, mesh, results)
-            if np.any(boundary_mask):
-                pressure = pressure.copy()
-                pressure[boundary_mask] = np.nan + 1j * np.nan
             self._add_colored_field_actor(
                 mesh,
                 pressure,
@@ -740,33 +789,102 @@ class ObservationPlaneViewport(QObject):
         self._field_cache[key] = (signature, mesh)
         return mesh
 
-    def _exterior_boundary_mask(self, plane: ObservationPlane, plane_mesh, results) -> np.ndarray:
-        signature = (
-            _field_geometry_signature(self._field_generation, plane, results.traces.symmetry, smooth=True),
-            results.run_id,
+    def _exterior_key_for_plane(self, plane: ObservationPlane) -> tuple[object, ...]:
+        results = None if self._field_results is None else self._field_results.exterior
+        if results is None:
+            raise ValueError("No exterior field results are available.")
+        frequency = results.resolved_frequency(plane.frequency_hz)
+        return _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
+
+    def _request_exterior_field_for_plane(self, plane: ObservationPlane, *, mesh=None) -> tuple[object, ...] | None:
+        results = None if self._field_results is None else self._field_results.exterior
+        if results is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
+            return None
+        frequency, boundary_pressure, boundary_normal = results.boundary_response(
+            plane.frequency_hz,
+            plane.response_id,
         )
-        key = ("exterior-mask", plane.id)
-        cached = self._field_cache.get(key)
-        if cached is not None and cached[0] == signature:
-            return cached[1]
-        pv = __import__("pyvista")
-        boundary_points, boundary_triangles = _expanded_boundary_geometry(
-            results.traces.points_m,
-            results.traces.triangles,
-            results.traces.symmetry,
+        key = _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
+        cached = self._exterior_results.get(key)
+        if cached is not None:
+            self._exterior_results.move_to_end(key)
+            if self._active_field is not None and self._active_field.plane_id == plane.id:
+                self._apply_exterior_field_result(plane, key, cached, mesh=mesh)
+            return key
+        if key in self._exterior_pending:
+            return key
+        mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
+        self._exterior_pending.add(key)
+        self._exterior_request_meshes[key] = mesh
+        self.exteriorFieldRequested.emit(
+            ExteriorFieldTask(
+                key=key,
+                backend_id=results.backend_id,
+                request=BemFieldEvaluationRequest(
+                    domain_key=f"{results.run_id}:{results.traces.symmetry}",
+                    points_m=np.asarray(mesh.points),
+                    boundary_points_m=results.traces.points_m,
+                    boundary_triangles=results.traces.triangles,
+                    boundary_pressure=boundary_pressure,
+                    boundary_normal_derivative=boundary_normal,
+                    frequency_hz=frequency,
+                    sound_speed_m_per_s=results.sound_speed_m_per_s,
+                    symmetry=results.traces.symmetry,
+                ),
+                mask_distance_m=max(1.0e-7, plane.resolution_m * 0.25),
+            )
         )
-        faces = np.column_stack(
-            (np.full(boundary_triangles.shape[0], 3, dtype=np.int64), boundary_triangles)
-        ).reshape(-1)
-        boundary_mesh = pv.PolyData(boundary_points, faces)
-        _cell_ids, closest_points = boundary_mesh.find_closest_cell(
-            np.asarray(plane_mesh.points),
-            return_closest_point=True,
+        return key
+
+    def _request_current_exterior_field(self) -> None:
+        plane = self._field_plane()
+        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+            self._request_exterior_field_for_plane(plane)
+
+    def _apply_exterior_field_result(
+        self,
+        plane: ObservationPlane,
+        key: tuple[object, ...],
+        pressure: np.ndarray,
+        *,
+        mesh=None,
+    ) -> bool:
+        mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
+        if pressure.shape != (mesh.n_points,):
+            return False
+        state = self._active_field
+        if (
+            state is not None
+            and state.plane_id == plane.id
+            and state.association == "point"
+            and state.mesh.n_points == mesh.n_points
+            and state.sample_shape == plane.sample_shape
+        ):
+            state.mesh.points = np.asarray(mesh.points)
+            if hasattr(state.mesh, "Modified"):
+                state.mesh.Modified()
+            phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+            projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+            if not _update_mesh_scalars(state.mesh, "point", projection.values):
+                return False
+            state.pressure = np.asarray(pressure)
+            state.plane = plane
+            state.sample_shape = plane.sample_shape
+            mapper = state.actor.GetMapper() if state.actor is not None and hasattr(state.actor, "GetMapper") else None
+            if mapper is not None:
+                mapper.SetScalarRange(*projection.clim)
+            self.viewer.render()
+            return True
+        self._remove_active_field_actor()
+        self._add_colored_field_actor(
+            mesh,
+            pressure,
+            plane,
+            association="point",
+            name=f"observation-plane:field:exterior:{plane.id}",
         )
-        distances = np.linalg.norm(np.asarray(plane_mesh.points) - np.asarray(closest_points), axis=1)
-        mask = distances <= max(1.0e-7, plane.resolution_m * 0.25)
-        self._field_cache[key] = (signature, mask)
-        return mask
+        self.viewer.render()
+        return True
 
     def _smooth_field_mesh(
         self,
@@ -911,6 +1029,9 @@ class ObservationPlaneViewport(QObject):
             pressure=np.asarray(pressure),
             association=association,
             actor=actor,
+            actor_name=name,
+            plane=plane,
+            sample_shape=plane.sample_shape if association == "point" else None,
         )
         self._scalar_bar_titles.add(projection.title)
         self._actor_names.add(name)
@@ -921,6 +1042,17 @@ class ObservationPlaneViewport(QObject):
         state = self._active_field
         if plane is None or state is None or state.plane_id != plane.id:
             return False
+        if plane.plane_type == ObservationPlaneType.EXTERIOR:
+            try:
+                key = self._exterior_key_for_plane(plane)
+            except (KeyError, TypeError, ValueError):
+                return False
+            pressure = self._exterior_results.get(key)
+            if pressure is not None:
+                self._exterior_results.move_to_end(key)
+                return self._apply_exterior_field_result(plane, key, pressure)
+            self._request_exterior_field_for_plane(plane)
+            return True
         try:
             mesh, pressure, association, _clipped = self._field_mesh_and_pressure(plane)
         except (KeyError, RuntimeError, TypeError, ValueError):
@@ -937,6 +1069,69 @@ class ObservationPlaneViewport(QObject):
             mapper.SetScalarRange(*projection.clim)
         self.viewer.render()
         return True
+
+    def _preview_exterior_geometry(self, plane: ObservationPlane) -> bool:
+        state = self._active_field
+        plane_mesh = self._plane_meshes.get(plane.id)
+        if plane_mesh is None:
+            return False
+        plane_mesh.points = plane.corners_m
+        if hasattr(plane_mesh, "Modified"):
+            plane_mesh.Modified()
+        if (
+            state is not None
+            and state.plane_id == plane.id
+            and state.association == "point"
+            and state.sample_shape is not None
+        ):
+            state.mesh.points = _sample_plane_points(plane, state.sample_shape)
+            if hasattr(state.mesh, "Modified"):
+                state.mesh.Modified()
+            state.plane = plane
+        self._refresh_interactive_tools(plane)
+        if self._rotation_angle_deg is not None:
+            self._add_rotation_angle_text(self._rotation_angle_deg)
+        self.viewer.render()
+        return True
+
+    def _refresh_interactive_tools(self, plane: ObservationPlane) -> None:
+        if self._foreground_renderer is not None:
+            for actor in self._tool_actors:
+                self._foreground_renderer.RemoveActor(actor)
+        for name in tuple(self._actor_names):
+            if not name.startswith("observation-plane:tool:"):
+                continue
+            try:
+                self.viewer.remove_actor(name, render=False)
+            except Exception:
+                pass
+            self._actor_names.discard(name)
+        self._tool_actors.clear()
+        self._tool_actor_controls.clear()
+        if self._mode == "move":
+            self._add_move_gizmo(plane)
+        elif self._mode == "rotate":
+            self._add_rotation_gizmo(plane)
+        elif self._mode == "size":
+            self._add_size_handles(plane)
+
+    def _remove_active_field_actor(self) -> None:
+        state = self._active_field
+        if state is None:
+            return
+        for title in tuple(self._scalar_bar_titles):
+            try:
+                self.viewer.remove_scalar_bar(title=title, render=False)
+            except (AttributeError, KeyError, TypeError):
+                pass
+        self._scalar_bar_titles.clear()
+        if state.actor_name:
+            try:
+                self.viewer.remove_actor(state.actor_name, render=False)
+            except Exception:
+                pass
+            self._actor_names.discard(state.actor_name)
+        self._active_field = None
 
     def _advance_animation(self) -> None:
         plane = next(
@@ -1248,6 +1443,43 @@ def _result_selection_update(
     return None
 
 
+def _exterior_geometry_update(
+    previous: tuple[ObservationPlane, ...],
+    current: tuple[ObservationPlane, ...],
+    previous_selected_id: str | None,
+    selected_id: str | None,
+    active_id: str | None,
+) -> ObservationPlane | None:
+    if previous_selected_id != selected_id or len(previous) != len(current):
+        return None
+    field_plane_id = active_id or selected_id
+    if field_plane_id is None:
+        return None
+    updated_plane = None
+    for old, new in zip(previous, current, strict=True):
+        if old.id != new.id:
+            return None
+        if old.id != field_plane_id:
+            if old != new:
+                return None
+            continue
+        if old.plane_type != ObservationPlaneType.EXTERIOR or new.plane_type != ObservationPlaneType.EXTERIOR:
+            return None
+        comparable = replace(
+            new,
+            center_m=old.center_m,
+            orientation_wxyz=old.orientation_wxyz,
+            width_m=old.width_m,
+            height_m=old.height_m,
+            resolution_m=old.resolution_m,
+        )
+        if comparable != old:
+            return None
+        if new != old:
+            updated_plane = new
+    return updated_plane
+
+
 def _field_geometry_signature(
     generation: int,
     plane: ObservationPlane,
@@ -1329,24 +1561,6 @@ def _expanded_fem_geometry(
     )
 
 
-def _expanded_boundary_geometry(
-    points: np.ndarray,
-    triangles: np.ndarray,
-    symmetry: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    points = np.asarray(points, dtype=float)
-    triangles = np.asarray(triangles, dtype=np.int64)
-    signs = [(1.0, 1.0, 1.0)]
-    if symmetry in {"x", "xy"}:
-        signs.append((-1.0, 1.0, 1.0))
-    if symmetry == "xy":
-        signs.extend(((1.0, -1.0, 1.0), (-1.0, -1.0, 1.0)))
-    return (
-        np.vstack([points * np.asarray(image_signs, dtype=float) for image_signs in signs]),
-        np.vstack([triangles + index * points.shape[0] for index, _signs in enumerate(signs)]),
-    )
-
-
 def _expanded_fem_field(
     points: np.ndarray,
     tetrahedra: np.ndarray,
@@ -1378,12 +1592,7 @@ def _fem_unstructured_grid(
 
 def _sample_plane_polydata(pv, plane: ObservationPlane):
     x_count, y_count = plane.sample_shape
-    axis_u, axis_v, _normal = plane.local_axes
-    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
-    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
-    center = np.asarray(plane.center_m, dtype=float)
-    u_grid, v_grid = np.meshgrid(u_values, v_values)
-    points = center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
+    points = _sample_plane_points(plane, (x_count, y_count))
     lower_left = (
         np.arange(y_count - 1, dtype=np.int64)[:, np.newaxis] * x_count + np.arange(x_count - 1, dtype=np.int64)
     ).reshape(-1)
@@ -1397,6 +1606,16 @@ def _sample_plane_polydata(pv, plane: ObservationPlane):
         )
     ).reshape(-1)
     return pv.PolyData(points, faces)
+
+
+def _sample_plane_points(plane: ObservationPlane, shape: tuple[int, int]) -> np.ndarray:
+    x_count, y_count = shape
+    axis_u, axis_v, _normal = plane.local_axes
+    u_values = np.linspace(-plane.width_m * 0.5, plane.width_m * 0.5, x_count)
+    v_values = np.linspace(-plane.height_m * 0.5, plane.height_m * 0.5, y_count)
+    center = np.asarray(plane.center_m, dtype=float)
+    u_grid, v_grid = np.meshgrid(u_values, v_values)
+    return center + u_grid.reshape(-1, 1) * axis_u + v_grid.reshape(-1, 1) * axis_v
 
 
 def _tetrahedral_interpolation_weights(sample_points: np.ndarray, tetrahedron_points: np.ndarray) -> np.ndarray:

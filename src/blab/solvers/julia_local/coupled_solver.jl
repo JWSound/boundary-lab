@@ -8,6 +8,9 @@ include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
+const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
+const MAX_BEM_FIELD_EVALUATION_CACHES = 2
 
 function object_by_id(items, object_id, label)
     for item in items
@@ -1184,6 +1187,11 @@ function solve_request(request; event_mode=false)
 end
 
 function reclaim_accelerator_memory_after_failure()
+    try
+        release_all_bem_field_evaluation_caches!()
+    catch
+        nothing
+    end
     GC.gc(true)
     try
         cuda = BeatEngineCore.cuda_module()
@@ -1204,14 +1212,45 @@ function complex_vector_from_wire(raw, ::Type{T}) where {T<:AbstractFloat}
     return complex.(real_values, imag_values)
 end
 
-function evaluate_bem_field_request(request)
-    precision_name = lowercase(String(get(request, "precision", "float32")))
-    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
-                error("Exterior field precision must be float32 or float64.")
-    backend = Symbol(lowercase(String(get(request, "bem_backend", "cpu"))))
-    backend in (:cpu, :cuda) || error("Exterior field backend must be cpu or cuda.")
-    symmetry = BeatEngineCore.normalized_symmetry_mode(get(request, "symmetry", "off"))
-    vertices = [SVector{3,FloatType}(FloatType.(point)) for point in request["boundary_points_m"]]
+function release_bem_field_evaluation_cache!(cache_key::String)
+    entry = pop!(BEM_FIELD_EVALUATION_CACHES, cache_key, nothing)
+    if entry !== nothing && entry.backend == :cuda
+        BeatEngineCoupled._unsafe_free_cuda_fields!(
+            entry.field_cache,
+            (
+                :source_points,
+                :source_normals,
+                :source_weights,
+                :source_faces,
+                :source_elements,
+                :basis_values,
+            ),
+        )
+    end
+    filter!(!=(cache_key), BEM_FIELD_EVALUATION_CACHE_ORDER)
+    return nothing
+end
+
+function release_all_bem_field_evaluation_caches!()
+    for cache_key in copy(BEM_FIELD_EVALUATION_CACHE_ORDER)
+        release_bem_field_evaluation_cache!(cache_key)
+    end
+    return nothing
+end
+
+function retained_bem_field_evaluation_cache(request, ::Type{T}, backend, symmetry) where {T<:AbstractFloat}
+    domain_key = strip(String(get(request, "domain_key", "")))
+    isempty(domain_key) && error("Exterior field request is missing its domain cache key.")
+    quadrature_order = Int(get(request, "quadrature_order", 2))
+    cache_key = "$domain_key|$(T)|$backend|$symmetry|q$quadrature_order"
+    cached = get(BEM_FIELD_EVALUATION_CACHES, cache_key, nothing)
+    if cached !== nothing
+        filter!(!=(cache_key), BEM_FIELD_EVALUATION_CACHE_ORDER)
+        push!(BEM_FIELD_EVALUATION_CACHE_ORDER, cache_key)
+        return cached
+    end
+
+    vertices = [SVector{3,T}(T.(point)) for point in request["boundary_points_m"]]
     faces = [
         (
             Int(face[1]) + 1,
@@ -1220,27 +1259,45 @@ function evaluate_bem_field_request(request)
         ) for face in request["boundary_triangles"]
     ]
     mesh = BoundaryMesh(vertices, faces, ones(Int, length(faces)))
+    rule = triangle_rule(T, quadrature_order)
+    cpu_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry)
+    field_cache = backend == :cuda ? build_cuda_field_evaluation_cache(cpu_cache) : cpu_cache
+    entry = (mesh=mesh, field_cache=field_cache, backend=backend)
+    BEM_FIELD_EVALUATION_CACHES[cache_key] = entry
+    push!(BEM_FIELD_EVALUATION_CACHE_ORDER, cache_key)
+    while length(BEM_FIELD_EVALUATION_CACHE_ORDER) > MAX_BEM_FIELD_EVALUATION_CACHES
+        release_bem_field_evaluation_cache!(first(BEM_FIELD_EVALUATION_CACHE_ORDER))
+    end
+    return entry
+end
+
+function evaluate_bem_field_request(request)
+    precision_name = lowercase(String(get(request, "precision", "float32")))
+    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
+                error("Exterior field precision must be float32 or float64.")
+    backend = Symbol(lowercase(String(get(request, "bem_backend", "cpu"))))
+    backend in (:cpu, :cuda) || error("Exterior field backend must be cpu or cuda.")
+    symmetry = BeatEngineCore.normalized_symmetry_mode(get(request, "symmetry", "off"))
+    retained = retained_bem_field_evaluation_cache(request, FloatType, backend, symmetry)
+    mesh = retained.mesh
     pressure = complex_vector_from_wire(request["boundary_pressure"], FloatType)
     normal_derivative = complex_vector_from_wire(
         request["boundary_normal_derivative"],
         FloatType,
     )
-    length(pressure) == length(vertices) ||
+    length(pressure) == length(mesh.vertices) ||
         error("Retained BEM pressure does not align with boundary vertices.")
-    length(normal_derivative) == length(faces) ||
+    length(normal_derivative) == length(mesh.faces) ||
         error("Retained BEM normal derivative does not align with boundary faces.")
     points = [SVector{3,FloatType}(FloatType.(point)) for point in request["points_m"]]
     frequency_hz = FloatType(request["frequency_hz"])
     sound_speed = FloatType(request["sound_speed_m_per_s"])
     frequency_hz > zero(FloatType) || error("Exterior field frequency must be positive.")
     sound_speed > zero(FloatType) || error("Exterior field sound speed must be positive.")
-    rule = triangle_rule(FloatType, Int(get(request, "quadrature_order", 2)))
-    cpu_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry)
-    field_cache = backend == :cuda ? build_cuda_field_evaluation_cache(cpu_cache) : cpu_cache
-    try
-        wavenumber = FloatType(2pi) * frequency_hz / sound_speed
-        return backend == :cuda ?
-               evaluate_galerkin_field_cuda(
+    field_cache = retained.field_cache
+    wavenumber = FloatType(2pi) * frequency_hz / sound_speed
+    return backend == :cuda ?
+           evaluate_galerkin_field_cuda(
             points,
             mesh,
             pressure,
@@ -1248,29 +1305,14 @@ function evaluate_bem_field_request(request)
             wavenumber,
             field_cache,
         ) :
-               evaluate_galerkin_field_cpu(
+           evaluate_galerkin_field_cpu(
             points,
             mesh,
             pressure,
             normal_derivative,
             wavenumber,
-            field_cache,
-        )
-    finally
-        if backend == :cuda
-            BeatEngineCoupled._unsafe_free_cuda_fields!(
-                field_cache,
-                (
-                    :source_points,
-                    :source_normals,
-                    :source_weights,
-                    :source_faces,
-                    :source_elements,
-                    :basis_values,
-                ),
-            )
-        end
-    end
+        field_cache,
+    )
 end
 
 function run_worker()
@@ -1295,6 +1337,7 @@ function run_worker()
                 )
                 println(JSON.json(Dict("type" => "completed")))
             elseif operation == "solve"
+                release_all_bem_field_evaluation_caches!()
                 outcome = solve_request(request; event_mode=true)
                 event_type = outcome.cancelled ? "cancelled" : "completed"
                 println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))

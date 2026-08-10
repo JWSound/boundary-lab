@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 
 import numpy as np
 
@@ -10,6 +11,7 @@ from blab.solvers.coupled_field import BemFieldEvaluationRequest, evaluate_bem_f
 
 def _request(*, value: float = 1.0) -> BemFieldEvaluationRequest:
     return BemFieldEvaluationRequest(
+        domain_key="run:test",
         points_m=np.asarray([[0.0, 0.0, 1.0], [0.25, 0.25, 1.0]]),
         boundary_points_m=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         boundary_triangles=np.asarray([[0, 1, 2]]),
@@ -50,6 +52,7 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
     assert payload["bem_backend"] == "cpu"
     assert payload["precision"] == "float32"
     assert payload["symmetry"] == "x"
+    assert payload["domain_key"] == "run:test"
     assert payload["boundary_triangles"] == [[0, 1, 2]]
     assert payload["boundary_pressure"]["shape"] == [3]
 
@@ -95,3 +98,28 @@ def test_exterior_field_service_coalesces_queued_requests(qapp, monkeypatch) -> 
         release.set()
         service.close()
 
+
+def test_exterior_field_service_masks_boundary_samples_off_ui_thread(qapp, monkeypatch) -> None:
+    import blab.ui.exterior_field_service as service_module
+    from blab.ui.exterior_field_service import ExteriorFieldEvaluationService, ExteriorFieldTask
+
+    request = replace(
+        _request(),
+        points_m=np.asarray([[0.25, 0.25, 0.0], [0.25, 0.25, 1.0]]),
+        symmetry="off",
+    )
+    monkeypatch.setattr(
+        service_module,
+        "evaluate_bem_field",
+        lambda request, **_kwargs: np.ones(request.points_m.shape[0], dtype=np.complex64),
+    )
+    service = ExteriorFieldEvaluationService()
+    try:
+        values = service._evaluate_task(
+            ExteriorFieldTask(("mask",), "beat_cpu", request, mask_distance_m=1.0e-4)
+        )
+    finally:
+        service.close()
+
+    assert np.isnan(values[0])
+    assert values[1] == 1.0
