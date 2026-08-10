@@ -73,6 +73,16 @@ class _SmoothFieldGeometry:
 
 
 @dataclass(frozen=True)
+class _CombinedFieldGeometry:
+    mesh: object
+    fem_point_ids: np.ndarray
+    source_node_ids: np.ndarray
+    interpolation_weights: np.ndarray
+    exterior_point_ids: np.ndarray
+    clipped: object
+
+
+@dataclass(frozen=True)
 class _ElementFieldGeometry:
     mesh: object
     source_tetrahedron_ids: np.ndarray
@@ -258,7 +268,10 @@ class ObservationPlaneViewport(QObject):
         mesh = self._exterior_request_meshes.pop(key, None)
         plane = self._field_plane()
         current_key = None
-        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+        if plane is not None and plane.plane_type in {
+            ObservationPlaneType.EXTERIOR,
+            ObservationPlaneType.COMBINED,
+        }:
             try:
                 current_key = self._exterior_key_for_plane(plane)
             except (KeyError, TypeError, ValueError):
@@ -268,8 +281,8 @@ class ObservationPlaneViewport(QObject):
             and key != current_key
             and self._can_stream_exterior_field_result(plane, key, current_key)
         ):
-            current_mesh = self._exterior_plane_mesh(plane)
-            if self._apply_exterior_field_result(plane, key, values, mesh=current_mesh):
+            current_geometry = self._exterior_plane_mesh(plane)
+            if self._apply_exterior_field_result(plane, key, values, mesh=current_geometry):
                 LOGGER.info(
                     "Applied lagged exterior field result: plane=%s frequency_hz=%s points=%d",
                     plane.id,
@@ -289,7 +302,10 @@ class ObservationPlaneViewport(QObject):
             key[8] if len(key) > 8 else plane.frequency_hz,
             values.shape[0],
         )
-        self._apply_exterior_field_result(plane, key, values, mesh=mesh)
+        if plane.plane_type == ObservationPlaneType.COMBINED:
+            self._apply_combined_field_result(plane, key, values, geometry=mesh)
+        else:
+            self._apply_exterior_field_result(plane, key, values, mesh=mesh)
 
     def _cache_exterior_field_result(self, key: tuple[object, ...], values: np.ndarray) -> None:
         previous = self._exterior_results.pop(key, None)
@@ -311,6 +327,7 @@ class ObservationPlaneViewport(QObject):
             drag is not None
             and drag.mode in {"move", "rotate"}
             and drag.original.id == plane.id
+            and plane.plane_type == ObservationPlaneType.EXTERIOR
             and _exterior_field_keys_stream_compatible(completed_key, current_key)
         )
 
@@ -326,7 +343,10 @@ class ObservationPlaneViewport(QObject):
             return
         self._exterior_failures[key] = str(message)
         plane = self._field_plane()
-        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+        if plane is not None and plane.plane_type in {
+            ObservationPlaneType.EXTERIOR,
+            ObservationPlaneType.COMBINED,
+        }:
             try:
                 current_key = self._exterior_key_for_plane(plane)
             except (KeyError, TypeError, ValueError):
@@ -388,7 +408,10 @@ class ObservationPlaneViewport(QObject):
                 self._actor_names.discard(ANGLE_ACTOR_NAME)
             plane = self._selected_plane()
             if plane is not None:
-                if plane.plane_type == ObservationPlaneType.EXTERIOR and self._field_plane_id() == plane.id:
+                if (
+                    plane.plane_type in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}
+                    and self._field_plane_id() == plane.id
+                ):
                     self._refresh_interactive_tools(plane)
                     self._request_exterior_field_for_plane(plane)
                     self.viewer.render()
@@ -630,15 +653,11 @@ class ObservationPlaneViewport(QObject):
     def _replace_selected(self, updated: ObservationPlane) -> None:
         updated = updated.validated()
         self._planes = tuple(updated if plane.id == updated.id else plane for plane in self._planes)
-        for cache_key in (("smooth", updated.id), ("element", updated.id)):
+        for cache_key in (("smooth", updated.id), ("element", updated.id), ("combined", updated.id)):
             self._field_cache.pop(cache_key, None)
-        if updated.plane_type == ObservationPlaneType.EXTERIOR:
+        if updated.plane_type in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}:
             if self._preview_exterior_geometry(updated):
-                if (
-                    self._field_plane_id() == updated.id
-                    and self._drag is not None
-                    and self._drag.mode != "size"
-                ):
+                if self._field_plane_id() == updated.id and self._drag is not None and self._drag.mode != "size":
                     self._schedule_exterior_refresh()
                 return
         self._render()
@@ -671,14 +690,13 @@ class ObservationPlaneViewport(QObject):
                 plane.id == field_plane_id
                 and self._field_results is not None
                 and (
-                    (
-                        plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
-                        and self._field_results.interior is not None
-                    )
+                    (plane.plane_type == ObservationPlaneType.INTERIOR and self._field_results.interior is not None)
                     or (
-                        plane.plane_type == ObservationPlaneType.EXTERIOR
+                        plane.plane_type == ObservationPlaneType.COMBINED
+                        and self._field_results.interior is not None
                         and self._field_results.exterior is not None
                     )
+                    or (plane.plane_type == ObservationPlaneType.EXTERIOR and self._field_results.exterior is not None)
                 )
             )
             mesh = _plane_polydata(plane)
@@ -704,6 +722,8 @@ class ObservationPlaneViewport(QObject):
         if field_plane is not None:
             if field_plane.plane_type == ObservationPlaneType.EXTERIOR:
                 self._add_exterior_field(field_plane)
+            elif field_plane.plane_type == ObservationPlaneType.COMBINED:
+                clip_active = self._add_combined_field(field_plane)
             else:
                 clip_active = self._add_interior_field(field_plane)
         if selected is not None:
@@ -806,10 +826,7 @@ class ObservationPlaneViewport(QObject):
         if results is None and self._field_results is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
             self._field_message = "Exterior field data was not retained; solve again with this plane configured."
             return False
-        if (
-            results is None
-            or plane.plane_type != ObservationPlaneType.EXTERIOR
-        ):
+        if results is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
             return False
         try:
             mesh = self._exterior_plane_mesh(plane)
@@ -838,6 +855,63 @@ class ObservationPlaneViewport(QObject):
             self._field_message = f"Exterior field unavailable: {exc}"
             return False
 
+    def _add_combined_field(self, plane: ObservationPlane) -> bool:
+        interior = None if self._field_results is None else self._field_results.interior
+        exterior = None if self._field_results is None else self._field_results.exterior
+        if interior is None or exterior is None:
+            if self._field_results is not None:
+                self._field_message = "Combined field data was not retained; solve again with this plane configured."
+            return False
+        if plane.interior_rendering != InteriorRenderingMode.SMOOTH_FIELD:
+            self._field_message = "Combined fields currently require Smooth Field rendering."
+            return False
+        try:
+            geometry = self._combined_field_geometry(plane, interior, exterior)
+            self._add_clipped_fem_volume(plane, geometry.clipped)
+            key = self._exterior_key_for_plane(plane)
+            exterior_pressure = (
+                np.empty(0, dtype=np.complex64)
+                if not geometry.exterior_point_ids.size
+                else self._exterior_results.get(key)
+            )
+            if exterior_pressure is None:
+                failure = self._exterior_failures.get(key)
+                if failure is not None:
+                    self._field_message = f"Combined field unavailable: {failure}"
+                    return False
+                self._request_exterior_field_for_plane(plane, mesh=geometry)
+                self._field_message = "Evaluating combined field..."
+                return True
+            pressure = self._combined_pressure(plane, geometry, exterior_pressure)
+            self._add_colored_field_actor(
+                geometry.mesh,
+                pressure,
+                plane,
+                association="point",
+                name=f"observation-plane:field:combined:{plane.id}",
+            )
+            return True
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            self._field_message = f"Combined field unavailable: {exc}"
+            return False
+
+    def _add_clipped_fem_volume(self, plane: ObservationPlane, clipped) -> None:
+        if clipped is None:
+            return
+        clip_name = f"observation-plane:field:clip:{plane.id}"
+        self.viewer.add_mesh(
+            clipped,
+            name=clip_name,
+            color="#91a4ad",
+            opacity=0.12,
+            show_edges=True,
+            edge_color="#63747c",
+            line_width=0.5,
+            pickable=False,
+            render=False,
+        )
+        self._actor_names.add(clip_name)
+
     def _exterior_plane_mesh(self, plane: ObservationPlane):
         signature = _field_geometry_signature(self._field_generation, plane, "off", smooth=True)
         key = ("exterior", plane.id)
@@ -853,30 +927,52 @@ class ObservationPlaneViewport(QObject):
         results = None if self._field_results is None else self._field_results.exterior
         if results is None:
             raise ValueError("No exterior field results are available.")
-        frequency = results.resolved_frequency(plane.frequency_hz)
+        if plane.plane_type == ObservationPlaneType.COMBINED:
+            frequencies = np.asarray(
+                self._field_results.frequencies_for(ObservationPlaneType.COMBINED),
+                dtype=float,
+            )
+            if not frequencies.size:
+                raise ValueError("Interior and exterior results have no common solved frequencies.")
+            requested = frequencies[0] if plane.frequency_hz is None else float(plane.frequency_hz)
+            frequency = float(frequencies[int(np.argmin(np.abs(frequencies - requested)))])
+        else:
+            frequency = results.resolved_frequency(plane.frequency_hz)
         return _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
 
     def _request_exterior_field_for_plane(self, plane: ObservationPlane, *, mesh=None) -> tuple[object, ...] | None:
         results = None if self._field_results is None else self._field_results.exterior
-        if results is None or plane.plane_type != ObservationPlaneType.EXTERIOR:
+        if results is None or plane.plane_type not in {
+            ObservationPlaneType.EXTERIOR,
+            ObservationPlaneType.COMBINED,
+        }:
             return None
+        key = self._exterior_key_for_plane(plane)
+        frequency = float(key[8])
         frequency, boundary_pressure, boundary_normal = results.boundary_response(
-            plane.frequency_hz,
+            frequency,
             plane.response_id,
         )
-        key = _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
         cached = self._exterior_results.get(key)
         if cached is not None:
             self._exterior_results.move_to_end(key)
             if self._active_field is not None and self._active_field.plane_id == plane.id:
-                self._apply_exterior_field_result(plane, key, cached, mesh=mesh)
+                self._apply_sampled_field_result(plane, key, cached, geometry=mesh)
             return key
         if key in self._exterior_pending:
             return key
-        mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
-        detached_points = np.array(mesh.points, dtype=np.float32, copy=True, order="C")
+        geometry = self._field_request_geometry(plane) if mesh is None else mesh
+        if plane.plane_type == ObservationPlaneType.COMBINED:
+            detached_points = np.array(
+                geometry.mesh.points[geometry.exterior_point_ids],
+                dtype=np.float32,
+                copy=True,
+                order="C",
+            )
+        else:
+            detached_points = np.array(geometry.points, dtype=np.float32, copy=True, order="C")
         self._exterior_pending.add(key)
-        self._exterior_request_meshes[key] = mesh
+        self._exterior_request_meshes[key] = geometry
         LOGGER.info(
             "Exterior field requested: plane=%s frequency_hz=%s points=%d",
             plane.id,
@@ -904,8 +1000,32 @@ class ObservationPlaneViewport(QObject):
 
     def _request_current_exterior_field(self) -> None:
         plane = self._field_plane()
-        if plane is not None and plane.plane_type == ObservationPlaneType.EXTERIOR:
+        if plane is not None and plane.plane_type in {
+            ObservationPlaneType.EXTERIOR,
+            ObservationPlaneType.COMBINED,
+        }:
             self._request_exterior_field_for_plane(plane)
+
+    def _field_request_geometry(self, plane: ObservationPlane):
+        if plane.plane_type == ObservationPlaneType.COMBINED:
+            interior = None if self._field_results is None else self._field_results.interior
+            exterior = None if self._field_results is None else self._field_results.exterior
+            if interior is None or exterior is None:
+                raise ValueError("Combined field data is incomplete.")
+            return self._combined_field_geometry(plane, interior, exterior)
+        return self._exterior_plane_mesh(plane)
+
+    def _apply_sampled_field_result(
+        self,
+        plane: ObservationPlane,
+        key: tuple[object, ...],
+        pressure: np.ndarray,
+        *,
+        geometry=None,
+    ) -> bool:
+        if plane.plane_type == ObservationPlaneType.COMBINED:
+            return self._apply_combined_field_result(plane, key, pressure, geometry=geometry)
+        return self._apply_exterior_field_result(plane, key, pressure, mesh=geometry)
 
     def _schedule_exterior_refresh(self) -> None:
         if not self._exterior_refresh_timer.isActive():
@@ -954,6 +1074,77 @@ class ObservationPlaneViewport(QObject):
         )
         self.viewer.render()
         return True
+
+    def _apply_combined_field_result(
+        self,
+        plane: ObservationPlane,
+        key: tuple[object, ...],
+        exterior_pressure: np.ndarray,
+        *,
+        geometry=None,
+    ) -> bool:
+        interior = None if self._field_results is None else self._field_results.interior
+        exterior = None if self._field_results is None else self._field_results.exterior
+        if interior is None or exterior is None:
+            return False
+        geometry = self._combined_field_geometry(plane, interior, exterior) if geometry is None else geometry
+        if not isinstance(geometry, _CombinedFieldGeometry):
+            return False
+        try:
+            pressure = self._combined_pressure(plane, geometry, exterior_pressure)
+        except (KeyError, RuntimeError, TypeError, ValueError):
+            return False
+        state = self._active_field
+        if (
+            state is not None
+            and state.plane_id == plane.id
+            and state.association == "point"
+            and state.mesh is geometry.mesh
+        ):
+            phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
+            projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+            if not _update_mesh_scalars(state.mesh, "point", projection.values):
+                return False
+            state.pressure = np.asarray(pressure)
+            state.plane = plane
+            mapper = state.actor.GetMapper() if state.actor is not None and hasattr(state.actor, "GetMapper") else None
+            if mapper is not None:
+                mapper.SetScalarRange(*projection.clim)
+            self.viewer.render()
+            return True
+        self._remove_active_field_actor()
+        self._add_clipped_fem_volume(plane, geometry.clipped)
+        self._add_colored_field_actor(
+            geometry.mesh,
+            pressure,
+            plane,
+            association="point",
+            name=f"observation-plane:field:combined:{plane.id}",
+        )
+        self.viewer.render()
+        return True
+
+    def _combined_pressure(
+        self,
+        plane: ObservationPlane,
+        geometry: _CombinedFieldGeometry,
+        exterior_pressure: np.ndarray,
+    ) -> np.ndarray:
+        interior = None if self._field_results is None else self._field_results.interior
+        if interior is None:
+            raise ValueError("No interior field results are available.")
+        exterior_values = np.asarray(exterior_pressure, dtype=np.complex64)
+        if exterior_values.shape != (geometry.exterior_point_ids.size,):
+            raise ValueError("Evaluated exterior pressure does not align with the combined field domain.")
+        frequency = float(self._exterior_key_for_plane(plane)[8])
+        nodal_pressure = interior.pressure(frequency, plane.response_id)
+        pressure = np.full(geometry.mesh.n_points, np.nan + 1j * np.nan, dtype=np.complex64)
+        pressure[geometry.fem_point_ids] = np.sum(
+            nodal_pressure[geometry.source_node_ids] * geometry.interpolation_weights,
+            axis=1,
+        )
+        pressure[geometry.exterior_point_ids] = exterior_values
+        return pressure
 
     def _exterior_pressure_for_display(
         self,
@@ -1024,6 +1215,32 @@ class ObservationPlaneViewport(QObject):
         self._field_cache[key] = (signature, boundary_mesh)
         return boundary_mesh
 
+    def _combined_boundary_mesh(self, results):
+        signature = (
+            self._field_generation,
+            results.run_id,
+            results.traces.symmetry,
+        )
+        key = ("combined-boundary", results.run_id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        boundary = self._exterior_boundary_mesh(results).clean(
+            point_merging=True,
+            tolerance=1.0e-10,
+            absolute=True,
+        )
+        open_or_non_manifold = boundary.extract_feature_edges(
+            boundary_edges=True,
+            non_manifold_edges=True,
+            feature_edges=False,
+            manifold_edges=False,
+        )
+        if open_or_non_manifold.n_cells:
+            raise ValueError("The completed BEM boundary is not closed and manifold.")
+        self._field_cache[key] = (signature, boundary)
+        return boundary
+
     def _smooth_field_mesh(
         self,
         plane: ObservationPlane,
@@ -1086,6 +1303,96 @@ class ObservationPlaneViewport(QObject):
             clipped=clipped,
         )
         self._field_cache[key] = (signature, result)
+        return result
+
+    def _combined_field_geometry(self, plane: ObservationPlane, interior, exterior) -> _CombinedFieldGeometry:
+        signature = (
+            _field_geometry_signature(self._field_generation, plane, interior.symmetry, smooth=True),
+            interior.run_id,
+            exterior.run_id,
+            exterior.traces.symmetry,
+        )
+        key = ("combined", plane.id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+
+        pv = __import__("pyvista")
+        expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+            interior.points_m,
+            interior.tetrahedra,
+            interior.symmetry,
+        )
+        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
+        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
+            expanded_tetrahedra.shape[0],
+            dtype=np.int64,
+        )
+        sample_mesh = _sample_plane_polydata(pv, plane)
+        sampled = sample_mesh.sample(volume)
+        fem_mask = np.asarray(sampled.point_data["vtkValidPointMask"], dtype=bool)
+        fem_point_ids = np.flatnonzero(fem_mask)
+        sampled_tetrahedron_ids = np.asarray(
+            sampled.point_data["_observation_plane_source_tetrahedron"],
+            dtype=np.int64,
+        )[fem_point_ids]
+        expanded_node_ids = expanded_tetrahedra[sampled_tetrahedron_ids]
+        interpolation_weights = _tetrahedral_interpolation_weights(
+            np.asarray(sample_mesh.points)[fem_point_ids],
+            expanded_points[expanded_node_ids],
+        )
+        sampled_source_node_ids = source_node_ids[expanded_node_ids]
+
+        boundary = self._combined_boundary_mesh(exterior)
+        enclosed = sample_mesh.select_interior_points(
+            boundary,
+            method="cell_locator",
+            locator_tolerance=1.0e-6,
+            check_surface=False,
+        )
+        enclosed_mask = np.asarray(enclosed.point_data["selected_points"], dtype=bool)
+        sample_points = np.asarray(sample_mesh.points)
+        _cell_ids, closest_points = boundary.find_closest_cell(sample_points, return_closest_point=True)
+        boundary_distance = np.linalg.norm(sample_points - np.asarray(closest_points), axis=1)
+        near_boundary = boundary_distance <= max(1.0e-7, plane.resolution_m * 0.25)
+        exterior_mask = ~fem_mask & ~enclosed_mask & ~near_boundary
+        exterior_point_ids = np.flatnonzero(exterior_mask)
+
+        acoustic_mask = fem_mask | exterior_mask
+        faces = np.asarray(sample_mesh.faces, dtype=np.int64).reshape(-1, 5)[:, 1:]
+        valid_cells = np.all(acoustic_mask[faces], axis=1)
+        if not np.any(valid_cells):
+            raise ValueError("The observation plane contains no fully resolved acoustic cells.")
+        visible_faces = np.column_stack(
+            (np.full(np.count_nonzero(valid_cells), 4, dtype=np.int64), faces[valid_cells])
+        ).reshape(-1)
+        mesh = pv.PolyData(np.array(sample_points, copy=True), visible_faces)
+
+        del volume.cell_data["_observation_plane_source_tetrahedron"]
+        _axis_u, _axis_v, normal = plane.local_axes
+        clipped = volume.clip(
+            normal=normal,
+            origin=np.asarray(plane.center_m),
+            invert=plane.invert_clip_side,
+        )
+        result = _CombinedFieldGeometry(
+            mesh=mesh,
+            fem_point_ids=fem_point_ids,
+            source_node_ids=sampled_source_node_ids,
+            interpolation_weights=interpolation_weights,
+            exterior_point_ids=exterior_point_ids,
+            clipped=clipped,
+        )
+        self._field_cache[key] = (signature, result)
+        LOGGER.info(
+            "Combined field domain updated: plane=%s points=%d fem=%d exterior=%d undefined=%d cells=%d",
+            plane.id,
+            sample_points.shape[0],
+            fem_point_ids.size,
+            exterior_point_ids.size,
+            int(np.count_nonzero(~acoustic_mask)),
+            int(np.count_nonzero(valid_cells)),
+        )
         return result
 
     def _element_field_mesh(
@@ -1180,14 +1487,24 @@ class ObservationPlaneViewport(QObject):
         state = self._active_field
         if plane is None or state is None or state.plane_id != plane.id:
             return False
-        if plane.plane_type == ObservationPlaneType.EXTERIOR:
+        if plane.plane_type in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}:
             try:
                 key = self._exterior_key_for_plane(plane)
             except (KeyError, TypeError, ValueError):
                 return False
             pressure = self._exterior_results.get(key)
+            if plane.plane_type == ObservationPlaneType.COMBINED and pressure is None:
+                try:
+                    geometry = self._field_request_geometry(plane)
+                except (KeyError, RuntimeError, TypeError, ValueError):
+                    return False
+                if not geometry.exterior_point_ids.size:
+                    pressure = np.empty(0, dtype=np.complex64)
             if pressure is not None:
-                self._exterior_results.move_to_end(key)
+                if key in self._exterior_results:
+                    self._exterior_results.move_to_end(key)
+                if plane.plane_type == ObservationPlaneType.COMBINED:
+                    return self._apply_combined_field_result(plane, key, pressure)
                 return self._apply_exterior_field_result(plane, key, pressure)
             self._request_exterior_field_for_plane(plane)
             return True
@@ -1296,9 +1613,10 @@ class ObservationPlaneViewport(QObject):
         self._animation_updated_at = now
         self._animation_phase_deg = (self._animation_phase_deg + 360.0 * plane.animation_speed_hz * elapsed) % 360.0
         if not self._update_animation_frame(plane):
-            exterior_pending = plane.plane_type == ObservationPlaneType.EXTERIOR and any(
-                len(key) > 2 and key[2] == plane.id for key in self._exterior_pending
-            )
+            exterior_pending = plane.plane_type in {
+                ObservationPlaneType.EXTERIOR,
+                ObservationPlaneType.COMBINED,
+            } and any(len(key) > 2 and key[2] == plane.id for key in self._exterior_pending)
             if exterior_pending:
                 return
             self.set_animation(None, False)
@@ -1664,7 +1982,9 @@ def _exterior_geometry_update(
             if old != new:
                 return None
             continue
-        if old.plane_type != ObservationPlaneType.EXTERIOR or new.plane_type != ObservationPlaneType.EXTERIOR:
+        if old.plane_type not in {ObservationPlaneType.EXTERIOR, ObservationPlaneType.COMBINED}:
+            return None
+        if new.plane_type != old.plane_type:
             return None
         comparable = replace(
             new,
@@ -1735,6 +2055,7 @@ def _exterior_field_key(
         plane.resolution_m,
         float(frequency_hz),
         plane.response_id,
+        plane.plane_type.value,
     )
 
 
@@ -1744,9 +2065,9 @@ def _exterior_field_keys_stream_compatible(
 ) -> bool:
     """Match field identity and grid topology while allowing a lagged rigid transform."""
 
-    if len(completed) != 10 or len(current) != 10:
+    if len(completed) != 11 or len(current) != 11:
         return False
-    compatible_indices = (0, 1, 2, 5, 6, 7, 8, 9)
+    compatible_indices = (0, 1, 2, 5, 6, 7, 8, 9, 10)
     return all(completed[index] == current[index] for index in compatible_indices)
 
 

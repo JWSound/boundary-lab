@@ -8,7 +8,7 @@ import numpy as np
 
 from blab.channel_synthesis import channel_drive, flat_target_corrections
 from blab.config import ChannelConfig
-from blab.observation_planes import ObservationPlaneDisplay
+from blab.observation_planes import ObservationPlaneDisplay, ObservationPlaneType
 from blab.physical_model import AcousticRegionKind
 from blab.solve_results import (
     FEM_NODAL_PRESSURE_ID,
@@ -146,7 +146,26 @@ class ObservationFieldResults:
     @property
     def frequencies_hz(self) -> np.ndarray:
         source = self.exterior or self.interior
-        return np.asarray(()) if source is None else source.frequencies_hz
+        return np.asarray(()) if source is None else np.asarray(source.frequencies_hz)
+
+    def frequencies_for(self, plane_type: ObservationPlaneType) -> np.ndarray:
+        if plane_type == ObservationPlaneType.INTERIOR:
+            source = self.interior
+            return np.asarray(()) if source is None else np.asarray(source.frequencies_hz)
+        if plane_type == ObservationPlaneType.EXTERIOR:
+            source = self.exterior
+            return np.asarray(()) if source is None else np.asarray(source.frequencies_hz)
+        if self.interior is not None and self.exterior is not None:
+            # Both result families originate from the same solve, but an
+            # interrupted or partially retained solve can leave different
+            # availability masks. Combined fields must never silently pair
+            # values from different frequencies.
+            return np.intersect1d(
+                np.asarray(self.interior.frequencies_hz, dtype=float),
+                np.asarray(self.exterior.frequencies_hz, dtype=float),
+                assume_unique=False,
+            )
+        return np.asarray(())
 
     @property
     def response_options(self) -> tuple[tuple[str, str], ...]:
@@ -231,9 +250,7 @@ def exterior_field_results_from_solved_system(
         ()
         if solved.compiled_system is None
         else tuple(
-            region
-            for region in solved.compiled_system.regions
-            if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+            region for region in solved.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
         )
     )
     if len(unbounded_regions) != 1:
@@ -286,8 +303,7 @@ def _channel_names_by_excitation(
     if solved.compiled_system is not None:
         component_by_port = {port.id: port.component_id for port in solved.compiled_system.excitation_ports}
     return tuple(
-        str(component_channels.get(component_by_port.get(port_id, ""), "main"))
-        for port_id in solved.excitation_ids
+        str(component_channels.get(component_by_port.get(port_id, ""), "main")) for port_id in solved.excitation_ids
     )
 
 
@@ -310,9 +326,7 @@ def _horizontal_pressure_basis(
 
 def _response_options(channel_names_by_excitation: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     channel_names = tuple(dict.fromkeys(channel_names_by_excitation))
-    return (("system", "System Response"),) + tuple(
-        (f"channel:{name}", f"Channel: {name}") for name in channel_names
-    )
+    return (("system", "System Response"),) + tuple((f"channel:{name}", f"Channel: {name}") for name in channel_names)
 
 
 def _nearest_frequency_index(frequencies_hz: np.ndarray, frequency_hz: float | None, *, label: str) -> int:
@@ -345,11 +359,7 @@ def _excitation_weights(
             [
                 np.sum(
                     horizontal_basis[
-                        [
-                            index
-                            for index, candidate in enumerate(channel_names_by_excitation)
-                            if candidate == name
-                        ]
+                        [index for index, candidate in enumerate(channel_names_by_excitation) if candidate == name]
                     ],
                     axis=0,
                 )

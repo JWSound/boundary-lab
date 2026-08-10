@@ -311,11 +311,18 @@ class ObservationPlanePropertiesDialog(QDialog):
         del blocker
 
     def _refresh_dependent_controls(self) -> None:
-        supports_interior = self.type_combo.currentData() in {
+        plane_type = self.type_combo.currentData()
+        supports_interior = plane_type in {
             ObservationPlaneType.INTERIOR.value,
             ObservationPlaneType.COMBINED.value,
         }
-        self.rendering_combo.setEnabled(supports_interior)
+        combined = plane_type == ObservationPlaneType.COMBINED.value
+        if combined and self.rendering_combo.currentData() != InteriorRenderingMode.SMOOTH_FIELD.value:
+            self._select_data(self.rendering_combo, InteriorRenderingMode.SMOOTH_FIELD.value)
+        # A combined element view would mix FEM cell shading with a sampled
+        # exterior surface. Keep the first implementation as one continuous,
+        # consistently scaled smooth field.
+        self.rendering_combo.setEnabled(supports_interior and not combined)
         self.invert_clip_check.setEnabled(supports_interior)
         element_field = (
             supports_interior and self.rendering_combo.currentData() == InteriorRenderingMode.ELEMENT_FIELD.value

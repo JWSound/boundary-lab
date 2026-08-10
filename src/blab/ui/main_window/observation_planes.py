@@ -54,9 +54,13 @@ class ObservationPlaneController(QObject):
         results = self._field_results()
         if hasattr(self._preview, "set_observation_plane_results"):
             self._preview.set_observation_plane_results(results)
-        frequencies = () if results is None else tuple(float(value) for value in results.frequencies_hz)
         responses = () if results is None else results.response_options
         for dialog in self._dialogs.values():
+            frequencies = (
+                ()
+                if results is None
+                else tuple(float(value) for value in results.frequencies_for(dialog.plane.plane_type))
+            )
             dialog.set_solved_results(frequencies, responses)
             dialog.set_active(dialog.plane.id == self._active_plane_id)
         self._preview.set_observation_planes(self._project().observation_planes, selected_id=selected_id)
@@ -120,7 +124,9 @@ class ObservationPlaneController(QObject):
             plane,
             self._window,
             active=plane.id == self._active_plane_id,
-            solved_frequencies_hz=(() if results is None else tuple(float(value) for value in results.frequencies_hz)),
+            solved_frequencies_hz=(
+                () if results is None else tuple(float(value) for value in results.frequencies_for(plane.plane_type))
+            ),
             response_options=(() if results is None else results.response_options),
         )
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)

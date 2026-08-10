@@ -118,6 +118,24 @@ def test_properties_dialog_disables_result_controls_without_solved_data(qapp) ->
         dialog.deleteLater()
 
 
+def test_combined_properties_use_a_single_smooth_rendering_mode(qapp) -> None:
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    plane = replace(
+        new_observation_plane("Combined"),
+        plane_type=ObservationPlaneType.COMBINED,
+        interior_rendering=InteriorRenderingMode.ELEMENT_FIELD,
+    )
+    dialog = ObservationPlanePropertiesDialog(plane)
+    try:
+        assert dialog.rendering_combo.currentData() == InteriorRenderingMode.SMOOTH_FIELD.value
+        assert not dialog.rendering_combo.isEnabled()
+        assert dialog.resolution_spin.isEnabled()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
     from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 
@@ -318,6 +336,19 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     np.testing.assert_allclose(results.pressure(100.0, "system"), 20.0, rtol=1e-5)
 
 
+def test_observation_field_results_use_only_common_combined_frequencies() -> None:
+    from blab.ui.observation_plane_results import ObservationFieldResults
+
+    results = ObservationFieldResults(
+        interior=SimpleNamespace(frequencies_hz=np.asarray([100.0, 200.0, 400.0])),
+        exterior=SimpleNamespace(frequencies_hz=np.asarray([100.0, 400.0, 800.0])),
+    )
+
+    assert results.frequencies_for(ObservationPlaneType.COMBINED).tolist() == [100.0, 400.0]
+    assert results.frequencies_for(ObservationPlaneType.INTERIOR).tolist() == [100.0, 200.0, 400.0]
+    assert results.frequencies_for(ObservationPlaneType.EXTERIOR).tolist() == [100.0, 400.0, 800.0]
+
+
 def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     from blab.config import ChannelConfig
     from blab.physical_model import AcousticRegionKind
@@ -350,9 +381,7 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     normal = np.asarray([[[3.0], [4.0]], [[30.0], [40.0]]], dtype=np.complex64)
     available = np.asarray([True, True])
     compiled = SimpleNamespace(
-        regions=(
-            SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),
-        ),
+        regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
         excitation_ports=(
             SimpleNamespace(id="port:woofer", component_id="component:woofer"),
             SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
@@ -476,6 +505,62 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
     np.testing.assert_allclose(rendered[0][0][1], np.arange(4))
 
 
+def test_combined_field_requests_only_points_classified_as_exterior() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _CombinedFieldGeometry
+
+    plane = replace(
+        new_observation_plane("Combined"),
+        plane_type=ObservationPlaneType.COMBINED,
+        frequency_hz=1000.0,
+    )
+    exterior = SimpleNamespace(
+        run_id="run",
+        backend_id="beat_cpu",
+        sound_speed_m_per_s=343.0,
+        traces=SimpleNamespace(
+            points_m=np.eye(3),
+            triangles=np.asarray([[0, 1, 2]]),
+            symmetry="off",
+        ),
+        boundary_response=lambda *_args: (
+            1000.0,
+            np.ones(3, dtype=np.complex64),
+            np.ones(1, dtype=np.complex64),
+        ),
+    )
+    mesh = SimpleNamespace(points=np.arange(15, dtype=float).reshape(5, 3), n_points=5)
+    geometry = _CombinedFieldGeometry(
+        mesh=mesh,
+        fem_point_ids=np.asarray([0, 2]),
+        source_node_ids=np.empty((2, 4), dtype=np.int64),
+        interpolation_weights=np.empty((2, 4)),
+        exterior_point_ids=np.asarray([1, 4]),
+        clipped=None,
+    )
+    requested = []
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(
+            interior=object(),
+            exterior=exterior,
+            frequencies_for=lambda _plane_type: np.asarray([1000.0]),
+        ),
+        _field_generation=7,
+        _exterior_results={},
+        _exterior_pending=set(),
+        _exterior_request_meshes={},
+        _active_field=None,
+        exteriorFieldRequested=SimpleNamespace(emit=lambda task: requested.append(task)),
+    )
+    editor._exterior_key_for_plane = MethodType(ObservationPlaneViewport._exterior_key_for_plane, editor)
+
+    key = ObservationPlaneViewport._request_exterior_field_for_plane(editor, plane, mesh=geometry)
+
+    assert key is not None
+    assert len(requested) == 1
+    np.testing.assert_allclose(requested[0].request.points_m, mesh.points[[1, 4]])
+    assert editor._exterior_request_meshes[key] is geometry
+
+
 def test_exterior_frequency_update_uses_cached_field_without_interior_sampling() -> None:
     from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _ActiveFieldState
 
@@ -487,10 +572,9 @@ def test_exterior_frequency_update_uses_cached_field_without_interior_sampling()
         _active_field=_ActiveFieldState(plane.id, SimpleNamespace(), np.zeros(1), "point"),
         _exterior_results=OrderedDict(((key, pressure),)),
         _exterior_key_for_plane=lambda _plane: key,
-        _apply_exterior_field_result=lambda candidate, candidate_key, values: applied.append(
-            (candidate, candidate_key, values)
-        )
-        or True,
+        _apply_exterior_field_result=lambda candidate, candidate_key, values: (
+            applied.append((candidate, candidate_key, values)) or True
+        ),
         _field_mesh_and_pressure=lambda _plane: pytest.fail("exterior updates must not sample the FEM field"),
     )
 
@@ -525,10 +609,9 @@ def test_exterior_move_stream_applies_compatible_lagged_result_without_caching()
         _field_plane=lambda: current,
         _exterior_key_for_plane=lambda _plane: current_key,
         _exterior_plane_mesh=lambda _plane: current_mesh,
-        _apply_exterior_field_result=lambda plane, key, values, *, mesh: applied.append(
-            (plane, key, values, mesh)
-        )
-        or True,
+        _apply_exterior_field_result=lambda plane, key, values, *, mesh: (
+            applied.append((plane, key, values, mesh)) or True
+        ),
         _cache_exterior_field_result=lambda *_args: pytest.fail(
             "lagged interactive fields must not enter the exact-position cache"
         ),
@@ -560,6 +643,7 @@ def test_exterior_stream_compatibility_ignores_only_rigid_transform() -> None:
     moved = replace(original, center_m=(1.0, 2.0, 3.0))
     resized = replace(moved, width_m=moved.width_m * 2.0)
     changed_response = replace(moved, response_id="channel:high")
+    changed_type = replace(moved, plane_type=ObservationPlaneType.COMBINED)
     original_key = _exterior_field_key(3, "run", original, 1000.0)
 
     assert _exterior_field_keys_stream_compatible(
@@ -573,6 +657,10 @@ def test_exterior_stream_compatibility_ignores_only_rigid_transform() -> None:
     assert not _exterior_field_keys_stream_compatible(
         original_key,
         _exterior_field_key(3, "run", changed_response, 1000.0),
+    )
+    assert not _exterior_field_keys_stream_compatible(
+        original_key,
+        _exterior_field_key(3, "run", changed_type, 1000.0),
     )
 
 
@@ -662,10 +750,7 @@ def test_exterior_boundary_mask_is_deferred_until_interaction_finishes() -> None
     calls = []
     editor = SimpleNamespace(
         _drag=_DragState(plane, "move", 0),
-        _masked_exterior_pressure=lambda candidate, mesh, values: calls.append(
-            (candidate, mesh, values)
-        )
-        or masked,
+        _masked_exterior_pressure=lambda candidate, mesh, values: calls.append((candidate, mesh, values)) or masked,
     )
 
     interactive = ObservationPlaneViewport._exterior_pressure_for_display(
@@ -922,6 +1007,104 @@ def test_smooth_and_element_fields_interpolate_and_clip_a_tetrahedron() -> None:
     )
     assert cached_smooth is smooth
     assert cached_element is element
+
+
+def test_combined_geometry_classifies_fem_exterior_and_solid_points() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = replace(
+        new_observation_plane("Combined"),
+        plane_type=ObservationPlaneType.COMBINED,
+        center_m=(0.0, 0.0, 0.0),
+        width_m=3.0,
+        height_m=3.0,
+        resolution_m=0.25,
+    )
+    interior = SimpleNamespace(
+        run_id="run",
+        symmetry="off",
+        points_m=np.asarray(
+            [
+                [-0.5, -0.5, -0.5],
+                [0.5, -0.5, -0.5],
+                [0.0, 0.5, -0.5],
+                [0.0, 0.0, 0.5],
+            ]
+        ),
+        tetrahedra=np.asarray([[0, 1, 2, 3]]),
+    )
+    exterior = SimpleNamespace(run_id="run", traces=SimpleNamespace(symmetry="off"))
+    boundary = pv.Cube(bounds=(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)).triangulate()
+    editor = SimpleNamespace(
+        _field_generation=1,
+        _field_cache={},
+        _exterior_boundary_mesh=lambda _results: boundary,
+    )
+    editor._combined_boundary_mesh = MethodType(ObservationPlaneViewport._combined_boundary_mesh, editor)
+
+    geometry = ObservationPlaneViewport._combined_field_geometry(editor, plane, interior, exterior)
+
+    acoustic_points = geometry.fem_point_ids.size + geometry.exterior_point_ids.size
+    assert geometry.fem_point_ids.size > 0
+    assert geometry.exterior_point_ids.size > 0
+    assert acoustic_points < geometry.mesh.n_points
+    assert 0 < geometry.mesh.n_cells < (plane.sample_shape[0] - 1) * (plane.sample_shape[1] - 1)
+    assert ObservationPlaneViewport._combined_field_geometry(editor, plane, interior, exterior) is geometry
+
+
+def test_combined_boundary_rejects_open_bem_geometry() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    boundary = pv.PolyData(
+        np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        np.asarray([3, 0, 1, 2]),
+    )
+    results = SimpleNamespace(run_id="run", traces=SimpleNamespace(symmetry="off"))
+    editor = SimpleNamespace(
+        _field_generation=1,
+        _field_cache={},
+        _exterior_boundary_mesh=lambda _results: boundary,
+    )
+
+    with pytest.raises(ValueError, match="not closed and manifold"):
+        ObservationPlaneViewport._combined_boundary_mesh(editor, results)
+
+
+def test_combined_pressure_merges_complex_fem_and_exterior_values_before_projection() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _CombinedFieldGeometry
+
+    plane = replace(new_observation_plane("Combined"), plane_type=ObservationPlaneType.COMBINED)
+    geometry = _CombinedFieldGeometry(
+        mesh=pv.PolyData(np.zeros((4, 3))),
+        fem_point_ids=np.asarray([0, 1]),
+        source_node_ids=np.asarray([[0, 1, 2, 3], [0, 1, 2, 3]]),
+        interpolation_weights=np.asarray([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5]]),
+        exterior_point_ids=np.asarray([2]),
+        clipped=None,
+    )
+    interior = SimpleNamespace(
+        pressure=lambda _frequency, _response: np.asarray([1.0 + 2.0j, 3.0, 5.0 + 1.0j, 7.0 + 3.0j])
+    )
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(interior=interior),
+        _exterior_key_for_plane=lambda _plane: (None,) * 8 + (1000.0,),
+    )
+
+    pressure = ObservationPlaneViewport._combined_pressure(
+        editor,
+        plane,
+        geometry,
+        np.asarray([11.0 + 13.0j], dtype=np.complex64),
+    )
+
+    np.testing.assert_allclose(pressure[:3], [1.0 + 2.0j, 6.0 + 2.0j, 11.0 + 13.0j])
+    assert np.isnan(pressure[3].real) and np.isnan(pressure[3].imag)
 
 
 def test_result_selection_changes_use_fast_viewport_update() -> None:
