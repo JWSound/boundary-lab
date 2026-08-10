@@ -56,7 +56,7 @@ from blab.ui.main_window_widgets import (
 from blab.ui.mesh_assembly import (
     MeshAssemblyService,
 )
-from blab.ui.observation_plane_results import interior_field_results_from_solved_system
+from blab.ui.observation_plane_results import observation_field_results_from_solved_system
 from blab.ui.operation_controllers import (
     GeometryController,
     SolveController,
@@ -375,7 +375,7 @@ class MainWindow(
             preview=self.preview,
             project=self._project_document,
             show_status=self.show_status,
-            field_results=lambda: interior_field_results_from_solved_system(
+            field_results=lambda: observation_field_results_from_solved_system(
                 self.solved_system,
                 component_channel_by_id=self.project.component_channel_by_id,
                 channel_configs=self.channel_configs(),

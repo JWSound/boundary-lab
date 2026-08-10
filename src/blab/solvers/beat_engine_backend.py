@@ -296,7 +296,13 @@ class BeatEngineWorkerProcess:
         self._stderr_thread: threading.Thread | None = None
         self._status_callback: Callable[[str], None] | None = None
 
-    def submit(self, request_path: Path, *, status_callback: Callable[[str], None] | None = None) -> Iterator[dict]:
+    def submit(
+        self,
+        request_path: Path,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        operation: str = "solve",
+    ) -> Iterator[dict]:
         self._lock.acquire()
         self._status_callback = status_callback
         try:
@@ -304,8 +310,14 @@ class BeatEngineWorkerProcess:
             process = self._process
             if process is None or process.stdin is None:
                 raise RuntimeError("Warm BEAT Engine solver did not provide stdin.")
-            self._emit_status("Submitting solve request")
-            process.stdin.write(json.dumps({"request": str(request_path)}, separators=(",", ":")) + "\n")
+            self._emit_status("Submitting solve request" if operation == "solve" else "Submitting field request")
+            process.stdin.write(
+                json.dumps(
+                    {"request": str(request_path), "operation": str(operation)},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
             process.stdin.flush()
             return self._iter_events_for_submission()
         except Exception:

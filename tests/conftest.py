@@ -68,6 +68,7 @@ def _stub_mesh_preview_class():
 
     class StubMeshPreview(QWidget):
         newObservationPlaneRequested = Signal(object)
+        observationPlaneExteriorFieldRequested = Signal(object)
         observationPlaneChanged = Signal(object)
         observationPlanePropertiesRequested = Signal(str)
         observationPlaneDeleteRequested = Signal(str)
@@ -105,6 +106,15 @@ def _stub_mesh_preview_class():
 
         def set_observation_plane_active(self, plane_id) -> None:
             self.active_observation_plane_id = plane_id
+
+        def set_observation_plane_exterior_field(self, key, pressure) -> None:
+            self.observation_plane_exterior_field = (key, pressure)
+
+        def set_observation_plane_exterior_field_failed(self, key, message) -> None:
+            self.observation_plane_exterior_field_failed = (key, message)
+
+        def discard_observation_plane_exterior_field_request(self, key) -> None:
+            self.discarded_observation_plane_exterior_field_request = key
 
     return StubMeshPreview
 

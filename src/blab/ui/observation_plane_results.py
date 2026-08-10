@@ -9,11 +9,14 @@ import numpy as np
 from blab.channel_synthesis import channel_drive, flat_target_corrections
 from blab.config import ChannelConfig
 from blab.observation_planes import ObservationPlaneDisplay
+from blab.physical_model import AcousticRegionKind
 from blab.solve_results import (
     FEM_NODAL_PRESSURE_ID,
     FEM_VOLUME_DOMAIN_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
+    BemBoundaryTraces,
     SolvedSystem,
+    bem_boundary_traces_from_solved_system,
     phase_deg,
     pressure_spl_db,
 )
@@ -48,10 +51,7 @@ class InteriorFieldResults:
 
     @property
     def response_options(self) -> tuple[tuple[str, str], ...]:
-        channel_names = tuple(dict.fromkeys(self.channel_names_by_excitation))
-        return (("system", "System Response"),) + tuple(
-            (f"channel:{name}", f"Channel: {name}") for name in channel_names
-        )
+        return _response_options(self.channel_names_by_excitation)
 
     def frequency_index(self, frequency_hz: float | None) -> int:
         if not self.frequencies_hz.size:
@@ -65,54 +65,89 @@ class InteriorFieldResults:
         solve_index = int(self.frequency_indices[available_index])
         frequency = float(self.frequencies_hz[available_index])
         basis = np.asarray(self.pressure_by_frequency[solve_index])
-        weights = self._excitation_weights(solve_index, frequency, response_id)
+        weights = _excitation_weights(
+            solve_index=solve_index,
+            frequency_hz=frequency,
+            response_id=response_id,
+            excitation_ids=self.excitation_ids,
+            channel_names_by_excitation=self.channel_names_by_excitation,
+            channel_configs=self.channel_configs,
+            horizontal_pressure_by_frequency=self.horizontal_pressure_by_frequency,
+            horizontal_angles_deg=self.horizontal_angles_deg,
+            flat_target_enabled=self.flat_target_enabled,
+            flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
+        )
         return np.sum(basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False)
 
-    def _excitation_weights(self, solve_index: int, frequency_hz: float, response_id: str) -> np.ndarray:
-        configs = {channel.name: channel for channel in self.channel_configs}
-        channel_names = tuple(dict.fromkeys(self.channel_names_by_excitation))
-        correction_by_channel = {name: 1.0 for name in channel_names}
-        if (
-            self.flat_target_enabled
-            and self.horizontal_pressure_by_frequency is not None
-            and self.horizontal_angles_deg is not None
-        ):
-            horizontal_basis = np.asarray(self.horizontal_pressure_by_frequency[solve_index])
-            grouped = np.vstack(
-                [
-                    np.sum(
-                        horizontal_basis[
-                            [
-                                index
-                                for index, candidate in enumerate(self.channel_names_by_excitation)
-                                if candidate == name
-                            ]
-                        ],
-                        axis=0,
-                    )
-                    for name in channel_names
-                ]
-            )
-            corrections = flat_target_corrections(
-                grouped,
-                self.horizontal_angles_deg,
-                self.flat_target_reference_angle_deg,
-                enabled=True,
-            )
-            correction_by_channel.update(
-                {name: float(correction) for name, correction in zip(channel_names, corrections, strict=True)}
-            )
 
-        selected_channel = response_id.removeprefix("channel:") if response_id.startswith("channel:") else None
-        if selected_channel not in channel_names:
-            selected_channel = None
-        weights = np.zeros(len(self.excitation_ids), dtype=np.complex64)
-        for index, channel_name in enumerate(self.channel_names_by_excitation):
-            if selected_channel is not None and channel_name != selected_channel:
-                continue
-            config = configs.get(channel_name, ChannelConfig(name=channel_name))
-            weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz)
-        return weights
+@dataclass(frozen=True)
+class ExteriorFieldResults:
+    """Retained BEM traces and response synthesis for exterior evaluation."""
+
+    traces: BemBoundaryTraces
+    backend_id: str
+    sound_speed_m_per_s: float
+    channel_names_by_excitation: tuple[str, ...]
+    channel_configs: tuple[ChannelConfig, ...]
+    horizontal_pressure_by_frequency: np.ndarray | None = None
+    horizontal_angles_deg: np.ndarray | None = None
+    flat_target_enabled: bool = False
+    flat_target_reference_angle_deg: float = 0.0
+
+    @property
+    def run_id(self) -> str:
+        return self.traces.run_id
+
+    @property
+    def frequencies_hz(self) -> np.ndarray:
+        return self.traces.frequencies_hz
+
+    @property
+    def response_options(self) -> tuple[tuple[str, str], ...]:
+        return _response_options(self.channel_names_by_excitation)
+
+    def boundary_response(
+        self,
+        frequency_hz: float | None,
+        response_id: str,
+    ) -> tuple[float, np.ndarray, np.ndarray]:
+        available_index = _nearest_frequency_index(self.frequencies_hz, frequency_hz, label="Exterior field")
+        solve_index = int(self.traces.frequency_indices[available_index])
+        frequency = float(self.frequencies_hz[available_index])
+        pressure_basis, normal_basis = self.traces.excitation_basis(frequency)
+        weights = _excitation_weights(
+            solve_index=solve_index,
+            frequency_hz=frequency,
+            response_id=response_id,
+            excitation_ids=self.traces.excitation_ids,
+            channel_names_by_excitation=self.channel_names_by_excitation,
+            channel_configs=self.channel_configs,
+            horizontal_pressure_by_frequency=self.horizontal_pressure_by_frequency,
+            horizontal_angles_deg=self.horizontal_angles_deg,
+            flat_target_enabled=self.flat_target_enabled,
+            flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
+        )
+        return (
+            frequency,
+            np.sum(pressure_basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False),
+            np.sum(normal_basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False),
+        )
+
+
+@dataclass(frozen=True)
+class ObservationFieldResults:
+    interior: InteriorFieldResults | None = None
+    exterior: ExteriorFieldResults | None = None
+
+    @property
+    def frequencies_hz(self) -> np.ndarray:
+        source = self.exterior or self.interior
+        return np.asarray(()) if source is None else source.frequencies_hz
+
+    @property
+    def response_options(self) -> tuple[tuple[str, str], ...]:
+        source = self.exterior or self.interior
+        return () if source is None else source.response_options
 
 
 def interior_field_results_from_solved_system(
@@ -151,25 +186,8 @@ def interior_field_results_from_solved_system(
         np.argsort(np.asarray(solved.frequencies_hz)[frequency_indices], kind="stable")
     ]
 
-    component_channels = component_channel_by_id or {}
-    component_by_port: dict[str, str] = {}
-    if solved.compiled_system is not None:
-        component_by_port = {port.id: port.component_id for port in solved.compiled_system.excitation_ports}
-    channel_names = tuple(
-        str(component_channels.get(component_by_port.get(port_id, ""), "main")) for port_id in solved.excitation_ids
-    )
-
-    horizontal = solved.quantities.get(HORIZONTAL_POLAR_PRESSURE_ID)
-    horizontal_values = None
-    horizontal_angles = None
-    if horizontal is not None:
-        candidate = np.asarray(horizontal.values)
-        horizontal_domain = solved.domains.get(horizontal.domain_id or "")
-        if candidate.ndim == 3 and candidate.shape[:2] == pressure.shape[:2] and horizontal_domain is not None:
-            angles = np.asarray(horizontal_domain.coordinates.get("angle_deg"), dtype=float)
-            if angles.shape == (candidate.shape[2],):
-                horizontal_values = candidate
-                horizontal_angles = angles
+    channel_names = _channel_names_by_excitation(solved, component_channel_by_id)
+    horizontal_values, horizontal_angles = _horizontal_pressure_basis(solved, pressure.shape[:2])
 
     symmetry = str(solved.provenance.solver_options.get("symmetry", "off")).strip().lower()
     if symmetry not in {"off", "x", "xy"}:
@@ -190,6 +208,170 @@ def interior_field_results_from_solved_system(
         flat_target_reference_angle_deg=float(flat_target_reference_angle_deg),
         symmetry=symmetry,
     )
+
+
+def exterior_field_results_from_solved_system(
+    solved: SolvedSystem | None,
+    *,
+    component_channel_by_id: dict[str, str] | None = None,
+    channel_configs: tuple[ChannelConfig, ...] = (),
+    flat_target_enabled: bool = False,
+    flat_target_reference_angle_deg: float = 0.0,
+) -> ExteriorFieldResults | None:
+    if solved is None or solved.provenance.solve_kind != "coupled_bem_fem":
+        return None
+    traces = bem_boundary_traces_from_solved_system(solved)
+    if traces is None:
+        return None
+    unbounded_regions = (
+        ()
+        if solved.compiled_system is None
+        else tuple(
+            region
+            for region in solved.compiled_system.regions
+            if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+        )
+    )
+    if len(unbounded_regions) != 1:
+        raise ValueError("Exterior field results require exactly one unbounded acoustic region.")
+    channel_names = _channel_names_by_excitation(solved, component_channel_by_id)
+    horizontal_values, horizontal_angles = _horizontal_pressure_basis(
+        solved,
+        (solved.frequencies_hz.size, len(solved.excitation_ids)),
+    )
+    return ExteriorFieldResults(
+        traces=traces,
+        backend_id=solved.provenance.backend_id,
+        sound_speed_m_per_s=float(unbounded_regions[0].sound_speed_m_per_s),
+        channel_names_by_excitation=channel_names,
+        channel_configs=tuple(channel_configs),
+        horizontal_pressure_by_frequency=horizontal_values,
+        horizontal_angles_deg=horizontal_angles,
+        flat_target_enabled=bool(flat_target_enabled),
+        flat_target_reference_angle_deg=float(flat_target_reference_angle_deg),
+    )
+
+
+def observation_field_results_from_solved_system(
+    solved: SolvedSystem | None,
+    *,
+    component_channel_by_id: dict[str, str] | None = None,
+    channel_configs: tuple[ChannelConfig, ...] = (),
+    flat_target_enabled: bool = False,
+    flat_target_reference_angle_deg: float = 0.0,
+) -> ObservationFieldResults | None:
+    options = {
+        "component_channel_by_id": component_channel_by_id,
+        "channel_configs": channel_configs,
+        "flat_target_enabled": flat_target_enabled,
+        "flat_target_reference_angle_deg": flat_target_reference_angle_deg,
+    }
+    interior = interior_field_results_from_solved_system(solved, **options)
+    exterior = exterior_field_results_from_solved_system(solved, **options)
+    if interior is None and exterior is None:
+        return None
+    return ObservationFieldResults(interior=interior, exterior=exterior)
+
+
+def _channel_names_by_excitation(
+    solved: SolvedSystem,
+    component_channel_by_id: dict[str, str] | None,
+) -> tuple[str, ...]:
+    component_channels = component_channel_by_id or {}
+    component_by_port: dict[str, str] = {}
+    if solved.compiled_system is not None:
+        component_by_port = {port.id: port.component_id for port in solved.compiled_system.excitation_ports}
+    return tuple(
+        str(component_channels.get(component_by_port.get(port_id, ""), "main"))
+        for port_id in solved.excitation_ids
+    )
+
+
+def _horizontal_pressure_basis(
+    solved: SolvedSystem,
+    leading_shape: tuple[int, int],
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    horizontal = solved.quantities.get(HORIZONTAL_POLAR_PRESSURE_ID)
+    if horizontal is None:
+        return None, None
+    candidate = np.asarray(horizontal.values)
+    horizontal_domain = solved.domains.get(horizontal.domain_id or "")
+    if candidate.ndim != 3 or candidate.shape[:2] != leading_shape or horizontal_domain is None:
+        return None, None
+    angles = np.asarray(horizontal_domain.coordinates.get("angle_deg"), dtype=float)
+    if angles.shape != (candidate.shape[2],):
+        return None, None
+    return candidate, angles
+
+
+def _response_options(channel_names_by_excitation: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    channel_names = tuple(dict.fromkeys(channel_names_by_excitation))
+    return (("system", "System Response"),) + tuple(
+        (f"channel:{name}", f"Channel: {name}") for name in channel_names
+    )
+
+
+def _nearest_frequency_index(frequencies_hz: np.ndarray, frequency_hz: float | None, *, label: str) -> int:
+    if not frequencies_hz.size:
+        raise ValueError(f"{label} results contain no solved frequencies.")
+    if frequency_hz is None or not np.isfinite(frequency_hz):
+        return 0
+    return int(np.argmin(np.abs(frequencies_hz - float(frequency_hz))))
+
+
+def _excitation_weights(
+    *,
+    solve_index: int,
+    frequency_hz: float,
+    response_id: str,
+    excitation_ids: tuple[str, ...],
+    channel_names_by_excitation: tuple[str, ...],
+    channel_configs: tuple[ChannelConfig, ...],
+    horizontal_pressure_by_frequency: np.ndarray | None,
+    horizontal_angles_deg: np.ndarray | None,
+    flat_target_enabled: bool,
+    flat_target_reference_angle_deg: float,
+) -> np.ndarray:
+    configs = {channel.name: channel for channel in channel_configs}
+    channel_names = tuple(dict.fromkeys(channel_names_by_excitation))
+    correction_by_channel = {name: 1.0 for name in channel_names}
+    if flat_target_enabled and horizontal_pressure_by_frequency is not None and horizontal_angles_deg is not None:
+        horizontal_basis = np.asarray(horizontal_pressure_by_frequency[solve_index])
+        grouped = np.vstack(
+            [
+                np.sum(
+                    horizontal_basis[
+                        [
+                            index
+                            for index, candidate in enumerate(channel_names_by_excitation)
+                            if candidate == name
+                        ]
+                    ],
+                    axis=0,
+                )
+                for name in channel_names
+            ]
+        )
+        corrections = flat_target_corrections(
+            grouped,
+            horizontal_angles_deg,
+            flat_target_reference_angle_deg,
+            enabled=True,
+        )
+        correction_by_channel.update(
+            {name: float(correction) for name, correction in zip(channel_names, corrections, strict=True)}
+        )
+
+    selected_channel = response_id.removeprefix("channel:") if response_id.startswith("channel:") else None
+    if selected_channel not in channel_names:
+        selected_channel = None
+    weights = np.zeros(len(excitation_ids), dtype=np.complex64)
+    for index, channel_name in enumerate(channel_names_by_excitation):
+        if selected_channel is not None and channel_name != selected_channel:
+            continue
+        config = configs.get(channel_name, ChannelConfig(name=channel_name))
+        weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz)
+    return weights
 
 
 def project_field_scalars(
@@ -235,8 +417,12 @@ def _finite_abs_max(values: np.ndarray) -> float:
 
 
 __all__ = [
+    "ExteriorFieldResults",
     "FieldScalarProjection",
     "InteriorFieldResults",
+    "ObservationFieldResults",
+    "exterior_field_results_from_solved_system",
     "interior_field_results_from_solved_system",
+    "observation_field_results_from_solved_system",
     "project_field_scalars",
 ]

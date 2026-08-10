@@ -1194,6 +1194,85 @@ function reclaim_accelerator_memory_after_failure()
     return nothing
 end
 
+function complex_vector_from_wire(raw, ::Type{T}) where {T<:AbstractFloat}
+    shape = Int.(raw["shape"])
+    length(shape) == 1 || error("Retained BEM traces must be one-dimensional arrays.")
+    real_values = T.(raw["real"])
+    imag_values = T.(raw["imag"])
+    length(real_values) == only(shape) == length(imag_values) ||
+        error("Retained BEM trace wire values do not match their declared shape.")
+    return complex.(real_values, imag_values)
+end
+
+function evaluate_bem_field_request(request)
+    precision_name = lowercase(String(get(request, "precision", "float32")))
+    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
+                error("Exterior field precision must be float32 or float64.")
+    backend = Symbol(lowercase(String(get(request, "bem_backend", "cpu"))))
+    backend in (:cpu, :cuda) || error("Exterior field backend must be cpu or cuda.")
+    symmetry = BeatEngineCore.normalized_symmetry_mode(get(request, "symmetry", "off"))
+    vertices = [SVector{3,FloatType}(FloatType.(point)) for point in request["boundary_points_m"]]
+    faces = [
+        (
+            Int(face[1]) + 1,
+            Int(face[2]) + 1,
+            Int(face[3]) + 1,
+        ) for face in request["boundary_triangles"]
+    ]
+    mesh = BoundaryMesh(vertices, faces, ones(Int, length(faces)))
+    pressure = complex_vector_from_wire(request["boundary_pressure"], FloatType)
+    normal_derivative = complex_vector_from_wire(
+        request["boundary_normal_derivative"],
+        FloatType,
+    )
+    length(pressure) == length(vertices) ||
+        error("Retained BEM pressure does not align with boundary vertices.")
+    length(normal_derivative) == length(faces) ||
+        error("Retained BEM normal derivative does not align with boundary faces.")
+    points = [SVector{3,FloatType}(FloatType.(point)) for point in request["points_m"]]
+    frequency_hz = FloatType(request["frequency_hz"])
+    sound_speed = FloatType(request["sound_speed_m_per_s"])
+    frequency_hz > zero(FloatType) || error("Exterior field frequency must be positive.")
+    sound_speed > zero(FloatType) || error("Exterior field sound speed must be positive.")
+    rule = triangle_rule(FloatType, Int(get(request, "quadrature_order", 2)))
+    cpu_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry)
+    field_cache = backend == :cuda ? build_cuda_field_evaluation_cache(cpu_cache) : cpu_cache
+    try
+        wavenumber = FloatType(2pi) * frequency_hz / sound_speed
+        return backend == :cuda ?
+               evaluate_galerkin_field_cuda(
+            points,
+            mesh,
+            pressure,
+            normal_derivative,
+            wavenumber,
+            field_cache,
+        ) :
+               evaluate_galerkin_field_cpu(
+            points,
+            mesh,
+            pressure,
+            normal_derivative,
+            wavenumber,
+            field_cache,
+        )
+    finally
+        if backend == :cuda
+            BeatEngineCoupled._unsafe_free_cuda_fields!(
+                field_cache,
+                (
+                    :source_points,
+                    :source_normals,
+                    :source_weights,
+                    :source_faces,
+                    :source_elements,
+                    :basis_values,
+                ),
+            )
+        end
+    end
+end
+
 function run_worker()
     println(JSON.json(Dict("type" => "ready")))
     flush(stdout)
@@ -1203,9 +1282,25 @@ function run_worker()
             submission = JSON.parse(line)
             request_path = String(submission["request"])
             request = JSON.parse(read(request_path, String))
-            outcome = solve_request(request; event_mode=true)
-            event_type = outcome.cancelled ? "cancelled" : "completed"
-            println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
+            operation = String(get(submission, "operation", "solve"))
+            if operation == "bem_field"
+                values = evaluate_bem_field_request(request)
+                println(
+                    JSON.json(
+                        Dict(
+                            "type" => "field_result",
+                            "values" => complex_array_wire(values),
+                        ),
+                    ),
+                )
+                println(JSON.json(Dict("type" => "completed")))
+            elseif operation == "solve"
+                outcome = solve_request(request; event_mode=true)
+                event_type = outcome.cancelled ? "cancelled" : "completed"
+                println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
+            else
+                error("Unsupported coupled worker operation: $operation")
+            end
         catch exception
             reclaim_accelerator_memory_after_failure()
             error_text = sprint(showerror, exception, catch_backtrace())

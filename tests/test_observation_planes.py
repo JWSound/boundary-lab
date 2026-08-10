@@ -317,6 +317,150 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     np.testing.assert_allclose(results.pressure(100.0, "system"), 20.0, rtol=1e-5)
 
 
+def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
+    from blab.config import ChannelConfig
+    from blab.physical_model import AcousticRegionKind
+    from blab.solve_results import (
+        BEM_BOUNDARY_DOMAIN_ID,
+        BEM_BOUNDARY_NEUMANN_ID,
+        BEM_BOUNDARY_PRESSURE_ID,
+        ResultDomain,
+        SolvedQuantity,
+        SolvedSystem,
+        SolveProvenance,
+    )
+    from blab.ui.observation_plane_results import exterior_field_results_from_solved_system
+
+    domain = ResultDomain(
+        id=BEM_BOUNDARY_DOMAIN_ID,
+        kind="bem_boundary",
+        dimensions=("bem_node", "bem_face"),
+        coordinates={"points_m": np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])},
+        topology={"triangles": np.asarray([[0, 1, 2]])},
+        metadata={"symmetry": "x"},
+    )
+    pressure = np.asarray(
+        [
+            [[1.0] * 3, [2.0] * 3],
+            [[10.0] * 3, [20.0] * 3],
+        ],
+        dtype=np.complex64,
+    )
+    normal = np.asarray([[[3.0], [4.0]], [[30.0], [40.0]]], dtype=np.complex64)
+    available = np.asarray([True, True])
+    compiled = SimpleNamespace(
+        regions=(
+            SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),
+        ),
+        excitation_ports=(
+            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+        ),
+    )
+    solved = SolvedSystem(
+        run_id="run",
+        provenance=SolveProvenance(backend_id="beat_cpu", solve_kind="coupled_bem_fem"),
+        frequencies_hz=np.asarray([1000.0, 100.0]),
+        excitation_ids=("port:woofer", "port:tweeter"),
+        domains={BEM_BOUNDARY_DOMAIN_ID: domain},
+        quantities={
+            BEM_BOUNDARY_PRESSURE_ID: SolvedQuantity(
+                id=BEM_BOUNDARY_PRESSURE_ID,
+                quantity="bem_boundary_pressure",
+                unit="Pa",
+                dimensions=("frequency", "excitation", "bem_node"),
+                values=pressure,
+                domain_id=BEM_BOUNDARY_DOMAIN_ID,
+                available_frequency_mask=available,
+            ),
+            BEM_BOUNDARY_NEUMANN_ID: SolvedQuantity(
+                id=BEM_BOUNDARY_NEUMANN_ID,
+                quantity="bem_boundary_neumann",
+                unit="Pa/m",
+                dimensions=("frequency", "excitation", "bem_face"),
+                values=normal,
+                domain_id=BEM_BOUNDARY_DOMAIN_ID,
+                available_frequency_mask=available,
+            ),
+        },
+        completion_mask=available,
+        diagnostics_by_frequency=({}, {}),
+        status="completed",
+        compiled_system=compiled,
+    )
+
+    results = exterior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low"), ChannelConfig(name="high")),
+    )
+
+    assert results is not None
+    assert results.frequencies_hz.tolist() == [100.0, 1000.0]
+    assert results.sound_speed_m_per_s == 344.0
+    assert results.traces.symmetry == "x"
+    frequency, system_pressure, system_normal = results.boundary_response(100.0, "system")
+    assert frequency == 100.0
+    np.testing.assert_allclose(system_pressure, 30.0)
+    np.testing.assert_allclose(system_normal, 70.0)
+    _frequency, channel_pressure, channel_normal = results.boundary_response(1000.0, "channel:high")
+    np.testing.assert_allclose(channel_pressure, 2.0)
+    np.testing.assert_allclose(channel_normal, 4.0)
+
+
+def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = replace(
+        new_observation_plane("Exterior"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+        frequency_hz=1000.0,
+    )
+    traces = SimpleNamespace(
+        points_m=np.eye(3),
+        triangles=np.asarray([[0, 1, 2]]),
+        symmetry="off",
+    )
+    exterior = SimpleNamespace(
+        run_id="run",
+        backend_id="beat_cpu",
+        sound_speed_m_per_s=343.0,
+        traces=traces,
+        boundary_response=lambda *_args: (
+            1000.0,
+            np.ones(3, dtype=np.complex64),
+            np.ones(1, dtype=np.complex64),
+        ),
+    )
+    mesh = SimpleNamespace(points=np.zeros((4, 3)), n_points=4)
+    requested = []
+    rendered = []
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(exterior=exterior),
+        _drag=None,
+        _field_generation=7,
+        _exterior_results={},
+        _exterior_failures={},
+        _exterior_pending=set(),
+        _field_message=None,
+        _exterior_plane_mesh=lambda _plane: mesh,
+        _exterior_boundary_mask=lambda *_args: np.zeros(4, dtype=bool),
+        _add_colored_field_actor=lambda *args, **kwargs: rendered.append((args, kwargs)),
+        exteriorFieldRequested=SimpleNamespace(emit=lambda task: requested.append(task)),
+    )
+
+    assert not ObservationPlaneViewport._add_exterior_field(editor, plane)
+    assert editor._field_message == "Evaluating exterior field..."
+    assert len(requested) == 1
+    task = requested[0]
+    assert task.request.frequency_hz == 1000.0
+    assert task.request.points_m.shape == (4, 3)
+
+    editor._exterior_results[task.key] = np.arange(4, dtype=np.complex64)
+    assert ObservationPlaneViewport._add_exterior_field(editor, plane)
+    np.testing.assert_allclose(rendered[0][0][1], np.arange(4))
+
+
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
     from blab.ui.observation_plane_results import project_field_scalars
 

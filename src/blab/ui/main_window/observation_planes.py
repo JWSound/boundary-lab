@@ -9,8 +9,9 @@ from PySide6.QtCore import QObject, Qt, Slot
 from PySide6.QtWidgets import QWidget
 
 from blab.observation_planes import ObservationPlane, new_observation_plane
+from blab.ui.exterior_field_service import ExteriorFieldEvaluationService, ExteriorFieldTask
 from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
-from blab.ui.observation_plane_results import InteriorFieldResults
+from blab.ui.observation_plane_results import ObservationFieldResults
 from blab.ui.project_state import ProjectDocument
 
 
@@ -25,7 +26,7 @@ class ObservationPlaneController(QObject):
         preview,
         project: Callable[[], ProjectDocument],
         show_status: Callable[[str], None],
-        field_results: Callable[[], InteriorFieldResults | None] | None = None,
+        field_results: Callable[[], ObservationFieldResults | None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._window = window
@@ -35,10 +36,16 @@ class ObservationPlaneController(QObject):
         self._field_results = field_results or (lambda: None)
         self._dialogs: dict[str, ObservationPlanePropertiesDialog] = {}
         self._active_plane_id: str | None = None
+        self._exterior_fields = ExteriorFieldEvaluationService(self)
+        self._exterior_fields.completed.connect(self._exterior_field_completed)
+        self._exterior_fields.failed.connect(self._exterior_field_failed)
+        self._exterior_fields.discarded.connect(self._exterior_field_discarded)
         preview.newObservationPlaneRequested.connect(self.create_plane)
         preview.observationPlaneChanged.connect(self.update_plane)
         preview.observationPlanePropertiesRequested.connect(self.open_properties)
         preview.observationPlaneDeleteRequested.connect(self.delete_plane)
+        if hasattr(preview, "observationPlaneExteriorFieldRequested"):
+            preview.observationPlaneExteriorFieldRequested.connect(self._request_exterior_field)
 
     def sync_view(self, *, selected_id: str | None = None) -> None:
         available_ids = {plane.id for plane in self._project().observation_planes}
@@ -189,6 +196,26 @@ class ObservationPlaneController(QObject):
     def _stop_animation(self) -> None:
         if hasattr(self._preview, "set_observation_plane_animation"):
             self._preview.set_observation_plane_animation(None, False)
+
+    @Slot(object)
+    def _request_exterior_field(self, task: object) -> None:
+        if isinstance(task, ExteriorFieldTask):
+            self._exterior_fields.submit(task)
+
+    @Slot(object, object)
+    def _exterior_field_completed(self, key: object, pressure: object) -> None:
+        if hasattr(self._preview, "set_observation_plane_exterior_field"):
+            self._preview.set_observation_plane_exterior_field(key, pressure)
+
+    @Slot(object, str)
+    def _exterior_field_failed(self, key: object, message: str) -> None:
+        if hasattr(self._preview, "set_observation_plane_exterior_field_failed"):
+            self._preview.set_observation_plane_exterior_field_failed(key, message)
+
+    @Slot(object)
+    def _exterior_field_discarded(self, key: object) -> None:
+        if hasattr(self._preview, "discard_observation_plane_exterior_field_request"):
+            self._preview.discard_observation_plane_exterior_field_request(key)
 
     def _find(self, plane_id: str) -> ObservationPlane | None:
         return next((plane for plane in self._project().observation_planes if plane.id == plane_id), None)

@@ -58,6 +58,7 @@ class MeshPreview(QWidget):
     observationPlaneChanged = Signal(object)
     observationPlanePropertiesRequested = Signal(str)
     observationPlaneDeleteRequested = Signal(str)
+    observationPlaneExteriorFieldRequested = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -100,6 +101,9 @@ class MeshPreview(QWidget):
         self._observation_editor.propertiesRequested.connect(self.observationPlanePropertiesRequested.emit)
         self._observation_editor.deleteRequested.connect(self.observationPlaneDeleteRequested.emit)
         self._observation_editor.clipStateChanged.connect(self._set_observation_clip_active)
+        self._observation_editor.exteriorFieldRequested.connect(
+            self.observationPlaneExteriorFieldRequested.emit
+        )
         self._install_hover_picker()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -137,6 +141,18 @@ class MeshPreview(QWidget):
     def set_observation_plane_active(self, plane_id: str | None) -> None:
         if self._observation_editor is not None:
             self._observation_editor.set_active_plane(plane_id)
+
+    def set_observation_plane_exterior_field(self, key, pressure) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_exterior_field_result(key, pressure)
+
+    def set_observation_plane_exterior_field_failed(self, key, message: str) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_exterior_field_failed(key, message)
+
+    def discard_observation_plane_exterior_field_request(self, key) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.discard_exterior_field_request(key)
 
     def _set_observation_clip_active(self, active: bool) -> None:
         self._observation_clip_active = bool(active)
