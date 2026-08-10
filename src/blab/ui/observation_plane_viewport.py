@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import OrderedDict
@@ -23,6 +24,8 @@ from blab.ui.observation_plane_results import (
     ObservationFieldResults,
     project_field_scalars,
 )
+
+LOGGER = logging.getLogger("blab.runtime")
 
 AXIS_COLORS = ("#ef5350", "#66bb6a", "#42a5f5")
 SELECTED_EDGE_COLOR = "#ffd54f"
@@ -236,6 +239,7 @@ class ObservationPlaneViewport(QObject):
         self._exterior_pending.discard(key)
         self._exterior_failures.pop(key, None)
         if not key or key[0] != self._field_generation:
+            LOGGER.info("Discarded stale exterior field result: key=%s", key)
             self._exterior_request_meshes.pop(key, None)
             return
         previous = self._exterior_results.pop(key, None)
@@ -257,7 +261,14 @@ class ObservationPlaneViewport(QObject):
         except (KeyError, TypeError, ValueError):
             return
         if key != current_key:
+            LOGGER.info("Cached non-current exterior field result: plane=%s", key[2] if len(key) > 2 else "unknown")
             return
+        LOGGER.info(
+            "Applying exterior field result: plane=%s frequency_hz=%s points=%d",
+            plane.id,
+            key[8] if len(key) > 8 else plane.frequency_hz,
+            values.shape[0],
+        )
         self._apply_exterior_field_result(plane, key, values, mesh=mesh)
 
     def set_exterior_field_failed(self, key: tuple[object, ...], message: str) -> None:
@@ -766,6 +777,7 @@ class ObservationPlaneViewport(QObject):
                 return False
             if pressure.shape != (mesh.n_points,):
                 raise ValueError("Evaluated exterior pressure does not align with the plane sample grid.")
+            pressure = self._masked_exterior_pressure(plane, mesh, pressure)
             self._add_colored_field_actor(
                 mesh,
                 pressure,
@@ -814,15 +826,22 @@ class ObservationPlaneViewport(QObject):
         if key in self._exterior_pending:
             return key
         mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
+        detached_points = np.array(mesh.points, dtype=np.float32, copy=True, order="C")
         self._exterior_pending.add(key)
         self._exterior_request_meshes[key] = mesh
+        LOGGER.info(
+            "Exterior field requested: plane=%s frequency_hz=%s points=%d",
+            plane.id,
+            frequency,
+            detached_points.shape[0],
+        )
         self.exteriorFieldRequested.emit(
             ExteriorFieldTask(
                 key=key,
                 backend_id=results.backend_id,
                 request=BemFieldEvaluationRequest(
                     domain_key=f"{results.run_id}:{results.traces.symmetry}",
-                    points_m=np.asarray(mesh.points),
+                    points_m=detached_points,
                     boundary_points_m=results.traces.points_m,
                     boundary_triangles=results.traces.triangles,
                     boundary_pressure=boundary_pressure,
@@ -831,7 +850,6 @@ class ObservationPlaneViewport(QObject):
                     sound_speed_m_per_s=results.sound_speed_m_per_s,
                     symmetry=results.traces.symmetry,
                 ),
-                mask_distance_m=max(1.0e-7, plane.resolution_m * 0.25),
             )
         )
         return key
@@ -852,6 +870,7 @@ class ObservationPlaneViewport(QObject):
         mesh = self._exterior_plane_mesh(plane) if mesh is None else mesh
         if pressure.shape != (mesh.n_points,):
             return False
+        pressure = self._masked_exterior_pressure(plane, mesh, pressure)
         state = self._active_field
         if (
             state is not None
@@ -859,10 +878,8 @@ class ObservationPlaneViewport(QObject):
             and state.association == "point"
             and state.mesh.n_points == mesh.n_points
             and state.sample_shape == plane.sample_shape
+            and _update_mesh_points(state.mesh, mesh.points)
         ):
-            state.mesh.points = np.asarray(mesh.points)
-            if hasattr(state.mesh, "Modified"):
-                state.mesh.Modified()
             phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
             projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
             if not _update_mesh_scalars(state.mesh, "point", projection.values):
@@ -885,6 +902,64 @@ class ObservationPlaneViewport(QObject):
         )
         self.viewer.render()
         return True
+
+    def _masked_exterior_pressure(self, plane: ObservationPlane, plane_mesh, pressure: np.ndarray) -> np.ndarray:
+        results = None if self._field_results is None else self._field_results.exterior
+        if results is None or not pressure.size:
+            return pressure
+        mask = self._exterior_boundary_mask(plane, plane_mesh, results)
+        if not np.any(mask):
+            return pressure
+        masked = np.asarray(pressure).copy()
+        masked[mask] = np.nan + 1j * np.nan
+        return masked
+
+    def _exterior_boundary_mask(self, plane: ObservationPlane, plane_mesh, results) -> np.ndarray:
+        signature = (
+            _field_geometry_signature(self._field_generation, plane, results.traces.symmetry, smooth=True),
+            results.run_id,
+        )
+        key = ("exterior-mask", plane.id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        boundary_mesh = self._exterior_boundary_mesh(results)
+        sample_points = np.array(plane_mesh.points, dtype=float, copy=True, order="C")
+        _cell_ids, closest_points = boundary_mesh.find_closest_cell(
+            sample_points,
+            return_closest_point=True,
+        )
+        distances = np.linalg.norm(sample_points - np.asarray(closest_points), axis=1)
+        mask = distances <= max(1.0e-7, plane.resolution_m * 0.25)
+        self._field_cache[key] = (signature, mask)
+        LOGGER.info(
+            "Exterior boundary mask updated: plane=%s points=%d masked=%d",
+            plane.id,
+            sample_points.shape[0],
+            int(np.count_nonzero(mask)),
+        )
+        return mask
+
+    def _exterior_boundary_mesh(self, results):
+        signature = (
+            self._field_generation,
+            results.run_id,
+            results.traces.symmetry,
+        )
+        key = ("exterior-boundary", results.run_id)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        pv = __import__("pyvista")
+        points, triangles = _expanded_boundary_geometry(
+            results.traces.points_m,
+            results.traces.triangles,
+            results.traces.symmetry,
+        )
+        faces = np.column_stack((np.full(triangles.shape[0], 3, dtype=np.int64), triangles)).reshape(-1)
+        boundary_mesh = pv.PolyData(points, faces)
+        self._field_cache[key] = (signature, boundary_mesh)
+        return boundary_mesh
 
     def _smooth_field_mesh(
         self,
@@ -1075,18 +1150,16 @@ class ObservationPlaneViewport(QObject):
         plane_mesh = self._plane_meshes.get(plane.id)
         if plane_mesh is None:
             return False
-        plane_mesh.points = plane.corners_m
-        if hasattr(plane_mesh, "Modified"):
-            plane_mesh.Modified()
+        if not _update_mesh_points(plane_mesh, plane.corners_m):
+            return False
         if (
             state is not None
             and state.plane_id == plane.id
             and state.association == "point"
             and state.sample_shape is not None
         ):
-            state.mesh.points = _sample_plane_points(plane, state.sample_shape)
-            if hasattr(state.mesh, "Modified"):
-                state.mesh.Modified()
+            if not _update_mesh_points(state.mesh, _sample_plane_points(plane, state.sample_shape)):
+                return False
             state.plane = plane
         self._refresh_interactive_tools(plane)
         if self._rotation_angle_deg is not None:
@@ -1561,6 +1634,24 @@ def _expanded_fem_geometry(
     )
 
 
+def _expanded_boundary_geometry(
+    points: np.ndarray,
+    triangles: np.ndarray,
+    symmetry: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    points = np.asarray(points, dtype=float)
+    triangles = np.asarray(triangles, dtype=np.int64)
+    signs = [(1.0, 1.0, 1.0)]
+    if symmetry in {"x", "xy"}:
+        signs.append((-1.0, 1.0, 1.0))
+    if symmetry == "xy":
+        signs.extend(((1.0, -1.0, 1.0), (-1.0, -1.0, 1.0)))
+    return (
+        np.vstack([points * np.asarray(image_signs, dtype=float) for image_signs in signs]),
+        np.vstack([triangles + index * points.shape[0] for index, _image_signs in enumerate(signs)]),
+    )
+
+
 def _expanded_fem_field(
     points: np.ndarray,
     tetrahedra: np.ndarray,
@@ -1641,6 +1732,23 @@ def _update_mesh_scalars(mesh, association: str, values: np.ndarray) -> bool:
     vtk_array = getattr(current, "VTKObject", None)
     if vtk_array is not None:
         vtk_array.Modified()
+    if hasattr(mesh, "Modified"):
+        mesh.Modified()
+    return True
+
+
+def _update_mesh_points(mesh, values: np.ndarray) -> bool:
+    current = mesh.points
+    updated = np.asarray(values)
+    if np.shape(current) != np.shape(updated):
+        return False
+    np.copyto(current, updated, casting="unsafe")
+    vtk_array = getattr(current, "VTKObject", None)
+    if vtk_array is not None:
+        vtk_array.Modified()
+    vtk_points = mesh.GetPoints() if hasattr(mesh, "GetPoints") else None
+    if vtk_points is not None:
+        vtk_points.Modified()
     if hasattr(mesh, "Modified"):
         mesh.Modified()
     return True

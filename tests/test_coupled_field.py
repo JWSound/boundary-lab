@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import replace
 
 import numpy as np
 
@@ -97,29 +96,3 @@ def test_exterior_field_service_coalesces_queued_requests(qapp, monkeypatch) -> 
     finally:
         release.set()
         service.close()
-
-
-def test_exterior_field_service_masks_boundary_samples_off_ui_thread(qapp, monkeypatch) -> None:
-    import blab.ui.exterior_field_service as service_module
-    from blab.ui.exterior_field_service import ExteriorFieldEvaluationService, ExteriorFieldTask
-
-    request = replace(
-        _request(),
-        points_m=np.asarray([[0.25, 0.25, 0.0], [0.25, 0.25, 1.0]]),
-        symmetry="off",
-    )
-    monkeypatch.setattr(
-        service_module,
-        "evaluate_bem_field",
-        lambda request, **_kwargs: np.ones(request.points_m.shape[0], dtype=np.complex64),
-    )
-    service = ExteriorFieldEvaluationService()
-    try:
-        values = service._evaluate_task(
-            ExteriorFieldTask(("mask",), "beat_cpu", request, mask_distance_m=1.0e-4)
-        )
-    finally:
-        service.close()
-
-    assert np.isnan(values[0])
-    assert values[1] == 1.0

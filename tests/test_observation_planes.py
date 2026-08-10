@@ -434,7 +434,8 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
             np.ones(1, dtype=np.complex64),
         ),
     )
-    mesh = SimpleNamespace(points=np.zeros((4, 3)), n_points=4)
+    source_points = np.zeros((4, 3))
+    mesh = SimpleNamespace(points=source_points, n_points=4)
     requested = []
     rendered = []
     editor = SimpleNamespace(
@@ -448,6 +449,7 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
         _active_field=None,
         _field_message=None,
         _exterior_plane_mesh=lambda _plane: mesh,
+        _masked_exterior_pressure=lambda _plane, _mesh, pressure: pressure,
         _add_colored_field_actor=lambda *args, **kwargs: rendered.append((args, kwargs)),
         exteriorFieldRequested=SimpleNamespace(emit=lambda task: requested.append(task)),
     )
@@ -463,6 +465,11 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
     task = requested[0]
     assert task.request.frequency_hz == 1000.0
     assert task.request.points_m.shape == (4, 3)
+    assert task.request.points_m.dtype == np.float32
+    assert task.request.points_m.flags.c_contiguous
+    assert not np.shares_memory(task.request.points_m, source_points)
+    source_points[:] = 12.0
+    np.testing.assert_allclose(task.request.points_m, 0.0)
 
     editor._exterior_results[task.key] = np.arange(4, dtype=np.complex64)
     assert ObservationPlaneViewport._add_exterior_field(editor, plane)
@@ -503,9 +510,10 @@ def test_exterior_geometry_preview_moves_existing_field_in_place() -> None:
         height_m=0.1,
         resolution_m=0.1,
     )
-    updated = replace(original, center_m=(0.2, -0.1, 0.3))
     outline = pv.PolyData(original.corners_m, np.asarray((4, 0, 1, 2, 3)))
     field = pv.PolyData(original.corners_m)
+    outline_points_address = outline.GetPoints().GetData().GetAddressAsString("")
+    field_points_address = field.GetPoints().GetData().GetAddressAsString("")
     pressure = np.arange(4, dtype=np.complex64)
     renders = []
     state = _ActiveFieldState(
@@ -524,12 +532,47 @@ def test_exterior_geometry_preview_moves_existing_field_in_place() -> None:
         viewer=SimpleNamespace(render=lambda: renders.append(True)),
     )
 
-    assert ObservationPlaneViewport._preview_exterior_geometry(editor, updated)
+    updated = original
+    for index in range(50):
+        updated = replace(original, center_m=(0.004 * index, -0.002 * index, 0.006 * index))
+        assert ObservationPlaneViewport._preview_exterior_geometry(editor, updated)
+
     np.testing.assert_allclose(outline.points, updated.corners_m)
     np.testing.assert_allclose(np.mean(field.points, axis=0), updated.center_m)
+    assert outline.GetPoints().GetData().GetAddressAsString("") == outline_points_address
+    assert field.GetPoints().GetData().GetAddressAsString("") == field_points_address
     assert state.pressure is pressure
     assert state.plane is updated
-    assert renders == [True]
+    assert len(renders) == 50
+
+
+def test_exterior_boundary_mask_is_cached_with_viewport_geometry() -> None:
+    import pyvista as pv
+
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = replace(
+        new_observation_plane("Exterior"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+        resolution_m=0.01,
+    )
+    plane_mesh = pv.PolyData(np.asarray([[0.25, 0.25, 0.0], [0.25, 0.25, 1.0]]))
+    results = SimpleNamespace(
+        run_id="run",
+        traces=SimpleNamespace(
+            points_m=np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            triangles=np.asarray([[0, 1, 2]]),
+            symmetry="off",
+        ),
+    )
+    editor = SimpleNamespace(_field_generation=3, _field_cache={})
+    editor._exterior_boundary_mesh = MethodType(ObservationPlaneViewport._exterior_boundary_mesh, editor)
+
+    first = ObservationPlaneViewport._exterior_boundary_mask(editor, plane, plane_mesh, results)
+    second = ObservationPlaneViewport._exterior_boundary_mask(editor, plane, plane_mesh, results)
+
+    assert first.tolist() == [True, False]
+    assert second is first
 
 
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
