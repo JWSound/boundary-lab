@@ -48,7 +48,8 @@ class ObservationPlaneController(QObject):
             preview.observationPlaneExteriorFieldRequested.connect(self._request_exterior_field)
 
     def sync_view(self, *, selected_id: str | None = None) -> None:
-        available_ids = {plane.id for plane in self._project().observation_planes}
+        project_planes = self._project().observation_planes
+        available_ids = {plane.id for plane in project_planes}
         if self._active_plane_id not in available_ids:
             self._active_plane_id = None
         results = self._field_results()
@@ -63,7 +64,15 @@ class ObservationPlaneController(QObject):
             )
             dialog.set_solved_results(frequencies, responses)
             dialog.set_active(dialog.plane.id == self._active_plane_id)
-        self._preview.set_observation_planes(self._project().observation_planes, selected_id=selected_id)
+        # Modeless property dialogs own live, uncommitted display state. Keep
+        # that state in the viewport when results are resynthesized; sending
+        # the persisted plane here would restore an older frequency/response
+        # until the user moved the corresponding control again.
+        preview_planes = tuple(
+            self._dialogs[plane.id].plane if plane.id in self._dialogs else plane
+            for plane in project_planes
+        )
+        self._preview.set_observation_planes(preview_planes, selected_id=selected_id)
         if hasattr(self._preview, "set_observation_plane_active"):
             self._preview.set_observation_plane_active(self._active_plane_id)
 

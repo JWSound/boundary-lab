@@ -349,6 +349,73 @@ def test_observation_field_results_use_only_common_combined_frequencies() -> Non
     assert results.frequencies_for(ObservationPlaneType.EXTERIOR).tolist() == [100.0, 400.0, 800.0]
 
 
+def test_channel_synthesis_update_reuses_field_geometry_and_refreshes_active_scalars() -> None:
+    from blab.config import ChannelConfig
+    from blab.ui.observation_plane_results import ObservationFieldResults
+    from blab.ui.observation_plane_viewport import (
+        ObservationPlaneViewport,
+        _observation_field_results_signature,
+        _observation_field_source_signature,
+    )
+
+    def results(level_db: float) -> ObservationFieldResults:
+        return ObservationFieldResults(
+            interior=SimpleNamespace(
+                run_id="run",
+                frequencies_hz=np.asarray([100.0, 1000.0]),
+                frequency_indices=np.asarray([0, 1]),
+                points_m=np.zeros((4, 3)),
+                tetrahedra=np.asarray([[0, 1, 2, 3]]),
+                pressure_by_frequency=np.ones((2, 1, 4), dtype=np.complex64),
+                excitation_ids=("port:main",),
+                channel_names_by_excitation=("main",),
+                channel_configs=(ChannelConfig(name="main", level_db=level_db),),
+                flat_target_enabled=False,
+                flat_target_reference_angle_deg=0.0,
+                symmetry="off",
+            )
+        )
+
+    original = results(0.0)
+    updated = results(-6.0)
+    plane = replace(new_observation_plane("Interior"), frequency_hz=1000.0)
+    geometry = object()
+    updates = []
+    stopped = []
+    editor = SimpleNamespace(
+        _field_results=original,
+        _field_source_signature=_observation_field_source_signature(original),
+        _field_results_signature=_observation_field_results_signature(original),
+        _field_generation=4,
+        _field_synthesis_generation=9,
+        _field_cache={("smooth", plane.id): geometry},
+        _exterior_results=OrderedDict((("old", np.ones(2, dtype=np.complex64)),)),
+        _exterior_result_bytes=16,
+        _exterior_pending={("pending",)},
+        _exterior_failures={("failed",): "old"},
+        _exterior_request_meshes={("pending",): object()},
+        _exterior_refresh_timer=SimpleNamespace(stop=lambda: stopped.append("exterior")),
+        _interior_refresh_timer=SimpleNamespace(stop=lambda: stopped.append("interior")),
+        _field_plane=lambda: plane,
+        _update_active_field=lambda candidate: updates.append(candidate) or True,
+        _render=lambda: pytest.fail("a synthesis-only update must not rebuild the scene"),
+    )
+
+    ObservationPlaneViewport.set_field_results(editor, updated)
+
+    assert editor._field_results is updated
+    assert editor._field_generation == 4
+    assert editor._field_synthesis_generation == 10
+    assert editor._field_cache[("smooth", plane.id)] is geometry
+    assert editor._exterior_results == {}
+    assert editor._exterior_result_bytes == 0
+    assert editor._exterior_pending == set()
+    assert editor._exterior_failures == {}
+    assert editor._exterior_request_meshes == {}
+    assert updates == [plane]
+    assert stopped == ["exterior", "interior"]
+
+
 def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     from blab.config import ChannelConfig
     from blab.physical_model import AcousticRegionKind
@@ -471,6 +538,7 @@ def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
         _field_results=SimpleNamespace(exterior=exterior),
         _drag=None,
         _field_generation=7,
+        _field_synthesis_generation=7,
         _exterior_results={},
         _exterior_failures={},
         _exterior_pending=set(),
@@ -545,6 +613,7 @@ def test_combined_field_requests_only_points_classified_as_exterior() -> None:
             frequencies_for=lambda _plane_type: np.asarray([1000.0]),
         ),
         _field_generation=7,
+        _field_synthesis_generation=7,
         _exterior_results={},
         _exterior_pending=set(),
         _exterior_request_meshes={},
@@ -602,6 +671,7 @@ def test_exterior_move_stream_applies_compatible_lagged_result_without_caching()
     applied = []
     editor = SimpleNamespace(
         _field_generation=7,
+        _field_synthesis_generation=7,
         _exterior_pending={completed_key},
         _exterior_failures={},
         _exterior_request_meshes={completed_key: requested_mesh},
@@ -630,6 +700,28 @@ def test_exterior_move_stream_applies_compatible_lagged_result_without_caching()
     assert applied[0][1] == completed_key
     assert applied[0][2] is pressure
     assert applied[0][3] is current_mesh
+
+
+def test_exterior_result_from_prior_channel_synthesis_is_discarded() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    stale_key = (6, "run", "plane")
+    editor = SimpleNamespace(
+        _field_synthesis_generation=7,
+        _exterior_pending={stale_key},
+        _exterior_failures={stale_key: "stale"},
+        _exterior_request_meshes={stale_key: object()},
+    )
+
+    ObservationPlaneViewport.set_exterior_field_result(
+        editor,
+        stale_key,
+        np.ones(4, dtype=np.complex64),
+    )
+
+    assert editor._exterior_pending == set()
+    assert editor._exterior_failures == {}
+    assert editor._exterior_request_meshes == {}
 
 
 def test_exterior_stream_compatibility_ignores_only_rigid_transform() -> None:
@@ -1189,6 +1281,35 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
     assert calls == [("field", 200.0), ("field", 300.0)]
 
 
+def test_plane_sync_prunes_only_plane_owned_field_cache_entries() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport
+
+    plane = new_observation_plane("Slice")
+    shared_volume = object()
+    shared_boundary = object()
+    retained_plane_geometry = object()
+    editor = SimpleNamespace(
+        _planes=(plane,),
+        _selected_id=plane.id,
+        _active_id=None,
+        _mode=None,
+        _field_cache={
+            ("fem-volume", "off"): shared_volume,
+            ("exterior-boundary", "run"): shared_boundary,
+            ("smooth", plane.id): retained_plane_geometry,
+            ("smooth", "deleted-plane"): object(),
+        },
+    )
+
+    ObservationPlaneViewport.set_planes(editor, (plane,), selected_id=plane.id)
+
+    assert editor._field_cache == {
+        ("fem-volume", "off"): shared_volume,
+        ("exterior-boundary", "run"): shared_boundary,
+        ("smooth", plane.id): retained_plane_geometry,
+    }
+
+
 def test_active_plane_remains_field_plane_after_camera_deselect() -> None:
     from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 
@@ -1402,6 +1523,34 @@ def test_properties_window_is_modeless_and_commits_or_reverts_live_preview(main_
     qapp.processEvents()
     assert main_window.project.observation_planes[0].name == "Accepted Slice"
     assert main_window.preview.observation_planes[0].name == "Accepted Slice"
+
+
+def test_result_sync_preserves_modeless_dialog_frequency_preview(main_window, qapp) -> None:
+    main_window.preview.newObservationPlaneRequested.emit({})
+    persisted = main_window.project.observation_planes[0]
+    controller = main_window.observation_plane_controller
+    results = SimpleNamespace(
+        response_options=(("system", "System Response"),),
+        frequencies_for=lambda _plane_type: np.asarray([100.0, 1000.0, 10_000.0]),
+    )
+    controller._field_results = lambda: results
+
+    main_window.preview.observationPlanePropertiesRequested.emit(persisted.id)
+    dialog = controller._dialogs[persisted.id]
+    dialog.active_check.setChecked(True)
+    dialog.frequency_slider.setValue(2)
+    QTest.qWait(20)
+    qapp.processEvents()
+
+    assert main_window.project.observation_planes[0].frequency_hz is None
+    assert main_window.preview.observation_planes[0].frequency_hz == 10_000.0
+
+    controller.sync_view()
+
+    assert dialog.plane.frequency_hz == 10_000.0
+    assert main_window.preview.observation_planes[0].frequency_hz == 10_000.0
+    assert main_window.preview.active_observation_plane_id == persisted.id
+    assert main_window.project.observation_planes[0].frequency_hz is None
 
 
 def test_properties_active_toggle_is_exclusive_and_session_scoped(main_window) -> None:

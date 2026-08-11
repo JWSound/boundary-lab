@@ -37,6 +37,7 @@ ANGLE_ACTOR_NAME = "observation-plane:rotation-angle"
 FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
 ROTATION_SNAP_DEG = 5.0
+PLANE_FIELD_CACHE_KINDS = frozenset({"smooth", "element", "combined", "exterior", "exterior-mask"})
 
 
 @dataclass
@@ -124,10 +125,12 @@ class ObservationPlaneViewport(QObject):
         self._scene_bounds: tuple[float, float, float, float, float, float] | None = None
         self._rotation_angle_deg: float | None = None
         self._field_results: ObservationFieldResults | None = None
+        self._field_source_signature: tuple[object, ...] | None = None
         self._field_results_signature: tuple[object, ...] | None = None
         self._field_message: str | None = None
         self._field_cache: dict[tuple[str, str], tuple[tuple[object, ...], object]] = {}
         self._field_generation = 0
+        self._field_synthesis_generation = 0
         self._scalar_bar_titles: set[str] = set()
         self._clip_active = False
         self._animation_plane_id: str | None = None
@@ -211,7 +214,7 @@ class ObservationPlaneViewport(QObject):
         if self._active_id not in available_ids:
             self._active_id = None
         for cache_key in tuple(self._field_cache):
-            if cache_key[1] not in available_ids:
+            if cache_key[0] in PLANE_FIELD_CACHE_KINDS and cache_key[1] not in available_ids:
                 self._field_cache.pop(cache_key, None)
         if selected_id is not None:
             self._selected_id = selected_id if selected_id in available_ids else None
@@ -253,14 +256,17 @@ class ObservationPlaneViewport(QObject):
             self._render()
 
     def set_field_results(self, results: ObservationFieldResults | None) -> None:
+        source_signature = _observation_field_source_signature(results)
         signature = _observation_field_results_signature(results)
-        if signature == self._field_results_signature:
+        source_changed = source_signature != self._field_source_signature
+        synthesis_changed = signature != self._field_results_signature
+        if not source_changed and not synthesis_changed:
             self._field_results = results
             return
         self._field_results = results
+        self._field_source_signature = source_signature
         self._field_results_signature = signature
-        self._field_generation += 1
-        self._field_cache.clear()
+        self._field_synthesis_generation += 1
         self._exterior_results.clear()
         self._exterior_result_bytes = 0
         self._exterior_pending.clear()
@@ -268,6 +274,14 @@ class ObservationPlaneViewport(QObject):
         self._exterior_request_meshes.clear()
         self._exterior_refresh_timer.stop()
         self._interior_refresh_timer.stop()
+        if not source_changed:
+            LOGGER.info("Observation field synthesis updated without rebuilding geometry")
+            if self._update_active_field(self._field_plane()):
+                return
+            self._render()
+            return
+        self._field_generation += 1
+        self._field_cache.clear()
         if results is None:
             self.set_animation(None, False)
         self._render()
@@ -275,7 +289,7 @@ class ObservationPlaneViewport(QObject):
     def set_exterior_field_result(self, key: tuple[object, ...], pressure: np.ndarray) -> None:
         self._exterior_pending.discard(key)
         self._exterior_failures.pop(key, None)
-        if not key or key[0] != self._field_generation:
+        if not key or key[0] != self._field_synthesis_generation:
             LOGGER.info("Discarded stale exterior field result: key=%s", key)
             self._exterior_request_meshes.pop(key, None)
             return
@@ -354,7 +368,7 @@ class ObservationPlaneViewport(QObject):
     def set_exterior_field_failed(self, key: tuple[object, ...], message: str) -> None:
         self._exterior_pending.discard(key)
         self._exterior_request_meshes.pop(key, None)
-        if not key or key[0] != self._field_generation:
+        if not key or key[0] != self._field_synthesis_generation:
             return
         self._exterior_failures[key] = str(message)
         plane = self._field_plane()
@@ -963,7 +977,7 @@ class ObservationPlaneViewport(QObject):
             frequency = float(frequencies[int(np.argmin(np.abs(frequencies - requested)))])
         else:
             frequency = results.resolved_frequency(plane.frequency_hz)
-        return _exterior_field_key(self._field_generation, results.run_id, plane, frequency)
+        return _exterior_field_key(self._field_synthesis_generation, results.run_id, plane, frequency)
 
     def _request_exterior_field_for_plane(self, plane: ObservationPlane, *, mesh=None) -> tuple[object, ...] | None:
         results = None if self._field_results is None else self._field_results.exterior
@@ -2114,6 +2128,47 @@ def _observation_field_results_signature(results: ObservationFieldResults | None
         )
 
     return field_key(results.interior), field_key(results.exterior)
+
+
+def _observation_field_source_signature(results: ObservationFieldResults | None) -> tuple[object, ...] | None:
+    """Identify solved bases/topology separately from their channel synthesis."""
+
+    if results is None:
+        return None
+
+    def interior_key(field) -> tuple[object, ...] | None:
+        if field is None:
+            return None
+        return (
+            field.run_id,
+            tuple(float(value) for value in np.asarray(field.frequencies_hz).reshape(-1)),
+            tuple(int(value) for value in np.asarray(field.frequency_indices).reshape(-1)),
+            field.excitation_ids,
+            field.symmetry,
+            np.asarray(field.points_m).shape,
+            np.asarray(field.tetrahedra).shape,
+            np.asarray(field.pressure_by_frequency).shape,
+        )
+
+    def exterior_key(field) -> tuple[object, ...] | None:
+        if field is None:
+            return None
+        traces = field.traces
+        return (
+            field.run_id,
+            tuple(float(value) for value in np.asarray(traces.frequencies_hz).reshape(-1)),
+            tuple(int(value) for value in np.asarray(traces.frequency_indices).reshape(-1)),
+            traces.excitation_ids,
+            traces.symmetry,
+            field.backend_id,
+            float(field.sound_speed_m_per_s),
+            np.asarray(traces.points_m).shape,
+            np.asarray(traces.triangles).shape,
+            np.asarray(traces.pressure_by_frequency).shape,
+            np.asarray(traces.normal_derivative_by_frequency).shape,
+        )
+
+    return interior_key(results.interior), exterior_key(results.exterior)
 
 
 def _exterior_field_key(
