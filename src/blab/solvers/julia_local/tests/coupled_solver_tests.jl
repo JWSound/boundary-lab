@@ -241,6 +241,77 @@ end
     @test size(operators.bem_trace) == (0, length(bem_mesh.vertices))
 end
 
+@testset "mixed FEM and BEM prescribed-velocity excitation" begin
+    fem_mesh = VolumeMesh(
+        SVector{3,Float64}[
+            SVector(0.0, 0.0, 0.0),
+            SVector(1.0, 0.0, 0.0),
+            SVector(0.0, 1.0, 0.0),
+            SVector(0.0, 0.0, 1.0),
+        ],
+        [(1, 2, 3, 4)],
+        [1],
+        [(1, 2, 3)],
+        [9],
+        Dict((3, 1) => "Volume", (2, 9) => "FEM source"),
+    )
+    bem_mesh = BoundaryMesh(
+        SVector{3,Float64}[
+            SVector(0.0, 0.0, 2.0),
+            SVector(1.0, 0.0, 2.0),
+            SVector(0.0, 1.0, 2.0),
+        ],
+        [(1, 2, 3)],
+        [11],
+    )
+    interface_map = ConformingInterfaceMap(Int[], Int[], Int[], Int[], Int[])
+    interface_operators = InterfaceOperators{Float64}(
+        spzeros(Float64, 4, 0),
+        spzeros(Float64, 1, 0),
+        spzeros(Float64, 0, 4),
+        spzeros(Float64, 0, 3),
+    )
+    system = (
+        fem_mesh=fem_mesh,
+        bem_mesh=bem_mesh,
+        interface_map=interface_map,
+        interface_operators=interface_operators,
+        transducers=ElectrodynamicTransducer{Float64}[],
+        transducer_operators=(bem_normal_velocity=spzeros(Float64, 1, 0),),
+        density=1.0,
+        omega=2.0,
+        factorization=lu(Matrix{ComplexF64}(I, 7, 7)),
+        formulation=:monolithic,
+        fem_range=1:4,
+        bem_range=5:7,
+        flux_range=8:7,
+        mechanical_range=1:0,
+        electrical_range=1:0,
+        prescribed_bem_rhs=reshape(ComplexF64[4, 5, 6], 3, 1),
+        prescribed_bem_neumann=reshape(ComplexF64[3im], 1, 1),
+        linear_backend=:cpu,
+        validation_diagnostics=false,
+        scalar_type=Float64,
+    )
+    excitation = (
+        kind=:normal_velocity,
+        fem_boundary_tags=[9],
+        fem_boundary_weights=[0.5],
+        bem_source_index=1,
+        transducer_index=0,
+        amplitude=ComplexF64(2, 0),
+    )
+
+    solution = only(solve_coupled_excitations(system, [excitation]))
+
+    @test solution.fem_pressure[1:3] ≈ fill(ComplexF64(0, 1 / 3), 3)
+    @test solution.fem_pressure[4] == 0
+    @test solution.bem_pressure == ComplexF64[8, 10, 12]
+    @test solution.bem_neumann == ComplexF64[6im]
+    @test solution.pressure_continuity_error == 0
+    @test solution.flux_conservation_error == 0
+end
+
 @testset "rigid-piston electrodynamic surface operators" begin
     fem_mesh = load_gmsh41_volume(joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"), 0.001)
     bem_mesh = load_gmsh22_with_tags(joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"), 0.001)
@@ -308,6 +379,13 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             2,
         )
         bulk_loss_factor = 0.01
+        prescribed_bem_normal_velocity = sparse(
+            findall(==(1), bem_mesh.physical_tags),
+            ones(Int, count(==(1), bem_mesh.physical_tags)),
+            ones(Float64, count(==(1), bem_mesh.physical_tags)),
+            length(bem_mesh.faces),
+            1,
+        )
         coupled_system = build_coupled_system(
             fem_mesh,
             bem_mesh,
@@ -318,6 +396,7 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
             quadrature_order=COUPLED_QUADRATURE_ORDER,
             singular_order=COUPLED_SINGULAR_ORDER,
             bulk_loss_factor=bulk_loss_factor,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
         )
         expected_fem_system = assemble_fem_dynamic_stiffness(
             coupled_system.cache.stiffness,
@@ -339,6 +418,31 @@ if get(ENV, "BLAB_RUN_COUPLED_REFERENCE", "0") == "1"
         @test solution.pressure_continuity_error < 1e-8
         @test solution.flux_conservation_error < 1e-10
         @test solution.all_bem_replay_error < 1e-8
+
+        bem_solution = only(
+            solve_coupled_excitations(
+                coupled_system,
+                [(
+                    kind=:normal_velocity,
+                    fem_boundary_tags=Int[],
+                    fem_boundary_weights=Float64[],
+                    bem_source_index=1,
+                    transducer_index=0,
+                    amplitude=ComplexF64(1, 0),
+                )],
+            ),
+        )
+        expected_bem_neumann = ComplexF64(0, 1.21 * 2pi * 500.0) .* vec(
+            prescribed_bem_normal_velocity,
+        )
+        expected_bem_neumann .+= ComplexF64.(
+            coupled_system.interface_operators.bem_flux,
+        ) * bem_solution.interface_flux
+        @test bem_solution.bem_neumann ≈ expected_bem_neumann
+        @test bem_solution.relative_residual < 1e-8
+        @test bem_solution.pressure_continuity_error < 1e-8
+        @test bem_solution.flux_conservation_error < 1e-10
+        @test bem_solution.all_bem_replay_error < 1e-8
 
         fem_mesh32 = load_gmsh41_volume(
             joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"),
@@ -397,6 +501,13 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             2,
         )
         radiator_tag = physical_tag(fem_mesh, 2, "Radiator")
+        prescribed_bem_normal_velocity = sparse(
+            findall(==(1), bem_mesh.physical_tags),
+            ones(Int, count(==(1), bem_mesh.physical_tags)),
+            ones(Float32, count(==(1), bem_mesh.physical_tags)),
+            length(bem_mesh.faces),
+            1,
+        )
         cpu_system = build_coupled_system(
             fem_mesh,
             bem_mesh,
@@ -409,6 +520,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             validation_diagnostics=false,
             bem_backend=:cpu,
             bulk_loss_factor=0.01f0,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
         )
         cuda_system = build_coupled_system(
             fem_mesh,
@@ -422,6 +534,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             validation_diagnostics=false,
             bem_backend=:cuda,
             bulk_loss_factor=0.01f0,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
         )
         condensed_system = build_coupled_system(
             fem_mesh,
@@ -436,6 +549,7 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             bem_backend=:cuda,
             static_condensation=true,
             bulk_loss_factor=0.01f0,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
         )
         try
             cpu_solution = solve_coupled_system(cpu_system, radiator_tag)
@@ -451,6 +565,19 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
                 radiator_velocities=ComplexF32[1, 0.5],
             )
             condensed_solution = condensed_solutions[1]
+            bem_excitation = (
+                kind=:normal_velocity,
+                fem_boundary_tags=Int[],
+                fem_boundary_weights=Float32[],
+                bem_source_index=1,
+                transducer_index=0,
+                amplitude=ComplexF32(1, 0),
+            )
+            cpu_bem_solution = only(solve_coupled_excitations(cpu_system, [bem_excitation]))
+            cuda_bem_solution = only(solve_coupled_excitations(cuda_system, [bem_excitation]))
+            condensed_bem_solution = only(
+                solve_coupled_excitations(condensed_system, [bem_excitation]),
+            )
             relative_error(reference, candidate) = norm(candidate - reference) / norm(reference)
 
             @test cpu_system.linear_backend == :cpu
@@ -487,6 +614,38 @@ if get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1" && cuda_available()
             ) < 1e-5
             @test condensed_solution.pressure_continuity_error < 1e-4
             @test condensed_solution.flux_conservation_error < 1e-4
+            @test relative_error(
+                cpu_bem_solution.fem_pressure,
+                cuda_bem_solution.fem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_bem_solution.bem_pressure,
+                cuda_bem_solution.bem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_bem_solution.interface_flux,
+                cuda_bem_solution.interface_flux,
+            ) < 5e-4
+            @test relative_error(
+                cuda_bem_solution.fem_pressure,
+                condensed_bem_solution.fem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                cuda_bem_solution.bem_pressure,
+                condensed_bem_solution.bem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                cuda_bem_solution.interface_flux,
+                condensed_bem_solution.interface_flux,
+            ) < 1e-3
+            @test relative_error(
+                cpu_bem_solution.bem_neumann,
+                cuda_bem_solution.bem_neumann,
+            ) < 5e-4
+            @test relative_error(
+                cuda_bem_solution.bem_neumann,
+                condensed_bem_solution.bem_neumann,
+            ) < 1e-3
         finally
             release_coupled_system!(cpu_system)
             release_coupled_system!(cuda_system)

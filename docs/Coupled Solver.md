@@ -77,13 +77,14 @@ still participating in the same acoustic boundary-integral solve.
 Every tagged surface belonging to an active region must have one boundary
 assignment. The System editor offers only `rigid`, `moving`, and `interface`;
 new surfaces and legacy `unused` assignments default to `rigid`. The coupled
-backend supports those same three assignments. A source used by an ideal
-prescribed-velocity component must act on a moving FEM boundary. An
-electrodynamic component may couple the same rigid-body degree of freedom to
-moving boundaries in several FEM regions, as well as to BEM moving boundaries.
-The independently meshed front and rear diaphragm surfaces do not need a
-node-to-node map because they communicate through the shared mechanical degree
-of freedom.
+backend supports those same three assignments. An ideal prescribed-velocity
+component may drive one or more moving boundaries in bounded FEM regions, the
+exterior BEM region, or both; per-boundary motion weights are applied to the
+component's canonical velocity. An electrodynamic component may likewise
+couple the same rigid-body degree of freedom to moving boundaries in several
+FEM regions, as well as to BEM moving boundaries. The independently meshed
+front and rear diaphragm surfaces do not need a node-to-node map because they
+communicate through the shared mechanical degree of freedom.
 
 A sealed enclosure therefore has no FEM-BEM acoustic interface: its rear
 diaphragm is a moving FEM boundary, its front diaphragm is a moving BEM
@@ -107,8 +108,8 @@ derivative. Differing fluids are rejected.
 2. In **System > Regions**, create a bounded-air region for each FEM chamber
    and one unbounded-air region. Select each active FEM volume group.
 3. In **Boundaries**, classify every active physical surface. Use `moving` for
-   prescribed FEM radiators, `interface` for both sides of the opening, and
-   `rigid` for the remaining walls.
+   prescribed FEM or BEM radiators, `interface` for both sides of the opening,
+   and `rigid` for the remaining walls.
 4. In **Interfaces**, use **Build/Identify Interfaces** to create and validate
    every FEM-to-BEM port connection.
 5. In **Components**, attach prescribed-velocity or electrodynamic components
@@ -226,15 +227,17 @@ Only tetrahedra in the selected physical volume groups are retained. Each
 domain's vertices and facets are compacted, and boundary tags are remapped into
 a collision-free aggregate namespace before assembly.
 
-A prescribed normal velocity \(v_n\) on a moving FEM surface is converted to
-the implemented pressure normal derivative
+A prescribed normal velocity \(v_n\) on a moving FEM or BEM surface is
+converted to the implemented pressure normal derivative
 
 $$
 q_v=i\rho\omega v_n
 $$
 
-and integrated against the triangular P1 boundary basis. Each excitation port
-uses \(v_n=1\ \mathrm{m/s}\) as its canonical basis input.
+and integrated against the triangular P1 boundary basis for FEM surfaces or
+inserted directly into the facewise DP0 Neumann data for BEM surfaces. Each
+excitation port uses \(v_n=1\ \mathrm{m/s}\) as its canonical basis input;
+per-surface velocity weights scale that basis before assembly.
 
 ### BEM region
 

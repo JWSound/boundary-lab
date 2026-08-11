@@ -233,6 +233,31 @@ def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
     assert exterior.mesh_ids == ("mesh:bem", "mesh:bem-phase-plug")
 
 
+def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
+    compiled = PhysicalSystemCompiler().compile(_mixed_prescribed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator", "excitation:exterior-radiator"),
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    exterior_component = next(
+        component
+        for component in session.request.compiled_system.components
+        if component.id == "component:exterior-radiator"
+    )
+    exterior_boundary = next(
+        boundary
+        for boundary in session.request.compiled_system.boundaries
+        if boundary.id == "boundary:exterior"
+    )
+    assert exterior_component.boundary_ids == (exterior_boundary.id,)
+    assert exterior_component.parameters["boundary_motion_weights"][exterior_boundary.id] == pytest.approx(0.5)
+    assert exterior_boundary.kind == BoundaryKind.MOVING
+
+
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
     starts_path = tmp_path / "coupled_cancel_starts.txt"
     fake_solver = tmp_path / "fake_coupled_cancel_worker.py"
@@ -604,6 +629,52 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     assert quantities["output:interface"].values.shape == (1, 106)
     assert quantities["output:field"].values.shape == (1, 1)
     assert quantities["output:fem"].values.dtype == np.complex128
+    assert result.diagnostics["relative_residual"] < 1e-8
+    assert result.diagnostics["pressure_continuity_error"] < 1e-8
+    assert result.diagnostics["flux_conservation_error"] < 1e-10
+    assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the mixed prescribed-source integration.",
+)
+def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources() -> None:
+    compiled = PhysicalSystemCompiler().compile(_mixed_prescribed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator", "excitation:exterior-radiator"),
+        outputs=(
+            OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={"quadrature_order": 1, "singular_order": 1},
+    )
+
+    (result,) = tuple(
+        CoupledReferenceBackend(
+            julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
+            persistent_worker=False,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert result.excitation_port_ids == request.excitation_port_ids
+    assert quantities["output:fem"].values.shape == (2, 842)
+    assert quantities["output:bem"].values.shape == (2, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (2, 2424)
+    assert quantities["output:field"].values.shape == (2, 1)
+    assert np.all(np.isfinite(quantities["output:field"].values))
+    assert np.linalg.norm(quantities["output:bem-neumann"].values[1]) > 0.0
     assert result.diagnostics["relative_residual"] < 1e-8
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
@@ -1620,6 +1691,37 @@ def _fixture_system() -> PhysicalSystem:
                 kind=ExcitationPortKind.NORMAL_VELOCITY,
             ),
         ),
+    )
+
+
+def _mixed_prescribed_fixture_system() -> PhysicalSystem:
+    system = _fixture_system()
+    exterior_component = PhysicalComponent(
+        id="component:exterior-radiator",
+        name="Exterior ideal radiator",
+        kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+        boundary_ids=("boundary:exterior",),
+        parameters={
+            "motion_profile": "uniform",
+            "boundary_motion_weights": {"boundary:exterior": 0.5},
+        },
+    )
+    exterior_port = ExcitationPort(
+        id="excitation:exterior-radiator",
+        name="Exterior unit normal velocity",
+        component_id=exterior_component.id,
+        kind=ExcitationPortKind.NORMAL_VELOCITY,
+    )
+    return replace(
+        system,
+        boundaries=tuple(
+            replace(boundary, kind=BoundaryKind.MOVING)
+            if boundary.id == "boundary:exterior"
+            else boundary
+            for boundary in system.boundaries
+        ),
+        components=(*system.components, exterior_component),
+        excitation_ports=(*system.excitation_ports, exterior_port),
     )
 
 

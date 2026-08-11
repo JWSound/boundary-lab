@@ -1104,6 +1104,10 @@ function solve_request(request; event_mode=false)
     excitation_port_ids = String.(request["excitation_port_ids"])
     isempty(excitation_port_ids) && error("Coupled solve requires at least one excitation port.")
     excitations = NamedTuple[]
+    prescribed_bem_rows = Int[]
+    prescribed_bem_cols = Int[]
+    prescribed_bem_values = FloatType[]
+    prescribed_bem_count = 0
     for port_id in excitation_port_ids
         port = object_by_id(ports, port_id, "excitation port")
         component = object_by_id(components, String(port["component_id"]), "component")
@@ -1116,36 +1120,71 @@ function solve_request(request; event_mode=false)
                 object_by_id(boundaries, String(boundary_id), "boundary")
                 for boundary_id in component["boundary_ids"]
             ]
-            bounded_boundaries = [
-                boundary
-                for boundary in candidate_boundaries
-                if haskey(
-                    fem_domains.fem_boundary_tag_by_id,
-                    String(boundary["id"]),
+            fem_boundary_tags = Int[]
+            fem_boundary_weights = FloatType[]
+            bem_boundary_tags = Int[]
+            bem_boundary_weights = FloatType[]
+            for boundary in candidate_boundaries
+                boundary_id = String(boundary["id"])
+                String(boundary["kind"]) == "moving" || error(
+                    "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                    "references non-moving boundary $(repr(boundary_id)).",
                 )
-            ]
-            length(bounded_boundaries) == 1 || error(
-                "Each prescribed-velocity component must own exactly one moving boundary " *
-                "in the bounded region.",
+                weight = FloatType(get(raw_weights, boundary_id, 1))
+                isfinite(weight) && weight > zero(FloatType) || error(
+                    "Prescribed-velocity boundary motion weights must be finite and greater than zero.",
+                )
+                if haskey(fem_domains.fem_boundary_tag_by_id, boundary_id)
+                    tag = fem_domains.fem_boundary_tag_by_id[boundary_id]
+                    any(==(tag), fem_mesh.boundary_physical_tags) || error(
+                        "Moving boundary tag $tag is not on the selected FEM volume groups.",
+                    )
+                    push!(fem_boundary_tags, tag)
+                    push!(fem_boundary_weights, weight)
+                elseif haskey(bem_boundary_tag_by_id, boundary_id)
+                    tag = bem_boundary_tag_by_id[boundary_id]
+                    any(==(tag), bem_mesh.physical_tags) || error(
+                        "Moving boundary tag $tag is not present in the exterior BEM mesh.",
+                    )
+                    push!(bem_boundary_tags, tag)
+                    push!(bem_boundary_weights, weight)
+                else
+                    error(
+                        "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                        "references boundary $(repr(boundary_id)) outside the active acoustic regions.",
+                    )
+                end
+            end
+            isempty(fem_boundary_tags) && isempty(bem_boundary_tags) && error(
+                "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                "must own at least one moving FEM or BEM boundary.",
             )
-            radiator_tag = fem_domains.fem_boundary_tag_by_id[
-                String(only(bounded_boundaries)["id"])
-            ]
-            boundary_id = String(only(bounded_boundaries)["id"])
-            amplitude = FloatType(get(raw_weights, boundary_id, 1))
-            isfinite(amplitude) && amplitude > zero(FloatType) || error(
-                "Prescribed-velocity boundary motion weights must be finite and greater than zero.",
-            )
-            any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
-                "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
-            )
+            bem_source_index = 0
+            if !isempty(bem_boundary_tags)
+                prescribed_bem_count += 1
+                bem_source_index = prescribed_bem_count
+                weight_by_tag = Dict(zip(bem_boundary_tags, bem_boundary_weights))
+                for face_index in eachindex(bem_mesh.faces)
+                    weight = get(
+                        weight_by_tag,
+                        bem_mesh.physical_tags[face_index],
+                        zero(FloatType),
+                    )
+                    weight == zero(FloatType) && continue
+                    push!(prescribed_bem_rows, face_index)
+                    push!(prescribed_bem_cols, bem_source_index)
+                    push!(prescribed_bem_values, weight)
+                end
+            end
             push!(
                 excitations,
                 (
                     kind=:normal_velocity,
-                    radiator_tag=radiator_tag,
+                    fem_boundary_tags=fem_boundary_tags,
+                    fem_boundary_weights=fem_boundary_weights,
+                    bem_source_index=bem_source_index,
                     transducer_index=0,
-                    amplitude=Complex{FloatType}(amplitude, 0),
+                    amplitude=Complex{FloatType}(1, 0),
                 ),
             )
         elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"
@@ -1176,6 +1215,13 @@ function solve_request(request; event_mode=false)
             )
         end
     end
+    prescribed_bem_normal_velocity = sparse(
+        prescribed_bem_rows,
+        prescribed_bem_cols,
+        prescribed_bem_values,
+        length(bem_mesh.faces),
+        prescribed_bem_count,
+    )
 
     quadrature_order = Int(get(solver_options, "quadrature_order", 2))
     singular_order = Int(get(solver_options, "singular_order", 2))
@@ -1243,6 +1289,7 @@ function solve_request(request; event_mode=false)
             wall_impedances=fem_domains.wall_impedances,
             transducers=transducers,
             transducer_operators=transducer_operators,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
         )
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()

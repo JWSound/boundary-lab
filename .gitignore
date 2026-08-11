@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+# Repository-local pytest and development-agent scratch roots
+/.pytest_*/
+/.assessment_pytest_tmp/
+/.codex_tmp/
 .mypy_cache/
 .ruff_cache/
 .pyre/

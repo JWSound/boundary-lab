@@ -957,12 +957,14 @@ function _cuda_coupled_bem_blocks(
     keep_device::Bool=false,
     inputs_on_device::Bool=false,
     bem_motion_flux=nothing,
+    bem_prescribed_neumann=nothing,
 ) where {T<:AbstractFloat}
     cuda = BeatEngineCore.cuda_module()
     coupling = Complex{T}(0, 1) / wavenumber
     d_identity_p1_p1 = d_identity_p1_dp0 = d_bem_flux = nothing
     d_lhs = d_interface_block = d_interface_temp = d_rhs_operator = nothing
     d_motion_block = d_motion_temp = nothing
+    d_prescribed_rhs = d_prescribed_temp = nothing
     try
         if inputs_on_device
             d_identity_p1_p1 = identity_p1_p1
@@ -1006,6 +1008,23 @@ function _cuda_coupled_bem_blocks(
             mul!(d_motion_temp, d_identity_p1_dp0, bem_motion_flux)
             d_motion_block .+= Complex{T}(0.5) * coupling .* d_motion_temp
         end
+        if !isnothing(bem_prescribed_neumann)
+            d_prescribed_rhs = similar(
+                operators.single_layer,
+                Complex{T},
+                size(operators.single_layer, 1),
+                size(bem_prescribed_neumann, 2),
+            )
+            d_prescribed_temp = similar(d_prescribed_rhs)
+            mul!(d_prescribed_rhs, operators.single_layer, bem_prescribed_neumann)
+            mul!(d_prescribed_temp, operators.adjoint_double_layer, bem_prescribed_neumann)
+            d_prescribed_rhs .+= coupling .* d_prescribed_temp
+            mul!(d_prescribed_temp, d_identity_p1_dp0, bem_prescribed_neumann)
+            d_prescribed_rhs .+= Complex{T}(0.5) * coupling .* d_prescribed_temp
+            # Prescribed Neumann data is a known RHS term; interface and motion
+            # blocks use the opposite sign because their amplitudes are unknowns.
+            d_prescribed_rhs .*= -one(Complex{T})
+        end
         if validation_diagnostics
             d_rhs_operator = (
                 -operators.single_layer .-
@@ -1035,6 +1054,13 @@ function _cuda_coupled_bem_blocks(
             else
                 Complex{T}.(Array(d_motion_block))
             end,
+            bem_prescribed_rhs=if isnothing(d_prescribed_rhs)
+                nothing
+            elseif keep_device
+                d_prescribed_rhs
+            else
+                Complex{T}.(Array(d_prescribed_rhs))
+            end,
         )
     finally
         input_allocations = inputs_on_device ? () : (
@@ -1042,11 +1068,22 @@ function _cuda_coupled_bem_blocks(
             d_identity_p1_dp0,
             d_bem_flux,
         )
-        for value in (input_allocations..., d_interface_temp, d_motion_temp)
+        for value in (
+            input_allocations...,
+            d_interface_temp,
+            d_motion_temp,
+            d_prescribed_temp,
+        )
             isnothing(value) || cuda.unsafe_free!(value)
         end
         if !keep_device
-            for value in (d_lhs, d_interface_block, d_motion_block, d_rhs_operator)
+            for value in (
+                d_lhs,
+                d_interface_block,
+                d_motion_block,
+                d_prescribed_rhs,
+                d_rhs_operator,
+            )
                 isnothing(value) || cuda.unsafe_free!(value)
             end
         end
@@ -1160,6 +1197,7 @@ function build_coupled_system(
     wall_impedances=NamedTuple[],
     transducers::AbstractVector{ElectrodynamicTransducer{T}}=ElectrodynamicTransducer{T}[],
     transducer_operators=nothing,
+    prescribed_bem_normal_velocity=nothing,
 ) where {T<:AbstractFloat}
     static_condensation && bem_backend != :cuda && error(
         "FEM static condensation is currently available only for the CUDA coupled backend.",
@@ -1235,6 +1273,16 @@ function build_coupled_system(
     bem_motion_flux = normal_derivative_scale .* Complex{T}.(
         resolved_transducer_operators.bem_normal_velocity
     )
+    resolved_prescribed_bem_velocity = isnothing(prescribed_bem_normal_velocity) ?
+                                       spzeros(T, length(bem_mesh.faces), 0) :
+                                       T.(prescribed_bem_normal_velocity)
+    size(resolved_prescribed_bem_velocity, 1) == length(bem_mesh.faces) || error(
+        "Prescribed BEM normal velocity must contain one row per BEM face.",
+    )
+    bem_prescribed_neumann = normal_derivative_scale .* Complex{T}.(
+        resolved_prescribed_bem_velocity
+    )
+    prescribed_bem_count = size(bem_prescribed_neumann, 2)
     fem_system_s = (time_ns() - fem_stage_started) / 1.0e9
 
     bem_operator_started = time_ns()
@@ -1261,10 +1309,16 @@ function build_coupled_system(
     linear_backend = bem_backend == :cuda && !validation_diagnostics ? :cuda : :cpu
     bem_blocks = if bem_backend == :cuda
         device_bem_motion_flux = nothing
+        device_bem_prescribed_neumann = nothing
         try
             if transducer_count > 0
                 device_bem_motion_flux = BeatEngineCore.cuda_module().CuArray(
                     Matrix(bem_motion_flux),
+                )
+            end
+            if prescribed_bem_count > 0
+                device_bem_prescribed_neumann = BeatEngineCore.cuda_module().CuArray(
+                    Matrix(bem_prescribed_neumann),
                 )
             end
             _cuda_coupled_bem_blocks(
@@ -1277,11 +1331,14 @@ function build_coupled_system(
                 keep_device=linear_backend == :cuda,
                 inputs_on_device=true,
                 bem_motion_flux=device_bem_motion_flux,
+                bem_prescribed_neumann=device_bem_prescribed_neumann,
             )
         finally
             release_operator_storage!(operators)
             isnothing(device_bem_motion_flux) ||
                 BeatEngineCore.cuda_module().unsafe_free!(device_bem_motion_flux)
+            isnothing(device_bem_prescribed_neumann) ||
+                BeatEngineCore.cuda_module().unsafe_free!(device_bem_prescribed_neumann)
         end
     else
         bem_lhs, bem_rhs_operator = burton_miller_neumann_matrices(
@@ -1297,10 +1354,16 @@ function build_coupled_system(
             bem_motion_block=transducer_count == 0 ?
                              nothing :
                              -(bem_rhs_operator * bem_motion_flux),
+            bem_prescribed_rhs=prescribed_bem_count == 0 ?
+                               nothing :
+                               bem_rhs_operator * bem_prescribed_neumann,
         )
     end
     bem_lhs = bem_blocks.bem_lhs
     bem_rhs_operator = bem_blocks.bem_rhs_operator
+    bem_prescribed_rhs = isnothing(bem_blocks.bem_prescribed_rhs) ?
+                         zeros(Complex{T}, length(bem_mesh.vertices), 0) :
+                         Complex{T}.(Array(bem_blocks.bem_prescribed_rhs))
     bem_matrix_s = (time_ns() - bem_matrix_started) / 1.0e9
 
     condensation_started = time_ns()
@@ -1479,6 +1542,8 @@ function build_coupled_system(
             cuda.unsafe_free!(bem_blocks.bem_interface_block)
             isnothing(bem_blocks.bem_motion_block) ||
                 cuda.unsafe_free!(bem_blocks.bem_motion_block)
+            isnothing(bem_blocks.bem_prescribed_rhs) ||
+                cuda.unsafe_free!(bem_blocks.bem_prescribed_rhs)
             for allocation in transducer_allocations
                 cuda.unsafe_free!(allocation)
             end
@@ -1557,6 +1622,8 @@ function build_coupled_system(
         bem_lhs=validation_diagnostics ? bem_lhs : nothing,
         bem_factorization=bem_factorization,
         bem_rhs_operator=validation_diagnostics ? bem_rhs_operator : nothing,
+        prescribed_bem_rhs=bem_prescribed_rhs,
+        prescribed_bem_neumann=bem_prescribed_neumann,
         bem_backend=bem_backend,
         linear_backend=linear_backend,
         symmetry_mode=prepared.symmetry_mode,
@@ -1596,6 +1663,10 @@ function _coupled_solution_from_parts(
     interface_flux;
     diaphragm_velocity=zeros(Complex{system.scalar_type}, length(system.transducers)),
     voice_coil_current=zeros(Complex{system.scalar_type}, length(system.transducers)),
+    prescribed_bem_neumann=zeros(
+        Complex{system.scalar_type},
+        length(system.bem_mesh.faces),
+    ),
     solution=nothing,
     rhs=nothing,
 )
@@ -1606,7 +1677,8 @@ function _coupled_solution_from_parts(
         (
             Complex{T}.(system.transducer_operators.bem_normal_velocity) *
             diaphragm_velocity
-        )
+        ) +
+        prescribed_bem_neumann
     )
 
     pressure_jump = (
@@ -1662,7 +1734,15 @@ function _coupled_solution_from_parts(
     )
 end
 
-function _coupled_solution_from_vector(system, solution, rhs)
+function _coupled_solution_from_vector(
+    system,
+    solution,
+    rhs;
+    prescribed_bem_neumann=zeros(
+        Complex{system.scalar_type},
+        length(system.bem_mesh.faces),
+    ),
+)
     return _coupled_solution_from_parts(
         system,
         solution[system.fem_range],
@@ -1670,6 +1750,7 @@ function _coupled_solution_from_vector(system, solution, rhs)
         solution[system.flux_range];
         diaphragm_velocity=solution[system.mechanical_range],
         voice_coil_current=solution[system.electrical_range],
+        prescribed_bem_neumann=prescribed_bem_neumann,
         solution=solution,
         rhs=rhs,
     )
@@ -1685,17 +1766,61 @@ function solve_coupled_excitations(system, excitations)
         length(system.fem_mesh.vertices),
         excitation_count,
     )
+    bem_rhs = zeros(
+        Complex{T},
+        length(system.bem_mesh.vertices),
+        excitation_count,
+    )
+    prescribed_bem_neumann = zeros(
+        Complex{T},
+        length(system.bem_mesh.faces),
+        excitation_count,
+    )
     electrical_rhs = zeros(Complex{T}, length(system.transducers), excitation_count)
     for (column, excitation) in enumerate(requested)
         kind = Symbol(excitation.kind)
         amplitude = Complex{T}(excitation.amplitude)
         if kind == :normal_velocity
-            fem_rhs[:, column] = assemble_prescribed_velocity_load(
-                system.fem_mesh,
-                Int(excitation.radiator_tag),
-                system.density,
-                system.omega,
-                amplitude,
+            fem_boundary_tags = hasproperty(excitation, :fem_boundary_tags) ?
+                                Int.(excitation.fem_boundary_tags) :
+                                [Int(excitation.radiator_tag)]
+            fem_boundary_weights = hasproperty(excitation, :fem_boundary_weights) ?
+                                   T.(excitation.fem_boundary_weights) :
+                                   ones(T, length(fem_boundary_tags))
+            length(fem_boundary_tags) == length(fem_boundary_weights) || error(
+                "Prescribed FEM boundary tags and weights must have the same length.",
+            )
+            all(weight -> isfinite(weight) && weight > zero(T), fem_boundary_weights) ||
+                error("Prescribed FEM boundary weights must be finite and greater than zero.")
+            for (tag, weight) in zip(fem_boundary_tags, fem_boundary_weights)
+                fem_rhs[:, column] .+= assemble_prescribed_velocity_load(
+                    system.fem_mesh,
+                    tag,
+                    system.density,
+                    system.omega,
+                    amplitude * weight,
+                )
+            end
+            bem_source_index = hasproperty(excitation, :bem_source_index) ?
+                               Int(excitation.bem_source_index) :
+                               0
+            if bem_source_index > 0
+                bem_source_index <= size(system.prescribed_bem_rhs, 2) || error(
+                    "Prescribed BEM source index $bem_source_index is unavailable.",
+                )
+                bem_rhs[:, column] .= amplitude .* view(
+                    system.prescribed_bem_rhs,
+                    :,
+                    bem_source_index,
+                )
+                prescribed_bem_neumann[:, column] .= amplitude .* view(
+                    system.prescribed_bem_neumann,
+                    :,
+                    bem_source_index,
+                )
+            end
+            isempty(fem_boundary_tags) && bem_source_index == 0 && error(
+                "A prescribed-velocity excitation must own at least one FEM or BEM moving boundary.",
             )
         elseif kind == :voltage
             transducer_index = Int(excitation.transducer_index)
@@ -1719,6 +1844,7 @@ function solve_coupled_excitations(system, excitations)
             size(system.factorization, 1),
             excitation_count,
         )
+        d_bem_rhs = nothing
         d_electrical_rhs = nothing
         d_solution = nothing
         try
@@ -1731,6 +1857,10 @@ function solve_coupled_excitations(system, excitations)
             )
             schur_rows = (condensation.interior_count + 1):length(condensation.permutation)
             view(d_rhs, system.gamma_range, :) .= view(d_forward, schur_rows, :)
+            if size(system.prescribed_bem_rhs, 2) > 0
+                d_bem_rhs = cuda.CuArray(bem_rhs)
+                view(d_rhs, system.bem_range, :) .= d_bem_rhs
+            end
             if !isempty(system.transducers)
                 d_electrical_rhs = cuda.CuArray(electrical_rhs)
                 view(d_rhs, system.electrical_range, :) .= d_electrical_rhs
@@ -1765,6 +1895,7 @@ function solve_coupled_excitations(system, excitations)
                     interface_flux[:, column];
                     diaphragm_velocity=diaphragm_velocity[:, column],
                     voice_coil_current=voice_coil_current[:, column],
+                    prescribed_bem_neumann=prescribed_bem_neumann[:, column],
                 )
                 for column in axes(fem_pressure, 2)
             ]
@@ -1772,6 +1903,7 @@ function solve_coupled_excitations(system, excitations)
             cuda.unsafe_free!(d_fem_rhs)
             cuda.unsafe_free!(d_forward)
             cuda.unsafe_free!(d_rhs)
+            isnothing(d_bem_rhs) || cuda.unsafe_free!(d_bem_rhs)
             isnothing(d_electrical_rhs) || cuda.unsafe_free!(d_electrical_rhs)
             isnothing(d_solution) || cuda.unsafe_free!(d_solution)
         end
@@ -1779,6 +1911,7 @@ function solve_coupled_excitations(system, excitations)
 
     rhs = zeros(Complex{T}, size(system.factorization, 1), excitation_count)
     rhs[system.fem_range, :] = fem_rhs
+    rhs[system.bem_range, :] = bem_rhs
     rhs[system.electrical_range, :] = electrical_rhs
     solution = if system.linear_backend == :cuda
         cuda = BeatEngineCore.cuda_module()
@@ -1796,7 +1929,12 @@ function solve_coupled_excitations(system, excitations)
         system.factorization \ rhs
     end
     return [
-        _coupled_solution_from_vector(system, solution[:, column], rhs[:, column])
+        _coupled_solution_from_vector(
+            system,
+            solution[:, column],
+            rhs[:, column];
+            prescribed_bem_neumann=prescribed_bem_neumann[:, column],
+        )
         for column in axes(solution, 2)
     ]
 end
