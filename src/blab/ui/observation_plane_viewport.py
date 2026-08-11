@@ -88,6 +88,14 @@ class _ElementFieldGeometry:
     source_tetrahedron_ids: np.ndarray
 
 
+@dataclass(frozen=True)
+class _FemVolumeGeometry:
+    volume: object
+    expanded_points: np.ndarray
+    expanded_tetrahedra: np.ndarray
+    source_node_ids: np.ndarray
+
+
 class ObservationPlaneViewport(QObject):
     """Own plane actors and translate Qt input into pure plane-model updates."""
 
@@ -136,6 +144,10 @@ class ObservationPlaneViewport(QObject):
         self._exterior_refresh_timer.setSingleShot(True)
         self._exterior_refresh_timer.setInterval(field_translation_interval_ms(None))
         self._exterior_refresh_timer.timeout.connect(self._request_current_exterior_field)
+        self._interior_refresh_timer = QTimer(self)
+        self._interior_refresh_timer.setSingleShot(True)
+        self._interior_refresh_timer.setInterval(field_translation_interval_ms(None))
+        self._interior_refresh_timer.timeout.connect(self._refresh_current_interior_field)
         self._animation_timer = QTimer(self)
         self._animation_timer.setInterval(50)
         self._animation_timer.timeout.connect(self._advance_animation)
@@ -156,7 +168,9 @@ class ObservationPlaneViewport(QObject):
     def set_field_preferences(self, *, cache_size_mb: object, translation_target_fps: object) -> None:
         self._exterior_result_cache_max_bytes = field_cache_size_bytes(cache_size_mb)
         self._trim_exterior_result_cache()
-        self._exterior_refresh_timer.setInterval(field_translation_interval_ms(translation_target_fps))
+        translation_interval_ms = field_translation_interval_ms(translation_target_fps)
+        self._exterior_refresh_timer.setInterval(translation_interval_ms)
+        self._interior_refresh_timer.setInterval(translation_interval_ms)
         LOGGER.info(
             "Field preferences updated: cache_mb=%d translation_fps=%.1f interval_ms=%d",
             self._exterior_result_cache_max_bytes // (1024 * 1024),
@@ -253,6 +267,7 @@ class ObservationPlaneViewport(QObject):
         self._exterior_failures.clear()
         self._exterior_request_meshes.clear()
         self._exterior_refresh_timer.stop()
+        self._interior_refresh_timer.stop()
         if results is None:
             self.set_animation(None, False)
         self._render()
@@ -403,6 +418,7 @@ class ObservationPlaneViewport(QObject):
             self._drag = None
             self._rotation_angle_deg = None
             self._exterior_refresh_timer.stop()
+            self._interior_refresh_timer.stop()
             if ANGLE_ACTOR_NAME in self._actor_names:
                 self.viewer.remove_actor(ANGLE_ACTOR_NAME, render=False)
                 self._actor_names.discard(ANGLE_ACTOR_NAME)
@@ -660,6 +676,16 @@ class ObservationPlaneViewport(QObject):
                 if self._field_plane_id() == updated.id and self._drag is not None and self._drag.mode != "size":
                     self._schedule_exterior_refresh()
                 return
+        if (
+            updated.plane_type == ObservationPlaneType.INTERIOR
+            and self._field_plane_id() == updated.id
+            and self._field_results is not None
+            and self._field_results.interior is not None
+            and self._drag is not None
+            and self._preview_interior_geometry(updated)
+        ):
+            self._schedule_interior_refresh()
+            return
         self._render()
 
     def _selected_plane(self) -> ObservationPlane | None:
@@ -759,7 +785,6 @@ class ObservationPlaneViewport(QObject):
         results = None if self._field_results is None else self._field_results.interior
         if (
             results is None
-            or (self._drag is not None and self._drag.original.id == plane.id)
             or plane.plane_type not in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
         ):
             return False
@@ -1253,18 +1278,18 @@ class ObservationPlaneViewport(QObject):
         cached = self._field_cache.get(key)
         if cached is not None and cached[0] == signature:
             return cached[1]
-        pv = __import__("pyvista")
-        expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+        geometry = ObservationPlaneViewport._fem_volume_geometry(
+            self,
             points,
             tetrahedra,
             symmetry,
         )
-        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
+        volume = geometry.volume
+        expanded_points = geometry.expanded_points
+        expanded_tetrahedra = geometry.expanded_tetrahedra
+        source_node_ids = geometry.source_node_ids
+        pv = __import__("pyvista")
         plane_mesh = _sample_plane_polydata(pv, plane)
-        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
-            expanded_tetrahedra.shape[0],
-            dtype=np.int64,
-        )
         sampled = plane_mesh.sample(volume)
         valid = np.asarray(sampled.point_data["vtkValidPointMask"], dtype=bool)
         faces = np.asarray(sampled.faces).reshape(-1, 5)[:, 1:]
@@ -1289,7 +1314,6 @@ class ObservationPlaneViewport(QObject):
             expanded_points[expanded_node_ids],
         )
         sampled_source_node_ids = source_node_ids[expanded_node_ids]
-        del volume.cell_data["_observation_plane_source_tetrahedron"]
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
@@ -1317,17 +1341,17 @@ class ObservationPlaneViewport(QObject):
         if cached is not None and cached[0] == signature:
             return cached[1]
 
-        pv = __import__("pyvista")
-        expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+        geometry = ObservationPlaneViewport._fem_volume_geometry(
+            self,
             interior.points_m,
             interior.tetrahedra,
             interior.symmetry,
         )
-        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
-        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
-            expanded_tetrahedra.shape[0],
-            dtype=np.int64,
-        )
+        volume = geometry.volume
+        expanded_points = geometry.expanded_points
+        expanded_tetrahedra = geometry.expanded_tetrahedra
+        source_node_ids = geometry.source_node_ids
+        pv = __import__("pyvista")
         sample_mesh = _sample_plane_polydata(pv, plane)
         sampled = sample_mesh.sample(volume)
         fem_mask = np.asarray(sampled.point_data["vtkValidPointMask"], dtype=bool)
@@ -1368,7 +1392,6 @@ class ObservationPlaneViewport(QObject):
         ).reshape(-1)
         mesh = pv.PolyData(np.array(sample_points, copy=True), visible_faces)
 
-        del volume.cell_data["_observation_plane_source_tetrahedron"]
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
@@ -1407,17 +1430,13 @@ class ObservationPlaneViewport(QObject):
         cached = self._field_cache.get(key)
         if cached is not None and cached[0] == signature:
             return cached[1]
-        pv = __import__("pyvista")
-        expanded_points, expanded_tetrahedra, _source_node_ids = _expanded_fem_geometry(
+        geometry = ObservationPlaneViewport._fem_volume_geometry(
+            self,
             points,
             tetrahedra,
             symmetry,
         )
-        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
-        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
-            expanded_tetrahedra.shape[0],
-            dtype=np.int64,
-        )
+        volume = geometry.volume
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
@@ -1432,6 +1451,44 @@ class ObservationPlaneViewport(QObject):
         result = _ElementFieldGeometry(
             mesh=clipped,
             source_tetrahedron_ids=clipped_source_ids % np.asarray(tetrahedra).shape[0],
+        )
+        self._field_cache[key] = (signature, result)
+        return result
+
+    def _fem_volume_geometry(
+        self,
+        points: np.ndarray,
+        tetrahedra: np.ndarray,
+        symmetry: str,
+    ) -> _FemVolumeGeometry:
+        """Reuse the immutable expanded FEM grid across interactive plane frames."""
+
+        signature = (
+            self._field_generation,
+            symmetry,
+            np.asarray(points).shape,
+            np.asarray(tetrahedra).shape,
+        )
+        key = ("fem-volume", symmetry)
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        pv = __import__("pyvista")
+        expanded_points, expanded_tetrahedra, source_node_ids = _expanded_fem_geometry(
+            points,
+            tetrahedra,
+            symmetry,
+        )
+        volume = _fem_unstructured_grid(pv, expanded_points, expanded_tetrahedra)
+        volume.cell_data["_observation_plane_source_tetrahedron"] = np.arange(
+            expanded_tetrahedra.shape[0],
+            dtype=np.int64,
+        )
+        result = _FemVolumeGeometry(
+            volume=volume,
+            expanded_points=expanded_points,
+            expanded_tetrahedra=expanded_tetrahedra,
+            source_node_ids=source_node_ids,
         )
         self._field_cache[key] = (signature, result)
         return result
@@ -1546,6 +1603,27 @@ class ObservationPlaneViewport(QObject):
             self._add_rotation_angle_text(self._rotation_angle_deg)
         self.viewer.render()
         return True
+
+    def _preview_interior_geometry(self, plane: ObservationPlane) -> bool:
+        """Move the authored plane immediately while retaining the latest live slice."""
+
+        plane_mesh = self._plane_meshes.get(plane.id)
+        if plane_mesh is None or not _update_mesh_points(plane_mesh, plane.corners_m):
+            return False
+        self._refresh_interactive_tools(plane)
+        if self._rotation_angle_deg is not None:
+            self._add_rotation_angle_text(self._rotation_angle_deg)
+        self.viewer.render()
+        return True
+
+    def _schedule_interior_refresh(self) -> None:
+        if not self._interior_refresh_timer.isActive():
+            self._interior_refresh_timer.start()
+
+    def _refresh_current_interior_field(self) -> None:
+        plane = self._field_plane()
+        if plane is not None and plane.plane_type == ObservationPlaneType.INTERIOR:
+            self._render()
 
     def _refresh_interactive_tools(self, plane: ObservationPlane) -> None:
         control_count = 4 if self._mode == "size" else 3 if self._mode in {"move", "rotate"} else 0

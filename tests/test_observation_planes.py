@@ -712,6 +712,51 @@ def test_exterior_geometry_preview_moves_existing_field_in_place() -> None:
     assert len(renders) == 50
 
 
+def test_interior_field_remains_visible_while_its_plane_is_dragged() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _DragState
+
+    plane = new_observation_plane("Interior")
+    rendered = []
+    editor = SimpleNamespace(
+        _field_results=SimpleNamespace(interior=object()),
+        _drag=_DragState(plane, "move", 0),
+        _field_message=None,
+        _field_mesh_and_pressure=lambda _plane: (object(), np.ones(4), "point", None),
+        _add_colored_field_actor=lambda *args, **kwargs: rendered.append((args, kwargs)),
+    )
+
+    assert ObservationPlaneViewport._add_interior_field(editor, plane)
+    assert len(rendered) == 1
+
+
+def test_interior_drag_schedules_live_slice_without_rebuilding_on_every_mouse_event() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _DragState
+
+    original = new_observation_plane("Interior")
+    updated = replace(original, center_m=(0.0, 0.0, 0.05))
+    calls = []
+    editor = SimpleNamespace(
+        _planes=(original,),
+        _field_cache={
+            ("smooth", original.id): object(),
+            ("element", original.id): object(),
+            ("combined", original.id): object(),
+        },
+        _field_results=SimpleNamespace(interior=object()),
+        _drag=_DragState(original, "move", 2),
+        _field_plane_id=lambda: original.id,
+        _preview_interior_geometry=lambda plane: calls.append(("preview", plane.center_m)) or True,
+        _schedule_interior_refresh=lambda: calls.append(("schedule", None)),
+        _render=lambda: pytest.fail("raw drag events must use the throttled interior preview path"),
+    )
+
+    ObservationPlaneViewport._replace_selected(editor, updated)
+
+    assert editor._planes == (updated,)
+    assert editor._field_cache == {}
+    assert calls == [("preview", updated.center_m), ("schedule", None)]
+
+
 def test_exterior_boundary_mask_is_cached_with_viewport_geometry() -> None:
     import pyvista as pv
 
@@ -796,6 +841,7 @@ def test_field_preferences_resize_result_cache_and_translation_timer() -> None:
 
     item_size = 10 * 1024 * 1024
     timer = Timer()
+    interior_timer = Timer()
     editor = SimpleNamespace(
         _exterior_results=OrderedDict(
             (
@@ -806,6 +852,7 @@ def test_field_preferences_resize_result_cache_and_translation_timer() -> None:
         _exterior_result_bytes=2 * item_size,
         _exterior_result_cache_max_bytes=128 * 1024 * 1024,
         _exterior_refresh_timer=timer,
+        _interior_refresh_timer=interior_timer,
     )
     editor._trim_exterior_result_cache = MethodType(ObservationPlaneViewport._trim_exterior_result_cache, editor)
 
@@ -819,6 +866,7 @@ def test_field_preferences_resize_result_cache_and_translation_timer() -> None:
     assert editor._exterior_result_bytes == item_size
     assert editor._exterior_result_cache_max_bytes == 16 * 1024 * 1024
     assert timer.interval_ms == 40
+    assert interior_timer.interval_ms == 40
 
     ObservationPlaneViewport._schedule_exterior_refresh(editor)
     ObservationPlaneViewport._schedule_exterior_refresh(editor)

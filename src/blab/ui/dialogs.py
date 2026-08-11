@@ -437,7 +437,7 @@ class PreferencesDialog(QDialog):
                     (
                         "Field Translation Target Framerate",
                         self.field_translation_target_fps_spin,
-                        "Sets how often an exterior field catches up while its plane is moving. Higher values feel more responsive but require more processing.",
+                        "Sets how often an observation-plane field catches up while its plane is moving. Higher values feel more responsive but require more processing.",
                     ),
                 ),
             )
