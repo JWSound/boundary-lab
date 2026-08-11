@@ -969,7 +969,7 @@ def test_field_preferences_resize_result_cache_and_translation_timer() -> None:
 
 
 def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> None:
-    from blab.ui.observation_plane_results import project_field_scalars
+    from blab.ui.observation_plane_results import normalized_spl_reference_db, project_field_scalars
 
     pressure = np.asarray([1.0 + 0.0j, 0.0 + 1.0j])
     normalized = project_field_scalars(pressure, ObservationPlaneDisplay.NORMALIZED_SPL)
@@ -985,6 +985,19 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     assert animated.clim == (-1.0, 1.0)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
+    relative_to_initial = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.NORMALIZED_SPL,
+        normalized_reference_db=normalized_spl_reference_db(pressure),
+    )
+    renormalized_at_final = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.NORMALIZED_SPL,
+    )
+    np.testing.assert_allclose(relative_to_initial.values, [20.0 * np.log10(2.0), 0.0])
+    np.testing.assert_allclose(renormalized_at_final.values, [0.0, -20.0 * np.log10(2.0)])
+    assert relative_to_initial.clim == renormalized_at_final.clim == (-40.0, 0.0)
+
     at_zero = project_field_scalars(
         stronger_pressure,
         ObservationPlaneDisplay.SPL,
@@ -996,6 +1009,40 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
         animation_phase_deg=90.0,
     )
     assert at_zero.clim == at_ninety.clim == (-2.0, 2.0)
+
+
+def test_move_drag_freezes_then_releases_normalized_spl_reference() -> None:
+    from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _ActiveFieldState
+
+    plane = replace(
+        new_observation_plane("Normalized"),
+        display=ObservationPlaneDisplay.NORMALIZED_SPL,
+    )
+    initial_pressure = np.asarray([1.0 + 0.0j, 1.0 + 0.0j])
+    moved_pressure = np.asarray([2.0 + 0.0j, 1.0 + 0.0j])
+    position = SimpleNamespace(x=lambda: 10.0, y=lambda: 20.0)
+    editor = SimpleNamespace(
+        _active_field=_ActiveFieldState(plane.id, object(), initial_pressure, "point"),
+        _selected_plane=lambda: plane,
+        _axis_parameter=lambda *_args: 0.0,
+        _world_per_display_pixel=lambda _center: 0.001,
+    )
+    editor._capture_normalized_spl_reference = MethodType(
+        ObservationPlaneViewport._capture_normalized_spl_reference,
+        editor,
+    )
+
+    ObservationPlaneViewport._begin_drag(editor, ("move", 0), position)
+
+    assert editor._drag is not None
+    initial_reference = editor._drag.normalized_reference_db
+    assert initial_reference is not None
+    during_drag = ObservationPlaneViewport._project_field_scalars(editor, moved_pressure, plane)
+    np.testing.assert_allclose(during_drag.values, [20.0 * np.log10(2.0), 0.0])
+
+    editor._drag = None
+    after_release = ObservationPlaneViewport._project_field_scalars(editor, moved_pressure, plane)
+    np.testing.assert_allclose(after_release.values, [0.0, -20.0 * np.log10(2.0)])
 
 
 @pytest.mark.parametrize("association", ["point", "cell"])

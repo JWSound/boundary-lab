@@ -393,6 +393,7 @@ def project_field_scalars(
     display: ObservationPlaneDisplay,
     *,
     animation_phase_deg: float | None = None,
+    normalized_reference_db: float | None = None,
 ) -> FieldScalarProjection:
     pressure = np.asarray(pressure)
     if animation_phase_deg is not None:
@@ -409,7 +410,12 @@ def project_field_scalars(
         return FieldScalarProjection(values, "SPL (dB re 20 µPa)", "turbo", (maximum - 60.0, maximum))
     if display == ObservationPlaneDisplay.NORMALIZED_SPL:
         values = pressure_spl_db(pressure)
-        values = values - _finite_max(values, fallback=0.0)
+        reference_db = (
+            _finite_max(values, fallback=0.0)
+            if normalized_reference_db is None or not np.isfinite(normalized_reference_db)
+            else float(normalized_reference_db)
+        )
+        values = values - reference_db
         return FieldScalarProjection(values, "Normalized SPL (dB)", "turbo", (-40.0, 0.0))
     if display == ObservationPlaneDisplay.PHASE:
         return FieldScalarProjection(phase_deg(pressure), "Phase (degrees)", "twilight", (-180.0, 180.0))
@@ -430,6 +436,12 @@ def _finite_abs_max(values: np.ndarray) -> float:
     return max(maximum, np.finfo(float).eps)
 
 
+def normalized_spl_reference_db(pressure: np.ndarray) -> float:
+    """Return the finite peak SPL used as the zero-dB normalization reference."""
+
+    return _finite_max(pressure_spl_db(np.asarray(pressure)), fallback=0.0)
+
+
 __all__ = [
     "ExteriorFieldResults",
     "FieldScalarProjection",
@@ -438,5 +450,6 @@ __all__ = [
     "exterior_field_results_from_solved_system",
     "interior_field_results_from_solved_system",
     "observation_field_results_from_solved_system",
+    "normalized_spl_reference_db",
     "project_field_scalars",
 ]

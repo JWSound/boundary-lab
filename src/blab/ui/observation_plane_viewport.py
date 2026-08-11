@@ -15,13 +15,16 @@ from PySide6.QtWidgets import QMenu
 from blab.observation_planes import (
     InteriorRenderingMode,
     ObservationPlane,
+    ObservationPlaneDisplay,
     ObservationPlaneType,
     rotate_observation_plane,
 )
 from blab.solvers.coupled_field import BemFieldEvaluationRequest
 from blab.ui.exterior_field_service import ExteriorFieldTask
 from blab.ui.observation_plane_results import (
+    FieldScalarProjection,
     ObservationFieldResults,
+    normalized_spl_reference_db,
     project_field_scalars,
 )
 from blab.ui.settings import field_cache_size_bytes, field_translation_interval_ms
@@ -51,6 +54,7 @@ class _DragState:
     start_display_xy: np.ndarray | None = None
     fallback_scale: float = 0.0
     fallback_screen_direction: np.ndarray | None = None
+    normalized_reference_db: float | None = None
 
 
 @dataclass
@@ -510,6 +514,9 @@ class ObservationPlaneViewport(QObject):
         if plane is None:
             return
         mode, control = tool
+        normalized_reference_db = (
+            self._capture_normalized_spl_reference(plane) if mode in {"move", "rotate"} else None
+        )
         if mode == "move":
             axis = plane.local_axes[control]
             parameter = self._axis_parameter(position, np.asarray(plane.center_m), axis)
@@ -520,6 +527,7 @@ class ObservationPlaneViewport(QObject):
                 start_axis_parameter=parameter,
                 start_display_xy=_position_array(position),
                 fallback_scale=self._world_per_display_pixel(np.asarray(plane.center_m)),
+                normalized_reference_db=normalized_reference_db,
             )
         elif mode == "rotate":
             axis = plane.local_axes[control]
@@ -536,6 +544,7 @@ class ObservationPlaneViewport(QObject):
                 fallback_screen_direction=self._rotation_screen_direction(
                     np.asarray(plane.center_m), axis, self._tool_scale(plane)
                 ),
+                normalized_reference_db=normalized_reference_db,
             )
         elif mode == "size":
             opposite_index = (control + 2) % 4
@@ -1092,7 +1101,12 @@ class ObservationPlaneViewport(QObject):
             and _update_mesh_points(state.mesh, mesh.points)
         ):
             phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
-            projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+            projection = ObservationPlaneViewport._project_field_scalars(
+                self,
+                pressure,
+                plane,
+                animation_phase_deg=phase,
+            )
             if not _update_mesh_scalars(state.mesh, "point", projection.values):
                 return False
             state.pressure = np.asarray(pressure)
@@ -1141,7 +1155,12 @@ class ObservationPlaneViewport(QObject):
             and state.mesh is geometry.mesh
         ):
             phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
-            projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+            projection = ObservationPlaneViewport._project_field_scalars(
+                self,
+                pressure,
+                plane,
+                animation_phase_deg=phase,
+            )
             if not _update_mesh_scalars(state.mesh, "point", projection.values):
                 return False
             state.pressure = np.asarray(pressure)
@@ -1507,6 +1526,38 @@ class ObservationPlaneViewport(QObject):
         self._field_cache[key] = (signature, result)
         return result
 
+    def _capture_normalized_spl_reference(self, plane: ObservationPlane) -> float | None:
+        state = getattr(self, "_active_field", None)
+        if (
+            plane.display != ObservationPlaneDisplay.NORMALIZED_SPL
+            or state is None
+            or state.plane_id != plane.id
+        ):
+            return None
+        return normalized_spl_reference_db(state.pressure)
+
+    def _project_field_scalars(
+        self,
+        pressure: np.ndarray,
+        plane: ObservationPlane,
+        *,
+        animation_phase_deg: float | None = None,
+    ) -> FieldScalarProjection:
+        drag = getattr(self, "_drag", None)
+        normalized_reference = None
+        if (
+            drag is not None
+            and drag.original.id == plane.id
+            and drag.mode in {"move", "rotate"}
+        ):
+            normalized_reference = drag.normalized_reference_db
+        return project_field_scalars(
+            pressure,
+            plane.display,
+            animation_phase_deg=animation_phase_deg,
+            normalized_reference_db=normalized_reference,
+        )
+
     def _add_colored_field_actor(
         self,
         mesh,
@@ -1517,7 +1568,12 @@ class ObservationPlaneViewport(QObject):
         name: str,
     ) -> None:
         phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
-        projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+        projection = ObservationPlaneViewport._project_field_scalars(
+            self,
+            pressure,
+            plane,
+            animation_phase_deg=phase,
+        )
         if association == "cell":
             mesh.cell_data[FIELD_SCALAR_NAME] = projection.values
         else:
@@ -1586,7 +1642,12 @@ class ObservationPlaneViewport(QObject):
         if mesh is not state.mesh or association != state.association:
             return False
         phase = self._animation_phase_deg if self._animation_plane_id == plane.id else None
-        projection = project_field_scalars(pressure, plane.display, animation_phase_deg=phase)
+        projection = ObservationPlaneViewport._project_field_scalars(
+            self,
+            pressure,
+            plane,
+            animation_phase_deg=phase,
+        )
         if not _update_mesh_scalars(mesh, association, projection.values):
             return False
         state.pressure = np.asarray(pressure)
