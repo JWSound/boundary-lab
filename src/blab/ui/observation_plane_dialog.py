@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -109,6 +110,25 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._select_data(self.display_combo, self._plane.display.value)
         form.addRow("Display", self.display_combo)
 
+        self.pressure_range_auto_check = QCheckBox("Automatic")
+        self.pressure_range_auto_check.setChecked(self._plane.pressure_color_limit_pa is None)
+        self.pressure_limit_spin = QDoubleSpinBox()
+        self.pressure_limit_spin.setRange(1e-9, 1e9)
+        self.pressure_limit_spin.setDecimals(9)
+        self.pressure_limit_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self.pressure_limit_spin.setSuffix(" Pa")
+        self.pressure_limit_spin.setValue(
+            1.0 if self._plane.pressure_color_limit_pa is None else self._plane.pressure_color_limit_pa
+        )
+        self.pressure_limit_spin.setToolTip(
+            "Set the symmetric pressure color range from -limit to +limit. Values outside it are saturated."
+        )
+        pressure_range_row = QHBoxLayout()
+        pressure_range_row.addWidget(self.pressure_range_auto_check)
+        pressure_range_row.addWidget(QLabel("+/-"))
+        pressure_range_row.addWidget(self.pressure_limit_spin, 1)
+        form.addRow("Pressure color range", pressure_range_row)
+
         self.rendering_combo = QComboBox()
         for value, label in INTERIOR_RENDERING_LABELS.items():
             self.rendering_combo.addItem(label, value.value)
@@ -180,6 +200,8 @@ class ObservationPlanePropertiesDialog(QDialog):
 
         self.type_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
         self.rendering_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
+        self.display_combo.currentIndexChanged.connect(self._refresh_dependent_controls)
+        self.pressure_range_auto_check.toggled.connect(self._refresh_dependent_controls)
         self.width_spin.valueChanged.connect(self._refresh_point_count)
         self.height_spin.valueChanged.connect(self._refresh_point_count)
         self.resolution_spin.valueChanged.connect(self._refresh_point_count)
@@ -207,6 +229,8 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.height_spin.valueChanged,
             self.resolution_spin.valueChanged,
             self.display_combo.currentIndexChanged,
+            self.pressure_range_auto_check.toggled,
+            self.pressure_limit_spin.valueChanged,
             self.rendering_combo.currentIndexChanged,
             self.invert_clip_check.toggled,
             self.response_combo.currentIndexChanged,
@@ -237,6 +261,9 @@ class ObservationPlanePropertiesDialog(QDialog):
             response_id=str(self.response_combo.currentData() or "system"),
             frequency_hz=self._selected_frequency_hz(),
             animation_speed_hz=self.animation_speed_slider.value() / 10.0,
+            pressure_color_limit_pa=(
+                None if self.pressure_range_auto_check.isChecked() else self.pressure_limit_spin.value()
+            ),
         ).validated()
 
     def update_geometry(self, plane: ObservationPlane) -> None:
@@ -328,6 +355,15 @@ class ObservationPlanePropertiesDialog(QDialog):
             supports_interior and self.rendering_combo.currentData() == InteriorRenderingMode.ELEMENT_FIELD.value
         )
         self.resolution_spin.setEnabled(not element_field)
+        pressure_display = self.display_combo.currentData() in {
+            ObservationPlaneDisplay.REAL_PRESSURE.value,
+            ObservationPlaneDisplay.IMAGINARY_PRESSURE.value,
+        }
+        pressure_controls_available = pressure_display or self.animate_button.isChecked()
+        self.pressure_range_auto_check.setEnabled(pressure_controls_available)
+        self.pressure_limit_spin.setEnabled(
+            pressure_controls_available and not self.pressure_range_auto_check.isChecked()
+        )
         self._refresh_point_count()
 
     def _refresh_point_count(self) -> None:
@@ -368,6 +404,7 @@ class ObservationPlanePropertiesDialog(QDialog):
         if self.animate_button.isChecked() and self.frequency_sweep_button.isChecked():
             self.frequency_sweep_button.setChecked(False)
         self.animation_speed_slider.setEnabled(bool(self._solved_frequencies_hz) and self.animate_button.isChecked())
+        self._refresh_dependent_controls()
 
     def _refresh_frequency_sweep_controls(self) -> None:
         available = len(self._solved_frequencies_hz) > 1

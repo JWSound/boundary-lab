@@ -394,6 +394,7 @@ def project_field_scalars(
     *,
     animation_phase_deg: float | None = None,
     normalized_reference_db: float | None = None,
+    pressure_color_limit_pa: float | None = None,
 ) -> FieldScalarProjection:
     pressure = np.asarray(pressure)
     if animation_phase_deg is not None:
@@ -401,7 +402,7 @@ def project_field_scalars(
         # Keep the animation scale stable for the entire cycle.  The complex
         # magnitude is the maximum instantaneous amplitude each sample can
         # reach, so its global maximum is a phase-independent symmetric limit.
-        limit = _finite_abs_max(np.abs(pressure))
+        limit = _pressure_color_limit(np.abs(pressure), pressure_color_limit_pa)
         return FieldScalarProjection(values, "Instantaneous Pressure (Pa)", "coolwarm", (-limit, limit))
     display = ObservationPlaneDisplay(display)
     if display == ObservationPlaneDisplay.SPL:
@@ -420,7 +421,7 @@ def project_field_scalars(
     if display == ObservationPlaneDisplay.PHASE:
         return FieldScalarProjection(phase_deg(pressure), "Phase (degrees)", "twilight", (-180.0, 180.0))
     values = np.real(pressure) if display == ObservationPlaneDisplay.REAL_PRESSURE else np.imag(pressure)
-    limit = _finite_abs_max(values)
+    limit = _pressure_color_limit(values, pressure_color_limit_pa)
     title = "Real Pressure (Pa)" if display == ObservationPlaneDisplay.REAL_PRESSURE else "Imaginary Pressure (Pa)"
     return FieldScalarProjection(values, title, "coolwarm", (-limit, limit))
 
@@ -434,6 +435,15 @@ def _finite_abs_max(values: np.ndarray) -> float:
     finite = np.asarray(values)[np.isfinite(values)]
     maximum = 1.0 if not finite.size else float(np.max(np.abs(finite)))
     return max(maximum, np.finfo(float).eps)
+
+
+def _pressure_color_limit(values: np.ndarray, manual_limit_pa: float | None) -> float:
+    if manual_limit_pa is None:
+        return _finite_abs_max(values)
+    limit = float(manual_limit_pa)
+    if not np.isfinite(limit) or limit <= 0.0:
+        raise ValueError("pressure_color_limit_pa must be finite and greater than zero.")
+    return limit
 
 
 def normalized_spl_reference_db(pressure: np.ndarray) -> float:

@@ -294,6 +294,21 @@ See [Physical System Model](Physical%20System%20Model.md) for the object model
 and [Coupled Solver](Coupled%20Solver.md) for numerical requirements and
 limitations.
 
+## Observation Planes
+
+Observation-plane properties control the plane geometry, sampling resolution,
+result response, frequency, and viewport display metric. Real, imaginary, and
+animated instantaneous pressure use a diverging color map centered on zero.
+
+The **Pressure color range** is automatic by default and uses a symmetric range
+based on the current pressure field. To keep the scale fixed while changing or
+sweeping frequency, clear **Automatic** and enter the positive limit in Pa. The
+viewport then uses `-limit` to `+limit`; values outside that interval saturate
+at the end colors. Reducing the limit makes low-amplitude spatial variation
+more visible when a localized pressure peak would otherwise dominate the
+automatic scale. The selected manual limit is stored with the observation
+plane in the project file.
+
 ## Frequency Controls
 
 Set **Min Hz**, **Max Hz**, and **Frequencies** before solving. Boundary Lab

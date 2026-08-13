@@ -1556,6 +1556,7 @@ class ObservationPlaneViewport(QObject):
             plane.display,
             animation_phase_deg=animation_phase_deg,
             normalized_reference_db=normalized_reference,
+            pressure_color_limit_pa=plane.pressure_color_limit_pa,
         )
 
     def _add_colored_field_actor(
@@ -2103,10 +2104,15 @@ def _result_selection_update(
             frequency_hz=old.frequency_hz,
             response_id=old.response_id,
             animation_speed_hz=old.animation_speed_hz,
+            pressure_color_limit_pa=old.pressure_color_limit_pa,
         )
         if comparable != old:
             return None
-        field_changed = old.frequency_hz != new.frequency_hz or old.response_id != new.response_id
+        field_changed = (
+            old.frequency_hz != new.frequency_hz
+            or old.response_id != new.response_id
+            or old.pressure_color_limit_pa != new.pressure_color_limit_pa
+        )
         state_changed = old.animation_speed_hz != new.animation_speed_hz
     if field_changed:
         return "field"

@@ -35,6 +35,7 @@ def test_observation_plane_round_trip_preserves_authoring_and_display_state() ->
         response_id="channel:woofer",
         frequency_hz=1234.0,
         animation_speed_hz=1.5,
+        pressure_color_limit_pa=0.25,
     ).validated()
 
     restored = ObservationPlane.from_payload(plane.to_payload())
@@ -101,6 +102,12 @@ def test_payload_reader_drops_invalid_and_duplicate_planes() -> None:
 def test_plane_rejects_invalid_resolution(invalid: float) -> None:
     with pytest.raises(ValueError, match="resolution_m"):
         replace(new_observation_plane("Plane"), resolution_m=invalid).validated()
+
+
+@pytest.mark.parametrize("invalid", [0.0, -1.0, float("nan")])
+def test_plane_rejects_invalid_manual_pressure_color_limit(invalid: float) -> None:
+    with pytest.raises(ValueError, match="pressure_color_limit_pa"):
+        replace(new_observation_plane("Plane"), pressure_color_limit_pa=invalid).validated()
 
 
 def test_properties_dialog_disables_result_controls_without_solved_data(qapp) -> None:
@@ -174,6 +181,35 @@ def test_properties_dialog_selects_and_previews_solved_frequency(qapp) -> None:
         assert not dialog.frequency_slider.isEnabled()
         assert not dialog.animate_button.isEnabled()
         assert not dialog.animation_speed_slider.isEnabled()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_properties_dialog_edits_manual_pressure_color_range(qapp) -> None:
+    from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
+
+    plane = replace(
+        new_observation_plane("Pressure"),
+        display=ObservationPlaneDisplay.REAL_PRESSURE,
+    )
+    dialog = ObservationPlanePropertiesDialog(plane)
+    try:
+        assert dialog.pressure_range_auto_check.isChecked()
+        assert dialog.pressure_range_auto_check.isEnabled()
+        assert not dialog.pressure_limit_spin.isEnabled()
+
+        dialog.pressure_range_auto_check.setChecked(False)
+        dialog.pressure_limit_spin.setValue(0.125)
+
+        assert dialog.pressure_limit_spin.isEnabled()
+        assert dialog.plane.pressure_color_limit_pa == pytest.approx(0.125)
+
+        spl_index = dialog.display_combo.findData(ObservationPlaneDisplay.SPL.value)
+        dialog.display_combo.setCurrentIndex(spl_index)
+        assert not dialog.pressure_range_auto_check.isEnabled()
+        assert not dialog.pressure_limit_spin.isEnabled()
+        assert dialog.plane.pressure_color_limit_pa == pytest.approx(0.125)
     finally:
         dialog.close()
         dialog.deleteLater()
@@ -1010,6 +1046,20 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     )
     assert at_zero.clim == at_ninety.clim == (-2.0, 2.0)
 
+    manual = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.REAL_PRESSURE,
+        pressure_color_limit_pa=0.25,
+    )
+    animated_manual = project_field_scalars(
+        stronger_pressure,
+        ObservationPlaneDisplay.SPL,
+        animation_phase_deg=90.0,
+        pressure_color_limit_pa=0.5,
+    )
+    assert manual.clim == (-0.25, 0.25)
+    assert animated_manual.clim == (-0.5, 0.5)
+
 
 def test_move_drag_freezes_then_releases_normalized_spl_reference() -> None:
     from blab.ui.observation_plane_viewport import ObservationPlaneViewport, _ActiveFieldState
@@ -1092,7 +1142,11 @@ def test_frequency_update_reuses_active_field_actor_and_updates_scalar_range() -
 
     mapper = Mapper()
     actor = SimpleNamespace(GetMapper=lambda: mapper)
-    plane = replace(new_observation_plane("Frequency"), display=ObservationPlaneDisplay.REAL_PRESSURE)
+    plane = replace(
+        new_observation_plane("Frequency"),
+        display=ObservationPlaneDisplay.REAL_PRESSURE,
+        pressure_color_limit_pa=0.25,
+    )
     mesh = pv.PolyData(np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
     mesh.point_data[FIELD_SCALAR_NAME] = np.zeros(2)
     pressure = np.asarray([2.0 + 1.0j, -1.0 - 3.0j])
@@ -1110,7 +1164,7 @@ def test_frequency_update_reuses_active_field_actor_and_updates_scalar_range() -
 
     assert updated
     np.testing.assert_allclose(mesh.point_data[FIELD_SCALAR_NAME], [2.0, -1.0])
-    assert mapper.scalar_range == (-2.0, 2.0)
+    assert mapper.scalar_range == (-0.25, 0.25)
     assert viewer.render_calls == 1
 
 
@@ -1320,12 +1374,16 @@ def test_result_selection_changes_use_fast_viewport_update() -> None:
     ObservationPlaneViewport.set_planes(editor, (speed_only,), selected_id=speed_only.id)
     assert calls == [("field", 200.0)]
 
-    active_update = replace(speed_only, frequency_hz=300.0)
+    manual_range = replace(speed_only, pressure_color_limit_pa=0.1)
+    ObservationPlaneViewport.set_planes(editor, (manual_range,), selected_id=manual_range.id)
+    assert calls == [("field", 200.0), ("field", 200.0)]
+
+    active_update = replace(manual_range, frequency_hz=300.0)
     editor._selected_id = None
-    editor._active_id = speed_only.id
+    editor._active_id = manual_range.id
     editor._field_plane = lambda: active_update
     ObservationPlaneViewport.set_planes(editor, (active_update,))
-    assert calls == [("field", 200.0), ("field", 300.0)]
+    assert calls == [("field", 200.0), ("field", 200.0), ("field", 300.0)]
 
 
 def test_plane_sync_prunes_only_plane_owned_field_cache_entries() -> None:

@@ -58,6 +58,7 @@ class ObservationPlane:
     response_id: str = "system"
     frequency_hz: float | None = None
     animation_speed_hz: float = 1.0
+    pressure_color_limit_pa: float | None = None
 
     def validated(self) -> ObservationPlane:
         center = _finite_tuple(self.center_m, 3, label="center_m")
@@ -77,6 +78,13 @@ class ObservationPlane:
         frequency = None
         if self.frequency_hz is not None:
             frequency = _positive_finite(self.frequency_hz, label="frequency_hz", minimum=1e-9)
+        pressure_color_limit = None
+        if self.pressure_color_limit_pa is not None:
+            pressure_color_limit = _positive_finite(
+                self.pressure_color_limit_pa,
+                label="pressure_color_limit_pa",
+                minimum=1e-12,
+            )
         return replace(
             self,
             id=identifier,
@@ -93,6 +101,7 @@ class ObservationPlane:
             response_id=str(self.response_id).strip() or "system",
             frequency_hz=frequency,
             animation_speed_hz=speed,
+            pressure_color_limit_pa=pressure_color_limit,
         )
 
     @property
@@ -150,6 +159,7 @@ class ObservationPlane:
             "response_id": plane.response_id,
             "frequency_hz": plane.frequency_hz,
             "animation_speed_hz": plane.animation_speed_hz,
+            "pressure_color_limit_pa": plane.pressure_color_limit_pa,
         }
 
     @classmethod
@@ -174,6 +184,11 @@ class ObservationPlane:
                 response_id=str(payload.get("response_id", "system")),
                 frequency_hz=(None if payload.get("frequency_hz") is None else float(payload["frequency_hz"])),
                 animation_speed_hz=float(payload.get("animation_speed_hz", 1.0)),
+                pressure_color_limit_pa=(
+                    None
+                    if payload.get("pressure_color_limit_pa") is None
+                    else float(payload["pressure_color_limit_pa"])
+                ),
             ).validated()
         except (TypeError, ValueError):
             return None
