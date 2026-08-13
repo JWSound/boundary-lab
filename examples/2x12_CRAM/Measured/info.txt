@@ -1,0 +1,11 @@
+This measurement was performed on ground plane in a reflection free environment with the microphone placed 10 meters from the front of the DUT. Measurement is not voltage calibrated, but corresponds to approximately 100dB @1m to effectively present a small-signal stimulus.
+
+Ambient Temperature - 22° C
+
+Barometric Pressure - 1024mb
+
+Humidity - 74%
+
+Background Noise - 56dBA averaged over 1 minute
+
+Devices: Dayton Audio EMM-6 Calibrated with factory file / Focusrite Scarlett 2i2 Interface calibrated using REW loopback
