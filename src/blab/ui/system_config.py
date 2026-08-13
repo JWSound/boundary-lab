@@ -73,6 +73,12 @@ from blab.physical_model import (
 )
 from blab.ui.dialogs import MeshDialogEntry
 
+INTERFACE_SEAM_SIMPLIFICATION_WARNING = (
+    "Boundary Lab simplified a mismatched interface seam by collapsing redundant boundary edges. "
+    "The result passed topology and element-quality checks, but local mesh quality may have changed. "
+    "Visually inspect the conformed interface and its surrounding surface in the 3D viewport before solving."
+)
+
 
 @dataclass(frozen=True)
 class AvailableSystemMesh:
@@ -102,12 +108,14 @@ class InterfaceRebuildResult:
     system: PhysicalSystem
     mesh_file_overrides_by_name: dict[str, str] = field(default_factory=dict)
     rebuilt_interface_ids: tuple[str, ...] = ()
+    quality_warning_interface_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class _InterfacePairMatch:
     boundary: Boundary
     conformed_bem_mesh: meshio.Mesh | None = None
+    seam_simplification_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -505,6 +513,7 @@ def rebuild_configured_interfaces(
 
     overrides: dict[str, str] = {}
     rebuilt_interface_ids: list[str] = []
+    quality_warning_interface_ids: list[str] = []
     normalized_symmetry = normalize_symmetry(symmetry_mode)
     output_root = Path(interface_output_root)
     for bem_name in sorted(affected_bem_names):
@@ -568,6 +577,8 @@ def rebuild_configured_interfaces(
                 )
                 rebuilt = True
                 rebuilt_interface_ids.append(interface.id)
+                if _result.seam_simplification_used:
+                    quality_warning_interface_ids.append(interface.id)
             final_fem_resource = fem_resource
             final_fem_name = fem_name
             final_bem_name = interface_bem_name
@@ -611,6 +622,7 @@ def rebuild_configured_interfaces(
         system=rebuilt_system,
         mesh_file_overrides_by_name=overrides,
         rebuilt_interface_ids=tuple(rebuilt_interface_ids),
+        quality_warning_interface_ids=tuple(quality_warning_interface_ids),
     )
 
 
@@ -1571,6 +1583,8 @@ class SystemConfigDialog(QDialog):
     def _identify_interfaces(self) -> None:
         self.identify_interfaces_button.setEnabled(False)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        quality_warning_interfaces: list[str] = []
+        identify_succeeded = False
         try:
             regions, resources = self._collect_regions_and_resources()
             boundaries = self._collect_boundaries()
@@ -1641,6 +1655,9 @@ class SystemConfigDialog(QDialog):
                     if fem_boundary.group.name == bem_boundary.group.name
                     else f"{fem_boundary.group.name} / {bem_boundary.group.name}"
                 )
+                if match.seam_simplification_used:
+                    quality_warning_interfaces.append(interface_name)
+                    interface_status = "Built (inspect)"
                 existing = next(
                     (
                         item
@@ -1666,11 +1683,19 @@ class SystemConfigDialog(QDialog):
                 raise ValueError("Mark matching bounded and unbounded surface groups as Interface first.")
             self._interfaces = interfaces
             self._load_interfaces()
+            identify_succeeded = True
         except (ValueError, OSError, InterfaceConformError) as exc:
             QMessageBox.warning(self, "Build/Identify Interfaces", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
             self.identify_interfaces_button.setEnabled(True)
+        if identify_succeeded and quality_warning_interfaces:
+            names = ", ".join(quality_warning_interfaces)
+            QMessageBox.warning(
+                self,
+                "Inspect Simplified Interface",
+                f"{INTERFACE_SEAM_SIMPLIFICATION_WARNING}\n\nInterface: {names}",
+            )
 
     def _match_interface_pair(
         self,
@@ -1698,7 +1723,7 @@ class SystemConfigDialog(QDialog):
                 ) from None
             fem_mesh = self._interface_mesh(fem_resource)
             bem_mesh = self._interface_mesh(bem_resource)
-            conformed_mesh, _result = conform_bem_interface_to_fem(
+            conformed_mesh, result = conform_bem_interface_to_fem(
                 fem_mesh,
                 bem_mesh,
                 fem_interface_name=str(fem_boundary.group.name),
@@ -1710,6 +1735,7 @@ class SystemConfigDialog(QDialog):
             return _InterfacePairMatch(
                 boundary=bem_boundary,
                 conformed_bem_mesh=conformed_mesh,
+                seam_simplification_used=result.seam_simplification_used,
             )
 
     def _write_conformed_bem_mesh(
@@ -2428,6 +2454,7 @@ def _unique_id(base: str, used: set[str]) -> str:
 
 __all__ = [
     "AvailableSystemMesh",
+    "INTERFACE_SEAM_SIMPLIFICATION_WARNING",
     "InterfaceRebuildResult",
     "MotionAxisInference",
     "SystemConfigResult",

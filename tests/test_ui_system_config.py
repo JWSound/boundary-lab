@@ -858,6 +858,29 @@ def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_pat
         )
 
 
+def test_build_identify_warns_when_ordered_seam_simplification_was_used(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    original_match = dialog._match_interface_pair
+    warnings = []
+
+    def marked_match(*args, **kwargs):
+        return replace(original_match(*args, **kwargs), seam_simplification_used=True)
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", marked_match)
+    monkeypatch.setattr(
+        system_config_module.QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    dialog._identify_interfaces()
+
+    assert dialog.interfaces_table.item(0, 3).text() == "Built (inspect)"
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Inspect Simplified Interface"
+    assert "Visually inspect the conformed interface" in warnings[0][1]
+
+
 def test_configured_interface_dependencies_identify_the_bem_mesh_to_rebuild(tmp_path: Path) -> None:
     system = _configured_fixture_dialog(
         bem_filename="exterior.msh",

@@ -75,6 +75,8 @@ class InterfaceConformResult:
     max_original_boundary_deviation: float
     interface_orientation_flipped: bool
     identity: InterfaceIdentityReport
+    seam_simplification_used: bool = False
+    simplified_bem_seam_edges: int = 0
 
 
 @dataclass(frozen=True)
@@ -224,6 +226,67 @@ def conform_bem_interface_to_fem(
             max_original_boundary_deviation=direct_seam_deviation,
             interface_orientation_flipped=interface_orientation_flipped,
             identity=identity,
+        )
+        return output_mesh, result
+
+    seam_plane_origin, seam_plane_normal = _best_fit_plane(bem_mesh.points[old_bem_opening_path])
+    seam_plane_deviation = _maximum_plane_deviation(
+        seam_plane_origin,
+        seam_plane_normal,
+        bem_mesh.points[old_bem_opening_path],
+        fem_mesh.points[fem_opening_path],
+    )
+    seam_simplification = (
+        _ordered_seam_simplification_correspondence(
+            fem_mesh.points,
+            fem_opening_path,
+            bem_mesh.points,
+            old_bem_opening_path,
+            tolerance=resolved_geometry_tolerance,
+            closed=not interface_symmetry_axes,
+        )
+        if seam_plane_deviation > resolved_geometry_tolerance
+        else None
+    )
+    if seam_simplification is not None:
+        aligned_bem_path, bem_to_fem_path_indices, seam_deviation = seam_simplification
+        output_mesh, interface_orientation_flipped, simplified_edges = (
+            _replace_bem_interface_with_simplified_seam(
+                fem_mesh,
+                bem_mesh,
+                fem_interface,
+                bem_data,
+                bem_interface_mask,
+                bem_interface_tag,
+                fem_seam_path=fem_opening_path,
+                bem_seam_path=aligned_bem_path,
+                bem_to_fem_path_indices=bem_to_fem_path_indices,
+                merge_tolerance=merge_tolerance,
+                closed=not interface_symmetry_axes,
+                protected_bem_tags=protected_bem_tags,
+            )
+        )
+        identity = validate_conforming_interfaces(
+            fem_mesh,
+            output_mesh,
+            fem_interface_name=fem_interface_name,
+            bem_interface_name=bem_interface_name,
+            coordinate_tolerance=max(merge_tolerance * 10.0, 1e-9),
+            require_closed_bem=True,
+            symmetry_mode=symmetry,
+        )
+        result = InterfaceConformResult(
+            fem_interface_triangles=len(fem_interface),
+            original_bem_interface_triangles=len(bem_interface),
+            original_adjacent_triangles=0,
+            remeshed_adjacent_triangles=0,
+            output_vertices=len(output_mesh.points),
+            output_triangles=len(_triangle_data(output_mesh, require_geometrical=True).triangles),
+            max_original_boundary_deviation=seam_deviation,
+            interface_orientation_flipped=interface_orientation_flipped,
+            identity=identity,
+            seam_simplification_used=True,
+            simplified_bem_seam_edges=simplified_edges,
         )
         return output_mesh, result
 
@@ -980,6 +1043,230 @@ def _discrete_path_correspondence(
     return np.asarray(first_to_second, dtype=np.int64), maximum_deviation
 
 
+def _ordered_seam_simplification_correspondence(
+    fem_points: np.ndarray,
+    fem_path: np.ndarray,
+    bem_points: np.ndarray,
+    bem_path: np.ndarray,
+    *,
+    tolerance: float,
+    closed: bool,
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Map a more finely divided BEM seam onto an ordered FEM seam.
+
+    This intentionally supports simplification only. Adding vertices to the
+    surrounding BEM surface needs a separate edge-splitting operation and is
+    not treated as an equivalent safe fallback.
+    """
+
+    fem_vertices = np.asarray(fem_path, dtype=np.int64)
+    bem_vertices = np.asarray(bem_path, dtype=np.int64)
+    if len(bem_vertices) <= len(fem_vertices):
+        return None
+
+    fem_coordinates = np.asarray(fem_points, dtype=float)[fem_vertices]
+    bem_coordinates = np.asarray(bem_points, dtype=float)[bem_vertices]
+    deviation_function = _symmetric_polyline_deviation if closed else _symmetric_open_polyline_deviation
+    seam_deviation = deviation_function(fem_coordinates, bem_coordinates)
+    if seam_deviation > tolerance:
+        return None
+
+    candidates = (bem_vertices, bem_vertices[::-1])
+    best: tuple[np.ndarray, np.ndarray, float] | None = None
+    for candidate_path in candidates:
+        candidate_coordinates = np.asarray(bem_points, dtype=float)[candidate_path]
+        vertex_distances, mapping = cKDTree(fem_coordinates).query(candidate_coordinates, k=1)
+        mapping = np.asarray(mapping, dtype=np.int64)
+        if set(map(int, mapping)) != set(range(len(fem_vertices))):
+            continue
+        if closed:
+            increments = np.mod(np.roll(mapping, -1) - mapping, len(fem_vertices))
+            if not np.all((increments == 0) | (increments == 1)):
+                continue
+        else:
+            if mapping[0] != 0 or mapping[-1] != len(fem_vertices) - 1:
+                continue
+            increments = np.diff(mapping)
+            if not np.all((increments == 0) | (increments == 1)):
+                continue
+        maximum_vertex_move = float(np.max(vertex_distances, initial=0.0))
+        if best is None or maximum_vertex_move < best[2]:
+            best = (candidate_path.copy(), mapping, maximum_vertex_move)
+
+    if best is None:
+        return None
+    return best[0], best[1], seam_deviation
+
+
+def _replace_bem_interface_with_simplified_seam(
+    fem_mesh: meshio.Mesh,
+    bem_mesh: meshio.Mesh,
+    fem_interface: np.ndarray,
+    bem_data: _TriangleData,
+    bem_interface_mask: np.ndarray,
+    bem_interface_tag: int,
+    *,
+    fem_seam_path: np.ndarray,
+    bem_seam_path: np.ndarray,
+    bem_to_fem_path_indices: np.ndarray,
+    merge_tolerance: float,
+    closed: bool,
+    protected_bem_tags: set[int],
+) -> tuple[meshio.Mesh, bool, int]:
+    """Collapse redundant ordered BEM seam edges and copy exact FEM facets."""
+
+    fem_path = np.asarray(fem_seam_path, dtype=np.int64)
+    bem_path = np.asarray(bem_seam_path, dtype=np.int64)
+    path_mapping = np.asarray(bem_to_fem_path_indices, dtype=np.int64)
+    edge_stop = len(bem_path) if closed else len(bem_path) - 1
+    collapsed_edge_positions = [
+        index
+        for index in range(edge_stop)
+        if path_mapping[index] == path_mapping[(index + 1) % len(bem_path)]
+    ]
+    expected_collapses = len(bem_path) - len(fem_path)
+    if len(collapsed_edge_positions) != expected_collapses or expected_collapses <= 0:
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: the redundant BEM vertices do not form consecutive edges."
+        )
+
+    keep_mask = ~bem_interface_mask
+    kept_original_indices = np.flatnonzero(keep_mask)
+    kept_original_triangles = bem_data.triangles[keep_mask]
+    kept_boundary_edges = _surface_boundary_edges(kept_original_triangles)
+    eligible_vertices = np.unique(np.concatenate((bem_path, kept_boundary_edges.ravel())))
+    eligible_tree = cKDTree(np.asarray(bem_mesh.points, dtype=float)[eligible_vertices])
+
+    point_map = np.arange(len(bem_mesh.points), dtype=np.int64)
+    representative_by_fem_index: dict[int, int] = {}
+    for fem_index in range(len(fem_path)):
+        positions = np.flatnonzero(path_mapping == fem_index)
+        if len(positions) == 0:
+            raise InterfaceConformError("Ordered seam simplification rejected: the seam mapping is not onto.")
+        representative_by_fem_index[fem_index] = int(bem_path[int(positions[0])])
+
+    for position, bem_vertex in enumerate(bem_path):
+        representative = representative_by_fem_index[int(path_mapping[position])]
+        nearby = eligible_vertices[
+            eligible_tree.query_ball_point(
+                np.asarray(bem_mesh.points, dtype=float)[int(bem_vertex)],
+                merge_tolerance,
+            )
+        ]
+        for vertex in map(int, nearby):
+            existing = int(point_map[vertex])
+            if existing != vertex and existing != representative:
+                raise InterfaceConformError(
+                    "Ordered seam simplification rejected: a BEM seam vertex has conflicting matches."
+                )
+            point_map[vertex] = representative
+
+    simplified_points = np.asarray(bem_mesh.points, dtype=float).copy()
+    for fem_index, representative in representative_by_fem_index.items():
+        simplified_points[representative] = np.asarray(fem_mesh.points, dtype=float)[fem_path[fem_index]]
+
+    mapped_kept_triangles = point_map[kept_original_triangles]
+    degenerate_mask = (
+        (mapped_kept_triangles[:, 0] == mapped_kept_triangles[:, 1])
+        | (mapped_kept_triangles[:, 1] == mapped_kept_triangles[:, 2])
+        | (mapped_kept_triangles[:, 0] == mapped_kept_triangles[:, 2])
+    )
+    if int(np.count_nonzero(degenerate_mask)) != expected_collapses:
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: collapsing the redundant seam did not remove exactly "
+            "one surrounding triangle per redundant edge."
+        )
+    if np.any(np.isin(bem_data.physical_tags[kept_original_indices[degenerate_mask]], tuple(protected_bem_tags))):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: it would modify another protected interface surface."
+        )
+
+    retained_original_triangles = kept_original_triangles[~degenerate_mask]
+    retained_triangles = mapped_kept_triangles[~degenerate_mask]
+    old_cross = np.cross(
+        np.asarray(bem_mesh.points, dtype=float)[retained_original_triangles[:, 1]]
+        - np.asarray(bem_mesh.points, dtype=float)[retained_original_triangles[:, 0]],
+        np.asarray(bem_mesh.points, dtype=float)[retained_original_triangles[:, 2]]
+        - np.asarray(bem_mesh.points, dtype=float)[retained_original_triangles[:, 0]],
+    )
+    new_cross = np.cross(
+        simplified_points[retained_triangles[:, 1]] - simplified_points[retained_triangles[:, 0]],
+        simplified_points[retained_triangles[:, 2]] - simplified_points[retained_triangles[:, 0]],
+    )
+    old_magnitudes = np.linalg.norm(old_cross, axis=1)
+    new_magnitudes = np.linalg.norm(new_cross, axis=1)
+    if np.any(old_magnitudes <= 0.0) or np.any(new_magnitudes <= 0.0):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: it would create a zero-area surrounding triangle."
+        )
+    normal_alignment = np.sum(old_cross * new_cross, axis=1) / (old_magnitudes * new_magnitudes)
+    area_ratio = new_magnitudes / old_magnitudes
+    if np.any(normal_alignment <= 0.0):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: it would invert a surrounding triangle."
+        )
+    if np.any((area_ratio < 0.05) | (area_ratio > 20.0)):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: surrounding triangle area would change by more than 20x."
+        )
+
+    old_bem_interface = bem_data.triangles[bem_interface_mask]
+    fem_interface_normal = _surface_normal(fem_mesh.points, fem_interface)
+    old_interface_normal = _surface_normal(bem_mesh.points, old_bem_interface)
+    interface_orientation_flipped = bool(np.dot(fem_interface_normal, old_interface_normal) < 0.0)
+    copied_interface = np.asarray(fem_interface, dtype=np.int64).copy()
+    if interface_orientation_flipped:
+        copied_interface = copied_interface[:, [0, 2, 1]]
+
+    fem_vertex_map = np.full(len(fem_mesh.points), -1, dtype=np.int64)
+    for fem_index, representative in representative_by_fem_index.items():
+        fem_vertex_map[fem_path[fem_index]] = representative
+    fem_vertices = np.unique(copied_interface)
+    appended_fem_vertices = fem_vertices[fem_vertex_map[fem_vertices] < 0]
+    appended_start = len(simplified_points)
+    fem_vertex_map[appended_fem_vertices] = np.arange(
+        appended_start,
+        appended_start + len(appended_fem_vertices),
+        dtype=np.int64,
+    )
+    combined_points = np.vstack(
+        (simplified_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices])
+    )
+    copied_interface = fem_vertex_map[copied_interface]
+    combined_triangles = np.vstack((retained_triangles, copied_interface))
+    connectivity_keys = np.sort(combined_triangles, axis=1)
+    if len(np.unique(connectivity_keys, axis=0)) != len(connectivity_keys):
+        raise InterfaceConformError(
+            "Ordered seam simplification rejected: it would create duplicate triangle connectivity."
+        )
+
+    retained_indices = kept_original_indices[~degenerate_mask]
+    combined_physical = np.concatenate(
+        (
+            bem_data.physical_tags[retained_indices],
+            np.full(len(copied_interface), bem_interface_tag, dtype=np.int32),
+        )
+    )
+    interface_geometrical_tag = int(np.min(bem_data.geometrical_tags[bem_interface_mask]))
+    combined_geometrical = np.concatenate(
+        (
+            bem_data.geometrical_tags[retained_indices],
+            np.full(len(copied_interface), interface_geometrical_tag, dtype=np.int32),
+        )
+    )
+    compact_points, compact_triangles = _compact_points(combined_points, combined_triangles)
+    output_mesh = meshio.Mesh(
+        points=compact_points,
+        cells=[("triangle", compact_triangles)],
+        cell_data={
+            "gmsh:physical": [combined_physical],
+            "gmsh:geometrical": [combined_geometrical],
+        },
+        field_data={name: np.asarray(value).copy() for name, value in bem_mesh.field_data.items()},
+    )
+    return output_mesh, interface_orientation_flipped, expected_collapses
+
+
 def _replace_bem_interface_directly(
     fem_mesh: meshio.Mesh,
     bem_mesh: meshio.Mesh,
@@ -1354,7 +1641,13 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
         f"{result.original_bem_interface_triangles} BEM triangles replaced by "
         f"{result.fem_interface_triangles} FEM facets"
     )
-    if result.original_adjacent_triangles == result.remeshed_adjacent_triangles == 0:
+    if result.seam_simplification_used:
+        print(
+            "Surrounding BEM seam simplified: "
+            f"{result.simplified_bem_seam_edges} redundant boundary edges collapsed"
+        )
+        print("Warning: inspect the conformed interface and surrounding triangles before solving.")
+    elif result.original_adjacent_triangles == result.remeshed_adjacent_triangles == 0:
         print("Surrounding BEM surface preserved: interface seams already matched discretely")
     else:
         print(
