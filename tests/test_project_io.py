@@ -161,6 +161,59 @@ def test_project_file_resolves_relative_paths(tmp_path) -> None:
     assert artifact["source_path"] == str((project_dir / "runs/case/config.txt").resolve())
 
 
+def test_project_file_writes_project_local_assets_as_relative_paths(tmp_path: Path) -> None:
+    project_dir = tmp_path / "portable"
+    local_mesh = (project_dir / "meshes" / "source.msh").resolve()
+    local_cleaned = (project_dir / "meshes" / "cleaned.msh").resolve()
+    local_run = (project_dir / "runs" / "case").resolve()
+    outside_mesh = (tmp_path / "shared" / "outside.msh").resolve()
+    payload = {
+        "schema_version": PROJECT_SCHEMA_VERSION,
+        "imported_meshes": [
+            {
+                "name": "local",
+                "source_file": str(local_mesh),
+                "cleaned_file": str(local_cleaned),
+            },
+            {"name": "outside", "source_file": str(outside_mesh), "cleaned_file": None},
+        ],
+        "generator_documents": [
+            {
+                "id": "generator",
+                "name": "waveguide",
+                "provider_id": "ath",
+                "provider_schema_version": 1,
+                "source": {"format": "ath_cfg", "text": ""},
+                "artifact": {
+                    "output_dir": str(local_run),
+                    "mesh_path": str(local_run / "case.msh"),
+                    "cleaned_mesh_path": None,
+                    "reduced_cleaned_mesh_path": None,
+                    "source_path": str(local_run / "config.txt"),
+                },
+            }
+        ],
+        "physical_system": {
+            "meshes": [{"id": "mesh:local", "file": str(local_cleaned)}],
+        },
+    }
+
+    project_path = write_project_file(project_dir / "portable.blab.json", payload)
+    raw = json.loads(project_path.read_text(encoding="utf-8"))
+
+    assert raw["imported_meshes"][0]["source_file"] == "meshes/source.msh"
+    assert raw["imported_meshes"][0]["cleaned_file"] == "meshes/cleaned.msh"
+    assert raw["imported_meshes"][1]["source_file"] == str(outside_mesh)
+    assert raw["generator_documents"][0]["artifact"]["output_dir"] == "runs/case"
+    assert raw["generator_documents"][0]["artifact"]["mesh_path"] == "runs/case/case.msh"
+    assert raw["physical_system"]["meshes"][0]["file"] == "meshes/cleaned.msh"
+    assert payload["imported_meshes"][0]["source_file"] == str(local_mesh)
+
+    loaded = read_project_file(project_path)
+    assert loaded["imported_meshes"][0]["source_file"] == str(local_mesh)
+    assert loaded["physical_system"]["meshes"][0]["file"] == str(local_cleaned)
+
+
 def test_project_migration_rejects_non_integer_schema() -> None:
     with pytest.raises(ValueError, match="schema_version must be an integer"):
         migrate_project_payload({"schema_version": "future"})

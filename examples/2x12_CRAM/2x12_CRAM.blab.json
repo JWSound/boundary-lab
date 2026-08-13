@@ -31,7 +31,7 @@
       "enabled": true,
       "name": "2x12CRAMInterior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\2x12_CRAM\\2x12CRAMInterior.msh",
+      "source_file": "2x12CRAMInterior.msh",
       "translation_mm": [
         0,
         0,
@@ -39,11 +39,11 @@
       ]
     },
     {
-      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\2x12cramexterior_5294c469d7_interface_conformed.msh",
+      "cleaned_file": "2x12CRAMExterior_interface_conformed.msh",
       "enabled": true,
       "name": "2x12CRAMExterior",
       "scale_factor": 0.001,
-      "source_file": "E:\\AthGUI\\boundary-lab\\examples\\2x12_CRAM\\2x12CRAMExterior.msh",
+      "source_file": "2x12CRAMExterior.msh",
       "translation_mm": [
         0,
         0,
@@ -253,7 +253,7 @@
     ],
     "meshes": [
       {
-        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\2x12cramexterior_5294c469d7_interface_conformed.msh",
+        "file": "2x12CRAMExterior_interface_conformed.msh",
         "id": "mesh:2x12cramexterior",
         "name": "2x12CRAMExterior",
         "purpose": "bem_surface",
@@ -265,7 +265,7 @@
         ]
       },
       {
-        "file": "E:\\AthGUI\\boundary-lab\\examples\\2x12_CRAM\\2x12CRAMInterior.msh",
+        "file": "2x12CRAMInterior.msh",
         "id": "mesh:2x12craminterior",
         "name": "2x12CRAMInterior",
         "purpose": "fem_volume",

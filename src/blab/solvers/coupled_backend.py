@@ -268,7 +268,6 @@ class _CoupledBackend:
         self.bem_backend = normalized_bem_backend
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
-        validate_system_capabilities(request)
         solver_options = dict(request.solver_options)
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
@@ -276,6 +275,7 @@ class _CoupledBackend:
         if self.bem_backend != "cuda":
             solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
+        validate_system_capabilities(typed_request)
         return CoupledSession(
             typed_request,
             julia_executable=self.julia_executable,
@@ -290,6 +290,10 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     """Reject physical-model features that the current coupled backend cannot solve."""
 
     system = request.compiled_system
+    if request.solver_options.get("static_condensation", False) and request.solver_options.get(
+        "validation_diagnostics", False
+    ):
+        raise ValueError("FEM static condensation cannot be combined with full-matrix validation diagnostics.")
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
     symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
     symmetry_factors = {"off": 1, "x": 2, "xy": 4}

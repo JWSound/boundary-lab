@@ -65,7 +65,8 @@ coordinates use the project's meter-based global coordinate frame. For example:
   ],
   "retain": ["bem_boundary_traces", "fem_nodal_pressure"],
   "solver_options": {
-    "validation_diagnostics": true
+    "quadrature_order": 4,
+    "singular_order": 4
   }
 }
 ```
@@ -89,6 +90,10 @@ Supported `retain` entries are `bem_boundary_pressure`,
 `fem_nodal_pressure`. Retaining fields can substantially increase solve output.
 Complex results remain separated by excitation port; the headless path does not
 collapse them into synthesized GUI channels.
+
+Full-matrix `validation_diagnostics` may be enabled for coupled BEAT CPU solves.
+They cannot be combined with CUDA FEM static condensation; project validation
+rejects that incompatible option combination before Julia starts.
 
 ### Result artifact
 

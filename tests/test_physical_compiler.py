@@ -429,6 +429,23 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
+def test_coupled_cuda_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"static_condensation": True, "validation_diagnostics": True},
+    )
+
+    with pytest.raises(ValueError, match="static condensation cannot be combined"):
+        CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
+
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.request.solver_options["static_condensation"] is False
+    assert cpu_session.request.solver_options["validation_diagnostics"] is True
+
+
 @pytest.mark.parametrize(
     ("parameters", "message"),
     (

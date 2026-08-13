@@ -7,6 +7,7 @@ wire/API serialization stays in ``blab.protocol``.
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -43,8 +44,9 @@ def normalize_project_path(path: str | Path) -> Path:
 def write_project_file(path: str | Path, payload: dict[str, Any]) -> Path:
     project_path = normalize_project_path(path)
     project_path.parent.mkdir(parents=True, exist_ok=True)
+    portable_payload = _project_payload_with_portable_paths(payload, project_path.parent)
     project_path.write_text(
-        json.dumps(payload, indent=2, sort_keys=True),
+        json.dumps(portable_payload, indent=2, sort_keys=True),
         encoding="utf-8",
         newline="\n",
     )
@@ -106,6 +108,36 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
         resolved["physical_system"] = physical_system
 
     return resolved
+
+
+def _project_payload_with_portable_paths(payload: dict[str, Any], base_dir: str | Path) -> dict[str, Any]:
+    """Store project-local assets relative to the project without mutating live state."""
+
+    portable = copy.deepcopy(payload)
+    base_path = Path(base_dir).resolve()
+
+    for item in _list_or_empty(portable.get("imported_meshes")):
+        if isinstance(item, dict):
+            _relativize_path_fields(item, base_path, ("source_file", "cleaned_file"))
+
+    for item in _list_or_empty(portable.get("generator_documents")):
+        if not isinstance(item, dict):
+            continue
+        artifact = item.get("artifact")
+        if isinstance(artifact, dict):
+            _relativize_path_fields(
+                artifact,
+                base_path,
+                ("output_dir", "mesh_path", "cleaned_mesh_path", "reduced_cleaned_mesh_path", "source_path"),
+            )
+
+    physical_system = portable.get("physical_system")
+    if isinstance(physical_system, dict):
+        for item in _list_or_empty(physical_system.get("meshes")):
+            if isinstance(item, dict):
+                _relativize_path_fields(item, base_path, ("file",))
+
+    return portable
 
 
 def migrate_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -287,6 +319,24 @@ def _resolve_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[
         if path.is_absolute():
             continue
         payload[field] = str((base_dir / path).resolve())
+
+
+def _relativize_path_fields(payload: dict[str, Any], base_dir: Path, fields: tuple[str, ...]) -> None:
+    for field in fields:
+        value = payload.get(field)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        path = Path(text)
+        if not path.is_absolute():
+            continue
+        try:
+            relative = path.resolve().relative_to(base_dir)
+        except ValueError:
+            continue
+        payload[field] = relative.as_posix() or "."
 
 
 def build_project_payload(
