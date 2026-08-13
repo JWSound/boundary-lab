@@ -12,6 +12,7 @@ COMMAND_MODULES = {
     "solve": "blab.solver",
     "prepare": "blab.postprocess",
     "plot": "blab.plotting",
+    "project": "blab.project_cli",
 }
 
 

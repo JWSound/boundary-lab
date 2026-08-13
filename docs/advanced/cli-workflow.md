@@ -2,6 +2,125 @@
 
 Boundary Lab still includes command-line tools for mesh cleaning, solving, data preparation, and static plot generation. The GUI is the recommended entry point for normal use.
 
+## Headless Project Workflow
+
+The project CLI loads a complete `.blab.json` physical system and runs the same
+BEAT Engine physical-system path used by the desktop application. It supports
+exterior BEM and coupled FEM-BEM-LEM projects without opening Qt.
+
+Validate a project before starting an expensive solve:
+
+```bash
+blab project validate examples/Simple_Sealed/simple_sealed.blab.json --json
+```
+
+Validation migrates the project schema, resolves paths relative to the project,
+loads and compiles all meshes and physical groups, checks backend capabilities,
+and reports the solve kind, assumptions, mesh hashes, excitations, outputs, and
+frequency range. It does not launch Julia or assemble solver matrices.
+
+Run the project using its saved frequency, polar, sphere, symmetry, channel, and
+observation-plane settings:
+
+```bash
+blab project solve speaker.blab.json --backend beat_cpu --output runs/speaker-check
+```
+
+The default `--backend beat_auto` always selects a BEAT Engine backend. It probes
+the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
+functional; otherwise it falls back to `beat_cpu`. Use an explicit
+`--backend beat_cpu` or `--backend beat_cuda` to disable automatic selection.
+`--julia-executable` and `--julia-threads` select the Julia installation and
+thread count. The output directory must not already exist, which prevents an
+agent from accidentally overwriting a previous run.
+
+For machine-readable progress, request newline-delimited JSON events:
+
+```bash
+blab project solve speaker.blab.json --request diagnosis.json --events ndjson
+```
+
+### Solve request overlays
+
+A request overlay changes one experiment without modifying the project. All
+coordinates use the project's meter-based global coordinate frame. For example:
+
+```json
+{
+  "schema_version": 1,
+  "frequencies_hz": [35.5, 40.0, 45.0, 50.0, 56.0, 63.0],
+  "excitation_port_ids": ["excitation:woofer"],
+  "include_project_observations": false,
+  "probes": [
+    {
+      "id": "farfield_on_axis",
+      "coordinate_frame": "project",
+      "points_m": [[0.0, 0.0, 3.0]]
+    },
+    {
+      "id": "port_nearfield",
+      "coordinate_frame": "project",
+      "points_m": [[0.18, -0.12, 0.03]]
+    }
+  ],
+  "retain": ["bem_boundary_traces", "fem_nodal_pressure"],
+  "solver_options": {
+    "validation_diagnostics": true
+  }
+}
+```
+
+`frequency_sweep` may replace `frequencies_hz`:
+
+```json
+{
+  "schema_version": 1,
+  "frequency_sweep": {
+    "min_hz": 20,
+    "max_hz": 500,
+    "count": 100,
+    "spacing": "log"
+  }
+}
+```
+
+Supported `retain` entries are `bem_boundary_pressure`,
+`bem_boundary_neumann`, `bem_boundary_traces` (both BEM traces), and
+`fem_nodal_pressure`. Retaining fields can substantially increase solve output.
+Complex results remain separated by excitation port; the headless path does not
+collapse them into synthesized GUI channels.
+
+### Result artifact
+
+Each run is a self-describing directory:
+
+```text
+speaker-check/
+  manifest.json
+  project.snapshot.blab.json
+  request.json
+  compiled-system.json
+  domains.json
+  domains.npz
+  frequencies/
+    000000.json
+    000000.npz
+    ...
+```
+
+`manifest.json` records the backend, solver options, phasor convention,
+frequency axis, excitation ids, completion mask, and run status. Each frequency
+is committed independently, so a failed or interrupted run retains completed
+complex quantities and diagnostics. The frequency JSON maps semantic quantity
+ids to arrays in the corresponding NPZ file. The result phasor convention is
+`exp(-i omega t)`.
+
+The current headless interface evaluates arbitrary exterior probe points declared
+before the solve. Retained BEM traces and FEM nodal fields provide the data needed
+for a future post-solve point-sampling command without repeating the system solve.
+
+## Legacy Mesh Workflow
+
 The CLI workflow is:
 
 1. `blab clean`
