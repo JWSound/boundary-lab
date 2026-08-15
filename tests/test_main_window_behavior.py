@@ -203,6 +203,7 @@ def test_data_exports_are_explicit_file_menu_actions(main_window) -> None:
 
     assert "Export Polar Data" in labels
     assert "Export On-Axis Data" in labels
+    assert "Export Speaker Package..." in labels
     assert not main_window.export_polar_data_action.isEnabled()
     assert not main_window.export_on_axis_data_action.isEnabled()
 

@@ -119,6 +119,11 @@ class ViewBuilderMixin:
         self.export_on_axis_data_action.triggered.connect(self.export_on_axis_data)
         file_menu.addAction(self.export_on_axis_data_action)
 
+        self.export_speaker_package_action = QAction("Export Speaker Package...", self)
+        self.export_speaker_package_action.setToolTip("Configure, solve, and export a .blabsp speaker package")
+        self.export_speaker_package_action.triggered.connect(self.export_speaker_package)
+        file_menu.addAction(self.export_speaker_package_action)
+
         view_menu = self.menuBar().addMenu("View")
         self.balloon_plot_action = QAction("Balloon Plot", self)
         self.balloon_plot_action.setEnabled(False)
@@ -419,6 +424,7 @@ class ViewBuilderMixin:
         self.mesh_config_button.setEnabled(controls.mesh_config)
         self.system_config_button.setEnabled(controls.system_config)
         self.channel_config_button.setEnabled(controls.channel_config)
+        self.export_speaker_package_action.setEnabled(controls.speaker_package)
 
     def set_workflow_phase(self, phase: OperationPhase, *, cancel_available: bool = True) -> None:
         """Convenience for controllers: map a phase and apply it in one step."""
@@ -442,6 +448,7 @@ class ViewBuilderMixin:
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)
+        self.export_speaker_package_action.setEnabled(available and self.solve_button.isEnabled())
 
     def clear_mesh_preview(self) -> None:
         self.preview.clear()

@@ -123,3 +123,36 @@ The balloon viewer exports a schema-versioned directory containing:
 The point order is the original solver Fibonacci-sample order. The export does
 not contain contour actors, axes, protractor geometry, or radar/isobar slice
 plots.
+
+## Exporting Speaker Packages
+
+Use **File > Export Speaker Package...** to configure a package and select
+**Solve and Export**. Boundary Lab starts a new physical-system solve with the
+raw complex quantities required by the selected fidelity; it does not reuse a
+plot-normalized result.
+
+Speaker packages use the `.blabsp` extension and are versioned ZIP64 archives.
+They preserve the independent excitation-port basis and the
+`exp(-i omega t)` phasor convention.
+
+- **Level 1 — Pattern superposition** contains complex pressure on a spherical
+  Fibonacci sampling surface.
+- **Level 2 — Fixed distributed sources** contains level 1 data plus the
+  exterior BEM surface, continuous P1 pressure, and facewise DP0 pressure
+  normal derivative. These traces define the fixed equivalent source
+  `D[p] - S[q]`; they are not two simultaneously imposed boundary conditions.
+
+Boundary Lab uses +Z as forward. Exported speaker packages use the array-tool
+frame with +Y as forward by applying the proper right-handed rotation
+`(x, y, z) -> (x, z, -y)`. Point and direction coordinates are rotated without
+reordering samples or changing complex trace values.
+
+For Level 2 solves using X or XY symmetry, Boundary Lab automatically mirrors
+the reduced BEM surface and traces into a complete physical boundary before
+rotating it into the package frame. Symmetry-plane nodes are shared, coincident
+face images are omitted, and reflected triangles have their winding corrected
+to preserve outward normals. The scalar P1 pressure and DP0 outward-normal
+derivative values are copied to each image. The archive records the source
+symmetry, image transforms, and source indices for every exported node and face.
+The package manifest records medium properties, units, coordinate conventions,
+frequency and excitation order, provenance, payload semantics, and checksums.

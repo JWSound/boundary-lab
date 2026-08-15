@@ -31,6 +31,11 @@ from blab.solve_results import (
     legacy_result_domains,
     legacy_result_to_system_result,
 )
+from blab.speaker_package import (
+    SpeakerPackageConfig,
+    export_speaker_package,
+    prepare_speaker_package_solve,
+)
 from blab.symmetry import SymmetryValidationError
 from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
@@ -97,6 +102,7 @@ class SolveWorkflowController(QObject):
         self._assembler = assembler
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
+        self._pending_speaker_package: SpeakerPackageConfig | None = None
 
     # -- starting a run -----------------------------------------------------
 
@@ -198,6 +204,61 @@ class SolveWorkflowController(QObject):
         self._solve_controller.start(
             self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
         )
+
+    def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
+        """Prepare the requested package outputs, run once, then export on completion."""
+
+        if self._geometry_controller.active or self._solve_controller.active:
+            return False
+        if not self._inputs.has_solver_meshes():
+            self._view.warn("No mesh", "Enable at least one generated or imported mesh before exporting a speaker package.")
+            return False
+        try:
+            normalized = config.normalized()
+        except ValueError as exc:
+            self._view.warn("Speaker package", str(exc))
+            return False
+        self._inputs.ensure_seeded_exterior_system()
+        project = self._project()
+        if project.physical_system is None:
+            self._view.warn(
+                "Speaker package",
+                "Open System and configure a physical system before exporting a speaker package.",
+            )
+            return False
+        preferences = self._read_preferences()
+        try:
+            meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(project.symmetry))
+            system = sync_physical_system_meshes(project.physical_system, meshes)
+            project.physical_system = system
+            frequencies = self._view.frequency_range()
+            prepared = prepare_system_ui_solve(
+                system,
+                freq_min_hz=float(frequencies.min_hz),
+                freq_max_hz=float(frequencies.max_hz),
+                freq_count=frequencies.count,
+                observation_distance_m=preferences.polar_observation_distance_m,
+                polar_angle_step_deg=preferences.polar_angle_step_deg,
+                spherical_sampling_enabled=False,
+                spherical_sampling_points=0,
+                component_channel_by_id=project.component_channel_by_id,
+                backend_id=preferences.solve_backend,
+                symmetry_mode=project.symmetry,
+                observation_planes=(),
+            )
+            prepared = prepare_speaker_package_solve(
+                prepared,
+                fidelity=normalized.fidelity,
+                sphere_point_count=balloon_sampling_points(preferences.balloon_angle_precision_deg),
+                sphere_radius_m=preferences.polar_observation_distance_m,
+            )
+        except Exception as exc:
+            self._view.show_stitch_or_generic_error("Speaker package preparation failed", exc)
+            return False
+
+        self._pending_speaker_package = normalized
+        self._start_prepared_system_solve(prepared, "Initializing speaker package solve...")
+        return True
 
     def _start_exterior_system_solve(self) -> None:
         if self._inputs.reconcile_symmetry_with_backend():
@@ -397,6 +458,16 @@ class SolveWorkflowController(QObject):
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session
         session.finalize_results(status=completion.phase.value)
+        pending_package = self._pending_speaker_package
+        self._pending_speaker_package = None
+        package_result = None
+        if pending_package is not None and completion.completed:
+            solved = session.solved_system
+            if solved is not None and solved.complete:
+                try:
+                    package_result = export_speaker_package(solved, pending_package)
+                except Exception as exc:
+                    self._view.show_error("Speaker package export failed", str(exc))
         observation_planes = getattr(self._view, "observation_plane_controller", None)
         if observation_planes is not None:
             observation_planes.sync_view()
@@ -431,7 +502,10 @@ class SolveWorkflowController(QObject):
             if completion.phase == OperationPhase.FAILED:
                 self._view.show_status(f"Solve failed after {solved_count} frequencies{elapsed_text}")
                 return
-            self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
+            if package_result is not None:
+                self._view.show_status(f"Exported speaker package to {package_result.path}")
+            else:
+                self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
         elif completion.phase == OperationPhase.CANCELLED:
             self._view.show_status("Solve stopped")
         self._plots.refresh_contour_controls()

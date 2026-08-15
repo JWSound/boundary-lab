@@ -7,7 +7,7 @@ import pytest
 from blab.ui.application_state import OperationPhase
 from blab.ui.main_window.workflow_view import FrequencyRange, WorkflowControls, workflow_controls
 
-MUTATING = ("generate", "solve", "mesh_config", "system_config", "channel_config")
+MUTATING = ("generate", "solve", "mesh_config", "system_config", "channel_config", "speaker_package")
 
 
 @pytest.mark.parametrize("phase", [OperationPhase.RUNNING, OperationPhase.CANCELLING])
@@ -38,6 +38,8 @@ def test_settled_phases_restore_the_inputs_and_hide_cancel(phase) -> None:
 def test_system_config_stays_gated_on_having_meshes() -> None:
     assert workflow_controls(OperationPhase.IDLE, has_solver_meshes=False).system_config is False
     assert workflow_controls(OperationPhase.IDLE, has_solver_meshes=True).system_config is True
+    assert workflow_controls(OperationPhase.IDLE, has_solver_meshes=False).speaker_package is False
+    assert workflow_controls(OperationPhase.IDLE, has_solver_meshes=True).speaker_package is True
 
 
 def test_busy_state_ignores_mesh_availability() -> None:

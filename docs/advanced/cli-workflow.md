@@ -124,6 +124,26 @@ The current headless interface evaluates arbitrary exterior probe points declare
 before the solve. Retained BEM traces and FEM nodal fields provide the data needed
 for a future post-solve point-sampling command without repeating the system solve.
 
+### Speaker package solve and export
+
+Create a complex-pattern level 1 package directly from a project:
+
+```bash
+blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity pattern
+```
+
+Create a level 2 package with fixed distributed BEM sources:
+
+```bash
+blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity fixed
+```
+
+The command accepts the same `--request`, `--backend`, `--julia-executable`,
+`--julia-threads`, and `--events` controls as the headless solve. It forces the
+spherical pressure and boundary traces required by the selected fidelity and
+publishes the archive atomically only after every requested frequency has
+completed.
+
 ## Legacy Mesh Workflow
 
 The CLI workflow is:

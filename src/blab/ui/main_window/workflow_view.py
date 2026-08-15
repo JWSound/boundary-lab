@@ -42,6 +42,7 @@ class WorkflowControls:
     mesh_config: bool
     system_config: bool
     channel_config: bool
+    speaker_package: bool
 
 
 def workflow_controls(
@@ -70,6 +71,7 @@ def workflow_controls(
             mesh_config=False,
             system_config=False,
             channel_config=False,
+            speaker_package=False,
         )
     return WorkflowControls(
         generate=True,
@@ -78,6 +80,7 @@ def workflow_controls(
         mesh_config=True,
         system_config=has_solver_meshes,
         channel_config=True,
+        speaker_package=has_solver_meshes,
     )
 
 

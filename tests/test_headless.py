@@ -149,12 +149,18 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
 
     validate = parser.parse_args(["validate", "speaker.blab.json", "--json"])
     solve = parser.parse_args(["solve", "speaker.blab.json", "--events", "ndjson"])
+    export = parser.parse_args(
+        ["export-speaker", "speaker.blab.json", "--output", "speaker.blabsp", "--fidelity", "fixed"]
+    )
 
     assert validate.project_command == "validate"
     assert validate.json is True
     assert validate.backend == "beat_auto"
     assert solve.project_command == "solve"
     assert solve.events == "ndjson"
+    assert export.project_command == "export-speaker"
+    assert export.output == Path("speaker.blabsp")
+    assert export.fidelity == "fixed"
 
 
 def test_auto_backend_prefers_functional_cuda(monkeypatch) -> None:
