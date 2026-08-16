@@ -147,8 +147,8 @@ used by Boundary Lab is cleaned before being added to the project.
 
 ## Solver setup
 
-Boundary Lab offers four local backends. The ROCm backend is an initial
-correctness-first implementation; the other three are production backends.
+Boundary Lab offers four local backends. The ROCm backend currently targets
+non-symmetric exterior BEM; the other BEAT backends also support coupled systems.
 
 | Backend | Hardware/runtime | Exterior BEM | Coupled FEM-BEM |
 |---|---|:---:|:---:|
@@ -158,8 +158,9 @@ correctness-first implementation; the other three are production backends.
 | BEAT Engine ROCm | Julia, AMDGPU.jl, and a functional ROCm SDK | Yes | No |
 
 The server backend can submit exterior BEM jobs to another Boundary Lab
-installation. The initial ROCm path supports non-symmetric exterior BEM using
-host-staged assembly and field evaluation plus a rocBLAS/rocSOLVER GPU solve.
+installation. The ROCm path supports non-symmetric exterior BEM using native
+GPU-resident regular and Duffy singular operator assembly plus a rocBLAS/rocSOLVER
+GPU solve. Exterior field evaluation remains CPU-resident.
 See [BEAT Engine ROCm development](advanced/beat-engine-rocm.md) for setup and
 validation details.
 

@@ -79,6 +79,7 @@ function validate_rocm_exterior()
             backend=:rocm,
             device_cache=rocm_cache,
             singular_cache=singular_cache,
+            rocm_assembly_mode=:native,
             symmetry_mode=:off,
         )
     end
@@ -150,6 +151,7 @@ function validate_rocm_exterior()
     field_error <= 5.0f-3 || error("ROCm field differs from BEAT CPU beyond tolerance.")
 
     release_operator_storage!(rocm_operators)
+    release_rocm_regular_assembly_cache!(rocm_cache)
     println("ROCM_EXTERIOR_VALIDATION_OK")
 end
 

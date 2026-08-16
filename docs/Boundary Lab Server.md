@@ -54,7 +54,7 @@ Supported `--solver` values:
 - `bempp_cpu`: Bempp OpenCL CPU backend.
 - `beat_cpu`: BEAT Engine CPU backend through Julia.
 - `beat_cuda`: BEAT Engine CUDA backend through Julia.
-- `beat_rocm`: BEAT Engine ROCm selector. This is accepted by the server CLI, but the ROCm implementation is currently a placeholder and reports not implemented.
+- `beat_rocm`: BEAT Engine ROCm non-symmetric exterior-BEM backend with GPU-resident operator assembly and solve.
 
 BEAT Engine server options are intentionally narrow:
 

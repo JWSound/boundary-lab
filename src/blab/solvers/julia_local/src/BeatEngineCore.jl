@@ -54,6 +54,9 @@ export BoundaryMesh,
     release_cuda_sparse_scatter_cache!,
     scatter_cuda_sparse_to_dense!,
     build_rocm_regular_assembly_cache,
+    release_rocm_regular_assembly_cache!,
+    build_rocm_singular_correction_cache,
+    release_rocm_singular_correction_cache!,
     build_rocm_field_evaluation_cache,
     build_field_evaluation_cache,
     build_beat_cpu_assembly_cache,
@@ -932,6 +935,7 @@ function assemble_regular_galerkin_operators(
     cpu_cache=nothing,
     device_singular_cache=nothing,
     device_image_singular_cache=nothing,
+    rocm_assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if backend == :cpu
@@ -991,6 +995,7 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             rocm_singular_cache=device_singular_cache,
+            assembly_mode=rocm_assembly_mode,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1061,6 +1066,18 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
         cuda.CuArray(Complex{T}.(identity_p1_p1)),
         cuda.CuArray(Complex{T}.(identity_p1_dp0)),
     )
+end
+
+function release_rocm_regular_assembly_cache!(args...; kwargs...)
+    error("ROCm regular-pair assembly cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function build_rocm_singular_correction_cache(args...; kwargs...)
+    error("ROCm singular-correction cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_singular_correction_cache!(args...; kwargs...)
+    error("ROCm singular-correction cache release requested, but AMDGPU.jl is not loaded.")
 end
 
 

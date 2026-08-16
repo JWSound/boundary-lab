@@ -1,17 +1,19 @@
 # BEAT Engine ROCm development
 
-The first ROCm milestone supports non-symmetric exterior Burton–Miller BEM solves.
-It intentionally uses a correctness-first pipeline:
+The ROCm backend supports non-symmetric exterior Burton-Miller BEM solves with
+GPU-resident operator assembly:
 
-- regular and singular Galerkin assembly use the existing BEAT CPU implementation;
-- dense operators are uploaded to `ROCArray` storage;
-- the Burton–Miller right-hand side uses rocBLAS;
+- regular Galerkin quadrature is evaluated by native ROCm entry-owned kernels;
+- Duffy singular quadrature is evaluated by native ROCm kernels;
+- all four dense operators are allocated and assembled in `ROCArray` storage;
+- the Burton-Miller right-hand side uses rocBLAS;
 - the dense complex solve uses rocSOLVER;
 - exterior field reconstruction currently uses the BEAT CPU implementation.
 
-Results identify this implementation as `rocm_host_staged_cpu_assembly`. Symmetry,
-native ROCm assembly and field kernels, coupled FEM-BEM, and performance tuning are
-later milestones.
+Results identify native assembly as `rocm_native_entry_owned`. Set
+`BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
+as a diagnostic fallback. Symmetry, native ROCm field kernels, coupled FEM-BEM,
+and performance tuning are later milestones.
 
 ## Julia environment
 
@@ -42,7 +44,10 @@ julia --project=src/blab/solvers/julia_rocm `
   src/blab/solvers/julia_local/scripts/validate_rocm_exterior.jl
 ```
 
-The script independently assembles BEAT CPU and ROCm-path operators, compares all
-four Galerkin operators, solves the same boundary condition on CPU and rocSOLVER,
-and compares boundary pressure, residual, and exterior field pressure. It exits
-with an error when a comparison exceeds its tolerance.
+The script independently assembles BEAT CPU and native ROCm operators, compares
+all four Galerkin operators, solves the same boundary condition on CPU and
+rocSOLVER, and compares boundary pressure, residual, and exterior field pressure.
+It exits with an error when a comparison exceeds its tolerance.
+
+To validate only native regular-pair kernels, excluding Duffy singular pairs, run
+`validate_rocm_native_regular.jl` from the same directory.

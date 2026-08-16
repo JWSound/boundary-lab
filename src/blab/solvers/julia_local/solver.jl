@@ -684,6 +684,9 @@ function solve_request_impl(request)
     config = request["config"]
     symmetry_mode = symmetry_mode_from_config(config)
     beat_backend = beat_backend_from_request(request)
+    rocm_assembly_mode = beat_backend == :rocm ? BeatEngineCore._normalized_rocm_assembly_mode(
+        get_value(config, "rocm_assembly_mode", nothing),
+    ) : nothing
     if beat_backend == :rocm && Symbol(symmetry_mode) != :off
         error("The initial BEAT Engine ROCm backend supports exterior BEM with symmetry disabled.")
     end
@@ -765,16 +768,25 @@ function solve_request_impl(request)
         end
         cuda_solve_identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, FloatType)
     elseif beat_backend == :rocm
-        emit_event("status"; message="Initializing BEAT Engine using ROCm (host-staged assembly, GPU solve)...")
+        emit_event(
+            "status";
+            message=rocm_assembly_mode == :host_staged ?
+                "Initializing BEAT Engine using ROCm (host-staged assembly fallback)..." :
+                "Initializing BEAT Engine using native ROCm operator assembly and GPU solve...",
+        )
         device_cache = build_rocm_regular_assembly_cache(
             mesh,
             p1_space,
             dp0_space,
             rule;
             singular_order=singular_order,
+            assembly_mode=rocm_assembly_mode,
             symmetry_mode=:off,
         )
         field_cache = build_rocm_field_evaluation_cache(cpu_field_cache)
+        if rocm_assembly_mode != :host_staged
+            device_singular_cache = build_rocm_singular_correction_cache(singular_cache)
+        end
         rocm_solve_identity_cache = build_rocm_burton_miller_identity_cache(
             identity_p1_p1,
             identity_p1_dp0,
@@ -854,6 +866,7 @@ function solve_request_impl(request)
                 cpu_cache=selected_cpu_assembly_cache,
                 device_singular_cache=device_singular_cache,
                 device_image_singular_cache=device_image_singular_cache,
+                rocm_assembly_mode=rocm_assembly_mode,
                 symmetry_mode=Symbol(symmetry_mode),
             )
         end
@@ -990,6 +1003,12 @@ function solve_request_impl(request)
         end
         if rocm_solve_identity_cache !== nothing
             release_rocm_burton_miller_identity_cache!(rocm_solve_identity_cache)
+        end
+        if beat_backend == :rocm && device_singular_cache !== nothing
+            release_rocm_singular_correction_cache!(device_singular_cache)
+        end
+        if beat_backend == :rocm && device_cache !== nothing
+            release_rocm_regular_assembly_cache!(device_cache)
         end
         if device_image_singular_cache !== nothing
             release_cuda_image_singular_correction_cache!(device_image_singular_cache)

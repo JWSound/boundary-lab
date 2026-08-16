@@ -35,8 +35,9 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 Boundary Lab currently has five selectable BEM solver backends in application
 preferences: Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine ROCm, and
-Bempp OpenCL CPU. The ROCm path is an initial correctness-first exterior-BEM
-implementation; native GPU assembly and performance tuning remain in progress.
+Bempp OpenCL CPU. The ROCm path supports non-symmetric exterior BEM with native
+GPU-resident regular and singular operator assembly; field kernels and performance
+tuning remain in progress.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -115,9 +116,8 @@ blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
 ```
 
 Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
-`beat_cuda`, and `beat_rocm`. ROCm is accepted as a server selector but the ROCm
-BEAT Engine implementation is still a placeholder and will report not implemented
-until that engine path is completed. For BEAT Engine solvers, use
+`beat_cuda`, and `beat_rocm`. ROCm supports non-symmetric exterior BEM; coupled and
+symmetry workflows remain on BEAT Engine CPU or CUDA. For BEAT Engine solvers, use
 `--julia-executable` and `--julia-threads` to point the server at the intended
 Julia installation and thread count.
 
