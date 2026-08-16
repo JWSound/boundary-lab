@@ -198,6 +198,7 @@ def test_explicit_backend_does_not_probe_cuda(monkeypatch) -> None:
 
     assert resolve_headless_backend("beat_cpu") == "beat_cpu"
     assert resolve_headless_backend("beat_cuda") == "beat_cuda"
+    assert resolve_headless_backend("beat_rocm") == "beat_rocm"
 
 
 def _prepared_request() -> SystemUiSolveRequest:

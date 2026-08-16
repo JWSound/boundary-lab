@@ -172,8 +172,8 @@ def prepare_system_ui_solve(
         component_names.append(component.name)
 
     normalized_backend_id = normalize_backend_id(backend_id)
-    if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Physical-system solves require BEAT Engine CPU or CUDA.")
+    if normalized_backend_id not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
+        raise ValueError("Physical-system solves require BEAT Engine CPU, CUDA, or ROCm.")
     outputs = [
         OutputRequest(
             id="ui:exterior-pressure",
@@ -268,7 +268,8 @@ def prepare_system_ui_solve(
             "singular_order": 2 if is_coupled else 4,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
-            "static_condensation": is_coupled and normalized_backend_id == "beat_cuda",
+            "static_condensation": is_coupled
+            and normalized_backend_id in {"beat_cuda", "beat_rocm"},
             "symmetry": symmetry,
         },
     )
@@ -300,7 +301,7 @@ def supports_exterior_system_protocol(
 ) -> bool:
     """Return whether an exterior project can use the local system worker."""
 
-    if stitch_exterior_meshes or normalize_backend_id(backend_id) not in {"beat_cpu", "beat_cuda"}:
+    if stitch_exterior_meshes or normalize_backend_id(backend_id) not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
         return False
     try:
         if infer_physical_solve_kind(system) != PhysicalSolveKind.EXTERIOR_BEM:

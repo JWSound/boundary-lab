@@ -21,7 +21,10 @@ function _apply_rocm_operator_p1_row_weights!(operators, mesh::BoundaryMesh{T}, 
 end
 
 function build_rocm_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, ::Type{T}) where {T<:AbstractFloat}
-    _require_rocm!(rocsolver=true)
+    # Building and using these blocks only needs rocBLAS. Keep rocSOLVER as a
+    # requirement of the device linear solve so the CPU-linear diagnostic path
+    # remains usable when dense factorization is unavailable.
+    _require_rocm!()
     return RocmBurtonMillerIdentityCache(
         AMDGPU.ROCArray(Complex{T}.(identity_p1_p1)),
         AMDGPU.ROCArray(Complex{T}.(identity_p1_dp0)),
@@ -31,6 +34,76 @@ end
 function release_rocm_burton_miller_identity_cache!(cache::RocmBurtonMillerIdentityCache)
     AMDGPU.unsafe_free!(cache.identity_p1_p1)
     AMDGPU.unsafe_free!(cache.identity_p1_dp0)
+    return nothing
+end
+
+struct RocmSparseScatterCache{R,C,V}
+    rows::R
+    columns::C
+    values::V
+end
+
+function build_rocm_sparse_scatter_cache(matrix::SparseMatrixCSC)
+    _require_rocm!()
+    rows, columns, values = findnz(matrix)
+    return RocmSparseScatterCache(
+        AMDGPU.ROCArray(Int32.(rows)),
+        AMDGPU.ROCArray(Int32.(columns)),
+        AMDGPU.ROCArray(values),
+    )
+end
+
+function _rocm_sparse_scatter_kernel!(
+    destination,
+    rows,
+    columns,
+    values,
+    row_offset::Int32,
+    column_offset::Int32,
+    alpha,
+    add::Bool,
+)
+    index = _rocm_global_linear_index()
+    if index <= length(values)
+        row = rows[index] + row_offset
+        column = columns[index] + column_offset
+        value = alpha * values[index]
+        if add
+            destination[row, column] += value
+        else
+            destination[row, column] = value
+        end
+    end
+    return nothing
+end
+
+function scatter_rocm_sparse_to_dense!(
+    destination,
+    cache::RocmSparseScatterCache;
+    row_offset::Integer=0,
+    column_offset::Integer=0,
+    alpha=one(eltype(destination)),
+    add::Bool=false,
+)
+    isempty(cache.values) && return destination
+    groupsize = _rocm_kernel_groupsize()
+    AMDGPU.@roc groupsize=groupsize gridsize=cld(length(cache.values), groupsize) _rocm_sparse_scatter_kernel!(
+        destination,
+        cache.rows,
+        cache.columns,
+        cache.values,
+        Int32(row_offset),
+        Int32(column_offset),
+        convert(eltype(destination), alpha),
+        add,
+    )
+    return destination
+end
+
+function release_rocm_sparse_scatter_cache!(cache::RocmSparseScatterCache)
+    AMDGPU.unsafe_free!(cache.rows)
+    AMDGPU.unsafe_free!(cache.columns)
+    AMDGPU.unsafe_free!(cache.values)
     return nothing
 end
 
@@ -83,6 +156,69 @@ function _rocm_dense_solve(d_lhs, d_rhs; max_attempts::Int=3)
         end
     end
     error("Unreachable ROCm dense-solve retry state.")
+end
+
+function rocm_dense_lu!(matrix; max_attempts::Int=3)
+    _require_rocm!(rocsolver=true)
+    max_attempts >= 1 || throw(ArgumentError("max_attempts must be positive."))
+    for attempt in 1:max_attempts
+        # `getrf!` mutates its input before AMDGPU reads the device-resident
+        # status. Factor a working copy so a corrupt status can be retried from
+        # the original matrix rather than accidentally factorizing LU factors.
+        working = copy(matrix)
+        try
+            AMDGPU.synchronize()
+            factorization = lu!(working)
+            AMDGPU.synchronize()
+            AMDGPU.unsafe_free!(matrix)
+            return factorization
+        catch exception
+            AMDGPU.unsafe_free!(working)
+            if attempt == max_attempts || !_is_corrupt_rocsolver_info(exception)
+                AMDGPU.unsafe_free!(matrix)
+                rethrow()
+            end
+            @warn "rocSOLVER returned a corrupt LAPACK info value; retrying the dense factorization." attempt exception=(exception, catch_backtrace())
+            try
+                AMDGPU.synchronize()
+            catch
+            end
+            GC.gc(true)
+            try
+                AMDGPU.reclaim()
+            catch
+            end
+        end
+    end
+    error("Unreachable ROCm dense-factorization retry state.")
+end
+
+function solve_rocm_dense_factorization(factorization, rhs; max_attempts::Int=3)
+    _require_rocm!(rocsolver=true)
+    max_attempts >= 1 || throw(ArgumentError("max_attempts must be positive."))
+    for attempt in 1:max_attempts
+        try
+            AMDGPU.synchronize()
+            solution = factorization \ rhs
+            AMDGPU.synchronize()
+            return solution
+        catch exception
+            if attempt == max_attempts || !_is_corrupt_rocsolver_info(exception)
+                rethrow()
+            end
+            @warn "rocSOLVER returned a corrupt LAPACK info value; retrying the factorized solve." attempt exception=(exception, catch_backtrace())
+            try
+                AMDGPU.synchronize()
+            catch
+            end
+            GC.gc(true)
+            try
+                AMDGPU.reclaim()
+            catch
+            end
+        end
+    end
+    error("Unreachable ROCm factorized-solve retry state.")
 end
 
 function solve_burton_miller_neumann(

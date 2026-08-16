@@ -232,7 +232,7 @@ def solve_speaker_package_system(
         compiled_system=request.compiled_system,
     )
     backend = PhysicalSystemProductionBackend(
-        bem_backend="cuda" if prepared.backend_id == "beat_cuda" else "cpu",
+        bem_backend=prepared.backend_id.removeprefix("beat_"),
         julia_executable=julia_executable,
         julia_threads=julia_threads,
     )

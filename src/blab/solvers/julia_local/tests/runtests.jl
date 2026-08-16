@@ -12,6 +12,18 @@ end
 
 cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
 
+const AMDGPU_MODULE = try
+    @eval import AMDGPU
+    AMDGPU
+catch
+    nothing
+end
+
+rocm_available() = AMDGPU_MODULE !== nothing &&
+                   AMDGPU_MODULE.functional() &&
+                   AMDGPU_MODULE.functional(:rocblas) &&
+                   AMDGPU_MODULE.functional(:rocsolver)
+
 @testset "mesh setup" begin
     mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
     p1 = build_p1_space(mesh)

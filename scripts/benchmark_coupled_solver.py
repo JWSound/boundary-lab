@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument("--quadrature-order", type=int, default=2)
     parser.add_argument("--singular-order", type=int, default=2)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
-    parser.add_argument("--bem-backend", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--bem-backend", choices=("cpu", "cuda", "rocm"), default="cpu")
     parser.add_argument("--symmetry", choices=("off", "x", "xy"), default="off")
     parser.add_argument(
         "--persistent",
@@ -137,7 +137,7 @@ def _run_mode(
         freq_count=len(frequencies),
         observation_distance_m=2.0,
         polar_angle_step_deg=angle_step,
-        backend_id="beat_cuda" if bem_backend == "cuda" else "beat_cpu",
+        backend_id=f"beat_{bem_backend}",
         symmetry_mode=symmetry_mode,
     )
     options = dict(prepared.request.solver_options)
@@ -145,6 +145,10 @@ def _run_mode(
     options["singular_order"] = int(singular_order)
     options["validation_diagnostics"] = mode != "interactive"
     options["cache_frequency_invariant"] = mode != "uncached"
+    if mode != "interactive":
+        # Full-matrix replay diagnostics intentionally benchmark the
+        # monolithic formulation on every accelerator backend.
+        options["static_condensation"] = False
     request = replace(
         prepared.request,
         frequencies_hz=frequencies,
@@ -180,8 +184,12 @@ def _run_mode(
         "bem_matrix_s",
         "fem_condensation_s",
         "fem_condensation_analysis_s",
+        "fem_condensation_partition_s",
         "fem_condensation_factorization_s",
         "fem_schur_extraction_s",
+        "fem_schur_upload_s",
+        "fem_rhs_condensation_s",
+        "fem_reconstruction_s",
         "block_assembly_s",
         "coupled_factorization_s",
         "replay_factorization_s",

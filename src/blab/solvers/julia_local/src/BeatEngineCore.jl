@@ -47,12 +47,17 @@ export BoundaryMesh,
     build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
     build_rocm_burton_miller_identity_cache,
+    build_rocm_sparse_scatter_cache,
     build_cuda_sparse_scatter_cache,
     release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
     release_rocm_burton_miller_identity_cache!,
+    release_rocm_sparse_scatter_cache!,
     release_cuda_sparse_scatter_cache!,
     scatter_cuda_sparse_to_dense!,
+    scatter_rocm_sparse_to_dense!,
+    rocm_dense_lu!,
+    solve_rocm_dense_factorization,
     build_rocm_regular_assembly_cache,
     release_rocm_regular_assembly_cache!,
     build_rocm_singular_correction_cache,
@@ -1092,6 +1097,26 @@ end
 
 function release_rocm_burton_miller_identity_cache!(args...; kwargs...)
     error("ROCm Burton-Miller identity cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function build_rocm_sparse_scatter_cache(args...; kwargs...)
+    error("ROCm sparse scatter cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function scatter_rocm_sparse_to_dense!(args...; kwargs...)
+    error("ROCm sparse scatter requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_sparse_scatter_cache!(args...; kwargs...)
+    error("ROCm sparse scatter cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function rocm_dense_lu!(args...; kwargs...)
+    error("ROCm dense factorization requested, but AMDGPU.jl is not loaded.")
+end
+
+function solve_rocm_dense_factorization(args...; kwargs...)
+    error("ROCm dense solve requested, but AMDGPU.jl is not loaded.")
 end
 
 function _cuda_burton_miller_rhs(operators, identity_cache::CudaBurtonMillerIdentityCache, d_q_neumann, coupling::Complex{T}) where {T<:AbstractFloat}

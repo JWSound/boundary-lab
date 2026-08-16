@@ -1193,6 +1193,42 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
     assert "assembling coupled backend detail" in caplog.text
 
 
+def test_coupled_worker_selects_rocm_backend(monkeypatch) -> None:
+    system = _configured_fixture_dialog().physical_system()
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        backend_id="beat_rocm",
+    )
+    backend_options = []
+
+    class Session:
+        def solve_stream(self, *, stop_requested=None):
+            del stop_requested
+            return iter(())
+
+        def stop(self) -> None:
+            pass
+
+    class Backend:
+        def __init__(self, **kwargs):
+            backend_options.append(kwargs)
+
+        def create_system_session(self, request):
+            del request
+            return Session()
+
+    monkeypatch.setattr(system_solve_module, "PhysicalSystemProductionBackend", Backend)
+
+    CoupledSolveWorker(prepared).run()
+
+    assert backend_options[0]["bem_backend"] == "rocm"
+
+
 @pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
     reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia GUI-path integration.",
@@ -1252,6 +1288,25 @@ def test_coupled_ui_request_routes_cuda_backend() -> None:
     )
 
     assert prepared.backend_id == "beat_cuda"
+    assert prepared.request.solver_options["static_condensation"] is True
+    assert "precision" not in prepared.request.solver_options
+    assert "bem_backend" not in prepared.request.solver_options
+
+
+def test_coupled_ui_request_routes_rocm_backend_with_hybrid_condensation() -> None:
+    system = _configured_fixture_dialog().physical_system()
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        backend_id="beat_rocm",
+    )
+
+    assert prepared.backend_id == "beat_rocm"
     assert prepared.request.solver_options["static_condensation"] is True
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import subprocess
 import tempfile
 import threading
@@ -26,8 +25,10 @@ from blab.physical_model import (
 )
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineWorkerProcess,
     _get_julia_worker,
+    _julia_process_env,
 )
 from blab.system_contract import (
     SystemFrequencyResult,
@@ -39,7 +40,7 @@ from blab.system_contract import (
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_COUPLED_SOLVER_SCRIPT.parent
-COUPLED_BEM_BACKENDS = {"cpu", "cuda"}
+COUPLED_BEM_BACKENDS = {"cpu", "cuda", "rocm"}
 COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
     BoundaryKind.MOVING,
@@ -115,8 +116,7 @@ class CoupledSession:
         if self.julia_project is not None:
             command.append(f"--project={self.julia_project}")
         command.append(str(self.solver_script))
-        environment = os.environ.copy()
-        environment.setdefault("JULIA_NUM_THREADS", str(self.julia_threads))
+        environment = _julia_process_env(self.julia_threads, self.julia_project)
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -258,7 +258,7 @@ class _CoupledBackend:
             raise ValueError("Coupled precision must be float32 or float64.")
         normalized_bem_backend = str(bem_backend).strip().lower()
         if normalized_bem_backend not in COUPLED_BEM_BACKENDS:
-            raise ValueError("Coupled BEM backend must be cpu or cuda.")
+            raise ValueError("Coupled BEM backend must be cpu, cuda, or rocm.")
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_project = None if julia_project is None else Path(julia_project)
@@ -272,7 +272,7 @@ class _CoupledBackend:
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-        if self.bem_backend != "cuda":
+        if self.bem_backend == "cpu":
             solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
         validate_system_capabilities(typed_request)
@@ -675,10 +675,12 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         persistent_worker: bool = True,
     ):
         normalized_bem_backend = str(bem_backend).strip().lower()
-        resolved_threads = (4 if normalized_bem_backend == "cuda" else 8) if julia_threads is None else julia_threads
-        julia_project = (
-            DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_bem_backend == "cuda" else DEFAULT_COUPLED_CPU_PROJECT
-        )
+        resolved_threads = (4 if normalized_bem_backend in {"cuda", "rocm"} else 8) if julia_threads is None else julia_threads
+        julia_project = {
+            "cpu": DEFAULT_COUPLED_CPU_PROJECT,
+            "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+            "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+        }.get(normalized_bem_backend, DEFAULT_COUPLED_CPU_PROJECT)
         super().__init__(
             julia_executable=julia_executable,
             solver_script=solver_script,

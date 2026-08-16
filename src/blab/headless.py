@@ -55,7 +55,7 @@ SUPPORTED_RETAIN_VALUES = {
     "fem_nodal_pressure",
 }
 HEADLESS_BACKEND_AUTO = "beat_auto"
-HEADLESS_BACKEND_IDS = (HEADLESS_BACKEND_AUTO, "beat_cpu", "beat_cuda")
+HEADLESS_BACKEND_IDS = (HEADLESS_BACKEND_AUTO, "beat_cpu", "beat_cuda", "beat_rocm")
 
 
 @dataclass(frozen=True)
@@ -481,7 +481,7 @@ def run_headless_solve(
     session = None
     try:
         backend = PhysicalSystemProductionBackend(
-            bem_backend="cuda" if backend_id == "beat_cuda" else "cpu",
+            bem_backend=backend_id.removeprefix("beat_"),
             julia_executable=julia_executable,
             julia_threads=julia_threads,
         )

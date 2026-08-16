@@ -5,6 +5,7 @@ import threading
 
 import numpy as np
 
+from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_ROCM_PROJECT
 from blab.solvers.coupled_field import BemFieldEvaluationRequest, evaluate_bem_field
 
 
@@ -91,6 +92,41 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
     )
     assert array_file_size == sum(item["nbytes"] for item in arrays.values())
     assert request_json_size < 2_000
+
+
+def test_evaluate_bem_field_routes_rocm_worker_and_payload(monkeypatch) -> None:
+    import blab.solvers.coupled_field as field_module
+
+    worker_options = []
+    payloads = []
+
+    class Worker:
+        def submit(self, request_path, *, operation):
+            assert operation == "bem_field"
+            payloads.append(json.loads(request_path.read_text(encoding="utf-8")))
+            yield {
+                "type": "field_result",
+                "values": {
+                    "dtype": "complex64",
+                    "shape": [2],
+                    "real": [1.0, 2.0],
+                    "imag": [-1.0, -2.0],
+                },
+            }
+            yield {"type": "completed"}
+
+    def worker_factory(**kwargs):
+        worker_options.append(kwargs)
+        return Worker()
+
+    monkeypatch.setattr(field_module, "_get_julia_worker", worker_factory)
+
+    values = evaluate_bem_field(_request(), backend_id="beat_rocm")
+
+    np.testing.assert_allclose(values, [1.0 - 1.0j, 2.0 - 2.0j])
+    assert worker_options[0]["julia_project"] == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+    assert worker_options[0]["julia_threads"] == 4
+    assert payloads[0]["bem_backend"] == "rocm"
 
 
 def test_exterior_field_service_coalesces_queued_requests(qapp, monkeypatch) -> None:

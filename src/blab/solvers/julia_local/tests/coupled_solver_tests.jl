@@ -657,3 +657,276 @@ elseif get(ENV, "BLAB_RUN_COUPLED_CUDA", "0") == "1"
 else
     @info "Set BLAB_RUN_COUPLED_CUDA=1 to run the GPU-resident coupled solve validation."
 end
+
+if get(ENV, "BLAB_RUN_COUPLED_ROCM", "0") == "1" && rocm_available()
+    @testset "FP32 ROCm GPU-resident coupled solve" begin
+        fem_mesh = load_gmsh41_volume(
+            joinpath(COUPLED_FIXTURE_ROOT, "femvolume.msh"),
+            Float32(0.001),
+        )
+        bem_mesh = load_gmsh22_with_tags(
+            joinpath(COUPLED_FIXTURE_ROOT, "exterior_conforming.msh"),
+            Float32(0.001),
+        )
+        interface_map = build_conforming_interface_map(
+            fem_mesh,
+            bem_mesh,
+            physical_tag(fem_mesh, 2, "Interface"),
+            2,
+        )
+        radiator_tag = physical_tag(fem_mesh, 2, "Radiator")
+        prescribed_bem_normal_velocity = sparse(
+            findall(==(1), bem_mesh.physical_tags),
+            ones(Int, count(==(1), bem_mesh.physical_tags)),
+            ones(Float32, count(==(1), bem_mesh.physical_tags)),
+            length(bem_mesh.faces),
+            1,
+        )
+        transducer = ElectrodynamicTransducer{Float32}(
+            "component:rocm-test",
+            [radiator_tag],
+            Float32[1],
+            [1],
+            Float32[-1],
+            SVector(0f0, 0f0, 1f0),
+            2f0,
+            1,
+            6f0,
+            0.0005f0,
+            7f0,
+            0.015f0,
+            0.0005f0,
+            1f0,
+        )
+        common_options = (
+            quadrature_order=COUPLED_QUADRATURE_ORDER,
+            singular_order=COUPLED_SINGULAR_ORDER,
+            validation_diagnostics=false,
+            bulk_loss_factor=0.01f0,
+            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
+            transducers=[transducer],
+        )
+        cpu_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            common_options...,
+            bem_backend=:cpu,
+        )
+        rocm_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            common_options...,
+            bem_backend=:rocm,
+            static_condensation=false,
+        )
+        condensed_system = build_coupled_system(
+            fem_mesh,
+            bem_mesh,
+            interface_map,
+            Float32(500),
+            Float32(343),
+            Float32(1.21);
+            common_options...,
+            bem_backend=:rocm,
+            static_condensation=true,
+        )
+        try
+            cpu_solution = solve_coupled_system(cpu_system, radiator_tag)
+            rocm_solutions = solve_coupled_systems(
+                rocm_system,
+                [radiator_tag, radiator_tag];
+                radiator_velocities=ComplexF32[1, 0.5],
+            )
+            rocm_solution = rocm_solutions[1]
+            condensed_solutions = solve_coupled_systems(
+                condensed_system,
+                [radiator_tag, radiator_tag];
+                radiator_velocities=ComplexF32[1, 0.5],
+            )
+            condensed_solution = condensed_solutions[1]
+            bem_excitation = (
+                kind=:normal_velocity,
+                fem_boundary_tags=Int[],
+                fem_boundary_weights=Float32[],
+                bem_source_index=1,
+                transducer_index=0,
+                amplitude=ComplexF32(1, 0),
+            )
+            cpu_bem_solution = only(solve_coupled_excitations(cpu_system, [bem_excitation]))
+            rocm_bem_solution = only(solve_coupled_excitations(rocm_system, [bem_excitation]))
+            condensed_bem_solution = only(
+                solve_coupled_excitations(condensed_system, [bem_excitation]),
+            )
+            voltage_excitation = (
+                kind=:voltage,
+                fem_boundary_tags=Int[],
+                fem_boundary_weights=Float32[],
+                bem_source_index=0,
+                transducer_index=1,
+                amplitude=ComplexF32(2.83, 0),
+            )
+            cpu_voltage_solution = only(
+                solve_coupled_excitations(cpu_system, [voltage_excitation]),
+            )
+            rocm_voltage_solution = only(
+                solve_coupled_excitations(rocm_system, [voltage_excitation]),
+            )
+            condensed_voltage_solution = only(
+                solve_coupled_excitations(condensed_system, [voltage_excitation]),
+            )
+            relative_error(reference, candidate) = norm(candidate - reference) / norm(reference)
+
+            @test cpu_system.linear_backend == :cpu
+            @test rocm_system.linear_backend == :rocm
+            @test rocm_system.formulation == :monolithic
+            @test condensed_system.linear_backend == :rocm
+            @test condensed_system.formulation == :fem_interface_condensed
+            @test condensed_system.solved_system_order < condensed_system.full_system_order
+            @test rocm_system.bulk_loss_factor == 0.01f0
+            @test relative_error(cpu_solution.fem_pressure, rocm_solution.fem_pressure) < 5e-4
+            @test relative_error(cpu_solution.bem_pressure, rocm_solution.bem_pressure) < 5e-4
+            @test relative_error(cpu_solution.interface_flux, rocm_solution.interface_flux) < 5e-4
+            @test relative_error(
+                0.5f0 .* rocm_solution.bem_pressure,
+                rocm_solutions[2].bem_pressure,
+            ) < 1e-5
+            @test relative_error(
+                rocm_solution.fem_pressure,
+                condensed_solution.fem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_solution.bem_pressure,
+                condensed_solution.bem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_solution.interface_flux,
+                condensed_solution.interface_flux,
+            ) < 1e-3
+            @test relative_error(
+                0.5f0 .* condensed_solution.bem_pressure,
+                condensed_solutions[2].bem_pressure,
+            ) < 1e-5
+            @test rocm_solution.pressure_continuity_error < 1e-4
+            @test rocm_solution.flux_conservation_error < 1e-4
+            @test relative_error(
+                cpu_bem_solution.fem_pressure,
+                rocm_bem_solution.fem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_bem_solution.bem_pressure,
+                rocm_bem_solution.bem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_bem_solution.interface_flux,
+                rocm_bem_solution.interface_flux,
+            ) < 5e-4
+            @test relative_error(
+                cpu_bem_solution.bem_neumann,
+                rocm_bem_solution.bem_neumann,
+            ) < 5e-4
+            @test relative_error(
+                rocm_bem_solution.fem_pressure,
+                condensed_bem_solution.fem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_bem_solution.bem_pressure,
+                condensed_bem_solution.bem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_bem_solution.interface_flux,
+                condensed_bem_solution.interface_flux,
+            ) < 1e-3
+            @test relative_error(
+                rocm_bem_solution.bem_neumann,
+                condensed_bem_solution.bem_neumann,
+            ) < 1e-3
+            @test relative_error(
+                cpu_voltage_solution.fem_pressure,
+                rocm_voltage_solution.fem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_voltage_solution.bem_pressure,
+                rocm_voltage_solution.bem_pressure,
+            ) < 5e-4
+            @test relative_error(
+                cpu_voltage_solution.interface_flux,
+                rocm_voltage_solution.interface_flux,
+            ) < 2e-3 # This FP32 fixture's coupled matrix has cond(A, 1) ~= 3.8e9.
+            @test relative_error(
+                cpu_voltage_solution.diaphragm_velocity,
+                rocm_voltage_solution.diaphragm_velocity,
+            ) < 5e-4
+            @test relative_error(
+                cpu_voltage_solution.voice_coil_current,
+                rocm_voltage_solution.voice_coil_current,
+            ) < 5e-4
+            @test relative_error(
+                rocm_voltage_solution.fem_pressure,
+                condensed_voltage_solution.fem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_voltage_solution.bem_pressure,
+                condensed_voltage_solution.bem_pressure,
+            ) < 1e-3
+            @test relative_error(
+                rocm_voltage_solution.interface_flux,
+                condensed_voltage_solution.interface_flux,
+            ) < 2e-3
+            @test relative_error(
+                rocm_voltage_solution.diaphragm_velocity,
+                condensed_voltage_solution.diaphragm_velocity,
+            ) < 1e-3
+            @test relative_error(
+                rocm_voltage_solution.voice_coil_current,
+                condensed_voltage_solution.voice_coil_current,
+            ) < 1e-3
+
+            field_points = SVector{3,Float32}[
+                SVector(0.20f0, 0.13f0, 0.30f0),
+                SVector(-0.27f0, 0.08f0, 0.24f0),
+            ]
+            cpu_field = evaluate_galerkin_field_cpu(
+                field_points,
+                bem_mesh,
+                cpu_solution.bem_pressure,
+                cpu_solution.bem_neumann,
+                cpu_system.wavenumber,
+                cpu_system.field_cache,
+            )
+            rocm_field = evaluate_galerkin_field_rocm(
+                field_points,
+                bem_mesh,
+                rocm_solution.bem_pressure,
+                rocm_solution.bem_neumann,
+                rocm_system.wavenumber,
+                rocm_system.field_cache,
+            )
+            @test relative_error(cpu_field, rocm_field) < 5e-4
+            condensed_field = evaluate_galerkin_field_rocm(
+                field_points,
+                bem_mesh,
+                condensed_solution.bem_pressure,
+                condensed_solution.bem_neumann,
+                condensed_system.wavenumber,
+                condensed_system.field_cache,
+            )
+            @test relative_error(rocm_field, condensed_field) < 1e-3
+        finally
+            release_coupled_system!(cpu_system)
+            release_coupled_system!(rocm_system)
+            release_coupled_system!(condensed_system)
+        end
+    end
+elseif get(ENV, "BLAB_RUN_COUPLED_ROCM", "0") == "1"
+    @test_skip "ROCm/rocBLAS/rocSOLVER unavailable; skipping ROCm coupled solve."
+else
+    @info "Set BLAB_RUN_COUPLED_ROCM=1 to run the ROCm coupled solve validation."
+end

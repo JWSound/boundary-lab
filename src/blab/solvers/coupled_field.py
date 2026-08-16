@@ -10,7 +10,11 @@ from typing import BinaryIO
 
 import numpy as np
 
-from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT, _get_julia_worker
+from blab.solvers.beat_engine_backend import (
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    _get_julia_worker,
+)
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
 from blab.solvers.registry import normalize_backend_id
 
@@ -41,15 +45,18 @@ def evaluate_bem_field(
     """Evaluate one synthesized BEM response on arbitrary exterior points."""
 
     normalized_backend = normalize_backend_id(backend_id)
-    if normalized_backend not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Retained BEM fields require the BEAT Engine CPU or CUDA backend.")
-    julia_project = (
-        DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_backend == "beat_cuda" else DEFAULT_COUPLED_CPU_PROJECT
-    )
+    if normalized_backend not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
+        raise ValueError("Retained BEM fields require a BEAT Engine CPU, CUDA, or ROCm backend.")
+    bem_backend = normalized_backend.removeprefix("beat_")
+    julia_project = {
+        "cpu": DEFAULT_COUPLED_CPU_PROJECT,
+        "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+        "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    }[bem_backend]
     worker = _get_julia_worker(
         julia_executable=julia_executable,
         solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT,
-        julia_threads=4 if normalized_backend == "beat_cuda" else 8,
+        julia_threads=4 if bem_backend in {"cuda", "rocm"} else 8,
         julia_project=julia_project,
     )
     with tempfile.TemporaryDirectory(prefix="blab-bem-field-") as temp_dir:
@@ -128,7 +135,7 @@ def _validated_evaluation_request(
             "frequency_hz": float(request.frequency_hz),
             "sound_speed_m_per_s": float(request.sound_speed_m_per_s),
             "symmetry": symmetry,
-            "bem_backend": "cuda" if backend_id == "beat_cuda" else "cpu",
+            "bem_backend": backend_id.removeprefix("beat_"),
             "precision": "float64" if dtype == np.dtype(np.complex128) else "float32",
             "quadrature_order": 2,
         },

@@ -96,7 +96,11 @@ def main() -> int:
         help="Comma-separated subset of off,x,xy,xy-detailed.",
     )
     parser.add_argument("--frequencies", default="500", help="Comma-separated frequencies in Hz.")
-    parser.add_argument("--bem-backend", choices=("cpu", "cuda", "both"), default="cpu")
+    parser.add_argument(
+        "--bem-backend",
+        choices=("cpu", "cuda", "rocm", "both", "cpu-cuda", "cpu-rocm"),
+        default="cpu",
+    )
     parser.add_argument("--julia", default="julia")
     parser.add_argument("--julia-threads", default="4")
     parser.add_argument(
@@ -111,7 +115,10 @@ def main() -> int:
         "--static-condensation",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Enable or disable exact FEM interface condensation (CUDA defaults to enabled).",
+        help=(
+            "Enable or disable exact FEM interface condensation "
+            "(CUDA and ROCm default to enabled outside validation diagnostics)."
+        ),
     )
     parser.add_argument(
         "--inspect-only",
@@ -155,7 +162,11 @@ def main() -> int:
         return 0
 
     points = _observation_points()
-    backend_names = ("cpu", "cuda") if args.bem_backend == "both" else (args.bem_backend,)
+    backend_names = {
+        "both": ("cpu", "cuda"),
+        "cpu-cuda": ("cpu", "cuda"),
+        "cpu-rocm": ("cpu", "rocm"),
+    }.get(args.bem_backend, (args.bem_backend,))
     reports_by_backend: dict[str, dict[str, dict[str, object]]] = {}
     pressure_by_backend: dict[str, dict[str, np.ndarray]] = {}
 
@@ -185,6 +196,8 @@ def main() -> int:
                 "validation_diagnostics": args.validation_diagnostics,
                 "cache_frequency_invariant": True,
                 "symmetry": spec.symmetry,
+                "static_condensation": backend_name in {"cuda", "rocm"}
+                and not args.validation_diagnostics,
             }
             if args.static_condensation is not None:
                 solver_options["static_condensation"] = args.static_condensation
@@ -230,14 +243,16 @@ def main() -> int:
         pressure_by_backend[backend_name] = pressure_by_mode
 
     if len(backend_names) == 2:
+        comparison_backend = backend_names[1]
         for mode in modes:
             comparison = _pressure_comparison(
                 pressure_by_backend["cpu"][mode],
-                pressure_by_backend["cuda"][mode],
+                pressure_by_backend[comparison_backend][mode],
             )
-            reports_by_backend["cuda"][mode]["cpu_comparison"] = comparison
+            reports_by_backend[comparison_backend][mode]["cpu_comparison"] = comparison
             print(
-                f"CUDA {mode.upper():>3} vs CPU: relative L2={comparison['relative_l2']:.4e}, "
+                f"{comparison_backend.upper()} {mode.upper():>3} vs CPU: "
+                f"relative L2={comparison['relative_l2']:.4e}, "
                 f"relative max={comparison['relative_max']:.4e}, "
                 f"max |dB|={comparison['max_abs_db']:.3f}"
             )
@@ -482,8 +497,12 @@ def _mode_report(
         "bem_matrix_s",
         "fem_condensation_s",
         "fem_condensation_analysis_s",
+        "fem_condensation_partition_s",
         "fem_condensation_factorization_s",
         "fem_schur_extraction_s",
+        "fem_schur_upload_s",
+        "fem_rhs_condensation_s",
+        "fem_reconstruction_s",
         "block_assembly_s",
         "coupled_factorization_s",
         "solve_s",
@@ -506,7 +525,17 @@ def _mode_report(
         "symmetry": symmetry,
         "bem_backend": str(results[0].diagnostics["bem_backend"]),
         "linear_backend": str(results[0].diagnostics["linear_backend"]),
+        "linear_solver": str(results[0].diagnostics["linear_solver"]),
         "formulation": str(results[0].diagnostics["formulation"]),
+        "fem_condensation_backend": results[0].diagnostics.get(
+            "fem_condensation_backend"
+        ),
+        "static_condensation_requested": bool(
+            results[0].diagnostics.get("static_condensation_requested", False)
+        ),
+        "static_condensation_active": bool(
+            results[0].diagnostics.get("static_condensation_active", False)
+        ),
         "full_system_order": int(results[0].diagnostics["full_system_order"]),
         "solved_system_order": int(results[0].diagnostics["solved_system_order"]),
         "wall_s": float(wall_s),
@@ -530,6 +559,7 @@ def _format_mode_report(report: dict[str, object]) -> str:
         f"{str(report['mode']).upper():>11}: wall={report['wall_s']:.3f}s, "
         f"interface={report['interface_vertices']} nodes/{report['interface_faces']} faces, "
         f"order={report['solved_system_order']}/{report['full_system_order']}, "
+        f"formulation={report['formulation']}, "
         f"assembly={timings['assembly_s']:.3f}s, solve={timings['solve_s']:.3f}s, "
         f"field={timings['field_s']:.3f}s"
     )

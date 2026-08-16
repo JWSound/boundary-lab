@@ -1,6 +1,7 @@
 import os
 import sys
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 
 import meshio
@@ -32,6 +33,7 @@ from blab.physical_model import (
 from blab.solvers.base import SolveRequest
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineCpuBackend,
     shutdown_beat_engine_workers,
 )
@@ -185,6 +187,71 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
     assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
     assert session.julia_threads == 4
     assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
+
+
+def test_coupled_production_backend_selects_rocm_project() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+        solver_options={"static_condensation": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="rocm").create_system_session(request)
+
+    assert session.request.solver_options["precision"] == "float32"
+    assert session.request.solver_options["bem_backend"] == "rocm"
+    assert session.request.solver_options["static_condensation"] is True
+    assert session.julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
+    assert session.julia_threads == 4
+
+
+def test_coupled_nonpersistent_rocm_worker_uses_shared_julia_environment(monkeypatch) -> None:
+    import blab.solvers.coupled_backend as backend_module
+
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+    )
+    environment_calls = []
+    process_calls = []
+
+    class Process:
+        def __init__(self):
+            self.stdin = StringIO()
+            self.stdout = StringIO()
+            self.stderr = StringIO()
+
+        def wait(self, timeout=None):
+            del timeout
+            return 0
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    def process_environment(threads, project):
+        environment_calls.append((threads, project))
+        return {"ROCM_PATH": "test-rocm"}
+
+    def popen(command, **kwargs):
+        process_calls.append((command, kwargs))
+        return Process()
+
+    monkeypatch.setattr(backend_module, "_julia_process_env", process_environment)
+    monkeypatch.setattr(backend_module.subprocess, "Popen", popen)
+    session = CoupledProductionBackend(bem_backend="rocm", persistent_worker=False).create_system_session(request)
+
+    assert list(session.solve_stream()) == []
+    assert environment_calls == [(4, DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve())]
+    assert process_calls[0][1]["env"] == {"ROCM_PATH": "test-rocm"}
 
 
 def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
