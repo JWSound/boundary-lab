@@ -17,10 +17,10 @@ Results identify the default native assembly as `rocm_native_colored_pair_owned`
 Set `BLAB_ROCM_REGULAR_KERNEL_MODE=entry_owned` to retain the earlier entry-owned
 kernel as a correctness and performance reference. Set
 `BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
-as a diagnostic fallback. Pair-owned assembly defaults to partially fused
-SLP/adjoint/DLP plus a separate hypersingular kernel. Set
-`BLAB_ROCM_PAIR_OPERATOR_MODE` to `combined`, `split`, or `partial_fused` to run
-the retained A/B variants. The default workgroup size is 64 on RDNA2; set
+as a diagnostic fallback. Pair-owned assembly uses a partially fused
+SLP/adjoint/DLP kernel plus a separate hypersingular kernel. The earlier combined
+and fully split A/B variants were removed after profiling selected this formulation.
+The default workgroup size is 64 on RDNA2; set
 `BLAB_ROCM_KERNEL_GROUPSIZE` to `32`, `64`, `128`, or `256` for hardware-specific tuning.
 Coupled FEM-BEM remains a later milestone.
 
@@ -120,13 +120,14 @@ GCN assembly, and exports AMD code objects beside it. Those code objects can be
 loaded by Radeon GPU Analyzer binary mode for ISA statistics and live VGPR/SGPR
 analysis.
 
-On `gfx1031`, the original combined DLP/hypersingular kernel used 128 VGPRs and
+Historical inspection on `gfx1031` found that the original combined
+DLP/hypersingular kernel used 128 VGPRs and
 148 bytes of scratch per thread at a reported occupancy of 8 waves. Fully
 splitting it reduced DLP to 104 VGPRs/36 bytes and HYP to 114 VGPRs/36 bytes, but
 required three quadrature passes. The selected partial fusion uses 128 VGPRs and
 76 bytes of scratch for SLP/adjoint/DLP, followed by the 114-VGPR hypersingular
 kernel. Despite some remaining spill, avoiding the third pass is faster on both
-fixtures.
+fixtures. The inspection script now exports only these two production kernels.
 
 Radeon Developer Panel 3.5 can attach to the Julia HIP process on this machine,
 but a hardware-counter trace against the custom TheRock runtime failed during

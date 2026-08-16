@@ -27,8 +27,7 @@ function build_rocm_field_evaluation_cache(cache::FieldEvaluationCache{T}) where
     _require_rocm!()
     source_points, source_normals, source_weights, source_faces, source_elements, basis_values =
         _rocm_field_arrays(cache)
-    return RocmFieldEvaluationCache{T,typeof(cache)}(
-        cache,
+    return RocmFieldEvaluationCache{T}(
         AMDGPU.ROCArray(source_points),
         AMDGPU.ROCArray(source_normals),
         AMDGPU.ROCArray(source_weights),

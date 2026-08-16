@@ -28,9 +28,10 @@ function inspect_rocm_regular_kernels(args=ARGS)
     open(output, "w") do io
         redirect_stdout(io) do
             AMDGPU.@device_code_gcn begin
-                AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_slp_adjoint_pairs_kernel!(
+                AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_slp_adjoint_dlp_pairs_kernel!(
                     operators.single_layer,
                     operators.adjoint_double_layer,
+                    operators.double_layer,
                     cache.face_vertices,
                     cache.normals,
                     cache.areas,
@@ -55,8 +56,7 @@ function inspect_rocm_regular_kernels(args=ARGS)
                     one(k),
                     one(k),
                 )
-                AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_dlp_hyp_pairs_kernel!(
-                    operators.double_layer,
+                AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_hyp_pairs_kernel!(
                     operators.hypersingular,
                     cache.face_vertices,
                     cache.normals,
@@ -85,125 +85,6 @@ function inspect_rocm_regular_kernels(args=ARGS)
                     one(k),
                     one(k),
                 )
-            end
-            operator_mode = BeatEngineCore._normalized_rocm_pair_operator_mode()
-            if operator_mode == :split
-                AMDGPU.@device_code_gcn begin
-                    AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_dlp_pairs_kernel!(
-                        operators.double_layer,
-                        cache.face_vertices,
-                        cache.normals,
-                        cache.areas,
-                        cache.faces,
-                        cache.p1_dofs,
-                        cache.rule_points,
-                        cache.rule_weights,
-                        cache.color_elements,
-                        test_start,
-                        test_count,
-                        trial_start,
-                        trial_count,
-                        k,
-                        cache.p1_dof_count,
-                        cache.face_count,
-                        cache.rule_count,
-                        cache.vertex_offsets,
-                        cache.incident_elements,
-                        Int32(0),
-                        one(k),
-                        one(k),
-                        one(k),
-                    )
-                    AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_hyp_pairs_kernel!(
-                        operators.hypersingular,
-                        cache.face_vertices,
-                        cache.normals,
-                        cache.areas,
-                        cache.faces,
-                        cache.curls,
-                        cache.p1_dofs,
-                        cache.rule_points,
-                        cache.rule_weights,
-                        cache.color_elements,
-                        test_start,
-                        test_count,
-                        trial_start,
-                        trial_count,
-                        k,
-                        cache.p1_dof_count,
-                        cache.face_count,
-                        cache.rule_count,
-                        cache.vertex_offsets,
-                        cache.incident_elements,
-                        Int32(0),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                    )
-                end
-            elseif operator_mode == :partial_fused
-                AMDGPU.@device_code_gcn begin
-                    AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_slp_adjoint_dlp_pairs_kernel!(
-                        operators.single_layer,
-                        operators.adjoint_double_layer,
-                        operators.double_layer,
-                        cache.face_vertices,
-                        cache.normals,
-                        cache.areas,
-                        cache.faces,
-                        cache.p1_dofs,
-                        cache.element_dp0_dofs,
-                        cache.rule_points,
-                        cache.rule_weights,
-                        cache.color_elements,
-                        test_start,
-                        test_count,
-                        trial_start,
-                        trial_count,
-                        k,
-                        cache.p1_dof_count,
-                        cache.face_count,
-                        cache.rule_count,
-                        cache.vertex_offsets,
-                        cache.incident_elements,
-                        Int32(0),
-                        one(k),
-                        one(k),
-                        one(k),
-                    )
-                    AMDGPU.@roc launch=false BeatEngineCore._rocm_regular_hyp_pairs_kernel!(
-                        operators.hypersingular,
-                        cache.face_vertices,
-                        cache.normals,
-                        cache.areas,
-                        cache.faces,
-                        cache.curls,
-                        cache.p1_dofs,
-                        cache.rule_points,
-                        cache.rule_weights,
-                        cache.color_elements,
-                        test_start,
-                        test_count,
-                        trial_start,
-                        trial_count,
-                        k,
-                        cache.p1_dof_count,
-                        cache.face_count,
-                        cache.rule_count,
-                        cache.vertex_offsets,
-                        cache.incident_elements,
-                        Int32(0),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                        one(k),
-                    )
-                end
             end
         end
     end

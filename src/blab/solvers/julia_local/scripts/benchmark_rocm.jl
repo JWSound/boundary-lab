@@ -326,7 +326,7 @@ function main(args=ARGS)
                 "warmups" => config.warmups,
                 "repetitions" => config.repetitions,
                 "regular_kernel_mode" => string(BeatEngineCore._normalized_rocm_regular_kernel_mode()),
-                "pair_operator_mode" => string(BeatEngineCore._normalized_rocm_pair_operator_mode()),
+                "pair_operator_mode" => "partial_fused",
             ),
             "metadata" => Dict(
                 "device" => string(setup.amdgpu.device()),

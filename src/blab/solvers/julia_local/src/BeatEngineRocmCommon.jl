@@ -1,7 +1,3 @@
-function _rocm_not_implemented(feature::AbstractString)
-    error("BEAT Engine ROCm $(feature) is not implemented yet.")
-end
-
 struct RocmSingularCorrectionCache{T}
     pair_offsets
     test_indices
@@ -44,8 +40,7 @@ struct RocmRegularAssemblyCache{T,C}
     image_singular_pair_count::Int
 end
 
-struct RocmFieldEvaluationCache{T,C}
-    host_cache::C
+struct RocmFieldEvaluationCache{T}
     source_points
     source_normals
     source_weights
@@ -85,24 +80,6 @@ function _normalized_rocm_regular_kernel_mode(value=nothing)
     normalized = get(aliases, mode, nothing)
     normalized === nothing && error(
         "BLAB_ROCM_REGULAR_KERNEL_MODE must be pair_owned or entry_owned; got $(value).",
-    )
-    return normalized
-end
-
-function _normalized_rocm_pair_operator_mode(value=nothing)
-    value === nothing && (value = get(ENV, "BLAB_ROCM_PAIR_OPERATOR_MODE", "partial_fused"))
-    mode = Symbol(lowercase(strip(String(value))))
-    aliases = Dict(
-        :combined => :combined,
-        :joint => :combined,
-        :split => :split,
-        :split_dlp_hyp => :split,
-        :partial_fused => :partial_fused,
-        :slp_dlp_fused => :partial_fused,
-    )
-    normalized = get(aliases, mode, nothing)
-    normalized === nothing && error(
-        "BLAB_ROCM_PAIR_OPERATOR_MODE must be combined, split, or partial_fused; got $(value).",
     )
     return normalized
 end
