@@ -12,6 +12,7 @@ from blab.solvers.beat_engine_backend import (
     BeatEngineBackend,
     BeatEngineRocmBackend,
     _friendly_julia_error,
+    _julia_process_env,
     _julia_worker_command,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
@@ -64,7 +65,7 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert backend_info("local").capabilities.supports_symmetry is False
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
-    assert backend_info("beat_rocm").capabilities.supports_symmetry is True
+    assert backend_info("beat_rocm").capabilities.supports_symmetry is False
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
@@ -115,7 +116,7 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert beat_rocm_backend.beat_engine_backend == "rocm"
     assert beat_rocm_backend.capabilities.is_remote is False
     assert beat_rocm_backend.capabilities.supports_parallel_workers is False
-    assert beat_rocm_backend.capabilities.supports_symmetry is True
+    assert beat_rocm_backend.capabilities.supports_symmetry is False
 
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
@@ -200,7 +201,13 @@ print(json.dumps({
         "vertical_spl_db": [90.0, 92.0, 89.5],
         "sphere_spl_norm_db": None,
         "timings": {"assembly_s": 0.1, "solve_s": 0.2, "field_s": 0.3},
-        "diagnostics": {"convergence_info": 0, "message": os.environ.get("JULIA_NUM_THREADS")},
+        "diagnostics": {
+            "convergence_info": 0,
+            "message": os.environ.get("JULIA_NUM_THREADS"),
+            "backend": "cuda",
+            "symmetry": "off",
+            "regular_assembly_mode": "serial_pair_batched",
+        },
     },
 }), flush=True)
 print(json.dumps({"type": "completed", "solved_count": 1}), flush=True)
@@ -232,6 +239,9 @@ print(json.dumps({"type": "completed", "solved_count": 1}), flush=True)
     assert results[0].impedance.tolist() == [[6.0, 1.0]]
     assert results[0].timings.assembly_s == 0.1
     assert results[0].diagnostics.message == "3"
+    assert results[0].diagnostics.backend == "cuda"
+    assert results[0].diagnostics.symmetry == "off"
+    assert results[0].diagnostics.regular_assembly_mode == "serial_pair_batched"
 
 
 def test_beat_cpu_backend_passes_cpu_selector_to_julia(tmp_path) -> None:
@@ -283,6 +293,20 @@ def test_julia_threads_auto_maps_to_cpu_count() -> None:
     assert _resolve_julia_threads("auto") == str(os.cpu_count() or 1)
     assert _resolve_julia_threads(16) == "16"
     assert _resolve_julia_threads("bad") == str(os.cpu_count() or 1)
+
+
+def test_rocm_project_process_env_uses_boundary_lab_rocm_root(monkeypatch, tmp_path) -> None:
+    rocm_root = tmp_path / "TheRock"
+    monkeypatch.setenv("BLAB_ROCM_PATH", str(rocm_root))
+
+    env = _julia_process_env(4, DEFAULT_BEAT_ENGINE_ROCM_PROJECT)
+
+    assert env["JULIA_NUM_THREADS"] == "4"
+    assert env["BLAB_BEAT_ENGINE_GPU_BACKEND"] == "rocm"
+    assert env["ROCM_PATH"] == str(rocm_root)
+    assert env["ROCM_HOME"] == str(rocm_root)
+    assert env["HIP_PATH"] == str(rocm_root)
+    assert env["PATH"].split(os.pathsep)[0] == str(rocm_root / "bin")
 
 
 def test_julia_dependency_load_error_gets_install_hint() -> None:

@@ -2,18 +2,37 @@ module BeatEngineCore
 
 using Base.Threads, LinearAlgebra, SparseArrays, StaticArrays
 
-const CUDA_MODULE = try
-    @eval import CUDA
-    CUDA
-catch
-    nothing
+const BEAT_ACCELERATOR_HINT = let
+    configured = lowercase(strip(get(ENV, "BLAB_BEAT_ENGINE_GPU_BACKEND", "")))
+    if configured in ("cuda", "rocm")
+        configured
+    else
+        active_project = Base.active_project()
+        project_directory = active_project === nothing ? "" : lowercase(basename(dirname(active_project)))
+        project_directory == "julia_cuda" ? "cuda" : project_directory == "julia_rocm" ? "rocm" : ""
+    end
 end
 
-const AMDGPU_MODULE = try
-    @eval import AMDGPU
-    AMDGPU
-catch
+const CUDA_MODULE = if BEAT_ACCELERATOR_HINT == "rocm"
     nothing
+else
+    try
+        @eval import CUDA
+        CUDA
+    catch
+        nothing
+    end
+end
+
+const AMDGPU_MODULE = if BEAT_ACCELERATOR_HINT == "cuda"
+    nothing
+else
+    try
+        @eval import AMDGPU
+        AMDGPU
+    catch
+        nothing
+    end
 end
 
 export BoundaryMesh,
@@ -27,9 +46,11 @@ export BoundaryMesh,
     build_cuda_field_evaluation_cache,
     build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    build_rocm_burton_miller_identity_cache,
     build_cuda_sparse_scatter_cache,
     release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
+    release_rocm_burton_miller_identity_cache!,
     release_cuda_sparse_scatter_cache!,
     scatter_cuda_sparse_to_dense!,
     build_rocm_regular_assembly_cache,
@@ -112,6 +133,11 @@ struct DP0Space
     global_dof_count::Int
 end
 struct CudaBurtonMillerIdentityCache{A,B}
+    identity_p1_p1::A
+    identity_p1_dp0::B
+end
+
+struct RocmBurtonMillerIdentityCache{A,B}
     identity_p1_p1::A
     identity_p1_dp0::B
 end
@@ -1037,6 +1063,15 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
     )
 end
 
+
+function build_rocm_burton_miller_identity_cache(args...; kwargs...)
+    error("ROCm Burton-Miller identity cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_burton_miller_identity_cache!(args...; kwargs...)
+    error("ROCm Burton-Miller identity cache release requested, but AMDGPU.jl is not loaded.")
+end
+
 function _cuda_burton_miller_rhs(operators, identity_cache::CudaBurtonMillerIdentityCache, d_q_neumann, coupling::Complex{T}) where {T<:AbstractFloat}
     d_rhs = similar(d_q_neumann, size(operators.single_layer, 1))
     mul!(d_rhs, operators.single_layer, d_q_neumann, -one(Complex{T}), zero(Complex{T}))
@@ -1080,6 +1115,16 @@ function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0,
     operators_on_gpu = get(operators, :on_gpu, false)
     if !operators_on_gpu
         return solve_burton_miller_neumann_cpu(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+    end
+
+    gpu_backend = get(operators, :gpu_backend, :cuda)
+    if gpu_backend == :rocm
+        identity_cache = build_rocm_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)
+        try
+            return solve_burton_miller_neumann(operators, identity_cache, q_neumann, k)
+        finally
+            release_rocm_burton_miller_identity_cache!(identity_cache)
+        end
     end
 
     identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)

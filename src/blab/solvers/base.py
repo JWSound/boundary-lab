@@ -21,6 +21,9 @@ class FrequencySolveTimings:
 class SolverDiagnostics:
     convergence_info: int | None = None
     message: str | None = None
+    backend: str | None = None
+    symmetry: str | None = None
+    regular_assembly_mode: str | None = None
 
 
 @dataclass(frozen=True)

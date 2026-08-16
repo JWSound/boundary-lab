@@ -431,7 +431,21 @@ function validate_radiator_elements(mesh, element_mesh_ids, radiators)
     end
 end
 
-function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, identity_p1_dp0, radiators, drives, rho, omega, k; cpu_solve_system=nothing, cuda_solve_identity_cache=nothing)
+function pressure_for_drives(
+    mesh,
+    element_mesh_ids,
+    operators,
+    identity_p1_p1,
+    identity_p1_dp0,
+    radiators,
+    drives,
+    rho,
+    omega,
+    k;
+    cpu_solve_system=nothing,
+    cuda_solve_identity_cache=nothing,
+    rocm_solve_identity_cache=nothing,
+)
     ComplexType = eltype(drives)
     q_neumann = zeros(ComplexType, length(mesh.faces))
     for (radiator_index, radiator) in enumerate(radiators)
@@ -447,6 +461,8 @@ function pressure_for_drives(mesh, element_mesh_ids, operators, identity_p1_p1, 
         solve_burton_miller_neumann_cpu_system(cpu_solve_system, q_neumann, typeof(k))
     elseif cuda_solve_identity_cache !== nothing
         solve_burton_miller_neumann(operators, cuda_solve_identity_cache, q_neumann, k)
+    elseif rocm_solve_identity_cache !== nothing
+        solve_burton_miller_neumann(operators, rocm_solve_identity_cache, q_neumann, k)
     else
         solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
     end
@@ -618,15 +634,22 @@ function solve_request(request)
     try
         solve_request_impl(request)
     finally
-        cleanup_cuda_after_solve!()
+        cleanup_accelerators_after_solve!()
     end
 end
 
-function cleanup_cuda_after_solve!()
+function cleanup_accelerators_after_solve!()
     cuda = BeatEngineCore.CUDA_MODULE
+    rocm = BeatEngineCore.AMDGPU_MODULE
     if cuda !== nothing
         try
             cuda.functional() && cuda.synchronize()
+        catch
+        end
+    end
+    if rocm !== nothing
+        try
+            rocm.functional() && rocm.synchronize()
         catch
         end
     end
@@ -637,6 +660,14 @@ function cleanup_cuda_after_solve!()
         try
             if isdefined(cuda, :reclaim)
                 cuda.reclaim()
+            end
+        catch
+        end
+    end
+    if rocm !== nothing
+        try
+            if isdefined(rocm, :reclaim)
+                rocm.reclaim()
             end
         catch
         end
@@ -653,6 +684,9 @@ function solve_request_impl(request)
     config = request["config"]
     symmetry_mode = symmetry_mode_from_config(config)
     beat_backend = beat_backend_from_request(request)
+    if beat_backend == :rocm && Symbol(symmetry_mode) != :off
+        error("The initial BEAT Engine ROCm backend supports exterior BEM with symmetry disabled.")
+    end
     frequencies = Float32.(request["frequencies_hz"])
     isempty(frequencies) && error("frequencies_hz must contain at least one frequency.")
     cancel_path = get_value(request, "cancel_path", nothing)
@@ -708,6 +742,7 @@ function solve_request_impl(request)
     device_singular_cache = nothing
     device_image_singular_cache = nothing
     cuda_solve_identity_cache = nothing
+    rocm_solve_identity_cache = nothing
     field_cache = cpu_field_cache
     regular_rule_cache = Dict{Int,Any}(base_regular_order => rule)
     identity_cache = Dict{Int,Any}(base_regular_order => (identity_p1_p1, identity_p1_dp0))
@@ -730,9 +765,21 @@ function solve_request_impl(request)
         end
         cuda_solve_identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, FloatType)
     elseif beat_backend == :rocm
-        emit_event("status"; message="Initializing BEAT Engine using ROCm...")
-        device_cache = build_rocm_regular_assembly_cache(mesh, rule)
+        emit_event("status"; message="Initializing BEAT Engine using ROCm (host-staged assembly, GPU solve)...")
+        device_cache = build_rocm_regular_assembly_cache(
+            mesh,
+            p1_space,
+            dp0_space,
+            rule;
+            singular_order=singular_order,
+            symmetry_mode=:off,
+        )
         field_cache = build_rocm_field_evaluation_cache(cpu_field_cache)
+        rocm_solve_identity_cache = build_rocm_burton_miller_identity_cache(
+            identity_p1_p1,
+            identity_p1_dp0,
+            FloatType,
+        )
     else
         emit_event(
             "status";
@@ -846,6 +893,7 @@ function solve_request_impl(request)
                     k,
                     cpu_solve_system=cpu_solve_system,
                     cuda_solve_identity_cache=cuda_solve_identity_cache,
+                    rocm_solve_identity_cache=rocm_solve_identity_cache,
                 )
             end
             t_field += @elapsed begin
@@ -939,6 +987,9 @@ function solve_request_impl(request)
     finally
         if cuda_solve_identity_cache !== nothing
             release_cuda_burton_miller_identity_cache!(cuda_solve_identity_cache)
+        end
+        if rocm_solve_identity_cache !== nothing
+            release_rocm_burton_miller_identity_cache!(rocm_solve_identity_cache)
         end
         if device_image_singular_cache !== nothing
             release_cuda_image_singular_correction_cache!(device_image_singular_cache)

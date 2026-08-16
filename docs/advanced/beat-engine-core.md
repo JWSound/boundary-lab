@@ -17,6 +17,7 @@ Solver](../Coupled%20Solver.md). Local production solves use single precision
 Backend-specific details live in:
 
 - [BEAT Engine CPU](beat-engine-CPU.md)
+- [BEAT Engine ROCm development](beat-engine-rocm.md)
 - [BEAT Engine CUDA](beat-engine-CUDA.md)
 
 ## Solve Pipeline

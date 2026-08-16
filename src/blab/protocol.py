@@ -237,6 +237,9 @@ def solver_diagnostics_to_dict(diagnostics: SolverDiagnostics | None) -> dict[st
     return {
         "convergence_info": diagnostics.convergence_info,
         "message": diagnostics.message,
+        "backend": diagnostics.backend,
+        "symmetry": diagnostics.symmetry,
+        "regular_assembly_mode": diagnostics.regular_assembly_mode,
     }
 
 
@@ -247,6 +250,11 @@ def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostic
     return SolverDiagnostics(
         convergence_info=None if convergence_info is None else int(convergence_info),
         message=None if raw.get("message") is None else str(raw["message"]),
+        backend=None if raw.get("backend") is None else str(raw["backend"]),
+        symmetry=None if raw.get("symmetry") is None else str(raw["symmetry"]),
+        regular_assembly_mode=(
+            None if raw.get("regular_assembly_mode") is None else str(raw["regular_assembly_mode"])
+        ),
     )
 
 

@@ -62,7 +62,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
-            supports_symmetry=True,
+            supports_symmetry=False,
             supports_channel_resynthesis=True,
             is_remote=False,
         ),

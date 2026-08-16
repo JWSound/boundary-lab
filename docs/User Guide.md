@@ -110,8 +110,9 @@ guide.
 ### Solver Config
 
 - **BEM Solver** selects Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine
-  ROCm, or Bempp OpenCL CPU. ROCm is currently a placeholder. Coupled systems
-  require the local BEAT Engine CPU or CUDA backend.
+  ROCm, or Bempp OpenCL CPU. ROCm currently supports non-symmetric exterior BEM
+  with host-staged assembly and a GPU-resident solve. Coupled systems require
+  the local BEAT Engine CPU or CUDA backend.
 - **Solve Server URL** and **Check Server** configure and query a remote
   exterior-BEM server. A successful health check also updates advertised
   capabilities such as symmetry support.

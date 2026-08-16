@@ -33,7 +33,10 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependent on hardware; GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
+Boundary Lab currently has five selectable BEM solver backends in application
+preferences: Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine ROCm, and
+Bempp OpenCL CPU. The ROCm path is an initial correctness-first exterior-BEM
+implementation; native GPU assembly and performance tuning remain in progress.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -143,5 +146,6 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
+- [BEAT Engine ROCm development](docs/advanced/beat-engine-rocm.md)
 - [BEAT Engine CUDA](docs/advanced/beat-engine-CUDA.md)
 - [Forward Beam Shape plot](docs/advanced/forward-beam-shape.md)
