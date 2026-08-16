@@ -3,9 +3,9 @@
 The ROCm backend supports exterior Burton-Miller BEM solves, including X and XY
 symmetry, with GPU-resident operator assembly and field evaluation:
 
-- regular Galerkin quadrature is evaluated once per element pair by native ROCm
-  pair-owned kernels; vertex-disjoint element colors make direct dense-operator
-  scatter race-free without atomics;
+- regular Galerkin quadrature is evaluated by native ROCm pair-owned kernels;
+  vertex-disjoint element colors make direct dense-operator scatter race-free
+  without atomics;
 - Duffy singular quadrature is evaluated once into compact per-pair blocks and
   gathered into the dense operators by race-free entry-owned kernels;
 - all four dense operators are allocated and assembled in `ROCArray` storage;
@@ -17,8 +17,11 @@ Results identify the default native assembly as `rocm_native_colored_pair_owned`
 Set `BLAB_ROCM_REGULAR_KERNEL_MODE=entry_owned` to retain the earlier entry-owned
 kernel as a correctness and performance reference. Set
 `BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
-as a diagnostic fallback. The default workgroup size is 64 on RDNA2; set
-`BLAB_ROCM_KERNEL_GROUPSIZE` to `64`, `128`, or `256` for hardware-specific tuning.
+as a diagnostic fallback. Pair-owned assembly defaults to partially fused
+SLP/adjoint/DLP plus a separate hypersingular kernel. Set
+`BLAB_ROCM_PAIR_OPERATOR_MODE` to `combined`, `split`, or `partial_fused` to run
+the retained A/B variants. The default workgroup size is 64 on RDNA2; set
+`BLAB_ROCM_KERNEL_GROUPSIZE` to `32`, `64`, `128`, or `256` for hardware-specific tuning.
 Coupled FEM-BEM remains a later milestone.
 
 ## Julia environment
@@ -96,16 +99,36 @@ Benchmark JSON is written beneath `src/blab/solvers/julia_local/results/`, which
 is intentionally ignored by Git.
 
 On the RX 6700 XT (`gfx1031`) with workgroup size 64, q4/s4, two warmups, and
-five measured repetitions, the initial colored pair-owned implementation gave:
+five measured repetitions, the optimized partial-fusion implementation gave:
 
-| Fixture | Entry-owned regular | Pair-owned regular | Regular speedup | Entry-owned total assembly | Pair-owned total assembly | Total speedup |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sample.msh` | 222.6 ms | 101.7 ms | 2.19x | 278.0 ms | 157.1 ms | 1.77x |
-| `sample_detailed.msh` | 1410.8 ms | 740.4 ms | 1.91x | 1710.0 ms | 1038.1 ms | 1.65x |
+| Fixture | Entry-owned regular | Initial pair-owned | Partial-fused | Regular speedup | Entry-owned total assembly | Partial-fused total assembly | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sample.msh` | 222.6 ms | 101.8 ms | 73.0 ms | 3.05x | 278.0 ms | 128.5 ms | 2.16x |
+| `sample_detailed.msh` | 1410.8 ms | 739.6 ms | 454.0 ms | 3.11x | 1710.0 ms | 752.0 ms | 2.27x |
 
 These are warmed-worker medians and exclude cold Julia/GPU compilation. The
 sample fixture uses 10 element colors (200 regular-kernel launches); the detailed
 fixture uses 12 colors (288 launches). Including the unchanged dense solve and a
 144-point GPU field evaluation, the summed stage medians improved from 296.1 ms
-to 175.9 ms (1.68x) on `sample.msh`, and from 1777.1 ms to 1104.4 ms (1.61x) on
+to 147.0 ms (2.01x) on `sample.msh`, and from 1777.1 ms to 820.5 ms (2.17x) on
 `sample_detailed.msh`.
+
+## Kernel inspection
+
+`inspect_rocm_regular_kernels.jl` compiles the exact Julia kernels, writes their
+GCN assembly, and exports AMD code objects beside it. Those code objects can be
+loaded by Radeon GPU Analyzer binary mode for ISA statistics and live VGPR/SGPR
+analysis.
+
+On `gfx1031`, the original combined DLP/hypersingular kernel used 128 VGPRs and
+148 bytes of scratch per thread at a reported occupancy of 8 waves. Fully
+splitting it reduced DLP to 104 VGPRs/36 bytes and HYP to 114 VGPRs/36 bytes, but
+required three quadrature passes. The selected partial fusion uses 128 VGPRs and
+76 bytes of scratch for SLP/adjoint/DLP, followed by the 114-VGPR hypersingular
+kernel. Despite some remaining spill, avoiding the third pass is faster on both
+fixtures.
+
+Radeon Developer Panel 3.5 can attach to the Julia HIP process on this machine,
+but a hardware-counter trace against the custom TheRock runtime failed during
+trace finalization with result `-2`. Offline RGA code-object analysis works and
+does not perturb or wedge the worker.

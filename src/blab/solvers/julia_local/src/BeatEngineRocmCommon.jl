@@ -66,8 +66,8 @@ end
 
 function _rocm_kernel_groupsize()
     groupsize = parse(Int, get(ENV, "BLAB_ROCM_KERNEL_GROUPSIZE", "64"))
-    groupsize in (64, 128, 256) ||
-        error("BLAB_ROCM_KERNEL_GROUPSIZE must be 64, 128, or 256; got $(groupsize).")
+    groupsize in (32, 64, 128, 256) ||
+        error("BLAB_ROCM_KERNEL_GROUPSIZE must be 32, 64, 128, or 256; got $(groupsize).")
     return groupsize
 end
 
@@ -85,6 +85,24 @@ function _normalized_rocm_regular_kernel_mode(value=nothing)
     normalized = get(aliases, mode, nothing)
     normalized === nothing && error(
         "BLAB_ROCM_REGULAR_KERNEL_MODE must be pair_owned or entry_owned; got $(value).",
+    )
+    return normalized
+end
+
+function _normalized_rocm_pair_operator_mode(value=nothing)
+    value === nothing && (value = get(ENV, "BLAB_ROCM_PAIR_OPERATOR_MODE", "partial_fused"))
+    mode = Symbol(lowercase(strip(String(value))))
+    aliases = Dict(
+        :combined => :combined,
+        :joint => :combined,
+        :split => :split,
+        :split_dlp_hyp => :split,
+        :partial_fused => :partial_fused,
+        :slp_dlp_fused => :partial_fused,
+    )
+    normalized = get(aliases, mode, nothing)
+    normalized === nothing && error(
+        "BLAB_ROCM_PAIR_OPERATOR_MODE must be combined, split, or partial_fused; got $(value).",
     )
     return normalized
 end

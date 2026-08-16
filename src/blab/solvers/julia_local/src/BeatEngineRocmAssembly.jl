@@ -55,6 +55,8 @@ function _assemble_regular_galerkin_operators_rocm_native(
     timing !== nothing && (timing["rocm_native_operator_alloc"] = allocation_elapsed)
 
     regular_kernel_mode = _normalized_rocm_regular_kernel_mode()
+    pair_operator_mode = regular_kernel_mode == :pair_owned ?
+        _normalized_rocm_pair_operator_mode() : nothing
     kernel_elapsed = @elapsed begin
         if regular_kernel_mode == :pair_owned
             _launch_rocm_regular_pair_kernels!(operators, native_cache, k)
@@ -139,7 +141,7 @@ function _assemble_regular_galerkin_operators_rocm_native(
             regular_kernel_threads=kernel_groupsize,
             regular_kernel_blocks=regular_kernel_mode == :pair_owned ? (
                 slp=(image_count + 1) * pair_blocks,
-                p1=(image_count + 1) * pair_blocks,
+                p1=(image_count + 1) * pair_blocks * (pair_operator_mode == :combined ? 1 : 2),
             ) : (
                 slp=cld(p1_space.global_dof_count * dp0_space.global_dof_count, kernel_groupsize),
                 p1=cld(p1_space.global_dof_count * p1_space.global_dof_count, kernel_groupsize),
@@ -148,7 +150,9 @@ function _assemble_regular_galerkin_operators_rocm_native(
             regular_kernel_total_pairs=(image_count + 1) * total_pairs,
             regular_kernel_color_count=color_count,
             regular_kernel_launches=regular_kernel_mode == :pair_owned ?
-                2 * (image_count + 1) * color_count^2 : 2 * (image_count + 1),
+                (pair_operator_mode == :split ? 3 : 2) * (image_count + 1) * color_count^2 :
+                2 * (image_count + 1),
+            regular_kernel_operator_mode=pair_operator_mode,
             regular_kernel_mode=regular_kernel_mode == :pair_owned ?
                 "rocm_native_colored_pair_owned" : "rocm_native_entry_owned",
             regular_assembly_mode=regular_kernel_mode == :pair_owned ?

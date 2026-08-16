@@ -207,6 +207,7 @@ function run_iteration(config::RocmBenchmarkConfig, setup)
         "regular_pairs" => operators.regular_pairs,
         "singular_pairs" => operators.singular_pairs,
         "regular_kernel_mode" => operators.regular_kernel_mode,
+        "regular_kernel_operator_mode" => get(operators, :regular_kernel_operator_mode, nothing),
         "regular_kernel_color_count" => get(operators, :regular_kernel_color_count, nothing),
         "regular_kernel_launches" => get(operators, :regular_kernel_launches, nothing),
     )
@@ -325,6 +326,7 @@ function main(args=ARGS)
                 "warmups" => config.warmups,
                 "repetitions" => config.repetitions,
                 "regular_kernel_mode" => string(BeatEngineCore._normalized_rocm_regular_kernel_mode()),
+                "pair_operator_mode" => string(BeatEngineCore._normalized_rocm_pair_operator_mode()),
             ),
             "metadata" => Dict(
                 "device" => string(setup.amdgpu.device()),

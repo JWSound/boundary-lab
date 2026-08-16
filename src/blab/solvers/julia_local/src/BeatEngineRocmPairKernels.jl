@@ -150,6 +150,150 @@ function _rocm_regular_slp_adjoint_pairs_kernel!(
     return nothing
 end
 
+function _rocm_regular_slp_adjoint_dlp_pairs_kernel!(
+    single_layer,
+    adjoint_double_layer,
+    double_layer,
+    face_vertices,
+    normals,
+    areas,
+    faces,
+    p1_dofs,
+    element_dp0_dofs,
+    rule_points,
+    rule_weights,
+    color_elements,
+    test_start,
+    test_count,
+    trial_start,
+    trial_count,
+    k,
+    p1_dof_count,
+    face_count,
+    rule_count,
+    pair_offsets,
+    singular_trial_indices,
+    skip_mode,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
+)
+    linear_index = _rocm_global_linear_index()
+    linear_index > test_count * trial_count && return nothing
+    test_index, trial_index = _rocm_pair_elements(
+        color_elements,
+        linear_index,
+        test_start,
+        test_count,
+        trial_start,
+    )
+    _rocm_pair_is_skipped(
+        faces,
+        face_count,
+        test_index,
+        trial_index,
+        pair_offsets,
+        singular_trial_indices,
+        skip_mode,
+    ) && return nothing
+
+    four_pi = typeof(k)(12.566370614359172)
+    slp_re = zero(SVector{3,typeof(k)})
+    slp_im = zero(SVector{3,typeof(k)})
+    adj_re = zero(SVector{3,typeof(k)})
+    adj_im = zero(SVector{3,typeof(k)})
+    dlp_re = zero(SVector{9,typeof(k)})
+    dlp_im = zero(SVector{9,typeof(k)})
+    test_nx = normals[test_index]
+    test_ny = normals[test_index + face_count]
+    test_nz = normals[test_index + 2 * face_count]
+    trial_nx = trial_sign_x * normals[trial_index]
+    trial_ny = trial_sign_y * normals[trial_index + face_count]
+    trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
+    jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
+
+    test_q = 1
+    while test_q <= rule_count
+        test_xi = rule_points[test_q]
+        test_eta = rule_points[test_q + rule_count]
+        tb1 = one(k) - test_xi - test_eta
+        tb2 = test_xi
+        tb3 = test_eta
+        test_basis = SVector(tb1, tb2, tb3)
+        x, y, z = _rocm_face_point(face_vertices, test_index, face_count, tb1, tb2, tb3)
+        test_weight = rule_weights[test_q]
+
+        trial_q = 1
+        while trial_q <= rule_count
+            trial_xi = rule_points[trial_q]
+            trial_eta = rule_points[trial_q + rule_count]
+            rb1 = one(k) - trial_xi - trial_eta
+            rb2 = trial_xi
+            rb3 = trial_eta
+            sx, sy, sz = _rocm_face_point(face_vertices, trial_index, face_count, rb1, rb2, rb3)
+            sx *= trial_sign_x
+            sy *= trial_sign_y
+            sz *= trial_sign_z
+            dx = sx - x
+            dy = sy - y
+            dz = sz - z
+            radius = sqrt(dx * dx + dy * dy + dz * dz)
+            if radius > zero(k)
+                inv_radius = one(k) / radius
+                phase = k * radius
+                green_scale = inv_radius / four_pi
+                green_re = cos(phase) * green_scale
+                green_im = sin(phase) * green_scale
+                weight = test_weight * rule_weights[trial_q] * jac_scale
+                weighted_basis = test_basis * weight
+                slp_re += weighted_basis * green_re
+                slp_im += weighted_basis * green_im
+
+                grad_re = -green_re * inv_radius - green_im * k
+                grad_im = green_re * k - green_im * inv_radius
+                test_dot = -(dx * test_nx + dy * test_ny + dz * test_nz) * inv_radius
+                adj_re += weighted_basis * (grad_re * test_dot)
+                adj_im += weighted_basis * (grad_im * test_dot)
+
+                trial_dot = (dx * trial_nx + dy * trial_ny + dz * trial_nz) * inv_radius
+                basis_products = SVector(
+                    tb1 * rb1, tb2 * rb1, tb3 * rb1,
+                    tb1 * rb2, tb2 * rb2, tb3 * rb2,
+                    tb1 * rb3, tb2 * rb3, tb3 * rb3,
+                )
+                dlp_re += basis_products * (grad_re * trial_dot * weight)
+                dlp_im += basis_products * (grad_im * trial_dot * weight)
+            end
+            trial_q += 1
+        end
+        test_q += 1
+    end
+
+    dp0_column = element_dp0_dofs[trial_index]
+    local_row = 1
+    while local_row <= 3
+        row = p1_dofs[test_index + (local_row - 1) * face_count]
+        operator_index = row + (dp0_column - 1) * p1_dof_count
+        single_layer[operator_index] += Complex(slp_re[local_row], slp_im[local_row])
+        adjoint_double_layer[operator_index] += Complex(adj_re[local_row], adj_im[local_row])
+        local_row += 1
+    end
+    local_column = 1
+    while local_column <= 3
+        column = p1_dofs[trial_index + (local_column - 1) * face_count]
+        local_row = 1
+        while local_row <= 3
+            row = p1_dofs[test_index + (local_row - 1) * face_count]
+            local_index = local_row + 3 * (local_column - 1)
+            operator_index = row + (column - 1) * p1_dof_count
+            double_layer[operator_index] += Complex(dlp_re[local_index], dlp_im[local_index])
+            local_row += 1
+        end
+        local_column += 1
+    end
+    return nothing
+end
+
 @inline function _rocm_pair_curl_products(
     curls,
     test_index,
@@ -330,6 +474,253 @@ function _rocm_regular_dlp_hyp_pairs_kernel!(
     return nothing
 end
 
+function _rocm_regular_dlp_pairs_kernel!(
+    double_layer,
+    face_vertices,
+    normals,
+    areas,
+    faces,
+    p1_dofs,
+    rule_points,
+    rule_weights,
+    color_elements,
+    test_start,
+    test_count,
+    trial_start,
+    trial_count,
+    k,
+    p1_dof_count,
+    face_count,
+    rule_count,
+    pair_offsets,
+    singular_trial_indices,
+    skip_mode,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
+)
+    linear_index = _rocm_global_linear_index()
+    linear_index > test_count * trial_count && return nothing
+    test_index, trial_index = _rocm_pair_elements(
+        color_elements,
+        linear_index,
+        test_start,
+        test_count,
+        trial_start,
+    )
+    _rocm_pair_is_skipped(
+        faces,
+        face_count,
+        test_index,
+        trial_index,
+        pair_offsets,
+        singular_trial_indices,
+        skip_mode,
+    ) && return nothing
+
+    four_pi = typeof(k)(12.566370614359172)
+    dlp_re = zero(SVector{9,typeof(k)})
+    dlp_im = zero(SVector{9,typeof(k)})
+    trial_nx = trial_sign_x * normals[trial_index]
+    trial_ny = trial_sign_y * normals[trial_index + face_count]
+    trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
+    jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
+
+    test_q = 1
+    while test_q <= rule_count
+        test_xi = rule_points[test_q]
+        test_eta = rule_points[test_q + rule_count]
+        tb1 = one(k) - test_xi - test_eta
+        tb2 = test_xi
+        tb3 = test_eta
+        x, y, z = _rocm_face_point(face_vertices, test_index, face_count, tb1, tb2, tb3)
+        test_weight = rule_weights[test_q]
+
+        trial_q = 1
+        while trial_q <= rule_count
+            trial_xi = rule_points[trial_q]
+            trial_eta = rule_points[trial_q + rule_count]
+            rb1 = one(k) - trial_xi - trial_eta
+            rb2 = trial_xi
+            rb3 = trial_eta
+            sx, sy, sz = _rocm_face_point(face_vertices, trial_index, face_count, rb1, rb2, rb3)
+            sx *= trial_sign_x
+            sy *= trial_sign_y
+            sz *= trial_sign_z
+            dx = sx - x
+            dy = sy - y
+            dz = sz - z
+            radius = sqrt(dx * dx + dy * dy + dz * dz)
+            if radius > zero(k)
+                inv_radius = one(k) / radius
+                phase = k * radius
+                green_scale = inv_radius / four_pi
+                green_re = cos(phase) * green_scale
+                green_im = sin(phase) * green_scale
+                weight = test_weight * rule_weights[trial_q] * jac_scale
+                trial_dot = (dx * trial_nx + dy * trial_ny + dz * trial_nz) * inv_radius
+                grad_re = -green_re * inv_radius - green_im * k
+                grad_im = green_re * k - green_im * inv_radius
+                basis_products = SVector(
+                    tb1 * rb1, tb2 * rb1, tb3 * rb1,
+                    tb1 * rb2, tb2 * rb2, tb3 * rb2,
+                    tb1 * rb3, tb2 * rb3, tb3 * rb3,
+                )
+                dlp_re += basis_products * (grad_re * trial_dot * weight)
+                dlp_im += basis_products * (grad_im * trial_dot * weight)
+            end
+            trial_q += 1
+        end
+        test_q += 1
+    end
+
+    local_column = 1
+    while local_column <= 3
+        column = p1_dofs[trial_index + (local_column - 1) * face_count]
+        local_row = 1
+        while local_row <= 3
+            row = p1_dofs[test_index + (local_row - 1) * face_count]
+            local_index = local_row + 3 * (local_column - 1)
+            operator_index = row + (column - 1) * p1_dof_count
+            double_layer[operator_index] += Complex(dlp_re[local_index], dlp_im[local_index])
+            local_row += 1
+        end
+        local_column += 1
+    end
+    return nothing
+end
+
+function _rocm_regular_hyp_pairs_kernel!(
+    hypersingular,
+    face_vertices,
+    normals,
+    areas,
+    faces,
+    curls,
+    p1_dofs,
+    rule_points,
+    rule_weights,
+    color_elements,
+    test_start,
+    test_count,
+    trial_start,
+    trial_count,
+    k,
+    p1_dof_count,
+    face_count,
+    rule_count,
+    pair_offsets,
+    singular_trial_indices,
+    skip_mode,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
+    trial_curl_sign_x,
+    trial_curl_sign_y,
+    trial_curl_sign_z,
+)
+    linear_index = _rocm_global_linear_index()
+    linear_index > test_count * trial_count && return nothing
+    test_index, trial_index = _rocm_pair_elements(
+        color_elements,
+        linear_index,
+        test_start,
+        test_count,
+        trial_start,
+    )
+    _rocm_pair_is_skipped(
+        faces,
+        face_count,
+        test_index,
+        trial_index,
+        pair_offsets,
+        singular_trial_indices,
+        skip_mode,
+    ) && return nothing
+
+    four_pi = typeof(k)(12.566370614359172)
+    k2 = k * k
+    hyp_re = zero(SVector{9,typeof(k)})
+    hyp_im = zero(SVector{9,typeof(k)})
+    trial_nx = trial_sign_x * normals[trial_index]
+    trial_ny = trial_sign_y * normals[trial_index + face_count]
+    trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
+    normal_product = normals[test_index] * trial_nx +
+        normals[test_index + face_count] * trial_ny +
+        normals[test_index + 2 * face_count] * trial_nz
+    curl_products = _rocm_pair_curl_products(
+        curls,
+        test_index,
+        trial_index,
+        face_count,
+        trial_curl_sign_x,
+        trial_curl_sign_y,
+        trial_curl_sign_z,
+    )
+    jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
+
+    test_q = 1
+    while test_q <= rule_count
+        test_xi = rule_points[test_q]
+        test_eta = rule_points[test_q + rule_count]
+        tb1 = one(k) - test_xi - test_eta
+        tb2 = test_xi
+        tb3 = test_eta
+        x, y, z = _rocm_face_point(face_vertices, test_index, face_count, tb1, tb2, tb3)
+        test_weight = rule_weights[test_q]
+
+        trial_q = 1
+        while trial_q <= rule_count
+            trial_xi = rule_points[trial_q]
+            trial_eta = rule_points[trial_q + rule_count]
+            rb1 = one(k) - trial_xi - trial_eta
+            rb2 = trial_xi
+            rb3 = trial_eta
+            sx, sy, sz = _rocm_face_point(face_vertices, trial_index, face_count, rb1, rb2, rb3)
+            sx *= trial_sign_x
+            sy *= trial_sign_y
+            sz *= trial_sign_z
+            dx = sx - x
+            dy = sy - y
+            dz = sz - z
+            radius = sqrt(dx * dx + dy * dy + dz * dz)
+            if radius > zero(k)
+                inv_radius = one(k) / radius
+                phase = k * radius
+                green_scale = inv_radius / four_pi
+                green_re = cos(phase) * green_scale
+                green_im = sin(phase) * green_scale
+                weight = test_weight * rule_weights[trial_q] * jac_scale
+                basis_products = SVector(
+                    tb1 * rb1, tb2 * rb1, tb3 * rb1,
+                    tb1 * rb2, tb2 * rb2, tb3 * rb2,
+                    tb1 * rb3, tb2 * rb3, tb3 * rb3,
+                )
+                hyper_factors = curl_products - basis_products * (k2 * normal_product)
+                hyp_re += hyper_factors * (green_re * weight)
+                hyp_im += hyper_factors * (green_im * weight)
+            end
+            trial_q += 1
+        end
+        test_q += 1
+    end
+
+    local_column = 1
+    while local_column <= 3
+        column = p1_dofs[trial_index + (local_column - 1) * face_count]
+        local_row = 1
+        while local_row <= 3
+            row = p1_dofs[test_index + (local_row - 1) * face_count]
+            local_index = local_row + 3 * (local_column - 1)
+            operator_index = row + (column - 1) * p1_dof_count
+            hypersingular[operator_index] += Complex(hyp_re[local_index], hyp_im[local_index])
+            local_row += 1
+        end
+        local_column += 1
+    end
+    return nothing
+end
+
 function _launch_rocm_colored_pair_kernels!(
     operators,
     cache::RocmRegularAssemblyCache,
@@ -345,6 +736,7 @@ function _launch_rocm_colored_pair_kernels!(
     trial_curl_sign_z,
 )
     groupsize = _rocm_kernel_groupsize()
+    operator_mode = _normalized_rocm_pair_operator_mode()
     color_count = length(cache.color_offsets) - 1
     for test_color in 1:color_count
         test_start = cache.color_offsets[test_color]
@@ -354,63 +746,153 @@ function _launch_rocm_colored_pair_kernels!(
             trial_count = cache.color_offsets[trial_color + 1] - trial_start
             pair_count = test_count * trial_count
             pair_count == 0 && continue
-            AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_slp_adjoint_pairs_kernel!(
-                operators.single_layer,
-                operators.adjoint_double_layer,
-                cache.face_vertices,
-                cache.normals,
-                cache.areas,
-                cache.faces,
-                cache.p1_dofs,
-                cache.element_dp0_dofs,
-                cache.rule_points,
-                cache.rule_weights,
-                cache.color_elements,
-                Int32(test_start),
-                Int32(test_count),
-                Int32(trial_start),
-                Int32(trial_count),
-                k,
-                cache.p1_dof_count,
-                cache.face_count,
-                cache.rule_count,
-                pair_offsets,
-                singular_trial_indices,
-                skip_mode,
-                trial_sign_x,
-                trial_sign_y,
-                trial_sign_z,
-            )
-            AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_dlp_hyp_pairs_kernel!(
-                operators.double_layer,
-                operators.hypersingular,
-                cache.face_vertices,
-                cache.normals,
-                cache.areas,
-                cache.faces,
-                cache.curls,
-                cache.p1_dofs,
-                cache.rule_points,
-                cache.rule_weights,
-                cache.color_elements,
-                Int32(test_start),
-                Int32(test_count),
-                Int32(trial_start),
-                Int32(trial_count),
-                k,
-                cache.p1_dof_count,
-                cache.face_count,
-                cache.rule_count,
-                pair_offsets,
-                singular_trial_indices,
-                skip_mode,
-                trial_sign_x,
-                trial_sign_y,
-                trial_sign_z,
-                trial_curl_sign_x,
-                trial_curl_sign_y,
-                trial_curl_sign_z,
-            )
+            if operator_mode == :partial_fused
+                AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_slp_adjoint_dlp_pairs_kernel!(
+                    operators.single_layer,
+                    operators.adjoint_double_layer,
+                    operators.double_layer,
+                    cache.face_vertices,
+                    cache.normals,
+                    cache.areas,
+                    cache.faces,
+                    cache.p1_dofs,
+                    cache.element_dp0_dofs,
+                    cache.rule_points,
+                    cache.rule_weights,
+                    cache.color_elements,
+                    Int32(test_start),
+                    Int32(test_count),
+                    Int32(trial_start),
+                    Int32(trial_count),
+                    k,
+                    cache.p1_dof_count,
+                    cache.face_count,
+                    cache.rule_count,
+                    pair_offsets,
+                    singular_trial_indices,
+                    skip_mode,
+                    trial_sign_x,
+                    trial_sign_y,
+                    trial_sign_z,
+                )
+            else
+                AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_slp_adjoint_pairs_kernel!(
+                    operators.single_layer,
+                    operators.adjoint_double_layer,
+                    cache.face_vertices,
+                    cache.normals,
+                    cache.areas,
+                    cache.faces,
+                    cache.p1_dofs,
+                    cache.element_dp0_dofs,
+                    cache.rule_points,
+                    cache.rule_weights,
+                    cache.color_elements,
+                    Int32(test_start),
+                    Int32(test_count),
+                    Int32(trial_start),
+                    Int32(trial_count),
+                    k,
+                    cache.p1_dof_count,
+                    cache.face_count,
+                    cache.rule_count,
+                    pair_offsets,
+                    singular_trial_indices,
+                    skip_mode,
+                    trial_sign_x,
+                    trial_sign_y,
+                    trial_sign_z,
+                )
+            end
+            if operator_mode == :combined
+                AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_dlp_hyp_pairs_kernel!(
+                    operators.double_layer,
+                    operators.hypersingular,
+                    cache.face_vertices,
+                    cache.normals,
+                    cache.areas,
+                    cache.faces,
+                    cache.curls,
+                    cache.p1_dofs,
+                    cache.rule_points,
+                    cache.rule_weights,
+                    cache.color_elements,
+                    Int32(test_start),
+                    Int32(test_count),
+                    Int32(trial_start),
+                    Int32(trial_count),
+                    k,
+                    cache.p1_dof_count,
+                    cache.face_count,
+                    cache.rule_count,
+                    pair_offsets,
+                    singular_trial_indices,
+                    skip_mode,
+                    trial_sign_x,
+                    trial_sign_y,
+                    trial_sign_z,
+                    trial_curl_sign_x,
+                    trial_curl_sign_y,
+                    trial_curl_sign_z,
+                )
+            elseif operator_mode == :split
+                AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_dlp_pairs_kernel!(
+                    operators.double_layer,
+                    cache.face_vertices,
+                    cache.normals,
+                    cache.areas,
+                    cache.faces,
+                    cache.p1_dofs,
+                    cache.rule_points,
+                    cache.rule_weights,
+                    cache.color_elements,
+                    Int32(test_start),
+                    Int32(test_count),
+                    Int32(trial_start),
+                    Int32(trial_count),
+                    k,
+                    cache.p1_dof_count,
+                    cache.face_count,
+                    cache.rule_count,
+                    pair_offsets,
+                    singular_trial_indices,
+                    skip_mode,
+                    trial_sign_x,
+                    trial_sign_y,
+                    trial_sign_z,
+                )
+            end
+            if operator_mode != :combined
+                AMDGPU.@roc groupsize=groupsize gridsize=cld(pair_count, groupsize) _rocm_regular_hyp_pairs_kernel!(
+                    operators.hypersingular,
+                    cache.face_vertices,
+                    cache.normals,
+                    cache.areas,
+                    cache.faces,
+                    cache.curls,
+                    cache.p1_dofs,
+                    cache.rule_points,
+                    cache.rule_weights,
+                    cache.color_elements,
+                    Int32(test_start),
+                    Int32(test_count),
+                    Int32(trial_start),
+                    Int32(trial_count),
+                    k,
+                    cache.p1_dof_count,
+                    cache.face_count,
+                    cache.rule_count,
+                    pair_offsets,
+                    singular_trial_indices,
+                    skip_mode,
+                    trial_sign_x,
+                    trial_sign_y,
+                    trial_sign_z,
+                    trial_curl_sign_x,
+                    trial_curl_sign_y,
+                    trial_curl_sign_z,
+                )
+            end
         end
     end
     return nothing
