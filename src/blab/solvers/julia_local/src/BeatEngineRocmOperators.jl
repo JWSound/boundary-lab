@@ -8,6 +8,18 @@ function release_operator_storage!(operators::NamedTuple)
     return nothing
 end
 
+function _apply_rocm_operator_p1_row_weights!(operators, mesh::BoundaryMesh{T}, symmetry_mode) where {T<:AbstractFloat}
+    normalized_symmetry_mode(symmetry_mode) == :off && return nothing
+    d_weights = AMDGPU.ROCArray(Complex{T}.(p1_symmetry_orbit_weights(mesh, symmetry_mode)))
+    operators.single_layer .*= reshape(d_weights, :, 1)
+    operators.double_layer .*= reshape(d_weights, :, 1)
+    operators.adjoint_double_layer .*= reshape(d_weights, :, 1)
+    operators.hypersingular .*= reshape(d_weights, :, 1)
+    AMDGPU.synchronize()
+    AMDGPU.unsafe_free!(d_weights)
+    return nothing
+end
+
 function build_rocm_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, ::Type{T}) where {T<:AbstractFloat}
     _require_rocm!(rocsolver=true)
     return RocmBurtonMillerIdentityCache(

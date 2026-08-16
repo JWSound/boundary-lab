@@ -65,7 +65,7 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert backend_info("local").capabilities.supports_symmetry is False
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
-    assert backend_info("beat_rocm").capabilities.supports_symmetry is False
+    assert backend_info("beat_rocm").capabilities.supports_symmetry is True
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
@@ -116,7 +116,7 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert beat_rocm_backend.beat_engine_backend == "rocm"
     assert beat_rocm_backend.capabilities.is_remote is False
     assert beat_rocm_backend.capabilities.supports_parallel_workers is False
-    assert beat_rocm_backend.capabilities.supports_symmetry is False
+    assert beat_rocm_backend.capabilities.supports_symmetry is True
 
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT

@@ -70,6 +70,37 @@ function _rocm_incident_element_arrays(
     return offsets, incident_elements, incident_local_indices, dp0_elements
 end
 
+function _rocm_image_singular_host_cache(
+    mesh::BoundaryMesh{T},
+    singular_order::Int,
+    element_indices,
+    transform::SymmetryTransform;
+    tolerance::T=T(1e-8),
+) where {T<:AbstractFloat}
+    pairs_by_test = [SingularCorrectionPair{T}[] for _ in eachindex(mesh.faces)]
+    base_rules = Dict(
+        :coincident => duffy_rule(T, singular_order, :coincident),
+        :edge_adjacent => duffy_rule(T, singular_order, :edge_adjacent),
+        :vertex_adjacent => duffy_rule(T, singular_order, :vertex_adjacent),
+    )
+    rules = DuffyRule{T}[]
+    rule_indices = Dict{NTuple{5,Int},Int}()
+    pairs = SingularCorrectionPair{T}[]
+    for (test_index, trial_index) in image_singular_candidates(mesh, element_indices, transform; tolerance=tolerance)
+        trial_vertices = reflect_vertices(transform, mesh.face_vertices[trial_index])
+        info = geometric_adjacency_info(mesh.face_vertices[test_index], trial_vertices; tolerance=tolerance)
+        info.kind == :regular && continue
+        rule_index = rule_for_singular_orientation!(rules, rule_indices, base_rules, info)
+        jac_scale = (T(2) * mesh.areas[test_index]) * (T(2) * mesh.areas[trial_index])
+        normal_product = dot(mesh.normals[test_index], reflect_normal(transform, mesh.normals[trial_index]))
+        pair = SingularCorrectionPair(test_index, trial_index, rule_index, jac_scale, normal_product)
+        push!(pairs_by_test[test_index], pair)
+        push!(pairs, pair)
+    end
+    curls = [surface_curls(mesh.face_vertices[index], mesh.normals[index]) for index in eachindex(mesh.faces)]
+    return SingularCorrectionCache(pairs_by_test, pairs, rules, curls, length(pairs))
+end
+
 function build_rocm_regular_assembly_cache(
     mesh::BoundaryMesh{T},
     p1_space::P1Space,
@@ -81,8 +112,7 @@ function build_rocm_regular_assembly_cache(
     assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
-    normalized_symmetry_mode(symmetry_mode) == :off ||
-        error("The initial BEAT Engine ROCm backend supports only symmetry_mode=:off.")
+    normalized_mode = normalized_symmetry_mode(symmetry_mode)
     _require_rocm!()
     indices = collect(element_indices)
     host_cache = if _normalized_rocm_assembly_mode(assembly_mode) == :host_staged
@@ -94,7 +124,7 @@ function build_rocm_regular_assembly_cache(
             singular_order=singular_order,
             element_indices=indices,
             threaded=threaded,
-            symmetry_mode=:off,
+            symmetry_mode=normalized_mode,
         )
     else
         nothing
@@ -103,6 +133,14 @@ function build_rocm_regular_assembly_cache(
     rule_points, rule_weights = _rocm_rule_arrays(rule)
     vertex_offsets, incident_elements, incident_local_indices, dp0_elements =
         _rocm_incident_element_arrays(p1_space, dp0_space, indices)
+    image_transforms = collect(symmetry_image_transforms(normalized_mode))
+    image_singular_caches = RocmSingularCorrectionCache{T}[]
+    image_singular_pair_count = 0
+    for transform in image_transforms
+        host_image_cache = _rocm_image_singular_host_cache(mesh, singular_order, indices, transform)
+        push!(image_singular_caches, build_rocm_singular_correction_cache(host_image_cache))
+        image_singular_pair_count += host_image_cache.pair_count
+    end
 
     return RocmRegularAssemblyCache{T,typeof(host_cache)}(
         host_cache,
@@ -122,6 +160,10 @@ function build_rocm_regular_assembly_cache(
         p1_space.global_dof_count,
         dp0_space.global_dof_count,
         length(rule.points),
+        normalized_mode,
+        image_transforms,
+        image_singular_caches,
+        image_singular_pair_count,
     )
 end
 
@@ -137,5 +179,8 @@ function release_rocm_regular_assembly_cache!(cache::RocmRegularAssemblyCache)
     AMDGPU.unsafe_free!(cache.incident_elements)
     AMDGPU.unsafe_free!(cache.incident_local_indices)
     AMDGPU.unsafe_free!(cache.dp0_elements)
+    for image_cache in cache.image_singular_caches
+        release_rocm_singular_correction_cache!(image_cache)
+    end
     return nothing
 end

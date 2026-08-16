@@ -2,6 +2,19 @@ function _rocm_not_implemented(feature::AbstractString)
     error("BEAT Engine ROCm $(feature) is not implemented yet.")
 end
 
+struct RocmSingularCorrectionCache{T}
+    pair_offsets
+    trial_indices
+    rule_indices
+    jac_scales
+    normal_products
+    rule_offsets
+    rule_test_points
+    rule_trial_points
+    rule_weights
+    pair_count::Int
+end
+
 struct RocmRegularAssemblyCache{T,C}
     host_cache::C
     face_vertices
@@ -20,23 +33,21 @@ struct RocmRegularAssemblyCache{T,C}
     p1_dof_count::Int
     dp0_dof_count::Int
     rule_count::Int
+    symmetry_mode::Symbol
+    image_transforms::Vector{SymmetryTransform}
+    image_singular_caches::Vector{RocmSingularCorrectionCache{T}}
+    image_singular_pair_count::Int
 end
 
-struct RocmFieldEvaluationCache{C}
+struct RocmFieldEvaluationCache{T,C}
     host_cache::C
-end
-
-struct RocmSingularCorrectionCache{T}
-    pair_offsets
-    trial_indices
-    rule_indices
-    jac_scales
-    normal_products
-    rule_offsets
-    rule_test_points
-    rule_trial_points
-    rule_weights
-    pair_count::Int
+    source_points
+    source_normals
+    source_weights
+    source_faces
+    source_elements
+    basis_values
+    source_count::Int
 end
 
 function _require_rocm!(; rocsolver::Bool=false)

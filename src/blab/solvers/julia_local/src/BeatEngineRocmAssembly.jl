@@ -28,8 +28,7 @@ function _assemble_regular_galerkin_operators_rocm_native(
     rocm_singular_cache,
     symmetry_mode::Symbol,
 ) where {T<:AbstractFloat}
-    normalized_symmetry_mode(symmetry_mode) == :off ||
-        error("Native ROCm regular assembly currently supports only symmetry_mode=:off.")
+    normalized_mode = normalized_symmetry_mode(symmetry_mode)
     native_cache = cache === nothing ? build_rocm_regular_assembly_cache(
         mesh,
         p1_space,
@@ -37,9 +36,11 @@ function _assemble_regular_galerkin_operators_rocm_native(
         rule;
         singular_order=singular_order,
         element_indices=element_indices,
-        symmetry_mode=:off,
+        symmetry_mode=normalized_mode,
     ) : cache
     native_cache isa RocmRegularAssemblyCache || error("Native ROCm assembly requires a RocmRegularAssemblyCache.")
+    native_cache.symmetry_mode == normalized_mode ||
+        error("ROCm assembly cache symmetry mode $(native_cache.symmetry_mode) does not match requested $(normalized_mode).")
 
     operators = nothing
     allocation_elapsed = @elapsed begin
@@ -55,6 +56,16 @@ function _assemble_regular_galerkin_operators_rocm_native(
 
     kernel_elapsed = @elapsed begin
         _launch_rocm_regular_entry_kernels!(operators, native_cache, k)
+        for (transform, image_cache) in zip(native_cache.image_transforms, native_cache.image_singular_caches)
+            _launch_rocm_symmetry_regular_entry_kernels!(
+                operators,
+                native_cache,
+                image_cache,
+                transform,
+                k;
+                skip_image_singular=!skip_singular,
+            )
+        end
         AMDGPU.synchronize()
     end
     timing !== nothing && (timing["rocm_native_regular_kernel"] = kernel_elapsed)
@@ -80,14 +91,29 @@ function _assemble_regular_galerkin_operators_rocm_native(
         singular_pairs = correction_cache.pair_count
         owns_device_singular_cache && _release_rocm_singular_correction_cache!(device_singular_cache)
     end
+    image_singular_pairs = 0
+    if !skip_singular
+        image_elapsed = @elapsed begin
+            for (transform, image_cache) in zip(native_cache.image_transforms, native_cache.image_singular_caches)
+                image_cache.pair_count == 0 && continue
+                _launch_rocm_singular_entry_kernels!(operators, native_cache, image_cache, k, transform)
+            end
+            AMDGPU.synchronize()
+        end
+        timing !== nothing && (timing["rocm_native_image_singular_kernel"] = image_elapsed)
+        image_singular_pairs = native_cache.image_singular_pair_count
+    end
+    weight_elapsed = @elapsed _apply_rocm_operator_p1_row_weights!(operators, mesh, normalized_mode)
+    timing !== nothing && (timing["rocm_native_symmetry_row_weights"] = weight_elapsed)
     total_pairs = length(indices) * length(indices)
+    image_count = length(native_cache.image_transforms)
     return merge(
         operators,
         (
-            regular_pairs=total_pairs - adjacent_pairs,
+            regular_pairs=total_pairs - adjacent_pairs + image_count * total_pairs - image_singular_pairs,
             singular_pairs=singular_pairs,
             skipped_pairs=skip_singular ? adjacent_pairs : 0,
-            image_singular_pairs=0,
+            image_singular_pairs=image_singular_pairs,
             on_gpu=true,
             gpu_backend=:rocm,
             host_staged_assembly=false,
@@ -97,7 +123,7 @@ function _assemble_regular_galerkin_operators_rocm_native(
                 p1=cld(p1_space.global_dof_count * p1_space.global_dof_count, 128),
             ),
             regular_kernel_qpair_count=length(rule.points)^2,
-            regular_kernel_total_pairs=total_pairs,
+            regular_kernel_total_pairs=(image_count + 1) * total_pairs,
             regular_kernel_mode="rocm_native_entry_owned",
             regular_assembly_mode=:rocm_native_entry_owned,
         ),
@@ -125,8 +151,7 @@ function assemble_regular_galerkin_operators_rocm_regular(
     _require_rocm!()
     return_device || error("ROCm host-staged assembly requires return_device=true.")
     accelerator_quadrature || error("ROCm host-staged assembly requires accelerator_quadrature=true.")
-    normalized_symmetry_mode(symmetry_mode) == :off ||
-        error("The initial BEAT Engine ROCm backend supports only symmetry_mode=:off.")
+    normalized_mode = normalized_symmetry_mode(symmetry_mode)
     normalized_assembly_mode = _normalized_rocm_assembly_mode(assembly_mode)
     if normalized_assembly_mode == :native
         return _assemble_regular_galerkin_operators_rocm_native(
@@ -163,7 +188,7 @@ function assemble_regular_galerkin_operators_rocm_regular(
             threaded=true,
             singular_cache=singular_cache,
             cpu_cache=host_cache,
-            symmetry_mode=:off,
+            symmetry_mode=normalized_mode,
         )
     end
     timing !== nothing && (timing["rocm_host_assembly"] = host_elapsed)

@@ -58,6 +58,7 @@ export BoundaryMesh,
     build_rocm_singular_correction_cache,
     release_rocm_singular_correction_cache!,
     build_rocm_field_evaluation_cache,
+    release_rocm_field_evaluation_cache!,
     build_field_evaluation_cache,
     build_beat_cpu_assembly_cache,
     build_singular_correction_cache,
@@ -1066,6 +1067,10 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
         cuda.CuArray(Complex{T}.(identity_p1_p1)),
         cuda.CuArray(Complex{T}.(identity_p1_dp0)),
     )
+end
+
+function release_rocm_field_evaluation_cache!(args...; kwargs...)
+    error("ROCm field-evaluation cache release requested, but AMDGPU.jl is not loaded.")
 end
 
 function release_rocm_regular_assembly_cache!(args...; kwargs...)

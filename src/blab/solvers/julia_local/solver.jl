@@ -687,9 +687,6 @@ function solve_request_impl(request)
     rocm_assembly_mode = beat_backend == :rocm ? BeatEngineCore._normalized_rocm_assembly_mode(
         get_value(config, "rocm_assembly_mode", nothing),
     ) : nothing
-    if beat_backend == :rocm && Symbol(symmetry_mode) != :off
-        error("The initial BEAT Engine ROCm backend supports exterior BEM with symmetry disabled.")
-    end
     frequencies = Float32.(request["frequencies_hz"])
     isempty(frequencies) && error("frequencies_hz must contain at least one frequency.")
     cancel_path = get_value(request, "cancel_path", nothing)
@@ -781,7 +778,7 @@ function solve_request_impl(request)
             rule;
             singular_order=singular_order,
             assembly_mode=rocm_assembly_mode,
-            symmetry_mode=:off,
+            symmetry_mode=Symbol(symmetry_mode),
         )
         field_cache = build_rocm_field_evaluation_cache(cpu_field_cache)
         if rocm_assembly_mode != :host_staged
@@ -1003,6 +1000,9 @@ function solve_request_impl(request)
         end
         if rocm_solve_identity_cache !== nothing
             release_rocm_burton_miller_identity_cache!(rocm_solve_identity_cache)
+        end
+        if beat_backend == :rocm
+            release_rocm_field_evaluation_cache!(field_cache)
         end
         if beat_backend == :rocm && device_singular_cache !== nothing
             release_rocm_singular_correction_cache!(device_singular_cache)

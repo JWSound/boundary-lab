@@ -145,12 +145,13 @@ function validate_rocm_exterior()
     println("field_relative_error=$(field_error)")
     flush(stdout)
 
-    maximum(values(operator_errors)) <= 1.0f-6 || error("ROCm staged operators differ from BEAT CPU.")
+    maximum(values(operator_errors)) <= 1.0f-6 || error("ROCm native operators differ from BEAT CPU.")
     pressure_error <= 5.0f-3 || error("ROCm pressure differs from BEAT CPU beyond tolerance.")
     rocm_residual <= 5.0f-3 || error("ROCm pressure residual exceeds tolerance.")
     field_error <= 5.0f-3 || error("ROCm field differs from BEAT CPU beyond tolerance.")
 
     release_operator_storage!(rocm_operators)
+    release_rocm_field_evaluation_cache!(rocm_field_cache)
     release_rocm_regular_assembly_cache!(rocm_cache)
     println("ROCM_EXTERIOR_VALIDATION_OK")
 end

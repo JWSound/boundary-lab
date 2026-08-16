@@ -98,6 +98,9 @@ function _rocm_singular_slp_adjoint_entries_kernel!(
     p1_dof_count,
     dp0_dof_count,
     face_count,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
 )
     linear_index = _rocm_global_linear_index()
     total_entries = p1_dof_count * dp0_dof_count
@@ -155,6 +158,9 @@ function _rocm_singular_slp_adjoint_entries_kernel!(
                     trial_basis2,
                     trial_basis3,
                 )
+                sx *= trial_sign_x
+                sy *= trial_sign_y
+                sz *= trial_sign_z
 
                 dx = sx - x
                 dy = sy - y
@@ -207,6 +213,12 @@ function _rocm_singular_dlp_hyp_entries_kernel!(
     k,
     p1_dof_count,
     face_count,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
+    trial_curl_sign_x,
+    trial_curl_sign_y,
+    trial_curl_sign_z,
 )
     linear_index = _rocm_global_linear_index()
     total_entries = p1_dof_count * p1_dof_count
@@ -242,14 +254,14 @@ function _rocm_singular_dlp_hyp_entries_kernel!(
                 q_stop = rule_offsets[rule_index + 1] - 1
                 jac_scale = jac_scales[pair_position]
                 normal_product = normal_products[pair_position]
-                trial_nx = normals[trial_index]
-                trial_ny = normals[trial_index + face_count]
-                trial_nz = normals[trial_index + 2 * face_count]
+                trial_nx = trial_sign_x * normals[trial_index]
+                trial_ny = trial_sign_y * normals[trial_index + face_count]
+                trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
                 trial_curl_offset = 3 * (local_column - 1)
                 curl_product =
-                    test_curl_x * curls[trial_index + trial_curl_offset * face_count] +
-                    test_curl_y * curls[trial_index + (trial_curl_offset + 1) * face_count] +
-                    test_curl_z * curls[trial_index + (trial_curl_offset + 2) * face_count]
+                    test_curl_x * trial_curl_sign_x * curls[trial_index + trial_curl_offset * face_count] +
+                    test_curl_y * trial_curl_sign_y * curls[trial_index + (trial_curl_offset + 1) * face_count] +
+                    test_curl_z * trial_curl_sign_z * curls[trial_index + (trial_curl_offset + 2) * face_count]
 
                 while q <= q_stop
                     test_xi = rule_test_points[q]
@@ -285,6 +297,9 @@ function _rocm_singular_dlp_hyp_entries_kernel!(
                         trial_basis2,
                         trial_basis3,
                     )
+                    sx *= trial_sign_x
+                    sy *= trial_sign_y
+                    sz *= trial_sign_z
 
                     dx = sx - x
                     dy = sy - y
@@ -326,10 +341,17 @@ function _launch_rocm_singular_entry_kernels!(
     regular_cache::RocmRegularAssemblyCache,
     singular_cache::RocmSingularCorrectionCache,
     k,
+    transform::SymmetryTransform=SymmetryTransform(:identity, SVector{3,Int}(1, 1, 1), 1),
 )
     groupsize = 128
     slp_entries = regular_cache.p1_dof_count * regular_cache.dp0_dof_count
     p1_entries = regular_cache.p1_dof_count * regular_cache.p1_dof_count
+    sx = typeof(k)(transform.signs[1])
+    sy = typeof(k)(transform.signs[2])
+    sz = typeof(k)(transform.signs[3])
+    csx = typeof(k)(transform.determinant * transform.signs[1])
+    csy = typeof(k)(transform.determinant * transform.signs[2])
+    csz = typeof(k)(transform.determinant * transform.signs[3])
     AMDGPU.@roc groupsize=groupsize gridsize=cld(slp_entries, groupsize) _rocm_singular_slp_adjoint_entries_kernel!(
         operators.single_layer,
         operators.adjoint_double_layer,
@@ -351,6 +373,9 @@ function _launch_rocm_singular_entry_kernels!(
         regular_cache.p1_dof_count,
         regular_cache.dp0_dof_count,
         regular_cache.face_count,
+        sx,
+        sy,
+        sz,
     )
     AMDGPU.@roc groupsize=groupsize gridsize=cld(p1_entries, groupsize) _rocm_singular_dlp_hyp_entries_kernel!(
         operators.double_layer,
@@ -373,6 +398,12 @@ function _launch_rocm_singular_entry_kernels!(
         k,
         regular_cache.p1_dof_count,
         regular_cache.face_count,
+        sx,
+        sy,
+        sz,
+        csx,
+        csy,
+        csz,
     )
     return nothing
 end

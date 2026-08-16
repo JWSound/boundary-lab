@@ -18,6 +18,16 @@ end
     return local_index == 1 ? basis1 : local_index == 2 ? basis2 : basis3
 end
 
+@inline function _rocm_find_pair(pair_offsets, trial_indices, test_index, trial_index)
+    pair_position = pair_offsets[test_index]
+    pair_stop = pair_offsets[test_index + 1] - 1
+    while pair_position <= pair_stop
+        trial_indices[pair_position] == trial_index && return pair_position
+        pair_position += 1
+    end
+    return zero(pair_position)
+end
+
 @inline function _rocm_face_point(face_vertices, element_index, face_count, basis1, basis2, basis3)
     x = basis1 * face_vertices[element_index] +
         basis2 * face_vertices[element_index + 3 * face_count] +
@@ -49,6 +59,12 @@ function _rocm_regular_slp_adjoint_entries_kernel!(
     dp0_dof_count,
     face_count,
     rule_count,
+    pair_offsets,
+    singular_trial_indices,
+    skip_mode,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
 )
     linear_index = _rocm_global_linear_index()
     total_entries = p1_dof_count * dp0_dof_count
@@ -68,9 +84,9 @@ function _rocm_regular_slp_adjoint_entries_kernel!(
     slp_im = zero(k)
     adj_re = zero(k)
     adj_im = zero(k)
-    trial_nx = normals[trial_index]
-    trial_ny = normals[trial_index + face_count]
-    trial_nz = normals[trial_index + 2 * face_count]
+    trial_nx = trial_sign_x * normals[trial_index]
+    trial_ny = trial_sign_y * normals[trial_index + face_count]
+    trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
     trial_area = areas[trial_index]
 
     incident_position = vertex_offsets[row]
@@ -78,7 +94,10 @@ function _rocm_regular_slp_adjoint_entries_kernel!(
     while incident_position <= incident_stop
         test_index = incident_elements[incident_position]
         local_row = incident_local_indices[incident_position]
-        if !_rocm_faces_are_adjacent(faces, test_index, trial_index, face_count)
+        skip_pair = skip_mode == 0 ?
+            _rocm_faces_are_adjacent(faces, test_index, trial_index, face_count) :
+            skip_mode == 1 && _rocm_find_pair(pair_offsets, singular_trial_indices, test_index, trial_index) != 0
+        if !skip_pair
             test_nx = normals[test_index]
             test_ny = normals[test_index + face_count]
             test_nz = normals[test_index + 2 * face_count]
@@ -117,6 +136,9 @@ function _rocm_regular_slp_adjoint_entries_kernel!(
                         trial_basis2,
                         trial_basis3,
                     )
+                    sx *= trial_sign_x
+                    sy *= trial_sign_y
+                    sz *= trial_sign_z
 
                     dx = sx - x
                     dy = sy - y
@@ -146,8 +168,8 @@ function _rocm_regular_slp_adjoint_entries_kernel!(
         incident_position += 1
     end
 
-    single_layer[linear_index] = Complex(slp_re, slp_im)
-    adjoint_double_layer[linear_index] = Complex(adj_re, adj_im)
+    single_layer[linear_index] += Complex(slp_re, slp_im)
+    adjoint_double_layer[linear_index] += Complex(adj_re, adj_im)
     return nothing
 end
 
@@ -168,6 +190,15 @@ function _rocm_regular_dlp_hyp_entries_kernel!(
     p1_dof_count,
     face_count,
     rule_count,
+    pair_offsets,
+    singular_trial_indices,
+    skip_mode,
+    trial_sign_x,
+    trial_sign_y,
+    trial_sign_z,
+    trial_curl_sign_x,
+    trial_curl_sign_y,
+    trial_curl_sign_z,
 )
     linear_index = _rocm_global_linear_index()
     total_entries = p1_dof_count * p1_dof_count
@@ -200,16 +231,19 @@ function _rocm_regular_dlp_hyp_entries_kernel!(
         while trial_position <= trial_stop
             trial_index = incident_elements[trial_position]
             local_column = incident_local_indices[trial_position]
-            if !_rocm_faces_are_adjacent(faces, test_index, trial_index, face_count)
-                trial_nx = normals[trial_index]
-                trial_ny = normals[trial_index + face_count]
-                trial_nz = normals[trial_index + 2 * face_count]
+            skip_pair = skip_mode == 0 ?
+                _rocm_faces_are_adjacent(faces, test_index, trial_index, face_count) :
+                skip_mode == 1 && _rocm_find_pair(pair_offsets, singular_trial_indices, test_index, trial_index) != 0
+            if !skip_pair
+                trial_nx = trial_sign_x * normals[trial_index]
+                trial_ny = trial_sign_y * normals[trial_index + face_count]
+                trial_nz = trial_sign_z * normals[trial_index + 2 * face_count]
                 normal_product = test_nx * trial_nx + test_ny * trial_ny + test_nz * trial_nz
                 trial_curl_offset = 3 * (local_column - 1)
                 curl_product =
-                    test_curl_x * curls[trial_index + trial_curl_offset * face_count] +
-                    test_curl_y * curls[trial_index + (trial_curl_offset + 1) * face_count] +
-                    test_curl_z * curls[trial_index + (trial_curl_offset + 2) * face_count]
+                    test_curl_x * trial_curl_sign_x * curls[trial_index + trial_curl_offset * face_count] +
+                    test_curl_y * trial_curl_sign_y * curls[trial_index + (trial_curl_offset + 1) * face_count] +
+                    test_curl_z * trial_curl_sign_z * curls[trial_index + (trial_curl_offset + 2) * face_count]
                 jac_scale = typeof(k)(4) * areas[test_index] * areas[trial_index]
 
                 test_q = 1
@@ -251,6 +285,9 @@ function _rocm_regular_dlp_hyp_entries_kernel!(
                             trial_basis2,
                             trial_basis3,
                         )
+                        sx *= trial_sign_x
+                        sy *= trial_sign_y
+                        sz *= trial_sign_z
 
                         dx = sx - x
                         dy = sy - y
@@ -285,8 +322,8 @@ function _rocm_regular_dlp_hyp_entries_kernel!(
         test_position += 1
     end
 
-    double_layer[linear_index] = Complex(dlp_re, dlp_im)
-    hypersingular[linear_index] = Complex(hyp_re, hyp_im)
+    double_layer[linear_index] += Complex(dlp_re, dlp_im)
+    hypersingular[linear_index] += Complex(hyp_re, hyp_im)
     return nothing
 end
 
@@ -312,6 +349,12 @@ function _launch_rocm_regular_entry_kernels!(operators, cache::RocmRegularAssemb
         cache.dp0_dof_count,
         cache.face_count,
         cache.rule_count,
+        cache.vertex_offsets,
+        cache.incident_elements,
+        Int32(0),
+        one(k),
+        one(k),
+        one(k),
     )
     AMDGPU.@roc groupsize=groupsize gridsize=cld(p1_entries, groupsize) _rocm_regular_dlp_hyp_entries_kernel!(
         operators.double_layer,
@@ -330,6 +373,88 @@ function _launch_rocm_regular_entry_kernels!(operators, cache::RocmRegularAssemb
         cache.p1_dof_count,
         cache.face_count,
         cache.rule_count,
+        cache.vertex_offsets,
+        cache.incident_elements,
+        Int32(0),
+        one(k),
+        one(k),
+        one(k),
+        one(k),
+        one(k),
+        one(k),
+    )
+    return nothing
+end
+
+function _launch_rocm_symmetry_regular_entry_kernels!(
+    operators,
+    cache::RocmRegularAssemblyCache,
+    image_cache::RocmSingularCorrectionCache,
+    transform::SymmetryTransform,
+    k;
+    skip_image_singular::Bool,
+)
+    groupsize = 128
+    slp_entries = cache.p1_dof_count * cache.dp0_dof_count
+    p1_entries = cache.p1_dof_count * cache.p1_dof_count
+    sx = typeof(k)(transform.signs[1])
+    sy = typeof(k)(transform.signs[2])
+    sz = typeof(k)(transform.signs[3])
+    csx = typeof(k)(transform.determinant * transform.signs[1])
+    csy = typeof(k)(transform.determinant * transform.signs[2])
+    csz = typeof(k)(transform.determinant * transform.signs[3])
+    skip_mode = skip_image_singular ? Int32(1) : Int32(2)
+    AMDGPU.@roc groupsize=groupsize gridsize=cld(slp_entries, groupsize) _rocm_regular_slp_adjoint_entries_kernel!(
+        operators.single_layer,
+        operators.adjoint_double_layer,
+        cache.face_vertices,
+        cache.normals,
+        cache.areas,
+        cache.faces,
+        cache.rule_points,
+        cache.rule_weights,
+        cache.vertex_offsets,
+        cache.incident_elements,
+        cache.incident_local_indices,
+        cache.dp0_elements,
+        k,
+        cache.p1_dof_count,
+        cache.dp0_dof_count,
+        cache.face_count,
+        cache.rule_count,
+        image_cache.pair_offsets,
+        image_cache.trial_indices,
+        skip_mode,
+        sx,
+        sy,
+        sz,
+    )
+    AMDGPU.@roc groupsize=groupsize gridsize=cld(p1_entries, groupsize) _rocm_regular_dlp_hyp_entries_kernel!(
+        operators.double_layer,
+        operators.hypersingular,
+        cache.face_vertices,
+        cache.normals,
+        cache.areas,
+        cache.faces,
+        cache.curls,
+        cache.rule_points,
+        cache.rule_weights,
+        cache.vertex_offsets,
+        cache.incident_elements,
+        cache.incident_local_indices,
+        k,
+        cache.p1_dof_count,
+        cache.face_count,
+        cache.rule_count,
+        image_cache.pair_offsets,
+        image_cache.trial_indices,
+        skip_mode,
+        sx,
+        sy,
+        sz,
+        csx,
+        csy,
+        csz,
     )
     return nothing
 end
