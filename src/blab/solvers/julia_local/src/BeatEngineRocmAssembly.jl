@@ -54,17 +54,33 @@ function _assemble_regular_galerkin_operators_rocm_native(
     end
     timing !== nothing && (timing["rocm_native_operator_alloc"] = allocation_elapsed)
 
+    regular_kernel_mode = _normalized_rocm_regular_kernel_mode()
     kernel_elapsed = @elapsed begin
-        _launch_rocm_regular_entry_kernels!(operators, native_cache, k)
+        if regular_kernel_mode == :pair_owned
+            _launch_rocm_regular_pair_kernels!(operators, native_cache, k)
+        else
+            _launch_rocm_regular_entry_kernels!(operators, native_cache, k)
+        end
         for (transform, image_cache) in zip(native_cache.image_transforms, native_cache.image_singular_caches)
-            _launch_rocm_symmetry_regular_entry_kernels!(
-                operators,
-                native_cache,
-                image_cache,
-                transform,
-                k;
-                skip_image_singular=!skip_singular,
-            )
+            if regular_kernel_mode == :pair_owned
+                _launch_rocm_symmetry_regular_pair_kernels!(
+                    operators,
+                    native_cache,
+                    image_cache,
+                    transform,
+                    k;
+                    skip_image_singular=!skip_singular,
+                )
+            else
+                _launch_rocm_symmetry_regular_entry_kernels!(
+                    operators,
+                    native_cache,
+                    image_cache,
+                    transform,
+                    k;
+                    skip_image_singular=!skip_singular,
+                )
+            end
         end
         AMDGPU.synchronize()
     end
@@ -108,6 +124,8 @@ function _assemble_regular_galerkin_operators_rocm_native(
     total_pairs = length(indices) * length(indices)
     image_count = length(native_cache.image_transforms)
     kernel_groupsize = _rocm_kernel_groupsize()
+    color_count = length(native_cache.color_offsets) - 1
+    pair_blocks = _rocm_colored_pair_block_count(native_cache)
     return merge(
         operators,
         (
@@ -119,14 +137,22 @@ function _assemble_regular_galerkin_operators_rocm_native(
             gpu_backend=:rocm,
             host_staged_assembly=false,
             regular_kernel_threads=kernel_groupsize,
-            regular_kernel_blocks=(
+            regular_kernel_blocks=regular_kernel_mode == :pair_owned ? (
+                slp=(image_count + 1) * pair_blocks,
+                p1=(image_count + 1) * pair_blocks,
+            ) : (
                 slp=cld(p1_space.global_dof_count * dp0_space.global_dof_count, kernel_groupsize),
                 p1=cld(p1_space.global_dof_count * p1_space.global_dof_count, kernel_groupsize),
             ),
             regular_kernel_qpair_count=length(rule.points)^2,
             regular_kernel_total_pairs=(image_count + 1) * total_pairs,
-            regular_kernel_mode="rocm_native_entry_owned",
-            regular_assembly_mode=:rocm_native_entry_owned,
+            regular_kernel_color_count=color_count,
+            regular_kernel_launches=regular_kernel_mode == :pair_owned ?
+                2 * (image_count + 1) * color_count^2 : 2 * (image_count + 1),
+            regular_kernel_mode=regular_kernel_mode == :pair_owned ?
+                "rocm_native_colored_pair_owned" : "rocm_native_entry_owned",
+            regular_assembly_mode=regular_kernel_mode == :pair_owned ?
+                :rocm_native_colored_pair_owned : :rocm_native_entry_owned,
         ),
     )
 end

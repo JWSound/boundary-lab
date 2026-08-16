@@ -70,6 +70,36 @@ function _rocm_incident_element_arrays(
     return offsets, incident_elements, incident_local_indices, dp0_elements
 end
 
+function _rocm_local_dof_arrays(
+    p1_space::P1Space,
+    dp0_space::DP0Space,
+    element_indices,
+    face_count::Int,
+)
+    p1_dofs = zeros(Int32, face_count, 3)
+    element_dp0_dofs = zeros(Int32, face_count)
+    for element_index in element_indices
+        local_p1_dofs = p1_space.local_to_global[element_index]
+        for local_index in 1:3
+            p1_dofs[element_index, local_index] = Int32(local_p1_dofs[local_index])
+        end
+        element_dp0_dofs[element_index] = Int32(dp0_space.local_to_global[element_index])
+    end
+    return p1_dofs, element_dp0_dofs
+end
+
+function _rocm_element_color_arrays(mesh::BoundaryMesh, element_indices)
+    groups = _beat_cpu_element_color_groups(mesh, element_indices)
+    offsets = Vector{Int}(undef, length(groups) + 1)
+    elements = Int32[]
+    offsets[1] = 1
+    for (color, group) in enumerate(groups)
+        append!(elements, Int32.(group))
+        offsets[color + 1] = length(elements) + 1
+    end
+    return offsets, elements
+end
+
 function _rocm_image_singular_host_cache(
     mesh::BoundaryMesh{T},
     singular_order::Int,
@@ -133,6 +163,9 @@ function build_rocm_regular_assembly_cache(
     rule_points, rule_weights = _rocm_rule_arrays(rule)
     vertex_offsets, incident_elements, incident_local_indices, dp0_elements =
         _rocm_incident_element_arrays(p1_space, dp0_space, indices)
+    p1_dofs, element_dp0_dofs =
+        _rocm_local_dof_arrays(p1_space, dp0_space, indices, length(mesh.faces))
+    color_offsets, color_elements = _rocm_element_color_arrays(mesh, indices)
     image_transforms = collect(symmetry_image_transforms(normalized_mode))
     image_singular_caches = RocmSingularCorrectionCache{T}[]
     image_singular_pair_count = 0
@@ -155,6 +188,10 @@ function build_rocm_regular_assembly_cache(
         AMDGPU.ROCArray(incident_elements),
         AMDGPU.ROCArray(incident_local_indices),
         AMDGPU.ROCArray(dp0_elements),
+        AMDGPU.ROCArray(p1_dofs),
+        AMDGPU.ROCArray(element_dp0_dofs),
+        AMDGPU.ROCArray(color_elements),
+        color_offsets,
         indices,
         length(mesh.faces),
         p1_space.global_dof_count,
@@ -179,6 +216,9 @@ function release_rocm_regular_assembly_cache!(cache::RocmRegularAssemblyCache)
     AMDGPU.unsafe_free!(cache.incident_elements)
     AMDGPU.unsafe_free!(cache.incident_local_indices)
     AMDGPU.unsafe_free!(cache.dp0_elements)
+    AMDGPU.unsafe_free!(cache.p1_dofs)
+    AMDGPU.unsafe_free!(cache.element_dp0_dofs)
+    AMDGPU.unsafe_free!(cache.color_elements)
     for image_cache in cache.image_singular_caches
         release_rocm_singular_correction_cache!(image_cache)
     end

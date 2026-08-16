@@ -29,6 +29,10 @@ struct RocmRegularAssemblyCache{T,C}
     incident_elements
     incident_local_indices
     dp0_elements
+    p1_dofs
+    element_dp0_dofs
+    color_elements
+    color_offsets::Vector{Int}
     element_indices::Vector{Int}
     face_count::Int
     p1_dof_count::Int
@@ -65,4 +69,22 @@ function _rocm_kernel_groupsize()
     groupsize in (64, 128, 256) ||
         error("BLAB_ROCM_KERNEL_GROUPSIZE must be 64, 128, or 256; got $(groupsize).")
     return groupsize
+end
+
+function _normalized_rocm_regular_kernel_mode(value=nothing)
+    value === nothing && (value = get(ENV, "BLAB_ROCM_REGULAR_KERNEL_MODE", "pair_owned"))
+    mode = Symbol(lowercase(strip(String(value))))
+    aliases = Dict(
+        :pair => :pair_owned,
+        :pair_owned => :pair_owned,
+        :colored => :pair_owned,
+        :colored_pair_owned => :pair_owned,
+        :entry => :entry_owned,
+        :entry_owned => :entry_owned,
+    )
+    normalized = get(aliases, mode, nothing)
+    normalized === nothing && error(
+        "BLAB_ROCM_REGULAR_KERNEL_MODE must be pair_owned or entry_owned; got $(value).",
+    )
+    return normalized
 end

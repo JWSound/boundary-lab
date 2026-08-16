@@ -3,7 +3,9 @@
 The ROCm backend supports exterior Burton-Miller BEM solves, including X and XY
 symmetry, with GPU-resident operator assembly and field evaluation:
 
-- regular Galerkin quadrature is evaluated by native ROCm entry-owned kernels;
+- regular Galerkin quadrature is evaluated once per element pair by native ROCm
+  pair-owned kernels; vertex-disjoint element colors make direct dense-operator
+  scatter race-free without atomics;
 - Duffy singular quadrature is evaluated once into compact per-pair blocks and
   gathered into the dense operators by race-free entry-owned kernels;
 - all four dense operators are allocated and assembled in `ROCArray` storage;
@@ -11,7 +13,9 @@ symmetry, with GPU-resident operator assembly and field evaluation:
 - the dense complex solve uses rocSOLVER;
 - exterior field source weighting and observation integration use native ROCm kernels.
 
-Results identify native assembly as `rocm_native_entry_owned`. Set
+Results identify the default native assembly as `rocm_native_colored_pair_owned`.
+Set `BLAB_ROCM_REGULAR_KERNEL_MODE=entry_owned` to retain the earlier entry-owned
+kernel as a correctness and performance reference. Set
 `BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
 as a diagnostic fallback. The default workgroup size is 64 on RDNA2; set
 `BLAB_ROCM_KERNEL_GROUPSIZE` to `64`, `128`, or `256` for hardware-specific tuning.
@@ -90,3 +94,18 @@ julia --project=src/blab/solvers/julia_rocm `
 
 Benchmark JSON is written beneath `src/blab/solvers/julia_local/results/`, which
 is intentionally ignored by Git.
+
+On the RX 6700 XT (`gfx1031`) with workgroup size 64, q4/s4, two warmups, and
+five measured repetitions, the initial colored pair-owned implementation gave:
+
+| Fixture | Entry-owned regular | Pair-owned regular | Regular speedup | Entry-owned total assembly | Pair-owned total assembly | Total speedup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `sample.msh` | 222.6 ms | 101.7 ms | 2.19x | 278.0 ms | 157.1 ms | 1.77x |
+| `sample_detailed.msh` | 1410.8 ms | 740.4 ms | 1.91x | 1710.0 ms | 1038.1 ms | 1.65x |
+
+These are warmed-worker medians and exclude cold Julia/GPU compilation. The
+sample fixture uses 10 element colors (200 regular-kernel launches); the detailed
+fixture uses 12 colors (288 launches). Including the unchanged dense solve and a
+144-point GPU field evaluation, the summed stage medians improved from 296.1 ms
+to 175.9 ms (1.68x) on `sample.msh`, and from 1777.1 ms to 1104.4 ms (1.61x) on
+`sample_detailed.msh`.

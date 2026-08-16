@@ -73,7 +73,9 @@ function validate_rocm_native_regular()
     flush(stdout)
 
     maximum(values(errors)) <= 5.0f-5 || error("Native ROCm regular operators differ from BEAT CPU.")
-    rocm_operators.regular_assembly_mode == :rocm_native_entry_owned ||
+    expected_mode = BeatEngineCore._normalized_rocm_regular_kernel_mode() == :pair_owned ?
+        :rocm_native_colored_pair_owned : :rocm_native_entry_owned
+    rocm_operators.regular_assembly_mode == expected_mode ||
         error("Unexpected ROCm regular assembly mode.")
     release_operator_storage!(rocm_operators)
     release_rocm_regular_assembly_cache!(rocm_cache)
