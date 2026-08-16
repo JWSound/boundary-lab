@@ -38,7 +38,11 @@ from blab.solve_results import (
     bem_boundary_result_domain,
     fem_volume_result_domain,
 )
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import (
+    backend_condenses_fem_interior,
+    normalize_backend_id,
+    supports_physical_system_solves,
+)
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 
 
@@ -172,8 +176,11 @@ def prepare_system_ui_solve(
         component_names.append(component.name)
 
     normalized_backend_id = normalize_backend_id(backend_id)
-    if normalized_backend_id not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Physical-system solves require BEAT Engine CPU or CUDA.")
+    if not supports_physical_system_solves(normalized_backend_id):
+        raise ValueError(
+            "Physical-system solves require BEAT Engine (CPU), BEAT Engine (CPU Condensed), "
+            "or BEAT Engine (CUDA) in Preferences."
+        )
     outputs = [
         OutputRequest(
             id="ui:exterior-pressure",
@@ -268,7 +275,9 @@ def prepare_system_ui_solve(
             "singular_order": 2 if is_coupled else 4,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
-            "static_condensation": is_coupled and normalized_backend_id == "beat_cuda",
+            # Condensation is a property of the selected backend. Exterior-only models have no
+            # FEM interior, so it is off there regardless of which backend is chosen.
+            "static_condensation": is_coupled and backend_condenses_fem_interior(normalized_backend_id),
             "symmetry": symmetry,
         },
     )
@@ -300,7 +309,7 @@ def supports_exterior_system_protocol(
 ) -> bool:
     """Return whether an exterior project can use the local system worker."""
 
-    if stitch_exterior_meshes or normalize_backend_id(backend_id) not in {"beat_cpu", "beat_cuda"}:
+    if stitch_exterior_meshes or not supports_physical_system_solves(backend_id):
         return False
     try:
         if infer_physical_solve_kind(system) != PhysicalSolveKind.EXTERIOR_BEM:

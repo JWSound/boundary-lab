@@ -28,6 +28,7 @@ cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
 end
 
 include(joinpath(@__DIR__, "coupled_solver_tests.jl"))
+include(joinpath(@__DIR__, "coupled_condensed_tests.jl"))
 
 @testset "cpu BLAS thread policy" begin
     @test beat_cpu_blas_thread_count(441; available_threads=16) == 1

@@ -6,6 +6,8 @@ include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
 include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
+include(joinpath(@__DIR__, "src", "BeatEngineCoupledCondensed.jl"))
+using .BeatEngineCoupledCondensed
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
@@ -1241,6 +1243,42 @@ function solve_request(request; event_mode=false)
     retained_fem_vertices = sort(
         unique(vcat(interface_map.fem_vertex_indices, transducer_fem_vertices)),
     )
+    # The interface-condensed CPU formulation is a separate solver, not a branch inside the
+    # monolithic one. CUDA condensation still lives in BeatEngineCoupled.
+    use_condensed_solver = static_condensation && bem_backend != :cuda
+    # Adaptive regular quadrature belongs to the condensed solver alone: it is the only path that
+    # keys its quadrature caches per order; the monolithic and CUDA paths always assemble at the
+    # fixed base order.
+    quadrature_selections = if use_condensed_solver
+        mode = lowercase(String(get(solver_options, "regular_quadrature_mode", "fixed")))
+        mode in ("fixed", "wavelength") || error(
+            "Unsupported regular quadrature mode: $mode. Expected fixed or wavelength.",
+        )
+        [
+            mode == "fixed" ?
+            (
+                order=quadrature_order, base_order=quadrature_order, mode=mode,
+                mesh_stat=nothing, area=nothing, length=nothing, kh=nothing,
+                q1_max=nothing, q2_max=nothing,
+            ) :
+            merge(
+                wavelength_quadrature_order(
+                    bem_mesh.areas,
+                    FloatType(frequency_value),
+                    sound_speed,
+                    quadrature_order;
+                    mesh_stat=lowercase(String(get(solver_options, "wavelength_mesh_stat", "p90"))),
+                    q1_max=Float64(get(solver_options, "wavelength_kh_q1_max", 0.0)),
+                    q2_max=Float64(get(solver_options, "wavelength_kh_q2_max", 2.0)),
+                ),
+                (mode=mode,),
+            )
+            for frequency_value in request["frequencies_hz"]
+        ]
+    else
+        nothing
+    end
+
     coupled_cache = nothing
     cache_setup_s = 0.0
     solved_count = 0
@@ -1248,18 +1286,35 @@ function solve_request(request; event_mode=false)
     cancelled && return (cancelled=true, solved_count=solved_count)
     if cache_frequency_invariant
         cache_setup_started = time_ns()
-        coupled_cache = prepare_coupled_cache(
-            fem_mesh,
-            bem_mesh,
-            interface_map;
-            quadrature_order=quadrature_order,
-            singular_order=singular_order,
-            bem_backend=bem_backend,
-            symmetry_mode=symmetry_mode,
-            retained_fem_vertices=retained_fem_vertices,
-            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
-            wall_impedances=fem_domains.wall_impedances,
-        )
+        coupled_cache = if use_condensed_solver
+            prepare_condensed_coupled_cache(
+                fem_mesh,
+                bem_mesh,
+                interface_map;
+                quadrature_order=quadrature_order,
+                regular_quadrature_orders=sort(
+                    unique(selection.order for selection in quadrature_selections),
+                ),
+                singular_order=singular_order,
+                symmetry_mode=symmetry_mode,
+                retained_fem_vertices=retained_fem_vertices,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+            )
+        else
+            prepare_coupled_cache(
+                fem_mesh,
+                bem_mesh,
+                interface_map;
+                quadrature_order=quadrature_order,
+                singular_order=singular_order,
+                bem_backend=bem_backend,
+                symmetry_mode=symmetry_mode,
+                retained_fem_vertices=retained_fem_vertices,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+            )
+        end
         cache_setup_s = (time_ns() - cache_setup_started) / 1.0e9
     end
     outputs = get(request, "outputs", Any[])
@@ -1271,29 +1326,53 @@ function solve_request(request; event_mode=false)
         frequency_hz = FloatType(frequency_value)
         println(stderr, "Coupled $(precision_name)/$(bem_backend): assembling $(frequency_hz) Hz")
         assembly_started = time_ns()
-        coupled_system = build_coupled_system(
-            fem_mesh,
-            bem_mesh,
-            interface_map,
-            frequency_hz,
-            sound_speed,
-            density;
-            quadrature_order=quadrature_order,
-            singular_order=singular_order,
-            cache=coupled_cache,
-            validation_diagnostics=validation_diagnostics,
-            bem_backend=bem_backend,
-            symmetry_mode=symmetry_mode,
-            static_condensation=static_condensation,
-            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
-            wall_impedances=fem_domains.wall_impedances,
-            transducers=transducers,
-            transducer_operators=transducer_operators,
-            prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
-        )
+        coupled_system = if use_condensed_solver
+            build_condensed_coupled_system(
+                fem_mesh,
+                bem_mesh,
+                interface_map,
+                frequency_hz,
+                sound_speed,
+                density;
+                quadrature_order=quadrature_order,
+                regular_quadrature_order=quadrature_selections[frequency_index].order,
+                singular_order=singular_order,
+                cache=coupled_cache,
+                validation_diagnostics=validation_diagnostics,
+                symmetry_mode=symmetry_mode,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+                transducers=transducers,
+                transducer_operators=transducer_operators,
+                prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
+            )
+        else
+            build_coupled_system(
+                fem_mesh,
+                bem_mesh,
+                interface_map,
+                frequency_hz,
+                sound_speed,
+                density;
+                quadrature_order=quadrature_order,
+                singular_order=singular_order,
+                cache=coupled_cache,
+                validation_diagnostics=validation_diagnostics,
+                bem_backend=bem_backend,
+                symmetry_mode=symmetry_mode,
+                static_condensation=static_condensation,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+                transducers=transducers,
+                transducer_operators=transducer_operators,
+                prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
+            )
+        end
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
-        solutions = solve_coupled_excitations(coupled_system, excitations)
+        solutions = use_condensed_solver ?
+                    solve_condensed_coupled_excitations(coupled_system, excitations) :
+                    solve_coupled_excitations(coupled_system, excitations)
         solve_s = (time_ns() - solve_started) / 1.0e9
         interface_error_sets = [
             per_interface_errors(
@@ -1506,9 +1585,13 @@ function solve_request(request; event_mode=false)
             "linear_backend" => String(coupled_system.linear_backend),
             "symmetry" => String(symmetry_mode),
             "formulation" => String(coupled_system.formulation),
-            "linear_solver" => coupled_system.formulation == :fem_interface_condensed ?
-                               "cuda_cudss_schur_plus_dense_lu" :
-                               "$(coupled_system.linear_backend)_dense_lu",
+            "linear_solver" => if coupled_system.formulation != :fem_interface_condensed
+                "$(coupled_system.linear_backend)_dense_lu"
+            elseif coupled_system.linear_backend == :cuda
+                "cuda_cudss_schur_plus_dense_lu"
+            else
+                "cpu_umfpack_schur_plus_dense_lu"
+            end,
             "full_system_order" => coupled_system.full_system_order,
             "solved_system_order" => coupled_system.solved_system_order,
             "bounded_region_count" => length(bounded_regions),
@@ -1585,6 +1668,16 @@ function solve_request(request; event_mode=false)
                 solution.all_bem_replay_error for solution in solutions
             )
         end
+        # The condensed counterpart of `relative_residual`: the monolithic coupled matrix does
+        # not exist under condensation, so this is reported unconditionally instead of being
+        # gated behind validation diagnostics. Only the condensed solver produces it.
+        if use_condensed_solver
+            diagnostics["fem_interior_residual"] = maximum(
+                solution.fem_interior_residual for solution in solutions
+            )
+        else
+            diagnostics["fem_interior_residual"] = nothing
+        end
         result = Dict(
             "schema_version" => 1,
             "freq_hz" => frequency_hz,
@@ -1598,10 +1691,17 @@ function solve_request(request; event_mode=false)
             println(JSON.json(result))
         end
         flush(stdout)
-        release_coupled_system!(coupled_system)
+        if use_condensed_solver
+            release_condensed_coupled_system!(coupled_system)
+        else
+            release_coupled_system!(coupled_system)
+        end
         solved_count = frequency_index
     end
-    coupled_cache === nothing || release_coupled_cache!(coupled_cache)
+    if coupled_cache !== nothing
+        use_condensed_solver ? release_condensed_coupled_cache!(coupled_cache) :
+        release_coupled_cache!(coupled_cache)
+    end
     cancelled = cancelled || cancel_requested()
     return (cancelled=cancelled, solved_count=solved_count)
 end

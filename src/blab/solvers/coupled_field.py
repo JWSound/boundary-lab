@@ -12,7 +12,7 @@ import numpy as np
 
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT, _get_julia_worker
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import normalize_backend_id, supports_physical_system_solves
 
 _FIELD_ARRAYS_FILENAME = "field-arrays.bin"
 _FIELD_RESULT_FILENAME = "field-result.bin"
@@ -41,8 +41,8 @@ def evaluate_bem_field(
     """Evaluate one synthesized BEM response on arbitrary exterior points."""
 
     normalized_backend = normalize_backend_id(backend_id)
-    if normalized_backend not in {"beat_cpu", "beat_cuda"}:
-        raise ValueError("Retained BEM fields require the BEAT Engine CPU or CUDA backend.")
+    if not supports_physical_system_solves(normalized_backend):
+        raise ValueError("Retained BEM fields require the BEAT Engine CPU, CPU Condensed, or CUDA backend.")
     julia_project = (
         DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_backend == "beat_cuda" else DEFAULT_COUPLED_CPU_PROJECT
     )

@@ -56,6 +56,23 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
         description="Run the local Boundary Element Acoustic Toolkit Engine CPU solver through the Boundary Lab subprocess adapter.",
     ),
+    "beat_cpu_condensed": SolverBackendInfo(
+        backend_id="beat_cpu_condensed",
+        label="BEAT Engine (CPU Condensed)",
+        capabilities=SolverCapabilities(
+            supports_remote_assets=False,
+            supports_parallel_workers=False,
+            supports_symmetry=True,
+            supports_channel_resynthesis=True,
+            is_remote=False,
+        ),
+        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
+        description=(
+            "Run the local Boundary Element Acoustic Toolkit Engine CPU solver with exact FEM interface "
+            "condensation, which eliminates the FEM interior onto the interface before the dense solve. "
+            "Identical to BEAT Engine (CPU) for exterior-only models, which have no FEM interior to eliminate."
+        ),
+    ),
     "beat_rocm": SolverBackendInfo(
         backend_id="beat_rocm",
         label="BEAT Engine (ROCm)",
@@ -81,6 +98,28 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         description="Run the bundled bempp-cl OpenCL CPU solver in the GUI process.",
     ),
 }
+
+
+#: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
+PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cpu_condensed", "beat_cuda"})
+#: Backends that condense the FEM interior onto the interface for coupled solves.
+CONDENSING_BACKEND_IDS = frozenset({"beat_cpu_condensed", "beat_cuda"})
+
+
+def supports_physical_system_solves(backend_id: str) -> bool:
+    """Return whether a backend can run compiled physical-system solves."""
+
+    return normalize_backend_id(backend_id) in PHYSICAL_SYSTEM_BACKEND_IDS
+
+
+def backend_condenses_fem_interior(backend_id: str) -> bool:
+    """Return whether a backend uses FEM interface condensation for coupled solves.
+
+    Only meaningful for coupled FEM-BEM solves; exterior-only models have no FEM interior to
+    eliminate and run identically either way.
+    """
+
+    return normalize_backend_id(backend_id) in CONDENSING_BACKEND_IDS
 
 
 def available_backend_infos() -> tuple[SolverBackendInfo, ...]:
@@ -121,6 +160,7 @@ def normalize_backend_id(backend_id: str) -> str:
         "cuda": "beat_cuda",
         "beat_cpu": "beat_cpu",
         "cpu_beat": "beat_cpu",
+        "beat_cpu_condensed": "beat_cpu_condensed",
         "beat_rocm": "beat_rocm",
         "rocm": "beat_rocm",
         "amd": "beat_rocm",

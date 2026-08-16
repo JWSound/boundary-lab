@@ -423,6 +423,12 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
 
     assert session.request.solver_options["static_condensation"] is True
+    # The CPU backend honours the request instead of forcing condensation off.
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.request.solver_options["static_condensation"] is True
+    assert cpu_session.request.solver_options["bem_backend"] == "cpu"
+    cpu_default = CoupledProductionBackend(bem_backend="cpu").create_system_session(replace(request, solver_options={}))
+    assert "static_condensation" not in cpu_default.request.solver_options
     assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
@@ -947,6 +953,88 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
     assert cuda_result.diagnostics["formulation"] == "fem_interface_condensed"
     assert cuda_result.diagnostics["static_condensation_requested"] is True
     assert cuda_result.diagnostics["static_condensation_active"] is True
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run CPU condensed/monolithic parity.",
+)
+def test_coupled_cpu_condensed_matches_cpu_monolithic() -> None:
+    """CPU condensed and monolithic solves agree through the real Julia backends."""
+
+    compiled = PhysicalSystemCompiler().compile(_bidirectional_electrodynamic_fixture_system())
+    outputs = (
+        OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+        OutputRequest(id="output:current", quantity="voice_coil_current"),
+        OutputRequest(
+            id="output:field",
+            quantity="exterior_pressure",
+            options={"points_m": [[0.0, 0.0, 0.2]]},
+        ),
+    )
+    base_options = {
+        "quadrature_order": 1,
+        "singular_order": 1,
+        "validation_diagnostics": False,
+    }
+    monolithic_request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=outputs,
+        solver_options={**base_options, "static_condensation": False},
+    )
+    condensed_request = replace(
+        monolithic_request,
+        solver_options={**base_options, "static_condensation": True},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    reference_backend = CoupledReferenceBackend(
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+    production_backend = CoupledProductionBackend(
+        bem_backend="cpu",
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+
+    (monolithic_result,) = tuple(reference_backend.create_system_session(monolithic_request).solve_stream())
+    (condensed_result,) = tuple(reference_backend.create_system_session(condensed_request).solve_stream())
+
+    monolithic_quantities = {quantity.id: quantity.values for quantity in monolithic_result.quantities}
+    condensed_quantities = {quantity.id: quantity.values for quantity in condensed_result.quantities}
+    for quantity_id, reference in monolithic_quantities.items():
+        scale = max(float(np.linalg.norm(reference)), np.finfo(float).eps)
+        relative_error = float(np.linalg.norm(condensed_quantities[quantity_id] - reference)) / scale
+        # Both sides are the FP64 reference backend and differ only in elimination order, so
+        # this is far tighter than the 5e-3 cross-backend tolerance.
+        assert relative_error < 1e-9, (quantity_id, relative_error)
+
+    # The shipping FP32 path only agrees to FP32 round-off: condensation factors the interior
+    # in ComplexF64 either way, so the condensed result is the more accurate of the two and
+    # the two FP32 runs are not expected to coincide beyond single precision.
+    (fp32_monolithic,) = tuple(production_backend.create_system_session(monolithic_request).solve_stream())
+    (fp32_condensed,) = tuple(production_backend.create_system_session(condensed_request).solve_stream())
+    fp32_reference = {quantity.id: quantity.values for quantity in fp32_monolithic.quantities}
+    fp32_candidate = {quantity.id: quantity.values for quantity in fp32_condensed.quantities}
+    for quantity_id, reference in fp32_reference.items():
+        scale = max(float(np.linalg.norm(reference)), np.finfo(float).eps)
+        relative_error = float(np.linalg.norm(fp32_candidate[quantity_id] - reference)) / scale
+        assert relative_error < 1e-4, (quantity_id, relative_error)
+    assert fp32_condensed.diagnostics["formulation"] == "fem_interface_condensed"
+    assert fp32_condensed.diagnostics["fem_interior_residual"] < 1e-4
+
+    assert monolithic_result.diagnostics["formulation"] == "monolithic"
+    assert condensed_result.diagnostics["formulation"] == "fem_interface_condensed"
+    assert condensed_result.diagnostics["linear_backend"] == "cpu"
+    assert condensed_result.diagnostics["linear_solver"] == "cpu_umfpack_schur_plus_dense_lu"
+    assert condensed_result.diagnostics["static_condensation_requested"] is True
+    assert condensed_result.diagnostics["static_condensation_active"] is True
+    assert condensed_result.diagnostics["solved_system_order"] < condensed_result.diagnostics["full_system_order"]
+    assert condensed_result.diagnostics["full_system_order"] == monolithic_result.diagnostics["full_system_order"]
+    assert condensed_result.diagnostics["fem_interior_residual"] < 1e-9
+    assert monolithic_result.diagnostics["fem_interior_residual"] is None
 
 
 @pytest.mark.skipif(

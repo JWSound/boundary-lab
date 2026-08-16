@@ -27,10 +27,12 @@ from blab.solvers.http_server import (
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
+    backend_condenses_fem_interior,
     backend_info,
     backend_label_to_id,
     create_backend,
     normalize_backend_id,
+    supports_physical_system_solves,
 )
 
 
@@ -68,6 +70,26 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
+
+
+def test_condensed_cpu_backend_is_selectable_and_maps_onto_the_cpu_engine() -> None:
+    labels = backend_label_to_id()
+
+    assert labels["BEAT Engine (CPU Condensed)"] == "beat_cpu_condensed"
+    assert "beat_cpu_condensed" in {info.backend_id for info in available_backend_infos()}
+    assert normalize_backend_id("beat_cpu_condensed") == "beat_cpu_condensed"
+    assert backend_info("beat_cpu_condensed").capabilities.supports_symmetry is True
+
+    assert backend_condenses_fem_interior("beat_cpu_condensed") is True
+    assert backend_condenses_fem_interior("beat_cuda") is True
+    assert backend_condenses_fem_interior("beat_cpu") is False
+
+    # All three BEAT physical-system backends are accepted; other engines are not.
+    assert supports_physical_system_solves("beat_cpu_condensed") is True
+    assert supports_physical_system_solves("beat_cpu") is True
+    assert supports_physical_system_solves("beat_cuda") is True
+    assert supports_physical_system_solves("beat_rocm") is False
+    assert supports_physical_system_solves("local") is False
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:
