@@ -1,19 +1,21 @@
 # BEAT Engine ROCm development
 
-The ROCm backend supports non-symmetric exterior Burton-Miller BEM solves with
-GPU-resident operator assembly:
+The ROCm backend supports exterior Burton-Miller BEM solves, including X and XY
+symmetry, with GPU-resident operator assembly and field evaluation:
 
 - regular Galerkin quadrature is evaluated by native ROCm entry-owned kernels;
-- Duffy singular quadrature is evaluated by native ROCm kernels;
+- Duffy singular quadrature is evaluated once into compact per-pair blocks and
+  gathered into the dense operators by race-free entry-owned kernels;
 - all four dense operators are allocated and assembled in `ROCArray` storage;
 - the Burton-Miller right-hand side uses rocBLAS;
 - the dense complex solve uses rocSOLVER;
-- exterior field reconstruction currently uses the BEAT CPU implementation.
+- exterior field source weighting and observation integration use native ROCm kernels.
 
 Results identify native assembly as `rocm_native_entry_owned`. Set
 `BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
-as a diagnostic fallback. Symmetry, native ROCm field kernels, coupled FEM-BEM,
-and performance tuning are later milestones.
+as a diagnostic fallback. The default workgroup size is 64 on RDNA2; set
+`BLAB_ROCM_KERNEL_GROUPSIZE` to `64`, `128`, or `256` for hardware-specific tuning.
+Coupled FEM-BEM remains a later milestone.
 
 ## Julia environment
 
@@ -51,3 +53,25 @@ It exits with an error when a comparison exceeds its tolerance.
 
 To validate only native regular-pair kernels, excluding Duffy singular pairs, run
 `validate_rocm_native_regular.jl` from the same directory.
+
+Set `BLAB_VALIDATE_REGULAR_ORDER` and `BLAB_VALIDATE_SINGULAR_ORDER` to validate
+production quadrature, for example q4/s4. Run `validate_rocm_symmetry.jl` for the
+half-mesh X and quarter-mesh XY fixtures.
+
+## Warm-worker benchmark
+
+`benchmark_rocm.jl` builds geometry, singular, identity, and field caches once,
+warms the compiled kernels, and then reports steady-state medians. This matches
+the reuse boundary of Boundary Lab's persistent Julia worker more closely than
+restarting Julia for every frequency.
+
+```powershell
+julia --project=src/blab/solvers/julia_rocm `
+  src/blab/solvers/julia_local/scripts/benchmark_rocm.jl `
+  --mesh src/blab/solvers/julia_local/test_meshes/sample_detailed.msh `
+  --quadrature-order 4 --singular-order 4 --eval-points 144 `
+  --warmups 2 --repetitions 5
+```
+
+Benchmark JSON is written beneath `src/blab/solvers/julia_local/results/`, which
+is intentionally ignored by Git.

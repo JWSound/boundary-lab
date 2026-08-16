@@ -107,6 +107,7 @@ function _assemble_regular_galerkin_operators_rocm_native(
     timing !== nothing && (timing["rocm_native_symmetry_row_weights"] = weight_elapsed)
     total_pairs = length(indices) * length(indices)
     image_count = length(native_cache.image_transforms)
+    kernel_groupsize = _rocm_kernel_groupsize()
     return merge(
         operators,
         (
@@ -117,10 +118,10 @@ function _assemble_regular_galerkin_operators_rocm_native(
             on_gpu=true,
             gpu_backend=:rocm,
             host_staged_assembly=false,
-            regular_kernel_threads=128,
+            regular_kernel_threads=kernel_groupsize,
             regular_kernel_blocks=(
-                slp=cld(p1_space.global_dof_count * dp0_space.global_dof_count, 128),
-                p1=cld(p1_space.global_dof_count * p1_space.global_dof_count, 128),
+                slp=cld(p1_space.global_dof_count * dp0_space.global_dof_count, kernel_groupsize),
+                p1=cld(p1_space.global_dof_count * p1_space.global_dof_count, kernel_groupsize),
             ),
             regular_kernel_qpair_count=length(rule.points)^2,
             regular_kernel_total_pairs=(image_count + 1) * total_pairs,

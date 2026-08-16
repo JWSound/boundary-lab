@@ -19,15 +19,16 @@ function validate_rocm_exterior()
     mesh = load_gmsh22_with_tags(mesh_path, Float32(0.001))
     p1 = build_p1_space(mesh)
     dp0 = build_dp0_space(mesh)
-    rule = triangle_rule(Float32, 1)
-    singular_order = 2
+    regular_order = parse(Int, get(ENV, "BLAB_VALIDATE_REGULAR_ORDER", "1"))
+    singular_order = parse(Int, get(ENV, "BLAB_VALIDATE_SINGULAR_ORDER", "2"))
+    rule = triangle_rule(Float32, regular_order)
     frequency_hz = 500.0f0
     sound_speed = 343.0f0
     k = Float32(2pi) * frequency_hz / sound_speed
     singular_cache = build_singular_correction_cache(mesh, singular_order)
 
     println("fixture=$(mesh_path)")
-    println("faces=$(length(mesh.faces)) p1_dofs=$(p1.global_dof_count) dp0_dofs=$(dp0.global_dof_count)")
+    println("faces=$(length(mesh.faces)) p1_dofs=$(p1.global_dof_count) dp0_dofs=$(dp0.global_dof_count) q=$(regular_order) s=$(singular_order)")
     println("device=$(amdgpu.device())")
     flush(stdout)
 
@@ -145,7 +146,8 @@ function validate_rocm_exterior()
     println("field_relative_error=$(field_error)")
     flush(stdout)
 
-    maximum(values(operator_errors)) <= 1.0f-6 || error("ROCm native operators differ from BEAT CPU.")
+    operator_tolerance = regular_order == 1 && singular_order == 2 ? 1.0f-6 : 1.0f-5
+    maximum(values(operator_errors)) <= operator_tolerance || error("ROCm native operators differ from BEAT CPU.")
     pressure_error <= 5.0f-3 || error("ROCm pressure differs from BEAT CPU beyond tolerance.")
     rocm_residual <= 5.0f-3 || error("ROCm pressure residual exceeds tolerance.")
     field_error <= 5.0f-3 || error("ROCm field differs from BEAT CPU beyond tolerance.")

@@ -328,7 +328,7 @@ function _rocm_regular_dlp_hyp_entries_kernel!(
 end
 
 function _launch_rocm_regular_entry_kernels!(operators, cache::RocmRegularAssemblyCache, k)
-    groupsize = 128
+    groupsize = _rocm_kernel_groupsize()
     slp_entries = cache.p1_dof_count * cache.dp0_dof_count
     p1_entries = cache.p1_dof_count * cache.p1_dof_count
     AMDGPU.@roc groupsize=groupsize gridsize=cld(slp_entries, groupsize) _rocm_regular_slp_adjoint_entries_kernel!(
@@ -394,7 +394,7 @@ function _launch_rocm_symmetry_regular_entry_kernels!(
     k;
     skip_image_singular::Bool,
 )
-    groupsize = 128
+    groupsize = _rocm_kernel_groupsize()
     slp_entries = cache.p1_dof_count * cache.dp0_dof_count
     p1_entries = cache.p1_dof_count * cache.p1_dof_count
     sx = typeof(k)(transform.signs[1])

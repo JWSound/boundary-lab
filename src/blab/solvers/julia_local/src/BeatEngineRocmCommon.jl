@@ -4,6 +4,7 @@ end
 
 struct RocmSingularCorrectionCache{T}
     pair_offsets
+    test_indices
     trial_indices
     rule_indices
     jac_scales
@@ -57,4 +58,11 @@ function _require_rocm!(; rocsolver::Bool=false)
         AMDGPU.functional(:rocsolver) || error("ROCm solve requested, but rocSOLVER is not functional.")
     end
     return nothing
+end
+
+function _rocm_kernel_groupsize()
+    groupsize = parse(Int, get(ENV, "BLAB_ROCM_KERNEL_GROUPSIZE", "64"))
+    groupsize in (64, 128, 256) ||
+        error("BLAB_ROCM_KERNEL_GROUPSIZE must be 64, 128, or 256; got $(groupsize).")
+    return groupsize
 end
