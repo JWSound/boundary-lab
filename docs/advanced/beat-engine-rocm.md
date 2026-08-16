@@ -58,6 +58,21 @@ Set `BLAB_VALIDATE_REGULAR_ORDER` and `BLAB_VALIDATE_SINGULAR_ORDER` to validate
 production quadrature, for example q4/s4. Run `validate_rocm_symmetry.jl` for the
 half-mesh X and quarter-mesh XY fixtures.
 
+For a high-frequency, end-to-end directivity check, run
+`scripts/diagnose_rocm_polar.jl`. It compares CPU and ROCm operators, boundary
+pressure, integrated radiator pressure (the impedance numerator), and all four
+CPU/ROCm boundary-and-field combinations on a full horizontal polar. The default
+is the XY-symmetry waveguide fixture at 8 kHz and q4/s4. Environment variables
+prefixed with `BLAB_DIAG_` select another mesh, frequency, quadrature order,
+symmetry mode, driven tag, or repeated-solve count.
+
+AMDGPU.jl reads rocSOLVER's `getrf` status from device memory. On this TheRock
+RDNA2 stack that read can rarely return an impossible large negative value even
+though factorization inputs are valid. Boundary Lab synchronizes the solve and
+retries only this corrupt-status signature; real LAPACK argument and singularity
+errors still propagate. A worker that nevertheless reports a failed job is
+retired instead of being reused by the next solve.
+
 ## Warm-worker benchmark
 
 `benchmark_rocm.jl` builds geometry, singular, identity, and field caches once,

@@ -108,6 +108,11 @@ class BeatEngineSession:
                 elif event_type == "completed":
                     return
                 elif event_type == "failed":
+                    if self._worker is not None:
+                        # A failed accelerator job may leave the process-local
+                        # runtime or allocator unhealthy. Never hand that worker
+                        # to the next solve request.
+                        self._worker.terminate()
                     raise RuntimeError(
                         _friendly_julia_error(
                             str(event.get("error", "BEAT Engine solver failed.")),
@@ -200,6 +205,8 @@ class BeatEngineSession:
                 )
                 return
             elif event_type == "failed":
+                if self._worker is not None:
+                    self._worker.terminate()
                 raise RuntimeError(
                     _friendly_julia_error(
                         str(event.get("error", "BEAT Engine solver failed.")),

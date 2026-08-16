@@ -569,6 +569,58 @@ def test_live_dataset_resynthesizes_channel_basis_after_gain_change() -> None:
     assert dataset.solved_count == 1
 
 
+def test_live_dataset_preserves_complex_pressure_directivity_for_isobar_and_balloon() -> None:
+    angles = np.array([-180.0, -90.0, 0.0, 90.0, 180.0], dtype=np.float32)
+    sphere_points = 5
+    pressure = np.array([[0.01j, 0.1j, 1.0j, 0.1j, 0.01j]], dtype=np.complex64)
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.array(["driver"]),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+        sphere_r_distance_m=np.full(sphere_points, 2.0, dtype=np.float32),
+        sphere_theta_polar_rad=np.linspace(0.0, np.pi, sphere_points, dtype=np.float32),
+        sphere_phi_azimuth_rad=np.zeros(sphere_points, dtype=np.float32),
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=8000.0,
+            # Deliberately inconsistent legacy arrays: complex pressure must
+            # remain the source of truth when channel-basis data is present.
+            horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            impedance=np.array([[1.0, 0.2]], dtype=np.float32),
+            channel_names=np.array(["main"]),
+            horizontal_pressure=pressure,
+            vertical_pressure=pressure,
+            sphere_pressure=pressure,
+        )
+    )
+
+    prepared = dataset.as_visualization_dataset(
+        PrepConfig(
+            angle_samples=None,
+            freq_samples=None,
+            octave_smoothing=None,
+            hor_ref_angle=0.0,
+            vert_ref_angle=0.0,
+        )
+    )
+    balloon = dataset.as_balloon_raw_bundle()
+
+    np.testing.assert_allclose(
+        prepared["horizontal_spl_norm_db"][0],
+        np.array([-30.0, -20.0, 0.0, -20.0, -30.0], dtype=np.float32),
+        atol=1e-5,
+    )
+    assert balloon is not None
+    np.testing.assert_allclose(
+        balloon["spl_norm"][0],
+        np.array([-40.0, -20.0, 0.0, -20.0, -40.0], dtype=np.float32),
+        atol=1e-5,
+    )
+
+
 def test_live_dataset_exposes_channel_on_axis_curves() -> None:
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
     dataset = LiveSolveDataset(

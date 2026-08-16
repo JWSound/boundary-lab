@@ -466,6 +466,86 @@ for line in sys.stdin:
         shutdown_beat_engine_workers()
 
 
+def test_julia_backend_restarts_persistent_worker_after_failed_job(tmp_path) -> None:
+    mesh_path = tmp_path / "mesh.msh"
+    mesh_path.write_text("mesh", encoding="utf-8")
+    starts_path = tmp_path / "failure_starts.txt"
+    fake_solver = tmp_path / "fake_julia_failure_worker.py"
+    fake_solver.write_text(
+        f"""
+import json
+import pathlib
+
+starts_path = pathlib.Path({str(starts_path)!r})
+starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
+starts_path.write_text(str(starts + 1), encoding="utf-8")
+
+print(json.dumps({{"type": "ready"}}), flush=True)
+for line in __import__("sys").stdin:
+    message = json.loads(line)
+    with open(message["request"], "r", encoding="utf-8") as handle:
+        request = json.load(handle)
+    print(json.dumps({{
+        "type": "initialized",
+        "polar_angle_deg": [0.0],
+        "radiator_names": ["Woofer"],
+        "sphere_metadata": None,
+    }}), flush=True)
+    if starts == 0:
+        print(json.dumps({{"type": "failed", "error": "synthetic accelerator failure"}}), flush=True)
+        continue
+    print(json.dumps({{
+        "type": "result",
+        "result": {{
+            "freq_hz": request["frequencies_hz"][0],
+            "horizontal_spl_norm_db": [0.0],
+            "vertical_spl_norm_db": [0.0],
+            "impedance": [[6.0, 1.0]],
+            "horizontal_spl_db": [90.0],
+            "vertical_spl_db": [90.0],
+            "sphere_spl_norm_db": None,
+            "timings": {{}},
+            "diagnostics": None,
+        }},
+    }}), flush=True)
+    print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    try:
+        backend = create_backend(
+            "beat_rocm",
+            julia_executable=sys.executable,
+            solver_script=str(fake_solver),
+            julia_project=None,
+            persistent_worker=True,
+        )
+        first = backend.create_session(
+            SolveRequest(
+                config=SimulationConfig(mesh_file=str(mesh_path)),
+                frequencies_hz=np.array([500.0], dtype=np.float32),
+            )
+        )
+        try:
+            list(first.solve_stream())
+        except RuntimeError as exc:
+            assert "synthetic accelerator failure" in str(exc)
+        else:
+            raise AssertionError("Synthetic worker failure was not surfaced.")
+
+        second = backend.create_session(
+            SolveRequest(
+                config=SimulationConfig(mesh_file=str(mesh_path)),
+                frequencies_hz=np.array([1000.0], dtype=np.float32),
+            )
+        )
+        assert len(list(second.solve_stream())) == 1
+        assert starts_path.read_text(encoding="utf-8") == "2"
+    finally:
+        shutdown_beat_engine_workers()
+
+
 def test_julia_backend_cancel_keeps_persistent_worker_warm(tmp_path) -> None:
     mesh_path = tmp_path / "mesh.msh"
     mesh_path.write_text("mesh", encoding="utf-8")

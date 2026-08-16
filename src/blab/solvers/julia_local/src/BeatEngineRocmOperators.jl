@@ -47,6 +47,44 @@ function _rocm_burton_miller_rhs(
     return d_rhs
 end
 
+function _is_corrupt_rocsolver_info(error)
+    error isa ArgumentError || return false
+    matched = match(r"invalid argument #(\d+) to LAPACK call", sprint(showerror, error))
+    matched === nothing && return false
+    # getrf has only a handful of parameters. A large negative `info` value is
+    # therefore uninitialized/corrupt device status, not a caller error.
+    return parse(Int, matched.captures[1]) > 16
+end
+
+function _rocm_dense_solve(d_lhs, d_rhs; max_attempts::Int=3)
+    max_attempts >= 1 || throw(ArgumentError("max_attempts must be positive."))
+    for attempt in 1:max_attempts
+        try
+            # rocSOLVER's `info` is device-resident. Keep preceding assembly and
+            # allocator work out of the status read that AMDGPU.jl performs.
+            AMDGPU.synchronize()
+            result = d_lhs \ d_rhs
+            AMDGPU.synchronize()
+            return result
+        catch exception
+            if attempt == max_attempts || !_is_corrupt_rocsolver_info(exception)
+                rethrow()
+            end
+            @warn "rocSOLVER returned a corrupt LAPACK info value; retrying the dense solve." attempt exception=(exception, catch_backtrace())
+            try
+                AMDGPU.synchronize()
+            catch
+            end
+            GC.gc(true)
+            try
+                AMDGPU.reclaim()
+            catch
+            end
+        end
+    end
+    error("Unreachable ROCm dense-solve retry state.")
+end
+
 function solve_burton_miller_neumann(
     operators,
     identity_cache::RocmBurtonMillerIdentityCache,
@@ -65,7 +103,7 @@ function solve_burton_miller_neumann(
         d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .-
             operators.double_layer .+ coupling .* operators.hypersingular
         d_rhs = _rocm_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
-        d_pressure = d_lhs \ d_rhs
+        d_pressure = _rocm_dense_solve(d_lhs, d_rhs)
         pressure = Complex{T}.(Array(d_pressure))
     finally
         for item in (d_q_neumann, d_lhs, d_rhs, d_pressure)
