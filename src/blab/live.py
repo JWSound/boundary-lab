@@ -291,15 +291,34 @@ class LiveSolveDataset:
             return {}
 
         try:
-            export_freqs, channel_names, curves, _phase_deg = self.as_channel_on_axis_export_arrays()
+            export_freqs, channel_names, curves, channel_phase_deg = self.as_channel_on_axis_export_arrays()
         except ValueError:
             return {}
         if not np.array_equal(export_freqs, np.asarray(freqs, dtype=np.float32)):
             return {}
 
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+        summed_phase_deg = np.asarray(
+            [
+                np.rad2deg(
+                    np.angle(
+                        complex_reference_pressure(
+                            self._synthesized_complex_pressures(result)[0],
+                            angles,
+                            0.0,
+                        )
+                    )
+                )
+                for result in self.ordered_results()
+            ],
+            dtype=np.float32,
+        )
+
         return {
             "channel_on_axis_names": channel_names,
             "channel_on_axis_spl_db": curves,
+            "on_axis_phase_deg": summed_phase_deg,
+            "channel_on_axis_phase_deg": channel_phase_deg,
             "channel_on_axis_freq_hz": freqs,
         }
 

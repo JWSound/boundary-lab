@@ -550,11 +550,11 @@ def test_live_dataset_resynthesizes_channel_basis_after_gain_change() -> None:
             impedance=np.array([[1.0, 0.2], [2.0, 0.4]], dtype=np.float32),
             channel_names=np.array(["LF", "HF"]),
             horizontal_pressure=np.array(
-                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0j, 1.0j, 1.0j]],
                 dtype=np.complex64,
             ),
             vertical_pressure=np.array(
-                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0j, 1.0j, 1.0j]],
                 dtype=np.complex64,
             ),
         )
@@ -637,11 +637,11 @@ def test_live_dataset_exposes_channel_on_axis_curves() -> None:
             impedance=np.array([[1.0, 0.2], [2.0, 0.4]], dtype=np.float32),
             channel_names=np.array(["LF", "HF"]),
             horizontal_pressure=np.array(
-                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0j, 1.0j, 1.0j]],
                 dtype=np.complex64,
             ),
             vertical_pressure=np.array(
-                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j]],
+                [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0j, 1.0j, 1.0j]],
                 dtype=np.complex64,
             ),
         )
@@ -654,6 +654,8 @@ def test_live_dataset_exposes_channel_on_axis_curves() -> None:
     assert prepared["channel_on_axis_names"].tolist() == ["LF", "HF"]
     assert prepared["channel_on_axis_spl_db"].shape == (2, 1)
     assert prepared["channel_on_axis_spl_db"][1, 0] < prepared["channel_on_axis_spl_db"][0, 0]
+    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"][:, 0], [0.0, 90.0])
+    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [26.5], atol=0.2)
 
 
 def test_live_dataset_builds_balloon_bundle_from_sphere_results() -> None:

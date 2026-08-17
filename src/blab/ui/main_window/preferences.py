@@ -21,6 +21,8 @@ from blab.ui.main_window.constants import (
     DEFAULT_DOCK_STATE_B64,
     FEM_PREVIEW_DARK_ICON,
     FEM_PREVIEW_LIGHT_ICON,
+    PHASE_DARK_ICON,
+    PHASE_LIGHT_ICON,
     SAVE_DARK_ICON,
     SAVE_LIGHT_ICON,
     SYNTAX_HIGHLIGHT_DARK_ICON,
@@ -79,6 +81,7 @@ class PreferencesMixin:
         fem_icon = QIcon(str(FEM_PREVIEW_LIGHT_ICON if light_theme else FEM_PREVIEW_DARK_ICON))
         bem_icon = QIcon(str(BEM_PREVIEW_LIGHT_ICON if light_theme else BEM_PREVIEW_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
+        phase_icon = QIcon(str(PHASE_DARK_ICON if light_theme else PHASE_LIGHT_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
             action.setIcon(icon)
         for action in getattr(self, "capture_contour_actions", {}).values():
@@ -91,6 +94,9 @@ class PreferencesMixin:
             self.show_exterior_region_action.setIcon(bem_icon)
         if hasattr(self, "syntax_highlighting_action"):
             self.syntax_highlighting_action.setIcon(syntax_icon)
+        on_axis_plot = getattr(self, "on_axis_plot", None)
+        if on_axis_plot is not None:
+            on_axis_plot.show_phase_action.setIcon(phase_icon)
 
     @Slot()
     def _save_frequency_settings(self) -> None:

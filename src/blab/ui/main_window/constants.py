@@ -40,6 +40,10 @@ SYNTAX_HIGHLIGHT_DARK_ICON = APP_ROOT / "assets" / "syntaxhighlight_dark.ico"
 
 SYNTAX_HIGHLIGHT_LIGHT_ICON = APP_ROOT / "assets" / "syntaxhighlight_light.ico"
 
+PHASE_DARK_ICON = APP_ROOT / "assets" / "phasephi_dark.ico"
+
+PHASE_LIGHT_ICON = APP_ROOT / "assets" / "phasephi_light.ico"
+
 ADD_DESIGN_TAB_LABEL = "+"
 
 DEFAULT_DOCK_STATE_B64 = (

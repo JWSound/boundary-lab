@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, MultipleLocator
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QMenu
 
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
@@ -1290,23 +1293,46 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
     def __init__(self):
         self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
+        self.phase_axes = self.axes.twinx()
         self._lines: list[object] = []
+        self._magnitude_lines: dict[str, object] = {}
+        self._phase_lines: dict[str, object] = {}
         self._series_labels: tuple[str, ...] = ()
+        self._series_visibility: dict[str, bool] = {}
+        self._channel_colors: dict[str, str] = {}
+        self._series_actions: dict[str, QAction] = {}
+        self._phase_available = False
         self._plot_state = None
-        super().__init__(self.figure, "On-Axis Frequency Response")
+        super().__init__(self.figure, "On-Axis Frequency Response", secondary_axes=self.phase_axes)
+        self.trace_filter_menu = QMenu("Traces", self)
+        self.trace_filter_action = QAction("Traces", self)
+        self.trace_filter_action.setToolTip("Choose visible on-axis response traces")
+        self.trace_filter_action.setMenu(self.trace_filter_menu)
+        self.show_phase_action = QAction("Phase", self)
+        self.show_phase_action.setToolTip("Show phase traces")
+        self.show_phase_action.setCheckable(True)
+        self.show_phase_action.setEnabled(False)
+        self.show_phase_action.toggled.connect(self._set_phase_visible)
         self.figure.subplots_adjust(
             left=PLOT_LEFT_MARGIN,
             right=PLOT_RIGHT_MARGIN,
             top=PLOT_TOP_MARGIN,
             bottom=PLOT_BOTTOM_MARGIN,
         )
+        self.phase_axes.yaxis.set_label_position("right")
+        self.phase_axes.yaxis.tick_right()
         self._draw_empty()
 
     def _configure_axes(self) -> None:
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
+        self.phase_axes.set_ylabel("Phase (deg)")
+        self.phase_axes.yaxis.set_label_position("right")
+        self.phase_axes.yaxis.tick_right()
         apply_audio_frequency_axis(self.axes)
+        self.phase_axes.set_ylim(-180.0, 600.0)
+        self.phase_axes.set_yticks(np.arange(-180.0, 601.0, 90.0))
         self.axes.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2.0, 10.0)))
         self.axes.yaxis.set_major_locator(MultipleLocator(10.0))
         self.axes.yaxis.set_minor_locator(MultipleLocator(5.0))
@@ -1319,20 +1345,31 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             alpha=MINOR_GRID_LINE_ALPHA,
         )
         apply_compact_plot_text(self.axes)
+        apply_compact_plot_text(self.phase_axes)
+        self.phase_axes.set_visible(False)
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
+        clear_plot_axes(self.phase_axes)
         self._lines = []
+        self._magnitude_lines = {}
+        self._phase_lines = {}
         self._series_labels = ()
+        self._phase_available = False
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
         self._configure_axes()
+        self._sync_trace_filter_actions(())
+        self.show_phase_action.setEnabled(False)
         self._redraw_crosshair()
         self.draw_idle()
 
     def _format_crosshair_y(self, value: float) -> str:
         return f"{value:.1f} dB"
+
+    def _format_secondary_crosshair_y(self, value: float) -> str:
+        return f"{value:.1f} deg"
 
     def set_comparison_plot(
         self,
@@ -1341,6 +1378,8 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         horizontal_spl_db: np.ndarray,
         channel_names: np.ndarray | None = None,
         channel_on_axis_spl_db: np.ndarray | None = None,
+        on_axis_phase_deg: np.ndarray | None = None,
+        channel_on_axis_phase_deg: np.ndarray | None = None,
     ) -> None:
         self._set_comparison_plot_state(
             self._normalized_plot_state(
@@ -1349,6 +1388,8 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
                 horizontal_spl_db,
                 channel_names,
                 channel_on_axis_spl_db,
+                on_axis_phase_deg,
+                channel_on_axis_phase_deg,
             )
         )
 
@@ -1359,32 +1400,57 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         horizontal_spl_db: np.ndarray,
         channel_names: np.ndarray | None,
         channel_on_axis_spl_db: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+        on_axis_phase_deg: np.ndarray | None,
+        channel_on_axis_phase_deg: np.ndarray | None,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+    ]:
         return (
             np.asarray(freqs_hz, dtype=np.float32).copy(),
             np.asarray(angles_deg, dtype=np.float32).copy(),
             np.asarray(horizontal_spl_db, dtype=np.float32).copy(),
             None if channel_names is None else np.asarray(channel_names).copy(),
             None if channel_on_axis_spl_db is None else np.asarray(channel_on_axis_spl_db, dtype=np.float32).copy(),
+            None if on_axis_phase_deg is None else np.asarray(on_axis_phase_deg, dtype=np.float32).copy(),
+            (
+                None
+                if channel_on_axis_phase_deg is None
+                else np.asarray(channel_on_axis_phase_deg, dtype=np.float32).copy()
+            ),
         )
 
     def _current_plot_state(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None] | None:
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        np.ndarray,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+        np.ndarray | None,
+    ] | None:
         if self._plot_state is None:
             return None
-        freqs_hz, angles_deg, horizontal_spl_db, channel_names, channel_on_axis_spl_db = self._plot_state
-        return (
-            freqs_hz.copy(),
-            angles_deg.copy(),
-            horizontal_spl_db.copy(),
-            None if channel_names is None else channel_names.copy(),
-            None if channel_on_axis_spl_db is None else channel_on_axis_spl_db.copy(),
-        )
+        return tuple(None if values is None else values.copy() for values in self._plot_state)
 
     def _apply_plot_state(
         self,
-        state: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None],
+        state: tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray | None,
+            np.ndarray | None,
+            np.ndarray | None,
+            np.ndarray | None,
+        ],
     ) -> None:
         self.update_plot(*state)
 
@@ -1395,6 +1461,8 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         horizontal_spl_db: np.ndarray,
         channel_names: np.ndarray | None = None,
         channel_on_axis_spl_db: np.ndarray | None = None,
+        on_axis_phase_deg: np.ndarray | None = None,
+        channel_on_axis_phase_deg: np.ndarray | None = None,
     ) -> None:
         state = self._normalized_plot_state(
             freqs_hz,
@@ -1402,10 +1470,20 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             horizontal_spl_db,
             channel_names,
             channel_on_axis_spl_db,
+            on_axis_phase_deg,
+            channel_on_axis_phase_deg,
         )
         if self._defer_current_plot_state(state):
             return
-        freqs_hz, angles_deg, horizontal_spl_db, channel_names, channel_on_axis_spl_db = state
+        (
+            freqs_hz,
+            angles_deg,
+            horizontal_spl_db,
+            channel_names,
+            channel_on_axis_spl_db,
+            on_axis_phase_deg,
+            channel_on_axis_phase_deg,
+        ) = state
         self._plot_state = state
         self._invalidate_crosshair_background()
         if freqs_hz.size:
@@ -1421,45 +1499,168 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
                 dtype=float,
             )
             series: list[tuple[str, np.ndarray]] = [("Sum", on_axis)]
+            phase_series: dict[str, np.ndarray] = {}
+            if on_axis_phase_deg is not None and np.asarray(on_axis_phase_deg).shape == freqs_hz.shape:
+                phase_series["Sum"] = np.asarray(on_axis_phase_deg, dtype=float)
             if channel_names is not None and channel_on_axis_spl_db is not None:
                 names = np.asarray(channel_names)
                 channel_curves = np.asarray(channel_on_axis_spl_db, dtype=float)
                 for index, name in enumerate(names):
                     if index >= channel_curves.shape[0]:
                         continue
-                    series.append((str(name), channel_curves[index]))
+                    label = str(name)
+                    series.append((label, channel_curves[index]))
+                    if (
+                        channel_on_axis_phase_deg is not None
+                        and index < np.asarray(channel_on_axis_phase_deg).shape[0]
+                    ):
+                        phase = np.asarray(channel_on_axis_phase_deg[index], dtype=float)
+                        if phase.shape == freqs_hz.shape:
+                            phase_series[label] = phase
             labels = tuple(name for name, _values in series)
             if labels != self._series_labels:
-                for line in self._lines:
+                for line in (*self._magnitude_lines.values(), *self._phase_lines.values()):
                     line.remove()
-                self._lines = []
+                self._magnitude_lines = {}
+                self._phase_lines = {}
                 for index, label in enumerate(labels):
-                    if index == 0:
-                        (line,) = self.axes.plot([], [], linewidth=2.0, color="#1f77b4", label=label)
-                    else:
-                        (line,) = self.axes.plot([], [], linewidth=1.1, linestyle="--", alpha=0.85, label=label)
-                    self._lines.append(line)
-                legend = self.axes.get_legend()
-                if legend is not None:
-                    legend.remove()
-                self.axes.legend(loc="best")
+                    color = self._series_color(label, index)
+                    self._magnitude_lines[label] = self.axes.plot(
+                        [],
+                        [],
+                        linewidth=2.0 if label == "Sum" else 1.3,
+                        linestyle="-",
+                        color=color,
+                        label=label,
+                    )[0]
+                    self._phase_lines[label] = self.phase_axes.plot(
+                        [],
+                        [],
+                        linewidth=1.2,
+                        linestyle=":",
+                        color=color,
+                    )[0]
+                    self._series_visibility.setdefault(label, True)
+                self._lines = list(self._magnitude_lines.values())
                 self._series_labels = labels
-            for line, (_label, values) in zip(self._lines, series, strict=True):
-                line.set_data(freqs_hz, values)
-            finite = on_axis[np.isfinite(on_axis)]
-            if channel_on_axis_spl_db is not None:
-                channel_finite = np.asarray(channel_on_axis_spl_db, dtype=float)
-                channel_finite = channel_finite[np.isfinite(channel_finite)]
-                if channel_finite.size:
-                    finite = np.concatenate([finite, channel_finite])
-            if finite.size:
-                ymax = float(np.ceil(np.max(finite) / 5.0) * 5.0)
-                self.axes.set_ylim(ymax - ON_AXIS_DB_SPAN, ymax)
+                self._sync_trace_filter_actions(labels)
+
+            for label, values in series:
+                self._magnitude_lines[label].set_data(freqs_hz, values)
+                if label in phase_series:
+                    phase_freqs, wrapped_phase = _phase_curve_with_wrap_breaks(freqs_hz, phase_series[label])
+                    self._phase_lines[label].set_data(phase_freqs, wrapped_phase)
+                else:
+                    self._phase_lines[label].set_data([], [])
+
+            self._phase_available = bool(phase_series)
+            self.show_phase_action.setEnabled(self._phase_available)
+            self._apply_series_visibility()
+            self._update_magnitude_limits()
 
         apply_compact_plot_text(self.axes)
+        apply_compact_plot_text(self.phase_axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
+
+    def _series_color(self, label: str, index: int) -> str:
+        if label == "Sum":
+            return "#000000"
+        if label not in self._channel_colors:
+            cycle = rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
+            self._channel_colors[label] = str(cycle[(index - 1) % len(cycle)])
+        return self._channel_colors[label]
+
+    def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:
+        self.trace_filter_menu.clear()
+        self._series_actions = {}
+        for label in labels:
+            action = self.trace_filter_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self._series_visibility.get(label, True))
+            action.toggled.connect(
+                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
+            )
+            self._series_actions[label] = action
+        self.trace_filter_action.setEnabled(bool(labels))
+
+    def set_series_visible(self, label: str, visible: bool) -> None:
+        if label not in self._series_labels:
+            return
+        self._series_visibility[label] = bool(visible)
+        self._apply_series_visibility()
+        self._update_magnitude_limits()
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _set_phase_visible(self, _visible: bool) -> None:
+        self._apply_series_visibility()
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _apply_series_visibility(self) -> None:
+        show_phase = self.show_phase_action.isChecked() and self._phase_available
+        any_phase_visible = False
+        for label in self._series_labels:
+            visible = self._series_visibility.get(label, True)
+            self._magnitude_lines[label].set_visible(visible)
+            phase_line = self._phase_lines[label]
+            phase_visible = visible and show_phase and np.asarray(phase_line.get_ydata()).size > 0
+            phase_line.set_visible(phase_visible)
+            any_phase_visible = any_phase_visible or phase_visible
+        self.phase_axes.set_visible(any_phase_visible)
+        self._refresh_magnitude_legend()
+
+    def _refresh_magnitude_legend(self) -> None:
+        legend = self.axes.get_legend()
+        if legend is not None:
+            legend.remove()
+        visible_lines = [
+            self._magnitude_lines[label]
+            for label in self._series_labels
+            if self._series_visibility.get(label, True)
+        ]
+        if visible_lines:
+            self.axes.legend(visible_lines, [line.get_label() for line in visible_lines], loc="best")
+
+    def _update_magnitude_limits(self) -> None:
+        finite_rows = []
+        for label in self._series_labels:
+            line = self._magnitude_lines[label]
+            if not line.get_visible():
+                continue
+            values = np.asarray(line.get_ydata(), dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                finite_rows.append(finite)
+        if finite_rows:
+            ymax = float(np.ceil(np.max(np.concatenate(finite_rows)) / 5.0) * 5.0)
+            self.axes.set_ylim(ymax - ON_AXIS_DB_SPAN, ymax)
+
+
+def _phase_curve_with_wrap_breaks(
+    freqs_hz: np.ndarray,
+    phase_deg: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    freqs = np.asarray(freqs_hz, dtype=float)
+    phase = ((np.asarray(phase_deg, dtype=float) + 180.0) % 360.0) - 180.0
+    if freqs.shape != phase.shape:
+        raise ValueError("Phase data must match the on-axis frequency array.")
+    if freqs.size < 2:
+        return freqs.copy(), phase.copy()
+    wrapped_freqs: list[float] = []
+    wrapped_phase: list[float] = []
+    for index, (frequency, value) in enumerate(zip(freqs, phase, strict=True)):
+        wrapped_freqs.append(float(frequency))
+        wrapped_phase.append(float(value))
+        if index + 1 >= phase.size:
+            continue
+        next_value = phase[index + 1]
+        if np.isfinite(value) and np.isfinite(next_value) and abs(float(next_value - value)) > 180.0:
+            wrapped_freqs.append(float("nan"))
+            wrapped_phase.append(float("nan"))
+    return np.asarray(wrapped_freqs), np.asarray(wrapped_phase)
 
 
 def _snapshot_spinorama_curves(curves: SpinoramaCurves) -> SpinoramaCurves:

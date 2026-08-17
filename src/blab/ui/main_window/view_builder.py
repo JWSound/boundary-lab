@@ -232,19 +232,24 @@ class ViewBuilderMixin:
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
         previous_plot_dock = None
         for entry in self.plot_entries:
+            tool_actions = [
+                action
+                for action in (
+                    self.capture_contour_actions.get(entry.plot_id),
+                    self.clear_contour_actions.get(entry.plot_id),
+                )
+                if action is not None
+            ]
+            if entry.plot_id == "on_axis_frequency_response":
+                tool_actions.extend(
+                    (entry.widget.trace_filter_action, entry.widget.show_phase_action)
+                )
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,
                 entry.widget,
                 save_action=self.export_plot_actions.get(entry.plot_id),
-                tool_actions=tuple(
-                    action
-                    for action in (
-                        self.capture_contour_actions.get(entry.plot_id),
-                        self.clear_contour_actions.get(entry.plot_id),
-                    )
-                    if action is not None
-                ),
+                tool_actions=tuple(tool_actions),
             )
             self.plot_docks[entry.plot_id] = dock
             self.workspace.addDockWidget(Qt.RightDockWidgetArea, dock)

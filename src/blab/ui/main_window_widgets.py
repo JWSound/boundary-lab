@@ -119,7 +119,18 @@ class DockTitleBar(QFrame):
         for action in (*(() if save_action is None else (save_action,)), *tool_actions):
             button = QToolButton()
             button.setAutoRaise(True)
-            button.setDefaultAction(action)
+            if action.menu() is not None:
+                button.setText(action.text())
+                button.setMenu(action.menu())
+                button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+                _sync_menu_tool_button(button, action)
+                action.changed.connect(
+                    lambda button=button, action=action: _sync_menu_tool_button(button, action)
+                )
+            else:
+                button.setDefaultAction(action)
+                if not action.icon().isNull():
+                    button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
             button.setToolTip(action.toolTip())
             self.tool_buttons.append(button)
         close_button = QToolButton()
@@ -153,6 +164,13 @@ class DockTitleBar(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt override
         event.ignore()
+
+
+def _sync_menu_tool_button(button: QToolButton, action: QAction) -> None:
+    button.setEnabled(action.isEnabled())
+    button.setVisible(action.isVisible())
+    button.setText(action.text())
+    button.setToolTip(action.toolTip())
 
 
 __all__ = [

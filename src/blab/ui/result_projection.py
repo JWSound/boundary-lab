@@ -68,6 +68,8 @@ class PolarResponseProjection:
     vertical_spl_db: np.ndarray
     channel_on_axis_names: np.ndarray | None
     channel_on_axis_spl_db: np.ndarray | None
+    on_axis_phase_deg: np.ndarray | None
+    channel_on_axis_phase_deg: np.ndarray | None
     spin_horizontal_reference_angle_deg: float
     spin_vertical_reference_angle_deg: float
 
@@ -82,6 +84,14 @@ class PolarResponseProjection:
             ),
             channel_on_axis_spl_db=(
                 None if self.channel_on_axis_spl_db is None else np.asarray(self.channel_on_axis_spl_db).copy()
+            ),
+            on_axis_phase_deg=(
+                None if self.on_axis_phase_deg is None else np.asarray(self.on_axis_phase_deg).copy()
+            ),
+            channel_on_axis_phase_deg=(
+                None
+                if self.channel_on_axis_phase_deg is None
+                else np.asarray(self.channel_on_axis_phase_deg).copy()
             ),
             spin_horizontal_reference_angle_deg=self.spin_horizontal_reference_angle_deg,
             spin_vertical_reference_angle_deg=self.spin_vertical_reference_angle_deg,
@@ -154,6 +164,8 @@ class ResultProjectionService:
                 vertical_spl_db=arrays["vertical_spl_db"],
                 channel_on_axis_names=arrays.get("channel_on_axis_names"),
                 channel_on_axis_spl_db=arrays.get("channel_on_axis_spl_db"),
+                on_axis_phase_deg=arrays.get("on_axis_phase_deg"),
+                channel_on_axis_phase_deg=arrays.get("channel_on_axis_phase_deg"),
                 spin_horizontal_reference_angle_deg=float(arrays["spin_horizontal_reference_angle_deg"]),
                 spin_vertical_reference_angle_deg=float(arrays["spin_vertical_reference_angle_deg"]),
             ),

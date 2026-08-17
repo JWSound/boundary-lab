@@ -163,6 +163,8 @@ class PlotPresenterMixin:
             response.horizontal_spl_db,
             response.channel_on_axis_names,
             response.channel_on_axis_spl_db,
+            response.on_axis_phase_deg,
+            response.channel_on_axis_phase_deg,
         )
         self.spinorama_plot.set_comparison_plot(
             response.freq_hz,
@@ -342,6 +344,8 @@ class PlotPresenterMixin:
             response.horizontal_spl_db,
             response.channel_on_axis_names,
             response.channel_on_axis_spl_db,
+            response.on_axis_phase_deg,
+            response.channel_on_axis_phase_deg,
         )
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:

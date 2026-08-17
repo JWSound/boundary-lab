@@ -9,6 +9,7 @@ window being reorganised into modules.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa: E402
 
@@ -157,6 +158,26 @@ def test_dock_title_bar_uses_a_native_raised_frame(main_window) -> None:
         assert isinstance(title_bar, QFrame)
         assert title_bar.frameShape() == QFrame.StyledPanel
         assert title_bar.frameShadow() == QFrame.Raised
+
+
+def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> None:
+    title_bar = main_window.plot_docks["on_axis_frequency_response"].titleBarWidget()
+    actions = [button.defaultAction() for button in title_bar.tool_buttons]
+
+    assert main_window.on_axis_plot.show_phase_action in actions
+    phase_button = next(
+        button
+        for button in title_bar.tool_buttons
+        if button.defaultAction() is main_window.on_axis_plot.show_phase_action
+    )
+    assert not phase_button.icon().isNull()
+    assert phase_button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+    trace_button = next(
+        button
+        for button in title_bar.tool_buttons
+        if button.menu() is main_window.on_axis_plot.trace_filter_menu
+    )
+    assert trace_button.text() == "Traces"
 
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:

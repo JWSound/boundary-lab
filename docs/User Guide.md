@@ -79,6 +79,13 @@ rather than snapping to one curve.
 - **Export Polar Data** writes horizontal and vertical response text files.
 - **Export On-Axis Data** writes SPL and phase for each solved channel.
 
+The **On-Axis Frequency Response** dock provides a **Traces** menu for showing
+or hiding the summed response and individual channels. The phi icon button adds
+matching dotted phase traces, wrapped between -180 and 180 degrees, on a right
+axis with a fixed -180 to 600 degree display range. Magnitude traces remain solid,
+and the summed response is always black. Phase is available when the solve retains
+complex channel-basis pressure.
+
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder
 if the saved location disappears, and changes only after a selection is
