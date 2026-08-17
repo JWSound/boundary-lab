@@ -167,6 +167,7 @@ def test_coupled_reference_backend_exposes_system_metadata_without_starting_juli
     assert session.metadata.available_quantity_ids == ("output:fem",)
     assert session.request.solver_options["precision"] == "float64"
     assert session.request.solver_options["bem_backend"] == "cpu"
+    assert session.request.solver_options["static_condensation"] is False
 
 
 def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> None:
@@ -184,9 +185,27 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
 
     assert session.request.solver_options["precision"] == "float32"
     assert session.request.solver_options["bem_backend"] == "cuda"
+    assert session.request.solver_options["static_condensation"] is True
     assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
     assert session.julia_threads == 4
-    assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.julia_threads == 8
+    assert cpu_session.request.solver_options["static_condensation"] is True
+
+
+def test_coupled_production_backend_keeps_full_matrix_diagnostics_monolithic() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+        solver_options={"validation_diagnostics": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert session.request.solver_options["static_condensation"] is False
 
 
 def test_coupled_production_backend_selects_rocm_project() -> None:

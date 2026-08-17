@@ -46,9 +46,7 @@ def evaluate_bem_field(
 
     normalized_backend = normalize_backend_id(backend_id)
     if not supports_physical_system_solves(normalized_backend):
-        raise ValueError(
-            "Retained BEM fields require a BEAT Engine CPU, CPU Condensed, CUDA, or ROCm backend."
-        )
+        raise ValueError("Retained BEM fields require a BEAT Engine CPU, CUDA, or ROCm backend.")
     bem_backend = _bem_backend_for_id(normalized_backend)
     julia_project = {
         "cpu": DEFAULT_COUPLED_CPU_PROJECT,
@@ -83,9 +81,9 @@ def evaluate_bem_field(
 
 
 def _bem_backend_for_id(backend_id: str) -> str:
-    """Map a selectable backend variant onto the Julia BEM implementation."""
+    """Map a selectable backend onto the Julia BEM implementation."""
 
-    return "cpu" if backend_id == "beat_cpu_condensed" else backend_id.removeprefix("beat_")
+    return backend_id.removeprefix("beat_")
 
 
 def _write_evaluation_request(

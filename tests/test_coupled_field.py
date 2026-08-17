@@ -130,7 +130,7 @@ def test_evaluate_bem_field_routes_rocm_worker_and_payload(monkeypatch) -> None:
     assert payloads[0]["bem_backend"] == "rocm"
 
 
-def test_evaluate_bem_field_maps_condensed_variant_to_cpu_worker(monkeypatch) -> None:
+def test_evaluate_bem_field_maps_legacy_condensed_id_to_cpu_worker(monkeypatch) -> None:
     import blab.solvers.coupled_field as field_module
 
     worker_options = []

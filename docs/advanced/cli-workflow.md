@@ -29,10 +29,10 @@ blab project solve speaker.blab.json --backend beat_cpu --output runs/speaker-ch
 The default `--backend beat_auto` always selects a BEAT Engine backend. It probes
 the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
 functional; otherwise it falls back to `beat_cpu`. Use an explicit
-`--backend beat_cpu`, `--backend beat_cpu_condensed`, `--backend beat_cuda`, or
-`--backend beat_rocm` to disable automatic selection. `beat_cpu_condensed` uses
-the ordinary CPU path for exterior-only projects and exact FEM interface
-condensation for coupled projects.
+`--backend beat_cpu`, `--backend beat_cuda`, or `--backend beat_rocm` to disable
+automatic selection. `beat_cpu` uses the ordinary CPU path for exterior-only
+projects and exact FEM interface condensation for coupled production projects.
+The former `beat_cpu_condensed` ID remains a compatibility alias for `beat_cpu`.
 `--julia-executable` and `--julia-threads` select the Julia installation and
 thread count. The output directory must not already exist, which prevents an
 agent from accidentally overwriting a previous run.

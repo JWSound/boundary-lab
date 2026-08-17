@@ -147,24 +147,28 @@ function _build_condensation(
     retained_interior = SparseMatrixCSC{ComplexF64,Int}(fem_system[retained, interior_vertices])
 
     # UMFPACK performs symbolic and numeric factorization in one call, so the whole cost lands
-    # in `factorization_s` and the analysis slot stays zero.
+    # in `factorization_s` and the analysis slot stays zero. If every FEM vertex is retained,
+    # condensation is an exact no-op and there is no interior matrix to factor.
     factorization_started = time_ns()
-    factorization = lu(interior_system)
+    factorization = interior_count == 0 ? nothing : lu(interior_system)
     factorization_s = (time_ns() - factorization_started) / 1.0e9
 
     schur_started = time_ns()
-    schur_result = BeatEngineCoupled._blocked_umfpack_schur_complement(
+    retained_system = Matrix{ComplexF64}(fem_system[retained, retained])
+    schur_result = interior_count == 0 ?
+                   (schur=retained_system, block_size=0, thread_count=1) :
+                   BeatEngineCoupled._blocked_umfpack_schur_complement(
         factorization,
         interior_retained,
         retained_interior,
-        Matrix{ComplexF64}(fem_system[retained, retained]);
+        retained_system;
         block_size=schur_block_columns,
     )
     schur = Complex{T}.(schur_result.schur)
     schur_extraction_s = (time_ns() - schur_started) / 1.0e9
 
     return (
-        backend=:cpu_umfpack,
+        backend=interior_count == 0 ? :cpu_noop : :cpu_umfpack,
         factorization=factorization,
         interior_system=interior_system,
         interior_retained=interior_retained,
@@ -190,7 +194,7 @@ function _release_condensation!(condensation)
     isnothing(condensation) && return nothing
     # UMFPACK holds its factors outside the Julia heap; release them with the system rather than
     # waiting for the finalizer, so a frequency sweep does not accumulate them.
-    finalize(condensation.factorization)
+    isnothing(condensation.factorization) || finalize(condensation.factorization)
     return nothing
 end
 
@@ -203,6 +207,7 @@ because the backward substitution needs it and nothing else retains it.
 function _forward_schur(condensation, fem_rhs::AbstractMatrix{Complex{T}}) where {T<:AbstractFloat}
     interior_rhs = ComplexF64.(fem_rhs[condensation.interior_vertices, :])
     retained_rhs = ComplexF64.(fem_rhs[condensation.retained_vertices, :])
+    condensation.interior_count == 0 && return Complex{T}.(retained_rhs), interior_rhs
     mul!(
         retained_rhs,
         condensation.retained_interior,
@@ -237,7 +242,9 @@ function _backward_schur(
     retained_pressure::AbstractMatrix{Complex{T}},
 ) where {T<:AbstractFloat}
     retained_double = ComplexF64.(retained_pressure)
-    interior_pressure = condensation.factorization \
+    interior_pressure = condensation.interior_count == 0 ?
+                        copy(interior_rhs) :
+                        condensation.factorization \
                         (interior_rhs - condensation.interior_retained * retained_double)
     interior_term = condensation.interior_system * interior_pressure
     retained_term = condensation.interior_retained * retained_double

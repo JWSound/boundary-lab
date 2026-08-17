@@ -32,7 +32,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
     ),
     "beat_cuda": SolverBackendInfo(
         backend_id="beat_cuda",
-        label="BEAT Engine (CUDA)",
+        label="BEAT Engine (Nvidia CUDA)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
@@ -56,30 +56,9 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
         description="Run the local Boundary Element Acoustic Toolkit Engine CPU solver through the Boundary Lab subprocess adapter.",
     ),
-    "beat_cpu_condensed": SolverBackendInfo(
-        backend_id="beat_cpu_condensed",
-        label="BEAT Engine (CPU Condensed)",
-        capabilities=SolverCapabilities(
-            supports_remote_assets=False,
-            supports_parallel_workers=False,
-            supports_symmetry=True,
-            supports_channel_resynthesis=True,
-            is_remote=False,
-        ),
-        factory=lambda **kwargs: _create_beat_engine_backend(
-            beat_engine_backend="cpu",
-            backend_id_override="beat_cpu_condensed",
-            label_override="BEAT Engine (CPU Condensed)",
-            **kwargs,
-        ),
-        description=(
-            "Run the local Boundary Element Acoustic Toolkit Engine CPU solver with exact FEM "
-            "interface condensation. Exterior-only models run through the ordinary CPU path."
-        ),
-    ),
     "beat_rocm": SolverBackendInfo(
         backend_id="beat_rocm",
-        label="BEAT Engine (ROCm)",
+        label="BEAT Engine (AMD ROCm)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
@@ -106,10 +85,10 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
 
 #: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
 PHYSICAL_SYSTEM_BACKEND_IDS = frozenset(
-    {"beat_cpu", "beat_cpu_condensed", "beat_cuda", "beat_rocm"}
+    {"beat_cpu", "beat_cuda", "beat_rocm"}
 )
 #: Backends that condense the FEM interior onto the retained interface for coupled solves.
-CONDENSING_BACKEND_IDS = frozenset({"beat_cpu_condensed", "beat_cuda", "beat_rocm"})
+CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
 
 
 def supports_physical_system_solves(backend_id: str) -> bool:
@@ -162,7 +141,9 @@ def normalize_backend_id(backend_id: str) -> str:
         "cuda": "beat_cuda",
         "beat_cpu": "beat_cpu",
         "cpu_beat": "beat_cpu",
-        "beat_cpu_condensed": "beat_cpu_condensed",
+        # Compatibility alias for projects, settings, and scripts written before the CPU
+        # monolithic and condensed selectors were consolidated.
+        "beat_cpu_condensed": "beat_cpu",
         "beat_rocm": "beat_rocm",
         "rocm": "beat_rocm",
         "amd": "beat_rocm",
@@ -229,8 +210,8 @@ def _create_beat_engine_backend(
     backend_id = backend_id_override or f"beat_{normalized_backend}"
     label = label_override or {
         "cpu": "BEAT Engine (CPU)",
-        "cuda": "BEAT Engine (CUDA)",
-        "rocm": "BEAT Engine (ROCm)",
+        "cuda": "BEAT Engine (Nvidia CUDA)",
+        "rocm": "BEAT Engine (AMD ROCm)",
     }[normalized_backend]
     default_project = {
         "cpu": DEFAULT_BEAT_ENGINE_CPU_PROJECT,

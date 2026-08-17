@@ -187,6 +187,38 @@ end
     @test eltype(residual32) == Float32
     @test maximum(residual32) < 1e-5
 
+    # A mesh whose every FEM vertex lies on a retained interface or moving surface has no
+    # interior block. Condensation is then an exact no-op rather than an invalid 0x0 UMFPACK
+    # factorization.
+    all_retained_system, all_retained_operators, _ = condensed_synthetic_case(
+        Float64;
+        vertex_count=10,
+        retained_count=10,
+    )
+    all_retained = collect(1:size(all_retained_system, 1))
+    all_retained_condensation = BeatEngineCoupledCondensed._build_condensation(
+        all_retained_system,
+        all_retained_operators,
+        all_retained,
+    )
+    @test all_retained_condensation.backend == :cpu_noop
+    @test all_retained_condensation.interior_count == 0
+    @test all_retained_condensation.schur == Matrix(all_retained_system)
+    all_retained_planted = ones(ComplexF64, size(all_retained_system, 1), 1)
+    all_retained_forcing = Matrix(all_retained_system * all_retained_planted)
+    all_retained_rhs, all_retained_interior = BeatEngineCoupledCondensed._forward_schur(
+        all_retained_condensation,
+        all_retained_forcing,
+    )
+    all_retained_recovered, all_retained_residual = BeatEngineCoupledCondensed._backward_schur(
+        all_retained_condensation,
+        all_retained_interior,
+        all_retained_condensation.schur \ all_retained_rhs,
+    )
+    @test all_retained_recovered ≈ all_retained_planted rtol = 1e-10
+    @test maximum(all_retained_residual) == 0
+    BeatEngineCoupledCondensed._release_condensation!(all_retained_condensation)
+
     # The structural guard that makes the condensation valid: interface loads must not touch
     # eliminated interior vertices.
     violating_system, violating_operators, violating_retained =

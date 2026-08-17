@@ -32,6 +32,7 @@ from blab.solve_results import (
 )
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import (
     OutputRequest,
     SystemFrequencyResult,
@@ -58,7 +59,6 @@ HEADLESS_BACKEND_AUTO = "beat_auto"
 HEADLESS_BACKEND_IDS = (
     HEADLESS_BACKEND_AUTO,
     "beat_cpu",
-    "beat_cpu_condensed",
     "beat_cuda",
     "beat_rocm",
 )
@@ -130,6 +130,8 @@ def resolve_headless_backend(
     requested = str(backend_id or HEADLESS_BACKEND_AUTO).strip().lower()
     if requested in {"auto", "beat"}:
         requested = HEADLESS_BACKEND_AUTO
+    elif requested != HEADLESS_BACKEND_AUTO:
+        requested = normalize_backend_id(requested)
     if requested not in HEADLESS_BACKEND_IDS:
         raise ValueError(f"Unknown headless backend {backend_id!r}; expected " + ", ".join(HEADLESS_BACKEND_IDS))
     if requested != HEADLESS_BACKEND_AUTO:
@@ -251,10 +253,13 @@ def prepare_headless_solve(
     if unknown_ids:
         raise ValueError("Unknown excitation port ids: " + ", ".join(unknown_ids))
     options = dict(request.solver_options)
-    requested_symmetry = (spec.solver_options or {}).get("symmetry")
+    option_overrides = dict(spec.solver_options or {})
+    requested_symmetry = option_overrides.get("symmetry")
     if requested_symmetry is not None and str(requested_symmetry).strip().lower() != project.symmetry:
         raise ValueError("solver_options.symmetry must match the project's compiled symmetry mode.")
-    options.update(spec.solver_options or {})
+    options.update(option_overrides)
+    if options.get("validation_diagnostics", False) and "static_condensation" not in option_overrides:
+        options["static_condensation"] = False
     options["symmetry"] = project.symmetry
     request = replace(
         request,
@@ -487,9 +492,7 @@ def run_headless_solve(
     session = None
     try:
         backend = PhysicalSystemProductionBackend(
-            bem_backend=(
-                "cpu" if backend_id == "beat_cpu_condensed" else backend_id.removeprefix("beat_")
-            ),
+            bem_backend=backend_id.removeprefix("beat_"),
             julia_executable=julia_executable,
             julia_threads=julia_threads,
         )

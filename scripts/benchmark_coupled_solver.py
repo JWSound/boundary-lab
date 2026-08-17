@@ -147,7 +147,7 @@ def _run_mode(
     symmetry_mode: str,
     condensed: bool = False,
 ) -> None:
-    backend_id = "beat_cpu_condensed" if condensed else f"beat_{bem_backend}"
+    backend_id = f"beat_{bem_backend}"
     prepared = prepare_coupled_ui_solve(
         system,
         freq_min_hz=min(frequencies),
@@ -163,6 +163,8 @@ def _run_mode(
     options["singular_order"] = int(singular_order)
     options["validation_diagnostics"] = mode != "interactive" and not condensed
     options["cache_frequency_invariant"] = mode != "uncached"
+    if bem_backend == "cpu":
+        options["static_condensation"] = condensed
     if mode != "interactive" and not condensed:
         # Full-matrix replay diagnostics intentionally benchmark the
         # monolithic formulation on every accelerator backend.

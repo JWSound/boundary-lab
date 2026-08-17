@@ -41,9 +41,10 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     labels = backend_label_to_id()
 
     assert labels["Server"] == "server"
-    assert labels["BEAT Engine (CUDA)"] == "beat_cuda"
+    assert labels["BEAT Engine (Nvidia CUDA)"] == "beat_cuda"
     assert labels["BEAT Engine (CPU)"] == "beat_cpu"
-    assert labels["BEAT Engine (ROCm)"] == "beat_rocm"
+    assert labels["BEAT Engine (AMD ROCm)"] == "beat_rocm"
+    assert "BEAT Engine (CPU Condensed)" not in labels
     assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp") == "local"
     assert normalize_backend_id("bempp_cpu") == "local"
@@ -73,22 +74,22 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
 
 
-def test_condensed_cpu_backend_is_selectable_without_displacing_rocm() -> None:
+def test_condensed_cpu_backend_id_is_a_compatibility_alias() -> None:
     labels = backend_label_to_id()
 
-    assert labels["BEAT Engine (CPU Condensed)"] == "beat_cpu_condensed"
-    assert normalize_backend_id("beat_cpu_condensed") == "beat_cpu_condensed"
-    assert backend_info("beat_cpu_condensed").capabilities.supports_symmetry is True
-    condensed_backend = create_backend("beat_cpu_condensed")
-    assert condensed_backend.backend_id == "beat_cpu_condensed"
-    assert condensed_backend.beat_engine_backend == "cpu"
+    assert "BEAT Engine (CPU Condensed)" not in labels
+    assert normalize_backend_id("beat_cpu_condensed") == "beat_cpu"
+    assert backend_info("beat_cpu_condensed").backend_id == "beat_cpu"
+    compatibility_backend = create_backend("beat_cpu_condensed")
+    assert compatibility_backend.backend_id == "beat_cpu"
+    assert compatibility_backend.beat_engine_backend == "cpu"
 
     assert backend_condenses_fem_interior("beat_cpu_condensed") is True
+    assert backend_condenses_fem_interior("beat_cpu") is True
     assert backend_condenses_fem_interior("beat_cuda") is True
     assert backend_condenses_fem_interior("beat_rocm") is True
-    assert backend_condenses_fem_interior("beat_cpu") is False
 
-    for backend_id in ("beat_cpu", "beat_cpu_condensed", "beat_cuda", "beat_rocm"):
+    for backend_id in ("beat_cpu", "beat_cuda", "beat_rocm"):
         assert supports_physical_system_solves(backend_id) is True
     assert supports_physical_system_solves("local") is False
 
@@ -345,7 +346,7 @@ Stacktrace:
         beat_engine_backend="cuda",
     )
 
-    assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (CUDA)." in friendly
+    assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (Nvidia CUDA)." in friendly
     assert "julia --project=" in friendly
     assert "src" in friendly
     assert "julia_cuda" in friendly

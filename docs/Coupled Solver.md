@@ -16,26 +16,24 @@ details, see [Inputs and Outputs](Inputs%20and%20Outputs.md).
 
 ## Production paths at a glance
 
-Coupled application solves require **BEAT Engine (CPU)** or
-**BEAT Engine (CUDA)**. Both use `Float32/ComplexF32`, solve all configured
-excitation ports as independent reference bases, and stream one result per
-frequency.
+Coupled application solves require **BEAT Engine (CPU)**,
+**BEAT Engine (Nvidia CUDA)**, or **BEAT Engine (AMD ROCm)**. They use
+`Float32/ComplexF32`, solve all configured excitation ports as independent
+reference bases, and stream one result per frequency.
 
 | | BEAT Engine CPU | BEAT Engine CUDA |
 |---|---|---|
 | FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU |
 | BEM operators | Assembled on CPU | Assembled on GPU |
-| Coupled system | Full monolithic dense system on CPU | Schur-condensed acoustic/electromechanical system on GPU |
-| Factorization | CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic |
+| Coupled system | Schur-condensed acoustic/electromechanical system on CPU | Schur-condensed acoustic/electromechanical system on GPU |
+| Factorization | UMFPACK interior Schur complement plus CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic |
 | Exterior field | Evaluated on CPU | Evaluated on GPU |
 | Default Julia threads | 8 | 4 |
 
-CUDA therefore accelerates more than BEM assembly. FEM volume-interior
-unknowns are eliminated with an exact Schur complement, the reduced coupled
-matrix is assembled and factored on the GPU, and eliminated FEM pressure is
-reconstructed after the coupled solve. Electrodynamic models retain the FEM
-nodes on their diaphragm surfaces in addition to the port-interface nodes, so
-the condensed coupling remains exact.
+Production backends eliminate FEM volume-interior unknowns with an exact Schur
+complement and reconstruct eliminated FEM pressure after the coupled solve.
+Electrodynamic models retain the FEM nodes on their diaphragm surfaces in
+addition to the port-interface nodes, so the condensed coupling remains exact.
 
 A separate backend-only **reference path** uses `Float64/ComplexF64` on the CPU.
 It retains the full monolithic matrix and enables additional residual and
@@ -117,8 +115,9 @@ derivative. Differing fluids are rejected.
    offsets and transducer parameters, and assign application channels.
 6. Set **FEM Bulk Loss Factor** on any bounded region that requires volume
    damping, and optionally configure **Wall Impedance** on bounded rigid
-   surfaces. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in
-   Preferences, then choose full, X-half, or XY-quarter symmetry in **Meshes**.
+   surfaces. Select **BEAT Engine (CPU)**, **BEAT Engine (Nvidia CUDA)**, or
+   **BEAT Engine (AMD ROCm)** in Preferences, then choose full, X-half, or
+   XY-quarter symmetry in **Meshes**.
 7. Run the normal application solve.
 
 The component editor accepts direct Re, Le, Bl, Mmd, Cms, and Rms values for an
@@ -388,8 +387,9 @@ backward sparse solve reconstructs every FEM domain's pressure. Static
 condensation changes the work and memory requirements, not the mathematical
 solution.
 
-CPU production and FP64 reference solves remain monolithic. CUDA
-electrodynamic solves use the retained-surface condensed formulation.
+CPU, CUDA, and ROCm production solves use the retained-surface condensed
+formulation. The FP64 reference path and explicit full-matrix diagnostic runs
+remain monolithic.
 
 The matrix is assembled and factored once per frequency. All requested
 excitation ports are then solved together as multiple right-hand sides, so an
@@ -557,10 +557,10 @@ The frequency-dependent FEM Helmholtz matrix, BEM operators, coupled blocks, and
 factorizations are rebuilt at every frequency.
 
 The solver is still limited by dense BEM and coupled algebra. BEM assembly grows
-approximately quadratically with boundary size. CPU monolithic LU grows
-approximately cubically with \(N_F+N_B+N_I+2N_T\). CUDA condensation removes FEM
+approximately quadratically with boundary size. Static condensation removes FEM
 interior nodes from the dense block, but the remaining interface, diaphragm,
-BEM, and transducer system is still dense and requires substantial GPU memory.
+BEM, and transducer system is still dense. Its factorization grows approximately
+cubically with the reduced order and requires substantial host or GPU memory.
 Symmetry can reduce these costs dramatically for both prescribed-velocity and
 electrodynamic models. The current backend is not an iterative or large-scale
 fast-multipole solver.

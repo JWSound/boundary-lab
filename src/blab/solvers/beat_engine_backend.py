@@ -463,7 +463,7 @@ class BeatEngineWorkerProcess:
 
 class BeatEngineBackend:
     backend_id = "beat_cuda"
-    label = "BEAT Engine (CUDA)"
+    label = "BEAT Engine (Nvidia CUDA)"
     beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
@@ -554,7 +554,7 @@ class BeatEngineBackend:
 
 class BeatEngineCudaBackend(BeatEngineBackend):
     backend_id = "beat_cuda"
-    label = "BEAT Engine (CUDA)"
+    label = "BEAT Engine (Nvidia CUDA)"
     beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
 
 
@@ -573,7 +573,7 @@ class BeatEngineCpuBackend(BeatEngineBackend):
 
 class BeatEngineRocmBackend(BeatEngineBackend):
     backend_id = "beat_rocm"
-    label = "BEAT Engine (ROCm)"
+    label = "BEAT Engine (AMD ROCm)"
     beat_engine_backend = BEAT_ENGINE_ROCM_BACKEND
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
@@ -740,11 +740,11 @@ def _friendly_julia_error(
 
 def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | None) -> str:
     if beat_engine_backend == BEAT_ENGINE_CUDA_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CUDA_PROJECT:
-        return "BEAT Engine (CUDA)"
+        return "BEAT Engine (Nvidia CUDA)"
     if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
         return "BEAT Engine (CPU)"
     if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND or project_path == DEFAULT_BEAT_ENGINE_ROCM_PROJECT:
-        return "BEAT Engine (ROCm)"
+        return "BEAT Engine (AMD ROCm)"
     return "the selected BEAT Engine backend"
 
 

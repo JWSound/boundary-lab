@@ -242,6 +242,8 @@ class CoupledSession:
 
 
 class _CoupledBackend:
+    default_static_condensation = False
+
     def __init__(
         self,
         *,
@@ -269,6 +271,15 @@ class _CoupledBackend:
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
         solver_options = dict(request.solver_options)
+        is_coupled = any(
+            region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions
+        )
+        solver_options.setdefault(
+            "static_condensation",
+            is_coupled
+            and self.default_static_condensation
+            and not bool(solver_options.get("validation_diagnostics", False)),
+        )
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
@@ -662,6 +673,7 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"
+    default_static_condensation = True
 
     def __init__(
         self,

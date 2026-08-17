@@ -1275,7 +1275,7 @@ function solve_request(request; event_mode=false)
         get(
             solver_options,
             "static_condensation",
-            bem_backend in (:cuda, :rocm) && !validation_diagnostics,
+            !validation_diagnostics,
         ),
     )
     static_condensation = static_condensation_requested
@@ -1638,6 +1638,8 @@ function solve_request(request; event_mode=false)
                     "rocm_hybrid_cpu_sparse_schur_plus_rocsolver_dense_lu"
                 elseif coupled_system.linear_backend == :cuda
                     "cuda_cudss_schur_plus_dense_lu"
+                elseif coupled_system.condensation.backend == :cpu_noop
+                    "cpu_dense_lu_noop_schur"
                 else
                     "cpu_umfpack_schur_plus_dense_lu"
                 end

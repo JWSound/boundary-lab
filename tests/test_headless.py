@@ -9,7 +9,9 @@ import blab.headless as headless_module
 from blab.headless import (
     HeadlessProject,
     HeadlessResultWriter,
+    HeadlessSolveSpec,
     load_headless_solve_spec,
+    prepare_headless_solve,
     resolve_headless_backend,
 )
 from blab.physical_model import (
@@ -199,7 +201,51 @@ def test_explicit_backend_does_not_probe_cuda(monkeypatch) -> None:
     assert resolve_headless_backend("beat_cpu") == "beat_cpu"
     assert resolve_headless_backend("beat_cuda") == "beat_cuda"
     assert resolve_headless_backend("beat_rocm") == "beat_rocm"
-    assert resolve_headless_backend("beat_cpu_condensed") == "beat_cpu_condensed"
+    assert resolve_headless_backend("beat_cpu_condensed") == "beat_cpu"
+
+
+def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypatch, tmp_path: Path) -> None:
+    prepared = _prepared_request()
+    request = SystemSolveRequest(
+        compiled_system=prepared.request.compiled_system,
+        frequencies_hz=prepared.request.frequencies_hz,
+        excitation_port_ids=prepared.request.excitation_port_ids,
+        outputs=prepared.request.outputs,
+        solver_options={"static_condensation": True},
+    )
+    prepared = SystemUiSolveRequest(
+        request=request,
+        backend_id=prepared.backend_id,
+        solve_kind=prepared.solve_kind,
+        polar_angle_deg=prepared.polar_angle_deg,
+        excitation_channel_names=prepared.excitation_channel_names,
+        excitation_component_names=prepared.excitation_component_names,
+        horizontal_count=prepared.horizontal_count,
+        vertical_count=prepared.vertical_count,
+        result_domains=prepared.result_domains,
+    )
+    monkeypatch.setattr(headless_module, "prepare_system_ui_solve", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(headless_module, "validate_system_solve_request", lambda _request: None)
+    monkeypatch.setattr(headless_module, "validate_system_capabilities", lambda _request: None)
+    project_path = tmp_path / "project.blab.json"
+    project_path.write_text("{}", encoding="utf-8")
+    project = HeadlessProject(
+        path=project_path,
+        payload={},
+        physical_system=PhysicalSystem("system:test", "Test", (), (), ()),
+        preferences=ProjectPreferencesState(),
+        symmetry="off",
+        component_channel_by_id={},
+    )
+
+    result = prepare_headless_solve(
+        project,
+        HeadlessSolveSpec(solver_options={"validation_diagnostics": True}),
+        backend_id="beat_cpu",
+    )
+
+    assert result.request.solver_options["validation_diagnostics"] is True
+    assert result.request.solver_options["static_condensation"] is False
 
 
 def _prepared_request() -> SystemUiSolveRequest:

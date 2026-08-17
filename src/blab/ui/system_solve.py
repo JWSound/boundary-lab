@@ -49,11 +49,7 @@ class SystemSolveWorker(QObject):
     def run(self) -> None:
         try:
             request = replace(self.prepared.request, status_callback=self._log_backend_status)
-            bem_backend = (
-                "cpu"
-                if self.prepared.backend_id == "beat_cpu_condensed"
-                else self.prepared.backend_id.removeprefix("beat_")
-            )
+            bem_backend = self.prepared.backend_id.removeprefix("beat_")
             backend = PhysicalSystemProductionBackend(
                 bem_backend=bem_backend,
                 julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
