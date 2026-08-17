@@ -357,7 +357,7 @@ reflect_vertices(transform::SymmetryTransform, vertices::NTuple{3,SVector{3,T}})
 function symmetry_plane_tolerance(
     vertices::AbstractVector{<:SVector{3,T}};
     absolute_floor::T=T(1e-9),
-    relative_tolerance::T=T(1e-7),
+    relative_tolerance::T=T(1e-6),
 ) where {T<:AbstractFloat}
     if isempty(vertices)
         model_scale = zero(T)

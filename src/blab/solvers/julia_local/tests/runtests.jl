@@ -36,7 +36,7 @@ rocm_available() = AMDGPU_MODULE !== nothing &&
     tolerance = symmetry_plane_tolerance(mesh.vertices)
     snapped = snap_symmetry_planes(mesh, :x)
 
-    @test tolerance ≈ sqrt(0.5) * 1.0e-7
+    @test tolerance ≈ sqrt(0.5) * 1.0e-6
     @test snapped.vertices[1][1] == 0.0
     @test mesh.vertices[1][1] == -1.2e-8
     validate_symmetry_fundamental_domain!(mesh, :x)
