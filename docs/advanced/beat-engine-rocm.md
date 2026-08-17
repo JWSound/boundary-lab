@@ -1,38 +1,88 @@
-# BEAT Engine ROCm development
+# BEAT Engine AMD ROCm
 
-The ROCm backend supports exterior Burton-Miller BEM and coupled FEM-BEM solves,
-including X and XY symmetry, with GPU-resident operator assembly and field
-evaluation:
+BEAT Engine AMD ROCm is Boundary Lab's local AMD GPU backend. It uses the same
+mesh model, Burton-Miller formulation, symmetry rules, coupled-system equations,
+and result protocol as the other BEAT Engine backends while moving the dense BEM
+work to ROCm through AMDGPU.jl.
 
-- regular Galerkin quadrature is evaluated by native ROCm pair-owned kernels;
-  vertex-disjoint element colors make direct dense-operator scatter race-free
-  without atomics;
-- Duffy singular quadrature is evaluated once into compact per-pair blocks and
-  gathered into the dense operators by race-free entry-owned kernels;
-- all four dense operators are allocated and assembled in `ROCArray` storage;
-- the Burton-Miller right-hand side uses rocBLAS;
-- the dense complex solve uses rocSOLVER;
-- exterior field source weighting and observation integration use native ROCm kernels.
+The backend supports:
 
-Results identify the default native assembly as `rocm_native_colored_pair_owned`.
-Set `BLAB_ROCM_REGULAR_KERNEL_MODE=entry_owned` to retain the earlier entry-owned
-kernel as a correctness and performance reference. Set
-`BLAB_ROCM_ASSEMBLY_MODE=host_staged` to use the original CPU-assembly/upload path
-as a diagnostic fallback. Pair-owned assembly uses a partially fused
-SLP/adjoint/DLP kernel plus a separate hypersingular kernel. The earlier combined
-and fully split A/B variants were removed after profiling selected this formulation.
-The default workgroup size is 64 on RDNA2; set
-`BLAB_ROCM_KERNEL_GROUPSIZE` to `32`, `64`, `128`, or `256` for hardware-specific tuning.
-Coupled solves use hybrid static condensation: CPU UMFPACK factors the sparse FEM
-interior and forms the exact Schur complement with bounded per-task scratch;
-the reduced coupled matrix is uploaded for the rocSOLVER dense solve.
+- exterior Burton-Miller BEM solves;
+- coupled FEM-BEM-LEM physical-system solves;
+- `off`, `x`, and `xy` symmetry;
+- GPU-resident regular and singular operator assembly;
+- rocBLAS construction of dense algebraic terms;
+- rocSOLVER dense complex factorization and solve; and
+- GPU exterior-field evaluation for polar, spherical, and arbitrary observation
+  points.
 
-## Julia environment
+Production solves use `Float32` and `ComplexF32`. See [BEAT Engine
+Core](beat-engine-core.md) for the shared boundary-integral formulation and
+[Coupled Solver](../Coupled%20Solver.md) for the physical-system model.
 
-The Windows installer detects and validates an existing ROCm SDK, prepares the
-dedicated Julia environment, and runs the AMDGPU.jl runtime checks. It does not
-download AMD's SDK because the SDK installer requires separate license acceptance
-and may require administrator access.
+## Execution model
+
+### Exterior BEM
+
+Boundary Lab prepares mesh topology, quadrature rules, symmetry transforms, and
+frequency-independent cache data on the CPU. The ROCm worker then:
+
+1. allocates the single-layer, double-layer, adjoint double-layer, and
+   hypersingular matrices as `ROCArray` objects;
+2. evaluates regular Galerkin pairs with native pair-owned ROCm kernels;
+3. evaluates adjacent and coincident pairs with Duffy singular quadrature and
+   gathers their compact correction blocks into the dense operators;
+4. applies symmetry-image contributions and reduced-domain row weights;
+5. forms the Burton-Miller system with rocBLAS and solves it with rocSOLVER; and
+6. evaluates the exterior field with native ROCm kernels.
+
+The default regular assembly uses element coloring so pair-owned kernels can
+scatter into the dense operators without atomics. Frequency-independent geometry,
+singular-pair, identity, and field caches are retained by the persistent Julia
+worker and reused across a frequency sweep.
+
+### Coupled FEM-BEM-LEM
+
+Coupled solves use hybrid static condensation. Sparse FEM assembly and the
+UMFPACK factorization of FEM interior degrees of freedom run on the CPU. Boundary
+Lab forms the exact Schur complement, retains the FEM-BEM interfaces, moving
+surfaces, BEM unknowns, and lumped electromechanical variables, and uploads the
+reduced coupled system for the rocSOLVER dense solve. Eliminated FEM pressure is
+reconstructed after solving.
+
+This keeps sparse FEM work on the CPU while using the GPU for the dense BEM and
+retained coupled system. Exterior field evaluation remains on the GPU.
+
+### Symmetry
+
+The ROCm backend supports the same positive-domain symmetry convention as BEAT
+Engine CPU and Nvidia CUDA. `x` represents a positive-X half model, while `xy`
+represents a positive-X/positive-Y quarter model. Reflected regular and singular
+source contributions are assembled directly into the reduced operators. Field
+evaluation includes the reflected sources, and radiator impedance is scaled to
+represent the complete physical radiator set.
+
+## Requirements
+
+A functional installation requires a supported AMD GPU and driver, Julia, the
+dedicated `src/blab/solvers/julia_rocm` environment, AMDGPU.jl core functionality,
+rocBLAS, and rocSOLVER with its runtime dependencies.
+
+GPU support varies by SDK release. Check AMD's current
+[Windows system requirements](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/shared/hipsdk/reference/system-requirements.html)
+before installing the [Windows HIP SDK](https://rocm.docs.amd.com/projects/install-on-windows/en/latest/).
+
+The four dense BEM operators scale quadratically with the boundary unknown count,
+so available GPU memory normally determines the largest practical mesh. The first
+solve in a new Julia process also includes kernel compilation; later frequencies
+and solves reuse the warm worker and its caches.
+
+## Windows setup
+
+`01_install_update_boundary-lab.bat` detects and validates an existing ROCm SDK,
+prepares the dedicated Julia environment, and runs the AMDGPU.jl runtime checks.
+It does not download AMD's SDK because AMD's installer requires separate license
+acceptance and may require administrator access.
 
 Boundary Lab checks these locations in order:
 
@@ -60,10 +110,12 @@ The saved path is stored under the current user's local application-data folder.
 Use `blab rocm clear` to return to environment-variable and standard-installation
 discovery.
 
-To prepare the Julia environment manually:
+### Manual Julia setup
+
+To prepare the Julia environment manually from the repository root:
 
 ```powershell
-julia --project=src/blab/solvers/julia_rocm -e 'using Pkg; Pkg.instantiate()'
+julia --project=src/blab/solvers/julia_rocm -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
 
 For one terminal session, `BLAB_ROCM_PATH` remains available as the highest-priority
@@ -80,93 +132,75 @@ TheRock layout used with the currently pinned AMDGPU.jl must expose an unversion
 Program Files discovery. In every case the SDK must make `AMDGPU.functional()`,
 `AMDGPU.functional(:rocblas)`, and `AMDGPU.functional(:rocsolver)` return `true`.
 
-## Exterior fixture validation
+## Selecting the backend
 
-Run the CPU-versus-ROCm validation against the complete non-symmetry `sample.msh`
-fixture from a Julia process configured for the selected ROCm SDK:
+In application preferences, select **BEAT Engine (AMD ROCm)**. The corresponding
+backend identifier used by project and server workflows is `beat_rocm`.
+
+The ROCm backend is loaded in its own Julia project, so AMDGPU.jl is not required
+for CPU or Nvidia CUDA solves. If a ROCm worker fails a job, Boundary Lab retires
+that worker instead of reusing potentially invalid device state.
+
+## Runtime controls
+
+Normal application use does not require these environment variables. They are
+available for SDK selection, compatibility diagnosis, and kernel comparison.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BLAB_ROCM_PATH` | Automatically discovered | Select a specific SDK root for the current process. |
+| `BLAB_ROCM_ASSEMBLY_MODE` | `native` | Use `host_staged` to assemble operators on the CPU and upload them as a diagnostic fallback. |
+| `BLAB_ROCM_REGULAR_KERNEL_MODE` | `pair_owned` | Use `entry_owned` as an alternate regular-assembly correctness reference. |
+| `BLAB_ROCM_KERNEL_GROUPSIZE` | `64` | Set the native kernel workgroup size to `32`, `64`, `128`, or `256`. |
+
+The production defaults are `native` assembly and `pair_owned` regular kernels.
+The alternate modes are diagnostic paths rather than separate application
+backends.
+
+## Verification
+
+First verify SDK discovery:
+
+```powershell
+blab rocm detect --json
+```
+
+Then verify the Julia runtime directly:
+
+```powershell
+julia --project=src/blab/solvers/julia_rocm -e 'using AMDGPU; AMDGPU.functional() || error("ROCm unavailable"); AMDGPU.functional(:rocblas) || error("rocBLAS unavailable"); AMDGPU.functional(:rocsolver) || error("rocSOLVER unavailable"); AMDGPU.versioninfo()'
+```
+
+The repository includes CPU-versus-ROCm validation scripts for each production
+path:
+
+| Script | Coverage |
+|---|---|
+| `validate_rocm_exterior.jl` | Operators, boundary pressure, residual, and exterior field for an exterior solve. |
+| `validate_rocm_symmetry.jl` | X and XY reduced-domain assembly and solve parity. |
+| `validate_rocm_coupled.jl` | Coupled FEM-BEM-LEM assembly, static condensation, solution, and reconstruction. |
+| `validate_rocm_native_regular.jl` | Native regular-pair kernels without singular-pair corrections. |
+
+For example:
 
 ```powershell
 julia --project=src/blab/solvers/julia_rocm `
   src/blab/solvers/julia_local/scripts/validate_rocm_exterior.jl
 ```
 
-The script independently assembles BEAT CPU and native ROCm operators, compares
-all four Galerkin operators, solves the same boundary condition on CPU and
-rocSOLVER, and compares boundary pressure, residual, and exterior field pressure.
-It exits with an error when a comparison exceeds its tolerance.
+The validation scripts exit with an error when CPU-versus-ROCm differences exceed
+their tolerances. `BLAB_VALIDATE_REGULAR_ORDER` and
+`BLAB_VALIDATE_SINGULAR_ORDER` can override the quadrature orders used by the
+exterior and symmetry fixtures.
 
-To validate only native regular-pair kernels, excluding Duffy singular pairs, run
-`validate_rocm_native_regular.jl` from the same directory.
+## Operational behavior
 
-Set `BLAB_VALIDATE_REGULAR_ORDER` and `BLAB_VALIDATE_SINGULAR_ORDER` to validate
-production quadrature, for example q4/s4. Run `validate_rocm_symmetry.jl` for the
-half-mesh X and quarter-mesh XY fixtures.
-
-For a high-frequency, end-to-end directivity check, run
-`scripts/diagnose_rocm_polar.jl`. It compares CPU and ROCm operators, boundary
-pressure, integrated radiator pressure (the impedance numerator), and all four
-CPU/ROCm boundary-and-field combinations on a full horizontal polar. The default
-is the XY-symmetry waveguide fixture at 8 kHz and q4/s4. Environment variables
-prefixed with `BLAB_DIAG_` select another mesh, frequency, quadrature order,
-symmetry mode, driven tag, or repeated-solve count.
-
-AMDGPU.jl reads rocSOLVER's `getrf` status from device memory. On this TheRock
-RDNA2 stack that read can rarely return an impossible large negative value even
-though factorization inputs are valid. Boundary Lab synchronizes the solve and
-retries only this corrupt-status signature; real LAPACK argument and singularity
-errors still propagate. A worker that nevertheless reports a failed job is
-retired instead of being reused by the next solve.
-
-## Warm-worker benchmark
-
-`benchmark_rocm.jl` builds geometry, singular, identity, and field caches once,
-warms the compiled kernels, and then reports steady-state medians. This matches
-the reuse boundary of Boundary Lab's persistent Julia worker more closely than
-restarting Julia for every frequency.
-
-```powershell
-julia --project=src/blab/solvers/julia_rocm `
-  src/blab/solvers/julia_local/scripts/benchmark_rocm.jl `
-  --mesh src/blab/solvers/julia_local/test_meshes/sample_detailed.msh `
-  --quadrature-order 4 --singular-order 4 --eval-points 144 `
-  --warmups 2 --repetitions 5
-```
-
-Benchmark JSON is written beneath `src/blab/solvers/julia_local/results/`, which
-is intentionally ignored by Git.
-
-On the RX 6700 XT (`gfx1031`) with workgroup size 64, q4/s4, two warmups, and
-five measured repetitions, the optimized partial-fusion implementation gave:
-
-| Fixture | Entry-owned regular | Initial pair-owned | Partial-fused | Regular speedup | Entry-owned total assembly | Partial-fused total assembly | Total speedup |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `sample.msh` | 222.6 ms | 101.8 ms | 73.0 ms | 3.05x | 278.0 ms | 128.5 ms | 2.16x |
-| `sample_detailed.msh` | 1410.8 ms | 739.6 ms | 454.0 ms | 3.11x | 1710.0 ms | 752.0 ms | 2.27x |
-
-These are warmed-worker medians and exclude cold Julia/GPU compilation. The
-sample fixture uses 10 element colors (200 regular-kernel launches); the detailed
-fixture uses 12 colors (288 launches). Including the unchanged dense solve and a
-144-point GPU field evaluation, the summed stage medians improved from 296.1 ms
-to 147.0 ms (2.01x) on `sample.msh`, and from 1777.1 ms to 820.5 ms (2.17x) on
-`sample_detailed.msh`.
-
-## Kernel inspection
-
-`inspect_rocm_regular_kernels.jl` compiles the exact Julia kernels, writes their
-GCN assembly, and exports AMD code objects beside it. Those code objects can be
-loaded by Radeon GPU Analyzer binary mode for ISA statistics and live VGPR/SGPR
-analysis.
-
-Historical inspection on `gfx1031` found that the original combined
-DLP/hypersingular kernel used 128 VGPRs and
-148 bytes of scratch per thread at a reported occupancy of 8 waves. Fully
-splitting it reduced DLP to 104 VGPRs/36 bytes and HYP to 114 VGPRs/36 bytes, but
-required three quadrature passes. The selected partial fusion uses 128 VGPRs and
-76 bytes of scratch for SLP/adjoint/DLP, followed by the 114-VGPR hypersingular
-kernel. Despite some remaining spill, avoiding the third pass is faster on both
-fixtures. The inspection script now exports only these two production kernels.
-
-Radeon Developer Panel 3.5 can attach to the Julia HIP process on this machine,
-but a hardware-counter trace against the custom TheRock runtime failed during
-trace finalization with result `-2`. Offline RGA code-object analysis works and
-does not perturb or wedge the worker.
+- A cold Julia worker compiles ROCm kernels before its first solve. Steady-state
+  solve time should be evaluated after warm-up.
+- Frequency-independent caches remain resident for the worker's lifetime and are
+  released when the worker exits or is retired.
+- A recognized corrupt rocSOLVER status read is retried a bounded number of times;
+  argument errors, singular systems, and other factorization failures still
+  propagate normally.
+- `host_staged` assembly is useful for separating GPU-kernel issues from SDK or
+  linear-solver issues, but it is not the production performance path.

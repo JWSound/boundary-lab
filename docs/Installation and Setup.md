@@ -160,7 +160,7 @@ BEM and coupled FEM-BEM systems, including X and XY symmetry.
 The server backend can submit exterior or coupled jobs to another Boundary Lab
 installation. The ROCm path uses GPU-resident regular and Duffy singular operator
 assembly, rocBLAS/rocSOLVER dense solves, and GPU exterior field evaluation.
-See [BEAT Engine ROCm development](advanced/beat-engine-rocm.md) for setup and
+See [BEAT Engine AMD ROCm](advanced/beat-engine-rocm.md) for setup and
 validation details.
 
 ### BEAT Engine AMD ROCm on Windows

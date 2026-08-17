@@ -145,6 +145,6 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
-- [BEAT Engine ROCm development](docs/advanced/beat-engine-rocm.md)
+- [BEAT Engine AMD ROCm](docs/advanced/beat-engine-rocm.md)
 - [BEAT Engine CUDA](docs/advanced/beat-engine-CUDA.md)
 - [Forward Beam Shape plot](docs/advanced/forward-beam-shape.md)
