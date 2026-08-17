@@ -81,7 +81,7 @@ class PreferencesMixin:
         fem_icon = QIcon(str(FEM_PREVIEW_LIGHT_ICON if light_theme else FEM_PREVIEW_DARK_ICON))
         bem_icon = QIcon(str(BEM_PREVIEW_LIGHT_ICON if light_theme else BEM_PREVIEW_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
-        phase_icon = QIcon(str(PHASE_DARK_ICON if light_theme else PHASE_LIGHT_ICON))
+        phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
             action.setIcon(icon)
         for action in getattr(self, "capture_contour_actions", {}).values():

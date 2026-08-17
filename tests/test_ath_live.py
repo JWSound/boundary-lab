@@ -658,6 +658,42 @@ def test_live_dataset_exposes_channel_on_axis_curves() -> None:
     np.testing.assert_allclose(prepared["on_axis_phase_deg"], [26.5], atol=0.2)
 
 
+def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_delay() -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+        polar_observation_distance_m=0.343,
+        exterior_sound_speed_m_per_s=343.0,
+    )
+    pressure = np.full((1, 3), 1.0j, dtype=np.complex64)
+    dataset.add(
+        FrequencyResult(
+            freq_hz=250.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+            channel_names=np.array(["main"]),
+            horizontal_pressure=pressure,
+            vertical_pressure=pressure.copy(),
+        )
+    )
+
+    prepared = dataset.as_visualization_dataset(
+        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
+    )
+    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"], [[0.0]], atol=1e-5)
+    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [0.0], atol=1e-5)
+
+    dataset.set_channel_synthesis((ChannelConfig(name="main", delay_ms=0.5),))
+    prepared = dataset.as_visualization_dataset(
+        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
+    )
+    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"], [[-45.0]], atol=1e-4)
+    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-45.0], atol=1e-4)
+
+
 def test_live_dataset_builds_balloon_bundle_from_sphere_results() -> None:
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
     theta = np.linspace(0.1, np.pi - 0.1, 8, dtype=np.float32)
@@ -947,6 +983,8 @@ def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_pa
         angles,
         channel_configs=(ChannelConfig(name="main"),),
         flat_target_normalization_enabled=False,
+        polar_observation_distance_m=0.343,
+        exterior_sound_speed_m_per_s=343.0,
     )
     for freq_hz, pressure in ((1000.0, 1.0 + 0.0j), (200.0, 0.0 + 1.0j)):
         channel_pressure = np.full((1, 3), pressure, dtype=np.complex64)
@@ -966,7 +1004,7 @@ def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_pa
 
     assert written == [tmp_path / "selected-response.txt"]
     assert written[0].read_text(encoding="utf-8").splitlines() == [
-        "200.000000\t93.979\t90.000",
+        "200.000000\t93.979\t18.000",
         "1000.000000\t93.979\t0.000",
     ]
 

@@ -84,7 +84,10 @@ or hiding the summed response and individual channels. The phi icon button adds
 matching dotted phase traces, wrapped between -180 and 180 degrees, on a right
 axis with a fixed -180 to 600 degree display range. Magnitude traces remain solid,
 and the summed response is always black. Phase is available when the solve retains
-complex channel-basis pressure.
+complex channel-basis pressure. On-axis phase removes the propagation time from
+the acoustic origin to the configured polar observation distance. On-axis text
+exports use the same reference, including any channel delay changes made after
+the solve.
 
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder

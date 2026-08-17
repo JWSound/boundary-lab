@@ -22,6 +22,7 @@ from blab.live import (
     build_log_frequencies,
 )
 from blab.physical_model import (
+    AcousticRegionKind,
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
@@ -395,12 +396,23 @@ class SolveWorkflowController(QObject):
     ) -> None:
         sphere_metadata = sphere_metadata or {}
         preferences = self._read_preferences()
+        system = self._project().physical_system
+        exterior_sound_speed = next(
+            (
+                region.sound_speed_m_per_s
+                for region in (() if system is None else system.regions)
+                if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+            ),
+            343.0,
+        )
         self._session.live_dataset = LiveSolveDataset(
             polar_angle_deg=np.asarray(angles, dtype=np.float32),
             radiator_names=np.asarray(radiator_names),
             channel_configs=self._inputs.channel_configs(),
             flat_target_normalization_enabled=preferences.normalized_channel_correction,
             flat_target_reference_angle_deg=preferences.horizontal_normalization_angle,
+            polar_observation_distance_m=preferences.polar_observation_distance_m,
+            exterior_sound_speed_m_per_s=exterior_sound_speed,
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
             sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),

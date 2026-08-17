@@ -11,7 +11,7 @@ _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def export_on_axis_text_files(dataset: LiveSolveDataset, output_target: str | Path) -> list[Path]:
-    """Write REW-compatible frequency, SPL, and phase columns for each channel.
+    """Write REW-compatible frequency, SPL, and propagation-aligned phase columns.
 
     ``output_target`` is the exact file path for a single-channel solve and an
     output directory for a multi-channel solve.
