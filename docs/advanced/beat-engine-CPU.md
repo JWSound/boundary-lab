@@ -2,7 +2,10 @@
 
 The BEAT Engine CPU backend is a hardware-agnostic Julia/OpenBLAS solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs operator assembly, dense solve, and field evaluation on the host.
 
-The application exposes this path as `BEAT Engine (CPU)` / `beat_cpu`.
+The application exposes the monolithic path as `BEAT Engine (CPU)` / `beat_cpu`
+and the exact FEM interface-condensed path as `BEAT Engine (CPU Condensed)` /
+`beat_cpu_condensed`. The condensed path eliminates FEM interior unknowns with a
+sparse UMFPACK Schur complement before the reduced dense CPU solve.
 Its coupled FEM-BEM execution path is described separately in [Coupled
 Solver](../Coupled%20Solver.md); the sections below focus on BEM operator and
 field work shared with exterior solves.

@@ -1248,6 +1248,27 @@ end
 
 const ROCM_HYBRID_SCHUR_BLOCK_SIZE = 64
 
+function _densify_sparse_columns!(
+    dense::AbstractMatrix{ComplexF64},
+    source::SparseMatrixCSC{ComplexF64,Int},
+    columns,
+)
+    fill!(dense, zero(ComplexF64))
+    row_indices = rowvals(source)
+    values = nonzeros(source)
+    for (local_column, source_column) in enumerate(columns)
+        for index in nzrange(source, source_column)
+            dense[row_indices[index], local_column] = values[index]
+        end
+    end
+    return dense
+end
+
+function _resolved_schur_block_size(requested::Int, retained_count::Int)
+    retained_count == 0 && return 0
+    return max(1, min(requested, fld(retained_count, Threads.nthreads())))
+end
+
 function _blocked_umfpack_schur_complement(
     factorization,
     interior_to_retained::SparseMatrixCSC{ComplexF64,Int},
@@ -1263,36 +1284,39 @@ function _blocked_umfpack_schur_complement(
         thread_count=1,
     )
 
-    resolved_block_size = min(block_size, retained_count)
-    blocks = collect(Iterators.partition(1:retained_count, resolved_block_size))
-    thread_count = min(Threads.nthreads(), length(blocks))
+    resolved_block_size = _resolved_schur_block_size(block_size, retained_count)
+    block_starts = collect(1:resolved_block_size:retained_count)
+    thread_count = max(1, min(Threads.nthreads(), length(block_starts)))
     schur = copy(retained_system)
 
-    if thread_count == 1
-        for block in blocks
-            columns = first(block):last(block)
-            interior_response = factorization \ Matrix(interior_to_retained[:, columns])
-            schur[:, columns] .-= retained_to_interior * interior_response
-        end
-    else
-        # UMFPACK's matrix solve iterates over right-hand sides while holding one
-        # factorization workspace lock. `copy(::UmfpackLU)` is a documented
-        # shallow copy that shares the numeric factors but owns independent
-        # workspace, control, info, and lock fields. One copy per Julia thread
-        # therefore permits exact concurrent solves without duplicating the LU.
-        thread_factorizations = [
-            copy(factorization)
-            for _ in 1:Threads.maxthreadid()
-        ]
-        Threads.@threads :static for block in blocks
-            columns = first(block):last(block)
-            local_factorization = thread_factorizations[Threads.threadid()]
-            interior_response = local_factorization \ Matrix(
-                interior_to_retained[:, columns],
-            )
-            schur[:, columns] .-= retained_to_interior * interior_response
+    interior_count = size(interior_to_retained, 1)
+    buffer_columns = min(resolved_block_size, retained_count)
+    tasks = map(1:thread_count) do task_index
+        Threads.@spawn begin
+            task_factorization = copy(factorization)
+            dense_columns = Matrix{ComplexF64}(undef, interior_count, buffer_columns)
+            solved_columns = Matrix{ComplexF64}(undef, interior_count, buffer_columns)
+            for block_index in task_index:thread_count:length(block_starts)
+                block_start = block_starts[block_index]
+                columns = block_start:min(
+                    block_start + resolved_block_size - 1,
+                    retained_count,
+                )
+                block_rhs = view(dense_columns, :, 1:length(columns))
+                block_solution = view(solved_columns, :, 1:length(columns))
+                _densify_sparse_columns!(block_rhs, interior_to_retained, columns)
+                ldiv!(block_solution, task_factorization, block_rhs)
+                mul!(
+                    view(schur, :, columns),
+                    retained_to_interior,
+                    block_solution,
+                    -one(ComplexF64),
+                    one(ComplexF64),
+                )
+            end
         end
     end
+    foreach(wait, tasks)
     return (
         schur=schur,
         block_size=resolved_block_size,

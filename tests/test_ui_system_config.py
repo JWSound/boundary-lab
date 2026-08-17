@@ -950,6 +950,19 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
     assert prepared.request.solver_options["static_condensation"] is False
     assert prepared.request.solver_options["symmetry"] == "off"
+
+    condensed = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(new_observation_plane("Interior Slice"),),
+        backend_id="beat_cpu_condensed",
+    )
+    assert condensed.request.solver_options["static_condensation"] is True
+    assert condensed.backend_id == "beat_cpu_condensed"
     interior = next(
         region for region in prepared.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     )

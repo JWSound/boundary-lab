@@ -490,13 +490,15 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
 
     assert session.request.solver_options["static_condensation"] is True
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.request.solver_options["static_condensation"] is True
     assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
-def test_coupled_cuda_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
+def test_coupled_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
     request = SystemSolveRequest(
         compiled_system=compiled,
@@ -508,9 +510,8 @@ def test_coupled_cuda_rejects_static_condensation_with_full_matrix_diagnostics()
     with pytest.raises(ValueError, match="static condensation cannot be combined"):
         CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
 
-    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
-    assert cpu_session.request.solver_options["static_condensation"] is False
-    assert cpu_session.request.solver_options["validation_diagnostics"] is True
+    with pytest.raises(ValueError, match="static condensation cannot be combined"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
 @pytest.mark.parametrize(
@@ -957,6 +958,61 @@ def test_coupled_reference_backend_solves_sealed_zero_interface_fixture() -> Non
 
 
 @pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run CPU condensed/monolithic parity.",
+)
+def test_coupled_cpu_condensed_matches_cpu_monolithic() -> None:
+    compiled = PhysicalSystemCompiler().compile(_bidirectional_electrodynamic_fixture_system())
+    outputs = (
+        OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+        OutputRequest(id="output:current", quantity="voice_coil_current"),
+        OutputRequest(
+            id="output:field",
+            quantity="exterior_pressure",
+            options={"points_m": [[0.0, 0.0, 0.2]]},
+        ),
+    )
+    base_options = {
+        "quadrature_order": 1,
+        "singular_order": 1,
+        "validation_diagnostics": False,
+    }
+    monolithic_request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=outputs,
+        solver_options={**base_options, "static_condensation": False},
+    )
+    condensed_request = replace(
+        monolithic_request,
+        solver_options={**base_options, "static_condensation": True},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    backend = CoupledReferenceBackend(
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+
+    (monolithic,) = tuple(backend.create_system_session(monolithic_request).solve_stream())
+    (condensed,) = tuple(backend.create_system_session(condensed_request).solve_stream())
+
+    reference = {quantity.id: quantity.values for quantity in monolithic.quantities}
+    candidate = {quantity.id: quantity.values for quantity in condensed.quantities}
+    for quantity_id, values in reference.items():
+        scale = max(float(np.linalg.norm(values)), np.finfo(float).eps)
+        relative_error = float(np.linalg.norm(candidate[quantity_id] - values)) / scale
+        assert relative_error < 1e-9, (quantity_id, relative_error)
+
+    assert monolithic.diagnostics["formulation"] == "monolithic"
+    assert condensed.diagnostics["formulation"] == "fem_interface_condensed"
+    assert condensed.diagnostics["linear_backend"] == "cpu"
+    assert condensed.diagnostics["linear_solver"] == "cpu_umfpack_schur_plus_dense_lu"
+    assert condensed.diagnostics["fem_interior_residual"] < 1e-9
+    assert condensed.diagnostics["solved_system_order"] < condensed.diagnostics["full_system_order"]
+
+
+@pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
     reason="Set BLAB_RUN_COUPLED_CUDA=1 to run electrodynamic CPU/CUDA parity.",
 )
@@ -994,7 +1050,11 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
         persistent_worker=True,
     )
 
-    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    cpu_request = replace(
+        request,
+        solver_options={**request.solver_options, "static_condensation": False},
+    )
+    (cpu_result,) = tuple(cpu_backend.create_system_session(cpu_request).solve_stream())
     (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
 
     cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}
@@ -1054,7 +1114,11 @@ def test_coupled_sealed_zero_interface_cuda_matches_cpu() -> None:
         persistent_worker=True,
     )
 
-    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    cpu_request = replace(
+        request,
+        solver_options={**request.solver_options, "static_condensation": False},
+    )
+    (cpu_result,) = tuple(cpu_backend.create_system_session(cpu_request).solve_stream())
     (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
 
     cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}

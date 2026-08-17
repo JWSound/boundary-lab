@@ -29,7 +29,10 @@ blab project solve speaker.blab.json --backend beat_cpu --output runs/speaker-ch
 The default `--backend beat_auto` always selects a BEAT Engine backend. It probes
 the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
 functional; otherwise it falls back to `beat_cpu`. Use an explicit
-`--backend beat_cpu` or `--backend beat_cuda` to disable automatic selection.
+`--backend beat_cpu`, `--backend beat_cpu_condensed`, `--backend beat_cuda`, or
+`--backend beat_rocm` to disable automatic selection. `beat_cpu_condensed` uses
+the ordinary CPU path for exterior-only projects and exact FEM interface
+condensation for coupled projects.
 `--julia-executable` and `--julia-threads` select the Julia installation and
 thread count. The output directory must not already exist, which prevents an
 agent from accidentally overwriting a previous run.
@@ -91,9 +94,9 @@ Supported `retain` entries are `bem_boundary_pressure`,
 Complex results remain separated by excitation port; the headless path does not
 collapse them into synthesized GUI channels.
 
-Full-matrix `validation_diagnostics` may be enabled for coupled BEAT CPU solves.
-They cannot be combined with CUDA FEM static condensation; project validation
-rejects that incompatible option combination before Julia starts.
+Full-matrix `validation_diagnostics` may be enabled for monolithic coupled BEAT
+CPU solves. They cannot be combined with CPU, CUDA, or ROCm FEM static
+condensation; project validation rejects that combination before Julia starts.
 
 ### Result artifact
 

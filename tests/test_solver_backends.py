@@ -28,10 +28,12 @@ from blab.solvers.http_server import (
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
+    backend_condenses_fem_interior,
     backend_info,
     backend_label_to_id,
     create_backend,
     normalize_backend_id,
+    supports_physical_system_solves,
 )
 
 
@@ -69,6 +71,26 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
+
+
+def test_condensed_cpu_backend_is_selectable_without_displacing_rocm() -> None:
+    labels = backend_label_to_id()
+
+    assert labels["BEAT Engine (CPU Condensed)"] == "beat_cpu_condensed"
+    assert normalize_backend_id("beat_cpu_condensed") == "beat_cpu_condensed"
+    assert backend_info("beat_cpu_condensed").capabilities.supports_symmetry is True
+    condensed_backend = create_backend("beat_cpu_condensed")
+    assert condensed_backend.backend_id == "beat_cpu_condensed"
+    assert condensed_backend.beat_engine_backend == "cpu"
+
+    assert backend_condenses_fem_interior("beat_cpu_condensed") is True
+    assert backend_condenses_fem_interior("beat_cuda") is True
+    assert backend_condenses_fem_interior("beat_rocm") is True
+    assert backend_condenses_fem_interior("beat_cpu") is False
+
+    for backend_id in ("beat_cpu", "beat_cpu_condensed", "beat_cuda", "beat_rocm"):
+        assert supports_physical_system_solves(backend_id) is True
+    assert supports_physical_system_solves("local") is False
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:

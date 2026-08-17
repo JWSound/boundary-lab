@@ -272,8 +272,6 @@ class _CoupledBackend:
         solver_options["precision"] = self.precision
         solver_options["bem_backend"] = self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-        if self.bem_backend == "cpu":
-            solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
         validate_system_capabilities(typed_request)
         return CoupledSession(

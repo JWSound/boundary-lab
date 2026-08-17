@@ -16,7 +16,7 @@ from blab.solvers.beat_engine_backend import (
     _get_julia_worker,
 )
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import normalize_backend_id, supports_physical_system_solves
 
 _FIELD_ARRAYS_FILENAME = "field-arrays.bin"
 _FIELD_RESULT_FILENAME = "field-result.bin"
@@ -45,9 +45,11 @@ def evaluate_bem_field(
     """Evaluate one synthesized BEM response on arbitrary exterior points."""
 
     normalized_backend = normalize_backend_id(backend_id)
-    if normalized_backend not in {"beat_cpu", "beat_cuda", "beat_rocm"}:
-        raise ValueError("Retained BEM fields require a BEAT Engine CPU, CUDA, or ROCm backend.")
-    bem_backend = normalized_backend.removeprefix("beat_")
+    if not supports_physical_system_solves(normalized_backend):
+        raise ValueError(
+            "Retained BEM fields require a BEAT Engine CPU, CPU Condensed, CUDA, or ROCm backend."
+        )
+    bem_backend = _bem_backend_for_id(normalized_backend)
     julia_project = {
         "cpu": DEFAULT_COUPLED_CPU_PROJECT,
         "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -78,6 +80,12 @@ def evaluate_bem_field(
         if values.dtype.kind != "c" or values.shape != (np.asarray(request.points_m).shape[0],):
             raise RuntimeError("The BEAT Engine field worker returned an invalid exterior pressure array.")
         return values
+
+
+def _bem_backend_for_id(backend_id: str) -> str:
+    """Map a selectable backend variant onto the Julia BEM implementation."""
+
+    return "cpu" if backend_id == "beat_cpu_condensed" else backend_id.removeprefix("beat_")
 
 
 def _write_evaluation_request(
@@ -135,7 +143,7 @@ def _validated_evaluation_request(
             "frequency_hz": float(request.frequency_hz),
             "sound_speed_m_per_s": float(request.sound_speed_m_per_s),
             "symmetry": symmetry,
-            "bem_backend": backend_id.removeprefix("beat_"),
+            "bem_backend": _bem_backend_for_id(backend_id),
             "precision": "float64" if dtype == np.dtype(np.complex128) else "float32",
             "quadrature_order": 2,
         },

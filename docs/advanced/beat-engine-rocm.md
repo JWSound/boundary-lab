@@ -1,7 +1,8 @@
 # BEAT Engine ROCm development
 
-The ROCm backend supports exterior Burton-Miller BEM solves, including X and XY
-symmetry, with GPU-resident operator assembly and field evaluation:
+The ROCm backend supports exterior Burton-Miller BEM and coupled FEM-BEM solves,
+including X and XY symmetry, with GPU-resident operator assembly and field
+evaluation:
 
 - regular Galerkin quadrature is evaluated by native ROCm pair-owned kernels;
   vertex-disjoint element colors make direct dense-operator scatter race-free
@@ -22,7 +23,9 @@ SLP/adjoint/DLP kernel plus a separate hypersingular kernel. The earlier combine
 and fully split A/B variants were removed after profiling selected this formulation.
 The default workgroup size is 64 on RDNA2; set
 `BLAB_ROCM_KERNEL_GROUPSIZE` to `32`, `64`, `128`, or `256` for hardware-specific tuning.
-Coupled FEM-BEM remains a later milestone.
+Coupled solves use hybrid static condensation: CPU UMFPACK factors the sparse FEM
+interior and forms the exact Schur complement with bounded per-task scratch;
+the reduced coupled matrix is uploaded for the rocSOLVER dense solve.
 
 ## Julia environment
 

@@ -6,6 +6,7 @@ import threading
 import numpy as np
 
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_ROCM_PROJECT
+from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT
 from blab.solvers.coupled_field import BemFieldEvaluationRequest, evaluate_bem_field
 
 
@@ -127,6 +128,39 @@ def test_evaluate_bem_field_routes_rocm_worker_and_payload(monkeypatch) -> None:
     assert worker_options[0]["julia_project"] == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
     assert worker_options[0]["julia_threads"] == 4
     assert payloads[0]["bem_backend"] == "rocm"
+
+
+def test_evaluate_bem_field_maps_condensed_variant_to_cpu_worker(monkeypatch) -> None:
+    import blab.solvers.coupled_field as field_module
+
+    worker_options = []
+    payloads = []
+
+    class Worker:
+        def submit(self, request_path, *, operation):
+            assert operation == "bem_field"
+            payloads.append(json.loads(request_path.read_text(encoding="utf-8")))
+            yield {
+                "type": "field_result",
+                "values": {
+                    "dtype": "complex64",
+                    "shape": [2],
+                    "real": [1.0, 2.0],
+                    "imag": [-1.0, -2.0],
+                },
+            }
+
+    monkeypatch.setattr(
+        field_module,
+        "_get_julia_worker",
+        lambda **kwargs: worker_options.append(kwargs) or Worker(),
+    )
+
+    evaluate_bem_field(_request(), backend_id="beat_cpu_condensed")
+
+    assert worker_options[0]["julia_project"] == DEFAULT_COUPLED_CPU_PROJECT
+    assert worker_options[0]["julia_threads"] == 8
+    assert payloads[0]["bem_backend"] == "cpu"
 
 
 def test_exterior_field_service_coalesces_queued_requests(qapp, monkeypatch) -> None:

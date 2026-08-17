@@ -48,6 +48,11 @@ def main() -> int:
     parser.add_argument("--singular-order", type=int, default=2)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
     parser.add_argument("--bem-backend", choices=("cpu", "cuda", "rocm"), default="cpu")
+    parser.add_argument(
+        "--condensed",
+        action="store_true",
+        help="Use exact CPU FEM interface condensation; CUDA and ROCm condense automatically.",
+    )
     parser.add_argument("--symmetry", choices=("off", "x", "xy"), default="off")
     parser.add_argument(
         "--persistent",
@@ -76,8 +81,14 @@ def main() -> int:
     frequencies = tuple(float(value.strip()) for value in args.frequencies.split(",") if value.strip())
     if not frequencies:
         parser.error("--frequencies must contain at least one value.")
+    if args.condensed and args.bem_backend != "cpu":
+        parser.error("--condensed requires --bem-backend cpu; CUDA and ROCm already condense.")
+    if args.condensed and args.mode == "reference":
+        parser.error("--condensed cannot use reference mode because no monolithic matrix exists.")
     system = _fixture_system() if args.project is None else _system_from_project(args.project)
     modes = ("interactive", "reference", "uncached") if args.mode == "all" else (args.mode,)
+    if args.condensed:
+        modes = tuple(mode for mode in modes if mode != "reference")
     for mode in modes:
         for warmup_index in range(args.warmup_runs):
             _run_mode(
@@ -95,6 +106,7 @@ def main() -> int:
                 precision=args.precision,
                 bem_backend=args.bem_backend,
                 symmetry_mode=args.symmetry,
+                condensed=args.condensed,
             )
         for run_index in range(max(1, args.repeat)):
             _run_mode(
@@ -112,6 +124,7 @@ def main() -> int:
                 precision=args.precision,
                 bem_backend=args.bem_backend,
                 symmetry_mode=args.symmetry,
+                condensed=args.condensed,
             )
     return 0
 
@@ -132,7 +145,9 @@ def _run_mode(
     precision: str,
     bem_backend: str,
     symmetry_mode: str,
+    condensed: bool = False,
 ) -> None:
+    backend_id = "beat_cpu_condensed" if condensed else f"beat_{bem_backend}"
     prepared = prepare_coupled_ui_solve(
         system,
         freq_min_hz=min(frequencies),
@@ -140,15 +155,15 @@ def _run_mode(
         freq_count=len(frequencies),
         observation_distance_m=2.0,
         polar_angle_step_deg=angle_step,
-        backend_id=f"beat_{bem_backend}",
+        backend_id=backend_id,
         symmetry_mode=symmetry_mode,
     )
     options = dict(prepared.request.solver_options)
     options["quadrature_order"] = int(quadrature_order)
     options["singular_order"] = int(singular_order)
-    options["validation_diagnostics"] = mode != "interactive"
+    options["validation_diagnostics"] = mode != "interactive" and not condensed
     options["cache_frequency_invariant"] = mode != "uncached"
-    if mode != "interactive":
+    if mode != "interactive" and not condensed:
         # Full-matrix replay diagnostics intentionally benchmark the
         # monolithic formulation on every accelerator backend.
         options["static_condensation"] = False
@@ -213,7 +228,7 @@ def _run_mode(
     )
     setup_detail_totals = {key: 0.0 for key in setup_detail_keys}
     print(
-        f"\n{mode.upper()} {phase}={run_index}  precision={precision}  bem={bem_backend}"
+        f"\n{mode.upper()} {phase}={run_index}  backend={backend_id}  precision={precision}  bem={bem_backend}"
         f"  symmetry={symmetry_mode}  frequencies={len(results)}  wall={wall_s:.3f}s"
     )
     if result_arrival_s:

@@ -116,8 +116,8 @@ blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
 ```
 
 Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
-`beat_cuda`, and `beat_rocm`. ROCm supports non-symmetric exterior BEM; coupled and
-symmetry workflows remain on BEAT Engine CPU or CUDA. For BEAT Engine solvers, use
+`beat_cuda`, and `beat_rocm`. ROCm supports exterior and coupled FEM-BEM solves,
+including symmetry and hybrid FEM static condensation. For BEAT Engine solvers, use
 `--julia-executable` and `--julia-threads` to point the server at the intended
 Julia installation and thread count.
 
