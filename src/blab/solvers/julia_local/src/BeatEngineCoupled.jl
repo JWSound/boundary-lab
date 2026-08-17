@@ -1246,6 +1246,60 @@ function _release_cuda_fem_condensation!(condensation)
     return nothing
 end
 
+const ROCM_HYBRID_SCHUR_BLOCK_SIZE = 64
+
+function _blocked_umfpack_schur_complement(
+    factorization,
+    interior_to_retained::SparseMatrixCSC{ComplexF64,Int},
+    retained_to_interior::SparseMatrixCSC{ComplexF64,Int},
+    retained_system::Matrix{ComplexF64};
+    block_size::Int=ROCM_HYBRID_SCHUR_BLOCK_SIZE,
+)
+    block_size > 0 || throw(ArgumentError("Schur-complement block size must be positive."))
+    retained_count = size(interior_to_retained, 2)
+    retained_count == 0 && return (
+        schur=copy(retained_system),
+        block_size=0,
+        thread_count=1,
+    )
+
+    resolved_block_size = min(block_size, retained_count)
+    blocks = collect(Iterators.partition(1:retained_count, resolved_block_size))
+    thread_count = min(Threads.nthreads(), length(blocks))
+    schur = copy(retained_system)
+
+    if thread_count == 1
+        for block in blocks
+            columns = first(block):last(block)
+            interior_response = factorization \ Matrix(interior_to_retained[:, columns])
+            schur[:, columns] .-= retained_to_interior * interior_response
+        end
+    else
+        # UMFPACK's matrix solve iterates over right-hand sides while holding one
+        # factorization workspace lock. `copy(::UmfpackLU)` is a documented
+        # shallow copy that shares the numeric factors but owns independent
+        # workspace, control, info, and lock fields. One copy per Julia thread
+        # therefore permits exact concurrent solves without duplicating the LU.
+        thread_factorizations = [
+            copy(factorization)
+            for _ in 1:Threads.maxthreadid()
+        ]
+        Threads.@threads :static for block in blocks
+            columns = first(block):last(block)
+            local_factorization = thread_factorizations[Threads.threadid()]
+            interior_response = local_factorization \ Matrix(
+                interior_to_retained[:, columns],
+            )
+            schur[:, columns] .-= retained_to_interior * interior_response
+        end
+    end
+    return (
+        schur=schur,
+        block_size=resolved_block_size,
+        thread_count=thread_count,
+    )
+end
+
 function _build_rocm_hybrid_fem_condensation(
     fem_system::SparseMatrixCSC{Complex{T}},
     interface_operators::InterfaceOperators{T},
@@ -1282,16 +1336,24 @@ function _build_rocm_hybrid_fem_condensation(
     factorization_s = (time_ns() - factorization_started) / 1.0e9
 
     schur_started = time_ns()
-    schur = if isempty(interior_vertices)
-        retained_system
+    schur_result = if isempty(interior_vertices)
+        (
+            schur=retained_system,
+            block_size=0,
+            thread_count=1,
+        )
     else
-        interior_response = factorization \ Matrix(interior_to_retained)
-        retained_system - retained_to_interior * interior_response
+        _blocked_umfpack_schur_complement(
+            factorization,
+            interior_to_retained,
+            retained_to_interior,
+            retained_system,
+        )
     end
     schur_extraction_s = (time_ns() - schur_started) / 1.0e9
 
     upload_started = time_ns()
-    device_schur = amdgpu.ROCArray(Complex{T}.(schur))
+    device_schur = amdgpu.ROCArray(Complex{T}.(schur_result.schur))
     amdgpu.synchronize()
     upload_s = (time_ns() - upload_started) / 1.0e9
     return (
@@ -1304,6 +1366,8 @@ function _build_rocm_hybrid_fem_condensation(
         retained_to_interior=retained_to_interior,
         interior_count=length(interior_vertices),
         retained_count=length(retained_vertices),
+        schur_block_size=schur_result.block_size,
+        schur_thread_count=schur_result.thread_count,
         timings=(
             analysis_s=0.0,
             partition_s=partition_s,

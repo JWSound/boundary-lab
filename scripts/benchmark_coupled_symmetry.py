@@ -102,7 +102,10 @@ def main() -> int:
         default="cpu",
     )
     parser.add_argument("--julia", default="julia")
-    parser.add_argument("--julia-threads", default="4")
+    parser.add_argument(
+        "--julia-threads",
+        help="Julia worker thread count or 'auto' (defaults by backend).",
+    )
     parser.add_argument(
         "--solver-script",
         type=Path,
@@ -529,6 +532,10 @@ def _mode_report(
         "formulation": str(results[0].diagnostics["formulation"]),
         "fem_condensation_backend": results[0].diagnostics.get(
             "fem_condensation_backend"
+        ),
+        "fem_schur_block_size": int(results[0].diagnostics.get("fem_schur_block_size", 0)),
+        "fem_schur_thread_count": int(
+            results[0].diagnostics.get("fem_schur_thread_count", 0)
         ),
         "static_condensation_requested": bool(
             results[0].diagnostics.get("static_condensation_requested", False)

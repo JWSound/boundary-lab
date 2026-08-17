@@ -38,7 +38,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, help="Boundary Lab project containing a physical_system.")
     parser.add_argument("--julia", default="julia", help="Julia executable or absolute path.")
-    parser.add_argument("--julia-threads", default="1", help="Julia worker thread count or 'auto'.")
+    parser.add_argument(
+        "--julia-threads",
+        help="Julia worker thread count or 'auto' (defaults by backend).",
+    )
     parser.add_argument("--frequencies", default="500,1000", help="Comma-separated frequencies in Hz.")
     parser.add_argument("--angle-step", type=float, default=90.0, help="Polar observation angle step.")
     parser.add_argument("--quadrature-order", type=int, default=2)

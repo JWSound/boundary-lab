@@ -205,7 +205,7 @@ def test_coupled_production_backend_selects_rocm_project() -> None:
     assert session.request.solver_options["bem_backend"] == "rocm"
     assert session.request.solver_options["static_condensation"] is True
     assert session.julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
-    assert session.julia_threads == 4
+    assert session.julia_threads == 8
 
 
 def test_coupled_nonpersistent_rocm_worker_uses_shared_julia_environment(monkeypatch) -> None:
@@ -250,7 +250,7 @@ def test_coupled_nonpersistent_rocm_worker_uses_shared_julia_environment(monkeyp
     session = CoupledProductionBackend(bem_backend="rocm", persistent_worker=False).create_system_session(request)
 
     assert list(session.solve_stream()) == []
-    assert environment_calls == [(4, DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve())]
+    assert environment_calls == [(8, DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve())]
     assert process_calls[0][1]["env"] == {"ROCM_PATH": "test-rocm"}
 
 

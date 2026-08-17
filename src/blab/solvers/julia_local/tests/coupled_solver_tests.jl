@@ -6,6 +6,39 @@ const COUPLED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..",
 const COUPLED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 
+@testset "blocked exact FEM Schur complement" begin
+    interior_system = sparse(ComplexF64[
+        4.0 + 0.1im 1.0 0.0
+        1.0 3.0 + 0.2im 0.5
+        0.0 0.5 2.0 + 0.1im
+    ])
+    interior_to_retained = sparse(ComplexF64[
+        1.0 0.0
+        0.25 0.5
+        0.0 1.0
+    ])
+    retained_to_interior = sparse(transpose(interior_to_retained))
+    retained_system = ComplexF64[
+        3.0 + 0.1im 0.2
+        0.2 2.5 + 0.1im
+    ]
+    factorization = lu(interior_system)
+    reference = retained_system -
+                retained_to_interior * (factorization \ Matrix(interior_to_retained))
+
+    result = BeatEngineCoupled._blocked_umfpack_schur_complement(
+        factorization,
+        interior_to_retained,
+        retained_to_interior,
+        retained_system;
+        block_size=1,
+    )
+
+    @test result.schur ≈ reference rtol=1e-14 atol=1e-14
+    @test result.block_size == 1
+    @test 1 <= result.thread_count <= min(Threads.nthreads(), 2)
+end
+
 @testset "disconnected BEM mesh aggregation" begin
     first = BoundaryMesh(
         SVector{3,Float64}[
@@ -790,6 +823,8 @@ if get(ENV, "BLAB_RUN_COUPLED_ROCM", "0") == "1" && rocm_available()
             @test condensed_system.linear_backend == :rocm
             @test condensed_system.formulation == :fem_interface_condensed
             @test condensed_system.solved_system_order < condensed_system.full_system_order
+            @test condensed_system.condensation.schur_block_size > 0
+            @test 1 <= condensed_system.condensation.schur_thread_count <= Threads.nthreads()
             @test rocm_system.bulk_loss_factor == 0.01f0
             @test relative_error(cpu_solution.fem_pressure, rocm_solution.fem_pressure) < 5e-4
             @test relative_error(cpu_solution.bem_pressure, rocm_solution.bem_pressure) < 5e-4

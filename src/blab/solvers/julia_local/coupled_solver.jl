@@ -1584,6 +1584,16 @@ function solve_request(request; event_mode=false)
             "fem_condensation_backend" => isnothing(coupled_system.condensation) ?
                                           nothing :
                                           String(coupled_system.condensation.backend),
+            "fem_schur_block_size" => isnothing(coupled_system.condensation) ||
+                                      !hasproperty(
+                coupled_system.condensation,
+                :schur_block_size,
+            ) ? 0 : coupled_system.condensation.schur_block_size,
+            "fem_schur_thread_count" => isnothing(coupled_system.condensation) ||
+                                        !hasproperty(
+                coupled_system.condensation,
+                :schur_thread_count,
+            ) ? 0 : coupled_system.condensation.schur_thread_count,
             "pressure_continuity_error" => isempty(interface_pressure_errors) ?
                                            nothing :
                                            maximum(interface_pressure_errors),

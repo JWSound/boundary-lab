@@ -675,7 +675,8 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         persistent_worker: bool = True,
     ):
         normalized_bem_backend = str(bem_backend).strip().lower()
-        resolved_threads = (4 if normalized_bem_backend in {"cuda", "rocm"} else 8) if julia_threads is None else julia_threads
+        default_threads = 4 if normalized_bem_backend == "cuda" else 8
+        resolved_threads = default_threads if julia_threads is None else julia_threads
         julia_project = {
             "cpu": DEFAULT_COUPLED_CPU_PROJECT,
             "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
