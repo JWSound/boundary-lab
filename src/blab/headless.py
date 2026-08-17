@@ -693,7 +693,7 @@ def _with_retained_fields(
             )
         )
         if FEM_VOLUME_DOMAIN_ID not in domain_ids:
-            domains.append(fem_volume_result_domain(compiled_system))
+            domains.append(fem_volume_result_domain(compiled_system, symmetry=symmetry))
     return outputs, domains
 
 

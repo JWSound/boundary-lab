@@ -30,6 +30,7 @@ from blab.solve_results import (
     bem_boundary_result_domain,
 )
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.symmetry import snap_points_to_symmetry_planes
 from blab.system_contract import OutputRequest, validate_system_solve_request
 from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
 
@@ -518,7 +519,7 @@ def expand_bem_boundary_symmetry(
     pressure_pa: np.ndarray,
     normal_derivative_pa_per_m: np.ndarray,
     symmetry: object,
-    tolerance_m: float = 1e-9,
+    tolerance_m: float | None = None,
 ) -> ExpandedBemBoundary:
     """Materialize X/XY mirror images while preserving P1/DP0 trace meaning.
 
@@ -546,7 +547,7 @@ def expand_bem_boundary_symmetry(
         raise ValueError("BEM normal derivative must end with the bem_face dimension.")
     if not np.all(np.isfinite(points)):
         raise ValueError("BEM points must be finite.")
-    if not np.isfinite(tolerance_m) or tolerance_m < 0.0:
+    if tolerance_m is not None and (not np.isfinite(tolerance_m) or tolerance_m < 0.0):
         raise ValueError("Symmetry weld tolerance must be finite and non-negative.")
 
     identity = np.eye(3, dtype=np.float64)
@@ -558,11 +559,7 @@ def expand_bem_boundary_symmetry(
     if mode == "xy":
         images.extend((("reflect_y", reflect_y), ("reflect_xy", reflect_x @ reflect_y)))
 
-    snapped = points.copy()
-    if mode in {"x", "xy"}:
-        snapped[np.abs(snapped[:, 0]) <= tolerance_m, 0] = 0.0
-    if mode == "xy":
-        snapped[np.abs(snapped[:, 1]) <= tolerance_m, 1] = 0.0
+    snapped = snap_points_to_symmetry_planes(points, mode, tolerance_m=tolerance_m)
 
     expanded_points: list[np.ndarray] = []
     source_nodes: list[int] = []

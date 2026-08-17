@@ -297,6 +297,26 @@ def test_bem_symmetry_expansion_welds_seams_and_preserves_trace_parity(
         np.testing.assert_allclose(target_normal, transform @ source_normal)
 
 
+def test_bem_symmetry_expansion_snaps_scale_relative_plane_noise() -> None:
+    expanded = expand_bem_boundary_symmetry(
+        points_m=np.asarray(
+            [
+                [-1.2e-8, 0.0, 0.8],
+                [0.5, 0.0, 0.8],
+                [0.0, 0.5, 0.8],
+            ]
+        ),
+        triangles=np.asarray([[0, 1, 2]]),
+        pressure_pa=np.ones(3),
+        normal_derivative_pa_per_m=np.ones(1),
+        symmetry="x",
+    )
+
+    source_zero_indices = np.flatnonzero(expanded.source_node_index == 0)
+    assert source_zero_indices.tolist() == [0]
+    assert expanded.points_m[source_zero_indices[0], 0] == 0.0
+
+
 def test_level_two_xy_symmetry_is_materialized_before_package_rotation(tmp_path: Path) -> None:
     solved = _solved_system(symmetry="xy")
     output = tmp_path / "speaker.blabsp"

@@ -100,6 +100,9 @@ export BoundaryMesh,
     reflect_point,
     reflect_vertices,
     p1_symmetry_orbit_weights,
+    snap_symmetry_planes,
+    snap_symmetry_plane_vertices,
+    symmetry_plane_tolerance,
     symmetry_image_transforms,
     symmetry_reduction_factor,
     symmetry_transforms,
@@ -351,7 +354,56 @@ reflect_vertices(transform::SymmetryTransform, vertices::NTuple{3,SVector{3,T}})
     reflect_point(transform, vertices[3]),
 )
 
-function validate_symmetry_fundamental_domain!(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+function symmetry_plane_tolerance(
+    vertices::AbstractVector{<:SVector{3,T}};
+    absolute_floor::T=T(1e-9),
+    relative_tolerance::T=T(1e-7),
+) where {T<:AbstractFloat}
+    if isempty(vertices)
+        model_scale = zero(T)
+    else
+        lower = first(vertices)
+        upper = first(vertices)
+        for vertex in Iterators.drop(vertices, 1)
+            lower = min.(lower, vertex)
+            upper = max.(upper, vertex)
+        end
+        model_scale = norm(upper - lower)
+    end
+    return max(absolute_floor, model_scale * relative_tolerance)
+end
+
+function snap_symmetry_plane_vertices(
+    vertices::AbstractVector{<:SVector{3,T}},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(vertices),
+) where {T<:AbstractFloat}
+    mode_symbol = normalized_symmetry_mode(mode)
+    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    return [
+        SVector{3,T}(ntuple(
+            axis -> axis in active_axes && abs(vertex[axis]) <= tolerance ? zero(T) : vertex[axis],
+            3,
+        ))
+        for vertex in vertices
+    ]
+end
+
+function snap_symmetry_planes(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
+    vertices = snap_symmetry_plane_vertices(mesh.vertices, mode; tolerance=tolerance)
+    vertices == mesh.vertices && return mesh
+    return BoundaryMesh(vertices, mesh.faces, mesh.physical_tags)
+end
+
+function validate_symmetry_fundamental_domain!(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
     for axis in active_axes
@@ -368,7 +420,11 @@ function validate_symmetry_fundamental_domain!(mesh::BoundaryMesh{T}, mode; tole
     return nothing
 end
 
-function p1_symmetry_orbit_weights(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+function p1_symmetry_orbit_weights(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     weights = ones(T, length(mesh.vertices))
     active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)

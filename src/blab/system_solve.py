@@ -232,7 +232,7 @@ def prepare_system_ui_solve(
                 target_ids=(FEM_VOLUME_DOMAIN_ID,),
             )
         )
-        result_domains.append(fem_volume_result_domain(compiled))
+        result_domains.append(fem_volume_result_domain(compiled, symmetry=symmetry))
     transducers = [
         component for component in compiled.components if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
     ]

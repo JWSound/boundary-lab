@@ -15,6 +15,7 @@ from blab.solve_results.model import (
     ResultDomain,
     SolvedSystem,
 )
+from blab.symmetry import snap_points_to_symmetry_planes
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,7 @@ def bem_boundary_result_domain(
 
         points, faces, physical_tags = _read_gmsh22_boundary_geometry(Path(resource.file))
         points = points * float(resource.scale_to_m) + np.asarray(resource.translation_m, dtype=float)
+        points = snap_points_to_symmetry_planes(points, symmetry)
         points_by_mesh.append(points)
         faces_by_mesh.append(faces + node_offset)
         tags_by_mesh.append(physical_tags)

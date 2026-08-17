@@ -281,7 +281,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
     )
     mesh_setup_started = time_ns()
     bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
-    mesh = bem_domain.mesh
+    mesh = snap_symmetry_planes(bem_domain.mesh, symmetry_mode)
     validate_symmetry_fundamental_domain!(mesh, symmetry_mode)
     excitation_port_ids = String.(request["excitation_port_ids"])
     excitations = exterior_excitations(
@@ -1106,8 +1106,25 @@ function solve_request(request; event_mode=false)
     bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
     bem_mesh = bem_domain.mesh
     symmetry_tolerance = max(
-        FloatType(1e-9),
-        maximum(maximum(abs, vertex) for vertex in fem_mesh.vertices) * FloatType(1e-6),
+        symmetry_plane_tolerance(fem_mesh.vertices),
+        symmetry_plane_tolerance(bem_mesh.vertices),
+    )
+    fem_mesh = VolumeMesh(
+        snap_symmetry_plane_vertices(
+            fem_mesh.vertices,
+            symmetry_mode;
+            tolerance=symmetry_tolerance,
+        ),
+        fem_mesh.tetrahedra,
+        fem_mesh.tetra_physical_tags,
+        fem_mesh.boundary_faces,
+        fem_mesh.boundary_physical_tags,
+        fem_mesh.physical_names,
+    )
+    bem_mesh = snap_symmetry_planes(
+        bem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
     )
     validate_volume_symmetry_fundamental_domain!(
         fem_mesh,

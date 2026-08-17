@@ -715,6 +715,7 @@ function solve_request_impl(request)
     ))
 
     mesh, element_mesh_ids = load_combined_mesh(mesh_inputs, FloatType)
+    mesh = snap_symmetry_planes(mesh, Symbol(symmetry_mode))
     validate_symmetry_fundamental_domain!(mesh, Symbol(symmetry_mode))
     validate_radiator_elements(mesh, element_mesh_ids, radiators)
     p1_space = build_p1_space(mesh)

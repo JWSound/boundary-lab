@@ -9,9 +9,10 @@ import numpy as np
 
 from blab.physical_model import AcousticRegionKind, CompiledPhysicalSystem
 from blab.solve_results.model import FEM_VOLUME_DOMAIN_ID, ResultDomain
+from blab.symmetry import snap_points_to_symmetry_planes
 
 
-def fem_volume_result_domain(system: CompiledPhysicalSystem) -> ResultDomain:
+def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = "off") -> ResultDomain:
     """Reconstruct the node and tetrahedron order used by the coupled backend.
 
     Julia restricts each bounded region to its selected physical-volume tags,
@@ -63,6 +64,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem) -> ResultDomain:
 
         points = np.asarray(mesh.points, dtype=np.float64)[active_vertices]
         points = points * float(resource.scale_to_m) + np.asarray(resource.translation_m, dtype=float)
+        points = snap_points_to_symmetry_planes(points, symmetry)
         points_by_region.append(points)
         tetrahedra_by_region.append(local_tetrahedra + node_offset)
         node_region_indices.append(np.full(points.shape[0], region_index, dtype=np.int32))

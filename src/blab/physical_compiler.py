@@ -46,6 +46,7 @@ from blab.physical_model import (
     PhysicsAssumption,
     ResolvedPhysicalGroup,
 )
+from blab.symmetry import snap_points_to_symmetry_planes
 
 
 class PhysicalModelCompileError(ValueError):
@@ -467,8 +468,8 @@ class PhysicalSystemCompiler:
         unbounded = boundaries_by_id[interface.unbounded_boundary_id]
         fem_resource = meshes_by_id[bounded.group.mesh_id]
         bem_resource = meshes_by_id[unbounded.group.mesh_id]
-        fem_mesh = self._transformed_mesh(fem_resource)
-        bem_mesh = self._transformed_mesh(bem_resource)
+        fem_mesh = self._transformed_mesh(fem_resource, symmetry_mode=symmetry_mode)
+        bem_mesh = self._transformed_mesh(bem_resource, symmetry_mode=symmetry_mode)
         try:
             topology = build_conforming_interface_map(
                 fem_mesh,
@@ -594,10 +595,11 @@ class PhysicalSystemCompiler:
             self._mesh_cache[resolved] = mesh
         return mesh
 
-    def _transformed_mesh(self, resource: MeshResource) -> meshio.Mesh:
+    def _transformed_mesh(self, resource: MeshResource, *, symmetry_mode: str = "off") -> meshio.Mesh:
         mesh = self._read_mesh(resource)
         points = np.asarray(mesh.points, dtype=float) * float(resource.scale_to_m)
         points += np.asarray(resource.translation_m, dtype=float)
+        points = snap_points_to_symmetry_planes(points, symmetry_mode)
         return meshio.Mesh(
             points=points,
             cells=mesh.cells,

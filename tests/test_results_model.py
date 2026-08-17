@@ -132,7 +132,7 @@ $EndElements
 $EndMeshFormat
 $Nodes
 3
-4 0 0 0
+4 -0.000000012 0 0
 8 0 1 0
 12 0 0 1
 $EndNodes
@@ -181,6 +181,7 @@ $EndElements
     assert domain.topology["triangles"].tolist() == [[0, 1, 2], [5, 3, 4]]
     assert domain.topology["source_physical_tag"].tolist() == [7, 9]
     np.testing.assert_allclose(domain.coordinates["points_m"][0], [1.0, 0.0, 0.0])
+    assert domain.coordinates["points_m"][3, 0] == 0.0
     np.testing.assert_allclose(domain.coordinates["points_m"][4], [0.0, 3.0, 0.0])
 
 
