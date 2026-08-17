@@ -39,6 +39,8 @@ class InteriorFieldResults:
     frequency_indices: np.ndarray
     points_m: np.ndarray
     tetrahedra: np.ndarray
+    tetrahedron_density_kg_per_m3: np.ndarray
+    pressure_shape_gradients: np.ndarray
     pressure_by_frequency: np.ndarray
     excitation_ids: tuple[str, ...]
     channel_names_by_excitation: tuple[str, ...]
@@ -78,6 +80,24 @@ class InteriorFieldResults:
             flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
         )
         return np.sum(basis * weights[:, np.newaxis], axis=0).astype(np.complex64, copy=False)
+
+    def particle_velocity(self, frequency_hz: float | None, response_id: str) -> np.ndarray:
+        """Return the complex P1 particle-velocity vector in each tetrahedron."""
+
+        available_index = self.frequency_index(frequency_hz)
+        frequency = float(self.frequencies_hz[available_index])
+        pressure = self.pressure(frequency, response_id)
+        pressure_gradient = np.einsum(
+            "ti,tij->tj",
+            pressure[np.asarray(self.tetrahedra, dtype=np.int64)],
+            self.pressure_shape_gradients,
+            optimize=True,
+        )
+        omega = 2.0 * np.pi * frequency
+        velocity = pressure_gradient / (
+            1j * omega * self.tetrahedron_density_kg_per_m3[:, np.newaxis]
+        )
+        return velocity.astype(np.complex64, copy=False)
 
 
 @dataclass(frozen=True)
@@ -198,6 +218,8 @@ def interior_field_results_from_solved_system(
         raise ValueError("FEM nodal pressure has unexpected dimensions.")
     if pressure.shape != (solved.frequencies_hz.size, len(solved.excitation_ids), points.shape[0]):
         raise ValueError("FEM nodal pressure does not align with the solved frequencies, excitations, and nodes.")
+    shape_gradients = tetrahedral_shape_gradients(points, tetrahedra)
+    tetrahedron_density = _tetrahedron_density_kg_per_m3(solved, domain, tetrahedra.shape[0])
 
     availability = np.asarray(solved.completion_mask, dtype=bool) & np.asarray(
         quantity.available_frequency_mask, dtype=bool
@@ -221,6 +243,8 @@ def interior_field_results_from_solved_system(
         frequency_indices=frequency_indices,
         points_m=points,
         tetrahedra=tetrahedra,
+        tetrahedron_density_kg_per_m3=tetrahedron_density,
+        pressure_shape_gradients=shape_gradients,
         pressure_by_frequency=pressure,
         excitation_ids=solved.excitation_ids,
         channel_names_by_excitation=channel_names,
@@ -231,6 +255,71 @@ def interior_field_results_from_solved_system(
         flat_target_reference_angle_deg=float(flat_target_reference_angle_deg),
         symmetry=symmetry,
     )
+
+
+def tetrahedral_shape_gradients(points_m: np.ndarray, tetrahedra: np.ndarray) -> np.ndarray:
+    """Return physical P1 basis gradients with shape ``(tetrahedron, 4, xyz)``."""
+
+    points = np.asarray(points_m, dtype=float)
+    cells = np.asarray(tetrahedra, dtype=np.int64)
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("FEM points must have shape (node, 3).")
+    if cells.ndim != 2 or cells.shape[1] != 4:
+        raise ValueError("FEM tetrahedra must have shape (tetrahedron, 4).")
+    if np.any(cells < 0) or np.any(cells >= points.shape[0]):
+        raise ValueError("FEM tetrahedra reference nodes outside the point array.")
+    vertices = points[cells]
+    jacobians = np.stack(
+        (
+            vertices[:, 1] - vertices[:, 0],
+            vertices[:, 2] - vertices[:, 0],
+            vertices[:, 3] - vertices[:, 0],
+        ),
+        axis=2,
+    )
+    determinants = np.linalg.det(jacobians)
+    edge_scale = np.max(np.abs(jacobians), axis=(1, 2))
+    tolerance = np.finfo(float).eps * edge_scale**3
+    if np.any(np.abs(determinants) <= tolerance):
+        raise ValueError("FEM volume mesh contains a numerically degenerate tetrahedron.")
+    reference_gradients = np.asarray(
+        [[-1.0, 1.0, 0.0, 0.0], [-1.0, 0.0, 1.0, 0.0], [-1.0, 0.0, 0.0, 1.0]],
+        dtype=float,
+    )
+    right_hand_side = np.broadcast_to(reference_gradients, (cells.shape[0], 3, 4))
+    gradients = np.linalg.solve(np.swapaxes(jacobians, 1, 2), right_hand_side)
+    return np.swapaxes(gradients, 1, 2)
+
+
+def _tetrahedron_density_kg_per_m3(
+    solved: SolvedSystem,
+    domain,
+    tetrahedron_count: int,
+) -> np.ndarray:
+    raw_densities = domain.metadata.get("density_kg_per_m3")
+    if raw_densities is None and solved.compiled_system is not None:
+        raw_densities = [
+            region.density_kg_per_m3
+            for region in getattr(solved.compiled_system, "regions", ())
+            if region.kind == AcousticRegionKind.BOUNDED_AIR
+        ]
+    densities = np.asarray(() if raw_densities is None else raw_densities, dtype=float)
+    if densities.ndim != 1 or not densities.size:
+        raise ValueError("FEM particle velocity requires bounded-region density metadata.")
+    if not np.all(np.isfinite(densities)) or np.any(densities <= 0.0):
+        raise ValueError("FEM bounded-region densities must be finite and greater than zero.")
+    raw_region_indices = domain.topology.get("region_index")
+    if raw_region_indices is None:
+        if densities.size != 1:
+            raise ValueError("FEM tetrahedra require region indices when multiple densities are present.")
+        region_indices = np.zeros(tetrahedron_count, dtype=np.int64)
+    else:
+        region_indices = np.asarray(raw_region_indices, dtype=np.int64)
+    if region_indices.shape != (tetrahedron_count,):
+        raise ValueError("FEM tetrahedron region indices do not align with the volume topology.")
+    if np.any(region_indices < 0) or np.any(region_indices >= densities.size):
+        raise ValueError("FEM tetrahedron region indices reference unavailable density values.")
+    return densities[region_indices]
 
 
 def exterior_field_results_from_solved_system(
@@ -397,6 +486,22 @@ def project_field_scalars(
     pressure_color_limit_pa: float | None = None,
 ) -> FieldScalarProjection:
     pressure = np.asarray(pressure)
+    display = ObservationPlaneDisplay(display)
+    if display == ObservationPlaneDisplay.PARTICLE_VELOCITY:
+        if pressure.ndim != 2 or pressure.shape[1] != 3:
+            raise ValueError("Particle velocity values must have shape (sample, 3).")
+        complex_magnitude = np.sqrt(np.sum(np.abs(pressure) ** 2, axis=1))
+        if animation_phase_deg is None:
+            values = complex_magnitude
+            title = "Particle Velocity Magnitude (m/s)"
+        else:
+            instantaneous = np.real(
+                pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg)))
+            )
+            values = np.linalg.norm(instantaneous, axis=1)
+            title = "Instantaneous Particle Speed (m/s)"
+        maximum = _finite_abs_max(complex_magnitude)
+        return FieldScalarProjection(values.astype(np.float32, copy=False), title, "turbo", (0.0, maximum))
     if animation_phase_deg is not None:
         values = np.real(pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg))))
         # Keep the animation scale stable for the entire cycle.  The complex
@@ -404,7 +509,6 @@ def project_field_scalars(
         # reach, so its global maximum is a phase-independent symmetric limit.
         limit = _pressure_color_limit(np.abs(pressure), pressure_color_limit_pa)
         return FieldScalarProjection(values, "Instantaneous Pressure (Pa)", "coolwarm", (-limit, limit))
-    display = ObservationPlaneDisplay(display)
     if display == ObservationPlaneDisplay.SPL:
         values = pressure_spl_db(pressure)
         maximum = _finite_max(values, fallback=0.0)
@@ -462,4 +566,5 @@ __all__ = [
     "observation_field_results_from_solved_system",
     "normalized_spl_reference_db",
     "project_field_scalars",
+    "tetrahedral_shape_gradients",
 ]

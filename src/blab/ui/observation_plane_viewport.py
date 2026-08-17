@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QMenu
 
 from blab.observation_planes import (
@@ -41,6 +42,10 @@ FIELD_MESSAGE_ACTOR_NAME = "observation-plane:field-message"
 FIELD_SCALAR_NAME = "observation-plane-field"
 ROTATION_SNAP_DEG = 5.0
 PLANE_FIELD_CACHE_KINDS = frozenset({"smooth", "element", "combined", "exterior", "exterior-mask"})
+PARTICLE_VELOCITY_SCALAR_BAR_TITLE = "Particle Velocity\nMagnitude (m/s)\n "
+SCALAR_BAR_MIN_POSITION_X = 0.70
+SCALAR_BAR_MAX_POSITION_X = 0.84
+SCALAR_BAR_RIGHT_TEXT_ALLOWANCE_PX = 103.0
 
 
 @dataclass
@@ -74,6 +79,8 @@ class _SmoothFieldGeometry:
     mesh: object
     source_node_ids: np.ndarray
     interpolation_weights: np.ndarray
+    source_tetrahedron_ids: np.ndarray
+    vector_signs: np.ndarray
     clipped: object
 
 
@@ -91,6 +98,7 @@ class _CombinedFieldGeometry:
 class _ElementFieldGeometry:
     mesh: object
     source_tetrahedron_ids: np.ndarray
+    vector_signs: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -136,6 +144,7 @@ class ObservationPlaneViewport(QObject):
         self._field_generation = 0
         self._field_synthesis_generation = 0
         self._scalar_bar_titles: set[str] = set()
+        self._text_color = _viewport_text_color(viewer)
         self._clip_active = False
         self._animation_plane_id: str | None = None
         self._animation_phase_deg = 0.0
@@ -163,14 +172,28 @@ class ObservationPlaneViewport(QObject):
         self._foreground_renderer = self._create_foreground_renderer()
         viewer.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         viewer.installEventFilter(self)
+        tool_shortcuts = {
+            "w": self._activate_move_mode,
+            "e": self._activate_rotate_mode,
+            "r": self._activate_scale_mode,
+        }
         if hasattr(viewer, "clear_events_for_key"):
-            viewer.clear_events_for_key("r")
+            for key in tool_shortcuts:
+                viewer.clear_events_for_key(key)
         if hasattr(viewer, "add_key_event"):
-            viewer.add_key_event("r", self._activate_rotate_mode)
+            for key, callback in tool_shortcuts.items():
+                viewer.add_key_event(key, callback)
 
     @property
     def selected_id(self) -> str | None:
         return self._selected_id
+
+    def refresh_theme(self) -> None:
+        text_color = _viewport_text_color(self.viewer)
+        if text_color == self._text_color:
+            return
+        self._text_color = text_color
+        self._render()
 
     def set_field_preferences(self, *, cache_size_mb: object, translation_target_fps: object) -> None:
         self._exterior_result_cache_max_bytes = field_cache_size_bytes(cache_size_mb)
@@ -457,17 +480,17 @@ class ObservationPlaneViewport(QObject):
 
     def _on_key_press(self, event) -> bool:
         key = event.key()
-        if key == Qt.Key.Key_R:
+        if key == Qt.Key.Key_W:
+            self._activate_move_mode()
+            return True
+        if key == Qt.Key.Key_E:
             self._activate_rotate_mode()
+            return True
+        if key == Qt.Key.Key_R:
+            self._activate_scale_mode()
             return True
         if self._selected_id is None:
             return False
-        if key == Qt.Key.Key_M:
-            self._set_mode("move")
-            return True
-        if key == Qt.Key.Key_S:
-            self._set_mode("size")
-            return True
         if key in {Qt.Key.Key_Delete, Qt.Key.Key_Backspace}:
             self.deleteRequested.emit(self._selected_id)
             return True
@@ -479,11 +502,20 @@ class ObservationPlaneViewport(QObject):
             return True
         return False
 
+    def _activate_move_mode(self) -> None:
+        self._activate_tool_mode("move")
+
     def _activate_rotate_mode(self) -> None:
+        self._activate_tool_mode("rotate")
+
+    def _activate_scale_mode(self) -> None:
+        self._activate_tool_mode("size")
+
+    def _activate_tool_mode(self, mode: str) -> None:
         if self._selected_id is None:
             return
         camera_position = _camera_position_snapshot(self.viewer)
-        self._set_mode("rotate")
+        self._set_mode(mode)
         if camera_position is not None:
             QTimer.singleShot(0, lambda: self._restore_camera_position(camera_position))
 
@@ -790,6 +822,7 @@ class ObservationPlaneViewport(QObject):
                 self._field_message,
                 position="lower_left",
                 font_size=9,
+                color=self._text_color,
                 name=FIELD_MESSAGE_ACTOR_NAME,
                 render=False,
             )
@@ -846,7 +879,15 @@ class ObservationPlaneViewport(QObject):
         results = None if self._field_results is None else self._field_results.interior
         if results is None:
             raise ValueError("No interior field results are available.")
-        pressure = results.pressure(plane.frequency_hz, plane.response_id)
+        particle_velocity = plane.display == ObservationPlaneDisplay.PARTICLE_VELOCITY
+        if particle_velocity and plane.plane_type != ObservationPlaneType.INTERIOR:
+            raise ValueError("Particle velocity is available for Interior observation planes only.")
+        pressure = None if particle_velocity else results.pressure(plane.frequency_hz, plane.response_id)
+        tetrahedron_velocity = (
+            results.particle_velocity(plane.frequency_hz, plane.response_id)
+            if particle_velocity
+            else None
+        )
         if plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD:
             geometry = self._element_field_mesh(
                 plane,
@@ -854,8 +895,14 @@ class ObservationPlaneViewport(QObject):
                 results.tetrahedra,
                 results.symmetry,
             )
-            source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
-            values = source_pressure[geometry.source_tetrahedron_ids]
+            if particle_velocity:
+                values = (
+                    tetrahedron_velocity[geometry.source_tetrahedron_ids]
+                    * geometry.vector_signs
+                )
+            else:
+                source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
+                values = source_pressure[geometry.source_tetrahedron_ids]
             return geometry.mesh, values, "cell", None
         geometry = self._smooth_field_mesh(
             plane,
@@ -863,10 +910,16 @@ class ObservationPlaneViewport(QObject):
             results.tetrahedra,
             results.symmetry,
         )
-        values = np.sum(
-            pressure[geometry.source_node_ids] * geometry.interpolation_weights,
-            axis=1,
-        )
+        if particle_velocity:
+            values = (
+                tetrahedron_velocity[geometry.source_tetrahedron_ids]
+                * geometry.vector_signs
+            )
+        else:
+            values = np.sum(
+                pressure[geometry.source_node_ids] * geometry.interpolation_weights,
+                axis=1,
+            )
         return geometry.mesh, values, "point", geometry.clipped
 
     def _add_exterior_field(self, plane: ObservationPlane) -> bool:
@@ -1347,6 +1400,11 @@ class ObservationPlaneViewport(QObject):
             expanded_points[expanded_node_ids],
         )
         sampled_source_node_ids = source_node_ids[expanded_node_ids]
+        source_tetrahedron_count = np.asarray(tetrahedra).shape[0]
+        source_tetrahedron_ids = sampled_cell_ids % source_tetrahedron_count
+        vector_signs = _symmetry_image_signs(symmetry)[
+            sampled_cell_ids // source_tetrahedron_count
+        ]
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
@@ -1357,6 +1415,8 @@ class ObservationPlaneViewport(QObject):
             mesh=sampled,
             source_node_ids=sampled_source_node_ids,
             interpolation_weights=interpolation_weights,
+            source_tetrahedron_ids=source_tetrahedron_ids,
+            vector_signs=vector_signs,
             clipped=clipped,
         )
         self._field_cache[key] = (signature, result)
@@ -1484,6 +1544,9 @@ class ObservationPlaneViewport(QObject):
         result = _ElementFieldGeometry(
             mesh=clipped,
             source_tetrahedron_ids=clipped_source_ids % np.asarray(tetrahedra).shape[0],
+            vector_signs=_symmetry_image_signs(symmetry)[
+                clipped_source_ids // np.asarray(tetrahedra).shape[0]
+            ],
         )
         self._field_cache[key] = (signature, result)
         return result
@@ -1579,6 +1642,7 @@ class ObservationPlaneViewport(QObject):
             mesh.cell_data[FIELD_SCALAR_NAME] = projection.values
         else:
             mesh.point_data[FIELD_SCALAR_NAME] = projection.values
+        scalar_bar_title = _scalar_bar_title(projection.title)
         actor = self.viewer.add_mesh(
             mesh,
             name=name,
@@ -1593,7 +1657,15 @@ class ObservationPlaneViewport(QObject):
             lighting=False,
             pickable=False,
             show_scalar_bar=True,
-            scalar_bar_args={"title": projection.title, "vertical": True},
+            scalar_bar_args={
+                "title": scalar_bar_title,
+                "vertical": True,
+                "color": self._text_color,
+                "title_font_size": 11,
+                "label_font_size": 10,
+                "position_x": _scalar_bar_position_x(self.viewer),
+                "width": 0.10,
+            },
             render=False,
         )
         self._active_field = _ActiveFieldState(
@@ -1606,7 +1678,7 @@ class ObservationPlaneViewport(QObject):
             plane=plane,
             sample_shape=plane.sample_shape if association == "point" else None,
         )
-        self._scalar_bar_titles.add(projection.title)
+        self._scalar_bar_titles.add(scalar_bar_title)
         self._actor_names.add(name)
 
     def _update_active_field(self, plane: ObservationPlane | None) -> bool:
@@ -1652,6 +1724,7 @@ class ObservationPlaneViewport(QObject):
         if not _update_mesh_scalars(mesh, association, projection.values):
             return False
         state.pressure = np.asarray(pressure)
+        state.plane = plane
         mapper = state.actor.GetMapper() if state.actor is not None and hasattr(state.actor, "GetMapper") else None
         if mapper is not None:
             mapper.SetScalarRange(*projection.clim)
@@ -1781,19 +1854,25 @@ class ObservationPlaneViewport(QObject):
         state = self._active_field
         if state is None or state.plane_id != plane.id:
             return False
-        phase_rad = math.radians(self._animation_phase_deg)
-        values = np.real(state.pressure) * math.cos(phase_rad) + np.imag(state.pressure) * math.sin(phase_rad)
-        if not _update_mesh_scalars(state.mesh, state.association, values):
+        projection = ObservationPlaneViewport._project_field_scalars(
+            self,
+            state.pressure,
+            plane,
+            animation_phase_deg=self._animation_phase_deg,
+        )
+        if not _update_mesh_scalars(state.mesh, state.association, projection.values):
             return False
         self.viewer.render()
         return True
 
     def _add_help_text(self, plane: ObservationPlane) -> None:
-        mode = f"\nMode: {self._mode.title()}" if self._mode else ""
+        mode_name = {"move": "Move", "rotate": "Rotate", "size": "Scale"}.get(self._mode, "")
+        mode = f"\nMode: {mode_name}" if mode_name else ""
         self.viewer.add_text(
-            f"{plane.name}\nM - Move    R - Rotate    S - Size{mode}",
+            f"{plane.name}\nW - Move    E - Rotate    R - Scale{mode}",
             position="upper_left",
             font_size=10,
+            color=self._text_color,
             name=HELP_ACTOR_NAME,
             render=False,
         )
@@ -1804,6 +1883,7 @@ class ObservationPlaneViewport(QObject):
             _relative_rotation_text(angle_deg),
             position="upper_edge",
             font_size=12,
+            color=self._text_color,
             name=ANGLE_ACTOR_NAME,
             render=False,
         )
@@ -2076,6 +2156,30 @@ def _relative_rotation_text(angle_deg: float) -> str:
     return f"Relative rotation: {float(angle_deg):+.1f}°"
 
 
+def _scalar_bar_title(title: str) -> str:
+    if title == "Particle Velocity Magnitude (m/s)":
+        return PARTICLE_VELOCITY_SCALAR_BAR_TITLE
+    return title
+
+
+def _scalar_bar_position_x(viewer: object) -> float:
+    try:
+        viewport_width = float(viewer.width())
+    except (AttributeError, TypeError, ValueError):
+        return SCALAR_BAR_MIN_POSITION_X
+    if not math.isfinite(viewport_width) or viewport_width <= 0.0:
+        return SCALAR_BAR_MIN_POSITION_X
+    position = 1.0 - SCALAR_BAR_RIGHT_TEXT_ALLOWANCE_PX / viewport_width
+    return min(max(position, SCALAR_BAR_MIN_POSITION_X), SCALAR_BAR_MAX_POSITION_X)
+
+
+def _viewport_text_color(viewer: object) -> str:
+    palette = viewer.palette() if hasattr(viewer, "palette") else None
+    if palette is not None and palette.color(QPalette.ColorRole.Window).lightness() < 128:
+        return "white"
+    return "black"
+
+
 def _result_selection_update(
     previous: tuple[ObservationPlane, ...],
     current: tuple[ObservationPlane, ...],
@@ -2278,21 +2382,26 @@ def _expanded_fem_geometry(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     points = np.asarray(points, dtype=float)
     tetrahedra = np.asarray(tetrahedra, dtype=np.int64)
-    signs = [(1.0, 1.0, 1.0)]
-    if symmetry in {"x", "xy"}:
-        signs.append((-1.0, 1.0, 1.0))
-    if symmetry == "xy":
-        signs.extend(((1.0, -1.0, 1.0), (-1.0, -1.0, 1.0)))
+    signs = _symmetry_image_signs(symmetry)
     point_blocks = []
     tetrahedron_blocks = []
     for image_index, image_signs in enumerate(signs):
-        point_blocks.append(points * np.asarray(image_signs, dtype=float))
+        point_blocks.append(points * image_signs)
         tetrahedron_blocks.append(tetrahedra + image_index * points.shape[0])
     return (
         np.vstack(point_blocks),
         np.vstack(tetrahedron_blocks),
         np.tile(np.arange(points.shape[0], dtype=np.int64), len(signs)),
     )
+
+
+def _symmetry_image_signs(symmetry: str) -> np.ndarray:
+    signs = [(1.0, 1.0, 1.0)]
+    if symmetry in {"x", "xy"}:
+        signs.append((-1.0, 1.0, 1.0))
+    if symmetry == "xy":
+        signs.extend(((1.0, -1.0, 1.0), (-1.0, -1.0, 1.0)))
+    return np.asarray(signs, dtype=float)
 
 
 def _expanded_boundary_geometry(

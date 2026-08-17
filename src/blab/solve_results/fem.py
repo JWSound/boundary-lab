@@ -93,6 +93,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
         metadata={
             "mesh_ids": mesh_ids,
             "region_ids": region_ids,
+            "density_kg_per_m3": [float(region.density_kg_per_m3) for region in bounded_regions],
             "node_offsets": node_offsets,
             "node_counts": node_counts,
             "tetra_offsets": tetra_offsets,

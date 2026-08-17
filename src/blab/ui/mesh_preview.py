@@ -115,6 +115,9 @@ class MeshPreview(QWidget):
         viewer = getattr(self, "viewer", None)
         if viewer is not None:
             viewer.set_background(themed_content_background(self.palette()))
+        observation_editor = getattr(self, "_observation_editor", None)
+        if observation_editor is not None:
+            observation_editor.refresh_theme()
 
     def clear(self) -> None:
         self._mesh_region_actors = []

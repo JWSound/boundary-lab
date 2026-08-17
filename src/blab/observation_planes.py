@@ -29,6 +29,7 @@ class ObservationPlaneDisplay(StrEnum):
     REAL_PRESSURE = "real_pressure"
     IMAGINARY_PRESSURE = "imaginary_pressure"
     NORMALIZED_SPL = "normalized_spl"
+    PARTICLE_VELOCITY = "particle_velocity"
 
 
 class InteriorRenderingMode(StrEnum):
@@ -54,7 +55,7 @@ class ObservationPlane:
     plane_type: ObservationPlaneType = ObservationPlaneType.INTERIOR
     display: ObservationPlaneDisplay = ObservationPlaneDisplay.SPL
     interior_rendering: InteriorRenderingMode = InteriorRenderingMode.SMOOTH_FIELD
-    invert_clip_side: bool = False
+    invert_clip_side: bool = True
     response_id: str = "system"
     frequency_hz: float | None = None
     animation_speed_hz: float = 1.0
@@ -85,6 +86,10 @@ class ObservationPlane:
                 label="pressure_color_limit_pa",
                 minimum=1e-12,
             )
+        plane_type = ObservationPlaneType(self.plane_type)
+        display = ObservationPlaneDisplay(self.display)
+        if display == ObservationPlaneDisplay.PARTICLE_VELOCITY and plane_type != ObservationPlaneType.INTERIOR:
+            display = ObservationPlaneDisplay.SPL
         return replace(
             self,
             id=identifier,
@@ -94,8 +99,8 @@ class ObservationPlane:
             width_m=width,
             height_m=height,
             resolution_m=resolution,
-            plane_type=ObservationPlaneType(self.plane_type),
-            display=ObservationPlaneDisplay(self.display),
+            plane_type=plane_type,
+            display=display,
             interior_rendering=InteriorRenderingMode(self.interior_rendering),
             invert_clip_side=bool(self.invert_clip_side),
             response_id=str(self.response_id).strip() or "system",
@@ -180,7 +185,7 @@ class ObservationPlane:
                 interior_rendering=InteriorRenderingMode(
                     payload.get("interior_rendering", InteriorRenderingMode.SMOOTH_FIELD.value)
                 ),
-                invert_clip_side=bool(payload.get("invert_clip_side", False)),
+                invert_clip_side=bool(payload.get("invert_clip_side", True)),
                 response_id=str(payload.get("response_id", "system")),
                 frequency_hz=(None if payload.get("frequency_hz") is None else float(payload["frequency_hz"])),
                 animation_speed_hz=float(payload.get("animation_speed_hz", 1.0)),

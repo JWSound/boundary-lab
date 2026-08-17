@@ -10,6 +10,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
+from matplotlib.ticker import LogLocator, MultipleLocator
 
 from blab.plotting import VisualizerConfig
 from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
@@ -32,6 +33,7 @@ PLOT_TICK_SIZE = 9
 PLOT_LEGEND_SIZE = 9
 PLOT_TITLE_PAD = 7
 GRID_LINE_ALPHA = 0.6
+MINOR_GRID_LINE_ALPHA = 0.3
 PLOT_LEFT_MARGIN = 0.14
 PLOT_RIGHT_MARGIN = 0.86
 PLOT_TOP_MARGIN = 0.9
@@ -1305,7 +1307,17 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("SPL (dB)")
         apply_audio_frequency_axis(self.axes)
+        self.axes.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2.0, 10.0)))
+        self.axes.yaxis.set_major_locator(MultipleLocator(10.0))
+        self.axes.yaxis.set_minor_locator(MultipleLocator(5.0))
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
+        self.axes.grid(
+            which="minor",
+            axis="both",
+            color="#808080",
+            linewidth=0.5,
+            alpha=MINOR_GRID_LINE_ALPHA,
+        )
         apply_compact_plot_text(self.axes)
 
     def _draw_empty(self) -> None:

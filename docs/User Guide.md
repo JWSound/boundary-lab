@@ -301,6 +301,13 @@ Observation-plane properties control the plane geometry, sampling resolution,
 result response, frequency, and viewport display metric. Real, imaginary, and
 animated instantaneous pressure use a diverging color map centered on zero.
 
+Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
+derives the complex particle-velocity vector from the P1 FEM pressure gradient
+using the bounded region density, then colors the plane by its magnitude in
+metres per second. Phase animation shows instantaneous particle speed. The
+option is unavailable for Exterior and Combined planes because their exterior
+BEM field evaluator currently returns pressure only.
+
 The **Pressure color range** is automatic by default and uses a symmetric range
 based on the current pressure field. To keep the scale fixed while changing or
 sweeping frequency, clear **Automatic** and enter the positive limit in Pa. The
@@ -309,6 +316,10 @@ at the end colors. Reducing the limit makes low-amplitude spatial variation
 more visible when a localized pressure peak would otherwise dominate the
 automatic scale. The selected manual limit is stored with the observation
 plane in the project file.
+
+With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
+and **R** for Scale. The manual pressure color limit accepts whole pascal
+values and starts at 10 Pa.
 
 ## Frequency Controls
 

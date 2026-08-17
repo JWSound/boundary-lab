@@ -7,7 +7,6 @@ from dataclasses import replace
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -43,6 +42,7 @@ DISPLAY_LABELS = {
     ObservationPlaneDisplay.REAL_PRESSURE: "Real Pressure",
     ObservationPlaneDisplay.IMAGINARY_PRESSURE: "Imaginary Pressure",
     ObservationPlaneDisplay.NORMALIZED_SPL: "Normalized SPL",
+    ObservationPlaneDisplay.PARTICLE_VELOCITY: "Particle Velocity Magnitude",
 }
 INTERIOR_RENDERING_LABELS = {
     InteriorRenderingMode.SMOOTH_FIELD: "Smooth Field",
@@ -56,14 +56,12 @@ class ObservationPlanePropertiesDialog(QDialog):
     """Edit authoring and future result-display properties for one plane."""
 
     previewChanged = Signal(object, bool)
-    activeChanged = Signal(str, bool)
 
     def __init__(
         self,
         plane: ObservationPlane,
         parent: QWidget | None = None,
         *,
-        active: bool = False,
         solved_frequencies_hz: tuple[float, ...] = (),
         response_options: tuple[tuple[str, str], ...] = (),
     ) -> None:
@@ -84,10 +82,6 @@ class ObservationPlanePropertiesDialog(QDialog):
             self.type_combo.addItem(label, value.value)
         self._select_data(self.type_combo, self._plane.plane_type.value)
         form.addRow("Type", self.type_combo)
-
-        self.active_check = QCheckBox("Keep this plane's cut and results visible")
-        self.active_check.setChecked(bool(active))
-        form.addRow("Active", self.active_check)
 
         size_row = QHBoxLayout()
         self.width_spin = _millimetre_spin(self._plane.width_m * 1000.0)
@@ -113,12 +107,12 @@ class ObservationPlanePropertiesDialog(QDialog):
         self.pressure_range_auto_check = QCheckBox("Automatic")
         self.pressure_range_auto_check.setChecked(self._plane.pressure_color_limit_pa is None)
         self.pressure_limit_spin = QDoubleSpinBox()
-        self.pressure_limit_spin.setRange(1e-9, 1e9)
-        self.pressure_limit_spin.setDecimals(9)
-        self.pressure_limit_spin.setStepType(QAbstractSpinBox.StepType.AdaptiveDecimalStepType)
+        self.pressure_limit_spin.setRange(1.0, 1e9)
+        self.pressure_limit_spin.setDecimals(0)
+        self.pressure_limit_spin.setSingleStep(1.0)
         self.pressure_limit_spin.setSuffix(" Pa")
         self.pressure_limit_spin.setValue(
-            1.0 if self._plane.pressure_color_limit_pa is None else self._plane.pressure_color_limit_pa
+            10.0 if self._plane.pressure_color_limit_pa is None else self._plane.pressure_color_limit_pa
         )
         self.pressure_limit_spin.setToolTip(
             "Set the symmetric pressure color range from -limit to +limit. Values outside it are saturated."
@@ -218,7 +212,6 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._frequency_sweep_direction = 1.0
         self._frequency_sweep_updated_at = time.monotonic()
         self.frequency_slider.sliderPressed.connect(self._stop_frequency_sweep)
-        self.active_check.toggled.connect(self._emit_active)
         self.animate_button.toggled.connect(self._refresh_animation_controls)
         self.frequency_sweep_button.toggled.connect(self._refresh_frequency_sweep_controls)
         self.frequency_sweep_speed_slider.valueChanged.connect(self._reset_frequency_sweep_clock)
@@ -332,13 +325,24 @@ class ObservationPlanePropertiesDialog(QDialog):
         self._refresh_animation_controls()
         self._refresh_frequency_sweep_controls()
 
-    def set_active(self, active: bool) -> None:
-        blocker = QSignalBlocker(self.active_check)
-        self.active_check.setChecked(bool(active))
-        del blocker
-
     def _refresh_dependent_controls(self) -> None:
         plane_type = self.type_combo.currentData()
+        interior_only = plane_type == ObservationPlaneType.INTERIOR.value
+        velocity_index = self.display_combo.findData(ObservationPlaneDisplay.PARTICLE_VELOCITY.value)
+        if velocity_index >= 0:
+            velocity_item = self.display_combo.model().item(velocity_index)
+            if velocity_item is not None:
+                velocity_item.setEnabled(interior_only)
+                velocity_item.setToolTip(
+                    "Available for Interior observation planes only."
+                    if not interior_only
+                    else "Derived from the complex FEM pressure gradient."
+                )
+        if (
+            not interior_only
+            and self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
+        ):
+            self._select_data(self.display_combo, ObservationPlaneDisplay.SPL.value)
         supports_interior = plane_type in {
             ObservationPlaneType.INTERIOR.value,
             ObservationPlaneType.COMBINED.value,
@@ -359,7 +363,10 @@ class ObservationPlanePropertiesDialog(QDialog):
             ObservationPlaneDisplay.REAL_PRESSURE.value,
             ObservationPlaneDisplay.IMAGINARY_PRESSURE.value,
         }
-        pressure_controls_available = pressure_display or self.animate_button.isChecked()
+        velocity_display = self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
+        pressure_controls_available = not velocity_display and (
+            pressure_display or self.animate_button.isChecked()
+        )
         self.pressure_range_auto_check.setEnabled(pressure_controls_available)
         self.pressure_limit_spin.setEnabled(
             pressure_controls_available and not self.pressure_range_auto_check.isChecked()
@@ -462,9 +469,6 @@ class ObservationPlanePropertiesDialog(QDialog):
     def _schedule_frequency_preview(self, *_args) -> None:
         if self._preview_ready and not self._frequency_preview_timer.isActive():
             self._frequency_preview_timer.start()
-
-    def _emit_active(self, active: bool) -> None:
-        self.activeChanged.emit(self._plane.id, bool(active))
 
     def accept(self) -> None:
         self._frequency_preview_timer.stop()

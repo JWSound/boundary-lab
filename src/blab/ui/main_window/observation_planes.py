@@ -63,7 +63,6 @@ class ObservationPlaneController(QObject):
                 else tuple(float(value) for value in results.frequencies_for(dialog.plane.plane_type))
             )
             dialog.set_solved_results(frequencies, responses)
-            dialog.set_active(dialog.plane.id == self._active_plane_id)
         # Modeless property dialogs own live, uncommitted display state. Keep
         # that state in the viewport when results are resynthesized; sending
         # the persisted plane here would restore an older frequency/response
@@ -93,6 +92,7 @@ class ObservationPlaneController(QObject):
             height_m=float(placement.get("height_m", placement.get("width_m", 0.25))),
         )
         project.observation_planes = (*project.observation_planes, plane)
+        self._active_plane_id = plane.id
         self.sync_view(selected_id=plane.id)
         self._show_status(f"Added {plane.name}")
 
@@ -124,6 +124,7 @@ class ObservationPlaneController(QObject):
             return
         existing = self._dialogs.get(plane_id)
         if existing is not None:
+            self._activate_plane(plane.id)
             existing.show()
             existing.raise_()
             existing.activateWindow()
@@ -132,7 +133,6 @@ class ObservationPlaneController(QObject):
         dialog = ObservationPlanePropertiesDialog(
             plane,
             self._window,
-            active=plane.id == self._active_plane_id,
             solved_frequencies_hz=(
                 () if results is None else tuple(float(value) for value in results.frequencies_for(plane.plane_type))
             ),
@@ -140,10 +140,10 @@ class ObservationPlaneController(QObject):
         )
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         dialog.previewChanged.connect(self._preview_properties)
-        dialog.activeChanged.connect(self.set_active_plane)
         dialog.accepted.connect(lambda plane_id=plane_id, dialog=dialog: self._accept_properties(plane_id, dialog))
         dialog.rejected.connect(lambda plane_id=plane_id: self._reject_properties(plane_id))
         self._dialogs[plane_id] = dialog
+        self._activate_plane(plane.id)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -172,14 +172,10 @@ class ObservationPlaneController(QObject):
         if hasattr(self._preview, "set_observation_plane_animation"):
             self._preview.set_observation_plane_animation(updated.id, animate)
 
-    @Slot(str, bool)
-    def set_active_plane(self, plane_id: str, active: bool) -> None:
-        if active and self._find(plane_id) is not None:
-            self._active_plane_id = plane_id
-        elif not active and self._active_plane_id == plane_id:
-            self._active_plane_id = None
-        for candidate_id, dialog in self._dialogs.items():
-            dialog.set_active(candidate_id == self._active_plane_id)
+    def _activate_plane(self, plane_id: str) -> None:
+        if self._find(plane_id) is None:
+            return
+        self._active_plane_id = plane_id
         if hasattr(self._preview, "set_observation_plane_active"):
             self._preview.set_observation_plane_active(self._active_plane_id)
 

@@ -181,6 +181,33 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     assert spinorama._di_lines == di_lines
 
 
+def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
+    canvas = OnAxisResponseCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    response = np.asarray(
+        [[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]],
+        dtype=np.float32,
+    )
+
+    canvas.update_plot(freqs, angles, response)
+    canvas.figure.canvas.draw()
+
+    visible_x_minor = {
+        round(float(tick.get_loc()))
+        for tick in canvas.axes.xaxis.get_minor_ticks()
+        if tick.gridline.get_visible() and 20.0 <= tick.get_loc() <= 20_000.0
+    }
+    visible_y_minor = {
+        round(float(tick.get_loc()))
+        for tick in canvas.axes.yaxis.get_minor_ticks()
+        if tick.gridline.get_visible()
+    }
+
+    assert {30, 40, 60, 70, 80, 90, 300, 3000}.issubset(visible_x_minor)
+    assert {35, 45, 55, 65, 75, 85}.issubset(visible_y_minor)
+
+
 def test_line_plot_crosshairs_track_raw_coordinates_and_persist_until_double_click() -> None:
     freqs = np.asarray([100.0, 1000.0, 10000.0], dtype=np.float32)
     impedance = ImpedanceCanvas()
