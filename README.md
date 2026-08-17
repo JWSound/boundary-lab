@@ -34,10 +34,9 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 ## Solver Requirements
 
 Boundary Lab currently has five selectable BEM solver backends in application
-preferences: Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine ROCm, and
-Bempp OpenCL CPU. The ROCm path supports non-symmetric exterior BEM with native
-GPU-resident regular and singular operator assembly; field kernels and performance
-tuning remain in progress.
+preferences: Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT Engine AMD
+ROCm, and Bempp OpenCL CPU. The ROCm path supports exterior and coupled FEM-BEM
+solves, including symmetry, GPU-resident operator assembly, and GPU field evaluation.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 

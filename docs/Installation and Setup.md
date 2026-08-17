@@ -147,22 +147,46 @@ used by Boundary Lab is cleaned before being added to the project.
 
 ## Solver setup
 
-Boundary Lab offers four local backends. The ROCm backend currently targets
-non-symmetric exterior BEM; the other BEAT backends also support coupled systems.
+Boundary Lab offers four local backends. All BEAT Engine backends support exterior
+BEM and coupled FEM-BEM systems, including X and XY symmetry.
 
 | Backend | Hardware/runtime | Exterior BEM | Coupled FEM-BEM |
 |---|---|:---:|:---:|
 | Bempp OpenCL CPU | CPU OpenCL runtime | Yes | No |
 | BEAT Engine CPU | Julia and CPU BLAS/LAPACK | Yes | Yes |
-| BEAT Engine CUDA | Julia and supported NVIDIA GPU | Yes | Yes |
-| BEAT Engine ROCm | Julia, AMDGPU.jl, and a functional ROCm SDK | Yes | No |
+| BEAT Engine Nvidia CUDA | Julia and supported NVIDIA GPU | Yes | Yes |
+| BEAT Engine AMD ROCm | Julia, AMDGPU.jl, and a functional ROCm SDK | Yes | Yes |
 
-The server backend can submit exterior BEM jobs to another Boundary Lab
-installation. The ROCm path supports non-symmetric exterior BEM using native
-GPU-resident regular and Duffy singular operator assembly plus a rocBLAS/rocSOLVER
-GPU solve. Exterior field evaluation remains CPU-resident.
+The server backend can submit exterior or coupled jobs to another Boundary Lab
+installation. The ROCm path uses GPU-resident regular and Duffy singular operator
+assembly, rocBLAS/rocSOLVER dense solves, and GPU exterior field evaluation.
 See [BEAT Engine ROCm development](advanced/beat-engine-rocm.md) for setup and
 validation details.
+
+### BEAT Engine AMD ROCm on Windows
+
+Install an AMD Windows HIP SDK supported by your GPU using AMD's
+[Windows HIP SDK installer](https://rocm.docs.amd.com/projects/install-on-windows/en/latest/).
+AMD publishes the current GPU and operating-system matrix in the
+[Windows system requirements](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/shared/hipsdk/reference/system-requirements.html).
+Restart the terminal after installation so updated environment variables are visible.
+
+Run `01_install_update_boundary-lab.bat` and accept the ROCm solver prompt. The
+installer detects `HIP_PATH`, `ROCM_PATH`, `ROCM_HOME`, and installed SDK versions
+under `%ProgramFiles%\AMD\ROCm`; it then prepares the Julia environment and verifies
+AMDGPU.jl, rocBLAS, and rocSOLVER. Boundary Lab deliberately does not download or
+silently elevate AMD's SDK installer because it requires separate license acceptance.
+
+Portable TheRock SDK layouts can be selected during installation or configured later:
+
+```powershell
+blab rocm configure "$env:USERPROFILE\SDKs\ROCm-TheRock"
+blab rocm detect --json
+```
+
+This stores a per-user path under `%LOCALAPPDATA%\Boundary Lab`, avoiding a
+checkout-specific drive or directory. Use `blab rocm clear` to remove the saved
+override.
 
 ### Bempp OpenCL CPU
 

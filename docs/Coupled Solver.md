@@ -21,14 +21,14 @@ Coupled application solves require **BEAT Engine (CPU)**,
 `Float32/ComplexF32`, solve all configured excitation ports as independent
 reference bases, and stream one result per frequency.
 
-| | BEAT Engine CPU | BEAT Engine CUDA |
-|---|---|---|
-| FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU |
-| BEM operators | Assembled on CPU | Assembled on GPU |
-| Coupled system | Schur-condensed acoustic/electromechanical system on CPU | Schur-condensed acoustic/electromechanical system on GPU |
-| Factorization | UMFPACK interior Schur complement plus CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic |
-| Exterior field | Evaluated on CPU | Evaluated on GPU |
-| Default Julia threads | 8 | 4 |
+| | BEAT Engine CPU | BEAT Engine Nvidia CUDA | BEAT Engine AMD ROCm |
+|---|---|---|---|
+| FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU | Sparse assembly and interior factorization on CPU |
+| BEM operators | Assembled on CPU | Assembled on GPU | Assembled on GPU |
+| Coupled system | Schur-condensed acoustic/electromechanical system on CPU | Schur-condensed acoustic/electromechanical system on GPU | Schur-condensed retained system uploaded to GPU |
+| Factorization | UMFPACK interior Schur complement plus CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic | UMFPACK interior Schur complement plus rocSOLVER dense LU |
+| Exterior field | Evaluated on CPU | Evaluated on GPU | Evaluated on GPU |
+| Default Julia threads | 8 | 4 | 4 |
 
 Production backends eliminate FEM volume-interior unknowns with an exact Schur
 complement and reconstruct eliminated FEM pressure after the coupled solve.

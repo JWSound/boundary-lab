@@ -29,22 +29,56 @@ the reduced coupled matrix is uploaded for the rocSOLVER dense solve.
 
 ## Julia environment
 
-Instantiate the dedicated environment once:
+The Windows installer detects and validates an existing ROCm SDK, prepares the
+dedicated Julia environment, and runs the AMDGPU.jl runtime checks. It does not
+download AMD's SDK because the SDK installer requires separate license acceptance
+and may require administrator access.
+
+Boundary Lab checks these locations in order:
+
+1. `BLAB_ROCM_PATH`, for a temporary or explicitly managed override;
+2. the saved Boundary Lab ROCm configuration;
+3. `HIP_PATH`, `ROCM_PATH`, and `ROCM_HOME`;
+4. installed versions below `%ProgramFiles%\AMD\ROCm`, newest first.
+
+Inspect the selected SDK and all candidates with:
+
+```powershell
+blab rocm detect --json
+```
+
+AMD's standard Windows HIP SDK normally needs no Boundary Lab-specific path.
+After installing it, open a new terminal or rerun the Boundary Lab installer.
+For a portable TheRock SDK outside the standard location, save its root without
+setting a machine-wide environment variable:
+
+```powershell
+blab rocm configure "$env:USERPROFILE\SDKs\ROCm-TheRock"
+```
+
+The saved path is stored under the current user's local application-data folder.
+Use `blab rocm clear` to return to environment-variable and standard-installation
+discovery.
+
+To prepare the Julia environment manually:
 
 ```powershell
 julia --project=src/blab/solvers/julia_rocm -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Set `BLAB_ROCM_PATH` to the SDK root before launching Boundary Lab. The subprocess
-adapter maps it to `ROCM_PATH`, `ROCM_HOME`, and `HIP_PATH`, and prepends the SDK's
-`bin` directory to `PATH` for ROCm workers.
+For one terminal session, `BLAB_ROCM_PATH` remains available as the highest-priority
+override:
 
 ```powershell
-$env:BLAB_ROCM_PATH = 'E:\ROCm-TheRock\10.1.0a20260816-gfx103X'
+$env:BLAB_ROCM_PATH = (Resolve-Path "$env:USERPROFILE\SDKs\ROCm-TheRock").Path
 ```
 
-The SDK must make `AMDGPU.functional()`, `AMDGPU.functional(:rocblas)`, and
-`AMDGPU.functional(:rocsolver)` return `true`.
+The subprocess adapter maps the selected SDK to `ROCM_PATH`, `ROCM_HOME`, and
+`HIP_PATH`, and prepends its `bin` directory to `PATH` for ROCm workers. A portable
+TheRock layout used with the currently pinned AMDGPU.jl must expose an unversioned
+`amdhip64.dll` at its SDK root. Official AMD installations use AMDGPU.jl's standard
+Program Files discovery. In every case the SDK must make `AMDGPU.functional()`,
+`AMDGPU.functional(:rocblas)`, and `AMDGPU.functional(:rocsolver)` return `true`.
 
 ## Exterior fixture validation
 

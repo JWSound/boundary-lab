@@ -136,12 +136,14 @@ region may have its own homogeneous bulk-loss factor. Bounded rigid walls may
 also use the supported locally reacting, rigid-backed Miki porous treatment;
 this is not a thermoviscous boundary-layer model.
 
-The coupled application path requires BEAT Engine CPU or CUDA. CPU solves the
-full monolithic dense coupled system. CUDA exactly eliminates eligible FEM
-interior degrees of freedom with a Schur complement, solves the retained
-interface, moving-surface, BEM, and transducer system on the GPU, and then
-reconstructs the eliminated FEM pressure. These are algebraically different
-execution strategies for the same linear model.
+The coupled application path requires BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.
+Production solves exactly eliminate eligible FEM interior degrees of freedom
+with a Schur complement and reconstruct the eliminated FEM pressure afterward.
+CPU uses UMFPACK for the sparse interior and a CPU dense solve. CUDA performs the
+condensed factorization and retained solve on the GPU. ROCm factors the sparse
+interior on the CPU, uploads the retained system, and uses rocSOLVER for its dense
+solve. These are algebraically equivalent execution strategies for the same
+linear model.
 
 ## Symmetry
 

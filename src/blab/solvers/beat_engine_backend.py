@@ -20,6 +20,7 @@ from blab.protocol import (
     ndarray_from_wire,
     solve_request_from_config_and_frequencies,
 )
+from blab.rocm import discover_rocm
 from blab.server import _safe_asset_filename
 from blab.solvers.base import FrequencyResult, SolveMetadata, SolverCapabilities, SolveRequest
 
@@ -780,19 +781,24 @@ def _julia_process_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     env["JULIA_NUM_THREADS"] = _resolve_julia_threads(julia_threads)
-    rocm_root = env.get("BLAB_ROCM_PATH", "").strip()
-    if rocm_root and julia_project is not None:
+    if julia_project is not None:
         try:
             is_rocm_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
         except OSError:
             is_rocm_project = False
         if is_rocm_project:
             env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_ROCM_BACKEND
-            env["ROCM_PATH"] = rocm_root
-            env["ROCM_HOME"] = rocm_root
-            env["HIP_PATH"] = rocm_root
-            rocm_bin = str(Path(rocm_root) / "bin")
-            env["PATH"] = rocm_bin + os.pathsep + env.get("PATH", "")
+            installation = discover_rocm(environ=env)
+            if installation is not None:
+                rocm_root = str(installation.root)
+                env["BLAB_ROCM_PATH"] = rocm_root
+                env["ROCM_PATH"] = rocm_root
+                env["ROCM_HOME"] = rocm_root
+                env["HIP_PATH"] = rocm_root
+                rocm_bin = str(installation.root / "bin")
+                path_entries = env.get("PATH", "").split(os.pathsep)
+                if os.path.normcase(rocm_bin) not in {os.path.normcase(entry) for entry in path_entries}:
+                    env["PATH"] = rocm_bin + os.pathsep + env.get("PATH", "")
     if julia_project is not None:
         try:
             is_cuda_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()

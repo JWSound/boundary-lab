@@ -109,10 +109,10 @@ guide.
 
 ### Solver Config
 
-- **BEM Solver** selects Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine
-  ROCm, or Bempp OpenCL CPU. ROCm currently supports non-symmetric exterior BEM
-  with GPU-resident operator assembly and solve; exterior field evaluation remains
-  CPU-resident. Coupled systems require the local BEAT Engine CPU or CUDA backend.
+- **BEM Solver** selects Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT
+  Engine AMD ROCm, or Bempp OpenCL CPU. All BEAT Engine backends support exterior
+  and coupled FEM-BEM systems, including X and XY symmetry. The ROCm backend uses
+  GPU-resident operator assembly, dense solve, and exterior field evaluation.
 - **Solve Server URL** and **Check Server** configure and query a remote
   exterior-BEM server. A successful health check also updates advertised
   capabilities such as symmetry support.

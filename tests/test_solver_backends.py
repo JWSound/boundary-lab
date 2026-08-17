@@ -320,6 +320,10 @@ def test_julia_threads_auto_maps_to_cpu_count() -> None:
 
 def test_rocm_project_process_env_uses_boundary_lab_rocm_root(monkeypatch, tmp_path) -> None:
     rocm_root = tmp_path / "TheRock"
+    rocm_bin = rocm_root / "bin"
+    rocm_bin.mkdir(parents=True)
+    for name in ("amdhip64.dll", "rocblas.dll", "rocsolver.dll", "rocsparse.dll", "hipconfig.exe"):
+        (rocm_bin / name).touch()
     monkeypatch.setenv("BLAB_ROCM_PATH", str(rocm_root))
 
     env = _julia_process_env(4, DEFAULT_BEAT_ENGINE_ROCM_PROJECT)
@@ -330,6 +334,23 @@ def test_rocm_project_process_env_uses_boundary_lab_rocm_root(monkeypatch, tmp_p
     assert env["ROCM_HOME"] == str(rocm_root)
     assert env["HIP_PATH"] == str(rocm_root)
     assert env["PATH"].split(os.pathsep)[0] == str(rocm_root / "bin")
+
+
+def test_rocm_project_process_env_discovers_standard_hip_path(monkeypatch, tmp_path) -> None:
+    rocm_root = tmp_path / "AMD" / "ROCm" / "7.2"
+    rocm_bin = rocm_root / "bin"
+    rocm_bin.mkdir(parents=True)
+    for name in ("amdhip64_7.dll", "rocblas.dll", "rocsolver.dll", "rocsparse.dll", "hipInfo.exe"):
+        (rocm_bin / name).touch()
+    monkeypatch.delenv("BLAB_ROCM_PATH", raising=False)
+    monkeypatch.setenv("BLAB_ROCM_CONFIG", str(tmp_path / "absent.txt"))
+    monkeypatch.setenv("HIP_PATH", str(rocm_root))
+
+    env = _julia_process_env(2, DEFAULT_BEAT_ENGINE_ROCM_PROJECT)
+
+    assert env["BLAB_ROCM_PATH"] == str(rocm_root.resolve())
+    assert env["ROCM_PATH"] == str(rocm_root.resolve())
+    assert env["PATH"].split(os.pathsep)[0] == str(rocm_bin.resolve())
 
 
 def test_julia_dependency_load_error_gets_install_hint() -> None:

@@ -13,6 +13,7 @@ COMMAND_MODULES = {
     "prepare": "blab.postprocess",
     "plot": "blab.plotting",
     "project": "blab.project_cli",
+    "rocm": "blab.rocm",
 }
 
 

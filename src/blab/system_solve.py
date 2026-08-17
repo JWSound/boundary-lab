@@ -178,7 +178,7 @@ def prepare_system_ui_solve(
     normalized_backend_id = normalize_backend_id(backend_id)
     if not supports_physical_system_solves(normalized_backend_id):
         raise ValueError(
-            "Physical-system solves require BEAT Engine CPU, CPU Condensed, CUDA, or ROCm."
+            "Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm."
         )
     outputs = [
         OutputRequest(
