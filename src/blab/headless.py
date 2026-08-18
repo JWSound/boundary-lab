@@ -16,7 +16,7 @@ import numpy as np
 
 from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
-from blab.physical_model import PhysicalSystem, physical_system_from_dict
+from blab.physical_model import PhysicalSolveKind, PhysicalSystem, physical_system_from_dict
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -228,6 +228,17 @@ def prepare_headless_solve(
         symmetry_mode=project.symmetry,
         observation_planes=observation_planes_from_payload(project.payload.get("observation_planes")),
     )
+    if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM and spec.probes:
+        raise ValueError(
+            "Interior FEM point probes are not yet supported; retain fem_nodal_pressure "
+            "or use an Interior observation plane."
+        )
+    if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM and set(spec.retain) & {
+        "bem_boundary_pressure",
+        "bem_boundary_neumann",
+        "bem_boundary_traces",
+    }:
+        raise ValueError("Interior FEM solves cannot retain BEM boundary quantities.")
     request = prepared.request
     frequencies = spec.frequencies_hz
     if frequencies is None:

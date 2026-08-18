@@ -635,6 +635,7 @@ function aggregate_fem_domains(
     domains = NamedTuple[]
     bulk_loss_factor_by_vertex = T[]
     wall_impedances = NamedTuple[]
+    plane_wave_terminations = NamedTuple[]
     fem_boundary_tag_by_id = Dict{String,Int}()
     domain_by_boundary_id = Dict{String,Int}()
     next_boundary_tag = 1
@@ -677,8 +678,18 @@ function aggregate_fem_domains(
             fem_boundary_tag_by_id[boundary_id] = solver_tag
             domain_by_boundary_id[boundary_id] = length(domains) + 1
             parameters = get(boundary, "parameters", Dict{String,Any}())
+            boundary_kind = String(boundary["kind"])
+            if boundary_kind == "plane_wave_tube_termination"
+                isempty(parameters) || error(
+                    "Plane-wave tube termination $(repr(boundary_id)) does not accept parameters.",
+                )
+                push!(
+                    plane_wave_terminations,
+                    (boundary_id=boundary_id, tag=solver_tag),
+                )
+            end
             if haskey(parameters, "wall_impedance")
-                String(boundary["kind"]) == "rigid" || error(
+                boundary_kind == "rigid" || error(
                     "Wall impedance boundary $(repr(boundary_id)) must be rigid.",
                 )
                 treatment = parameters["wall_impedance"]
@@ -760,6 +771,7 @@ function aggregate_fem_domains(
         domain_by_boundary_id=domain_by_boundary_id,
         bulk_loss_factor_by_vertex=bulk_loss_factor_by_vertex,
         wall_impedances=wall_impedances,
+        plane_wave_terminations=plane_wave_terminations,
     )
 end
 
@@ -1029,6 +1041,389 @@ function electrodynamic_transducers_from_wire(
     return transducers, index_by_component_id
 end
 
+function solve_interior_request(request, system, bounded_regions; event_mode=false)
+    isempty(bounded_regions) && error("Interior FEM solving requires at least one bounded region.")
+    isempty(system["interfaces"]) || error("Interior FEM solving does not accept FEM-BEM interfaces.")
+    meshes = system["meshes"]
+    boundaries = system["boundaries"]
+    components = system["components"]
+    ports = system["excitation_ports"]
+    solver_options = get(request, "solver_options", Dict{String,Any}())
+    precision_name = lowercase(String(get(solver_options, "precision", "float64")))
+    FloatType = if precision_name in ("float32", "complex64")
+        Float32
+    elseif precision_name in ("float64", "complex128")
+        Float64
+    else
+        error("Unsupported interior FEM precision: $precision_name. Expected float32 or float64.")
+    end
+    symmetry_mode = BeatEngineCore.normalized_symmetry_mode(
+        get(solver_options, "symmetry", "off"),
+    )
+    transducer_reference_voltage_v = FloatType(
+        get(
+            solver_options,
+            "transducer_reference_voltage_v",
+            DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
+        ),
+    )
+    transducer_reference_voltage_v > zero(FloatType) || error(
+        "transducer_reference_voltage_v must be greater than zero.",
+    )
+
+    reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
+    reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
+    for region in bounded_regions
+        isapprox(
+            Float64(region["sound_speed_m_per_s"]),
+            reference_sound_speed;
+            rtol=1e-9,
+            atol=0,
+        ) && isapprox(
+            Float64(region["density_kg_per_m3"]),
+            reference_density;
+            rtol=1e-9,
+            atol=0,
+        ) || error(
+            "Interior FEM solving currently requires one shared sound speed and density.",
+        )
+    end
+    sound_speed = FloatType(reference_sound_speed)
+    density = FloatType(reference_density)
+
+    mesh_setup_started = time_ns()
+    fem_domains = aggregate_fem_domains(meshes, bounded_regions, boundaries, FloatType)
+    fem_mesh = fem_domains.mesh
+    symmetry_tolerance = symmetry_plane_tolerance(fem_mesh.vertices)
+    fem_mesh = VolumeMesh(
+        snap_symmetry_plane_vertices(
+            fem_mesh.vertices,
+            symmetry_mode;
+            tolerance=symmetry_tolerance,
+        ),
+        fem_mesh.tetrahedra,
+        fem_mesh.tetra_physical_tags,
+        fem_mesh.boundary_faces,
+        fem_mesh.boundary_physical_tags,
+        fem_mesh.physical_names,
+    )
+    validate_volume_symmetry_fundamental_domain!(
+        fem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
+    )
+    mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
+
+    cache_started = time_ns()
+    stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    bulk_loss_mass = spdiagm(
+        0 => FloatType.(fem_domains.bulk_loss_factor_by_vertex),
+    ) * mass
+    wall_operators = [
+        begin
+            face_indices = findall(==(Int(spec.tag)), fem_mesh.boundary_physical_tags)
+            isempty(face_indices) && error(
+                "Wall-impedance boundary $(repr(spec.boundary_id)) contains no selected FEM faces.",
+            )
+            (
+                boundary_id=spec.boundary_id,
+                matrix=assemble_boundary_mass_matrix(
+                    fem_mesh,
+                    face_indices,
+                    collect(1:length(fem_mesh.vertices)),
+                ),
+                thickness_m=FloatType(spec.thickness_m),
+                flow_resistivity_pa_s_per_m2=FloatType(spec.flow_resistivity_pa_s_per_m2),
+            )
+        end
+        for spec in fem_domains.wall_impedances
+    ]
+    termination_operators = [
+        begin
+            face_indices = findall(==(Int(spec.tag)), fem_mesh.boundary_physical_tags)
+            isempty(face_indices) && error(
+                "Plane-wave tube termination $(repr(spec.boundary_id)) contains no selected FEM faces.",
+            )
+            (
+                boundary_id=spec.boundary_id,
+                matrix=assemble_boundary_mass_matrix(
+                    fem_mesh,
+                    face_indices,
+                    collect(1:length(fem_mesh.vertices)),
+                ),
+            )
+        end
+        for spec in fem_domains.plane_wave_terminations
+    ]
+    empty_bem_mesh = BoundaryMesh(
+        SVector{3,FloatType}[],
+        NTuple{3,Int}[],
+        Int[],
+    )
+    transducers, transducer_index_by_component_id = electrodynamic_transducers_from_wire(
+        components,
+        boundaries,
+        fem_domains.fem_boundary_tag_by_id,
+        Dict{String,Int}(),
+        fem_mesh,
+        empty_bem_mesh,
+        FloatType,
+        symmetry_mode,
+    )
+    transducer_operators = assemble_transducer_operators(
+        fem_mesh,
+        empty_bem_mesh,
+        transducers,
+    )
+    cache_setup_s = (time_ns() - cache_started) / 1.0e9
+
+    excitation_port_ids = String.(request["excitation_port_ids"])
+    isempty(excitation_port_ids) && error("Interior FEM solving requires at least one excitation port.")
+    excitations = NamedTuple[]
+    for port_id in excitation_port_ids
+        port = object_by_id(ports, port_id, "excitation port")
+        component = object_by_id(components, String(port["component_id"]), "component")
+        port_kind = String(port["kind"])
+        component_kind = String(component["kind"])
+        if port_kind == "normal_velocity" && component_kind == "ideal_velocity_source"
+            parameters = get(component, "parameters", Dict{String,Any}())
+            raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
+            tags = Int[]
+            weights = FloatType[]
+            for boundary_id_value in component["boundary_ids"]
+                boundary_id = String(boundary_id_value)
+                boundary = object_by_id(boundaries, boundary_id, "boundary")
+                String(boundary["kind"]) == "moving" || error(
+                    "Prescribed-velocity component $(repr(String(component["id"]))) references " *
+                    "non-moving boundary $(repr(boundary_id)).",
+                )
+                tag = get(fem_domains.fem_boundary_tag_by_id, boundary_id, 0)
+                tag > 0 || error(
+                    "Interior prescribed-velocity boundary $(repr(boundary_id)) did not resolve to a FEM tag.",
+                )
+                weight = FloatType(get(raw_weights, boundary_id, 1))
+                isfinite(weight) && weight > zero(FloatType) || error(
+                    "Prescribed-velocity boundary weights must be finite and positive.",
+                )
+                push!(tags, tag)
+                push!(weights, weight)
+            end
+            isempty(tags) && error(
+                "Prescribed-velocity component $(repr(String(component["id"]))) has no moving FEM boundary.",
+            )
+            push!(excitations, (kind=:normal_velocity, tags=tags, weights=weights, transducer_index=0))
+        elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"
+            transducer_index = get(transducer_index_by_component_id, String(component["id"]), 0)
+            transducer_index > 0 || error(
+                "Voltage excitation $(repr(port_id)) did not resolve to an electrodynamic transducer.",
+            )
+            push!(
+                excitations,
+                (kind=:voltage, tags=Int[], weights=FloatType[], transducer_index=transducer_index),
+            )
+        else
+            error("Interior excitation port $(repr(port_id)) is incompatible with its component.")
+        end
+    end
+
+    outputs = get(request, "outputs", Any[])
+    frequencies = Float64.(request["frequencies_hz"])
+    cancel_path = get(request, "cancel_path", nothing)
+    cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
+    solved_count = 0
+    for (frequency_index, frequency_hz_value) in enumerate(frequencies)
+        cancel_requested() && return (cancelled=true, solved_count=solved_count)
+        frequency_hz = FloatType(frequency_hz_value)
+        omega = FloatType(2pi) * frequency_hz
+        wavenumber = omega / sound_speed
+        assembly_started = time_ns()
+        fem_system = assemble_fem_dynamic_stiffness(
+            stiffness,
+            mass,
+            wavenumber;
+            bulk_loss_mass=bulk_loss_mass,
+        )
+        for operator in wall_operators
+            admittance = miki_rigid_backed_surface_admittance(
+                frequency_hz,
+                sound_speed,
+                density,
+                operator.thickness_m,
+                operator.flow_resistivity_pa_s_per_m2,
+            )
+            fem_system -= Complex{FloatType}(0, density * omega) * admittance .* operator.matrix
+        end
+        for operator in termination_operators
+            fem_system -= Complex{FloatType}(0, wavenumber) .* operator.matrix
+        end
+
+        fem_count = length(fem_mesh.vertices)
+        transducer_count = length(transducers)
+        mechanical_range = transducer_count == 0 ?
+                           (1:0) :
+                           ((fem_count + 1):(fem_count + transducer_count))
+        electrical_range = transducer_count == 0 ?
+                           (1:0) :
+                           ((fem_count + transducer_count + 1):(fem_count + 2 * transducer_count))
+        system_order = fem_count + 2 * transducer_count
+        coupled = if transducer_count == 0
+            SparseMatrixCSC{ComplexF64,Int}(fem_system)
+        else
+            normal_derivative_scale = Complex{FloatType}(0, density * omega)
+            fem_motion = -normal_derivative_scale .* Complex{FloatType}.(
+                transducer_operators.fem_surface,
+            )
+            fem_force = -Complex{FloatType}.(transpose(transducer_operators.fem_force))
+            mechanical_impedance = Complex{FloatType}[
+                Complex{FloatType}(
+                    transducer.rms_n_s_per_m,
+                    -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
+                )
+                for transducer in transducers
+            ]
+            electrical_impedance = Complex{FloatType}[
+                Complex{FloatType}(transducer.re_ohm, -omega * transducer.le_h)
+                for transducer in transducers
+            ]
+            force_factor = Complex{FloatType}[transducer.bl_n_per_a for transducer in transducers]
+            sparse_system = [
+                fem_system fem_motion spzeros(Complex{FloatType}, fem_count, transducer_count)
+                fem_force spdiagm(0 => mechanical_impedance) -spdiagm(0 => force_factor)
+                spzeros(Complex{FloatType}, transducer_count, fem_count) spdiagm(0 => force_factor) spdiagm(0 => electrical_impedance)
+            ]
+            SparseMatrixCSC{ComplexF64,Int}(sparse_system)
+        end
+        factorization = lu(coupled)
+        assembly_s = (time_ns() - assembly_started) / 1.0e9
+
+        rhs = zeros(ComplexF64, system_order, length(excitations))
+        for (column, excitation) in enumerate(excitations)
+            if excitation.kind == :normal_velocity
+                for (tag, weight) in zip(excitation.tags, excitation.weights)
+                    rhs[1:fem_count, column] .+= ComplexF64.(
+                        assemble_prescribed_velocity_load(
+                            fem_mesh,
+                            tag,
+                            density,
+                            omega,
+                            Complex{FloatType}(weight, 0),
+                        ),
+                    )
+                end
+            else
+                rhs[first(electrical_range) + excitation.transducer_index - 1, column] =
+                    ComplexF64(transducer_reference_voltage_v)
+            end
+        end
+        solve_started = time_ns()
+        solution = factorization \ rhs
+        solve_s = (time_ns() - solve_started) / 1.0e9
+        fem_pressures = [
+            Complex{FloatType}.(solution[1:fem_count, column])
+            for column in axes(solution, 2)
+        ]
+        diaphragm_velocities = [
+            Complex{FloatType}.(solution[mechanical_range, column])
+            for column in axes(solution, 2)
+        ]
+        voice_coil_currents = [
+            Complex{FloatType}.(solution[electrical_range, column])
+            for column in axes(solution, 2)
+        ]
+
+        quantities = Dict{String,Any}[]
+        for output in outputs
+            quantity = String(output["quantity"])
+            if quantity == "fem_nodal_pressure"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(fem_pressures, FloatType),
+                        "Pa",
+                        ["excitation", "fem_node"],
+                        metadata=Dict(
+                            "mesh_ids" => [domain.mesh_id for domain in fem_domains.domains],
+                            "region_ids" => [domain.id for domain in fem_domains.domains],
+                            "node_offsets" => [domain.vertex_offset for domain in fem_domains.domains],
+                            "node_counts" => [domain.vertex_count for domain in fem_domains.domains],
+                        ),
+                    ),
+                )
+            elseif quantity == "diaphragm_velocity"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(diaphragm_velocities, FloatType),
+                        "m/s",
+                        ["excitation", "transducer"],
+                        metadata=Dict("component_ids" => [transducer.id for transducer in transducers]),
+                    ),
+                )
+            elseif quantity == "voice_coil_current"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(voice_coil_currents, FloatType),
+                        "A",
+                        ["excitation", "transducer"],
+                        metadata=Dict("component_ids" => [transducer.id for transducer in transducers]),
+                    ),
+                )
+            else
+                error("Unsupported interior FEM output quantity: $quantity")
+            end
+        end
+        relative_residual = maximum(
+            norm(coupled * solution[:, column] - rhs[:, column]) /
+            max(norm(rhs[:, column]), eps(Float64))
+            for column in axes(solution, 2)
+        )
+        diagnostics = Dict{String,Any}(
+            "precision" => precision_name,
+            "linear_backend" => "cpu",
+            "linear_solver" => "cpu_umfpack_sparse_lu_fp64",
+            "symmetry" => String(symmetry_mode),
+            "formulation" => "interior_fem_sparse",
+            "full_system_order" => system_order,
+            "solved_system_order" => system_order,
+            "bounded_region_count" => length(bounded_regions),
+            "interface_count" => 0,
+            "transducer_count" => transducer_count,
+            "transducer_reference_voltage_v" => transducer_reference_voltage_v,
+            "plane_wave_termination_boundary_ids" => [
+                operator.boundary_id for operator in termination_operators
+            ],
+            "wall_impedance_boundary_ids" => [operator.boundary_id for operator in wall_operators],
+            "relative_residual" => relative_residual,
+            "timings" => Dict(
+                "assembly_s" => assembly_s,
+                "solve_s" => solve_s,
+                "field_s" => 0.0,
+                "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
+                "cache_setup_s" => frequency_index == 1 ? cache_setup_s : 0.0,
+            ),
+        )
+        result = Dict(
+            "schema_version" => 1,
+            "freq_hz" => frequency_hz_value,
+            "excitation_port_ids" => excitation_port_ids,
+            "quantities" => quantities,
+            "diagnostics" => diagnostics,
+        )
+        if event_mode
+            println(JSON.json(Dict("type" => "result", "result" => result)))
+        else
+            println(JSON.json(result))
+        end
+        flush(stdout)
+        solved_count += 1
+    end
+    return (cancelled=false, solved_count=solved_count)
+end
+
 function solve_request(request; event_mode=false)
     Int(get(request, "schema_version", 0)) == 1 || error("Unsupported system solve request schema.")
     cancel_path = get(request, "cancel_path", nothing)
@@ -1044,6 +1439,12 @@ function solve_request(request; event_mode=false)
 
     bounded_regions = [region for region in regions if String(region["kind"]) == "bounded_air"]
     unbounded_regions = [region for region in regions if String(region["kind"]) == "unbounded_air"]
+    isempty(unbounded_regions) && return solve_interior_request(
+        request,
+        system,
+        bounded_regions;
+        event_mode=event_mode,
+    )
     length(unbounded_regions) == 1 || error("Coupled backend currently requires exactly one unbounded region.")
     unbounded_region = only(unbounded_regions)
     isempty(bounded_regions) && return solve_exterior_request(

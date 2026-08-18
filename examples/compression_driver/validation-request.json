@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "frequencies_hz": [1000.0],
+  "include_project_observations": false,
+  "retain": ["fem_nodal_pressure"]
+}

@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM or coupled FEM-BEM-LEM solving from the configured physical system, and presents SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots in the desktop application. Ath is the bundled geometry-generator provider.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is the bundled geometry-generator provider.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -10,7 +10,7 @@ Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeake
 
 - Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) generator
 - 3D mesh viewport for generated geometry and imported `.msh` files
-- Physical-system editor for exterior BEM and coupled FEM-BEM-LEM models
+- Physical-system editor for exterior BEM, interior FEM, and coupled FEM-BEM-LEM models
 - Prescribed-velocity and linear electrodynamic transducer components
 - Channel controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and radiation-impedance plots
@@ -138,6 +138,7 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [Installation and Setup](docs/Installation%20and%20Setup.md)
 - [User Guide](docs/User%20Guide.md)
 - [Physical System Model](docs/Physical%20System%20Model.md)
+- [Interior FEM Solver](docs/Interior%20FEM%20Solver.md)
 - [Coupled Solver](docs/Coupled%20Solver.md)
 - [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
 - [CUDA Server Docker Image](docs/Docker.md)

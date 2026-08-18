@@ -51,6 +51,7 @@ from blab.component_symmetry import (
     infer_component_symmetry,
 )
 from blab.config import normalize_symmetry
+from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import (
     InterfaceConformError,
     build_conforming_interface_map,
@@ -92,7 +93,13 @@ class AvailableSystemMesh:
     surface_groups: tuple[str, ...]
     volume_groups: tuple[str, ...]
     has_tetrahedra: bool
+    surface_groups_by_volume: tuple[tuple[str, tuple[str, ...]], ...] = ()
     locked: bool = False
+
+    def surface_groups_for_volume(self, volume_group: str | None) -> tuple[str, ...]:
+        if volume_group is None:
+            return self.surface_groups
+        return dict(self.surface_groups_by_volume).get(volume_group, ())
 
 
 @dataclass(frozen=True)
@@ -395,12 +402,31 @@ def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[Availabl
         mesh = meshio.read(effective_path)
         surface_groups = []
         volume_groups = []
+        surface_name_by_tag = {}
+        volume_tag_by_name = {}
         for name, raw in mesh.field_data.items():
-            _tag, dimension = map(int, np.asarray(raw).tolist())
+            tag, dimension = map(int, np.asarray(raw).tolist())
             if dimension == 2:
                 surface_groups.append(str(name))
+                surface_name_by_tag[tag] = str(name)
             elif dimension == 3:
                 volume_groups.append(str(name))
+                volume_tag_by_name[str(name)] = tag
+        surface_groups_by_volume = ()
+        if any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells):
+            surface_groups_by_volume = tuple(
+                (
+                    volume_name,
+                    tuple(
+                        sorted(
+                            surface_name_by_tag[tag]
+                            for tag in selected_volume_surface_tags(mesh, (volume_tag,))
+                            if tag in surface_name_by_tag
+                        )
+                    ),
+                )
+                for volume_name, volume_tag in sorted(volume_tag_by_name.items())
+            )
         inspected.append(
             AvailableSystemMesh(
                 name=entry.name,
@@ -411,6 +437,7 @@ def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[Availabl
                 surface_groups=tuple(sorted(surface_groups)),
                 volume_groups=tuple(sorted(volume_groups)),
                 has_tetrahedra=any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells),
+                surface_groups_by_volume=surface_groups_by_volume,
                 locked=bool(entry.locked),
             )
         )
@@ -1096,6 +1123,34 @@ class SystemConfigDialog(QDialog):
             (boundary.region_id, boundary.group.mesh_id, boundary.group.name): boundary
             for boundary in (() if system is None else system.boundaries)
         }
+        self._existing_boundaries_by_mesh_group: dict[tuple[str, str | None], list[Boundary]] = {}
+        for boundary in (() if system is None else system.boundaries):
+            self._existing_boundaries_by_mesh_group.setdefault(
+                (boundary.group.mesh_id, boundary.group.name), []
+            ).append(boundary)
+        self._relocatable_boundary_ids: set[str] = set()
+        if system is not None:
+            regions_by_id = {region.id: region for region in system.regions}
+            resources_by_id = {resource.id: resource for resource in system.meshes}
+            for boundary in system.boundaries:
+                region = regions_by_id.get(boundary.region_id)
+                resource = resources_by_id.get(boundary.group.mesh_id)
+                mesh = None if resource is None else self._mesh_by_name.get(resource.name)
+                volume_group = next(
+                    (
+                        group.name
+                        for group in (() if region is None else region.volume_groups)
+                        if group.mesh_id == boundary.group.mesh_id
+                    ),
+                    None,
+                )
+                if (
+                    region is not None
+                    and region.kind == AcousticRegionKind.BOUNDED_AIR
+                    and mesh is not None
+                    and boundary.group.name not in mesh.surface_groups_for_volume(volume_group)
+                ):
+                    self._relocatable_boundary_ids.add(boundary.id)
         self._existing_components = {
             component.id: component for component in (() if system is None else system.components)
         }
@@ -1278,6 +1333,18 @@ class SystemConfigDialog(QDialog):
                 )
             return
         exterior_meshes = tuple(mesh.name for mesh in self._meshes if not mesh.has_tetrahedra)
+        if not exterior_meshes:
+            volume_mesh = next((mesh for mesh in self._meshes if mesh.has_tetrahedra), None)
+            self._append_region(
+                name="Interior Air 1",
+                kind=AcousticRegionKind.BOUNDED_AIR,
+                mesh_name=None if volume_mesh is None else volume_mesh.name,
+                volume_group=(
+                    None if volume_mesh is None or not volume_mesh.volume_groups else volume_mesh.volume_groups[0]
+                ),
+                bulk_loss_factor=0.0,
+            )
+            return
         self._append_region(
             name="Exterior Air",
             kind=AcousticRegionKind.UNBOUNDED_AIR,
@@ -1383,9 +1450,14 @@ class SystemConfigDialog(QDialog):
         has_bounded_region = any(
             self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR for row in range(self.regions_table.rowCount())
         )
+        has_unbounded_region = any(
+            self._region_kind(row) == AcousticRegionKind.UNBOUNDED_AIR
+            for row in range(self.regions_table.rowCount())
+        )
+        interfaces_available = has_bounded_region and has_unbounded_region
         tab_index = self.tabs.indexOf(self.interfaces_tab)
-        self.tabs.setTabEnabled(tab_index, has_bounded_region)
-        self.identify_interfaces_button.setEnabled(has_bounded_region)
+        self.tabs.setTabEnabled(tab_index, interfaces_available)
+        self.identify_interfaces_button.setEnabled(interfaces_available)
 
     def _refresh_region_volume_combo(self, row: int, *, selected: str | None = None) -> None:
         if row >= self.regions_table.rowCount():
@@ -1443,15 +1515,32 @@ class SystemConfigDialog(QDialog):
             regions = self._region_drafts()
         except ValueError:
             return
+        used_boundary_ids: set[str] = set()
         for region in regions:
             for mesh_name, mesh_id in zip(region["mesh_names"], region["mesh_ids"], strict=True):
                 mesh = self._mesh_by_name.get(mesh_name)
                 if mesh is None:
                     continue
                 mesh_region = dict(region, mesh_id=mesh_id)
-                for group_name in mesh.surface_groups:
+                group_names = (
+                    mesh.surface_groups_for_volume(region["volume_group"])
+                    if region["kind"] == AcousticRegionKind.BOUNDED_AIR
+                    else mesh.surface_groups
+                )
+                for group_name in group_names:
                     key = (region["id"], mesh_id, group_name)
                     existing = self._existing_boundaries.get(key)
+                    if existing is None:
+                        candidates = [
+                            boundary
+                            for boundary in self._existing_boundaries_by_mesh_group.get(
+                                (mesh_id, group_name), ()
+                            )
+                            if boundary.id not in used_boundary_ids
+                            and boundary.id in self._relocatable_boundary_ids
+                        ]
+                        if len(candidates) == 1:
+                            existing = candidates[0]
                     boundary_id, selected, parameters = current.get(
                         key,
                         (
@@ -1460,6 +1549,8 @@ class SystemConfigDialog(QDialog):
                             {} if existing is None else dict(existing.parameters),
                         ),
                     )
+                    if boundary_id:
+                        used_boundary_ids.add(boundary_id)
                     self._append_boundary_row(mesh_region, mesh, group_name, boundary_id, selected, parameters)
 
     def _append_boundary_row(
@@ -1489,6 +1580,8 @@ class SystemConfigDialog(QDialog):
         combo.addItem("Rigid", BoundaryKind.RIGID)
         combo.addItem("Moving", BoundaryKind.MOVING)
         combo.addItem("Interface", BoundaryKind.INTERFACE)
+        if region["kind"] == AcousticRegionKind.BOUNDED_AIR:
+            combo.addItem("Plane-wave tube termination", BoundaryKind.PLANE_WAVE_TUBE_TERMINATION)
         combo.setProperty("boundary_id", boundary_id)
         normalized = BoundaryKind.RIGID if selected in {None, BoundaryKind.UNUSED} else selected
         index = combo.findData(normalized)

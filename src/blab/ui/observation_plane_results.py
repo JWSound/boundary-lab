@@ -201,7 +201,7 @@ def interior_field_results_from_solved_system(
     flat_target_enabled: bool = False,
     flat_target_reference_angle_deg: float = 0.0,
 ) -> InteriorFieldResults | None:
-    if solved is None or solved.provenance.solve_kind != "coupled_bem_fem":
+    if solved is None or solved.provenance.solve_kind not in {"coupled_bem_fem", "interior_fem"}:
         return None
     domain = solved.domains.get(FEM_VOLUME_DOMAIN_ID)
     quantity = solved.quantities.get(FEM_NODAL_PRESSURE_ID)

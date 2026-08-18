@@ -23,6 +23,7 @@ from blab.component_symmetry import (
     infer_component_symmetry,
 )
 from blab.config import normalize_symmetry
+from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
 from blab.physical_model import (
     PHYSICAL_MODEL_VERSION,
@@ -81,7 +82,7 @@ class PhysicalSystemCompiler:
         compiled_boundaries_by_id = {boundary.id: boundary for boundary in compiled_boundaries}
         compiled_components = self._compile_components(system, symmetry)
 
-        self._validate_boundary_coverage(system, compiled_boundaries, meshes_by_id)
+        self._validate_boundary_coverage(compiled_regions, compiled_boundaries, meshes_by_id)
         compiled_interfaces = tuple(
             self._compile_interface(
                 interface,
@@ -219,6 +220,32 @@ class PhysicalSystemCompiler:
                 )
             if not math.isfinite(interface.coordinate_tolerance_m) or interface.coordinate_tolerance_m <= 0.0:
                 issues.append(f"Interface '{interface.id}' coordinate_tolerance_m must be finite and positive.")
+
+        interface_boundary_counts: Counter[str] = Counter(
+            boundary_id
+            for interface in system.interfaces
+            for boundary_id in (interface.bounded_boundary_id, interface.unbounded_boundary_id)
+        )
+        for boundary in system.boundaries:
+            count = interface_boundary_counts[boundary.id]
+            if boundary.kind == BoundaryKind.INTERFACE and count != 1:
+                issues.append(
+                    f"Interface boundary '{boundary.id}' must belong to exactly one acoustic interface; found {count}."
+                )
+            elif boundary.kind != BoundaryKind.INTERFACE and count:
+                issues.append(
+                    f"Boundary '{boundary.id}' is referenced by an acoustic interface but is not assigned as interface."
+                )
+            if boundary.kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION:
+                region = regions.get(boundary.region_id)
+                if region is not None and region.kind != AcousticRegionKind.BOUNDED_AIR:
+                    issues.append(
+                        f"Plane-wave tube termination '{boundary.id}' requires a bounded-air FEM region."
+                    )
+                if boundary.parameters:
+                    issues.append(
+                        f"Plane-wave tube termination '{boundary.id}' does not accept boundary parameters."
+                    )
 
         component_by_boundary: Counter[str] = Counter()
         for component in system.components:
@@ -541,7 +568,7 @@ class PhysicalSystemCompiler:
 
     def _validate_boundary_coverage(
         self,
-        system: PhysicalSystem,
+        regions: tuple[CompiledRegion, ...],
         compiled_boundaries: tuple[CompiledBoundary, ...],
         meshes_by_id: dict[str, MeshResource],
     ) -> None:
@@ -550,7 +577,7 @@ class PhysicalSystemCompiler:
             boundaries_by_region.setdefault(boundary.region_id, []).append(boundary)
 
         issues: list[str] = []
-        for region in system.regions:
+        for region in regions:
             region_boundaries = boundaries_by_region.get(region.id, [])
             for mesh_id in region.mesh_ids:
                 resource = meshes_by_id[mesh_id]
@@ -558,14 +585,34 @@ class PhysicalSystemCompiler:
                 assigned_tags = {
                     boundary.group.tag for boundary in region_boundaries if boundary.group.mesh_id == mesh_id
                 }
-                triangle_tags = self._physical_tags(mesh, dimension=2)
-                present_tags = set(map(int, np.unique(triangle_tags)))
+                if region.kind == AcousticRegionKind.BOUNDED_AIR:
+                    selected_volume_tags = {
+                        int(group.tag) for group in region.volume_groups if group.mesh_id == mesh_id
+                    }
+                    try:
+                        present_tags = set(selected_volume_surface_tags(mesh, selected_volume_tags))
+                    except ValueError as exc:
+                        issues.append(f"Region '{region.id}' could not resolve its FEM boundary: {exc}")
+                        continue
+                else:
+                    triangle_tags = self._physical_tags(mesh, dimension=2)
+                    present_tags = set(map(int, np.unique(triangle_tags)))
                 missing_tags = sorted(present_tags - assigned_tags)
                 if missing_tags:
                     names = [self._name_for_tag(mesh, tag, 2, required=False) or str(tag) for tag in missing_tags]
                     issues.append(
                         f"Region '{region.id}' has unassigned physical surface groups on mesh '{mesh_id}': "
                         f"{', '.join(names)}."
+                    )
+                inactive_tags = sorted(assigned_tags - present_tags)
+                if inactive_tags:
+                    names = [
+                        self._name_for_tag(mesh, tag, 2, required=False) or str(tag)
+                        for tag in inactive_tags
+                    ]
+                    issues.append(
+                        f"Region '{region.id}' assigns physical surface groups outside its selected "
+                        f"volume groups on mesh '{mesh_id}': {', '.join(names)}."
                     )
                 duplicate_groups = [
                     tag
@@ -704,6 +751,16 @@ class PhysicalSystemCompiler:
                 PhysicsAssumption(
                     AssumptionStatus.INCLUDED,
                     "Locally reacting rigid-backed Miki porous wall treatments",
+                )
+            )
+        if any(
+            boundary.kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION
+            for boundary in system.boundaries
+        ):
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED,
+                    "Locally reacting anechoic plane-wave tube terminations",
                 )
             )
         return tuple(assumptions)

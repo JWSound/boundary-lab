@@ -224,6 +224,25 @@ def test_interfaces_tab_is_disabled_until_a_bounded_region_exists() -> None:
     assert dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
 
 
+def test_interior_only_editor_offers_tube_termination_without_enabling_interfaces() -> None:
+    dialog = SystemConfigDialog(
+        inspect_system_meshes((_fixture_mesh_entries()[0],)),
+        None,
+        ("main",),
+    )
+    dialog._refresh_boundaries()
+
+    assert [dialog._region_kind(row) for row in range(dialog.regions_table.rowCount())] == [
+        AcousticRegionKind.BOUNDED_AIR
+    ]
+    assert not dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
+    assert dialog.boundaries_table.rowCount() > 0
+    for row in range(dialog.boundaries_table.rowCount()):
+        combo = dialog.boundaries_table.cellWidget(row, 3)
+        assert isinstance(combo, QComboBox)
+        assert combo.findData(BoundaryKind.PLANE_WAVE_TUBE_TERMINATION) >= 0
+
+
 def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
     _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
     second = replace(bem, name="Exterior B")

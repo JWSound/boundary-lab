@@ -70,11 +70,16 @@ preserved. Replacing an imported row preserves its mesh identity, which keeps
 downstream references intact when the replacement uses the same physical-group
 names.
 
-The application infers the solve kind from the authored regions. Exactly one
-unbounded region with no bounded regions is an exterior BEM system; adding one
-or more bounded regions selects the coupled FEM-BEM path and enables the
-Interfaces tab. Exterior-only systems currently accept prescribed-velocity
-components, while coupled systems may also use electrodynamic transducers.
+The application infers the solve kind from the authored regions:
+
+- exactly one unbounded region and no bounded regions selects exterior BEM;
+- one or more bounded regions and no unbounded region selects interior FEM;
+- one or more bounded regions plus exactly one unbounded region selects
+  coupled FEM-BEM.
+
+The Interfaces tab is enabled only for the third topology. Exterior-only
+systems currently accept prescribed-velocity components; interior and coupled
+systems may also use electrodynamic transducers.
 
 Component-to-channel routing is stored as application project state, not in the
 physical system or compiled solver contract. The coupled solver returns one
@@ -110,6 +115,14 @@ facing the exterior region.
 Regions do not describe how individual surfaces behave. That is the role of
 boundary assignments.
 
+One tetrahedral mesh may contain several physical volume groups. Separate
+bounded regions can reference the same mesh while selecting different volume
+groups. Boundary Lab derives each region's available surfaces from tetrahedral
+face adjacency, so groups belonging only to another volume are not shown or
+accepted. A physical surface group that contains facets adjacent to several
+selected volumes, such as a shared `walls` tag, appears once under each
+applicable region.
+
 ## Boundaries
 
 A boundary assigns a physical role to one tagged surface group on one mesh. It
@@ -121,16 +134,23 @@ The model schema defines these boundary roles:
 - `moving`: motion is supplied by a component.
 - `interface`: acoustic state is coupled to another region through an
   interface.
+- `plane_wave_tube_termination`: a bounded FEM surface uses a locally planar,
+  anechoic radiation condition without creating an exterior region.
 - `impedance`: pressure and normal velocity obey a surface-impedance model.
 - `unused`: a compatibility/future-facing schema value that is not offered by
   the current System editor. Existing unused assignments are presented and
   saved as `rigid`.
 
-These are model-level roles. The current UI creates `rigid`, `moving`, and
-`interface` assignments; it represents the supported Miki wall treatment as
-parameters on a rigid boundary rather than as a generic `impedance` role. A
-solver backend must declare which roles it supports, so a future-facing schema
-value does not imply that the current numerical backend can solve it.
+These are model-level roles. The current UI creates `rigid`, `moving`,
+`interface`, and bounded-only `plane_wave_tube_termination` assignments; it
+represents the supported Miki wall treatment as parameters on a rigid boundary
+rather than as a generic `impedance` role. A solver backend must declare which
+roles it supports, so a future-facing schema value does not imply that the
+current numerical backend can solve it.
+
+A plane-wave tube termination is intentionally not an interface to a dummy or
+non-existent exterior region. It closes the FEM weak form directly with the
+Robin condition described in [Interior FEM Solver](Interior%20FEM%20Solver.md).
 
 The coupled backend additionally supports a locally reacting porous lining on
 a bounded region's `rigid` boundary. It remains a rigid boundary assignment and

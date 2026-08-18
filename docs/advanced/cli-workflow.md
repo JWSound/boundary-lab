@@ -6,7 +6,7 @@ Boundary Lab still includes command-line tools for mesh cleaning, solving, data 
 
 The project CLI loads a complete `.blab.json` physical system and runs the same
 BEAT Engine physical-system path used by the desktop application. It supports
-exterior BEM and coupled FEM-BEM-LEM projects without opening Qt.
+exterior BEM, interior FEM, and coupled FEM-BEM-LEM projects without opening Qt.
 
 Validate a project before starting an expensive solve:
 
@@ -31,7 +31,8 @@ the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
 functional; otherwise it falls back to `beat_cpu`. Use an explicit
 `--backend beat_cpu`, `--backend beat_cuda`, or `--backend beat_rocm` to disable
 automatic selection. `beat_cpu` uses the ordinary CPU path for exterior-only
-projects and exact FEM interface condensation for coupled production projects.
+projects, sparse UMFPACK pressure FEM for interior-only projects, and exact FEM
+interface condensation for coupled production projects.
 The former `beat_cpu_condensed` ID remains a compatibility alias for `beat_cpu`.
 `--julia-executable` and `--julia-threads` select the Julia installation and
 thread count. The output directory must not already exist, which prevents an
@@ -93,6 +94,10 @@ Supported `retain` entries are `bem_boundary_pressure`,
 `fem_nodal_pressure`. Retaining fields can substantially increase solve output.
 Complex results remain separated by excitation port; the headless path does not
 collapse them into synthesized GUI channels.
+
+Interior-only projects do not accept exterior point probes or retained BEM
+traces. Their FEM nodal pressure is retained automatically and can drive
+Interior observation planes.
 
 Full-matrix `validation_diagnostics` may be enabled for monolithic coupled BEAT
 CPU solves. They cannot be combined with CPU, CUDA, or ROCm FEM static

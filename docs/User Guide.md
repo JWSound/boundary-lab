@@ -190,6 +190,7 @@ Managed generated artifacts are stored below `runs/generated_geometry`.
 **Solve (F5)** infers the numerical path from **System > Regions**:
 
 - one unbounded exterior and no bounded regions uses exterior BEM;
+- one or more bounded FEM regions and no unbounded region uses interior FEM;
 - one or more bounded FEM regions plus one unbounded exterior uses the coupled
   FEM-BEM path.
 
@@ -239,33 +240,36 @@ data is resynthesized only while its window is open.
 
 ## System
 
-The **System** window is the physical-model editor for both exterior BEM and
-coupled FEM-BEM projects. Every active surface defaults to **Rigid** and can be
-changed to **Moving** or **Interface**. The UI has no unassigned or unused
-surface state.
+The **System** window is the physical-model editor for exterior BEM, interior
+FEM, and coupled FEM-BEM projects. Every active surface defaults to **Rigid**.
+The UI has no unassigned or unused surface state.
 
 ### Regions
 
 <img src="../assets/regionswindow.png" alt="System Regions tab" width="700">
 
-Create exactly one **Unbounded Exterior** region and assign its BEM surface
-mesh or meshes. Add a **Bounded Interior** for each FEM chamber, choose its
-tetrahedral mesh and physical volume group, and optionally select a homogeneous
-FEM bulk-loss factor. If the exterior uses adjoining parts of one continuous
-surface, enable **Stitch exterior region meshes**; leave it off for disconnected
-closed bodies.
+For exterior or coupled work, create exactly one **Unbounded Exterior** region
+and assign its BEM surface mesh or meshes. Add a **Bounded Interior** for each
+FEM chamber, choose its tetrahedral mesh and physical volume group, and
+optionally select a homogeneous FEM bulk-loss factor. A project containing
+bounded regions but no unbounded region is a valid interior-only FEM project.
+If the exterior uses adjoining parts of one continuous surface, enable
+**Stitch exterior region meshes**; leave it off for disconnected closed bodies.
 
-An exterior-only system supports prescribed-velocity components. Adding a
-bounded region selects the coupled path and enables the Interfaces tab.
+An exterior-only system supports prescribed-velocity components. Interior and
+coupled systems also support linear electrodynamic components. The Interfaces
+tab is enabled only when both bounded and unbounded regions exist.
 
 ### Boundaries
 
 <img src="../assets/boundarieswindow.png" alt="System Boundaries tab" width="700">
 
-Classify each region surface as **Rigid**, **Moving**, or **Interface**. A
-bounded rigid surface may additionally use a rigid-backed porous lining via
-**Wall Impedance**. The Miki model accepts lining thickness and airflow
-resistivity; disabling it restores the hard-wall condition.
+Classify each region surface as **Rigid**, **Moving**, or—where applicable—
+**Interface** or **Plane-wave tube termination**. A bounded rigid surface may
+additionally use a rigid-backed porous lining via **Wall Impedance**. The Miki
+model accepts lining thickness and airflow resistivity; disabling it restores
+the hard-wall condition. A plane-wave termination is a bounded-only anechoic
+Robin boundary intended for a locally one-dimensional tube mode.
 
 Moving boundaries must be owned by exactly one component. An FEM and BEM port
 mouth uses two interface boundary assignments, one in each acoustic region.
@@ -278,8 +282,8 @@ mouth uses two interface boundary assignments, one in each acoustic region.
 surfaces, makes the BEM side conform to the authoritative FEM boundary facets
 when needed, and validates node, face, and normal-orientation mappings. The
 original imported files are not overwritten. Multiple tagged openings may
-share the same surrounding BEM surface. This tab is disabled when no bounded
-FEM region exists.
+share the same surrounding BEM surface. This tab is enabled only when both
+bounded FEM and unbounded BEM regions exist.
 
 ### Components
 

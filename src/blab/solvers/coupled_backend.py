@@ -271,9 +271,14 @@ class _CoupledBackend:
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
         solver_options = dict(request.solver_options)
-        is_coupled = any(
+        has_bounded = any(
             region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions
         )
+        has_unbounded = any(
+            region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in request.compiled_system.regions
+        )
+        is_coupled = has_bounded and has_unbounded
+        is_interior = has_bounded and not has_unbounded
         solver_options.setdefault(
             "static_condensation",
             is_coupled
@@ -281,7 +286,7 @@ class _CoupledBackend:
             and not bool(solver_options.get("validation_diagnostics", False)),
         )
         solver_options["precision"] = self.precision
-        solver_options["bem_backend"] = self.bem_backend
+        solver_options["bem_backend"] = "cpu" if is_interior else self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         typed_request = replace(request, solver_options=solver_options)
         validate_system_capabilities(typed_request)
@@ -289,7 +294,7 @@ class _CoupledBackend:
             typed_request,
             julia_executable=self.julia_executable,
             solver_script=self.solver_script,
-            julia_project=self.julia_project,
+            julia_project=DEFAULT_COUPLED_CPU_PROJECT if is_interior else self.julia_project,
             julia_threads=self.julia_threads,
             persistent_worker=self.persistent_worker,
         )
@@ -432,10 +437,141 @@ def validate_system_capabilities(request: SystemSolveRequest) -> None:
     bounded_regions = [
         region for region in request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     ]
-    if bounded_regions:
+    unbounded_regions = [
+        region for region in request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+    ]
+    if bounded_regions and unbounded_regions:
         validate_coupled_capabilities(request)
         return
+    if bounded_regions:
+        validate_interior_capabilities(request)
+        return
     validate_exterior_capabilities(request)
+
+
+def validate_interior_capabilities(request: SystemSolveRequest) -> None:
+    """Reject features unsupported by the sparse interior-FEM branch."""
+
+    system = request.compiled_system
+    bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
+    unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
+    if not bounded_regions or unbounded_regions:
+        raise ValueError("Interior FEM solving requires bounded regions and no unbounded region.")
+    if system.interfaces:
+        raise ValueError("Interior FEM systems cannot contain FEM-BEM interfaces.")
+    if any(len(region.mesh_ids) != 1 for region in bounded_regions):
+        raise ValueError("Each interior FEM region must currently reference exactly one FEM mesh.")
+
+    requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
+    symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
+    symmetry_factors = {"off": 1, "x": 2, "xy": 4}
+    if symmetry_mode not in symmetry_factors:
+        raise ValueError(f"Unsupported interior FEM symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+
+    reference_medium = bounded_regions[0]
+    mismatched_media = [
+        region.id
+        for region in bounded_regions
+        if not math.isclose(
+            region.sound_speed_m_per_s,
+            reference_medium.sound_speed_m_per_s,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+        or not math.isclose(
+            region.density_kg_per_m3,
+            reference_medium.density_kg_per_m3,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+    ]
+    if mismatched_media:
+        raise ValueError(
+            "Interior FEM solving currently requires one shared sound speed and density; mismatched: "
+            + ", ".join(mismatched_media)
+        )
+
+    supported_boundary_kinds = {
+        BoundaryKind.RIGID,
+        BoundaryKind.MOVING,
+        BoundaryKind.PLANE_WAVE_TUBE_TERMINATION,
+    }
+    unsupported_boundaries = [
+        boundary.id for boundary in system.boundaries if boundary.kind not in supported_boundary_kinds
+    ]
+    if unsupported_boundaries:
+        raise ValueError(
+            "Interior FEM solving supports rigid, moving, and plane-wave tube termination boundaries only: "
+            + ", ".join(unsupported_boundaries)
+        )
+    parameterized_boundaries = [
+        boundary.id
+        for boundary in system.boundaries
+        if boundary.parameters and set(boundary.parameters) != {WALL_IMPEDANCE_KEY}
+    ]
+    if parameterized_boundaries:
+        raise ValueError(
+            "Interior FEM solving does not support the boundary parameters used by: "
+            + ", ".join(parameterized_boundaries)
+        )
+    for boundary in system.boundaries:
+        treatment = wall_impedance_parameters(boundary.parameters)
+        if treatment is not None and boundary.kind != BoundaryKind.RIGID:
+            raise ValueError(f"Wall impedance boundary '{boundary.id}' must use the rigid boundary assignment.")
+    for region in bounded_regions:
+        unknown_loss_keys = set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY}
+        if unknown_loss_keys:
+            raise ValueError(
+                f"Interior FEM solving does not support acoustic loss parameters on '{region.id}': "
+                + ", ".join(sorted(unknown_loss_keys))
+            )
+        region_bulk_loss_factor(region.loss_model)
+
+    supported_component_kinds = {
+        ComponentKind.IDEAL_VELOCITY_SOURCE,
+        ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+    }
+    unsupported_components = [
+        component.id for component in system.components if component.kind not in supported_component_kinds
+    ]
+    if unsupported_components:
+        raise ValueError(
+            "Interior FEM solving supports prescribed-velocity and linear electrodynamic components; unsupported: "
+            + ", ".join(unsupported_components)
+        )
+    for component in system.components:
+        _validate_boundary_motion_weights(component)
+        if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            _validate_electrodynamic_component(
+                component,
+                symmetry_factor=symmetry_factors[symmetry_mode],
+                active_symmetry_axes=(
+                    () if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")
+                ),
+            )
+            continue
+        unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
+        if unsupported_parameters:
+            raise ValueError(
+                f"Interior FEM solving does not support component parameters on '{component.id}': "
+                + ", ".join(sorted(unsupported_parameters))
+            )
+        if component.parameters.get("motion_profile", "uniform") != "uniform":
+            raise ValueError(f"Interior prescribed-velocity component '{component.id}' must use uniform motion.")
+
+    components_by_id = {component.id: component for component in system.components}
+    incompatible_ports = []
+    for port in system.excitation_ports:
+        component = components_by_id[port.component_id]
+        expected = (
+            ExcitationPortKind.VOLTAGE
+            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            else ExcitationPortKind.NORMAL_VELOCITY
+        )
+        if port.kind != expected:
+            incompatible_ports.append(port.id)
+    if incompatible_ports:
+        raise ValueError("Interior FEM solving received incompatible excitation ports: " + ", ".join(incompatible_ports))
 
 
 def validate_exterior_capabilities(request: SystemSolveRequest) -> None:
@@ -669,7 +805,7 @@ class CoupledReferenceBackend(_CoupledBackend):
 
 
 class PhysicalSystemProductionBackend(_CoupledBackend):
-    """FP32 physical-system backend for exterior and coupled BEAT solves."""
+    """FP32 physical-system backend for exterior, interior, and coupled BEAT solves."""
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"

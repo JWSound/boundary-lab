@@ -343,10 +343,15 @@ class SolveWorkflowController(QObject):
                 observation_planes=project.observation_planes,
             )
         except Exception as exc:
-            self._view.warn("Coupled solve", str(exc))
+            self._view.warn("FEM system solve", str(exc))
             return
 
-        self._start_prepared_system_solve(prepared, "Initializing coupled solver...")
+        status = (
+            "Initializing interior FEM solver..."
+            if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
+            else "Initializing coupled solver..."
+        )
+        self._start_prepared_system_solve(prepared, status)
 
     def _start_prepared_system_solve(self, prepared, status: str) -> None:
         self._begin_run(status)
@@ -450,6 +455,11 @@ class SolveWorkflowController(QObject):
         )
         if not self._read_preferences().live_plot_streaming:
             return
+        if (
+            self._session.result_builder is not None
+            and self._session.result_builder.provenance.solve_kind == "interior_fem"
+        ):
+            return
         self._plots.request_live_refresh()
 
     @Slot(object)
@@ -487,13 +497,18 @@ class SolveWorkflowController(QObject):
         if session.has_solved_data():
             solved_count = session.solved_count
             solve_completed = completion.completed
+            interior_fem = (
+                session.result_builder is not None
+                and session.result_builder.provenance.solve_kind == "interior_fem"
+            )
             session.use_final_isobar_resolution = solve_completed
-            if solve_completed:
+            if solve_completed and not interior_fem:
                 self._view.show_status("Rendering final high-resolution plots...")
             refreshed_dataset = None
             if self._read_preferences().live_plot_streaming or solve_completed:
-                refreshed_dataset = self._plots.refresh_plots()
-            if solve_completed:
+                if not interior_fem:
+                    refreshed_dataset = self._plots.refresh_plots()
+            if solve_completed and not interior_fem:
                 if refreshed_dataset is None:
                     refreshed_dataset = self._plots.prepared_live_dataset(
                         angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -501,11 +516,15 @@ class SolveWorkflowController(QObject):
                     )
                 if refreshed_dataset is not None:
                     session.last_completed_visualization = refreshed_dataset.snapshot()
-            session.final_isobar_plots_rendered = solve_completed and bool(self._plots.visible_isobar_plots())
-            self._view.set_plot_exports_available(True)
-            self._view.set_polar_export_available(True)
-            self._view.set_on_axis_export_available(session.live_dataset.supports_channel_resynthesis)
-            self._view.set_balloon_plot_available(session.live_dataset.has_balloon_data)
+            session.final_isobar_plots_rendered = (
+                solve_completed and not interior_fem and bool(self._plots.visible_isobar_plots())
+            )
+            self._view.set_plot_exports_available(not interior_fem)
+            self._view.set_polar_export_available(not interior_fem)
+            self._view.set_on_axis_export_available(
+                not interior_fem and session.live_dataset.supports_channel_resynthesis
+            )
+            self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
             self._plots.refresh_contour_controls()
             elapsed_text = f" in {elapsed_s:.1f} s"
             if completion.phase == OperationPhase.CANCELLED:

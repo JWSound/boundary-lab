@@ -9,6 +9,7 @@ from dataclasses import replace
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.physical_model import PhysicalSolveKind
 from blab.solve_results import (
     HORIZONTAL_POLAR_PRESSURE_ID,
     RADIATION_IMPEDANCE_ID,
@@ -83,6 +84,40 @@ class SystemSolveWorker(QObject):
 
     def _to_live_result(self, result: SystemFrequencyResult) -> FrequencyResult:
         result = self._canonical_result(result)
+        if self.prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM:
+            excitation_count = len(result.excitation_port_ids)
+            empty_pressure = np.zeros((excitation_count, 0), dtype=np.complex64)
+            channel_names, horizontal, vertical, _sphere = self._combine_channel_rows(
+                empty_pressure,
+                empty_pressure,
+                None,
+            )
+            raw_timings = result.diagnostics.get("timings", {})
+            raw_timings = raw_timings if isinstance(raw_timings, dict) else {}
+            residual = result.diagnostics.get("relative_residual")
+            return FrequencyResult(
+                freq_hz=float(result.freq_hz),
+                horizontal_spl_norm_db=np.empty(0, dtype=np.float32),
+                vertical_spl_norm_db=np.empty(0, dtype=np.float32),
+                impedance=self._impedance_values(result),
+                horizontal_spl_db=np.empty(0, dtype=np.float32),
+                vertical_spl_db=np.empty(0, dtype=np.float32),
+                channel_names=channel_names,
+                horizontal_pressure=horizontal,
+                vertical_pressure=vertical,
+                timings=FrequencySolveTimings(
+                    assembly_s=(
+                        float(raw_timings.get("assembly_s", 0.0))
+                        + float(raw_timings.get("mesh_setup_s", 0.0))
+                        + float(raw_timings.get("cache_setup_s", 0.0))
+                    ),
+                    solve_s=float(raw_timings.get("solve_s", 0.0)),
+                    field_s=0.0,
+                ),
+                diagnostics=SolverDiagnostics(
+                    message=None if residual is None else f"Interior FEM residual {float(residual):.3g}"
+                ),
+            )
         horizontal = self._pressure_values(result, HORIZONTAL_POLAR_PRESSURE_ID)
         vertical = self._pressure_values(result, VERTICAL_POLAR_PRESSURE_ID)
         sphere_quantity = next((item for item in result.quantities if item.id == SPHERE_PRESSURE_ID), None)

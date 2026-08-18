@@ -84,47 +84,56 @@ def prepare_system_ui_solve(
         raise ValueError("The coupled solver does not yet support unused surface groups.")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
     solve_kind = infer_physical_solve_kind(system)
+    has_exterior = solve_kind != PhysicalSolveKind.INTERIOR_FEM
     frequencies = build_log_frequencies(
         float(min(freq_min_hz, freq_max_hz)),
         float(max(freq_min_hz, freq_max_hz)),
         int(freq_count),
     )
     ordered = order_frequencies_for_live_plotting(frequencies)
-    angles, horizontal, vertical = _polar_observation_points(
-        distance_m=float(observation_distance_m),
-        step_deg=float(polar_angle_step_deg),
-    )
-    point_blocks = [horizontal, vertical]
-    observation_domains = [
-        {
-            "id": HORIZONTAL_POLAR_DOMAIN_ID,
-            "quantity_id": HORIZONTAL_POLAR_PRESSURE_ID,
-            "offset": 0,
-            "count": len(horizontal),
-        },
-        {
-            "id": VERTICAL_POLAR_DOMAIN_ID,
-            "quantity_id": VERTICAL_POLAR_PRESSURE_ID,
-            "offset": len(horizontal),
-            "count": len(vertical),
-        },
-    ]
-    result_domains = [
-        ResultDomain(
-            id=HORIZONTAL_POLAR_DOMAIN_ID,
-            kind="polar_observation",
-            dimensions=("observation",),
-            coordinates={"points_m": horizontal, "angle_deg": angles},
-            metadata={"plane": "horizontal"},
-        ),
-        ResultDomain(
-            id=VERTICAL_POLAR_DOMAIN_ID,
-            kind="polar_observation",
-            dimensions=("observation",),
-            coordinates={"points_m": vertical, "angle_deg": angles},
-            metadata={"plane": "vertical"},
-        ),
-    ]
+    if has_exterior:
+        angles, horizontal, vertical = _polar_observation_points(
+            distance_m=float(observation_distance_m),
+            step_deg=float(polar_angle_step_deg),
+        )
+        point_blocks = [horizontal, vertical]
+        observation_domains = [
+            {
+                "id": HORIZONTAL_POLAR_DOMAIN_ID,
+                "quantity_id": HORIZONTAL_POLAR_PRESSURE_ID,
+                "offset": 0,
+                "count": len(horizontal),
+            },
+            {
+                "id": VERTICAL_POLAR_DOMAIN_ID,
+                "quantity_id": VERTICAL_POLAR_PRESSURE_ID,
+                "offset": len(horizontal),
+                "count": len(vertical),
+            },
+        ]
+        result_domains = [
+            ResultDomain(
+                id=HORIZONTAL_POLAR_DOMAIN_ID,
+                kind="polar_observation",
+                dimensions=("observation",),
+                coordinates={"points_m": horizontal, "angle_deg": angles},
+                metadata={"plane": "horizontal"},
+            ),
+            ResultDomain(
+                id=VERTICAL_POLAR_DOMAIN_ID,
+                kind="polar_observation",
+                dimensions=("observation",),
+                coordinates={"points_m": vertical, "angle_deg": angles},
+                metadata={"plane": "vertical"},
+            ),
+        ]
+    else:
+        angles = np.empty(0, dtype=np.float32)
+        horizontal = np.empty((0, 3), dtype=float)
+        vertical = np.empty((0, 3), dtype=float)
+        point_blocks = []
+        observation_domains = []
+        result_domains = []
     if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
         result_domains.append(
             ResultDomain(
@@ -138,7 +147,7 @@ def prepare_system_ui_solve(
             )
         )
     sphere_metadata = None
-    if spherical_sampling_enabled:
+    if spherical_sampling_enabled and has_exterior:
         sphere, sphere_metadata = _fibonacci_sphere_points(
             max(int(spherical_sampling_points), 1),
             float(observation_distance_m),
@@ -161,7 +170,7 @@ def prepare_system_ui_solve(
                 coordinates={"points_m": sphere, **sphere_metadata},
             )
         )
-    points = np.vstack(point_blocks)
+    points = np.vstack(point_blocks) if point_blocks else np.empty((0, 3), dtype=float)
 
     components = {component.id: component for component in compiled.components}
     port_ids = tuple(port.id for port in compiled.excitation_ports)
@@ -180,16 +189,18 @@ def prepare_system_ui_solve(
         raise ValueError(
             "Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm."
         )
-    outputs = [
-        OutputRequest(
-            id="ui:exterior-pressure",
-            quantity="exterior_pressure",
-            options={
-                "points_m": points.tolist(),
-                "observation_domains": observation_domains,
-            },
+    outputs = []
+    if has_exterior:
+        outputs.append(
+            OutputRequest(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                options={
+                    "points_m": points.tolist(),
+                    "observation_domains": observation_domains,
+                },
+            )
         )
-    ]
     if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
         outputs.append(
             OutputRequest(
@@ -198,7 +209,7 @@ def prepare_system_ui_solve(
                 target_ids=(RADIATOR_DOMAIN_ID,),
             )
         )
-    retain_interior_field = any(
+    retain_interior_field = solve_kind == PhysicalSolveKind.INTERIOR_FEM or any(
         plane.plane_type in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
         for plane in observation_planes
     )
@@ -208,6 +219,8 @@ def prepare_system_ui_solve(
     )
     if solve_kind == PhysicalSolveKind.EXTERIOR_BEM and retain_interior_field:
         raise ValueError("Exterior-only systems support Exterior observation planes only.")
+    if solve_kind == PhysicalSolveKind.INTERIOR_FEM and retain_exterior_field:
+        raise ValueError("Interior-only systems support Interior observation planes only.")
     if retain_exterior_field:
         outputs.extend(
             (
@@ -264,14 +277,15 @@ def prepare_system_ui_solve(
         )
 
     is_coupled = solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM
+    has_fem = solve_kind != PhysicalSolveKind.EXTERIOR_BEM
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=tuple(float(value) for value in ordered),
         excitation_port_ids=port_ids,
         outputs=tuple(outputs),
         solver_options={
-            "quadrature_order": 2 if is_coupled else 4,
-            "singular_order": 2 if is_coupled else 4,
+            "quadrature_order": 2 if has_fem else 4,
+            "singular_order": 2 if has_fem else 4,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
             "static_condensation": is_coupled
