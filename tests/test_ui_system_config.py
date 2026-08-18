@@ -275,6 +275,97 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
         exterior_bem_inputs(unsupported, component_channel_by_id=channels)
 
 
+def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "ath_two_way.msh"
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [7.0, 0.0, 0.0],
+            [6.0, 1.0, 0.0],
+        ]
+    )
+    meshio.write(
+        mesh_path,
+        meshio.Mesh(
+            points=points,
+            cells=[("triangle", np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]))],
+            cell_data={"gmsh:physical": [np.array([2, 3, 4, 5], dtype=np.int32)]},
+            field_data={
+                "SD1D1001": np.array([2, 2], dtype=np.int32),
+                "SD1D1002": np.array([3, 2], dtype=np.int32),
+                "SD1D1003": np.array([4, 2], dtype=np.int32),
+                "SD1D1004": np.array([5, 2], dtype=np.int32),
+            },
+        ),
+        file_format="gmsh22",
+        binary=False,
+    )
+    mesh = inspect_system_meshes(
+        (MeshDialogEntry(name="2way", source_file=str(mesh_path), scale_factor=0.001),)
+    )[0]
+    radiators = tuple(
+        RadiatorConfig(
+            name=f"2way:{surface}",
+            mesh="2way",
+            tag=tag,
+            drive_group=drive_group,
+            drive_group_name=drive_name,
+            channel=channel,
+            velocity_offset_db=offset_db,
+        )
+        for surface, tag, drive_group, drive_name, channel, offset_db in (
+            ("SD1D1001", 2, "ath:0", "horn_driver", "High", -12.042),
+            ("SD1D1002", 3, "ath:0", "horn_driver", "High", -2.499),
+            ("SD1D1003", 4, "ath:0", "horn_driver", "High", 0.0),
+            ("SD1D1004", 5, "ath:2", "woofer_B", "Low", 0.0),
+        )
+    )
+
+    system, channels = seed_exterior_system((mesh,), radiators)
+
+    assert [(component.name, len(component.boundary_ids)) for component in system.components] == [
+        ("horn_driver", 3),
+        ("woofer_B", 1),
+    ]
+    tweeter = system.components[0]
+    boundary_names = {boundary.id: boundary.name for boundary in system.boundaries}
+    weights_by_surface = {
+        boundary_names[boundary_id]: weight
+        for boundary_id, weight in tweeter.parameters["boundary_motion_weights"].items()
+    }
+    assert weights_by_surface == pytest.approx(
+        {
+            "SD1D1001": 10.0 ** (-12.042 / 20.0),
+            "SD1D1002": 10.0 ** (-2.499 / 20.0),
+            "SD1D1003": 1.0,
+        }
+    )
+    assert channels[tweeter.id] == "High"
+
+    inputs = exterior_bem_inputs(system, component_channel_by_id=channels)
+    assert [(radiator.tag, radiator.channel, radiator.velocity_offset_db) for radiator in inputs.radiators] == [
+        (2, "High", pytest.approx(-12.042)),
+        (3, "High", pytest.approx(-2.499)),
+        (4, "High", pytest.approx(0.0)),
+        (5, "Low", pytest.approx(0.0)),
+    ]
+
+    ungrouped, _channels = seed_exterior_system(
+        (mesh,),
+        tuple(replace(radiator, drive_group=None, drive_group_name=None) for radiator in radiators),
+    )
+    assert len(ungrouped.components) == 4
+
+
 def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
     _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
     tags = read_surface_physical_names(Path(bem.file))

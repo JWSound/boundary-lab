@@ -7,7 +7,12 @@ import json
 import sys
 from pathlib import Path
 
-from blab.ath import ath_run_result_to_payload, build_ath_mesh_artifacts, mesh_ath_geo_text
+from blab.ath import (
+    ath_run_result_to_payload,
+    build_ath_mesh_artifacts,
+    mesh_ath_geo_text,
+    parse_ath_drive_definitions,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config,
             geo_path=args.geo,
             log_path=args.log,
+            drive_definitions=parse_ath_drive_definitions(geo_text),
             mirror_axes=tuple(args.mirror_axes),
         )
         args.result.write_text(

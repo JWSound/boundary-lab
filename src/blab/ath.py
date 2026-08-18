@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -45,6 +46,58 @@ ATH_GMSH_LOCK = threading.RLock()
 
 class AthCancelledError(RuntimeError):
     """Raised when an active Ath generation is cancelled by the user."""
+
+
+@dataclass(frozen=True)
+class AthDriveDefinition:
+    """One drive record emitted in Ath blab-mode GEO metadata."""
+
+    internal_id: int
+    user_id: int
+    name: str
+    ref_elements: str
+    weight_absolute: float
+    weight_db: float
+    driving_direction: int
+
+
+def parse_ath_drive_definitions(geo_text: str) -> tuple[AthDriveDefinition, ...]:
+    """Parse ``//#// DRV`` records from an Ath blab-mode GEO footer."""
+    definitions = []
+    referenced_elements: set[str] = set()
+    for line_number, raw_line in enumerate(str(geo_text).splitlines(), start=1):
+        stripped = raw_line.strip()
+        if not stripped.startswith("//#//"):
+            continue
+        fields = stripped.removeprefix("//#//").split()
+        if not fields or fields[0] != "DRV":
+            continue
+        if len(fields) != 8:
+            raise ValueError(
+                f"Malformed Ath DRV metadata on GEO line {line_number}: expected 8 fields, "
+                f"found {len(fields)}."
+            )
+        try:
+            definition = AthDriveDefinition(
+                internal_id=int(fields[1]),
+                user_id=int(fields[2]),
+                name=fields[3],
+                ref_elements=fields[4],
+                weight_absolute=float(fields[5]),
+                weight_db=float(fields[6]),
+                driving_direction=int(fields[7]),
+            )
+        except ValueError as exc:
+            raise ValueError(f"Invalid Ath DRV metadata on GEO line {line_number}: {raw_line}") from exc
+        if not math.isfinite(definition.weight_absolute) or not math.isfinite(definition.weight_db):
+            raise ValueError(f"Ath DRV metadata on GEO line {line_number} contains a non-finite weight.")
+        if definition.ref_elements in referenced_elements:
+            raise ValueError(
+                f"Ath DRV metadata references {definition.ref_elements!r} more than once."
+            )
+        referenced_elements.add(definition.ref_elements)
+        definitions.append(definition)
+    return tuple(definitions)
 
 
 def ath_mirror_axes_from_config_text(config_text: str) -> tuple[str, ...]:
@@ -102,6 +155,7 @@ class AthRunResult:
     config_path: Path
     driven_tag: int
     radiators: tuple[RadiatorConfig, ...]
+    drive_definitions: tuple[AthDriveDefinition, ...] = ()
     geo_path: Path | None = None
     log_path: Path | None = None
     mirror_axes: tuple[str, ...] = ()
@@ -444,13 +498,36 @@ def mesh_ath_geo_text(geo_text: str, *, output_dir: Path, case_name: str) -> mes
             parser_path.unlink(missing_ok=True)
 
 
-def _radiators_from_physical_names(physical_names: dict[str, int]) -> tuple[RadiatorConfig, ...]:
+def _radiators_from_physical_names(
+    physical_names: dict[str, int],
+    drive_definitions: tuple[AthDriveDefinition, ...] = (),
+) -> tuple[RadiatorConfig, ...]:
+    if drive_definitions:
+        missing = [
+            definition.ref_elements
+            for definition in drive_definitions
+            if definition.ref_elements not in physical_names
+        ]
+        if missing:
+            names = ", ".join(repr(name) for name in missing)
+            raise RuntimeError(f"Ath DRV metadata references missing physical surfaces: {names}.")
+        return tuple(
+            RadiatorConfig(
+                name=definition.ref_elements,
+                tag=physical_names[definition.ref_elements],
+                drive_group=f"ath:{definition.internal_id}",
+                drive_group_name=definition.name,
+                velocity_offset_db=definition.weight_db,
+            )
+            for definition in drive_definitions
+        )
+
     if set(COMPLEX_RADIATOR_DRIVES_DB).issubset(physical_names):
         return tuple(
             RadiatorConfig(
                 name=COMPLEX_RADIATOR_NAMES[physical_name],
                 tag=physical_names[physical_name],
-                level_db=level_db,
+                velocity_offset_db=level_db,
             )
             for physical_name, level_db in COMPLEX_RADIATOR_DRIVES_DB.items()
         )
@@ -460,7 +537,6 @@ def _radiators_from_physical_names(physical_names: dict[str, int]) -> tuple[Radi
             RadiatorConfig(
                 name="throat",
                 tag=physical_names[DRIVEN_DIAPHRAGM_PHYSICAL_NAME],
-                level_db=0.0,
             ),
         )
     return ()
@@ -474,6 +550,7 @@ def build_ath_mesh_artifacts(
     config_path: Path,
     geo_path: Path | None = None,
     log_path: Path | None = None,
+    drive_definitions: tuple[AthDriveDefinition, ...] = (),
     mirror_axes: tuple[str, ...] = (),
     merge_tol: float = MERGE_TOL,
     area_tol: float = AREA_TOL,
@@ -520,7 +597,8 @@ def build_ath_mesh_artifacts(
         msh_path=reduced_path,
         config_path=config_path,
         driven_tag=driven_tag,
-        radiators=_radiators_from_physical_names(physical_names),
+        radiators=_radiators_from_physical_names(physical_names, drive_definitions),
+        drive_definitions=drive_definitions,
         geo_path=geo_path,
         log_path=log_path,
         mirror_axes=mirror_axes,
@@ -538,8 +616,27 @@ def ath_run_result_to_payload(result: AthRunResult) -> dict:
         "config_path": str(result.config_path),
         "driven_tag": int(result.driven_tag),
         "radiators": [
-            {"name": radiator.name, "tag": int(radiator.tag), "level_db": float(radiator.level_db)}
+            {
+                "name": radiator.name,
+                "tag": int(radiator.tag),
+                "drive_group": radiator.drive_group,
+                "drive_group_name": radiator.drive_group_name,
+                "velocity_offset_db": float(radiator.velocity_offset_db),
+                "level_db": float(radiator.level_db),
+            }
             for radiator in result.radiators
+        ],
+        "drive_definitions": [
+            {
+                "internal_id": definition.internal_id,
+                "user_id": definition.user_id,
+                "name": definition.name,
+                "ref_elements": definition.ref_elements,
+                "weight_absolute": definition.weight_absolute,
+                "weight_db": definition.weight_db,
+                "driving_direction": definition.driving_direction,
+            }
+            for definition in result.drive_definitions
         ],
         "geo_path": None if result.geo_path is None else str(result.geo_path),
         "log_path": None if result.log_path is None else str(result.log_path),
@@ -575,9 +672,30 @@ def ath_run_result_from_payload(payload: dict) -> AthRunResult:
             RadiatorConfig(
                 name=str(radiator["name"]),
                 tag=int(radiator["tag"]),
+                drive_group=(
+                    None if radiator.get("drive_group") is None else str(radiator["drive_group"])
+                ),
+                drive_group_name=(
+                    None
+                    if radiator.get("drive_group_name") is None
+                    else str(radiator["drive_group_name"])
+                ),
+                velocity_offset_db=float(radiator.get("velocity_offset_db", 0.0)),
                 level_db=float(radiator.get("level_db", 0.0)),
             )
             for radiator in payload.get("radiators", [])
+        ),
+        drive_definitions=tuple(
+            AthDriveDefinition(
+                internal_id=int(definition["internal_id"]),
+                user_id=int(definition["user_id"]),
+                name=str(definition["name"]),
+                ref_elements=str(definition["ref_elements"]),
+                weight_absolute=float(definition["weight_absolute"]),
+                weight_db=float(definition["weight_db"]),
+                driving_direction=int(definition["driving_direction"]),
+            )
+            for definition in payload.get("drive_definitions", [])
         ),
         geo_path=Path(payload["geo_path"]) if payload.get("geo_path") else None,
         log_path=Path(payload["log_path"]) if payload.get("log_path") else None,
@@ -650,5 +768,8 @@ def read_surface_physical_names(msh_path: Path) -> dict[str, int]:
     return surface_names
 
 
-def detect_ath_radiators(msh_path: Path) -> tuple[RadiatorConfig, ...]:
-    return _radiators_from_physical_names(read_physical_names(msh_path))
+def detect_ath_radiators(
+    msh_path: Path,
+    drive_definitions: tuple[AthDriveDefinition, ...] = (),
+) -> tuple[RadiatorConfig, ...]:
+    return _radiators_from_physical_names(read_physical_names(msh_path), drive_definitions)

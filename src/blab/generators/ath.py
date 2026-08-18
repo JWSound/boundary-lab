@@ -8,11 +8,13 @@ from typing import Any
 
 from blab.ath import (
     AthCancelledError,
+    AthDriveDefinition,
     AthProcessRunner,
     AthRunResult,
     ath_mirror_axes_from_config_text,
     detect_ath_radiators,
     find_physical_tag_by_name,
+    parse_ath_drive_definitions,
 )
 from blab.generators.base import (
     GeneratedGeometry,
@@ -57,7 +59,21 @@ def ath_result_to_generated_geometry(result: AthRunResult) -> GeneratedGeometry:
         reduced_cleaned_mesh_path=result.reduced_cleaned_msh_path,
         mirror_axes=result.mirror_axes,
         quality_warning=result.quality_warning,
-        provider_metadata={"driven_tag": result.driven_tag},
+        provider_metadata={
+            "driven_tag": result.driven_tag,
+            "ath_drive_definitions": [
+                {
+                    "internal_id": definition.internal_id,
+                    "user_id": definition.user_id,
+                    "name": definition.name,
+                    "ref_elements": definition.ref_elements,
+                    "weight_absolute": definition.weight_absolute,
+                    "weight_db": definition.weight_db,
+                    "driving_direction": definition.driving_direction,
+                }
+                for definition in result.drive_definitions
+            ],
+        },
     )
 
 
@@ -67,12 +83,25 @@ def generated_geometry_to_ath_result(result: GeneratedGeometry) -> AthRunResult:
     driven_tag = result.provider_metadata.get("driven_tag")
     if driven_tag is None:
         driven_tag = find_physical_tag_by_name(result.solver_mesh_path, "SD1D1001")
+    drive_definitions = tuple(
+        AthDriveDefinition(
+            internal_id=int(definition["internal_id"]),
+            user_id=int(definition["user_id"]),
+            name=str(definition["name"]),
+            ref_elements=str(definition["ref_elements"]),
+            weight_absolute=float(definition["weight_absolute"]),
+            weight_db=float(definition["weight_db"]),
+            driving_direction=int(definition["driving_direction"]),
+        )
+        for definition in result.provider_metadata.get("ath_drive_definitions", [])
+    )
     return AthRunResult(
         output_dir=result.output_dir,
         msh_path=result.mesh_path,
         config_path=result.source_path or result.output_dir / "config.txt",
         driven_tag=int(driven_tag),
         radiators=result.radiators,
+        drive_definitions=drive_definitions,
         mirror_axes=result.mirror_axes,
         cleaned_msh_path=result.cleaned_mesh_path,
         reduced_cleaned_msh_path=result.reduced_cleaned_mesh_path,
@@ -139,14 +168,21 @@ class AthGeneratorBackend(GeneratorBackend):
         solver_path = cleaned_path if cleaned_path is not None and cleaned_path.exists() else mesh_path
         try:
             driven_tag = find_physical_tag_by_name(solver_path, "SD1D1001")
+            config_path = (
+                Path(artifact.source_path) if artifact.source_path else Path(artifact.output_dir) / "config.txt"
+            )
+            geo_path = config_path.with_suffix(".geo")
+            drive_definitions = (
+                parse_ath_drive_definitions(geo_path.read_text(encoding="utf-8")) if geo_path.exists() else ()
+            )
             ath_result = AthRunResult(
                 output_dir=Path(artifact.output_dir),
                 msh_path=mesh_path,
-                config_path=(
-                    Path(artifact.source_path) if artifact.source_path else Path(artifact.output_dir) / "config.txt"
-                ),
+                config_path=config_path,
                 driven_tag=driven_tag,
-                radiators=detect_ath_radiators(solver_path),
+                radiators=detect_ath_radiators(solver_path, drive_definitions),
+                drive_definitions=drive_definitions,
+                geo_path=geo_path if geo_path.exists() else None,
                 mirror_axes=ath_mirror_axes_from_config_text(ath_source_text(document)),
                 cleaned_msh_path=cleaned_path if cleaned_path is not None and cleaned_path.exists() else None,
                 reduced_cleaned_msh_path=(

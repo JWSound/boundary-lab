@@ -8,13 +8,17 @@ import pytest
 import blab.live as live_module
 from blab.ath import (
     AthCancelledError,
+    AthDriveDefinition,
     AthProcessRunner,
     AthRunResult,
     ath_mirror_axes_from_config_text,
+    ath_run_result_from_payload,
+    ath_run_result_to_payload,
     build_ath_mesh_artifacts,
     detect_ath_radiators,
     find_physical_tag_by_name,
     mesh_ath_geo_text,
+    parse_ath_drive_definitions,
     read_surface_physical_names,
 )
 from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
@@ -226,7 +230,9 @@ $EndPhysicalNames
     assert read_surface_physical_names(msh_path) == {"SD1D1001": 2}
 
 
-def test_detect_ath_radiators_uses_weighted_complex_dome_groups(tmp_path: Path) -> None:
+def test_detect_ath_radiators_uses_weighted_complex_dome_groups_as_legacy_fallback(
+    tmp_path: Path,
+) -> None:
     msh_path = tmp_path / "complex.msh"
     msh_path.write_text(
         """
@@ -246,11 +252,71 @@ $EndPhysicalNames
 
     radiators = detect_ath_radiators(msh_path)
 
-    assert [(r.name, r.tag, r.level_db) for r in radiators] == [
+    assert [(r.name, r.tag, r.velocity_offset_db) for r in radiators] == [
         ("dome", 4, 0.0),
         ("surround_inner", 3, -2.5),
         ("surround_outer", 2, -12.0),
     ]
+
+
+def test_parse_ath_drive_definitions_reads_blab_geo_footer() -> None:
+    definitions = parse_ath_drive_definitions(
+        """
+Physical Surface("SD1D1001",2)={25,26};
+//#// DRV  0  0  horn_driver  SD1D1001  0.249989  -12.042  1
+//#// DRV  0  0  horn_driver  SD1D1002  0.749996   -2.499  1
+//#// DRV  0  0  horn_driver  SD1D1003  1.000000    0.000  1
+//#// DRV  2  4  woofer_B     SD1D1004  1.000000    0.000  1
+"""
+    )
+
+    assert definitions == (
+        AthDriveDefinition(0, 0, "horn_driver", "SD1D1001", 0.249989, -12.042, 1),
+        AthDriveDefinition(0, 0, "horn_driver", "SD1D1002", 0.749996, -2.499, 1),
+        AthDriveDefinition(0, 0, "horn_driver", "SD1D1003", 1.0, 0.0, 1),
+        AthDriveDefinition(2, 4, "woofer_B", "SD1D1004", 1.0, 0.0, 1),
+    )
+
+
+def test_parse_ath_drive_definitions_rejects_duplicate_surface() -> None:
+    geo_text = """
+//#// DRV 0 0 horn_driver SD1D1001 1 0 1
+//#// DRV 0 0 horn_driver SD1D1001 1 0 1
+"""
+
+    with pytest.raises(ValueError, match="more than once"):
+        parse_ath_drive_definitions(geo_text)
+
+
+def test_build_ath_mesh_artifacts_uses_geo_drive_metadata(tmp_path: Path) -> None:
+    raw_mesh = meshio.Mesh(
+        points=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
+        field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
+    )
+    definitions = (AthDriveDefinition(0, 0, "horn_driver", "SD1D1001", 0.25, -12.0412, 1),)
+
+    result = build_ath_mesh_artifacts(
+        raw_mesh,
+        output_dir=tmp_path,
+        case_name="case",
+        config_path=tmp_path / "case.cfg",
+        drive_definitions=definitions,
+    )
+
+    assert result.drive_definitions == definitions
+    assert [
+        (r.name, r.tag, r.drive_group, r.drive_group_name, r.velocity_offset_db)
+        for r in result.radiators
+    ] == [
+        ("SD1D1001", 2, "ath:0", "horn_driver", -12.0412)
+    ]
+
+    restored = ath_run_result_from_payload(ath_run_result_to_payload(result))
+    assert restored.drive_definitions == definitions
+    assert restored.radiators[0].velocity_offset_db == pytest.approx(-12.0412)
+    assert restored.radiators[0].drive_group == "ath:0"
 
 
 @pytest.mark.parametrize(

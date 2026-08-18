@@ -58,6 +58,10 @@ def test_ath_result_conversion_preserves_solver_artifacts(tmp_path: Path) -> Non
 def test_ath_backend_restores_generic_geometry_from_document_artifact(tmp_path: Path) -> None:
     mesh_path = tmp_path / "waveguide.msh"
     _write_triangle_mesh(mesh_path)
+    (tmp_path / "waveguide.geo").write_text(
+        "//#// DRV 0 0 horn_driver SD1D1001 0.5 -6.0206 1\n",
+        encoding="utf-8",
+    )
     document = GeneratorDocument(
         id="design1",
         name="waveguide",
@@ -77,3 +81,8 @@ def test_ath_backend_restores_generic_geometry_from_document_artifact(tmp_path: 
     assert restored.provider_id == "ath"
     assert restored.mesh_path == mesh_path
     assert restored.provider_metadata["driven_tag"] == 2
+    assert restored.provider_metadata["ath_drive_definitions"][0]["name"] == "horn_driver"
+    assert restored.radiators[0].name == "SD1D1001"
+    assert restored.radiators[0].drive_group == "ath:0"
+    assert restored.radiators[0].drive_group_name == "horn_driver"
+    assert restored.radiators[0].velocity_offset_db == -6.0206

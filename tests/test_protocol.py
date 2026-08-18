@@ -35,6 +35,8 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
                 name="HF",
                 mesh="waveguide",
                 tag=4,
+                drive_group="ath:0",
+                drive_group_name="horn_driver",
                 channel="tweeter",
                 velocity_offset_db=-1.5,
                 hpf=CrossoverConfig(
@@ -66,6 +68,8 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     assert restored.meshes[0].translation_m == (0.1, 0.0, -0.2)
     assert restored.radiators[0].hpf.filter == "linkwitz_riley"
     assert restored.radiators[0].channel == "tweeter"
+    assert restored.radiators[0].drive_group == "ath:0"
+    assert restored.radiators[0].drive_group_name == "horn_driver"
     assert restored.radiators[0].velocity_offset_db == -1.5
     assert restored.channels[0].polarity == -1
     assert restored.channels[0].lpf.frequency_hz == 20000.0

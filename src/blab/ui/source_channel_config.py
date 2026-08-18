@@ -167,6 +167,7 @@ def apply_saved_source_config_to_result(
         surface_tags.items(), key=lambda item: (item[1][0], item[1][1], item[0])
     ):
         saved = config_by_name.get(surface_name)
+        existing = existing_by_tag.get(tag)
         if isinstance(saved, dict):
             if not bool(saved.get("driven", False)):
                 continue
@@ -175,13 +176,14 @@ def apply_saved_source_config_to_result(
                     name=surface_name,
                     mesh=mesh_name,
                     tag=tag,
+                    drive_group=None if existing is None else existing.drive_group,
+                    drive_group_name=None if existing is None else existing.drive_group_name,
                     channel=str(saved.get("channel", "main")),
                     velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
                 )
             )
             continue
 
-        existing = existing_by_tag.get(tag)
         if existing is not None:
             radiators.append(
                 replace(
@@ -222,6 +224,8 @@ def apply_saved_imported_source_config(
                     name=surface_name,
                     mesh=mesh_name,
                     tag=tag,
+                    drive_group=None if existing is None else existing.drive_group,
+                    drive_group_name=None if existing is None else existing.drive_group_name,
                     channel=str(saved.get("channel", "main")),
                     velocity_offset_db=float(saved.get("velocity_offset_db", 0.0)),
                 )

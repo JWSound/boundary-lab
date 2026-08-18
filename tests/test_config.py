@@ -19,6 +19,8 @@ translation_m = [0.0, 0.1, -0.2]
 name = "HF"
 mesh = "waveguide"
 tag = 4
+drive_group = "ath:0"
+drive_group_name = "horn_driver"
 level_db = -2.5
 polarity = -1
 delay_ms = 0.125
@@ -47,6 +49,8 @@ frequency_hz = 5000.0
     assert radiator.name == "HF"
     assert radiator.mesh == "waveguide"
     assert radiator.tag == 4
+    assert radiator.drive_group == "ath:0"
+    assert radiator.drive_group_name == "horn_driver"
     assert radiator.polarity == -1
     assert radiator.hpf.type == "highpass"
     assert radiator.hpf.frequency_hz == 800.0

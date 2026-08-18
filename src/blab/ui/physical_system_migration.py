@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshio
@@ -26,6 +27,15 @@ from blab.physical_model import (
 from blab.ui.system_config import AvailableSystemMesh
 
 AUTO_SEEDED_EXTERIOR_KEY = "auto_seeded_exterior"
+
+
+@dataclass
+class _DriveGroup:
+    mesh_name: str
+    component_name: str
+    channel: str
+    boundary_ids: list[str] = field(default_factory=list)
+    weights: dict[str, float] = field(default_factory=dict)
 
 
 def seed_exterior_system(
@@ -62,9 +72,7 @@ def seed_exterior_system(
     )
     radiator_by_key = _radiators_by_mesh_tag(radiators, tuple(resource_by_name))
     boundaries = []
-    components = []
-    ports = []
-    component_channels = {}
+    driven_boundaries = []
     for mesh in exterior_meshes:
         resource = resource_by_name[mesh.name]
         tags_by_name = _surface_tags_by_name(Path(mesh.file))
@@ -88,33 +96,54 @@ def seed_exterior_system(
             )
             if radiator is None:
                 continue
-            component_id = _unique_id(
-                f"component:{_slug(mesh.name)}:{_slug(group_name)}",
-                used_ids,
-            )
+            driven_boundaries.append((mesh.name, group_name, boundary_id, radiator))
+
+    grouped_drives: dict[tuple[str, str, str], _DriveGroup] = {}
+    for mesh_name, group_name, boundary_id, radiator in driven_boundaries:
+        channel = radiator.channel or "main"
+        if radiator.drive_group:
+            group_key = (mesh_name, radiator.drive_group, channel)
+            component_name = radiator.drive_group_name or radiator.drive_group
+        else:
+            group_key = (mesh_name, f"boundary:{boundary_id}", channel)
             component_name = group_name
-            components.append(
-                PhysicalComponent(
-                    id=component_id,
-                    name=component_name,
-                    kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
-                    boundary_ids=(boundary_id,),
-                    parameters={
-                        "motion_profile": "uniform",
-                        "boundary_motion_weights": {boundary_id: float(10.0 ** (radiator.velocity_offset_db / 20.0))},
-                    },
-                )
+        group = grouped_drives.setdefault(
+            group_key,
+            _DriveGroup(mesh_name=mesh_name, component_name=component_name, channel=channel),
+        )
+        group.boundary_ids.append(boundary_id)
+        group.weights[boundary_id] = float(10.0 ** (radiator.velocity_offset_db / 20.0))
+
+    components = []
+    ports = []
+    component_channels = {}
+    for group in grouped_drives.values():
+        component_id = _unique_id(
+            f"component:{_slug(group.mesh_name)}:{_slug(group.component_name)}",
+            used_ids,
+        )
+        components.append(
+            PhysicalComponent(
+                id=component_id,
+                name=group.component_name,
+                kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+                boundary_ids=tuple(group.boundary_ids),
+                parameters={
+                    "motion_profile": "uniform",
+                    "boundary_motion_weights": dict(group.weights),
+                },
             )
-            port_id = _unique_id(f"excitation:{_slug(component_id)}", used_ids)
-            ports.append(
-                ExcitationPort(
-                    id=port_id,
-                    name=f"{component_name} unit normal velocity",
-                    component_id=component_id,
-                    kind=ExcitationPortKind.NORMAL_VELOCITY,
-                )
+        )
+        port_id = _unique_id(f"excitation:{_slug(component_id)}", used_ids)
+        ports.append(
+            ExcitationPort(
+                id=port_id,
+                name=f"{group.component_name} unit normal velocity",
+                component_id=component_id,
+                kind=ExcitationPortKind.NORMAL_VELOCITY,
             )
-            component_channels[component_id] = radiator.channel or "main"
+        )
+        component_channels[component_id] = group.channel
 
     return (
         PhysicalSystem(
