@@ -40,7 +40,7 @@ def test_every_bundled_resource_path_actually_exists() -> None:
     from pathlib import Path
 
     # Directories that are created on demand or ship only in a packaged build.
-    runtime_created = {"APP_ROOT", "ASSETS_DIR", "GENERATED_GEOMETRY_ROOT", "ATH_BUNDLE_DIR", "GMSH_BUNDLE_EXE"}
+    runtime_created = {"APP_ROOT", "ASSETS_DIR", "GENERATED_GEOMETRY_ROOT", "ATH_BUNDLE_DIR"}
 
     missing = []
     for module_name in (

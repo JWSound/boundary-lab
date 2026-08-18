@@ -12,8 +12,6 @@ ATH_BUNDLE_DIR = APP_ROOT / "ath"
 
 GENERATED_GEOMETRY_ROOT = APP_ROOT / "runs" / "generated_geometry"
 
-GMSH_BUNDLE_EXE = APP_ROOT / "gmsh" / "gmsh-4.15.2-Windows64" / "gmsh.exe"
-
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 
 SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"

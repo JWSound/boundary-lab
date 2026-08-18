@@ -46,7 +46,6 @@ src = ["src", "tests", "scripts"]
 force-exclude = true
 extend-exclude = [
   "ath/",
-  "gmsh/",
   "runs/",
   "references/",
 ]

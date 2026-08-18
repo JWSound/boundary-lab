@@ -7,18 +7,15 @@ import pytest
 
 import blab.live as live_module
 from blab.ath import (
+    AthCancelledError,
     AthProcessRunner,
-    ath_mirror_axes_for_result,
-    ath_mirror_axes_from_solving_file,
-    clean_ath_mesh_output,
-    clean_ath_reduced_mesh_output,
+    AthRunResult,
+    ath_mirror_axes_from_config_text,
+    build_ath_mesh_artifacts,
     detect_ath_radiators,
-    discover_ath_output,
     find_physical_tag_by_name,
-    read_ath_output_root,
+    mesh_ath_geo_text,
     read_surface_physical_names,
-    write_ath_gmsh_path,
-    write_ath_output_root,
 )
 from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
 from blab.config import ChannelConfig
@@ -77,35 +74,54 @@ class _FakeAthProcess:
         return self.returncode
 
 
-def test_ath_process_runner_discovers_output_after_process_exit(tmp_path: Path, monkeypatch) -> None:
+def test_ath_process_runner_captures_blaba_output_and_launches_gmsh_worker(
+    tmp_path: Path, monkeypatch
+) -> None:
     ath_dir = tmp_path / "ath"
     ath_dir.mkdir()
     ath_exe = ath_dir / "ath.exe"
     ath_exe.write_text("", encoding="utf-8")
-    output_root = tmp_path / "output"
-    (ath_dir / "ath.cfg").write_text(f'OutputRootDir = "{output_root}"\n', encoding="utf-8")
-    mesh_dir = output_root / "case" / "ABEC_FreeStanding"
-    mesh_dir.mkdir(parents=True)
-    _write_minimal_msh(mesh_dir / "case.msh")
 
     popen_calls = []
 
     def fake_popen(*args, **kwargs):
         popen_calls.append((args, kwargs))
-        return _FakeAthProcess()
+        return _FakeAthProcess(stdout="Point(1) = {0, 0, 0, 1};", stderr="Ath diagnostic")
+
+    worker_calls = []
+
+    def fake_worker(self, **kwargs):
+        worker_calls.append(kwargs)
+        return AthRunResult(
+            output_dir=kwargs["output_dir"],
+            msh_path=kwargs["output_dir"] / "case_reduced.msh",
+            config_path=kwargs["config_path"],
+            driven_tag=2,
+            radiators=(),
+            mirror_axes=kwargs["mirror_axes"],
+            cleaned_msh_path=kwargs["output_dir"] / "case.msh",
+            reduced_cleaned_msh_path=kwargs["output_dir"] / "case_reduced.msh",
+        )
 
     monkeypatch.setattr("blab.ath.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(AthProcessRunner, "_run_gmsh_worker", fake_worker)
 
     result = AthProcessRunner().run(
         ath_exe=ath_exe,
-        config_text="Length = 10",
+        config_text="Length = 10\nMesh.Quadrants = 1",
         run_root=tmp_path / "runs",
         case_name="case",
     )
 
-    assert result.msh_path == mesh_dir / "case.msh"
-    assert (tmp_path / "runs" / "case.cfg").read_text(encoding="utf-8") == "Length = 10"
-    assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(tmp_path / "runs" / "case.cfg")]
+    output_dir = (tmp_path / "runs" / "case").resolve()
+    config_path = output_dir / "case.cfg"
+    assert result.cleaned_msh_path == output_dir / "case.msh"
+    assert config_path.read_text(encoding="utf-8") == "Length = 10\nMesh.Quadrants = 1"
+    assert (output_dir / "case.geo").read_text(encoding="utf-8") == "Point(1) = {0, 0, 0, 1};"
+    assert (output_dir / "ath.log").read_text(encoding="utf-8") == "Ath diagnostic"
+    assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(config_path), "-b"]
+    assert popen_calls[0][1]["cwd"] == output_dir
+    assert worker_calls[0]["mirror_axes"] == ("x", "y")
 
 
 @pytest.mark.parametrize("platform_name", ("linux", "darwin"))
@@ -116,21 +132,27 @@ def test_ath_process_runner_uses_wine_for_ath_exe_on_linux_or_macos(
     ath_dir.mkdir()
     ath_exe = ath_dir / "ath.exe"
     ath_exe.write_text("", encoding="utf-8")
-    output_root = tmp_path / "output"
-    (ath_dir / "ath.cfg").write_text(f'OutputRootDir = "{output_root}"\n', encoding="utf-8")
-    mesh_dir = output_root / "case" / "ABEC_FreeStanding"
-    mesh_dir.mkdir(parents=True)
-    _write_minimal_msh(mesh_dir / "case.msh")
 
     popen_calls = []
 
     def fake_popen(*args, **kwargs):
         popen_calls.append((args, kwargs))
-        return _FakeAthProcess()
+        return _FakeAthProcess(stdout="Point(1) = {0, 0, 0, 1};")
 
     monkeypatch.setattr("blab.ath.sys.platform", platform_name)
     monkeypatch.setattr("blab.ath.shutil.which", lambda name: "/usr/bin/wine" if name == "wine" else None)
     monkeypatch.setattr("blab.ath.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        AthProcessRunner,
+        "_run_gmsh_worker",
+        lambda self, **kwargs: AthRunResult(
+            output_dir=kwargs["output_dir"],
+            msh_path=kwargs["output_dir"] / "case.msh",
+            config_path=kwargs["config_path"],
+            driven_tag=2,
+            radiators=(),
+        ),
+    )
 
     AthProcessRunner().run(
         ath_exe=ath_exe,
@@ -142,7 +164,8 @@ def test_ath_process_runner_uses_wine_for_ath_exe_on_linux_or_macos(
     assert popen_calls[0][0][0] == [
         "/usr/bin/wine",
         str(ath_exe.resolve()),
-        str(tmp_path / "runs" / "case.cfg"),
+        str((tmp_path / "runs" / "case" / "case.cfg").resolve()),
+        "-b",
     ]
 
 
@@ -151,7 +174,6 @@ def test_ath_process_runner_reports_missing_wine_on_linux(tmp_path: Path, monkey
     ath_dir.mkdir()
     ath_exe = ath_dir / "ath.exe"
     ath_exe.write_text("", encoding="utf-8")
-    (ath_dir / "ath.cfg").write_text('OutputRootDir = "output"\n', encoding="utf-8")
 
     monkeypatch.setattr("blab.ath.sys.platform", "linux")
     monkeypatch.setattr("blab.ath.shutil.which", lambda name: None)
@@ -204,19 +226,6 @@ $EndPhysicalNames
     assert read_surface_physical_names(msh_path) == {"SD1D1001": 2}
 
 
-def test_discover_ath_output_finds_msh_and_driven_tag(tmp_path: Path) -> None:
-    output_dir = tmp_path / "case"
-    mesh_dir = output_dir / "ABEC_FreeStanding"
-    mesh_dir.mkdir(parents=True)
-    _write_minimal_msh(mesh_dir / "case.msh")
-
-    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
-
-    assert result.msh_path == mesh_dir / "case.msh"
-    assert result.driven_tag == 2
-    assert [(r.name, r.tag, r.level_db) for r in result.radiators] == [("throat", 2, 0.0)]
-
-
 def test_detect_ath_radiators_uses_weighted_complex_dome_groups(tmp_path: Path) -> None:
     msh_path = tmp_path / "complex.msh"
     msh_path.write_text(
@@ -244,178 +253,108 @@ $EndPhysicalNames
     ]
 
 
-def test_read_ath_output_root_reads_companion_config(tmp_path: Path) -> None:
-    ath_cfg = tmp_path / "ath.cfg"
-    ath_cfg.write_text(
-        'OutputRootDir = "E:\\AthGUI"\nMeshCmd = "C:\\gmsh\\gmsh.exe %f -"\n',
-        encoding="utf-8",
-    )
-
-    assert read_ath_output_root(ath_cfg) == Path("E:\\AthGUI")
-
-
-def test_write_ath_output_root_updates_companion_config(tmp_path: Path) -> None:
-    ath_cfg = tmp_path / "ath.cfg"
-    ath_cfg.write_text(
-        'OutputRootDir = "E:\\old"\nMeshCmd = "C:\\gmsh\\gmsh.exe %f -"\n',
-        encoding="utf-8",
-    )
-    output_root = tmp_path / "runs" / "ath_output"
-
-    written_root = write_ath_output_root(ath_cfg, output_root)
-
-    assert written_root == output_root.resolve()
-    assert read_ath_output_root(ath_cfg) == output_root.resolve()
-    assert 'MeshCmd = "C:\\gmsh\\gmsh.exe %f -"' in ath_cfg.read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("config_text", "expected_axes"),
+    (
+        ("Length = 10", ()),
+        ("; Mesh.Quadrants = 1\nLength = 10", ()),
+        ("Mesh.Quadrants = 1234 ; fully expanded", ()),
+        ("mesh.quadrants = 14", ("x",)),
+        ("  Mesh.Quadrants = 1  ", ("x", "y")),
+    ),
+)
+def test_ath_mirror_axes_are_parsed_from_config(config_text: str, expected_axes: tuple[str, ...]) -> None:
+    assert ath_mirror_axes_from_config_text(config_text) == expected_axes
 
 
-def test_write_ath_gmsh_path_updates_mesh_command(tmp_path: Path) -> None:
-    ath_cfg = tmp_path / "ath.cfg"
-    ath_cfg.write_text(
-        'OutputRootDir = "E:\\old"\nMeshCmd = "C:\\gmsh\\gmsh.exe %f -"\nGnuplotPath = "C:\\gnuplot"\n',
-        encoding="utf-8",
-    )
-    gmsh_exe = tmp_path / "gmsh" / "gmsh.exe"
-    gmsh_exe.parent.mkdir()
-    gmsh_exe.write_text("", encoding="utf-8")
-
-    written_gmsh = write_ath_gmsh_path(ath_cfg, gmsh_exe)
-    cfg_text = ath_cfg.read_text(encoding="utf-8")
-
-    assert written_gmsh == gmsh_exe.resolve()
-    assert f'MeshCmd = "{gmsh_exe.resolve()} %f -"' in cfg_text
-    assert 'OutputRootDir = "E:\\old"' in cfg_text
-    assert 'GnuplotPath = "C:\\gnuplot"' in cfg_text
+@pytest.mark.parametrize(
+    ("config_text", "message"),
+    (
+        ("Mesh.Quadrants = 12", "Y-only symmetry"),
+        ("Mesh.Quadrants = 13", "Invalid Mesh.Quadrants"),
+        ("Mesh.Quadrants = 24", "Invalid Mesh.Quadrants"),
+        ("Mesh.Quadrants = 1\nMesh.Quadrants = 14", "multiple active"),
+    ),
+)
+def test_ath_invalid_or_unsupported_quadrants_are_rejected(config_text: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        ath_mirror_axes_from_config_text(config_text)
 
 
-def test_write_ath_gmsh_path_inserts_mesh_command_when_missing(tmp_path: Path) -> None:
-    ath_cfg = tmp_path / "ath.cfg"
-    ath_cfg.write_text('OutputRootDir = "E:\\old"', encoding="utf-8")
-    gmsh_exe = tmp_path / "gmsh.exe"
+def test_mesh_ath_geo_text_preserves_physical_groups_without_running_save(tmp_path: Path) -> None:
+    geo_text = """
+Point(1) = {0, 0, 0, 1};
+Point(2) = {1, 0, 0, 1};
+Point(3) = {0, 1, 0, 1};
+Line(1) = {1, 2};
+Line(2) = {2, 3};
+Line(3) = {3, 1};
+Curve Loop(1) = {1, 2, 3};
+Plane Surface(1) = {1};
+Physical Surface("SD1D1001", 2) = {1};
+Mesh 2;
+Save "must_not_be_written.msh";
+"""
 
-    write_ath_gmsh_path(ath_cfg, gmsh_exe)
+    mesh = mesh_ath_geo_text(geo_text, output_dir=tmp_path, case_name="case")
 
-    assert ath_cfg.read_text(encoding="utf-8").splitlines() == [
-        f'MeshCmd = "{gmsh_exe.resolve()} %f -"',
-        'OutputRootDir = "E:\\old"',
-    ]
-
-
-def test_ath_mirror_axes_from_solving_symmetry_line(tmp_path: Path) -> None:
-    solving_path = tmp_path / "solving.txt"
-    solving_path.write_text(
-        "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
-        encoding="utf-8",
-    )
-
-    assert ath_mirror_axes_from_solving_file(solving_path) == ("x", "y")
-
-
-def test_ath_mirror_axes_are_empty_without_symmetry_line(tmp_path: Path) -> None:
-    solving_path = tmp_path / "solving.txt"
-    solving_path.write_text("Control_Solver\n  Abscissa=log; Dim=3D\n", encoding="utf-8")
-
-    assert ath_mirror_axes_from_solving_file(solving_path) == ()
+    assert "triangle" in mesh.cells_dict
+    assert mesh.field_data["SD1D1001"].tolist() == [2, 2]
+    assert np.unique(mesh.cell_data_dict["gmsh:physical"]["triangle"]).tolist() == [2]
+    assert not (tmp_path / "must_not_be_written.msh").exists()
+    assert not (tmp_path / ".case_gmsh_input.geo").exists()
 
 
-def test_clean_ath_mesh_output_writes_cleaned_solver_mesh(tmp_path: Path) -> None:
-    output_dir = tmp_path / "case"
-    mesh_dir = output_dir / "ABEC_FreeStanding"
-    mesh_dir.mkdir(parents=True)
-
-    raw_msh = mesh_dir / "case.msh"
-    mesh = meshio.Mesh(
-        points=np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-            ]
-        ),
+def test_build_ath_mesh_artifacts_writes_expanded_and_reduced_solver_meshes(tmp_path: Path) -> None:
+    raw_mesh = meshio.Mesh(
+        points=np.array([[1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [1.0, 2.0, 0.0]]),
         cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
         cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
         field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
     )
-    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
 
-    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
-    cleaned = clean_ath_mesh_output(result)
-
-    assert cleaned.msh_path == raw_msh
-    assert cleaned.cleaned_msh_path == mesh_dir / "case_clean.msh"
-    assert cleaned.solver_msh_path == cleaned.cleaned_msh_path
-    assert cleaned.solver_msh_path.exists()
-    assert find_physical_tag_by_name(cleaned.solver_msh_path, "SD1D1001") == 2
-    assert [(r.name, r.tag, r.level_db) for r in cleaned.radiators] == [("throat", 2, 0.0)]
-
-
-def test_clean_ath_mesh_output_uses_solving_symmetry_axes(tmp_path: Path) -> None:
-    output_dir = tmp_path / "case"
-    mesh_dir = output_dir / "ABEC_InfiniteBaffle"
-    mesh_dir.mkdir(parents=True)
-    (mesh_dir / "solving.txt").write_text(
-        "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
-        encoding="utf-8",
+    result = build_ath_mesh_artifacts(
+        raw_mesh,
+        output_dir=tmp_path,
+        case_name="case",
+        config_path=tmp_path / "case.cfg",
+        mirror_axes=("x", "y"),
     )
-
-    raw_msh = mesh_dir / "case.msh"
-    mesh = meshio.Mesh(
-        points=np.array(
-            [
-                [1.0, 1.0, 0.0],
-                [2.0, 1.0, 0.0],
-                [1.0, 2.0, 0.0],
-            ]
-        ),
-        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
-        cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
-        field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
-    )
-    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
-
-    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
-    cleaned = clean_ath_mesh_output(result)
-    cleaned_mesh = meshio.read(cleaned.solver_msh_path)
-
-    assert ath_mirror_axes_for_result(result) == ("x", "y")
-    assert cleaned_mesh.cells_dict["triangle"].shape[0] == 4
-
-
-def test_clean_ath_reduced_mesh_output_keeps_fundamental_domain(tmp_path: Path) -> None:
-    output_dir = tmp_path / "case"
-    mesh_dir = output_dir / "ABEC_InfiniteBaffle"
-    mesh_dir.mkdir(parents=True)
-    (mesh_dir / "solving.txt").write_text(
-        "Control_Solver\n  Abscissa=log; Dim=3D; MeshFrequency=1000; Sym=xy\n",
-        encoding="utf-8",
-    )
-
-    raw_msh = mesh_dir / "case.msh"
-    mesh = meshio.Mesh(
-        points=np.array(
-            [
-                [1.0, 1.0, 0.0],
-                [2.0, 1.0, 0.0],
-                [1.0, 2.0, 0.0],
-            ]
-        ),
-        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
-        cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
-        field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
-    )
-    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
-
-    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
-    expanded = clean_ath_mesh_output(result)
-    reduced = clean_ath_reduced_mesh_output(expanded)
-
-    expanded_mesh = meshio.read(expanded.solver_msh_path_for_symmetry("off"))
-    reduced_mesh = meshio.read(reduced.solver_msh_path_for_symmetry("xy"))
+    expanded_mesh = meshio.read(result.solver_msh_path_for_symmetry("off"))
+    reduced_mesh = meshio.read(result.solver_msh_path_for_symmetry("xy"))
 
     assert expanded_mesh.cells_dict["triangle"].shape[0] == 4
     assert reduced_mesh.cells_dict["triangle"].shape[0] == 1
-    assert reduced.cleaned_msh_path == expanded.cleaned_msh_path
-    assert reduced.reduced_cleaned_msh_path == mesh_dir / "case_clean_reduced.msh"
+    assert result.cleaned_msh_path == tmp_path / "case.msh"
+    assert result.reduced_cleaned_msh_path == tmp_path / "case_reduced.msh"
+    assert result.mirror_axes == ("x", "y")
+    assert [(radiator.name, radiator.tag) for radiator in result.radiators] == [("throat", 2)]
+
+
+def test_gmsh_worker_can_be_cancelled_through_ath_runner(tmp_path: Path, monkeypatch) -> None:
+    runner = AthProcessRunner()
+
+    class _CancellingGmshProcess(_FakeAthProcess):
+        def communicate(self, timeout=None):
+            runner.stop()
+            return "", ""
+
+    process = _CancellingGmshProcess()
+    monkeypatch.setattr("blab.ath.subprocess.Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr("blab.ath.os.name", "posix")
+
+    with pytest.raises(AthCancelledError):
+        runner._run_gmsh_worker(
+            output_dir=tmp_path,
+            case_name="case",
+            config_path=tmp_path / "case.cfg",
+            geo_path=tmp_path / "case.geo",
+            log_path=tmp_path / "ath.log",
+            mirror_axes=("x",),
+            timeout_s=None,
+        )
+
+    assert process.terminated
 
 
 def test_triangle_quality_warning_detects_float32_singular_sliver() -> None:
@@ -443,13 +382,8 @@ def test_triangle_quality_warning_detects_float32_singular_sliver() -> None:
     assert warning.worst_altitude_edge_ratio < 2e-3
 
 
-def test_clean_ath_mesh_output_reports_sliver_warning(tmp_path: Path) -> None:
-    output_dir = tmp_path / "case"
-    mesh_dir = output_dir / "ABEC_FreeStanding"
-    mesh_dir.mkdir(parents=True)
-
-    raw_msh = mesh_dir / "case.msh"
-    mesh = meshio.Mesh(
+def test_build_ath_mesh_artifacts_reports_sliver_warning(tmp_path: Path) -> None:
+    raw_mesh = meshio.Mesh(
         points=np.array(
             [
                 [0.13800001, 0.095886745, 0.0368],
@@ -465,14 +399,17 @@ def test_clean_ath_mesh_output_reports_sliver_warning(tmp_path: Path) -> None:
         cell_data={"gmsh:physical": [np.array([1, 2], dtype=np.int32)]},
         field_data={"Rigid": np.array([1, 2], dtype=np.int32), "SD1D1001": np.array([2, 2], dtype=np.int32)},
     )
-    meshio.write(raw_msh, mesh, file_format="gmsh22", binary=False)
 
-    result = discover_ath_output(run_root=tmp_path, case_name="case", config_path=tmp_path / "case.cfg")
-    cleaned = clean_ath_mesh_output(result)
+    result = build_ath_mesh_artifacts(
+        raw_mesh,
+        output_dir=tmp_path,
+        case_name="case",
+        config_path=tmp_path / "case.cfg",
+    )
 
-    assert cleaned.quality_warning is not None
-    assert cleaned.quality_warning.has_warnings
-    assert cleaned.quality_warning.float32_singular_triangles == 1
+    assert result.quality_warning is not None
+    assert result.quality_warning.has_warnings
+    assert result.quality_warning.float32_singular_triangles == 1
 
 
 def test_live_frequency_order_starts_with_limits_and_preserves_all_points() -> None:

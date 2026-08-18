@@ -10,8 +10,7 @@ from blab.ath import (
     AthCancelledError,
     AthProcessRunner,
     AthRunResult,
-    ath_mirror_axes_for_result,
-    clean_ath_mesh_output,
+    ath_mirror_axes_from_config_text,
     detect_ath_radiators,
     find_physical_tag_by_name,
 )
@@ -56,7 +55,7 @@ def ath_result_to_generated_geometry(result: AthRunResult) -> GeneratedGeometry:
         radiators=result.radiators,
         cleaned_mesh_path=result.cleaned_msh_path,
         reduced_cleaned_mesh_path=result.reduced_cleaned_msh_path,
-        mirror_axes=ath_mirror_axes_for_result(result),
+        mirror_axes=result.mirror_axes,
         quality_warning=result.quality_warning,
         provider_metadata={"driven_tag": result.driven_tag},
     )
@@ -74,6 +73,7 @@ def generated_geometry_to_ath_result(result: GeneratedGeometry) -> AthRunResult:
         config_path=result.source_path or result.output_dir / "config.txt",
         driven_tag=int(driven_tag),
         radiators=result.radiators,
+        mirror_axes=result.mirror_axes,
         cleaned_msh_path=result.cleaned_mesh_path,
         reduced_cleaned_msh_path=result.reduced_cleaned_mesh_path,
         quality_warning=result.quality_warning,
@@ -95,12 +95,11 @@ class AthGeneratorSession:
                 config_text=str(self.request.source.get("text", "")),
                 run_root=self.request.run_root,
                 case_name=self.request.case_name,
+                status_callback=status_callback,
             )
             if stop_requested is not None and stop_requested():
                 raise GenerationCancelledError("Geometry generation cancelled")
-            if status_callback is not None:
-                status_callback("Cleaning generated mesh...")
-            result = ath_result_to_generated_geometry(clean_ath_mesh_output(raw_result))
+            result = ath_result_to_generated_geometry(raw_result)
             if stop_requested is not None and stop_requested():
                 raise GenerationCancelledError("Geometry generation cancelled")
             return result
@@ -148,6 +147,7 @@ class AthGeneratorBackend(GeneratorBackend):
                 ),
                 driven_tag=driven_tag,
                 radiators=detect_ath_radiators(solver_path),
+                mirror_axes=ath_mirror_axes_from_config_text(ath_source_text(document)),
                 cleaned_msh_path=cleaned_path if cleaned_path is not None and cleaned_path.exists() else None,
                 reduced_cleaned_msh_path=(
                     Path(artifact.reduced_cleaned_mesh_path)

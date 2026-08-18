@@ -179,8 +179,10 @@ current status message.
 ### Generate
 
 **Generate (F7)** runs the active design through its geometry provider. With
-Ath, Boundary Lab stages the `.cfg`, runs `ath.exe` (through Wine when needed),
-cleans the generated surface mesh, and loads it into the project and preview.
+Ath, Boundary Lab stages the design script, captures Gmsh geometry from Ath's
+blab mode, meshes and cleans it in a cancellable worker, and loads the final
+surface mesh into the project and preview. **Stop (Shift+F5)** terminates either
+the active Ath process or a Gmsh meshing operation that cannot complete.
 Managed generated artifacts are stored below `runs/generated_geometry`.
 
 ### Solve and Stop

@@ -10,7 +10,7 @@ Boundary Lab requires Python 3.11 or newer.
 The guided Windows scripts target 64-bit Windows 10 and 11. The Linux commands
 below target an x86-64 Debian or Ubuntu desktop, including Ubuntu under WSL2.
 The Python application and BEAT Engine CPU backend may work on other Linux
-architectures, but the bundled Windows Ath and Gmsh executables require an
+architectures, but the bundled Windows Ath executable requires an
 x86-compatible Wine environment.
 
 ## Windows
@@ -60,8 +60,8 @@ used without activation:
 .\.venv\Scripts\blab.exe gui
 ```
 
-Ath and the bundled Windows Gmsh executable run natively on Windows; Wine is
-not required.
+Ath runs natively on Windows, and Boundary Lab meshes its geometry through the
+cross-platform Python Gmsh library. Wine is not required.
 
 ## Linux
 
@@ -111,8 +111,8 @@ Qt application in the shell environment.
 ## Ath geometry generation on Linux
 
 Boundary Lab automatically invokes the bundled `ath.exe` through `wine` on
-Linux. The bundled Ath executable is 32-bit and the bundled Gmsh executable is
-64-bit, so an x86-64 Linux installation needs both Wine architectures.
+Linux. The bundled Ath executable is 32-bit; Gmsh runs natively through the
+Python package installed with Boundary Lab.
 
 On Debian or Ubuntu:
 
@@ -122,9 +122,8 @@ sudo apt update
 sudo apt install --install-recommends wine wine64 wine32:i386
 ```
 
-Wine's default 64-bit/WoW64 prefix supports both bundled executables. Do not
-create a `WINEARCH=win32` prefix because it cannot run the 64-bit Gmsh binary.
-An optional dedicated prefix can be initialized with:
+Wine's default 64-bit/WoW64 prefix supports Ath. An optional dedicated prefix
+can be initialized with:
 
 ```bash
 export WINEPREFIX="$HOME/.wine-boundary-lab"
@@ -136,14 +135,9 @@ runtime, Wine Mono, Wine Gecko, or Winetricks package is required for Ath mesh
 generation. Gnuplot is optional and is not used by Boundary Lab's normal mesh
 generation workflow.
 
-To verify the bundled 64-bit Gmsh executable before using Ath:
-
-```bash
-wine gmsh/gmsh-4.15.2-Windows64/gmsh.exe -version
-```
-
-Generated Ath files are written below `runs/generated_geometry` and the mesh
-used by Boundary Lab is cleaned before being added to the project.
+Generated Ath GEO, diagnostic logs, and final solve-ready meshes are written
+below `runs/generated_geometry`. Gmsh meshing runs in a cancellable child
+process, and no intermediate raw mesh is written or reloaded.
 
 ## Solver setup
 

@@ -96,10 +96,11 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes generated files into:
+Boundary Lab captures Ath blab-mode geometry and writes managed generated
+artifacts into:
 
 ```text
-runs/ath_output
+runs/generated_geometry
 ```
 
 
