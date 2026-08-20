@@ -156,6 +156,16 @@ class PlotPresenterMixin:
             impedance.real,
             impedance.imaginary,
         )
+        electrical_impedance = dataset.electrical_impedance
+        if electrical_impedance is None:
+            self.electrical_impedance_plot.clear_comparison_plot()
+        else:
+            self.electrical_impedance_plot.set_comparison_plot(
+                electrical_impedance.freq_hz,
+                electrical_impedance.channel_names,
+                electrical_impedance.magnitude_ohm,
+                electrical_impedance.phase_deg,
+            )
         response = dataset.response
         self.on_axis_plot.set_comparison_plot(
             response.freq_hz,
@@ -272,6 +282,7 @@ class PlotPresenterMixin:
                 max_db=self.preferences.spl_max_db,
             ),
             transducer_motion=self._solve_session().transducer_motion,
+            electrical_impedance=self._solve_session().electrical_impedance,
         )
 
     def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:
@@ -355,6 +366,19 @@ class PlotPresenterMixin:
             response.channel_on_axis_spl_db,
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
+        )
+
+    def _update_electrical_impedance_plot(self, dataset: VisualizationProjection) -> None:
+        impedance = dataset.electrical_impedance
+        if impedance is None:
+            if self.electrical_impedance_plot._plot_state is not None:
+                self.electrical_impedance_plot._draw_empty()
+            return
+        self.electrical_impedance_plot.update_plot(
+            impedance.freq_hz,
+            impedance.channel_names,
+            impedance.magnitude_ohm,
+            impedance.phase_deg,
         )
 
     def _update_excursion_plot(self, dataset: VisualizationProjection) -> None:

@@ -97,6 +97,9 @@ class PreferencesMixin:
         on_axis_plot = getattr(self, "on_axis_plot", None)
         if on_axis_plot is not None:
             on_axis_plot.show_phase_action.setIcon(phase_icon)
+        electrical_impedance_plot = getattr(self, "electrical_impedance_plot", None)
+        if electrical_impedance_plot is not None:
+            electrical_impedance_plot.show_phase_action.setIcon(phase_icon)
 
     @Slot()
     def _save_frequency_settings(self) -> None:

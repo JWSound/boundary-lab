@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from blab.config import ChannelConfig
-from blab.live import LiveSolveDataset, TransducerMotionDataset
+from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind, MeshPurpose
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
@@ -416,3 +416,47 @@ def test_electrical_impedance_uses_the_matching_voltage_basis_current() -> None:
 
     assert impedance.metadata["excitation_port_ids"] == ["port:a", "port:b"]
     assert impedance.values.tolist() == [[4.0 + 0.0j, 8.0 + 0.0j], [2.0 + 0.0j, 4.0 + 0.0j]]
+
+
+def test_live_electrical_impedance_aggregates_parallel_channel_current_and_symmetry() -> None:
+    dataset = ElectricalImpedanceDataset(
+        excitation_port_ids=("port:a1", "port:a2", "port:b"),
+        excitation_channel_names=np.asarray(["A", "A", "B"]),
+        excitation_component_ids=np.asarray(["component:a1", "component:a2", "component:b"]),
+        transducer_component_ids=np.asarray(["component:a1", "component:a2", "component:b"]),
+        physical_driver_orbit_counts=np.asarray([1, 2, 1]),
+        channel_names=np.asarray(["A", "B"]),
+    )
+    dataset.add(
+        SystemFrequencyResult(
+            freq_hz=100.0,
+            excitation_port_ids=("port:b", "port:a2", "port:a1"),
+            quantities=(
+                QuantityResult(
+                    id=VOICE_COIL_CURRENT_ID,
+                    quantity="voice_coil_current",
+                    unit="A",
+                    axes=("excitation", "transducer"),
+                    metadata={
+                        "component_ids": ["component:b", "component:a2", "component:a1"]
+                    },
+                    values=np.asarray(
+                        [
+                            [0.7 + 0.0j, 9.0 + 0.0j, 9.0 + 0.0j],
+                            [9.0 + 0.0j, 0.25j, 0.2j],
+                            [9.0 + 0.0j, 0.1j, 0.5j],
+                        ],
+                        dtype=np.complex64,
+                    ),
+                ),
+            ),
+            diagnostics={"transducer_reference_voltage_v": 2.8},
+        )
+    )
+
+    frequencies, names, magnitude, phase = dataset.as_impedance_arrays()
+
+    assert frequencies.tolist() == [100.0]
+    assert names.tolist() == ["A", "B"]
+    np.testing.assert_allclose(magnitude[:, 0], [2.0, 4.0], atol=1e-6)
+    np.testing.assert_allclose(phase[:, 0], [-90.0, 0.0], atol=1e-6)

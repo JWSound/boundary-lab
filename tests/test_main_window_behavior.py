@@ -73,6 +73,7 @@ PLOT_IDS = {
     "horizontal_isobar",
     "vertical_isobar",
     "acoustic_impedance",
+    "electrical_impedance",
     "on_axis_frequency_response",
     "transducer_excursion",
     "spinorama",
@@ -188,6 +189,16 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
         if button.menu() is main_window.excursion_plot.trace_filter_menu
     )
     assert excursion_trace_button.text() == "Traces"
+
+    electrical_title_bar = main_window.plot_docks["electrical_impedance"].titleBarWidget()
+    electrical_actions = [button.defaultAction() for button in electrical_title_bar.tool_buttons]
+    assert main_window.electrical_impedance_plot.show_phase_action in electrical_actions
+    electrical_trace_button = next(
+        button
+        for button in electrical_title_bar.tool_buttons
+        if button.menu() is main_window.electrical_impedance_plot.trace_filter_menu
+    )
+    assert electrical_trace_button.text() == "Traces"
 
 
 def test_prescribed_velocity_channel_detection_uses_physical_excitation_ports(main_window) -> None:

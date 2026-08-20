@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from blab.config import ChannelConfig
-from blab.live import LiveSolveDataset, TransducerMotionDataset
+from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
 from blab.postprocess import PrepConfig
 
 
@@ -109,11 +109,28 @@ class ExcursionProjection:
 
 
 @dataclass(frozen=True)
+class ElectricalImpedanceProjection:
+    freq_hz: np.ndarray
+    channel_names: np.ndarray
+    magnitude_ohm: np.ndarray
+    phase_deg: np.ndarray
+
+    def snapshot(self) -> ElectricalImpedanceProjection:
+        return ElectricalImpedanceProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            channel_names=np.asarray(self.channel_names).copy(),
+            magnitude_ohm=np.asarray(self.magnitude_ohm).copy(),
+            phase_deg=np.asarray(self.phase_deg).copy(),
+        )
+
+
+@dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
     response: PolarResponseProjection
     excursion: ExcursionProjection | None = None
+    electrical_impedance: ElectricalImpedanceProjection | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
@@ -121,6 +138,11 @@ class VisualizationProjection:
             impedance=self.impedance.snapshot(),
             response=self.response.snapshot(),
             excursion=None if self.excursion is None else self.excursion.snapshot(),
+            electrical_impedance=(
+                None
+                if self.electrical_impedance is None
+                else self.electrical_impedance.snapshot()
+            ),
         )
 
 
@@ -133,6 +155,7 @@ class ResultProjectionService:
         channels: tuple[ChannelConfig, ...],
         options: ProjectionOptions,
         transducer_motion: TransducerMotionDataset | None = None,
+        electrical_impedance: ElectricalImpedanceDataset | None = None,
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -160,6 +183,11 @@ class ResultProjectionService:
             excursion_arrays = transducer_motion.as_excursion_arrays(dataset)
             if excursion_arrays is not None:
                 excursion = ExcursionProjection(*excursion_arrays)
+        electrical_projection = None
+        if electrical_impedance is not None:
+            electrical_arrays = electrical_impedance.as_impedance_arrays()
+            if electrical_arrays is not None:
+                electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -188,4 +216,5 @@ class ResultProjectionService:
                 spin_vertical_reference_angle_deg=float(arrays["spin_vertical_reference_angle_deg"]),
             ),
             excursion=excursion,
+            electrical_impedance=electrical_projection,
         )

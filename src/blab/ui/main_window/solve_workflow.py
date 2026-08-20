@@ -17,6 +17,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.live import (
+    ElectricalImpedanceDataset,
     FrequencyResult,
     LiveSolveDataset,
     TransducerMotionDataset,
@@ -361,11 +362,17 @@ class SolveWorkflowController(QObject):
     def _start_prepared_system_solve(self, prepared, status: str) -> None:
         self._begin_run(status)
         channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
+        ports_by_id = {
+            port.id: port for port in prepared.request.compiled_system.excitation_ports
+        }
+        excitation_ports = [
+            ports_by_id[port_id] for port_id in prepared.request.excitation_port_ids
+        ]
         voltage_channels = {
             channel_name
             for channel_name, port in zip(
                 channel_names,
-                prepared.request.compiled_system.excitation_ports,
+                excitation_ports,
                 strict=True,
             )
             if port.kind == ExcitationPortKind.VOLTAGE
@@ -374,7 +381,7 @@ class SolveWorkflowController(QObject):
             channel_name
             for channel_name, port in zip(
                 channel_names,
-                prepared.request.compiled_system.excitation_ports,
+                excitation_ports,
                 strict=True,
             )
             if port.kind == ExcitationPortKind.NORMAL_VELOCITY
@@ -392,6 +399,39 @@ class SolveWorkflowController(QObject):
                 excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
                 transducer_names=transducer_names,
             )
+            if prepared.solve_kind != PhysicalSolveKind.INTERIOR_FEM:
+                transducers = [
+                    component
+                    for component in prepared.request.compiled_system.components
+                    if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+                ]
+                voltage_channel_names = np.asarray(
+                    list(
+                        dict.fromkeys(
+                            name
+                            for name in channel_names
+                            if name in self._session.voltage_channel_names
+                        )
+                    )
+                )
+                self._session.electrical_impedance = ElectricalImpedanceDataset(
+                    excitation_port_ids=tuple(prepared.request.excitation_port_ids),
+                    excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                    excitation_component_ids=np.asarray(
+                        [port.component_id for port in excitation_ports]
+                    ),
+                    transducer_component_ids=np.asarray(
+                        [component.id for component in transducers]
+                    ),
+                    physical_driver_orbit_counts=np.asarray(
+                        [
+                            int(component.parameters.get("physical_driver_orbit_count", 1))
+                            for component in transducers
+                        ],
+                        dtype=np.int64,
+                    ),
+                    channel_names=voltage_channel_names,
+                )
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
             excitation_ids=prepared.request.excitation_port_ids,
@@ -509,6 +549,9 @@ class SolveWorkflowController(QObject):
         motion = self._session.transducer_motion
         if motion is not None:
             motion.add(result)
+        electrical_impedance = self._session.electrical_impedance
+        if electrical_impedance is not None:
+            electrical_impedance.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:

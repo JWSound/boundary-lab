@@ -51,7 +51,7 @@ buttons to capture and clear contour overlays.
 
 <img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
 
-All five plot types share the same mouse interactions:
+All plot types share the same mouse interactions:
 
 - Press and drag the left mouse button to position a crosshair. The crosshair
   remains after release; double-click the plot to remove it.
@@ -94,6 +94,18 @@ electrodynamic transducers. It plots synthesized excursion magnitude in
 millimetres for each transducer, with a **Traces** menu for hiding individual
 components. Excursion uses the same channel gain, polarity, delay, crossover,
 and normalized channel correction as the acoustic response.
+
+The **Electrical Impedance** dock reports the driving-point load of each
+voltage-driven channel in ohms. Electrodynamic transducers assigned to the same
+channel are treated as electrically paralleled, including the full driver count
+represented by symmetry. The **Traces** menu controls individual channels and
+the phi icon adds matching dotted phase traces. Phase wraps between -180 and
+180 degrees while the right axis retains the fixed -180 to 600 degree display
+range used by the on-axis plot. Prescribed-velocity and mixed-source channels
+are omitted. Electrical impedance is a property of the linear load, so changing
+Voltage, Trim, polarity, delay, crossover, or normalized response correction
+after the solve does not change the impedance curve. Interior-FEM-only solves
+do not currently populate this plot.
 
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder

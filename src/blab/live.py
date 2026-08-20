@@ -18,7 +18,7 @@ from blab.channel_synthesis import (
 )
 from blab.config import ChannelConfig, SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
-from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID
+from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult, SolveRequest
 from blab.system_contract import SystemFrequencyResult
 
@@ -418,6 +418,98 @@ class TransducerMotionDataset:
             np.asarray(self.transducer_names).copy(),
             np.vstack(rows).T.astype(np.float32, copy=False),
         )
+
+
+@dataclass
+class ElectricalImpedanceDataset:
+    """Live per-channel electrical load derived from voltage-basis currents."""
+
+    excitation_port_ids: tuple[str, ...]
+    excitation_channel_names: np.ndarray
+    excitation_component_ids: np.ndarray
+    transducer_component_ids: np.ndarray
+    physical_driver_orbit_counts: np.ndarray
+    channel_names: np.ndarray
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        quantity = next((item for item in result.quantities if item.id == VOICE_COIL_CURRENT_ID), None)
+        if quantity is None:
+            return
+        if quantity.axes != ("excitation", "transducer"):
+            raise ValueError("Voice-coil current must use excitation and transducer axes.")
+
+        result_port_ids = tuple(str(value) for value in result.excitation_port_ids)
+        if set(result_port_ids) != set(self.excitation_port_ids):
+            raise ValueError("Voice-coil current excitation ports do not match the prepared solve.")
+        row_by_port_id = {port_id: index for index, port_id in enumerate(result_port_ids)}
+        row_order = [row_by_port_id[port_id] for port_id in self.excitation_port_ids]
+
+        expected_component_ids = tuple(str(value) for value in self.transducer_component_ids.tolist())
+        result_component_ids = tuple(str(value) for value in quantity.metadata.get("component_ids", ()))
+        if not result_component_ids:
+            result_component_ids = expected_component_ids
+        if set(result_component_ids) != set(expected_component_ids):
+            raise ValueError("Voice-coil current transducers do not match the prepared solve.")
+        column_by_component_id = {
+            component_id: index for index, component_id in enumerate(result_component_ids)
+        }
+        column_order = [column_by_component_id[component_id] for component_id in expected_component_ids]
+
+        values = np.asarray(quantity.values, dtype=np.complex64)
+        expected_shape = (len(result_port_ids), len(result_component_ids))
+        if values.shape != expected_shape:
+            raise ValueError(f"Voice-coil current has shape {values.shape}, expected {expected_shape}.")
+        values = values[np.ix_(row_order, column_order)]
+
+        try:
+            reference_voltage_v = float(result.diagnostics["transducer_reference_voltage_v"])
+        except (KeyError, TypeError, ValueError):
+            reference_voltage_v = np.nan
+        if not np.isfinite(reference_voltage_v) or reference_voltage_v <= 0.0:
+            reference_voltage_v = np.nan
+
+        excitation_channels = np.asarray(self.excitation_channel_names).astype(str)
+        excitation_components = np.asarray(self.excitation_component_ids).astype(str)
+        transducer_components = np.asarray(self.transducer_component_ids).astype(str)
+        orbit_counts = np.asarray(self.physical_driver_orbit_counts, dtype=np.float64)
+        impedances = np.full(self.channel_names.size, np.nan + 1j * np.nan, dtype=np.complex64)
+        for channel_index, channel_name_value in enumerate(self.channel_names.tolist()):
+            channel_name = str(channel_name_value)
+            excitation_indices = np.flatnonzero(excitation_channels == channel_name)
+            driven_component_ids = set(excitation_components[excitation_indices].tolist())
+            transducer_indices = np.asarray(
+                [
+                    index
+                    for index, component_id in enumerate(transducer_components.tolist())
+                    if component_id in driven_component_ids
+                ],
+                dtype=np.int64,
+            )
+            if not excitation_indices.size or not transducer_indices.size:
+                continue
+            channel_currents = values[np.ix_(excitation_indices, transducer_indices)]
+            total_current = np.sum(
+                channel_currents * orbit_counts[transducer_indices][np.newaxis, :],
+                dtype=np.complex128,
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                impedances[channel_index] = reference_voltage_v / total_current
+        self.results[float(result.freq_hz)] = impedances
+
+    def as_impedance_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return frequency, channel, magnitude, and wrapped phase arrays."""
+
+        if not self.results or not self.channel_names.size:
+            return None
+        ordered = sorted(self.results.items())
+        frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
+        complex_impedance = np.vstack([values for _frequency, values in ordered]).T
+        magnitude_ohm = np.abs(complex_impedance).astype(np.float32, copy=False)
+        phase_deg = np.rad2deg(np.angle(complex_impedance)).astype(np.float32, copy=False)
+        return frequencies, np.asarray(self.channel_names).copy(), magnitude_ohm, phase_deg
 
 
 def build_log_frequencies(freq_min: float, freq_max: float, freq_count: int) -> np.ndarray:

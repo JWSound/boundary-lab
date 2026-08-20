@@ -240,7 +240,7 @@ class ViewBuilderMixin:
                 )
                 if action is not None
             ]
-            if entry.plot_id == "on_axis_frequency_response":
+            if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id == "transducer_excursion":
                 tool_actions.append(entry.widget.trace_filter_action)

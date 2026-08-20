@@ -8,8 +8,12 @@ describes the behaviour that must survive.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
 
+from blab.physical_model import ComponentKind, ExcitationPortKind, PhysicalSolveKind  # noqa: E402
 from blab.ui.application_state import OperationPhase, SolveCompletion  # noqa: E402
 from blab.ui.main_window.solve_session import SolveSession  # noqa: E402
 from blab.ui.main_window.solve_workflow import SolveWorkflowController  # noqa: E402
@@ -146,6 +150,53 @@ def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> Non
     assert controller.view.polar_exports == [False]
     assert controller.view.on_axis_exports == [False]
     assert controller.view.balloon == [False]
+
+
+@pytest.mark.parametrize(
+    ("solve_kind", "expects_electrical_impedance"),
+    [
+        (PhysicalSolveKind.COUPLED_BEM_FEM, True),
+        (PhysicalSolveKind.INTERIOR_FEM, False),
+    ],
+)
+def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
+    controller,
+    solve_kind,
+    expects_electrical_impedance,
+) -> None:
+    component = SimpleNamespace(
+        id="component:woofer",
+        name="Woofer",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        parameters={"physical_driver_orbit_count": 2},
+    )
+    port = SimpleNamespace(
+        id="port:woofer",
+        component_id=component.id,
+        kind=ExcitationPortKind.VOLTAGE,
+    )
+    prepared = SimpleNamespace(
+        excitation_channel_names=np.asarray(["main"]),
+        request=SimpleNamespace(
+            compiled_system=SimpleNamespace(
+                excitation_ports=(port,),
+                components=(component,),
+            ),
+            excitation_port_ids=(port.id,),
+            frequencies_hz=(100.0,),
+            solver_options={},
+        ),
+        backend_id="beat_cpu",
+        solve_kind=solve_kind,
+        result_domains=(),
+    )
+
+    controller._start_prepared_system_solve(prepared, "Starting")
+
+    assert (controller.session.electrical_impedance is not None) is expects_electrical_impedance
+    if expects_electrical_impedance:
+        assert controller.session.electrical_impedance.channel_names.tolist() == ["main"]
+        assert controller.session.electrical_impedance.physical_driver_orbit_counts.tolist() == [2]
 
 
 def test_solving_without_a_mesh_warns_instead_of_starting(controller) -> None:

@@ -27,6 +27,7 @@ from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
 )
+from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window.backend_health import BackendHealthController
@@ -420,6 +421,7 @@ class MainWindow(
         self.horizontal_plot = IsobarCanvas("Horizontal Isobar")
         self.vertical_plot = IsobarCanvas("Vertical Isobar")
         self.impedance_plot = ImpedanceCanvas()
+        self.electrical_impedance_plot = ElectricalImpedanceCanvas()
         self.on_axis_plot = OnAxisResponseCanvas()
         self.excursion_plot = ExcursionCanvas()
         self.spinorama_plot = SpinoramaCanvas()
@@ -444,6 +446,13 @@ class MainWindow(
                 "acoustic_impedance.png",
                 self.impedance_plot,
                 self._update_impedance_plot,
+            ),
+            PlotEntry(
+                "electrical_impedance",
+                "Electrical Impedance",
+                "electrical_impedance.png",
+                self.electrical_impedance_plot,
+                self._update_electrical_impedance_plot,
             ),
             PlotEntry(
                 "on_axis_frequency_response",

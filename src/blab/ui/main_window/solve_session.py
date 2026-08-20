@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from blab.live import LiveSolveDataset, TransducerMotionDataset
+from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
 from blab.solve_results import SolvedSystem, SolvedSystemBuilder
 from blab.ui.result_projection import VisualizationProjection
 
@@ -31,6 +31,9 @@ class SolveSession:
 
     #: Lightweight live transducer motion rows used by the excursion plot.
     transducer_motion: TransducerMotionDataset | None = None
+
+    #: Voltage-basis currents projected into parallel per-channel loads.
+    electrical_impedance: ElectricalImpedanceDataset | None = None
 
     #: Physical-system channels whose grouped basis contains voltage ports only.
     voltage_channel_names: frozenset[str] = frozenset()
@@ -73,6 +76,7 @@ class SolveSession:
         self.live_dataset = None
         self.result_builder = None
         self.transducer_motion = None
+        self.electrical_impedance = None
         self.voltage_channel_names = frozenset()
         self.solved_system = None
         self.use_final_isobar_resolution = False

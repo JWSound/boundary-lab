@@ -499,8 +499,13 @@ containing electrodynamic transducers it also retains `diaphragm_velocity` and
 impedance can be derived. These raw complex quantities are assembled into the
 in-memory solved-system model. The application synthesizes the complex
 excitation basis before converting diaphragm velocity to excursion magnitude
-for the Transducer Excursion plot. Electrical input impedance does not yet
-have a dedicated reporting plot.
+for the Transducer Excursion plot. The Electrical Impedance plot instead
+constructs each voltage-driven channel independently, applies equal voltage to
+every component assigned to that channel, sums their complex coil currents and
+symmetry orbit counts, and divides the reference voltage by that parallel
+current. Its phase traces wrap at +/-180 degrees. Prescribed-velocity and mixed
+channels are excluded, and the plot remains disabled for interior-FEM-only
+solves.
 
 When an exterior or combined observation plane is declared, the application
 also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.

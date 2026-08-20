@@ -10,10 +10,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from blab.spinorama import SpinoramaCurves
+from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.main_window import MainWindow
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
 from blab.ui.result_projection import (
+    ElectricalImpedanceProjection,
     ExcursionProjection,
     ImpedanceProjection,
     IsobarProjection,
@@ -181,6 +183,22 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     excursion.update_plot(freqs, np.asarray(["Woofer"]), np.asarray([[2.0, 3.0, 4.0]]))
     assert excursion._lines == excursion_lines
 
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[4.0, 8.0, 6.0]]),
+        np.asarray([[10.0, 20.0, 30.0]]),
+    )
+    electrical_lines = dict(electrical._magnitude_lines)
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[5.0, 9.0, 7.0]]),
+        np.asarray([[20.0, 30.0, 40.0]]),
+    )
+    assert electrical._magnitude_lines == electrical_lines
+
     spinorama = SpinoramaCanvas()
     curves = _spinorama_curves()
     spinorama.update_curves(curves)
@@ -232,6 +250,42 @@ def test_excursion_plot_uses_audio_frequency_axis_zero_baseline_and_trace_filter
     canvas._series_actions["Passive radiator"].setChecked(False)
     assert not canvas._lines["Passive radiator"].get_visible()
     assert canvas._lines["Woofer"].get_visible()
+
+
+def test_electrical_impedance_plot_uses_parallel_load_magnitude_and_phase_toggle() -> None:
+    canvas = ElectricalImpedanceCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["LF", "HF"]),
+        np.asarray([[4.0, 20.0, 8.0], [8.0, 10.0, 12.0]], dtype=np.float32),
+        np.asarray([[170.0, -170.0, -90.0], [10.0, 20.0, 30.0]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylim()[0] == 0.0
+    assert canvas.axes.get_ylabel() == "Impedance (Ω)"
+    assert canvas.show_phase_action.isEnabled()
+    assert not canvas.phase_axes.get_visible()
+    assert all(line.get_linestyle() == ":" for line in canvas._phase_lines.values())
+    assert all(
+        canvas._phase_lines[label].get_color() == canvas._magnitude_lines[label].get_color()
+        for label in canvas._series_labels
+    )
+
+    canvas.show_phase_action.setChecked(True)
+    assert canvas.phase_axes.get_visible()
+    assert canvas.phase_axes.get_ylim() == (-180.0, 600.0)
+    assert np.isnan(np.asarray(canvas._phase_lines["LF"].get_ydata())).any()
+    finite_phase = np.asarray(canvas._phase_lines["LF"].get_ydata(), dtype=float)
+    finite_phase = finite_phase[np.isfinite(finite_phase)]
+    assert np.all(finite_phase >= -180.0)
+    assert np.all(finite_phase <= 180.0)
+
+    canvas._series_actions["HF"].setChecked(False)
+    assert not canvas._magnitude_lines["HF"].get_visible()
+    assert not canvas._phase_lines["HF"].get_visible()
 
 
 def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
@@ -364,6 +418,25 @@ def test_remaining_plots_restore_current_solve_when_comparison_ends() -> None:
     assert impedance.axes.get_title() == "Acoustic Impedance"
     np.testing.assert_allclose(impedance._lines[0].get_ydata(), [1.0, 2.0, 3.0])
 
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        names,
+        np.asarray([[4.0, 8.0, 6.0]]),
+        np.asarray([[10.0, 20.0, 30.0]]),
+    )
+    electrical.set_comparison_plot(
+        freqs,
+        names,
+        np.asarray([[5.0, 9.0, 7.0]]),
+        np.asarray([[20.0, 30.0, 40.0]]),
+    )
+    electrical._on_comparison_button_press(_mouse_event(electrical.axes, MouseButton.RIGHT))
+    np.testing.assert_allclose(electrical._lines[0].get_ydata(), [5.0, 9.0, 7.0])
+    electrical._on_comparison_button_release(_mouse_event(electrical.axes, MouseButton.RIGHT))
+    assert electrical.axes.get_title() == "Electrical Impedance"
+    np.testing.assert_allclose(electrical._lines[0].get_ydata(), [4.0, 8.0, 6.0])
+
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     current_response = np.asarray([[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]])
     on_axis = OnAxisResponseCanvas()
@@ -411,32 +484,46 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         spin_vertical_reference_angle_deg=-5.0,
     )
     excursion = ExcursionProjection(freqs, np.asarray(["Woofer"]), np.ones((1, 2)))
-    plots = [PlotRecorder() for _index in range(6)]
+    electrical = ElectricalImpedanceProjection(
+        freqs,
+        np.asarray(["main"]),
+        np.ones((1, 2)),
+        np.zeros((1, 2)),
+    )
+    plots = [PlotRecorder() for _index in range(7)]
     window = SimpleNamespace(
-        _last_completed_visualization_dataset=VisualizationProjection(isobar, impedance, response, excursion),
+        _last_completed_visualization_dataset=VisualizationProjection(
+            isobar,
+            impedance,
+            response,
+            excursion,
+            electrical,
+        ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
         impedance_plot=plots[2],
-        on_axis_plot=plots[3],
-        excursion_plot=plots[4],
-        spinorama_plot=plots[5],
+        electrical_impedance_plot=plots[3],
+        on_axis_plot=plots[4],
+        excursion_plot=plots[5],
+        spinorama_plot=plots[6],
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
     MainWindow.apply_last_completed_comparison(window)
 
-    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1]
-    assert plots[5].calls[0][1] == {
+    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1]
+    assert plots[6].calls[0][1] == {
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
-    assert len(plots[3].calls[0][0]) == 7
+    assert len(plots[4].calls[0][0]) == 7
 
 
 def test_every_chart_panel_gets_the_same_axes_box() -> None:
     """The spinorama used to reserve extra bottom margin for its legend."""
     canvases = (
         ImpedanceCanvas(),
+        ElectricalImpedanceCanvas(),
         OnAxisResponseCanvas(),
         ExcursionCanvas(),
         SpinoramaCanvas(),
