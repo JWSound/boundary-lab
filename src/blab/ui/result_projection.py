@@ -125,12 +125,27 @@ class ElectricalImpedanceProjection:
 
 
 @dataclass(frozen=True)
+class GroupDelayProjection:
+    freq_hz: np.ndarray
+    trace_names: np.ndarray
+    group_delay_ms: np.ndarray
+
+    def snapshot(self) -> GroupDelayProjection:
+        return GroupDelayProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            trace_names=np.asarray(self.trace_names).copy(),
+            group_delay_ms=np.asarray(self.group_delay_ms).copy(),
+        )
+
+
+@dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
     response: PolarResponseProjection
     excursion: ExcursionProjection | None = None
     electrical_impedance: ElectricalImpedanceProjection | None = None
+    group_delay: GroupDelayProjection | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
@@ -143,6 +158,7 @@ class VisualizationProjection:
                 if self.electrical_impedance is None
                 else self.electrical_impedance.snapshot()
             ),
+            group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
         )
 
 
@@ -188,6 +204,10 @@ class ResultProjectionService:
             electrical_arrays = electrical_impedance.as_impedance_arrays()
             if electrical_arrays is not None:
                 electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
+        group_delay_projection = None
+        group_delay_arrays = dataset.as_group_delay_arrays()
+        if group_delay_arrays is not None:
+            group_delay_projection = GroupDelayProjection(*group_delay_arrays)
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -217,4 +237,5 @@ class ResultProjectionService:
             ),
             excursion=excursion,
             electrical_impedance=electrical_projection,
+            group_delay=group_delay_projection,
         )

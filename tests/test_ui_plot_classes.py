@@ -420,6 +420,7 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "self.impedance_plot.set_comparison_plot(" in main_source
     assert "self.electrical_impedance_plot.set_comparison_plot(" in main_source
     assert "self.on_axis_plot.set_comparison_plot(" in main_source
+    assert "self.group_delay_plot.set_comparison_plot(" in main_source
     assert "self.spinorama_plot.set_comparison_plot(" in main_source
     assert "SolveInvalidationReason.NEW_PROJECT" in state_source
     assert "clear_comparison_history=True" in state_source

@@ -30,6 +30,7 @@ from blab.ui.dialogs import (
 from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.file_dialogs import FileDialogService
+from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window.backend_health import BackendHealthController
 from blab.ui.main_window.channels import ChannelsMixin
 from blab.ui.main_window.constants import (
@@ -423,6 +424,7 @@ class MainWindow(
         self.impedance_plot = ImpedanceCanvas()
         self.electrical_impedance_plot = ElectricalImpedanceCanvas()
         self.on_axis_plot = OnAxisResponseCanvas()
+        self.group_delay_plot = GroupDelayCanvas()
         self.excursion_plot = ExcursionCanvas()
         self.spinorama_plot = SpinoramaCanvas()
         self.plot_entries = (
@@ -460,6 +462,13 @@ class MainWindow(
                 "on_axis_frequency_response.png",
                 self.on_axis_plot,
                 self._update_on_axis_plot,
+            ),
+            PlotEntry(
+                "group_delay",
+                "Group Delay",
+                "group_delay.png",
+                self.group_delay_plot,
+                self._update_group_delay_plot,
             ),
             PlotEntry(
                 "transducer_excursion",

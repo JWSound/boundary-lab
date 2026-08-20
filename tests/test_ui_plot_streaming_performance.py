@@ -12,11 +12,13 @@ from PySide6.QtWidgets import QApplication
 from blab.spinorama import SpinoramaCurves
 from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
+from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window import MainWindow
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
 from blab.ui.result_projection import (
     ElectricalImpedanceProjection,
     ExcursionProjection,
+    GroupDelayProjection,
     ImpedanceProjection,
     IsobarProjection,
     PolarResponseProjection,
@@ -199,6 +201,20 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     )
     assert electrical._magnitude_lines == electrical_lines
 
+    group_delay = GroupDelayCanvas()
+    group_delay.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF"]),
+        np.asarray([[1.0, 2.0, 1.0], [2.0, 3.0, 2.0]]),
+    )
+    group_delay_lines = dict(group_delay._lines)
+    group_delay.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF"]),
+        np.asarray([[1.5, 2.5, 1.5], [2.5, 3.5, 2.5]]),
+    )
+    assert group_delay._lines == group_delay_lines
+
     spinorama = SpinoramaCanvas()
     curves = _spinorama_curves()
     spinorama.update_curves(curves)
@@ -286,6 +302,31 @@ def test_electrical_impedance_plot_uses_parallel_load_magnitude_and_phase_toggle
     canvas._series_actions["HF"].setChecked(False)
     assert not canvas._magnitude_lines["HF"].get_visible()
     assert not canvas._phase_lines["HF"].get_visible()
+
+
+def test_group_delay_plot_uses_audio_axis_trace_filter_and_signed_milliseconds() -> None:
+    canvas = GroupDelayCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF", "HF"]),
+        np.asarray(
+            [[0.5, 1.0, 0.25], [2.0, 3.0, 1.0], [-0.5, -1.0, -0.25]],
+            dtype=np.float32,
+        ),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylabel() == "Group Delay (ms)"
+    assert canvas.axes.get_ylim()[0] < -1.0
+    assert canvas.axes.get_ylim()[1] > 3.0
+    assert canvas._lines["Sum"].get_color() == "#000000"
+    assert canvas._lines["Sum"].get_linewidth() > canvas._lines["LF"].get_linewidth()
+
+    canvas._series_actions["HF"].setChecked(False)
+    assert not canvas._lines["HF"].get_visible()
+    assert canvas._lines["Sum"].get_visible()
 
 
 def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
@@ -437,6 +478,15 @@ def test_remaining_plots_restore_current_solve_when_comparison_ends() -> None:
     assert electrical.axes.get_title() == "Electrical Impedance"
     np.testing.assert_allclose(electrical._lines[0].get_ydata(), [4.0, 8.0, 6.0])
 
+    group_delay = GroupDelayCanvas()
+    group_delay.update_plot(freqs, names, np.asarray([[1.0, 2.0, 3.0]]))
+    group_delay.set_comparison_plot(freqs, names, np.asarray([[4.0, 5.0, 6.0]]))
+    group_delay._on_comparison_button_press(_mouse_event(group_delay.axes, MouseButton.RIGHT))
+    np.testing.assert_allclose(group_delay._lines["HF"].get_ydata(), [4.0, 5.0, 6.0])
+    group_delay._on_comparison_button_release(_mouse_event(group_delay.axes, MouseButton.RIGHT))
+    assert group_delay.axes.get_title() == "Group Delay"
+    np.testing.assert_allclose(group_delay._lines["HF"].get_ydata(), [1.0, 2.0, 3.0])
+
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     current_response = np.asarray([[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]])
     on_axis = OnAxisResponseCanvas()
@@ -490,7 +540,12 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         np.ones((1, 2)),
         np.zeros((1, 2)),
     )
-    plots = [PlotRecorder() for _index in range(7)]
+    group_delay = GroupDelayProjection(
+        freqs,
+        np.asarray(["Sum", "main"]),
+        np.ones((2, 2)),
+    )
+    plots = [PlotRecorder() for _index in range(8)]
     window = SimpleNamespace(
         _last_completed_visualization_dataset=VisualizationProjection(
             isobar,
@@ -498,21 +553,23 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
             response,
             excursion,
             electrical,
+            group_delay,
         ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
         impedance_plot=plots[2],
         electrical_impedance_plot=plots[3],
         on_axis_plot=plots[4],
-        excursion_plot=plots[5],
-        spinorama_plot=plots[6],
+        group_delay_plot=plots[5],
+        excursion_plot=plots[6],
+        spinorama_plot=plots[7],
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
     MainWindow.apply_last_completed_comparison(window)
 
-    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1]
-    assert plots[6].calls[0][1] == {
+    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1, 1]
+    assert plots[7].calls[0][1] == {
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
@@ -525,6 +582,7 @@ def test_every_chart_panel_gets_the_same_axes_box() -> None:
         ImpedanceCanvas(),
         ElectricalImpedanceCanvas(),
         OnAxisResponseCanvas(),
+        GroupDelayCanvas(),
         ExcursionCanvas(),
         SpinoramaCanvas(),
         IsobarCanvas("Horizontal Isobar"),

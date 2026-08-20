@@ -22,6 +22,8 @@ from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_I
 from blab.solvers.base import FrequencyResult, SolveRequest
 from blab.system_contract import SystemFrequencyResult
 
+GROUP_DELAY_VALID_RELATIVE_DB = -40.0
+
 
 @dataclass
 class LiveSolveDataset:
@@ -110,6 +112,16 @@ class LiveSolveDataset:
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return frequency, channel name, SPL, and phase arrays at zero degrees."""
+        freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
+        spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
+        phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
+        return freqs, channel_names, spl_db, phase_deg
+
+    def _channel_on_axis_complex_pressures(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return raw complex on-axis pressure for each synthesized channel."""
+
         if not self.results:
             raise ValueError("No solved on-axis data available.")
         if not self.supports_channel_resynthesis:
@@ -145,9 +157,39 @@ class LiveSolveDataset:
                 )
 
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
-        phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
-        return freqs, channel_names, spl_db, phase_deg
+        return freqs, channel_names, pressures
+
+    def as_group_delay_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return source-referenced group delay for the sum and each channel."""
+
+        if not self.supports_channel_resynthesis or self.solved_count < 3:
+            return None
+        try:
+            freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
+        except ValueError:
+            return None
+        aligned_pressures = self._propagation_aligned_values(pressures, freqs)
+        configs_by_name = {channel.name: channel for channel in self.channel_configs}
+        configured_delay_s = np.asarray(
+            [
+                configs_by_name.get(str(name), ChannelConfig(name=str(name))).delay_ms / 1000.0
+                for name in channel_names.tolist()
+            ],
+            dtype=np.float64,
+        )
+        channel_group_delay_ms, summed_group_delay_ms = group_delay_from_channel_pressures(
+            freqs,
+            aligned_pressures,
+            configured_delay_s=configured_delay_s,
+        )
+        labels = np.concatenate((np.asarray(["Sum"]), channel_names.astype(str)))
+        values = np.vstack((summed_group_delay_ms, channel_group_delay_ms)).astype(
+            np.float32,
+            copy=False,
+        )
+        return freqs, labels, values
 
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
         if not self.results:
@@ -344,6 +386,14 @@ class LiveSolveDataset:
         pressures: np.ndarray,
         freqs_hz: np.ndarray,
     ) -> np.ndarray:
+        values = self._propagation_aligned_values(pressures, freqs_hz)
+        return np.rad2deg(np.angle(values)).astype(np.float32, copy=False)
+
+    def _propagation_aligned_values(
+        self,
+        pressures: np.ndarray,
+        freqs_hz: np.ndarray,
+    ) -> np.ndarray:
         distance_m = float(self.polar_observation_distance_m)
         sound_speed_m_per_s = float(self.exterior_sound_speed_m_per_s)
         if not np.isfinite(distance_m) or distance_m < 0.0:
@@ -357,7 +407,82 @@ class LiveSolveDataset:
             raise ValueError("Pressure frequency axis must match freqs_hz.")
         reference_delay_s = distance_m / sound_speed_m_per_s
         reference_rotation = np.exp(-1j * 2.0 * np.pi * freqs * reference_delay_s)
-        return np.rad2deg(np.angle(values * reference_rotation)).astype(np.float32, copy=False)
+        return values * reference_rotation
+
+
+def group_delay_from_channel_pressures(
+    freqs_hz: np.ndarray,
+    channel_pressures: np.ndarray,
+    *,
+    configured_delay_s: np.ndarray | None = None,
+    valid_relative_db: float = GROUP_DELAY_VALID_RELATIVE_DB,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Derive channel and summed group delay from complex sampled responses.
+
+    Known pure channel delays are removed before phase unwrapping and added
+    back analytically. The summed derivative is assembled from the channel
+    derivatives, avoiding a second unwrap of the potentially cancelling sum.
+    """
+
+    frequencies = np.asarray(freqs_hz, dtype=np.float64)
+    pressures = np.asarray(channel_pressures, dtype=np.complex128)
+    if frequencies.ndim != 1 or frequencies.size < 3:
+        raise ValueError("Group delay requires at least three frequency samples.")
+    if not np.all(np.isfinite(frequencies)) or np.any(frequencies <= 0.0):
+        raise ValueError("Group-delay frequencies must be finite and greater than zero.")
+    if np.any(np.diff(frequencies) <= 0.0):
+        raise ValueError("Group-delay frequencies must be strictly increasing.")
+    if pressures.ndim != 2 or pressures.shape[1] != frequencies.size:
+        raise ValueError("Channel pressures must have shape (channel, frequency).")
+    delays = (
+        np.zeros(pressures.shape[0], dtype=np.float64)
+        if configured_delay_s is None
+        else np.asarray(configured_delay_s, dtype=np.float64)
+    )
+    if delays.shape != (pressures.shape[0],) or not np.all(np.isfinite(delays)):
+        raise ValueError("Configured channel delays must be finite and match the channel count.")
+
+    omega = 2.0 * np.pi * frequencies
+    channel_group_delay_s = np.full(pressures.shape, np.nan, dtype=np.float64)
+    channel_derivatives = np.zeros(pressures.shape, dtype=np.complex128)
+    for channel_index, (pressure, delay_s) in enumerate(zip(pressures, delays, strict=True)):
+        amplitude = np.abs(pressure)
+        residual = pressure * np.exp(1j * omega * delay_s)
+        residual_phase = np.unwrap(np.angle(residual))
+        full_phase = residual_phase - omega * delay_s
+        amplitude_derivative = np.gradient(amplitude, omega, edge_order=2)
+        phase_derivative = np.gradient(full_phase, omega, edge_order=2)
+        channel_derivatives[channel_index] = np.exp(1j * full_phase) * (
+            amplitude_derivative + 1j * amplitude * phase_derivative
+        )
+        channel_group_delay_s[channel_index] = -phase_derivative
+
+    summed_pressure = np.sum(pressures, axis=0)
+    summed_derivative = np.sum(channel_derivatives, axis=0)
+    summed_log_derivative = np.full(frequencies.shape, np.nan + 1j * np.nan, dtype=np.complex128)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        np.divide(
+            summed_derivative,
+            summed_pressure,
+            out=summed_log_derivative,
+            where=np.abs(summed_pressure) > np.finfo(np.float64).tiny,
+        )
+    summed_group_delay_s = -np.imag(summed_log_derivative)
+
+    for channel_index, pressure in enumerate(pressures):
+        channel_group_delay_s[channel_index, ~_group_delay_valid_mask(pressure, valid_relative_db)] = np.nan
+    summed_group_delay_s[~_group_delay_valid_mask(summed_pressure, valid_relative_db)] = np.nan
+    return channel_group_delay_s * 1000.0, summed_group_delay_s * 1000.0
+
+
+def _group_delay_valid_mask(values: np.ndarray, valid_relative_db: float) -> np.ndarray:
+    magnitude = np.abs(np.asarray(values))
+    finite = np.isfinite(magnitude)
+    maximum = float(np.max(magnitude[finite])) if np.any(finite) else 0.0
+    if maximum <= np.finfo(float).tiny:
+        return np.zeros(magnitude.shape, dtype=bool)
+    threshold = maximum * 10.0 ** (float(valid_relative_db) / 20.0)
+    return finite & (magnitude >= threshold)
 
 
 @dataclass

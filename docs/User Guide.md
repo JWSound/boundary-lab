@@ -89,6 +89,15 @@ the acoustic origin to the configured polar observation distance. On-axis text
 exports use the same reference, including any channel delay changes made after
 the solve.
 
+The **Group Delay** dock derives source-referenced delay in milliseconds from
+the complex on-axis response. It provides **Sum** and per-channel traces with a
+**Traces** menu, removes propagation time to the observation point, and responds
+to channel delay, trim, polarity, crossover, and correction changes made after
+the solve. Values more than 40 dB below each trace's peak are hidden because
+group delay is not meaningful near response nulls. The derivative uses the
+solved frequency samples directly, so denser frequency spacing produces a more
+detailed curve.
+
 The **Transducer Excursion** dock is available for systems containing
 electrodynamic transducers. It plots synthesized excursion magnitude in
 millimetres for each transducer, with a **Traces** menu for hiding individual
@@ -121,7 +130,7 @@ application settings.
 
 <img src="../assets/viewmenu.png" alt="View menu" width="260">
 
-The View menu shows or hides the design editor, mesh preview, and five plot
+The View menu shows or hides the design editor, mesh preview, and eight plot
 panels. **Balloon Plot** opens its own window and is enabled only when the
 current solve contains spherical samples.
 

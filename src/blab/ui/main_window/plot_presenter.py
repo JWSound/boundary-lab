@@ -176,6 +176,15 @@ class PlotPresenterMixin:
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
         )
+        group_delay = dataset.group_delay
+        if group_delay is None:
+            self.group_delay_plot.clear_comparison_plot()
+        else:
+            self.group_delay_plot.set_comparison_plot(
+                group_delay.freq_hz,
+                group_delay.trace_names,
+                group_delay.group_delay_ms,
+            )
         if dataset.excursion is None:
             self.excursion_plot.clear_comparison_plot()
         else:
@@ -379,6 +388,18 @@ class PlotPresenterMixin:
             impedance.channel_names,
             impedance.magnitude_ohm,
             impedance.phase_deg,
+        )
+
+    def _update_group_delay_plot(self, dataset: VisualizationProjection) -> None:
+        group_delay = dataset.group_delay
+        if group_delay is None:
+            if self.group_delay_plot._plot_state is not None:
+                self.group_delay_plot._draw_empty()
+            return
+        self.group_delay_plot.update_plot(
+            group_delay.freq_hz,
+            group_delay.trace_names,
+            group_delay.group_delay_ms,
         )
 
     def _update_excursion_plot(self, dataset: VisualizationProjection) -> None:

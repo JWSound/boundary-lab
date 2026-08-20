@@ -28,6 +28,7 @@ from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
     build_log_frequencies,
+    group_delay_from_channel_pressures,
     order_frequencies_for_live_plotting,
     split_frequency_order_for_workers,
 )
@@ -722,6 +723,62 @@ def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_d
     )
     np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"], [[-45.0]], atol=1e-4)
     np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-45.0], atol=1e-4)
+
+
+def test_group_delay_removes_propagation_and_tracks_configured_delay_exactly() -> None:
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    frequencies = np.asarray([100.0, 250.0, 700.0, 2000.0, 6000.0], dtype=np.float32)
+    propagation_delay_s = 0.001
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main", delay_ms=3.0),),
+        flat_target_normalization_enabled=False,
+        polar_observation_distance_m=0.343,
+        exterior_sound_speed_m_per_s=343.0,
+    )
+    for frequency in frequencies:
+        propagated_pressure = np.exp(1j * 2.0 * np.pi * float(frequency) * propagation_delay_s)
+        pressure = np.full((1, angles.size), propagated_pressure, dtype=np.complex64)
+        dataset.add(
+            FrequencyResult(
+                freq_hz=float(frequency),
+                horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                impedance=np.zeros((1, 2), dtype=np.float32),
+                channel_names=np.asarray(["main"]),
+                horizontal_pressure=pressure,
+                vertical_pressure=pressure.copy(),
+            )
+        )
+
+    group_delay = dataset.as_group_delay_arrays()
+
+    assert group_delay is not None
+    _freqs, names, values_ms = group_delay
+    assert names.tolist() == ["Sum", "main"]
+    np.testing.assert_allclose(values_ms, 3.0, atol=2e-3)
+
+    dataset.set_channel_synthesis((ChannelConfig(name="main", delay_ms=7.0),))
+    _freqs, _names, changed_ms = dataset.as_group_delay_arrays()
+    np.testing.assert_allclose(changed_ms, 7.0, atol=3e-3)
+
+
+def test_group_delay_masks_channel_and_sum_below_relative_magnitude_floor() -> None:
+    frequencies = np.asarray([100.0, 200.0, 400.0, 800.0, 1600.0])
+    omega = 2.0 * np.pi * frequencies
+    pressure = np.exp(-1j * omega * 0.002)[np.newaxis, :]
+    pressure[0, 2] *= 0.001
+
+    channels_ms, summed_ms = group_delay_from_channel_pressures(
+        frequencies,
+        pressure,
+        configured_delay_s=np.asarray([0.002]),
+    )
+
+    assert np.isnan(channels_ms[0, 2])
+    assert np.isnan(summed_ms[2])
+    np.testing.assert_allclose(channels_ms[0, [0, 1, 3, 4]], 2.0, atol=1e-10)
+    np.testing.assert_allclose(summed_ms[[0, 1, 3, 4]], 2.0, atol=1e-10)
 
 
 def test_live_dataset_builds_balloon_bundle_from_sphere_results() -> None:

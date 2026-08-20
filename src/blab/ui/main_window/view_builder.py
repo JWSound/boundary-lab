@@ -242,7 +242,7 @@ class ViewBuilderMixin:
             ]
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
-            elif entry.plot_id == "transducer_excursion":
+            elif entry.plot_id in {"group_delay", "transducer_excursion"}:
                 tool_actions.append(entry.widget.trace_filter_action)
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
