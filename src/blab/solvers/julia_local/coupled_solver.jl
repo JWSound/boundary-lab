@@ -32,6 +32,8 @@ function translated_volume_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
         mesh.boundary_faces,
         mesh.boundary_physical_tags,
         mesh.physical_names,
+        mesh.quadratic_tetrahedra,
+        mesh.quadratic_boundary_faces,
     )
 end
 
@@ -632,6 +634,9 @@ function aggregate_fem_domains(
     tetra_tags = Int[]
     boundary_faces = NTuple{3,Int}[]
     boundary_tags = Int[]
+    quadratic_tetrahedra = NTuple{10,Int}[]
+    quadratic_boundary_faces = NTuple{6,Int}[]
+    quadratic_order = nothing
     domains = NamedTuple[]
     bulk_loss_factor_by_vertex = T[]
     wall_impedances = NamedTuple[]
@@ -654,6 +659,12 @@ function aggregate_fem_domains(
             if String(group["mesh_id"]) == mesh_id
         ]
         selection = restrict_volume_mesh(full_mesh, selected_volume_tags)
+        local_quadratic = is_quadratic(selection.mesh)
+        if isnothing(quadratic_order)
+            quadratic_order = local_quadratic
+        elseif local_quadratic != quadratic_order
+            error("All bounded FEM regions must use the same tetrahedron order.")
+        end
         loss_model = get(region, "loss_model", Dict{String,Any}())
         bulk_loss_factor = T(get(loss_model, "bulk_loss_factor", 0.0))
         isfinite(bulk_loss_factor) && zero(T) <= bulk_loss_factor <= one(T) || error(
@@ -736,6 +747,13 @@ function aggregate_fem_domains(
         )
         append!(tetra_tags, selection.mesh.tetra_physical_tags)
         append!(
+            quadratic_tetrahedra,
+            [
+                ntuple(index -> tetrahedron[index] + vertex_offset, 10)
+                for tetrahedron in selection.mesh.quadratic_tetrahedra
+            ],
+        )
+        append!(
             boundary_faces,
             [
                 ntuple(index -> face[index] + vertex_offset, 3)
@@ -743,6 +761,13 @@ function aggregate_fem_domains(
             ],
         )
         append!(boundary_tags, remapped_boundary_tags)
+        append!(
+            quadratic_boundary_faces,
+            [
+                ntuple(index -> face[index] + vertex_offset, 6)
+                for face in selection.mesh.quadratic_boundary_faces
+            ],
+        )
         push!(
             domains,
             (
@@ -763,6 +788,8 @@ function aggregate_fem_domains(
         boundary_faces,
         boundary_tags,
         Dict{Tuple{Int,Int},String}(),
+        quadratic_tetrahedra,
+        quadratic_boundary_faces,
     )
     return (
         mesh=mesh,
@@ -1070,6 +1097,13 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
     transducer_reference_voltage_v > zero(FloatType) || error(
         "transducer_reference_voltage_v must be greater than zero.",
     )
+    fem_consistent_mass_weight = FloatType(
+        get(solver_options, "fem_consistent_mass_weight", 1.0),
+    )
+    isfinite(fem_consistent_mass_weight) &&
+        zero(FloatType) <= fem_consistent_mass_weight <= one(FloatType) || error(
+        "fem_consistent_mass_weight must be finite and between zero and one.",
+    )
 
     reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
     reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
@@ -1106,6 +1140,8 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
         fem_mesh.boundary_faces,
         fem_mesh.boundary_physical_tags,
         fem_mesh.physical_names,
+        fem_mesh.quadratic_tetrahedra,
+        fem_mesh.quadratic_boundary_faces,
     )
     validate_volume_symmetry_fundamental_domain!(
         fem_mesh,
@@ -1115,7 +1151,8 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
     mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
 
     cache_started = time_ns()
-    stiffness, mass = assemble_p1_fem_matrices(fem_mesh)
+    stiffness, consistent_mass = assemble_fem_matrices(fem_mesh)
+    mass = blend_fem_mass_matrix(consistent_mass, fem_consistent_mass_weight)
     bulk_loss_mass = spdiagm(
         0 => FloatType.(fem_domains.bulk_loss_factor_by_vertex),
     ) * mass
@@ -1387,6 +1424,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             "linear_solver" => "cpu_umfpack_sparse_lu_fp64",
             "symmetry" => String(symmetry_mode),
             "formulation" => "interior_fem_sparse",
+            "fem_consistent_mass_weight" => fem_consistent_mass_weight,
             "full_system_order" => system_order,
             "solved_system_order" => system_order,
             "bounded_region_count" => length(bounded_regions),
@@ -1521,6 +1559,8 @@ function solve_request(request; event_mode=false)
         fem_mesh.boundary_faces,
         fem_mesh.boundary_physical_tags,
         fem_mesh.physical_names,
+        fem_mesh.quadratic_tetrahedra,
+        fem_mesh.quadratic_boundary_faces,
     )
     bem_mesh = snap_symmetry_planes(
         bem_mesh,

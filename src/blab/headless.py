@@ -48,7 +48,7 @@ from blab.ui.project_io import PROJECT_SCHEMA_VERSION, read_project_file
 from blab.ui.project_state import ProjectPreferencesState
 
 HEADLESS_REQUEST_VERSION = 1
-HEADLESS_RESULT_VERSION = 1
+HEADLESS_RESULT_VERSION = 2
 SUPPORTED_RETAIN_VALUES = {
     "bem_boundary_pressure",
     "bem_boundary_neumann",
@@ -291,19 +291,7 @@ def validation_summary(
     backend_id: str,
 ) -> dict[str, Any]:
     request = prepared.request
-    mesh_entries = []
-    for mesh in request.compiled_system.meshes:
-        path = Path(mesh.file)
-        mesh_entries.append(
-            {
-                "id": mesh.id,
-                "name": mesh.name,
-                "purpose": mesh.purpose.value,
-                "file": str(path),
-                "size_bytes": path.stat().st_size,
-                "sha256": _sha256(path),
-            }
-        )
+    mesh_entries = _mesh_manifest_entries(request.compiled_system)
     return {
         "valid": True,
         "project": str(project.path),
@@ -378,6 +366,7 @@ class HeadlessResultWriter:
             "frequencies_hz": self.frequencies.tolist(),
             "excitation_port_ids": list(prepared.request.excitation_port_ids),
             "solver_options": _json_safe(prepared.request.solver_options),
+            "meshes": _mesh_manifest_entries(prepared.request.compiled_system),
             "completion_mask": self.completion.tolist(),
             "results": self.results,
         }
@@ -714,6 +703,23 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _mesh_manifest_entries(system) -> list[dict[str, Any]]:
+    entries = []
+    for mesh in system.meshes:
+        path = Path(mesh.file).resolve()
+        entries.append(
+            {
+                "id": mesh.id,
+                "name": mesh.name,
+                "purpose": mesh.purpose.value,
+                "file": str(path),
+                "size_bytes": path.stat().st_size,
+                "sha256": _sha256(path),
+            }
+        )
+    return entries
 
 
 def _command_available(command: str) -> bool:

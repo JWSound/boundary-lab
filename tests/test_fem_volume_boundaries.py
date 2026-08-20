@@ -89,6 +89,24 @@ def test_selected_volume_surface_tags_follow_tetrahedron_adjacency() -> None:
     assert selected_volume_surface_tags(mesh, {1, 2}) == {1, 2, 3, 4, 7}
 
 
+def test_selected_volume_surface_tags_accept_quadratic_elements() -> None:
+    linear = _two_volume_mesh()
+    triangles = np.asarray(linear.cells[0].data, dtype=np.int32)
+    tetrahedra = np.asarray(linear.cells[1].data, dtype=np.int32)
+    quadratic = meshio.Mesh(
+        points=linear.points,
+        cells=[
+            ("triangle6", np.column_stack((triangles, triangles))),
+            ("tetra10", np.column_stack((tetrahedra, tetrahedra, tetrahedra[:, :2]))),
+        ],
+        cell_data=linear.cell_data,
+        field_data=linear.field_data,
+    )
+
+    assert selected_volume_surface_tags(quadratic, {1}) == {1, 3, 7}
+    assert selected_volume_surface_tags(quadratic, {2}) == {2, 4, 7}
+
+
 def test_system_dialog_filters_surfaces_for_each_volume_group(tmp_path: Path) -> None:
     mesh_path = tmp_path / "two-volume.msh"
     _write_two_volume_mesh(mesh_path)

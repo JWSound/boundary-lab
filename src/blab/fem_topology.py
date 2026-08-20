@@ -8,8 +8,8 @@ from collections.abc import Iterable
 import meshio
 import numpy as np
 
-_TETRAHEDRON_TYPES = {"tetra", "tetra4"}
-_TRIANGLE_TYPES = {"triangle", "triangle3"}
+_TETRAHEDRON_TYPES = {"tetra", "tetra4", "tetra10"}
+_TRIANGLE_TYPES = {"triangle", "triangle3", "triangle6"}
 
 
 def selected_volume_surface_tags(
@@ -38,7 +38,7 @@ def selected_volume_surface_tags(
         tetrahedra = np.asarray(block.data, dtype=np.int64)
         tags = np.asarray(raw_tags, dtype=np.int64)
         if tetrahedra.ndim != 2 or tetrahedra.shape[1] < 4 or tags.shape != (tetrahedra.shape[0],):
-            raise ValueError("FEM mesh physical-volume tags do not align with first-order tetrahedra.")
+            raise ValueError("FEM mesh physical-volume tags do not align with tetrahedra.")
         for tetrahedron in tetrahedra[np.isin(tags, tuple(selected_tags)), :4]:
             selected_tetrahedron_count += 1
             a, b, c, d = map(int, tetrahedron)
@@ -62,7 +62,7 @@ def selected_volume_surface_tags(
         triangles = np.asarray(block.data, dtype=np.int64)
         tags = np.asarray(raw_tags, dtype=np.int64)
         if triangles.ndim != 2 or triangles.shape[1] < 3 or tags.shape != (triangles.shape[0],):
-            raise ValueError("FEM mesh physical-surface tags do not align with first-order triangles.")
+            raise ValueError("FEM mesh physical-surface tags do not align with triangles.")
         for triangle, tag in zip(triangles[:, :3], tags, strict=True):
             if tuple(sorted(map(int, triangle))) in exterior_faces:
                 surface_tags.add(int(tag))

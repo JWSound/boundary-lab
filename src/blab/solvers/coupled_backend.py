@@ -285,7 +285,13 @@ class _CoupledBackend:
             and self.default_static_condensation
             and not bool(solver_options.get("validation_diagnostics", False)),
         )
-        solver_options["precision"] = self.precision
+        # Pure interior FEM uses sparse direct CPU factorization regardless of
+        # the requested production BEM backend. Keep its mesh coordinates and
+        # element Jacobians in Float64: forcing the production backend's FP32
+        # setting can classify valid, highly graded tetrahedra as numerically
+        # degenerate before assembly. Coupled/exterior BEM paths retain their
+        # configured precision.
+        solver_options["precision"] = "float64" if is_interior else self.precision
         solver_options["bem_backend"] = "cpu" if is_interior else self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         typed_request = replace(request, solver_options=solver_options)

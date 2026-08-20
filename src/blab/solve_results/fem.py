@@ -24,6 +24,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
     meshes_by_id = {mesh.id: mesh for mesh in system.meshes}
     points_by_region: list[np.ndarray] = []
     tetrahedra_by_region: list[np.ndarray] = []
+    tetrahedra10_by_region: list[np.ndarray] = []
     node_region_indices: list[np.ndarray] = []
     tetra_region_indices: list[np.ndarray] = []
     node_offsets: list[int] = []
@@ -34,6 +35,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
     region_ids: list[str] = []
     node_offset = 0
     tetra_offset = 0
+    element_order: int | None = None
 
     bounded_regions = tuple(region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR)
     if not bounded_regions:
@@ -54,7 +56,12 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
         mesh = meshio.read(Path(resource.file))
         selected_tetrahedra = _selected_tetrahedra(mesh, selected_tags)
         if not selected_tetrahedra.size:
-            raise ValueError(f"Bounded region {region.id!r} contains no selected first-order tetrahedra.")
+            raise ValueError(f"Bounded region {region.id!r} contains no selected tetrahedra.")
+        region_order = 2 if selected_tetrahedra.shape[1] == 10 else 1
+        if element_order is None:
+            element_order = region_order
+        elif region_order != element_order:
+            raise ValueError("All bounded FEM regions must use the same tetrahedron order.")
         active_vertices = np.unique(selected_tetrahedra.reshape(-1))
         source_to_local = np.full(len(mesh.points), -1, dtype=np.int64)
         source_to_local[active_vertices] = np.arange(active_vertices.size, dtype=np.int64)
@@ -66,7 +73,9 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
         points = points * float(resource.scale_to_m) + np.asarray(resource.translation_m, dtype=float)
         points = snap_points_to_symmetry_planes(points, symmetry)
         points_by_region.append(points)
-        tetrahedra_by_region.append(local_tetrahedra + node_offset)
+        tetrahedra_by_region.append(local_tetrahedra[:, :4] + node_offset)
+        if region_order == 2:
+            tetrahedra10_by_region.append(local_tetrahedra + node_offset)
         node_region_indices.append(np.full(points.shape[0], region_index, dtype=np.int32))
         tetra_region_indices.append(np.full(local_tetrahedra.shape[0], region_index, dtype=np.int32))
         node_offsets.append(node_offset)
@@ -78,6 +87,13 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
         node_offset += points.shape[0]
         tetra_offset += local_tetrahedra.shape[0]
 
+    topology = {
+        "tetrahedra": np.vstack(tetrahedra_by_region),
+        "region_index": np.concatenate(tetra_region_indices),
+    }
+    if element_order == 2:
+        topology["tetrahedra10"] = np.vstack(tetrahedra10_by_region)
+
     return ResultDomain(
         id=FEM_VOLUME_DOMAIN_ID,
         kind="fem_volume",
@@ -86,10 +102,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
             "points_m": np.vstack(points_by_region),
             "region_index": np.concatenate(node_region_indices),
         },
-        topology={
-            "tetrahedra": np.vstack(tetrahedra_by_region),
-            "region_index": np.concatenate(tetra_region_indices),
-        },
+        topology=topology,
         metadata={
             "mesh_ids": mesh_ids,
             "region_ids": region_ids,
@@ -98,6 +111,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
             "node_counts": node_counts,
             "tetra_offsets": tetra_offsets,
             "tetra_counts": tetra_counts,
+            "element_order": element_order,
         },
     )
 
@@ -108,7 +122,7 @@ def _selected_tetrahedra(mesh: meshio.Mesh, selected_tags: set[int]) -> np.ndarr
         raise ValueError("FEM mesh tetrahedra do not contain gmsh:physical volume tags.")
     selected: list[np.ndarray] = []
     for block, raw_tags in zip(mesh.cells, physical_blocks, strict=True):
-        if block.type not in {"tetra", "tetra4"}:
+        if block.type not in {"tetra", "tetra4", "tetra10"}:
             continue
         cells = np.asarray(block.data, dtype=np.int64)
         tags = np.asarray(raw_tags, dtype=np.int64)
@@ -117,7 +131,12 @@ def _selected_tetrahedra(mesh: meshio.Mesh, selected_tags: set[int]) -> np.ndarr
         mask = np.isin(tags, tuple(selected_tags))
         if np.any(mask):
             selected.append(cells[mask])
-    return np.vstack(selected) if selected else np.empty((0, 4), dtype=np.int64)
+    if not selected:
+        return np.empty((0, 4), dtype=np.int64)
+    widths = {cells.shape[1] for cells in selected}
+    if len(widths) != 1:
+        raise ValueError("FEM mesh mixes first- and second-order tetrahedra.")
+    return np.vstack(selected)
 
 
 __all__ = ["fem_volume_result_domain"]

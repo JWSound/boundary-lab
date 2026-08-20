@@ -666,7 +666,11 @@ class PhysicalSystemCompiler:
         physical_blocks = mesh.cell_data.get("gmsh:physical")
         if physical_blocks is None:
             raise PhysicalModelCompileError("Mesh elements do not contain gmsh:physical tags.")
-        cell_types = {"triangle", "triangle3"} if dimension == 2 else {"tetra", "tetra4"}
+        cell_types = (
+            {"triangle", "triangle3", "triangle6"}
+            if dimension == 2
+            else {"tetra", "tetra4", "tetra10"}
+        )
         values = [
             np.asarray(physical_blocks[index], dtype=np.int64)
             for index, block in enumerate(mesh.cells)

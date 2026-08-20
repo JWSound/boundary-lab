@@ -10,6 +10,13 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from blab.fem_validation import (
+    FEMConvergenceGates,
+    FEMValidationGates,
+    compare_fem_validation_reports,
+    evaluate_fem_run,
+    write_fem_validation_report,
+)
 from blab.headless import (
     HEADLESS_BACKEND_AUTO,
     HEADLESS_BACKEND_IDS,
@@ -66,6 +73,42 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     solve.add_argument("--julia-threads", default=None, help="Julia thread count, or auto")
 
+    evaluate_fem = commands.add_parser(
+        "evaluate-fem",
+        help="Evaluate phase coherence and plane-mode purity on tagged FEM exit surfaces",
+    )
+    evaluate_fem.add_argument("run_dir", type=Path, help="Completed headless result directory")
+    evaluate_fem.add_argument(
+        "--surface-pattern",
+        action="append",
+        dest="surface_patterns",
+        help="Physical surface glob; repeatable (default: exit_*)",
+    )
+    evaluate_fem.add_argument("--output", type=Path, help="Report path (default: RUN_DIR/fem-validation.json)")
+    evaluate_fem.add_argument("--max-within-phase-rms-deg", type=float, default=10.0)
+    evaluate_fem.add_argument("--max-inter-phase-rms-deg", type=float, default=5.0)
+    evaluate_fem.add_argument("--max-inter-phase-deg", type=float, default=10.0)
+    evaluate_fem.add_argument("--min-plane-mode-fraction", type=float, default=0.95)
+    evaluate_fem.add_argument("--min-points-per-wavelength-p95", type=float, default=8.0)
+    evaluate_fem.add_argument("--min-points-per-wavelength-maximum-edge", type=float, default=4.0)
+    evaluate_fem.add_argument(
+        "--split-surface-entities",
+        action="store_true",
+        help="Evaluate each Gmsh geometrical entity within a physical surface separately",
+    )
+
+    compare_fem = commands.add_parser(
+        "compare-fem",
+        help="Compare tagged-surface fields from coarse and fine FEM validation reports",
+    )
+    compare_fem.add_argument("coarse_report", type=Path)
+    compare_fem.add_argument("fine_report", type=Path)
+    compare_fem.add_argument("--output", type=Path)
+    compare_fem.add_argument("--max-phase-rms-delta-deg", type=float, default=1.0)
+    compare_fem.add_argument("--max-phase-delta-deg", type=float, default=2.0)
+    compare_fem.add_argument("--max-normalized-amplitude-rms-delta", type=float, default=0.02)
+    compare_fem.add_argument("--max-plane-mode-fraction-delta", type=float, default=0.01)
+
     export_speaker = commands.add_parser(
         "export-speaker",
         help="Solve a project and export a level 1 or 2 .blabsp speaker package",
@@ -94,6 +137,10 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             _validate(args)
         elif args.project_command == "solve":
             _solve(args)
+        elif args.project_command == "evaluate-fem":
+            _evaluate_fem(args)
+        elif args.project_command == "compare-fem":
+            _compare_fem(args)
         else:
             _export_speaker(args)
     except KeyboardInterrupt:
@@ -168,6 +215,65 @@ def _solve(args: argparse.Namespace) -> None:
     )
     if args.events == "text":
         print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def _evaluate_fem(args: argparse.Namespace) -> None:
+    gates = FEMValidationGates(
+        maximum_within_surface_phase_rms_deg=args.max_within_phase_rms_deg,
+        maximum_inter_surface_phase_rms_deg=args.max_inter_phase_rms_deg,
+        maximum_inter_surface_phase_deg=args.max_inter_phase_deg,
+        minimum_plane_mode_fraction=args.min_plane_mode_fraction,
+        minimum_points_per_wavelength_p95=args.min_points_per_wavelength_p95,
+        minimum_points_per_wavelength_maximum_edge=(
+            args.min_points_per_wavelength_maximum_edge
+        ),
+    )
+    report = evaluate_fem_run(
+        args.run_dir,
+        surface_patterns=tuple(args.surface_patterns or ("exit_*",)),
+        split_surface_entities=args.split_surface_entities,
+        gates=gates,
+    )
+    output = args.output or args.run_dir / "fem-validation.json"
+    write_fem_validation_report(output, report)
+    summary = {
+        "output": str(output.resolve()),
+        "surface_count": report["surface_count"],
+        "frequencies_hz": report["frequencies_hz"],
+        "sampled_coherence_ceiling_hz_by_excitation": report[
+            "sampled_coherence_ceiling_hz_by_excitation"
+        ],
+    }
+    print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def _compare_fem(args: argparse.Namespace) -> None:
+    gates = FEMConvergenceGates(
+        maximum_surface_phase_rms_delta_deg=args.max_phase_rms_delta_deg,
+        maximum_surface_phase_delta_deg=args.max_phase_delta_deg,
+        maximum_normalized_amplitude_rms_delta=(
+            args.max_normalized_amplitude_rms_delta
+        ),
+        maximum_plane_mode_fraction_delta=args.max_plane_mode_fraction_delta,
+    )
+    report = compare_fem_validation_reports(
+        args.coarse_report,
+        args.fine_report,
+        gates=gates,
+    )
+    output = args.output or args.fine_report.with_name("fem-convergence.json")
+    write_fem_validation_report(output, report)
+    print(
+        json.dumps(
+            {
+                "output": str(output.resolve()),
+                "passed": report["passed"],
+                "frequency_count": len(report["comparisons"]),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def _export_speaker(args: argparse.Namespace) -> None:

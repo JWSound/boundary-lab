@@ -18,6 +18,7 @@ function _cudss_module()
 end
 
 export VolumeMesh,
+    is_quadratic,
     ConformingInterfaceMap,
     InterfaceOperators,
     ElectrodynamicTransducer,
@@ -25,6 +26,9 @@ export VolumeMesh,
     restrict_volume_mesh,
     physical_tag,
     assemble_p1_fem_matrices,
+    assemble_p2_fem_matrices,
+    assemble_fem_matrices,
+    blend_fem_mass_matrix,
     assemble_fem_dynamic_stiffness,
     assemble_boundary_mass_matrix,
     miki_rigid_backed_surface_admittance,
@@ -51,7 +55,49 @@ struct VolumeMesh{T<:AbstractFloat}
     boundary_faces::Vector{NTuple{3,Int}}
     boundary_physical_tags::Vector{Int}
     physical_names::Dict{Tuple{Int,Int},String}
+    quadratic_tetrahedra::Vector{NTuple{10,Int}}
+    quadratic_boundary_faces::Vector{NTuple{6,Int}}
 end
+
+function VolumeMesh{T}(
+    vertices,
+    tetrahedra,
+    tetra_physical_tags,
+    boundary_faces,
+    boundary_physical_tags,
+    physical_names,
+) where {T<:AbstractFloat}
+    return VolumeMesh{T}(
+        vertices,
+        tetrahedra,
+        tetra_physical_tags,
+        boundary_faces,
+        boundary_physical_tags,
+        physical_names,
+        NTuple{10,Int}[],
+        NTuple{6,Int}[],
+    )
+end
+
+function VolumeMesh(
+    vertices::Vector{SVector{3,T}},
+    tetrahedra,
+    tetra_physical_tags,
+    boundary_faces,
+    boundary_physical_tags,
+    physical_names,
+) where {T<:AbstractFloat}
+    return VolumeMesh{T}(
+        vertices,
+        tetrahedra,
+        tetra_physical_tags,
+        boundary_faces,
+        boundary_physical_tags,
+        physical_names,
+    )
+end
+
+is_quadratic(mesh::VolumeMesh) = !isempty(mesh.quadratic_tetrahedra)
 
 struct ConformingInterfaceMap
     fem_vertex_indices::Vector{Int}
@@ -115,7 +161,11 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         mesh.boundary_faces,
     )
 
-    active_vertices = sort(unique(vcat([collect(tetrahedron) for tetrahedron in selected_tetrahedra]...)))
+    selected_quadratic_tetrahedra = is_quadratic(mesh) ?
+                                      mesh.quadratic_tetrahedra[tetrahedron_indices] :
+                                      NTuple{10,Int}[]
+    active_connectivity = is_quadratic(mesh) ? selected_quadratic_tetrahedra : selected_tetrahedra
+    active_vertices = sort(unique(vcat([collect(tetrahedron) for tetrahedron in active_connectivity]...)))
     vertex_index_map = Dict(vertex => index for (index, vertex) in enumerate(active_vertices))
     boundary_face_index_map = Dict(
         face_index => index
@@ -129,6 +179,14 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         ntuple(local_index -> vertex_index_map[face[local_index]], 3)
         for face in mesh.boundary_faces[boundary_face_indices]
     ]
+    restricted_quadratic_tetrahedra = [
+        ntuple(local_index -> vertex_index_map[tetrahedron[local_index]], 10)
+        for tetrahedron in selected_quadratic_tetrahedra
+    ]
+    restricted_quadratic_boundary_faces = is_quadratic(mesh) ? [
+        ntuple(local_index -> vertex_index_map[face[local_index]], 6)
+        for face in mesh.quadratic_boundary_faces[boundary_face_indices]
+    ] : NTuple{6,Int}[]
     restricted = VolumeMesh{T}(
         mesh.vertices[active_vertices],
         restricted_tetrahedra,
@@ -136,6 +194,8 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         restricted_boundary_faces,
         mesh.boundary_physical_tags[boundary_face_indices],
         mesh.physical_names,
+        restricted_quadratic_tetrahedra,
+        restricted_quadratic_boundary_faces,
     )
     return (
         mesh=restricted,
@@ -162,13 +222,14 @@ function load_gmsh41_volume(filepath::String, scale::T) where {T<:AbstractFloat}
     physical_names = _parse_physical_names(lines)
     entity_physical_tags = _parse_entity_physical_tags(lines)
     vertices, node_index_map = _parse_gmsh41_nodes(lines, scale)
-    tetrahedra, tetra_tags, boundary_faces, boundary_tags = _parse_gmsh41_elements(
+    tetrahedra, tetra_tags, boundary_faces, boundary_tags,
+    quadratic_tetrahedra, quadratic_boundary_faces = _parse_gmsh41_elements(
         lines,
         node_index_map,
         entity_physical_tags,
     )
-    isempty(tetrahedra) && error("FEM volume mesh contains no first-order tetrahedra.")
-    isempty(boundary_faces) && error("FEM volume mesh contains no first-order boundary triangles.")
+    isempty(tetrahedra) && error("FEM volume mesh contains no supported tetrahedra.")
+    isempty(boundary_faces) && error("FEM volume mesh contains no supported boundary triangles.")
     return VolumeMesh{T}(
         vertices,
         tetrahedra,
@@ -176,6 +237,8 @@ function load_gmsh41_volume(filepath::String, scale::T) where {T<:AbstractFloat}
         boundary_faces,
         boundary_tags,
         physical_names,
+        quadratic_tetrahedra,
+        quadratic_boundary_faces,
     )
 end
 
@@ -248,6 +311,133 @@ function assemble_p1_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
     return stiffness, mass
 end
 
+function _p2_tetra_basis_gradients(lambda::AbstractVector{T}) where {T<:AbstractFloat}
+    gradients_lambda = T[
+        -1 1 0 0
+        -1 0 1 0
+        -1 0 0 1
+    ]
+    values = zeros(T, 10)
+    gradients = zeros(T, 3, 10)
+    for index in 1:4
+        values[index] = lambda[index] * (T(2) * lambda[index] - one(T))
+        gradients[:, index] .= (T(4) * lambda[index] - one(T)) .* gradients_lambda[:, index]
+    end
+    edges = ((1, 2), (2, 3), (3, 1), (1, 4), (4, 3), (2, 4))
+    for (offset, (left, right)) in enumerate(edges)
+        index = 4 + offset
+        values[index] = T(4) * lambda[left] * lambda[right]
+        gradients[:, index] .= T(4) .* (
+            lambda[left] .* gradients_lambda[:, right] +
+            lambda[right] .* gradients_lambda[:, left]
+        )
+    end
+    return values, gradients
+end
+
+function _p2_tetra_reference_operators(::Type{T}) where {T<:AbstractFloat}
+    quadrature = Tuple{Vector{T},T}[]
+    push!(quadrature, (fill(T(1) / T(4), 4), T(-0.013155555555555556)))
+    high = T(11) / T(14)
+    low = T(1) / T(14)
+    for high_index in 1:4
+        lambda = fill(low, 4)
+        lambda[high_index] = high
+        push!(quadrature, (lambda, T(0.007622222222222222)))
+    end
+    delta = sqrt(T(5) / T(14))
+    left = (one(T) + delta) / T(4)
+    right = (one(T) - delta) / T(4)
+    for first in 1:3, second in (first + 1):4
+        lambda = fill(right, 4)
+        lambda[first] = left
+        lambda[second] = left
+        push!(quadrature, (lambda, T(0.02488888888888889)))
+    end
+    mass = zeros(T, 10, 10)
+    stiffness_tensor = zeros(T, 10, 10, 3, 3)
+    for (lambda, weight) in quadrature
+        values, gradients = _p2_tetra_basis_gradients(lambda)
+        mass .+= weight .* (values * transpose(values))
+        for row in 1:10, col in 1:10, left_axis in 1:3, right_axis in 1:3
+            stiffness_tensor[row, col, left_axis, right_axis] +=
+                weight * gradients[left_axis, row] * gradients[right_axis, col]
+        end
+    end
+    return mass, stiffness_tensor
+end
+
+function assemble_p2_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
+    is_quadratic(mesh) || error("P2 FEM assembly requires ten-node tetrahedra.")
+    stiffness_rows = Int[]
+    stiffness_cols = Int[]
+    stiffness_values = T[]
+    mass_rows = Int[]
+    mass_cols = Int[]
+    mass_values = T[]
+    reference_mass, reference_stiffness = _p2_tetra_reference_operators(T)
+
+    for element_index in eachindex(mesh.tetrahedra)
+        corners = mesh.tetrahedra[element_index]
+        tetrahedron = mesh.quadratic_tetrahedra[element_index]
+        x1 = mesh.vertices[corners[1]]
+        jacobian = SMatrix{3,3,T}(
+            hcat(
+                mesh.vertices[corners[2]] - x1,
+                mesh.vertices[corners[3]] - x1,
+                mesh.vertices[corners[4]] - x1,
+            ),
+        )
+        determinant = det(jacobian)
+        edge_scale = maximum(abs, jacobian)
+        abs(determinant) > eps(T) * edge_scale^3 || error(
+            "FEM volume mesh contains a numerically degenerate tetrahedron.",
+        )
+        absolute_determinant = abs(determinant)
+        inverse_jacobian = inv(jacobian)
+        metric = inverse_jacobian * transpose(inverse_jacobian)
+        for local_row in 1:10, local_col in 1:10
+            stiffness_value = zero(T)
+            for left_axis in 1:3, right_axis in 1:3
+                stiffness_value += metric[left_axis, right_axis] * reference_stiffness[
+                    local_row,
+                    local_col,
+                    left_axis,
+                    right_axis,
+                ]
+            end
+            push!(stiffness_rows, tetrahedron[local_row])
+            push!(stiffness_cols, tetrahedron[local_col])
+            push!(stiffness_values, absolute_determinant * stiffness_value)
+            push!(mass_rows, tetrahedron[local_row])
+            push!(mass_cols, tetrahedron[local_col])
+            push!(mass_values, absolute_determinant * reference_mass[local_row, local_col])
+        end
+    end
+    dof_count = length(mesh.vertices)
+    return (
+        sparse(stiffness_rows, stiffness_cols, stiffness_values, dof_count, dof_count),
+        sparse(mass_rows, mass_cols, mass_values, dof_count, dof_count),
+    )
+end
+
+assemble_fem_matrices(mesh::VolumeMesh) = is_quadratic(mesh) ?
+                                         assemble_p2_fem_matrices(mesh) :
+                                         assemble_p1_fem_matrices(mesh)
+
+function blend_fem_mass_matrix(
+    consistent_mass::SparseMatrixCSC{T,Ti},
+    consistent_weight::T,
+) where {T<:AbstractFloat,Ti<:Integer}
+    isfinite(consistent_weight) && zero(T) <= consistent_weight <= one(T) || error(
+        "FEM consistent-mass weight must be finite and between zero and one.",
+    )
+    consistent_weight == one(T) && return consistent_mass
+    lumped_mass = spdiagm(0 => vec(sum(consistent_mass; dims=2)))
+    return consistent_weight .* consistent_mass +
+           (one(T) - consistent_weight) .* lumped_mass
+end
+
 function assemble_fem_dynamic_stiffness(
     stiffness::SparseMatrixCSC{T,Ti},
     mass::SparseMatrixCSC{T,Ti},
@@ -303,6 +493,54 @@ function miki_rigid_backed_surface_admittance(
     return admittance
 end
 
+function _p2_triangle_basis(lambda::AbstractVector{T}) where {T<:AbstractFloat}
+    return T[
+        lambda[1] * (T(2) * lambda[1] - one(T)),
+        lambda[2] * (T(2) * lambda[2] - one(T)),
+        lambda[3] * (T(2) * lambda[3] - one(T)),
+        T(4) * lambda[1] * lambda[2],
+        T(4) * lambda[2] * lambda[3],
+        T(4) * lambda[3] * lambda[1],
+    ]
+end
+
+function _p2_triangle_quadrature(::Type{T}) where {T<:AbstractFloat}
+    first = (
+        T(0.816847572980459),
+        T(0.091576213509771),
+        T(0.109951743655322) / T(2),
+    )
+    second = (
+        T(0.108103018168070),
+        T(0.445948490915965),
+        T(0.223381589678011) / T(2),
+    )
+    quadrature = Tuple{Vector{T},T}[]
+    for (single, repeated, weight) in (first, second), single_index in 1:3
+        lambda = fill(repeated, 3)
+        lambda[single_index] = single
+        push!(quadrature, (lambda, weight))
+    end
+    return quadrature
+end
+
+function _p2_triangle_reference_mass(::Type{T}) where {T<:AbstractFloat}
+    mass = zeros(T, 6, 6)
+    for (lambda, weight) in _p2_triangle_quadrature(T)
+        values = _p2_triangle_basis(lambda)
+        mass .+= weight .* (values * transpose(values))
+    end
+    return mass
+end
+
+function _p2_triangle_reference_load(::Type{T}) where {T<:AbstractFloat}
+    load = zeros(T, 6)
+    for (lambda, weight) in _p2_triangle_quadrature(T)
+        load .+= weight .* _p2_triangle_basis(lambda)
+    end
+    return load
+end
+
 function assemble_boundary_mass_matrix(
     mesh::VolumeMesh{T},
     face_indices,
@@ -318,11 +556,17 @@ function assemble_boundary_mass_matrix(
         1 1 2
     ]
 
+    quadratic_reference_mass = is_quadratic(mesh) ? _p2_triangle_reference_mass(T) : nothing
     for face_index in face_indices
-        face = mesh.boundary_faces[face_index]
+        face = is_quadratic(mesh) ?
+               mesh.quadratic_boundary_faces[face_index] :
+               mesh.boundary_faces[face_index]
         area = _triangle_area(mesh.vertices, face)
-        local_mass = (area / T(12)) .* reference_mass
-        for local_row in 1:3, local_col in 1:3
+        local_mass = is_quadratic(mesh) ?
+                     (T(2) * area) .* quadratic_reference_mass :
+                     (area / T(12)) .* reference_mass
+        local_count = length(face)
+        for local_row in 1:local_count, local_col in 1:local_count
             boundary_col = get(boundary_dof, face[local_col], 0)
             boundary_col == 0 && error("Boundary face references a vertex outside the requested boundary space.")
             push!(rows, face[local_row])
@@ -342,12 +586,23 @@ function assemble_prescribed_velocity_load(
 ) where {T<:AbstractFloat}
     load = zeros(Complex{T}, length(mesh.vertices))
     normal_derivative = Complex{T}(0, density * omega) * velocity
+    quadratic_reference_load = is_quadratic(mesh) ? _p2_triangle_reference_load(T) : nothing
     for face_index in eachindex(mesh.boundary_faces)
         mesh.boundary_physical_tags[face_index] == boundary_tag || continue
-        face = mesh.boundary_faces[face_index]
-        nodal_load = normal_derivative * _triangle_area(mesh.vertices, face) / T(3)
-        for vertex in face
-            load[vertex] += nodal_load
+        face = is_quadratic(mesh) ?
+               mesh.quadratic_boundary_faces[face_index] :
+               mesh.boundary_faces[face_index]
+        area = _triangle_area(mesh.vertices, face)
+        if is_quadratic(mesh)
+            nodal_load = normal_derivative .* (T(2) * area) .* quadratic_reference_load
+            for (local_index, vertex) in enumerate(face)
+                load[vertex] += nodal_load[local_index]
+            end
+        else
+            nodal_load = normal_derivative * area / T(3)
+            for vertex in face
+                load[vertex] += nodal_load
+            end
         end
     end
     return load
@@ -360,7 +615,7 @@ function sealed_cavity_modes(
     zero_tolerance::T=T(1e-8),
 ) where {T<:AbstractFloat}
     count > 0 || error("Mode count must be positive.")
-    stiffness, mass = assemble_p1_fem_matrices(mesh)
+    stiffness, mass = assemble_fem_matrices(mesh)
     decomposition = eigen(Symmetric(Matrix(stiffness)), Symmetric(Matrix(mass)))
     eigenvalues = sort(real.(decomposition.values))
     scale = maximum(abs, eigenvalues; init=one(T))
@@ -378,7 +633,7 @@ function solve_prescribed_velocity_interior(
     velocity::Complex{T}=Complex{T}(1, 0),
     bulk_loss_factor::T=zero(T),
 ) where {T<:AbstractFloat}
-    stiffness, mass = assemble_p1_fem_matrices(mesh)
+    stiffness, mass = assemble_fem_matrices(mesh)
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
     system = assemble_fem_dynamic_stiffness(
@@ -670,6 +925,9 @@ function prepare_coupled_cache(
     bulk_loss_factor_by_vertex=zeros(T, length(fem_mesh.vertices)),
     wall_impedances=NamedTuple[],
 ) where {T<:AbstractFloat}
+    is_quadratic(fem_mesh) && error(
+        "Quadratic tetrahedra are currently supported only by the pure interior FEM solve.",
+    )
     bem_backend in (:cpu, :cuda, :rocm) ||
         error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu, :cuda, or :rocm.")
     normalized_symmetry = BeatEngineCore.normalized_symmetry_mode(symmetry_mode)
@@ -2446,11 +2704,13 @@ function _parse_gmsh41_elements(lines, node_index_map, entity_physical_tags)
     block_count = parse(Int, tokens[cursor])
     _element_count = parse(Int, tokens[cursor + 1])
     cursor += 4
-    node_counts = Dict(1 => 2, 2 => 3, 4 => 4, 15 => 1)
+    node_counts = Dict(1 => 2, 2 => 3, 4 => 4, 9 => 6, 11 => 10, 15 => 1)
     tetrahedra = NTuple{4,Int}[]
     tetra_tags = Int[]
     boundary_faces = NTuple{3,Int}[]
     boundary_tags = Int[]
+    quadratic_tetrahedra = NTuple{10,Int}[]
+    quadratic_boundary_faces = NTuple{6,Int}[]
     for _ in 1:block_count
         entity_dimension = parse(Int, tokens[cursor])
         entity_tag = parse(Int, tokens[cursor + 1])
@@ -2470,10 +2730,30 @@ function _parse_gmsh41_elements(lines, node_index_map, entity_physical_tags)
             elseif element_type == 4
                 push!(tetrahedra, nodes)
                 push!(tetra_tags, physical)
+            elseif element_type == 9
+                push!(boundary_faces, ntuple(index -> nodes[index], 3))
+                push!(quadratic_boundary_faces, nodes)
+                push!(boundary_tags, physical)
+            elseif element_type == 11
+                push!(tetrahedra, ntuple(index -> nodes[index], 4))
+                push!(quadratic_tetrahedra, nodes)
+                push!(tetra_tags, physical)
             end
         end
     end
-    return tetrahedra, tetra_tags, boundary_faces, boundary_tags
+    isempty(quadratic_tetrahedra) == isempty(quadratic_boundary_faces) || error(
+        "FEM mesh must use the same interpolation order for tetrahedra and boundary triangles.",
+    )
+    if !isempty(quadratic_tetrahedra)
+        length(quadratic_tetrahedra) == length(tetrahedra) || error(
+            "FEM mesh mixes first- and second-order tetrahedra.",
+        )
+        length(quadratic_boundary_faces) == length(boundary_faces) || error(
+            "FEM mesh mixes first- and second-order boundary triangles.",
+        )
+    end
+    return tetrahedra, tetra_tags, boundary_faces, boundary_tags,
+        quadratic_tetrahedra, quadratic_boundary_faces
 end
 
 function _triangle_area(vertices, face)

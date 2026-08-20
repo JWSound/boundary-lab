@@ -6,6 +6,55 @@ const COUPLED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..",
 const COUPLED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 
+@testset "FEM consistent/lumped mass blending" begin
+    consistent = sparse(Float64[2 1; 1 2] ./ 6)
+    lumped = blend_fem_mass_matrix(consistent, 0.0)
+    blended = blend_fem_mass_matrix(consistent, 0.5)
+
+    @test blend_fem_mass_matrix(consistent, 1.0) === consistent
+    @test Matrix(lumped) ≈ [0.5 0.0; 0.0 0.5]
+    @test Matrix(blended) ≈ 0.5 .* (Matrix(consistent) + Matrix(lumped))
+    @test vec(sum(blended; dims=2)) ≈ vec(sum(consistent; dims=2))
+    @test_throws ErrorException blend_fem_mass_matrix(consistent, 1.1)
+end
+
+@testset "affine quadratic tetrahedron FEM assembly" begin
+    vertices = SVector{3,Float64}[
+        SVector(0.0, 0.0, 0.0),
+        SVector(1.0, 0.0, 0.0),
+        SVector(0.0, 1.0, 0.0),
+        SVector(0.0, 0.0, 1.0),
+        SVector(0.5, 0.0, 0.0),
+        SVector(0.5, 0.5, 0.0),
+        SVector(0.0, 0.5, 0.0),
+        SVector(0.0, 0.0, 0.5),
+        SVector(0.0, 0.5, 0.5),
+        SVector(0.5, 0.0, 0.5),
+    ]
+    mesh = VolumeMesh{Float64}(
+        vertices,
+        [(1, 2, 3, 4)],
+        [1],
+        [(1, 2, 3)],
+        [2],
+        Dict{Tuple{Int,Int},String}(),
+        [(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)],
+        [(1, 2, 3, 5, 6, 7)],
+    )
+
+    stiffness, mass = assemble_p2_fem_matrices(mesh)
+    boundary_mass = assemble_boundary_mass_matrix(mesh, [1], collect(1:10))
+    load = assemble_prescribed_velocity_load(mesh, 2, 1.2, 100.0, 1.0 + 0.0im)
+
+    @test size(stiffness) == (10, 10)
+    @test Matrix(stiffness) ≈ transpose(Matrix(stiffness)) atol=1e-12
+    @test Matrix(mass) ≈ transpose(Matrix(mass)) atol=1e-12
+    @test sum(mass) ≈ 1 / 6 atol=1e-12
+    @test norm(stiffness * ones(10)) < 1e-12
+    @test sum(boundary_mass) ≈ 0.5 atol=1e-12
+    @test sum(load) ≈ 1im * 1.2 * 100.0 * 0.5 atol=1e-12
+end
+
 @testset "blocked exact FEM Schur complement" begin
     interior_system = sparse(ComplexF64[
         4.0 + 0.1im 1.0 0.0

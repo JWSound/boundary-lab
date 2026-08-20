@@ -132,6 +132,64 @@ The current headless interface evaluates arbitrary exterior probe points declare
 before the solve. Retained BEM traces and FEM nodal fields provide the data needed
 for a future post-solve point-sampling command without repeating the system solve.
 
+Completed interior FEM runs can also be evaluated directly on named tube exits:
+
+```bash
+blab project evaluate-fem runs/manifold-check
+```
+
+By default the command selects compiled plane-wave termination groups matching
+`exit_*` and writes `fem-validation.json` into the run. It reconstructs the
+tagged Gmsh triangles and their adjacent tetrahedra, then reports integrated P1
+or P2 surface-mean pressure, plane-mode fraction, within-exit phase RMS,
+inter-exit phase spread, normal particle velocity, impedance, and local
+forward/backward wave estimates. For P2 results, pressure is integrated with
+quadratic face quadrature and velocity uses the quadratic tetrahedron gradient
+at each face centroid. The default gates are configurable with
+`--max-within-phase-rms-deg`, `--max-inter-phase-rms-deg`,
+`--max-inter-phase-deg`, and `--min-plane-mode-fraction`; repeat
+`--surface-pattern` to select a different set of termination groups.
+Use `--split-surface-entities` when one physical exit group contains separate
+Gmsh faces, such as a 2x2 septated bundle. The report then evaluates each child
+face independently while preserving its parent exit name as a prefix. Four-face
+groups are named by geometric row and then column, avoiding mesh-dependent
+left/right swaps from microscopic centroid noise.
+
+Interior quadratic FEM accepts matching Gmsh `tetra10` volume cells and
+`triangle6` boundary faces. The result artifact preserves both the corner
+topology and full ten-node connectivity, and records `element_order` in the FEM
+domain metadata. Mixed P1/P2 bounded regions and mismatched volume/boundary
+orders are rejected. The current coupled FEM-BEM path remains P1-only; P2 is
+supported for pure interior FEM solves.
+
+The evaluator verifies the source mesh SHA-256 before reconstructing named
+surfaces. Keep the exact `.msh` used for the solve available at its recorded
+path; replacing it makes the run intentionally unevaluable. The report also
+records tetrahedron-edge statistics and applies a default minimum of eight
+points per wavelength at the 95th-percentile edge and four at the maximum edge.
+Override those screening gates with `--min-points-per-wavelength-p95` and
+`--min-points-per-wavelength-maximum-edge` only when documenting a deliberate
+mesh-convergence policy.
+
+Compare two reports with common frequencies, excitations, and surface names
+before accepting a mesh. Frequencies present in only one report are listed but
+do not prevent comparison of the shared subset:
+
+```bash
+blab project compare-fem runs/coarse/fem-validation-children.json runs/fine/fem-validation-children.json
+```
+
+The comparison removes common complex gain and phase, then gates the
+area-weighted surface-phase delta, normalized amplitude delta, and plane-mode
+fraction delta. This catches accumulated P1 dispersion that a local
+points-per-wavelength count can miss in long routed passages.
+
+Interior P1 FEM accepts an experimental `fem_consistent_mass_weight` solver
+option between zero (fully row-sum lumped) and one (standard consistent mass,
+the default). Any non-default value must be justified by a convergence report;
+mass blending changes numerical dispersion and is not itself evidence of
+accuracy.
+
 ### Speaker package solve and export
 
 Create a complex-pattern level 1 package directly from a project:

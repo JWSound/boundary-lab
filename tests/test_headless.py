@@ -140,6 +140,8 @@ def test_result_writer_persists_partial_complex_frequency_result(tmp_path: Path)
     metadata = json.loads((tmp_path / "run" / "frequencies" / "000000.json").read_text(encoding="utf-8"))
     arrays = np.load(tmp_path / "run" / "frequencies" / "000000.npz")
     assert manifest["status"] == "complete"
+    assert manifest["schema_version"] == 2
+    assert manifest["meshes"] == []
     assert manifest["completion_mask"] == [True]
     assert metadata["quantities"][0]["id"] == "acoustic:pressure:probe:test"
     assert arrays["q0000"].dtype == np.complex64
@@ -154,6 +156,8 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     export = parser.parse_args(
         ["export-speaker", "speaker.blab.json", "--output", "speaker.blabsp", "--fidelity", "fixed"]
     )
+    evaluate_fem = parser.parse_args(["evaluate-fem", "runs/case"])
+    compare_fem = parser.parse_args(["compare-fem", "coarse.json", "fine.json"])
 
     assert validate.project_command == "validate"
     assert validate.json is True
@@ -163,6 +167,13 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     assert export.project_command == "export-speaker"
     assert export.output == Path("speaker.blabsp")
     assert export.fidelity == "fixed"
+    assert evaluate_fem.project_command == "evaluate-fem"
+    assert evaluate_fem.run_dir == Path("runs/case")
+    assert evaluate_fem.min_points_per_wavelength_p95 == 8.0
+    assert evaluate_fem.min_points_per_wavelength_maximum_edge == 4.0
+    assert evaluate_fem.split_surface_entities is False
+    assert compare_fem.project_command == "compare-fem"
+    assert compare_fem.coarse_report == Path("coarse.json")
 
 
 def test_auto_backend_prefers_functional_cuda(monkeypatch) -> None:
