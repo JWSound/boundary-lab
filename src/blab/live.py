@@ -10,6 +10,7 @@ import numpy as np
 
 from blab.channel_synthesis import (
     channel_drive,
+    channel_voltage_gain,
     complex_reference_pressure,
     flat_target_corrections,
     pressure_to_spl,
@@ -34,6 +35,7 @@ class LiveSolveDataset:
     sphere_r_distance_m: np.ndarray | None = None
     sphere_theta_polar_rad: np.ndarray | None = None
     sphere_phi_azimuth_rad: np.ndarray | None = None
+    voltage_channel_names: frozenset[str] = frozenset()
     results: dict[float, FrequencyResult] = field(default_factory=dict)
 
     def add(self, result: FrequencyResult) -> None:
@@ -223,6 +225,7 @@ class LiveSolveDataset:
                 channel_configs=self.channel_configs,
                 flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
                 flat_target_enabled=self.flat_target_normalization_enabled,
+                voltage_channel_names=self.voltage_channel_names,
             )
             return (
                 synthesized["horizontal_spl_norm_db"],
@@ -268,6 +271,13 @@ class LiveSolveDataset:
                     channel_configs_by_name.get(str(channel_name), ChannelConfig(name=str(channel_name))),
                     float(result.freq_hz),
                 )
+                * (
+                    channel_voltage_gain(
+                        channel_configs_by_name.get(str(channel_name), ChannelConfig(name=str(channel_name)))
+                    )
+                    if str(channel_name) in self.voltage_channel_names
+                    else 1.0
+                )
                 * float(corrections[index])
                 for index, channel_name in enumerate(np.asarray(result.channel_names).tolist())
             ],
@@ -291,6 +301,7 @@ class LiveSolveDataset:
                 channel_configs=self.channel_configs,
                 flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
                 flat_target_enabled=self.flat_target_normalization_enabled,
+                voltage_channel_names=self.voltage_channel_names,
             )
             return synthesized["sphere_spl_norm_db"]
         return result.sphere_spl_norm_db

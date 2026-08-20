@@ -536,7 +536,8 @@ def test_system_and_channel_config_use_bottom_buttons() -> None:
     assert "self.system_config_button.clicked.connect(self.open_system_config)" in source
     assert "self.channel_config_button.clicked.connect(self.open_channel_config)" in source
     assert '("channel_config", "Channel Config Panel")' not in source
-    assert "ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)" in open_channel_config
+    assert "ChannelConfigDialog(" in open_channel_config
+    assert "prescribed_velocity_channel_names=self.prescribed_velocity_channel_names()" in open_channel_config
     assert "dialog.show()" in open_channel_config
     assert "dialog.activateWindow()" in open_channel_config
     assert "_make_panel_dock" not in open_channel_config

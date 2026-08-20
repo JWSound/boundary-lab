@@ -236,7 +236,10 @@ They are useful for multiway interference and crossover studies.
 <img src="../assets/channelconfig.png" alt="Channels window" width="600">
 
 - **Name** identifies the channel used by components.
-- **Level dB**, **Polarity**, and **Delay ms** apply complex channel weights.
+- **Voltage** sets the nominal voltage shared by electrodynamic transducers on
+  the channel. It is unavailable when the channel contains a
+  prescribed-velocity source.
+- **Trim dB**, **Polarity**, and **Delay ms** apply complex channel weights.
 - **HPF/LPF Type** and **Frequency** define idealized analog crossover transfer
   functions.
 
@@ -306,8 +309,9 @@ surround to share a component while using different motion amplitudes.
 Ath-generated driver groups are initially seeded as prescribed-velocity
 components.
 
-Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters
-with a 2.83 V reference excitation. Their rigid-translation motion axis can be
+Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters.
+The solver retains a 2.83 V reference basis, while the channel Voltage control
+scales that basis after the solve. Their rigid-translation motion axis can be
 inferred from the selected surface normals or entered manually. In a symmetry
 model, Boundary Lab also infers whether moving surfaces are cut by the active
 planes and reports how many distinct components exist in the fully mirrored

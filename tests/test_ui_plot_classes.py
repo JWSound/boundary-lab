@@ -149,6 +149,8 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
     assert "buttons.rejected.connect(self.closeRequested.emit if self._embedded else self.reject)" in channel_dialog
     assert "button_row.addWidget(buttons)" in channel_dialog
     assert "layout.addWidget(buttons)" not in channel_dialog
+    assert '"Voltage"' in channel_dialog
+    assert '"Trim dB"' in channel_dialog
     assert "_preview_channel_config" not in main_source
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 

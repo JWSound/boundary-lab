@@ -17,6 +17,7 @@ from blab.acoustic_materials import (
     region_bulk_loss_factor,
     wall_impedance_parameters,
 )
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V
 from blab.physical_model import (
     AcousticRegionKind,
     BoundaryKind,
@@ -46,7 +47,7 @@ COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.MOVING,
     BoundaryKind.INTERFACE,
 }
-DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = DEFAULT_CHANNEL_VOLTAGE_V
 ELECTRODYNAMIC_REQUIRED_PARAMETERS = {
     "re_ohm",
     "le_h",

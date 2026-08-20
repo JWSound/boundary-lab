@@ -567,6 +567,38 @@ def test_live_dataset_resynthesizes_channel_basis_after_gain_change() -> None:
     assert dataset.solved_count == 1
 
 
+def test_live_dataset_applies_voltage_only_to_declared_voltage_channels() -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+        voltage_channel_names=frozenset({"main"}),
+    )
+    pressure = np.ones((1, angles.size), dtype=np.complex64)
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(angles.size),
+            vertical_spl_norm_db=np.zeros(angles.size),
+            impedance=np.zeros((1, 2)),
+            channel_names=np.asarray(["main"]),
+            horizontal_pressure=pressure,
+            vertical_pressure=pressure.copy(),
+        )
+    )
+
+    _freqs, _angles, before, _vertical = dataset.as_raw_polar_arrays()
+    dataset.set_channel_synthesis((ChannelConfig(name="main", voltage_v=5.66),))
+    _freqs, _angles, after, _vertical = dataset.as_raw_polar_arrays()
+
+    np.testing.assert_allclose(after - before, 20.0 * np.log10(2.0), atol=1e-5)
+
+    dataset.voltage_channel_names = frozenset()
+    _freqs, _angles, prescribed_velocity, _vertical = dataset.as_raw_polar_arrays()
+    np.testing.assert_allclose(prescribed_velocity, before, atol=1e-5)
+
+
 def test_live_dataset_preserves_complex_pressure_directivity_for_isobar_and_balloon() -> None:
     angles = np.array([-180.0, -90.0, 0.0, 90.0, 180.0], dtype=np.float32)
     sphere_points = 5

@@ -376,6 +376,7 @@ def test_frequency_sweep_and_phase_animation_are_mutually_exclusive(qapp) -> Non
 
 def test_interior_field_results_synthesize_system_and_channel_responses() -> None:
     from blab.config import ChannelConfig
+    from blab.physical_model import ExcitationPortKind
     from blab.solve_results import (
         FEM_NODAL_PRESSURE_ID,
         FEM_VOLUME_DOMAIN_ID,
@@ -411,8 +412,12 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     )
     compiled = SimpleNamespace(
         excitation_ports=(
-            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
-            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+            SimpleNamespace(
+                id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE
+            ),
+            SimpleNamespace(
+                id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE
+            ),
         )
     )
     solved = SolvedSystem(
@@ -446,6 +451,13 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     np.testing.assert_allclose(results.pressure(1000.0, "channel:low"), 1.0)
     np.testing.assert_allclose(results.pressure(1000.0, "channel:high"), 1.0, rtol=1e-5)
     np.testing.assert_allclose(results.pressure(100.0, "system"), 20.0, rtol=1e-5)
+
+    voltage_results = interior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low", voltage_v=5.66), ChannelConfig(name="high", level_db=-6.0206)),
+    )
+    np.testing.assert_allclose(voltage_results.pressure(1000.0, "channel:low"), 2.0)
 
 
 def test_interior_particle_velocity_uses_exact_p1_pressure_gradient() -> None:
@@ -581,7 +593,7 @@ def test_channel_synthesis_update_reuses_field_geometry_and_refreshes_active_sca
 
 def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     from blab.config import ChannelConfig
-    from blab.physical_model import AcousticRegionKind
+    from blab.physical_model import AcousticRegionKind, ExcitationPortKind
     from blab.solve_results import (
         BEM_BOUNDARY_DOMAIN_ID,
         BEM_BOUNDARY_NEUMANN_ID,
@@ -613,8 +625,12 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     compiled = SimpleNamespace(
         regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
         excitation_ports=(
-            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
-            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+            SimpleNamespace(
+                id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE
+            ),
+            SimpleNamespace(
+                id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE
+            ),
         ),
     )
     solved = SolvedSystem(
@@ -666,6 +682,15 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     _frequency, channel_pressure, channel_normal = results.boundary_response(1000.0, "channel:high")
     np.testing.assert_allclose(channel_pressure, 2.0)
     np.testing.assert_allclose(channel_normal, 4.0)
+
+    voltage_results = exterior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low"), ChannelConfig(name="high", voltage_v=5.66)),
+    )
+    _frequency, channel_pressure, channel_normal = voltage_results.boundary_response(1000.0, "channel:high")
+    np.testing.assert_allclose(channel_pressure, 4.0)
+    np.testing.assert_allclose(channel_normal, 8.0)
 
 
 def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import signal
 
-from blab.config import ChannelConfig, CrossoverConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, CrossoverConfig
 
 REFERENCE_PRESSURE_PA = 20e-6
 
@@ -46,6 +46,15 @@ def channel_drive(channel: ChannelConfig, freq_hz: float) -> complex:
     return complex(level * channel.polarity * delay * crossover)
 
 
+def channel_voltage_gain(channel: ChannelConfig) -> float:
+    """Return a channel voltage relative to the fixed transducer solve basis."""
+
+    voltage = float(channel.voltage_v)
+    if not np.isfinite(voltage) or voltage < 0.0:
+        raise ValueError("Channel voltage must be finite and non-negative.")
+    return voltage / DEFAULT_CHANNEL_VOLTAGE_V
+
+
 def flat_target_corrections(
     horizontal_pressure: np.ndarray,
     angles_deg: np.ndarray,
@@ -84,6 +93,7 @@ def synthesize_channel_basis_spl(
     flat_target_reference_angle_deg: float,
     flat_target_enabled: bool = True,
     sphere_pressure: np.ndarray | None = None,
+    voltage_channel_names: frozenset[str] = frozenset(),
 ) -> dict[str, np.ndarray | None]:
     names = [str(name) for name in np.asarray(channel_names).tolist()]
     channels_by_name = {channel.name: channel for channel in channel_configs}
@@ -98,7 +108,13 @@ def synthesize_channel_basis_spl(
     )
     weights = np.asarray(
         [
-            channel_drive(channels_by_name.get(name, ChannelConfig(name=name)), freq_hz) * corrections[index]
+            channel_drive(channels_by_name.get(name, ChannelConfig(name=name)), freq_hz)
+            * (
+                channel_voltage_gain(channels_by_name.get(name, ChannelConfig(name=name)))
+                if name in voltage_channel_names
+                else 1.0
+            )
+            * corrections[index]
             for index, name in enumerate(names)
         ],
         dtype=np.complex64,

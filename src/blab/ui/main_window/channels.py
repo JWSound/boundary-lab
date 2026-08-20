@@ -6,6 +6,7 @@ from PySide6.QtCore import Slot
 
 from blab.config import ChannelConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
+from blab.physical_model import ExcitationPortKind
 from blab.ui.dialogs import (
     ChannelConfigDialog,
 )
@@ -48,6 +49,17 @@ class ChannelsMixin:
     def _channel_configs_for_current_radiators(self) -> tuple[ChannelConfig, ...]:
         return self.solver_channel_configs(self.all_radiators())
 
+    def prescribed_velocity_channel_names(self) -> frozenset[str]:
+        system = self.project.physical_system
+        if system is None:
+            return frozenset(radiator.channel for radiator in self.all_radiators())
+        channel_by_component = self.project.component_channel_by_id
+        return frozenset(
+            str(channel_by_component.get(port.component_id, "main"))
+            for port in system.excitation_ports
+            if port.kind == ExcitationPortKind.NORMAL_VELOCITY
+        )
+
     def discard_channel_config_dialog(self) -> None:
         dialog = self.channel_config_dialog
         self.channel_config_dialog = None
@@ -78,7 +90,11 @@ class ChannelsMixin:
             self.channel_config_dialog.activateWindow()
             return
 
-        dialog = ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)
+        dialog = ChannelConfigDialog(
+            self._channel_configs_for_current_radiators(),
+            self,
+            prescribed_velocity_channel_names=self.prescribed_velocity_channel_names(),
+        )
         self.channel_config_dialog = dialog
         dialog.channelsApplied.connect(self._apply_channel_config)
         dialog.destroyed.connect(lambda *_args: setattr(self, "channel_config_dialog", None))

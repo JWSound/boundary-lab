@@ -25,6 +25,7 @@ from blab.live import (
 from blab.physical_model import (
     AcousticRegionKind,
     ComponentKind,
+    ExcitationPortKind,
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
@@ -359,6 +360,26 @@ class SolveWorkflowController(QObject):
 
     def _start_prepared_system_solve(self, prepared, status: str) -> None:
         self._begin_run(status)
+        channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
+        voltage_channels = {
+            channel_name
+            for channel_name, port in zip(
+                channel_names,
+                prepared.request.compiled_system.excitation_ports,
+                strict=True,
+            )
+            if port.kind == ExcitationPortKind.VOLTAGE
+        }
+        prescribed_velocity_channels = {
+            channel_name
+            for channel_name, port in zip(
+                channel_names,
+                prepared.request.compiled_system.excitation_ports,
+                strict=True,
+            )
+            if port.kind == ExcitationPortKind.NORMAL_VELOCITY
+        }
+        self._session.voltage_channel_names = frozenset(voltage_channels - prescribed_velocity_channels)
         transducer_names = np.asarray(
             [
                 component.name
@@ -437,6 +458,7 @@ class SolveWorkflowController(QObject):
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
             sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),
+            voltage_channel_names=self._session.voltage_channel_names,
         )
         self._view.show_status("Solving...")
 

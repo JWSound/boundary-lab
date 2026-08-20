@@ -859,24 +859,43 @@ class ChannelConfigDialog(QDialog):
     channelsApplied = Signal(object)
     closeRequested = Signal()
 
-    def __init__(self, channels: tuple[ChannelConfig, ...], parent: QWidget | None = None, *, embedded: bool = False):
+    def __init__(
+        self,
+        channels: tuple[ChannelConfig, ...],
+        parent: QWidget | None = None,
+        *,
+        embedded: bool = False,
+        prescribed_velocity_channel_names: frozenset[str] = frozenset(),
+    ):
         super().__init__(parent)
         self.setWindowTitle("Channel Config")
         self.setAttribute(Qt.WA_DeleteOnClose, not embedded)
         self._embedded = bool(embedded)
         self._channels = list(channels) or [ChannelConfig(name="main")]
+        self._prescribed_velocity_channel_names = frozenset(prescribed_velocity_channel_names)
 
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Level dB", "Polarity", "Delay ms", "HPF Type", "HPF Frequency", "LPF Type", "LPF Frequency"]
+            [
+                "Name",
+                "Voltage",
+                "Trim dB",
+                "Polarity",
+                "Delay ms",
+                "HPF Type",
+                "HPF Frequency",
+                "LPF Type",
+                "LPF Frequency",
+            ]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 8):
+        for column in range(1, 9):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
 
         self.name_items: list[QTableWidgetItem] = []
+        self.voltage_widgets: list[QDoubleSpinBox] = []
         self.level_widgets: list[QDoubleSpinBox] = []
         self.polarity_widgets: list[QComboBox] = []
         self.delay_widgets: list[QDoubleSpinBox] = []
@@ -927,19 +946,32 @@ class ChannelConfigDialog(QDialog):
         self.table.setItem(row, 0, name_item)
         self.name_items.append(name_item)
 
+        voltage_spin = QDoubleSpinBox()
+        voltage_spin.setRange(0.0, 1000.0)
+        voltage_spin.setDecimals(2)
+        voltage_spin.setSingleStep(0.1)
+        voltage_spin.setSuffix(" V")
+        voltage_spin.setValue(float(channel.voltage_v))
+        voltage_editable = channel.name not in self._prescribed_velocity_channel_names
+        voltage_spin.setEnabled(voltage_editable)
+        if not voltage_editable:
+            voltage_spin.setToolTip("Voltage is unavailable because this channel contains a prescribed-velocity source.")
+        self.table.setCellWidget(row, 1, voltage_spin)
+        self.voltage_widgets.append(voltage_spin)
+
         level_spin = QDoubleSpinBox()
         level_spin.setRange(-120.0, 60.0)
         level_spin.setDecimals(2)
         level_spin.setSingleStep(0.5)
         level_spin.setValue(float(channel.level_db))
-        self.table.setCellWidget(row, 1, level_spin)
+        self.table.setCellWidget(row, 2, level_spin)
         self.level_widgets.append(level_spin)
 
         polarity_combo = QComboBox()
         polarity_combo.addItem("+", 1)
         polarity_combo.addItem("-", -1)
         polarity_combo.setCurrentIndex(0 if channel.polarity >= 0 else 1)
-        self.table.setCellWidget(row, 2, polarity_combo)
+        self.table.setCellWidget(row, 3, polarity_combo)
         self.polarity_widgets.append(polarity_combo)
 
         delay_spin = QDoubleSpinBox()
@@ -947,23 +979,23 @@ class ChannelConfigDialog(QDialog):
         delay_spin.setDecimals(3)
         delay_spin.setSingleStep(0.01)
         delay_spin.setValue(float(channel.delay_ms))
-        self.table.setCellWidget(row, 3, delay_spin)
+        self.table.setCellWidget(row, 4, delay_spin)
         self.delay_widgets.append(delay_spin)
 
         hpf_type_combo = _build_crossover_type_combo(_crossover_label(channel.hpf))
-        self.table.setCellWidget(row, 4, hpf_type_combo)
+        self.table.setCellWidget(row, 5, hpf_type_combo)
         self.hpf_type_widgets.append(hpf_type_combo)
 
         hpf_freq_spin = _build_crossover_frequency_spin(channel.hpf.frequency_hz)
-        self.table.setCellWidget(row, 5, hpf_freq_spin)
+        self.table.setCellWidget(row, 6, hpf_freq_spin)
         self.hpf_freq_widgets.append(hpf_freq_spin)
 
         lpf_type_combo = _build_crossover_type_combo(_crossover_label(channel.lpf))
-        self.table.setCellWidget(row, 6, lpf_type_combo)
+        self.table.setCellWidget(row, 7, lpf_type_combo)
         self.lpf_type_widgets.append(lpf_type_combo)
 
         lpf_freq_spin = _build_crossover_frequency_spin(channel.lpf.frequency_hz)
-        self.table.setCellWidget(row, 7, lpf_freq_spin)
+        self.table.setCellWidget(row, 8, lpf_freq_spin)
         self.lpf_freq_widgets.append(lpf_freq_spin)
 
         hpf_type_combo.currentTextChanged.connect(lambda _text, row=row: self._set_frequency_controls_enabled(row))
@@ -984,6 +1016,7 @@ class ChannelConfigDialog(QDialog):
                 return
             self.table.removeRow(row)
             del self.name_items[row]
+            del self.voltage_widgets[row]
             del self.level_widgets[row]
             del self.polarity_widgets[row]
             del self.delay_widgets[row]
@@ -1025,6 +1058,7 @@ class ChannelConfigDialog(QDialog):
             channels.append(
                 ChannelConfig(
                     name=name,
+                    voltage_v=float(self.voltage_widgets[row].value()),
                     level_db=float(self.level_widgets[row].value()),
                     polarity=int(self.polarity_widgets[row].currentData()),
                     delay_ms=float(self.delay_widgets[row].value()),

@@ -8,6 +8,8 @@ window being reorganised into modules.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa:
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
 from blab.config import ChannelConfig  # noqa: E402
+from blab.physical_model import ExcitationPortKind  # noqa: E402
 from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
@@ -185,6 +188,21 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
         if button.menu() is main_window.excursion_plot.trace_filter_menu
     )
     assert excursion_trace_button.text() == "Traces"
+
+
+def test_prescribed_velocity_channel_detection_uses_physical_excitation_ports(main_window) -> None:
+    main_window.project.physical_system = SimpleNamespace(
+        excitation_ports=(
+            SimpleNamespace(component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:port", kind=ExcitationPortKind.NORMAL_VELOCITY),
+        )
+    )
+    main_window.project.component_channel_by_id = {
+        "component:woofer": "low",
+        "component:port": "mixed",
+    }
+
+    assert main_window.prescribed_velocity_channel_names() == frozenset({"mixed"})
 
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:

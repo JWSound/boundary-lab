@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 
 from blab.ath import read_surface_physical_names
-from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, CrossoverConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
 
 SOURCE_CONFIG_SETTINGS_KEY = "source/config_by_name"
@@ -72,6 +72,7 @@ def save_channel_config(settings: QSettings, channels: tuple[ChannelConfig, ...]
 def channel_config_payload(channels: tuple[ChannelConfig, ...]) -> dict[str, dict]:
     return {
         channel.name: {
+            "voltage_v": float(channel.voltage_v),
             "level_db": float(channel.level_db),
             "polarity": int(channel.polarity),
             "delay_ms": float(channel.delay_ms),
@@ -100,6 +101,7 @@ def channel_configs_from_payload(raw: object) -> tuple[ChannelConfig, ...]:
         channels.append(
             ChannelConfig(
                 name=str(name),
+                voltage_v=float(payload.get("voltage_v", DEFAULT_CHANNEL_VOLTAGE_V)),
                 level_db=float(payload.get("level_db", 0.0)),
                 polarity=int(payload.get("polarity", 1)),
                 delay_ms=float(payload.get("delay_ms", 0.0)),

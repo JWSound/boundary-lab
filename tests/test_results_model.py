@@ -327,6 +327,11 @@ def test_live_transducer_excursion_uses_normalized_channel_drive_before_magnitud
     # The 2 Pa on-axis channel basis applies a 0.5 normalized correction.
     assert excursion_mm[0, 0] == pytest.approx(1000.0)
 
+    acoustic.voltage_channel_names = frozenset({"main"})
+    acoustic.set_channel_synthesis((ChannelConfig(name="main", voltage_v=5.66),))
+    _freqs, _names, excursion_mm = motion.as_excursion_arrays(acoustic)
+    assert excursion_mm[0, 0] == pytest.approx(2000.0)
+
 
 def test_live_transducer_excursion_sums_complex_excitation_bases_before_magnitude() -> None:
     acoustic = LiveSolveDataset(
