@@ -1230,7 +1230,7 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     np.testing.assert_allclose(velocity_magnitude.values, [5.0, 5.0])
     np.testing.assert_allclose(velocity_at_zero.values, [5.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0], atol=1e-6)
-    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 5.0)
+    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 35.0)
     assert velocity_magnitude.title == "Particle Velocity Magnitude (m/s)"
 
 

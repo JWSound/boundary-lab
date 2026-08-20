@@ -342,7 +342,8 @@ animated instantaneous pressure use a diverging color map centered on zero.
 Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
 derives the complex particle-velocity vector from the P1 FEM pressure gradient
 using the bounded region density, then colors the plane by its magnitude in
-metres per second. Phase animation shows instantaneous particle speed. The
+metres per second on a fixed 0 to 35 m/s color scale. Phase animation shows
+instantaneous particle speed using the same fixed scale. The
 option is unavailable for Exterior and Combined planes because their exterior
 BEM field evaluator currently returns pressure only.
 
