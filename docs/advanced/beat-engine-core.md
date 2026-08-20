@@ -5,8 +5,8 @@ is the Julia solver stack used for local exterior BEM and coupled FEM-BEM-LEM
 solves. The Python side stages mesh assets and request JSON, while
 `src/blab/solvers/julia_local/solver.jl` owns the numerical solve.
 `BeatEngineCore.jl` provides shared BEM mesh, quadrature, formulation,
-symmetry, Burton-Miller, and field-evaluation utilities used by both BEAT Engine
-CPU and BEAT Engine CUDA.
+symmetry, Burton-Miller, and field-evaluation utilities used by BEAT Engine CPU,
+Nvidia CUDA, and AMD ROCm.
 
 This page describes the shared exterior-BEM core and its prescribed normal
 velocity path. The FEM assembly, interface transfer, electrodynamic equations,
@@ -17,6 +17,7 @@ Solver](../Coupled%20Solver.md). Local production solves use single precision
 Backend-specific details live in:
 
 - [BEAT Engine CPU](beat-engine-CPU.md)
+- [BEAT Engine AMD ROCm](beat-engine-rocm.md)
 - [BEAT Engine CUDA](beat-engine-CUDA.md)
 
 ## Solve Pipeline
@@ -115,11 +116,13 @@ Operator assembly splits triangle pairs into regular pairs and adjacent/coincide
 
 The singular path builds a frequency-independent correction cache for the mesh and singular quadrature order. The cache stores adjacent/coincident element pairs, orientation-remapped Duffy rules, surface curls, and pair geometry scalars once, then reuses them across the frequency loop. Per-frequency work still evaluates the Helmholtz kernels because they depend on \(k\).
 
-The image-singular path for symmetry computes compact `singular - regular` correction blocks before adding them to the dense operators. CUDA scatters those blocks through GPU correction buffers with atomics; CPU applies the same correction logic directly on host matrices.
+The image-singular path for symmetry computes compact `singular - regular` correction blocks before adding them to the dense operators. CUDA scatters those blocks through GPU correction buffers with atomics, ROCm uses race-free device gather kernels, and CPU applies the same correction logic directly on host matrices.
 
 ## Symmetry Mode
 
-BEAT Engine supports `off`, `x`, and `xy` symmetry modes in both the BEAT CUDA and BEAT CPU backends. The application disables the symmetry control for backends that do not advertise symmetry support.
+BEAT Engine supports `off`, `x`, and `xy` symmetry modes in the CPU, Nvidia CUDA,
+and AMD ROCm backends. The application disables the symmetry control for backends
+that do not advertise symmetry support.
 
 The application passes a reduced-domain mesh plus symmetry metadata. BEAT Engine does not infer or match mirrored element orbits. Instead, it assumes the global origin is the symmetry origin and validates that the provided mesh lies in the positive fundamental domain:
 
@@ -197,3 +200,4 @@ Symmetry can improve runtime by more than the simple physical-area reduction wou
 - `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
 - `src/blab/solvers/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
 - `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
+- `src/blab/solvers/julia_local/src/BeatEngineRocm.jl`: include hub for the ROCm implementation files.

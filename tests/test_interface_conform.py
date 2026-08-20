@@ -10,6 +10,7 @@ from blab.interface_conform import (
     _best_fit_plane,
     _boundary_loops,
     _matching_discrete_paths,
+    _physical_opening_path,
     _physical_surface_tag,
     _triangle_data,
     conform_bem_interface_to_fem,
@@ -24,6 +25,54 @@ SAWMOD_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "SAWMOD"
 CURVED_FEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceFEM.msh"
 CURVED_BEM_FIXTURE = REPOSITORY_ROOT / "tests" / "fixtures" / "curvedinterfaceBEM.msh"
 NONPLANAR_MULTISURFACE_FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "nonplanar_multisurface_interface"
+
+
+def _split_bem_opening_edges(mesh: meshio.Mesh, interface_name: str, count: int) -> meshio.Mesh:
+    data = _triangle_data(mesh, require_geometrical=True)
+    interface_tag = _physical_surface_tag(mesh, interface_name)
+    interface_triangles = data.triangles[data.physical_tags == interface_tag]
+    diameter = float(np.linalg.norm(np.ptp(mesh.points[np.unique(interface_triangles)], axis=0)))
+    opening = _physical_opening_path(mesh.points, interface_triangles, (0, 1), diameter * 1e-6)
+    edge_positions = np.linspace(2, len(opening) - 4, count, dtype=int)
+
+    points = np.asarray(mesh.points, dtype=float).copy()
+    triangles = np.asarray(data.triangles, dtype=np.int64).copy()
+    physical = np.asarray(data.physical_tags, dtype=np.int32).copy()
+    geometrical = np.asarray(data.geometrical_tags, dtype=np.int32).copy()
+    for edge_position in edge_positions:
+        start = int(opening[edge_position])
+        end = int(opening[edge_position + 1])
+        midpoint = len(points)
+        points = np.vstack((points, 0.5 * (points[start] + points[end])))
+        incident = np.flatnonzero(np.sum(np.isin(triangles, (start, end)), axis=1) == 2)
+        assert len(incident) == 2
+        replacement_triangles = []
+        replacement_physical = []
+        replacement_geometrical = []
+        keep = np.ones(len(triangles), dtype=bool)
+        keep[incident] = False
+        for triangle_index in incident:
+            triangle = triangles[triangle_index]
+            for first, second in ((start, end), (end, start)):
+                positions = np.flatnonzero(triangle == first)
+                if len(positions) and triangle[(int(positions[0]) + 1) % 3] == second:
+                    third = int(triangle[(int(positions[0]) + 2) % 3])
+                    replacement_triangles.extend(((first, midpoint, third), (midpoint, second, third)))
+                    break
+            else:
+                raise AssertionError("Selected seam edge was not oriented in its incident triangle.")
+            replacement_physical.extend((physical[triangle_index], physical[triangle_index]))
+            replacement_geometrical.extend((geometrical[triangle_index], geometrical[triangle_index]))
+        triangles = np.vstack((triangles[keep], np.asarray(replacement_triangles, dtype=np.int64)))
+        physical = np.concatenate((physical[keep], np.asarray(replacement_physical, dtype=np.int32)))
+        geometrical = np.concatenate((geometrical[keep], np.asarray(replacement_geometrical, dtype=np.int32)))
+
+    return meshio.Mesh(
+        points,
+        [("triangle", triangles)],
+        cell_data={"gmsh:physical": [physical], "gmsh:geometrical": [geometrical]},
+        field_data={name: np.asarray(value).copy() for name, value in mesh.field_data.items()},
+    )
 
 
 def test_direct_seam_match_requires_identical_edge_connectivity() -> None:
@@ -224,6 +273,35 @@ def test_nonplanar_curved_interface_with_matching_discrete_seam_is_replaced_dire
         symmetry_mode="xy",
     )
     assert round_trip_identity == identity
+
+
+def test_curved_interface_with_redundant_ordered_bem_seam_edges_is_simplified() -> None:
+    fem_mesh = meshio.read(CURVED_FEM_FIXTURE)
+    bem_mesh = _split_bem_opening_edges(meshio.read(CURVED_BEM_FIXTURE), "INTERFACE", 4)
+
+    conformed_mesh, result = conform_bem_interface_to_fem(
+        fem_mesh,
+        bem_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+    identity = validate_conforming_interfaces(
+        fem_mesh,
+        conformed_mesh,
+        fem_interface_name="INTERFACE",
+        bem_interface_name="INTERFACE",
+        symmetry_mode="xy",
+    )
+
+    assert result.seam_simplification_used
+    assert result.simplified_bem_seam_edges == 4
+    assert result.original_adjacent_triangles == 0
+    assert result.remeshed_adjacent_triangles == 0
+    assert result.max_original_boundary_deviation <= 1e-8
+    assert identity.interface_triangles == 2506
+    assert identity.max_coordinate_error <= 1e-8
+    assert identity.fem_facets_on_tetra_boundary == 2506
 
 
 def test_nonplanar_multisurface_interface_with_near_matching_seam_is_welded_directly() -> None:

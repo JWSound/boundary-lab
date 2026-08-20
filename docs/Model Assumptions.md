@@ -1,9 +1,11 @@
 # Model Assumptions
 
 Boundary Lab is a frequency-domain linear-acoustics application for predicting
-loudspeaker radiation. It supports two physical-system topologies:
+loudspeaker radiation and internal acoustic loading. It supports three
+physical-system topologies:
 
 - an unbounded exterior region only, solved with BEM;
+- one or more bounded tetrahedral air regions only, solved with sparse FEM;
 - one or more bounded tetrahedral air regions coupled to an unbounded exterior
   BEM region, with optional lumped electrodynamic transducer equations.
 
@@ -23,16 +25,18 @@ Every active mesh surface belongs to an acoustic region and is classified as:
    electrodynamic component.
 3. **Interface**: pressure and normal flux are transferred between a bounded
    FEM region and the exterior BEM region.
+4. **Plane-wave tube termination**: the bounded FEM weak form receives a
+   first-order outgoing-wave Robin condition. It is not an interface.
 
 The UI defaults every surface to Rigid and does not provide an unassigned or
 unused state. This prevents an omitted assignment from silently behaving as an
 opening.
 
-An exterior-only model accepts prescribed-velocity components. A coupled model
-may use prescribed-velocity components, linear electrodynamic transducers, or
-both. A component can own several moving surface groups, and each group can
-have a relative velocity weight. This supports idealized motion profiles such
-as a dome and surround moving at different amplitudes.
+An exterior-only model accepts prescribed-velocity components. Interior and
+coupled models may use prescribed-velocity components, linear electrodynamic
+transducers, or both. A component can own several moving surface groups, and
+each group can have a relative velocity weight. This supports idealized motion
+profiles such as a dome and surround moving at different amplitudes.
 
 Prescribed-velocity components use a canonical 1 m/s normal-velocity basis.
 Electrodynamic components use a canonical 2.83 V basis and a single rigid-body
@@ -122,6 +126,21 @@ $$
 
 where `D` and `S` are the double- and single-layer potentials.
 
+## Interior FEM Model
+
+With bounded regions and no unbounded region, Boundary Lab assembles only the
+first-order pressure FEM system and factors it as a sparse matrix on the CPU.
+Disconnected chambers remain acoustically separate unless one shared
+electrodynamic component couples their moving surfaces. Rigid walls are the
+natural boundary condition; homogeneous bulk loss and rigid-backed Miki wall
+treatments use the same formulations as a coupled solve.
+
+A plane-wave tube termination imposes the first-order outgoing condition
+$\partial p/\partial n=i k p$ for the `exp(-i omega t)` convention. It represents
+the characteristic impedance $\rho c$ of a locally uniform tube, not a hidden
+exterior region. Its accuracy degrades when higher-order or evanescent modes
+are significant at the cut plane. See [Interior FEM Solver](Interior%20FEM%20Solver.md).
+
 ## Coupled FEM-BEM Model
 
 Each bounded region uses first-order pressure FEM on selected tetrahedral
@@ -136,12 +155,14 @@ region may have its own homogeneous bulk-loss factor. Bounded rigid walls may
 also use the supported locally reacting, rigid-backed Miki porous treatment;
 this is not a thermoviscous boundary-layer model.
 
-The coupled application path requires BEAT Engine CPU or CUDA. CPU solves the
-full monolithic dense coupled system. CUDA exactly eliminates eligible FEM
-interior degrees of freedom with a Schur complement, solves the retained
-interface, moving-surface, BEM, and transducer system on the GPU, and then
-reconstructs the eliminated FEM pressure. These are algebraically different
-execution strategies for the same linear model.
+The coupled application path requires BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.
+Production solves exactly eliminate eligible FEM interior degrees of freedom
+with a Schur complement and reconstruct the eliminated FEM pressure afterward.
+CPU uses UMFPACK for the sparse interior and a CPU dense solve. CUDA performs the
+condensed factorization and retained solve on the GPU. ROCm factors the sparse
+interior on the CPU, uploads the retained system, and uses rocSOLVER for its dense
+solve. These are algebraically equivalent execution strategies for the same
+linear model.
 
 ## Symmetry
 

@@ -111,6 +111,9 @@ class PlotPresenterMixin:
     def clear_plots(self) -> None:
         self.cancel_live_refresh()
         self._solve_session().begin()
+        observation_planes = getattr(self, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self.set_plot_exports_available(False)
@@ -160,6 +163,8 @@ class PlotPresenterMixin:
             response.horizontal_spl_db,
             response.channel_on_axis_names,
             response.channel_on_axis_spl_db,
+            response.on_axis_phase_deg,
+            response.channel_on_axis_phase_deg,
         )
         self.spinorama_plot.set_comparison_plot(
             response.freq_hz,
@@ -339,6 +344,8 @@ class PlotPresenterMixin:
             response.horizontal_spl_db,
             response.channel_on_axis_names,
             response.channel_on_axis_spl_db,
+            response.on_axis_phase_deg,
+            response.channel_on_axis_phase_deg,
         )
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:

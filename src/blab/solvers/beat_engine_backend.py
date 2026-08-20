@@ -20,6 +20,7 @@ from blab.protocol import (
     ndarray_from_wire,
     solve_request_from_config_and_frequencies,
 )
+from blab.rocm import discover_rocm
 from blab.server import _safe_asset_filename
 from blab.solvers.base import FrequencyResult, SolveMetadata, SolverCapabilities, SolveRequest
 
@@ -108,6 +109,11 @@ class BeatEngineSession:
                 elif event_type == "completed":
                     return
                 elif event_type == "failed":
+                    if self._worker is not None:
+                        # A failed accelerator job may leave the process-local
+                        # runtime or allocator unhealthy. Never hand that worker
+                        # to the next solve request.
+                        self._worker.terminate()
                     raise RuntimeError(
                         _friendly_julia_error(
                             str(event.get("error", "BEAT Engine solver failed.")),
@@ -175,7 +181,7 @@ class BeatEngineSession:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    env=_julia_process_env(self.julia_threads),
+                    env=_julia_process_env(self.julia_threads, self.julia_project),
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(
@@ -200,6 +206,8 @@ class BeatEngineSession:
                 )
                 return
             elif event_type == "failed":
+                if self._worker is not None:
+                    self._worker.terminate()
                 raise RuntimeError(
                     _friendly_julia_error(
                         str(event.get("error", "BEAT Engine solver failed.")),
@@ -296,7 +304,13 @@ class BeatEngineWorkerProcess:
         self._stderr_thread: threading.Thread | None = None
         self._status_callback: Callable[[str], None] | None = None
 
-    def submit(self, request_path: Path, *, status_callback: Callable[[str], None] | None = None) -> Iterator[dict]:
+    def submit(
+        self,
+        request_path: Path,
+        *,
+        status_callback: Callable[[str], None] | None = None,
+        operation: str = "solve",
+    ) -> Iterator[dict]:
         self._lock.acquire()
         self._status_callback = status_callback
         try:
@@ -304,8 +318,14 @@ class BeatEngineWorkerProcess:
             process = self._process
             if process is None or process.stdin is None:
                 raise RuntimeError("Warm BEAT Engine solver did not provide stdin.")
-            self._emit_status("Submitting solve request")
-            process.stdin.write(json.dumps({"request": str(request_path)}, separators=(",", ":")) + "\n")
+            self._emit_status("Submitting solve request" if operation == "solve" else "Submitting field request")
+            process.stdin.write(
+                json.dumps(
+                    {"request": str(request_path), "operation": str(operation)},
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
             process.stdin.flush()
             return self._iter_events_for_submission()
         except Exception:
@@ -361,7 +381,7 @@ class BeatEngineWorkerProcess:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                env=_julia_process_env(self.julia_threads),
+                env=_julia_process_env(self.julia_threads, self.julia_project),
             )
         except FileNotFoundError as exc:
             raise RuntimeError("Julia executable was not found. Set the Julia executable path in Preferences.") from exc
@@ -444,7 +464,7 @@ class BeatEngineWorkerProcess:
 
 class BeatEngineBackend:
     backend_id = "beat_cuda"
-    label = "BEAT Engine (CUDA)"
+    label = "BEAT Engine (Nvidia CUDA)"
     beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
     capabilities = SolverCapabilities(
         supports_remote_assets=False,
@@ -484,6 +504,8 @@ class BeatEngineBackend:
         self.julia_sysimage = None if julia_sysimage in (None, "") else Path(julia_sysimage)
         if self.beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
             self.capabilities = BeatEngineCpuBackend.capabilities
+        elif self.beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND:
+            self.capabilities = BeatEngineRocmBackend.capabilities
 
     def create_session(self, request: SolveRequest) -> BeatEngineSession:
         return BeatEngineSession(
@@ -533,7 +555,7 @@ class BeatEngineBackend:
 
 class BeatEngineCudaBackend(BeatEngineBackend):
     backend_id = "beat_cuda"
-    label = "BEAT Engine (CUDA)"
+    label = "BEAT Engine (Nvidia CUDA)"
     beat_engine_backend = BEAT_ENGINE_CUDA_BACKEND
 
 
@@ -552,8 +574,15 @@ class BeatEngineCpuBackend(BeatEngineBackend):
 
 class BeatEngineRocmBackend(BeatEngineBackend):
     backend_id = "beat_rocm"
-    label = "BEAT Engine (ROCm)"
+    label = "BEAT Engine (AMD ROCm)"
     beat_engine_backend = BEAT_ENGINE_ROCM_BACKEND
+    capabilities = SolverCapabilities(
+        supports_remote_assets=False,
+        supports_parallel_workers=False,
+        supports_symmetry=True,
+        supports_channel_resynthesis=True,
+        is_remote=False,
+    )
 
 
 def _normalize_warmup_mode(value: object) -> str:
@@ -712,11 +741,11 @@ def _friendly_julia_error(
 
 def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | None) -> str:
     if beat_engine_backend == BEAT_ENGINE_CUDA_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CUDA_PROJECT:
-        return "BEAT Engine (CUDA)"
+        return "BEAT Engine (Nvidia CUDA)"
     if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
         return "BEAT Engine (CPU)"
     if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND or project_path == DEFAULT_BEAT_ENGINE_ROCM_PROJECT:
-        return "BEAT Engine (ROCm)"
+        return "BEAT Engine (AMD ROCm)"
     return "the selected BEAT Engine backend"
 
 
@@ -746,9 +775,37 @@ def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> Simulatio
     )
 
 
-def _julia_process_env(julia_threads: str | int = "auto") -> dict[str, str]:
+def _julia_process_env(
+    julia_threads: str | int = "auto",
+    julia_project: str | Path | None = None,
+) -> dict[str, str]:
     env = os.environ.copy()
     env["JULIA_NUM_THREADS"] = _resolve_julia_threads(julia_threads)
+    if julia_project is not None:
+        try:
+            is_rocm_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
+        except OSError:
+            is_rocm_project = False
+        if is_rocm_project:
+            env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_ROCM_BACKEND
+            installation = discover_rocm(environ=env)
+            if installation is not None:
+                rocm_root = str(installation.root)
+                env["BLAB_ROCM_PATH"] = rocm_root
+                env["ROCM_PATH"] = rocm_root
+                env["ROCM_HOME"] = rocm_root
+                env["HIP_PATH"] = rocm_root
+                rocm_bin = str(installation.root / "bin")
+                path_entries = env.get("PATH", "").split(os.pathsep)
+                if os.path.normcase(rocm_bin) not in {os.path.normcase(entry) for entry in path_entries}:
+                    env["PATH"] = rocm_bin + os.pathsep + env.get("PATH", "")
+    if julia_project is not None:
+        try:
+            is_cuda_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
+        except OSError:
+            is_cuda_project = False
+        if is_cuda_project:
+            env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_CUDA_BACKEND
     return env
 
 

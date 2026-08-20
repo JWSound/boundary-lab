@@ -46,6 +46,8 @@ def test_solved_data_is_reported_once_a_frequency_lands() -> None:
 def test_beginning_a_run_discards_the_previous_results() -> None:
     session = SolveSession(
         live_dataset=_Dataset(solved_count=12),
+        result_builder=object(),
+        solved_system=object(),
         use_final_isobar_resolution=True,
         final_isobar_plots_rendered=True,
     )
@@ -53,6 +55,8 @@ def test_beginning_a_run_discards_the_previous_results() -> None:
     session.begin()
 
     assert session.live_dataset is None
+    assert session.result_builder is None
+    assert session.solved_system is None
     assert session.use_final_isobar_resolution is False
     assert session.final_isobar_plots_rendered is False
     assert session.has_solved_data() is False

@@ -34,6 +34,7 @@ class BoundaryKind(StrEnum):
     RIGID = "rigid"
     MOVING = "moving"
     INTERFACE = "interface"
+    PLANE_WAVE_TUBE_TERMINATION = "plane_wave_tube_termination"
     IMPEDANCE = "impedance"
     UNUSED = "unused"
 
@@ -54,6 +55,7 @@ class PhysicalSolveKind(StrEnum):
 
     EXTERIOR_BEM = "exterior_bem"
     COUPLED_BEM_FEM = "coupled_bem_fem"
+    INTERIOR_FEM = "interior_fem"
 
 
 class AssumptionStatus(StrEnum):
@@ -150,10 +152,16 @@ def infer_physical_solve_kind(system: PhysicalSystem) -> PhysicalSolveKind:
 
     bounded_count = sum(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions)
     unbounded_count = sum(region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in system.regions)
-    if unbounded_count != 1:
+    if unbounded_count > 1:
         raise ValueError(
-            f"A physical system must contain exactly one unbounded exterior acoustic region; found {unbounded_count}."
+            f"A physical system may contain at most one unbounded exterior acoustic region; found {unbounded_count}."
         )
+    if bounded_count == 0 and unbounded_count == 0:
+        raise ValueError("A physical system must contain at least one acoustic region.")
+    if unbounded_count == 0:
+        if system.interfaces:
+            raise ValueError("An interior-only FEM system cannot contain FEM-BEM interfaces.")
+        return PhysicalSolveKind.INTERIOR_FEM
     if bounded_count == 0:
         if system.interfaces:
             raise ValueError("An exterior-only BEM system cannot contain FEM-BEM interfaces.")

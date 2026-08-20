@@ -9,6 +9,7 @@ window being reorganised into modules.
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
 from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa: E402
 
@@ -39,7 +40,7 @@ def test_every_bundled_resource_path_actually_exists() -> None:
     from pathlib import Path
 
     # Directories that are created on demand or ship only in a packaged build.
-    runtime_created = {"APP_ROOT", "ASSETS_DIR", "GENERATED_GEOMETRY_ROOT", "ATH_BUNDLE_DIR", "GMSH_BUNDLE_EXE"}
+    runtime_created = {"APP_ROOT", "ASSETS_DIR", "GENERATED_GEOMETRY_ROOT", "ATH_BUNDLE_DIR"}
 
     missing = []
     for module_name in (
@@ -159,6 +160,24 @@ def test_dock_title_bar_uses_a_native_raised_frame(main_window) -> None:
         assert title_bar.frameShadow() == QFrame.Raised
 
 
+def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> None:
+    title_bar = main_window.plot_docks["on_axis_frequency_response"].titleBarWidget()
+    actions = [button.defaultAction() for button in title_bar.tool_buttons]
+
+    assert main_window.on_axis_plot.show_phase_action in actions
+    phase_button = next(
+        button
+        for button in title_bar.tool_buttons
+        if button.defaultAction() is main_window.on_axis_plot.show_phase_action
+    )
+    assert not phase_button.icon().isNull()
+    assert phase_button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+    trace_button = next(
+        button for button in title_bar.tool_buttons if button.menu() is main_window.on_axis_plot.trace_filter_menu
+    )
+    assert trace_button.text() == "Traces"
+
+
 def test_dock_state_round_trips_through_workspace(main_window) -> None:
     state = main_window.workspace.saveState()
     assert not state.isEmpty()
@@ -203,6 +222,7 @@ def test_data_exports_are_explicit_file_menu_actions(main_window) -> None:
 
     assert "Export Polar Data" in labels
     assert "Export On-Axis Data" in labels
+    assert "Export Speaker Package..." in labels
     assert not main_window.export_polar_data_action.isEnabled()
     assert not main_window.export_on_axis_data_action.isEnabled()
 
@@ -378,6 +398,24 @@ def test_no_confirmation_when_there_is_nothing_solved_to_lose(main_window, messa
 
 
 # --------------------------------------------------------------- unsaved project guard
+
+
+def test_field_preferences_are_applied_to_the_preview(main_window) -> None:
+    from dataclasses import replace
+
+    assert main_window.preview.observation_plane_field_preferences == (
+        main_window.preferences.field_cache_size_mb,
+        main_window.preferences.field_translation_target_fps,
+    )
+
+    updated = replace(
+        main_window.preferences,
+        field_cache_size_mb=512,
+        field_translation_target_fps=20.0,
+    )
+    main_window._set_preferences(updated)
+
+    assert main_window.preview.observation_plane_field_preferences == (512, 20.0)
 
 
 def test_startup_leaves_a_clean_untitled_project(main_window) -> None:

@@ -32,6 +32,10 @@ def test_cli_exposes_interface_conformer() -> None:
     assert cli.COMMAND_MODULES["conform-interface"] == "blab.interface_conform"
 
 
+def test_cli_exposes_rocm_configuration() -> None:
+    assert cli.COMMAND_MODULES["rocm"] == "blab.rocm"
+
+
 def test_solver_accepts_short_public_option_names() -> None:
     args = solver._build_arg_parser().parse_args(
         [

@@ -1,4 +1,5 @@
 using Test
+using StaticArrays
 
 include(joinpath(@__DIR__, "..", "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
@@ -11,6 +12,40 @@ catch
 end
 
 cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
+
+const AMDGPU_MODULE = try
+    @eval import AMDGPU
+    AMDGPU
+catch
+    nothing
+end
+
+rocm_available() = AMDGPU_MODULE !== nothing &&
+                   AMDGPU_MODULE.functional() &&
+                   AMDGPU_MODULE.functional(:rocblas) &&
+                   AMDGPU_MODULE.functional(:rocsolver)
+
+@testset "symmetry plane snapping" begin
+    vertices = [
+        SVector{3,Float64}(-1.2e-8, 0.0, 0.8),
+        SVector{3,Float64}(0.5, 0.0, 0.8),
+        SVector{3,Float64}(0.0, 0.5, 0.8),
+    ]
+    mesh = BoundaryMesh(vertices, [(1, 2, 3)], [1])
+
+    tolerance = symmetry_plane_tolerance(mesh.vertices)
+    snapped = snap_symmetry_planes(mesh, :x)
+
+    @test tolerance ≈ sqrt(0.5) * 1.0e-6
+    @test snapped.vertices[1][1] == 0.0
+    @test mesh.vertices[1][1] == -1.2e-8
+    validate_symmetry_fundamental_domain!(mesh, :x)
+    @test_throws ErrorException validate_symmetry_fundamental_domain!(
+        mesh,
+        :x;
+        tolerance=1.0e-9,
+    )
+end
 
 @testset "mesh setup" begin
     mesh = load_gmsh22_with_tags(joinpath(@__DIR__, "..", "test_meshes", "sample.msh"), Float32(0.001))
@@ -28,6 +63,7 @@ cuda_available() = CUDA_MODULE !== nothing && CUDA_MODULE.functional()
 end
 
 include(joinpath(@__DIR__, "coupled_solver_tests.jl"))
+include(joinpath(@__DIR__, "coupled_condensed_tests.jl"))
 
 @testset "cpu BLAS thread policy" begin
     @test beat_cpu_blas_thread_count(441; available_threads=16) == 1

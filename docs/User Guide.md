@@ -79,6 +79,16 @@ rather than snapping to one curve.
 - **Export Polar Data** writes horizontal and vertical response text files.
 - **Export On-Axis Data** writes SPL and phase for each solved channel.
 
+The **On-Axis Frequency Response** dock provides a **Traces** menu for showing
+or hiding the summed response and individual channels. The phi icon button adds
+matching dotted phase traces, wrapped between -180 and 180 degrees, on a right
+axis with a fixed -180 to 600 degree display range. Magnitude traces remain solid,
+and the summed response is always black. Phase is available when the solve retains
+complex channel-basis pressure. On-axis phase removes the propagation time from
+the acoustic origin to the configured polar observation distance. On-axis text
+exports use the same reference, including any channel delay changes made after
+the solve.
+
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder
 if the saved location disappears, and changes only after a selection is
@@ -109,9 +119,10 @@ guide.
 
 ### Solver Config
 
-- **BEM Solver** selects Server, BEAT Engine CUDA, BEAT Engine CPU, BEAT Engine
-  ROCm, or Bempp OpenCL CPU. ROCm is currently a placeholder. Coupled systems
-  require the local BEAT Engine CPU or CUDA backend.
+- **BEM Solver** selects Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT
+  Engine AMD ROCm, or Bempp OpenCL CPU. All BEAT Engine backends support exterior
+  and coupled FEM-BEM systems, including X and XY symmetry. The ROCm backend uses
+  GPU-resident operator assembly, dense solve, and exterior field evaluation.
 - **Solve Server URL** and **Check Server** configure and query a remote
   exterior-BEM server. A successful health check also updates advertised
   capabilities such as symmetry support.
@@ -168,8 +179,10 @@ current status message.
 ### Generate
 
 **Generate (F7)** runs the active design through its geometry provider. With
-Ath, Boundary Lab stages the `.cfg`, runs `ath.exe` (through Wine when needed),
-cleans the generated surface mesh, and loads it into the project and preview.
+Ath, Boundary Lab stages the design script, captures Gmsh geometry from Ath's
+blab mode, meshes and cleans it in a cancellable worker, and loads the final
+surface mesh into the project and preview. **Stop (Shift+F5)** terminates either
+the active Ath process or a Gmsh meshing operation that cannot complete.
 Managed generated artifacts are stored below `runs/generated_geometry`.
 
 ### Solve and Stop
@@ -177,6 +190,7 @@ Managed generated artifacts are stored below `runs/generated_geometry`.
 **Solve (F5)** infers the numerical path from **System > Regions**:
 
 - one unbounded exterior and no bounded regions uses exterior BEM;
+- one or more bounded FEM regions and no unbounded region uses interior FEM;
 - one or more bounded FEM regions plus one unbounded exterior uses the coupled
   FEM-BEM path.
 
@@ -226,33 +240,36 @@ data is resynthesized only while its window is open.
 
 ## System
 
-The **System** window is the physical-model editor for both exterior BEM and
-coupled FEM-BEM projects. Every active surface defaults to **Rigid** and can be
-changed to **Moving** or **Interface**. The UI has no unassigned or unused
-surface state.
+The **System** window is the physical-model editor for exterior BEM, interior
+FEM, and coupled FEM-BEM projects. Every active surface defaults to **Rigid**.
+The UI has no unassigned or unused surface state.
 
 ### Regions
 
 <img src="../assets/regionswindow.png" alt="System Regions tab" width="700">
 
-Create exactly one **Unbounded Exterior** region and assign its BEM surface
-mesh or meshes. Add a **Bounded Interior** for each FEM chamber, choose its
-tetrahedral mesh and physical volume group, and optionally select a homogeneous
-FEM bulk-loss factor. If the exterior uses adjoining parts of one continuous
-surface, enable **Stitch exterior region meshes**; leave it off for disconnected
-closed bodies.
+For exterior or coupled work, create exactly one **Unbounded Exterior** region
+and assign its BEM surface mesh or meshes. Add a **Bounded Interior** for each
+FEM chamber, choose its tetrahedral mesh and physical volume group, and
+optionally select a homogeneous FEM bulk-loss factor. A project containing
+bounded regions but no unbounded region is a valid interior-only FEM project.
+If the exterior uses adjoining parts of one continuous surface, enable
+**Stitch exterior region meshes**; leave it off for disconnected closed bodies.
 
-An exterior-only system supports prescribed-velocity components. Adding a
-bounded region selects the coupled path and enables the Interfaces tab.
+An exterior-only system supports prescribed-velocity components. Interior and
+coupled systems also support linear electrodynamic components. The Interfaces
+tab is enabled only when both bounded and unbounded regions exist.
 
 ### Boundaries
 
 <img src="../assets/boundarieswindow.png" alt="System Boundaries tab" width="700">
 
-Classify each region surface as **Rigid**, **Moving**, or **Interface**. A
-bounded rigid surface may additionally use a rigid-backed porous lining via
-**Wall Impedance**. The Miki model accepts lining thickness and airflow
-resistivity; disabling it restores the hard-wall condition.
+Classify each region surface as **Rigid**, **Moving**, or—where applicable—
+**Interface** or **Plane-wave tube termination**. A bounded rigid surface may
+additionally use a rigid-backed porous lining via **Wall Impedance**. The Miki
+model accepts lining thickness and airflow resistivity; disabling it restores
+the hard-wall condition. A plane-wave termination is a bounded-only anechoic
+Robin boundary intended for a locally one-dimensional tube mode.
 
 Moving boundaries must be owned by exactly one component. An FEM and BEM port
 mouth uses two interface boundary assignments, one in each acoustic region.
@@ -265,8 +282,8 @@ mouth uses two interface boundary assignments, one in each acoustic region.
 surfaces, makes the BEM side conform to the authoritative FEM boundary facets
 when needed, and validates node, face, and normal-orientation mappings. The
 original imported files are not overwritten. Multiple tagged openings may
-share the same surrounding BEM surface. This tab is disabled when no bounded
-FEM region exists.
+share the same surrounding BEM surface. This tab is enabled only when both
+bounded FEM and unbounded BEM regions exist.
 
 ### Components
 
@@ -293,6 +310,32 @@ system; there is no manual component-symmetry multiplier.
 See [Physical System Model](Physical%20System%20Model.md) for the object model
 and [Coupled Solver](Coupled%20Solver.md) for numerical requirements and
 limitations.
+
+## Observation Planes
+
+Observation-plane properties control the plane geometry, sampling resolution,
+result response, frequency, and viewport display metric. Real, imaginary, and
+animated instantaneous pressure use a diverging color map centered on zero.
+
+Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
+derives the complex particle-velocity vector from the P1 FEM pressure gradient
+using the bounded region density, then colors the plane by its magnitude in
+metres per second. Phase animation shows instantaneous particle speed. The
+option is unavailable for Exterior and Combined planes because their exterior
+BEM field evaluator currently returns pressure only.
+
+The **Pressure color range** is automatic by default and uses a symmetric range
+based on the current pressure field. To keep the scale fixed while changing or
+sweeping frequency, clear **Automatic** and enter the positive limit in Pa. The
+viewport then uses `-limit` to `+limit`; values outside that interval saturate
+at the end colors. Reducing the limit makes low-amplitude spatial variation
+more visible when a localized pressure peak would otherwise dominate the
+automatic scale. The selected manual limit is stored with the observation
+plane in the project file.
+
+With a plane selected in the viewport, use **W** for Move, **E** for Rotate,
+and **R** for Scale. The manual pressure color limit accepts whole pascal
+values and starts at 10 Pa.
 
 ## Frequency Controls
 

@@ -38,7 +38,13 @@ from blab.ui.drag_drop import local_drop_paths
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.server_tokens import load_server_access_token, remember_server_access_token
 from blab.ui.settings import (
+    FIELD_CACHE_SIZE_MAX_MB,
+    FIELD_CACHE_SIZE_MIN_MB,
+    FIELD_TRANSLATION_TARGET_FPS_MAX,
+    FIELD_TRANSLATION_TARGET_FPS_MIN,
     GuiPreferences,
+    normalize_field_cache_size_mb,
+    normalize_field_translation_target_fps,
     normalize_live_plot_quality,
 )
 
@@ -322,6 +328,24 @@ class PreferencesDialog(QDialog):
         self.balloon_angle_precision_spin.setEnabled(preferences.spherical_sampling_enabled)
         self.spherical_sampling_check.toggled.connect(self.balloon_angle_precision_spin.setEnabled)
 
+        self.field_cache_size_spin = QSpinBox()
+        self.field_cache_size_spin.setRange(FIELD_CACHE_SIZE_MIN_MB, FIELD_CACHE_SIZE_MAX_MB)
+        self.field_cache_size_spin.setSingleStep(16)
+        self.field_cache_size_spin.setSuffix(" MB")
+        self.field_cache_size_spin.setValue(normalize_field_cache_size_mb(preferences.field_cache_size_mb))
+
+        self.field_translation_target_fps_spin = QDoubleSpinBox()
+        self.field_translation_target_fps_spin.setRange(
+            FIELD_TRANSLATION_TARGET_FPS_MIN,
+            FIELD_TRANSLATION_TARGET_FPS_MAX,
+        )
+        self.field_translation_target_fps_spin.setDecimals(1)
+        self.field_translation_target_fps_spin.setSingleStep(0.5)
+        self.field_translation_target_fps_spin.setSuffix(" FPS")
+        self.field_translation_target_fps_spin.setValue(
+            normalize_field_translation_target_fps(preferences.field_translation_target_fps)
+        )
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -403,6 +427,23 @@ class PreferencesDialog(QDialog):
         )
         right_column.addWidget(
             self._section(
+                "Fields",
+                (
+                    (
+                        "Field Cache Size",
+                        self.field_cache_size_spin,
+                        "Limits how much evaluated observation-plane field data is kept for quick reuse. Larger values use more memory.",
+                    ),
+                    (
+                        "Field Translation Target Framerate",
+                        self.field_translation_target_fps_spin,
+                        "Sets how often an observation-plane field catches up while its plane is moving. Higher values feel more responsive but require more processing.",
+                    ),
+                ),
+            )
+        )
+        right_column.addWidget(
+            self._section(
                 "Application",
                 (
                     ("Theme", self.theme_combo, ""),
@@ -417,7 +458,7 @@ class PreferencesDialog(QDialog):
         columns.addLayout(right_column, 1)
         layout.addLayout(columns)
         layout.addWidget(buttons)
-        self.resize(820, 420)
+        self.resize(900, 500)
 
     def _check_server(self) -> None:
         url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
@@ -509,6 +550,8 @@ class PreferencesDialog(QDialog):
             stitch_tolerance_mm=float(self.stitch_tolerance_spin.value()),
             spherical_sampling_enabled=bool(self.spherical_sampling_check.isChecked()),
             balloon_angle_precision_deg=float(self.balloon_angle_precision_spin.value()),
+            field_cache_size_mb=int(self.field_cache_size_spin.value()),
+            field_translation_target_fps=float(self.field_translation_target_fps_spin.value()),
         )
 
 

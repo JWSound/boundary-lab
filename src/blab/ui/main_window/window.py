@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QSettings, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -22,6 +22,7 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.live import (
     LiveSolveDataset,
 )
+from blab.solve_results import SolvedSystem
 from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
@@ -38,6 +39,7 @@ from blab.ui.main_window.generator_documents import GeneratorDocumentsMixin
 from blab.ui.main_window.geometry_store import GeometryStore
 from blab.ui.main_window.geometry_workflow import GeometryWorkflowController
 from blab.ui.main_window.mesh_workflow import MeshWorkflowMixin
+from blab.ui.main_window.observation_planes import ObservationPlaneController
 from blab.ui.main_window.panels import PanelVisibilityMixin
 from blab.ui.main_window.plot_presenter import PlotPresenterMixin
 from blab.ui.main_window.preferences import PreferencesMixin
@@ -54,6 +56,7 @@ from blab.ui.main_window_widgets import (
 from blab.ui.mesh_assembly import (
     MeshAssemblyService,
 )
+from blab.ui.observation_plane_results import observation_field_results_from_solved_system
 from blab.ui.operation_controllers import (
     GeometryController,
     SolveController,
@@ -77,8 +80,7 @@ from blab.ui.result_projection import (
     VisualizationProjection,
 )
 from blab.ui.settings import (
-    SETTINGS_APP,
-    SETTINGS_ORG,
+    application_settings,
     load_syntax_highlighting_enabled,
     settings_int,
 )
@@ -169,6 +171,12 @@ class MainWindow(
     @live_dataset.setter
     def live_dataset(self, value: LiveSolveDataset | None) -> None:
         self._solve_session().live_dataset = value
+
+    @property
+    def solved_system(self) -> SolvedSystem | None:
+        """Canonical raw result snapshot for the most recent solve."""
+
+        return self._solve_session().solved_system
 
     @property
     def _use_final_isobar_resolution(self) -> bool:
@@ -278,7 +286,7 @@ class MainWindow(
                 startup_status(stage)
 
         startup("Loading saved settings...")
-        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.settings = application_settings()
         self.file_dialogs = FileDialogService(self.settings)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
@@ -360,6 +368,21 @@ class MainWindow(
         from blab.ui.mesh_preview import MeshPreview
 
         self.preview = MeshPreview()
+        self._apply_field_preferences()
+        self.observation_plane_controller = ObservationPlaneController(
+            self,
+            window=self,
+            preview=self.preview,
+            project=self._project_document,
+            show_status=self.show_status,
+            field_results=lambda: observation_field_results_from_solved_system(
+                self.solved_system,
+                component_channel_by_id=self.project.component_channel_by_id,
+                channel_configs=self.channel_configs(),
+                flat_target_enabled=self.preferences.normalized_channel_correction,
+                flat_target_reference_angle_deg=self.preferences.horizontal_normalization_angle,
+            ),
+        )
         if self.has_solver_meshes():
             startup("Loading mesh preview...")
             self._refresh_mesh_preview()
@@ -487,6 +510,7 @@ class MainWindow(
 
     def _set_preferences(self, preferences) -> None:
         self.preferences = preferences
+        self._apply_field_preferences()
 
     @Slot()
     def new_project(self) -> None:

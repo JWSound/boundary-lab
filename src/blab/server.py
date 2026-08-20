@@ -392,6 +392,8 @@ class JobOrchestrator:
             dataset = LiveSolveDataset(
                 polar_angle_deg=np.asarray(solver.polar_angle_deg, dtype=np.float32),
                 radiator_names=np.asarray(solver.radiator_names),
+                polar_observation_distance_m=abs(float(job.config.distance) + float(job.config.axial_offset)),
+                exterior_sound_speed_m_per_s=float(job.config.sound_speed),
                 sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
                 sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
                 sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),

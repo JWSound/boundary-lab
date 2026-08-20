@@ -199,23 +199,24 @@ echo No NVIDIA driver was detected. CUDA support is not required for CPU solving
 call :ASK_YN "Install the CUDA environment anyway"
 
 :CUDA_DECISION
-if /i not "%ANSWER%"=="Y" goto OPTIONAL_SOLVERS_DONE
+if /i not "%ANSWER%"=="Y" goto ROCM_SETUP
 
 echo.
 echo Installing / updating the BEAT Engine CUDA environment...
 julia --project="%PROJECT_DIR%\src\blab\solvers\julia_cuda" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
 if errorlevel 1 (
     echo ERROR: The BEAT Engine CUDA environment could not be prepared.
-    goto OPTIONAL_SOLVER_FAILED
+    set "OPTIONAL_SOLVER_WARNING=1"
+    goto ROCM_SETUP
 )
 
 where nvidia-smi >nul 2>&1
-if errorlevel 1 goto OPTIONAL_SOLVERS_DONE
+if errorlevel 1 goto ROCM_SETUP
 
 echo.
 echo Verifying CUDA access from Julia...
 julia --project="%PROJECT_DIR%\src\blab\solvers\julia_cuda" -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
-if not errorlevel 1 goto OPTIONAL_SOLVERS_DONE
+if not errorlevel 1 goto ROCM_SETUP
 
 echo.
 echo WARNING: CUDA packages were installed, but the CUDA runtime check failed.
@@ -223,6 +224,92 @@ echo Boundary Lab and the CPU solvers can still be used.
 echo.
 set "OPTIONAL_SOLVER_WARNING=1"
 pause
+goto ROCM_SETUP
+
+:ROCM_SETUP
+echo.
+echo Checking for an AMD ROCm SDK...
+set "ROCM_ROOT="
+set "ROCM_ROOT_FILE=%TEMP%\boundary_lab_rocm_root_%RANDOM%_%RANDOM%.txt"
+if exist "%ROCM_ROOT_FILE%" del /q "%ROCM_ROOT_FILE%" >nul 2>&1
+"%BLAB_EXE%" rocm detect --root-file "%ROCM_ROOT_FILE%"
+if not errorlevel 1 goto ROCM_FOUND
+
+if exist "%ROCM_ROOT_FILE%" del /q "%ROCM_ROOT_FILE%" >nul 2>&1
+echo.
+echo Boundary Lab can use AMD's installed Windows HIP SDK or a portable
+echo TheRock SDK directory. Installing an AMD SDK itself requires accepting
+echo AMD's license and may require administrator access.
+echo.
+call :ASK_YN "Configure a custom existing ROCm SDK directory"
+if /i not "%ANSWER%"=="Y" goto ROCM_NOT_CONFIGURED
+
+set "ROCM_INPUT="
+set /p "ROCM_INPUT=ROCm SDK root, without surrounding quotes: "
+if not defined ROCM_INPUT goto ROCM_NOT_CONFIGURED
+echo.
+"%BLAB_EXE%" rocm configure "%ROCM_INPUT%"
+if errorlevel 1 (
+    set "OPTIONAL_SOLVER_WARNING=1"
+    echo.
+    pause
+    goto OPTIONAL_SOLVERS_DONE
+)
+
+"%BLAB_EXE%" rocm detect --root-file "%ROCM_ROOT_FILE%"
+if errorlevel 1 (
+    set "OPTIONAL_SOLVER_WARNING=1"
+    goto OPTIONAL_SOLVERS_DONE
+)
+
+:ROCM_FOUND
+if not exist "%ROCM_ROOT_FILE%" (
+    echo ERROR: ROCm detection did not return an SDK path.
+    set "OPTIONAL_SOLVER_WARNING=1"
+    goto OPTIONAL_SOLVERS_DONE
+)
+set /p "ROCM_ROOT=" < "%ROCM_ROOT_FILE%"
+del /q "%ROCM_ROOT_FILE%" >nul 2>&1
+if not defined ROCM_ROOT (
+    echo ERROR: ROCm detection returned an empty SDK path.
+    set "OPTIONAL_SOLVER_WARNING=1"
+    goto OPTIONAL_SOLVERS_DONE
+)
+
+echo.
+echo Valid ROCm SDK detected:
+echo   %ROCM_ROOT%
+call :ASK_YN "Install or update AMD ROCm solver support"
+if /i not "%ANSWER%"=="Y" goto OPTIONAL_SOLVERS_DONE
+
+set "BLAB_ROCM_PATH=%ROCM_ROOT%"
+echo.
+echo Installing / updating the BEAT Engine ROCm environment...
+julia --project="%PROJECT_DIR%\src\blab\solvers\julia_rocm" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+if errorlevel 1 (
+    echo ERROR: The BEAT Engine ROCm environment could not be prepared.
+    set "OPTIONAL_SOLVER_WARNING=1"
+    goto OPTIONAL_SOLVERS_DONE
+)
+
+echo.
+echo Verifying ROCm access from Julia...
+julia --project="%PROJECT_DIR%\src\blab\solvers\julia_rocm" -e "using AMDGPU; AMDGPU.functional() || error(\"ROCm is not functional\"); AMDGPU.functional(:rocblas) || error(\"rocBLAS is not functional\"); AMDGPU.functional(:rocsolver) || error(\"rocSOLVER is not functional\"); AMDGPU.versioninfo()"
+if not errorlevel 1 goto OPTIONAL_SOLVERS_DONE
+
+echo.
+echo WARNING: ROCm packages were installed, but the ROCm runtime check failed.
+echo Boundary Lab and the CPU solvers can still be used. Confirm that the GPU
+echo is supported by AMD's Windows HIP SDK and review the ROCm setup guide.
+echo.
+set "OPTIONAL_SOLVER_WARNING=1"
+pause
+goto OPTIONAL_SOLVERS_DONE
+
+:ROCM_NOT_CONFIGURED
+echo.
+echo ROCm setup was skipped. Installation instructions:
+echo   https://rocm.docs.amd.com/projects/install-on-windows/en/latest/
 goto OPTIONAL_SOLVERS_DONE
 
 :OPTIONAL_SOLVER_FAILED

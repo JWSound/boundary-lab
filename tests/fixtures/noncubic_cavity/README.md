@@ -19,7 +19,7 @@ The centered variants are generated from `noncubic_patch.geo`. From the
 repository root:
 
 ```powershell
-$gmsh = "gmsh/gmsh-4.15.2-Windows64/gmsh.exe"
+$gmsh = "gmsh" # Gmsh CLI available on PATH
 & $gmsh tests/fixtures/noncubic_cavity/noncubic_patch.geo -3 -format msh41 `
   -o tests/fixtures/noncubic_cavity/noncubic_driven_x_center.msh `
   -setnumber PatchWall 0 -setnumber PatchU 0 -setnumber PatchV 0

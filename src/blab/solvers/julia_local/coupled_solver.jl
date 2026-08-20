@@ -1,13 +1,18 @@
 #!/usr/bin/env julia
 
-using JSON, LinearAlgebra, SparseArrays, StaticArrays
+using JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
 include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
+include(joinpath(@__DIR__, "src", "BeatEngineCoupledCondensed.jl"))
+using .BeatEngineCoupledCondensed
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
+const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
+const MAX_BEM_FIELD_EVALUATION_CACHES = 2
 
 function object_by_id(items, object_id, label)
     for item in items
@@ -27,6 +32,8 @@ function translated_volume_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
         mesh.boundary_faces,
         mesh.boundary_physical_tags,
         mesh.physical_names,
+        mesh.quadratic_tetrahedra,
+        mesh.quadratic_boundary_faces,
     )
 end
 
@@ -43,11 +50,12 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
     resources = [object_by_id(meshes, mesh_id, "mesh") for mesh_id in mesh_ids]
     all(String(resource["purpose"]) == "bem_surface" for resource in resources) ||
         error("Unbounded region meshes must be BEM surfaces.")
-    combined = combine_boundary_meshes(
-        [translated_boundary_mesh(resource, T) for resource in resources],
-    )
+    translated_meshes = [translated_boundary_mesh(resource, T) for resource in resources]
+    combined = combine_boundary_meshes(translated_meshes)
     vertex_offset_by_mesh_id = Dict(zip(mesh_ids, combined.vertex_offsets))
     face_offset_by_mesh_id = Dict(zip(mesh_ids, combined.face_offsets))
+    vertex_count_by_mesh_id = Dict(zip(mesh_ids, [length(mesh.vertices) for mesh in translated_meshes]))
+    face_count_by_mesh_id = Dict(zip(mesh_ids, [length(mesh.faces) for mesh in translated_meshes]))
     tag_map_by_mesh_id = Dict(zip(mesh_ids, combined.physical_tag_maps))
     boundary_tag_by_id = Dict{String,Int}()
     for boundary in boundaries
@@ -72,6 +80,8 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
         mesh=combined.mesh,
         vertex_offset_by_mesh_id=vertex_offset_by_mesh_id,
         face_offset_by_mesh_id=face_offset_by_mesh_id,
+        vertex_count_by_mesh_id=vertex_count_by_mesh_id,
+        face_count_by_mesh_id=face_count_by_mesh_id,
         boundary_tag_by_id=boundary_tag_by_id,
     )
 end
@@ -148,6 +158,416 @@ function rows(vectors, ::Type{T}) where {T<:AbstractFloat}
     return reduce(vcat, (reshape(Complex{T}.(values), 1, :) for values in vectors))
 end
 
+function exterior_quadrature_selection(options, mesh::BoundaryMesh{T}, frequency_hz::T, sound_speed::T, base_order::Int, backend::Symbol) where {T<:AbstractFloat}
+    default_mode = backend == :cpu ? "wavelength" : "fixed"
+    mode = lowercase(String(get(options, "regular_quadrature_mode", default_mode)))
+    mode in ("fixed", "wavelength") || error(
+        "Unsupported regular quadrature mode: $mode. Expected fixed or wavelength.",
+    )
+    backend == :cpu || mode == "fixed" || error(
+        "Wavelength-driven regular quadrature is currently available only on the CPU backend.",
+    )
+    if mode == "fixed"
+        return (order=base_order, mode=mode, mesh_stat=nothing, area=nothing, length=nothing, kh=nothing)
+    end
+    mesh_stat = lowercase(String(get(options, "wavelength_mesh_stat", "p90")))
+    areas = collect(Float64.(mesh.areas))
+    area = if mesh_stat == "median"
+        median(areas)
+    elseif mesh_stat == "p75"
+        quantile(areas, 0.75)
+    elseif mesh_stat == "p90"
+        quantile(areas, 0.90)
+    elseif mesh_stat == "max"
+        maximum(areas)
+    else
+        error("Unsupported wavelength mesh stat: $mesh_stat.")
+    end
+    element_length = sqrt(area)
+    kh = Float64(2pi * frequency_hz / sound_speed) * element_length
+    q1_cutoff = Float64(get(options, "wavelength_kh_q1_max", 0.0))
+    q2_cutoff = Float64(get(options, "wavelength_kh_q2_max", 2.0))
+    q1_cutoff >= 0.0 || error("wavelength_kh_q1_max must be non-negative.")
+    q2_cutoff > q1_cutoff || error("wavelength_kh_q2_max must exceed wavelength_kh_q1_max.")
+    order = kh <= q1_cutoff ? 1 : kh <= q2_cutoff ? 2 : base_order
+    return (order=order, mode=mode, mesh_stat=mesh_stat, area=area, length=element_length, kh=kh)
+end
+
+function exterior_excitations(ports, components, boundaries, boundary_tag_by_id, exterior_region, ::Type{T}) where {T<:AbstractFloat}
+    excitations = NamedTuple[]
+    for port_id in String.(ports)
+        port = object_by_id(components.ports, port_id, "excitation port")
+        String(port["kind"]) == "normal_velocity" || error(
+            "Exterior excitation port $port_id must be a normal-velocity port.",
+        )
+        component = object_by_id(components.items, String(port["component_id"]), "component")
+        String(component["kind"]) == "ideal_velocity_source" || error(
+            "Exterior excitation port $port_id must reference an ideal velocity source.",
+        )
+        parameters = get(component, "parameters", Dict{String,Any}())
+        raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
+        tags = Int[]
+        amplitudes = T[]
+        for boundary_id in String.(component["boundary_ids"])
+            boundary = object_by_id(boundaries, boundary_id, "boundary")
+            String(boundary["region_id"]) == String(exterior_region["id"]) || error(
+                "Exterior component $(repr(String(component["id"]))) references a boundary outside its region.",
+            )
+            String(boundary["kind"]) == "moving" || continue
+            tag = get(boundary_tag_by_id, boundary_id, 0)
+            tag > 0 || error("Exterior moving boundary $boundary_id did not resolve to a BEM tag.")
+            amplitude = T(get(raw_weights, boundary_id, 1.0))
+            isfinite(amplitude) && amplitude > zero(T) || error(
+                "Exterior boundary motion weights must be finite and positive.",
+            )
+            push!(tags, tag)
+            push!(amplitudes, amplitude)
+        end
+        isempty(tags) && error(
+            "Exterior component $(repr(String(component["id"]))) has no moving boundaries.",
+        )
+        push!(excitations, (port_id=port_id, component_id=String(component["id"]), tags=tags, amplitudes=amplitudes))
+    end
+    return excitations
+end
+
+function exterior_neumann(mesh, excitation, density::T, omega::T) where {T<:AbstractFloat}
+    values = zeros(Complex{T}, length(mesh.faces))
+    for (tag, amplitude) in zip(excitation.tags, excitation.amplitudes)
+        for face_index in eachindex(mesh.faces)
+            mesh.physical_tags[face_index] == tag || continue
+            values[face_index] = Complex{T}(0, density * omega * amplitude)
+        end
+    end
+    return values
+end
+
+function exterior_field(points, mesh, pressure, neumann, wavenumber, cache, backend)
+    if backend == :cuda
+        return evaluate_galerkin_field_cuda(points, mesh, pressure, neumann, wavenumber, cache)
+    elseif backend == :rocm
+        return evaluate_galerkin_field_rocm(points, mesh, pressure, neumann, wavenumber, cache)
+    end
+    return evaluate_galerkin_field_cpu(points, mesh, pressure, neumann, wavenumber, cache)
+end
+
+function exterior_component_impedance(mesh, pressure, excitation, symmetry_mode, ::Type{T}) where {T<:AbstractFloat}
+    force = zero(Complex{T})
+    selected_tags = Set(excitation.tags)
+    for face_index in eachindex(mesh.faces)
+        mesh.physical_tags[face_index] in selected_tags || continue
+        face = mesh.faces[face_index]
+        average_pressure = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / T(3)
+        force += average_pressure * T(mesh.areas[face_index])
+    end
+    force *= T(symmetry_reduction_factor(symmetry_mode)) * T(10)
+    return Complex{T}(real(force) / T(2), -imag(force) / T(2))
+end
+
+function solve_exterior_request(request, system, unbounded_region; event_mode=false)
+    meshes = system["meshes"]
+    boundaries = system["boundaries"]
+    components = system["components"]
+    port_objects = system["excitation_ports"]
+    options = get(request, "solver_options", Dict{String,Any}())
+    precision_name = lowercase(String(get(options, "precision", "float32")))
+    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
+                error("Exterior precision must be float32 or float64.")
+    backend = Symbol(lowercase(String(get(options, "bem_backend", "cpu"))))
+    backend in (:cpu, :cuda, :rocm) || error("Exterior BEM backend must be cpu, cuda, or rocm.")
+    symmetry_mode = BeatEngineCore.normalized_symmetry_mode(get(options, "symmetry", "off"))
+    sound_speed = FloatType(unbounded_region["sound_speed_m_per_s"])
+    density = FloatType(unbounded_region["density_kg_per_m3"])
+    sound_speed > zero(FloatType) && density > zero(FloatType) || error(
+        "Exterior sound speed and density must be positive.",
+    )
+    mesh_setup_started = time_ns()
+    bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
+    mesh = snap_symmetry_planes(bem_domain.mesh, symmetry_mode)
+    validate_symmetry_fundamental_domain!(mesh, symmetry_mode)
+    excitation_port_ids = String.(request["excitation_port_ids"])
+    excitations = exterior_excitations(
+        excitation_port_ids,
+        (ports=port_objects, items=components),
+        boundaries,
+        bem_domain.boundary_tag_by_id,
+        unbounded_region,
+        FloatType,
+    )
+    mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
+    p1_space = build_p1_space(mesh)
+    dp0_space = build_dp0_space(mesh)
+    base_order = Int(get(options, "quadrature_order", 4))
+    singular_order = Int(get(options, "singular_order", 4))
+    base_rule = triangle_rule(FloatType, base_order)
+    singular_cache = build_singular_correction_cache(mesh, singular_order)
+    identity_p1_p1 = assemble_l2_identity_matrix(
+        mesh, p1_space, dp0_space, base_rule, :p1, :p1; symmetry_mode=symmetry_mode,
+    )
+    identity_p1_dp0 = assemble_l2_identity_matrix(
+        mesh, p1_space, dp0_space, base_rule, :p1, :dp0; symmetry_mode=symmetry_mode,
+    )
+    cpu_field_cache = build_field_evaluation_cache(mesh, base_rule; symmetry_mode=symmetry_mode)
+    accelerator_backend = backend in (:cuda, :rocm)
+    device_cache = if backend == :cuda
+        build_cuda_regular_assembly_cache(mesh, base_rule)
+    elseif backend == :rocm
+        build_rocm_regular_assembly_cache(
+            mesh,
+            p1_space,
+            dp0_space,
+            base_rule;
+            singular_order=singular_order,
+            symmetry_mode=symmetry_mode,
+        )
+    else
+        nothing
+    end
+    field_cache = if backend == :cuda
+        build_cuda_field_evaluation_cache(cpu_field_cache)
+    elseif backend == :rocm
+        build_rocm_field_evaluation_cache(cpu_field_cache)
+    else
+        cpu_field_cache
+    end
+    device_singular_cache = if backend == :cuda
+        BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1_space, dp0_space)
+    elseif backend == :rocm
+        build_rocm_singular_correction_cache(singular_cache)
+    else
+        nothing
+    end
+    device_image_singular_cache = backend == :cuda && symmetry_mode != :off ?
+                                  build_cuda_image_singular_correction_cache(
+        mesh, p1_space, dp0_space, singular_order, eachindex(mesh.faces), symmetry_mode,
+    ) : nothing
+    device_identity_cache = if backend == :cuda
+        build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, FloatType)
+    elseif backend == :rocm
+        build_rocm_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, FloatType)
+    else
+        nothing
+    end
+    cpu_blas_threads = backend == :cpu ?
+                       configure_beat_cpu_blas_threads!(p1_space.global_dof_count) :
+                       BLAS.get_num_threads()
+    rule_cache = Dict{Int,Any}(base_order => base_rule)
+    identity_cache = Dict{Int,Any}(base_order => (identity_p1_p1, identity_p1_dp0))
+    cpu_field_cache_by_order = Dict{Int,Any}(base_order => cpu_field_cache)
+    cpu_assembly_cache_by_order = Dict{Int,Any}()
+    outputs = get(request, "outputs", Any[])
+    cancel_path = get(request, "cancel_path", nothing)
+    cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
+    solved_count = 0
+    try
+        for (frequency_index, raw_frequency) in enumerate(request["frequencies_hz"])
+            cancel_requested() && return (cancelled=true, solved_count=solved_count)
+            frequency_hz = FloatType(raw_frequency)
+            omega = FloatType(2pi) * frequency_hz
+            wavenumber = omega / sound_speed
+            selection = exterior_quadrature_selection(
+                options, mesh, frequency_hz, sound_speed, base_order, backend,
+            )
+            rule = backend == :cpu ? get!(rule_cache, selection.order) do
+                triangle_rule(FloatType, selection.order)
+            end : base_rule
+            selected_identity = backend == :cpu ? get!(identity_cache, selection.order) do
+                (
+                    assemble_l2_identity_matrix(
+                        mesh, p1_space, dp0_space, rule, :p1, :p1; symmetry_mode=symmetry_mode,
+                    ),
+                    assemble_l2_identity_matrix(
+                        mesh, p1_space, dp0_space, rule, :p1, :dp0; symmetry_mode=symmetry_mode,
+                    ),
+                )
+            end : (identity_p1_p1, identity_p1_dp0)
+            selected_field_cache = backend == :cpu ? get!(cpu_field_cache_by_order, selection.order) do
+                build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode)
+            end : field_cache
+            selected_cpu_cache = backend == :cpu ? get!(cpu_assembly_cache_by_order, selection.order) do
+                build_beat_cpu_assembly_cache(
+                    mesh,
+                    p1_space,
+                    dp0_space,
+                    rule;
+                    singular_order=singular_order,
+                    symmetry_mode=symmetry_mode,
+                )
+            end : nothing
+            assembly_started = time_ns()
+            operators = assemble_regular_galerkin_operators(
+                mesh,
+                p1_space,
+                dp0_space,
+                wavenumber,
+                rule;
+                skip_singular=false,
+                singular_order=singular_order,
+                backend=backend,
+                device_cache=device_cache,
+                return_device=accelerator_backend,
+                accelerator_quadrature=accelerator_backend,
+                singular_cache=singular_cache,
+                cpu_cache=selected_cpu_cache,
+                device_singular_cache=device_singular_cache,
+                device_image_singular_cache=device_image_singular_cache,
+                symmetry_mode=symmetry_mode,
+            )
+            assembly_s = (time_ns() - assembly_started) / 1.0e9
+            solve_started = time_ns()
+            cpu_system = backend == :cpu ? build_burton_miller_neumann_cpu_system(
+                operators, selected_identity[1], selected_identity[2], wavenumber,
+            ) : nothing
+            pressures = Vector{Vector{Complex{FloatType}}}()
+            neumann_values = Vector{Vector{Complex{FloatType}}}()
+            for excitation in excitations
+                neumann = exterior_neumann(mesh, excitation, density, omega)
+                pressure = backend == :cpu ?
+                           solve_burton_miller_neumann_cpu_system(cpu_system, neumann, FloatType) :
+                           solve_burton_miller_neumann(
+                    operators, device_identity_cache, neumann, wavenumber,
+                )
+                push!(pressures, Complex{FloatType}.(pressure))
+                push!(neumann_values, neumann)
+            end
+            solve_s = (time_ns() - solve_started) / 1.0e9
+            quantities = Dict{String,Any}[]
+            field_s = 0.0
+            for output in outputs
+                quantity = String(output["quantity"])
+                if quantity == "exterior_pressure"
+                    field_started = time_ns()
+                    raw_points = get(get(output, "options", Dict{String,Any}()), "points_m", Any[])
+                    isempty(raw_points) && error("exterior_pressure output requires options.points_m.")
+                    points = [SVector{3,FloatType}(FloatType.(point)) for point in raw_points]
+                    values = [
+                        exterior_field(
+                            points,
+                            mesh,
+                            pressure,
+                            neumann,
+                            wavenumber,
+                            selected_field_cache,
+                            backend,
+                        ) for (pressure, neumann) in zip(pressures, neumann_values)
+                    ]
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(values, FloatType),
+                            "Pa",
+                            ["excitation", "observation"],
+                            metadata=Dict("points_m" => raw_points),
+                        ),
+                    )
+                    field_s += (time_ns() - field_started) / 1.0e9
+                elseif quantity == "bem_boundary_pressure"
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(pressures, FloatType),
+                            "Pa",
+                            ["excitation", "bem_node"],
+                        ),
+                    )
+                elseif quantity == "bem_boundary_neumann"
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(neumann_values, FloatType),
+                            "Pa/m",
+                            ["excitation", "bem_face"],
+                        ),
+                    )
+                elseif quantity == "radiation_impedance"
+                    impedance_by_component = Complex{FloatType}[]
+                    pressure_by_component = Dict(
+                        excitation.component_id => pressure
+                        for (excitation, pressure) in zip(excitations, pressures)
+                    )
+                    excitation_by_component = Dict(
+                        excitation.component_id => excitation for excitation in excitations
+                    )
+                    for component in components
+                        component_id = String(component["id"])
+                        push!(
+                            impedance_by_component,
+                            exterior_component_impedance(
+                                mesh,
+                                pressure_by_component[component_id],
+                                excitation_by_component[component_id],
+                                symmetry_mode,
+                                FloatType,
+                            ),
+                        )
+                    end
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            impedance_by_component,
+                            "Pa*s/m^3",
+                            ["radiator"],
+                        ),
+                    )
+                else
+                    error("Unsupported exterior output quantity: $quantity")
+                end
+            end
+            diagnostics = Dict{String,Any}(
+                "precision" => precision_name,
+                "bem_backend" => String(backend),
+                "symmetry" => String(symmetry_mode),
+                "formulation" => "exterior_burton_miller_neumann",
+                "linear_solver" => backend == :cpu ?
+                                   "cpu_dense_lu" :
+                                   backend == :cuda ? "cuda_dense_lu" : "rocm_rocsolver_dense_lu",
+                "bounded_region_count" => 0,
+                "interface_count" => 0,
+                "regular_quadrature_mode" => selection.mode,
+                "regular_quadrature_order" => selection.order,
+                "blas_threads" => cpu_blas_threads,
+                "timings" => Dict(
+                    "assembly_s" => assembly_s,
+                    "solve_s" => solve_s,
+                    "field_s" => field_s,
+                    "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
+                    "cache_setup_s" => 0.0,
+                ),
+            )
+            result = Dict(
+                "schema_version" => 1,
+                "freq_hz" => frequency_hz,
+                "excitation_port_ids" => excitation_port_ids,
+                "quantities" => quantities,
+                "diagnostics" => diagnostics,
+            )
+            println(JSON.json(event_mode ? Dict("type" => "result", "result" => result) : result))
+            flush(stdout)
+            release_operator_storage!(operators)
+            solved_count = frequency_index
+        end
+    finally
+        if device_identity_cache !== nothing
+            backend == :cuda ?
+            release_cuda_burton_miller_identity_cache!(device_identity_cache) :
+            release_rocm_burton_miller_identity_cache!(device_identity_cache)
+        end
+        device_image_singular_cache === nothing ||
+            release_cuda_image_singular_correction_cache!(device_image_singular_cache)
+        if backend == :rocm
+            device_singular_cache === nothing ||
+                release_rocm_singular_correction_cache!(device_singular_cache)
+            field_cache === cpu_field_cache || release_rocm_field_evaluation_cache!(field_cache)
+            device_cache === nothing || release_rocm_regular_assembly_cache!(device_cache)
+        end
+    end
+    return (cancelled=cancel_requested(), solved_count=solved_count)
+end
+
 function per_interface_errors(
     solution,
     fem_mesh,
@@ -214,9 +634,13 @@ function aggregate_fem_domains(
     tetra_tags = Int[]
     boundary_faces = NTuple{3,Int}[]
     boundary_tags = Int[]
+    quadratic_tetrahedra = NTuple{10,Int}[]
+    quadratic_boundary_faces = NTuple{6,Int}[]
+    quadratic_order = nothing
     domains = NamedTuple[]
     bulk_loss_factor_by_vertex = T[]
     wall_impedances = NamedTuple[]
+    plane_wave_terminations = NamedTuple[]
     fem_boundary_tag_by_id = Dict{String,Int}()
     domain_by_boundary_id = Dict{String,Int}()
     next_boundary_tag = 1
@@ -235,6 +659,12 @@ function aggregate_fem_domains(
             if String(group["mesh_id"]) == mesh_id
         ]
         selection = restrict_volume_mesh(full_mesh, selected_volume_tags)
+        local_quadratic = is_quadratic(selection.mesh)
+        if isnothing(quadratic_order)
+            quadratic_order = local_quadratic
+        elseif local_quadratic != quadratic_order
+            error("All bounded FEM regions must use the same tetrahedron order.")
+        end
         loss_model = get(region, "loss_model", Dict{String,Any}())
         bulk_loss_factor = T(get(loss_model, "bulk_loss_factor", 0.0))
         isfinite(bulk_loss_factor) && zero(T) <= bulk_loss_factor <= one(T) || error(
@@ -259,8 +689,18 @@ function aggregate_fem_domains(
             fem_boundary_tag_by_id[boundary_id] = solver_tag
             domain_by_boundary_id[boundary_id] = length(domains) + 1
             parameters = get(boundary, "parameters", Dict{String,Any}())
+            boundary_kind = String(boundary["kind"])
+            if boundary_kind == "plane_wave_tube_termination"
+                isempty(parameters) || error(
+                    "Plane-wave tube termination $(repr(boundary_id)) does not accept parameters.",
+                )
+                push!(
+                    plane_wave_terminations,
+                    (boundary_id=boundary_id, tag=solver_tag),
+                )
+            end
             if haskey(parameters, "wall_impedance")
-                String(boundary["kind"]) == "rigid" || error(
+                boundary_kind == "rigid" || error(
                     "Wall impedance boundary $(repr(boundary_id)) must be rigid.",
                 )
                 treatment = parameters["wall_impedance"]
@@ -307,6 +747,13 @@ function aggregate_fem_domains(
         )
         append!(tetra_tags, selection.mesh.tetra_physical_tags)
         append!(
+            quadratic_tetrahedra,
+            [
+                ntuple(index -> tetrahedron[index] + vertex_offset, 10)
+                for tetrahedron in selection.mesh.quadratic_tetrahedra
+            ],
+        )
+        append!(
             boundary_faces,
             [
                 ntuple(index -> face[index] + vertex_offset, 3)
@@ -314,6 +761,13 @@ function aggregate_fem_domains(
             ],
         )
         append!(boundary_tags, remapped_boundary_tags)
+        append!(
+            quadratic_boundary_faces,
+            [
+                ntuple(index -> face[index] + vertex_offset, 6)
+                for face in selection.mesh.quadratic_boundary_faces
+            ],
+        )
         push!(
             domains,
             (
@@ -334,6 +788,8 @@ function aggregate_fem_domains(
         boundary_faces,
         boundary_tags,
         Dict{Tuple{Int,Int},String}(),
+        quadratic_tetrahedra,
+        quadratic_boundary_faces,
     )
     return (
         mesh=mesh,
@@ -342,6 +798,7 @@ function aggregate_fem_domains(
         domain_by_boundary_id=domain_by_boundary_id,
         bulk_loss_factor_by_vertex=bulk_loss_factor_by_vertex,
         wall_impedances=wall_impedances,
+        plane_wave_terminations=plane_wave_terminations,
     )
 end
 
@@ -611,6 +1068,400 @@ function electrodynamic_transducers_from_wire(
     return transducers, index_by_component_id
 end
 
+function solve_interior_request(request, system, bounded_regions; event_mode=false)
+    isempty(bounded_regions) && error("Interior FEM solving requires at least one bounded region.")
+    isempty(system["interfaces"]) || error("Interior FEM solving does not accept FEM-BEM interfaces.")
+    meshes = system["meshes"]
+    boundaries = system["boundaries"]
+    components = system["components"]
+    ports = system["excitation_ports"]
+    solver_options = get(request, "solver_options", Dict{String,Any}())
+    precision_name = lowercase(String(get(solver_options, "precision", "float64")))
+    FloatType = if precision_name in ("float32", "complex64")
+        Float32
+    elseif precision_name in ("float64", "complex128")
+        Float64
+    else
+        error("Unsupported interior FEM precision: $precision_name. Expected float32 or float64.")
+    end
+    symmetry_mode = BeatEngineCore.normalized_symmetry_mode(
+        get(solver_options, "symmetry", "off"),
+    )
+    transducer_reference_voltage_v = FloatType(
+        get(
+            solver_options,
+            "transducer_reference_voltage_v",
+            DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
+        ),
+    )
+    transducer_reference_voltage_v > zero(FloatType) || error(
+        "transducer_reference_voltage_v must be greater than zero.",
+    )
+    fem_consistent_mass_weight = FloatType(
+        get(solver_options, "fem_consistent_mass_weight", 1.0),
+    )
+    isfinite(fem_consistent_mass_weight) &&
+        zero(FloatType) <= fem_consistent_mass_weight <= one(FloatType) || error(
+        "fem_consistent_mass_weight must be finite and between zero and one.",
+    )
+
+    reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
+    reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
+    for region in bounded_regions
+        isapprox(
+            Float64(region["sound_speed_m_per_s"]),
+            reference_sound_speed;
+            rtol=1e-9,
+            atol=0,
+        ) && isapprox(
+            Float64(region["density_kg_per_m3"]),
+            reference_density;
+            rtol=1e-9,
+            atol=0,
+        ) || error(
+            "Interior FEM solving currently requires one shared sound speed and density.",
+        )
+    end
+    sound_speed = FloatType(reference_sound_speed)
+    density = FloatType(reference_density)
+
+    mesh_setup_started = time_ns()
+    fem_domains = aggregate_fem_domains(meshes, bounded_regions, boundaries, FloatType)
+    fem_mesh = fem_domains.mesh
+    symmetry_tolerance = symmetry_plane_tolerance(fem_mesh.vertices)
+    fem_mesh = VolumeMesh(
+        snap_symmetry_plane_vertices(
+            fem_mesh.vertices,
+            symmetry_mode;
+            tolerance=symmetry_tolerance,
+        ),
+        fem_mesh.tetrahedra,
+        fem_mesh.tetra_physical_tags,
+        fem_mesh.boundary_faces,
+        fem_mesh.boundary_physical_tags,
+        fem_mesh.physical_names,
+        fem_mesh.quadratic_tetrahedra,
+        fem_mesh.quadratic_boundary_faces,
+    )
+    validate_volume_symmetry_fundamental_domain!(
+        fem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
+    )
+    mesh_setup_s = (time_ns() - mesh_setup_started) / 1.0e9
+
+    cache_started = time_ns()
+    stiffness, consistent_mass = assemble_fem_matrices(fem_mesh)
+    mass = blend_fem_mass_matrix(consistent_mass, fem_consistent_mass_weight)
+    bulk_loss_mass = spdiagm(
+        0 => FloatType.(fem_domains.bulk_loss_factor_by_vertex),
+    ) * mass
+    wall_operators = [
+        begin
+            face_indices = findall(==(Int(spec.tag)), fem_mesh.boundary_physical_tags)
+            isempty(face_indices) && error(
+                "Wall-impedance boundary $(repr(spec.boundary_id)) contains no selected FEM faces.",
+            )
+            (
+                boundary_id=spec.boundary_id,
+                matrix=assemble_boundary_mass_matrix(
+                    fem_mesh,
+                    face_indices,
+                    collect(1:length(fem_mesh.vertices)),
+                ),
+                thickness_m=FloatType(spec.thickness_m),
+                flow_resistivity_pa_s_per_m2=FloatType(spec.flow_resistivity_pa_s_per_m2),
+            )
+        end
+        for spec in fem_domains.wall_impedances
+    ]
+    termination_operators = [
+        begin
+            face_indices = findall(==(Int(spec.tag)), fem_mesh.boundary_physical_tags)
+            isempty(face_indices) && error(
+                "Plane-wave tube termination $(repr(spec.boundary_id)) contains no selected FEM faces.",
+            )
+            (
+                boundary_id=spec.boundary_id,
+                matrix=assemble_boundary_mass_matrix(
+                    fem_mesh,
+                    face_indices,
+                    collect(1:length(fem_mesh.vertices)),
+                ),
+            )
+        end
+        for spec in fem_domains.plane_wave_terminations
+    ]
+    empty_bem_mesh = BoundaryMesh(
+        SVector{3,FloatType}[],
+        NTuple{3,Int}[],
+        Int[],
+    )
+    transducers, transducer_index_by_component_id = electrodynamic_transducers_from_wire(
+        components,
+        boundaries,
+        fem_domains.fem_boundary_tag_by_id,
+        Dict{String,Int}(),
+        fem_mesh,
+        empty_bem_mesh,
+        FloatType,
+        symmetry_mode,
+    )
+    transducer_operators = assemble_transducer_operators(
+        fem_mesh,
+        empty_bem_mesh,
+        transducers,
+    )
+    cache_setup_s = (time_ns() - cache_started) / 1.0e9
+
+    excitation_port_ids = String.(request["excitation_port_ids"])
+    isempty(excitation_port_ids) && error("Interior FEM solving requires at least one excitation port.")
+    excitations = NamedTuple[]
+    for port_id in excitation_port_ids
+        port = object_by_id(ports, port_id, "excitation port")
+        component = object_by_id(components, String(port["component_id"]), "component")
+        port_kind = String(port["kind"])
+        component_kind = String(component["kind"])
+        if port_kind == "normal_velocity" && component_kind == "ideal_velocity_source"
+            parameters = get(component, "parameters", Dict{String,Any}())
+            raw_weights = get(parameters, "boundary_motion_weights", Dict{String,Any}())
+            tags = Int[]
+            weights = FloatType[]
+            for boundary_id_value in component["boundary_ids"]
+                boundary_id = String(boundary_id_value)
+                boundary = object_by_id(boundaries, boundary_id, "boundary")
+                String(boundary["kind"]) == "moving" || error(
+                    "Prescribed-velocity component $(repr(String(component["id"]))) references " *
+                    "non-moving boundary $(repr(boundary_id)).",
+                )
+                tag = get(fem_domains.fem_boundary_tag_by_id, boundary_id, 0)
+                tag > 0 || error(
+                    "Interior prescribed-velocity boundary $(repr(boundary_id)) did not resolve to a FEM tag.",
+                )
+                weight = FloatType(get(raw_weights, boundary_id, 1))
+                isfinite(weight) && weight > zero(FloatType) || error(
+                    "Prescribed-velocity boundary weights must be finite and positive.",
+                )
+                push!(tags, tag)
+                push!(weights, weight)
+            end
+            isempty(tags) && error(
+                "Prescribed-velocity component $(repr(String(component["id"]))) has no moving FEM boundary.",
+            )
+            push!(excitations, (kind=:normal_velocity, tags=tags, weights=weights, transducer_index=0))
+        elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"
+            transducer_index = get(transducer_index_by_component_id, String(component["id"]), 0)
+            transducer_index > 0 || error(
+                "Voltage excitation $(repr(port_id)) did not resolve to an electrodynamic transducer.",
+            )
+            push!(
+                excitations,
+                (kind=:voltage, tags=Int[], weights=FloatType[], transducer_index=transducer_index),
+            )
+        else
+            error("Interior excitation port $(repr(port_id)) is incompatible with its component.")
+        end
+    end
+
+    outputs = get(request, "outputs", Any[])
+    frequencies = Float64.(request["frequencies_hz"])
+    cancel_path = get(request, "cancel_path", nothing)
+    cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
+    solved_count = 0
+    for (frequency_index, frequency_hz_value) in enumerate(frequencies)
+        cancel_requested() && return (cancelled=true, solved_count=solved_count)
+        frequency_hz = FloatType(frequency_hz_value)
+        omega = FloatType(2pi) * frequency_hz
+        wavenumber = omega / sound_speed
+        assembly_started = time_ns()
+        fem_system = assemble_fem_dynamic_stiffness(
+            stiffness,
+            mass,
+            wavenumber;
+            bulk_loss_mass=bulk_loss_mass,
+        )
+        for operator in wall_operators
+            admittance = miki_rigid_backed_surface_admittance(
+                frequency_hz,
+                sound_speed,
+                density,
+                operator.thickness_m,
+                operator.flow_resistivity_pa_s_per_m2,
+            )
+            fem_system -= Complex{FloatType}(0, density * omega) * admittance .* operator.matrix
+        end
+        for operator in termination_operators
+            fem_system -= Complex{FloatType}(0, wavenumber) .* operator.matrix
+        end
+
+        fem_count = length(fem_mesh.vertices)
+        transducer_count = length(transducers)
+        mechanical_range = transducer_count == 0 ?
+                           (1:0) :
+                           ((fem_count + 1):(fem_count + transducer_count))
+        electrical_range = transducer_count == 0 ?
+                           (1:0) :
+                           ((fem_count + transducer_count + 1):(fem_count + 2 * transducer_count))
+        system_order = fem_count + 2 * transducer_count
+        coupled = if transducer_count == 0
+            SparseMatrixCSC{ComplexF64,Int}(fem_system)
+        else
+            normal_derivative_scale = Complex{FloatType}(0, density * omega)
+            fem_motion = -normal_derivative_scale .* Complex{FloatType}.(
+                transducer_operators.fem_surface,
+            )
+            fem_force = -Complex{FloatType}.(transpose(transducer_operators.fem_force))
+            mechanical_impedance = Complex{FloatType}[
+                Complex{FloatType}(
+                    transducer.rms_n_s_per_m,
+                    -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
+                )
+                for transducer in transducers
+            ]
+            electrical_impedance = Complex{FloatType}[
+                Complex{FloatType}(transducer.re_ohm, -omega * transducer.le_h)
+                for transducer in transducers
+            ]
+            force_factor = Complex{FloatType}[transducer.bl_n_per_a for transducer in transducers]
+            sparse_system = [
+                fem_system fem_motion spzeros(Complex{FloatType}, fem_count, transducer_count)
+                fem_force spdiagm(0 => mechanical_impedance) -spdiagm(0 => force_factor)
+                spzeros(Complex{FloatType}, transducer_count, fem_count) spdiagm(0 => force_factor) spdiagm(0 => electrical_impedance)
+            ]
+            SparseMatrixCSC{ComplexF64,Int}(sparse_system)
+        end
+        factorization = lu(coupled)
+        assembly_s = (time_ns() - assembly_started) / 1.0e9
+
+        rhs = zeros(ComplexF64, system_order, length(excitations))
+        for (column, excitation) in enumerate(excitations)
+            if excitation.kind == :normal_velocity
+                for (tag, weight) in zip(excitation.tags, excitation.weights)
+                    rhs[1:fem_count, column] .+= ComplexF64.(
+                        assemble_prescribed_velocity_load(
+                            fem_mesh,
+                            tag,
+                            density,
+                            omega,
+                            Complex{FloatType}(weight, 0),
+                        ),
+                    )
+                end
+            else
+                rhs[first(electrical_range) + excitation.transducer_index - 1, column] =
+                    ComplexF64(transducer_reference_voltage_v)
+            end
+        end
+        solve_started = time_ns()
+        solution = factorization \ rhs
+        solve_s = (time_ns() - solve_started) / 1.0e9
+        fem_pressures = [
+            Complex{FloatType}.(solution[1:fem_count, column])
+            for column in axes(solution, 2)
+        ]
+        diaphragm_velocities = [
+            Complex{FloatType}.(solution[mechanical_range, column])
+            for column in axes(solution, 2)
+        ]
+        voice_coil_currents = [
+            Complex{FloatType}.(solution[electrical_range, column])
+            for column in axes(solution, 2)
+        ]
+
+        quantities = Dict{String,Any}[]
+        for output in outputs
+            quantity = String(output["quantity"])
+            if quantity == "fem_nodal_pressure"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(fem_pressures, FloatType),
+                        "Pa",
+                        ["excitation", "fem_node"],
+                        metadata=Dict(
+                            "mesh_ids" => [domain.mesh_id for domain in fem_domains.domains],
+                            "region_ids" => [domain.id for domain in fem_domains.domains],
+                            "node_offsets" => [domain.vertex_offset for domain in fem_domains.domains],
+                            "node_counts" => [domain.vertex_count for domain in fem_domains.domains],
+                        ),
+                    ),
+                )
+            elseif quantity == "diaphragm_velocity"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(diaphragm_velocities, FloatType),
+                        "m/s",
+                        ["excitation", "transducer"],
+                        metadata=Dict("component_ids" => [transducer.id for transducer in transducers]),
+                    ),
+                )
+            elseif quantity == "voice_coil_current"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows(voice_coil_currents, FloatType),
+                        "A",
+                        ["excitation", "transducer"],
+                        metadata=Dict("component_ids" => [transducer.id for transducer in transducers]),
+                    ),
+                )
+            else
+                error("Unsupported interior FEM output quantity: $quantity")
+            end
+        end
+        relative_residual = maximum(
+            norm(coupled * solution[:, column] - rhs[:, column]) /
+            max(norm(rhs[:, column]), eps(Float64))
+            for column in axes(solution, 2)
+        )
+        diagnostics = Dict{String,Any}(
+            "precision" => precision_name,
+            "linear_backend" => "cpu",
+            "linear_solver" => "cpu_umfpack_sparse_lu_fp64",
+            "symmetry" => String(symmetry_mode),
+            "formulation" => "interior_fem_sparse",
+            "fem_consistent_mass_weight" => fem_consistent_mass_weight,
+            "full_system_order" => system_order,
+            "solved_system_order" => system_order,
+            "bounded_region_count" => length(bounded_regions),
+            "interface_count" => 0,
+            "transducer_count" => transducer_count,
+            "transducer_reference_voltage_v" => transducer_reference_voltage_v,
+            "plane_wave_termination_boundary_ids" => [
+                operator.boundary_id for operator in termination_operators
+            ],
+            "wall_impedance_boundary_ids" => [operator.boundary_id for operator in wall_operators],
+            "relative_residual" => relative_residual,
+            "timings" => Dict(
+                "assembly_s" => assembly_s,
+                "solve_s" => solve_s,
+                "field_s" => 0.0,
+                "mesh_setup_s" => frequency_index == 1 ? mesh_setup_s : 0.0,
+                "cache_setup_s" => frequency_index == 1 ? cache_setup_s : 0.0,
+            ),
+        )
+        result = Dict(
+            "schema_version" => 1,
+            "freq_hz" => frequency_hz_value,
+            "excitation_port_ids" => excitation_port_ids,
+            "quantities" => quantities,
+            "diagnostics" => diagnostics,
+        )
+        if event_mode
+            println(JSON.json(Dict("type" => "result", "result" => result)))
+        else
+            println(JSON.json(result))
+        end
+        flush(stdout)
+        solved_count += 1
+    end
+    return (cancelled=false, solved_count=solved_count)
+end
+
 function solve_request(request; event_mode=false)
     Int(get(request, "schema_version", 0)) == 1 || error("Unsupported system solve request schema.")
     cancel_path = get(request, "cancel_path", nothing)
@@ -626,9 +1477,20 @@ function solve_request(request; event_mode=false)
 
     bounded_regions = [region for region in regions if String(region["kind"]) == "bounded_air"]
     unbounded_regions = [region for region in regions if String(region["kind"]) == "unbounded_air"]
-    isempty(bounded_regions) && error("Coupled backend requires at least one bounded region.")
+    isempty(unbounded_regions) && return solve_interior_request(
+        request,
+        system,
+        bounded_regions;
+        event_mode=event_mode,
+    )
     length(unbounded_regions) == 1 || error("Coupled backend currently requires exactly one unbounded region.")
     unbounded_region = only(unbounded_regions)
+    isempty(bounded_regions) && return solve_exterior_request(
+        request,
+        system,
+        unbounded_region;
+        event_mode=event_mode,
+    )
     reference_sound_speed = Float64(bounded_regions[1]["sound_speed_m_per_s"])
     reference_density = Float64(bounded_regions[1]["density_kg_per_m3"])
     for region in regions
@@ -657,8 +1519,8 @@ function solve_request(request; event_mode=false)
         error("Unsupported coupled precision: $precision_name. Expected float32 or float64.")
     end
     bem_backend = Symbol(lowercase(String(get(solver_options, "bem_backend", "cpu"))))
-    bem_backend in (:cpu, :cuda) ||
-        error("Unsupported coupled BEM backend: $bem_backend. Expected cpu or cuda.")
+    bem_backend in (:cpu, :cuda, :rocm) ||
+        error("Unsupported coupled BEM backend: $bem_backend. Expected cpu, cuda, or rocm.")
     symmetry_mode = BeatEngineCore.normalized_symmetry_mode(
         get(solver_options, "symmetry", "off"),
     )
@@ -683,8 +1545,27 @@ function solve_request(request; event_mode=false)
     bem_domain = aggregate_bem_region(meshes, unbounded_region, boundaries, FloatType)
     bem_mesh = bem_domain.mesh
     symmetry_tolerance = max(
-        FloatType(1e-9),
-        maximum(maximum(abs, vertex) for vertex in fem_mesh.vertices) * FloatType(1e-6),
+        symmetry_plane_tolerance(fem_mesh.vertices),
+        symmetry_plane_tolerance(bem_mesh.vertices),
+    )
+    fem_mesh = VolumeMesh(
+        snap_symmetry_plane_vertices(
+            fem_mesh.vertices,
+            symmetry_mode;
+            tolerance=symmetry_tolerance,
+        ),
+        fem_mesh.tetrahedra,
+        fem_mesh.tetra_physical_tags,
+        fem_mesh.boundary_faces,
+        fem_mesh.boundary_physical_tags,
+        fem_mesh.physical_names,
+        fem_mesh.quadratic_tetrahedra,
+        fem_mesh.quadratic_boundary_faces,
+    )
+    bem_mesh = snap_symmetry_planes(
+        bem_mesh,
+        symmetry_mode;
+        tolerance=symmetry_tolerance,
     )
     validate_volume_symmetry_fundamental_domain!(
         fem_mesh,
@@ -725,6 +1606,10 @@ function solve_request(request; event_mode=false)
     excitation_port_ids = String.(request["excitation_port_ids"])
     isempty(excitation_port_ids) && error("Coupled solve requires at least one excitation port.")
     excitations = NamedTuple[]
+    prescribed_bem_rows = Int[]
+    prescribed_bem_cols = Int[]
+    prescribed_bem_values = FloatType[]
+    prescribed_bem_count = 0
     for port_id in excitation_port_ids
         port = object_by_id(ports, port_id, "excitation port")
         component = object_by_id(components, String(port["component_id"]), "component")
@@ -737,36 +1622,71 @@ function solve_request(request; event_mode=false)
                 object_by_id(boundaries, String(boundary_id), "boundary")
                 for boundary_id in component["boundary_ids"]
             ]
-            bounded_boundaries = [
-                boundary
-                for boundary in candidate_boundaries
-                if haskey(
-                    fem_domains.fem_boundary_tag_by_id,
-                    String(boundary["id"]),
+            fem_boundary_tags = Int[]
+            fem_boundary_weights = FloatType[]
+            bem_boundary_tags = Int[]
+            bem_boundary_weights = FloatType[]
+            for boundary in candidate_boundaries
+                boundary_id = String(boundary["id"])
+                String(boundary["kind"]) == "moving" || error(
+                    "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                    "references non-moving boundary $(repr(boundary_id)).",
                 )
-            ]
-            length(bounded_boundaries) == 1 || error(
-                "Each prescribed-velocity component must own exactly one moving boundary " *
-                "in the bounded region.",
+                weight = FloatType(get(raw_weights, boundary_id, 1))
+                isfinite(weight) && weight > zero(FloatType) || error(
+                    "Prescribed-velocity boundary motion weights must be finite and greater than zero.",
+                )
+                if haskey(fem_domains.fem_boundary_tag_by_id, boundary_id)
+                    tag = fem_domains.fem_boundary_tag_by_id[boundary_id]
+                    any(==(tag), fem_mesh.boundary_physical_tags) || error(
+                        "Moving boundary tag $tag is not on the selected FEM volume groups.",
+                    )
+                    push!(fem_boundary_tags, tag)
+                    push!(fem_boundary_weights, weight)
+                elseif haskey(bem_boundary_tag_by_id, boundary_id)
+                    tag = bem_boundary_tag_by_id[boundary_id]
+                    any(==(tag), bem_mesh.physical_tags) || error(
+                        "Moving boundary tag $tag is not present in the exterior BEM mesh.",
+                    )
+                    push!(bem_boundary_tags, tag)
+                    push!(bem_boundary_weights, weight)
+                else
+                    error(
+                        "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                        "references boundary $(repr(boundary_id)) outside the active acoustic regions.",
+                    )
+                end
+            end
+            isempty(fem_boundary_tags) && isempty(bem_boundary_tags) && error(
+                "Prescribed-velocity component $(repr(String(component["id"]))) " *
+                "must own at least one moving FEM or BEM boundary.",
             )
-            radiator_tag = fem_domains.fem_boundary_tag_by_id[
-                String(only(bounded_boundaries)["id"])
-            ]
-            boundary_id = String(only(bounded_boundaries)["id"])
-            amplitude = FloatType(get(raw_weights, boundary_id, 1))
-            isfinite(amplitude) && amplitude > zero(FloatType) || error(
-                "Prescribed-velocity boundary motion weights must be finite and greater than zero.",
-            )
-            any(==(radiator_tag), fem_mesh.boundary_physical_tags) || error(
-                "Moving boundary tag $radiator_tag is not on the selected FEM volume groups.",
-            )
+            bem_source_index = 0
+            if !isempty(bem_boundary_tags)
+                prescribed_bem_count += 1
+                bem_source_index = prescribed_bem_count
+                weight_by_tag = Dict(zip(bem_boundary_tags, bem_boundary_weights))
+                for face_index in eachindex(bem_mesh.faces)
+                    weight = get(
+                        weight_by_tag,
+                        bem_mesh.physical_tags[face_index],
+                        zero(FloatType),
+                    )
+                    weight == zero(FloatType) && continue
+                    push!(prescribed_bem_rows, face_index)
+                    push!(prescribed_bem_cols, bem_source_index)
+                    push!(prescribed_bem_values, weight)
+                end
+            end
             push!(
                 excitations,
                 (
                     kind=:normal_velocity,
-                    radiator_tag=radiator_tag,
+                    fem_boundary_tags=fem_boundary_tags,
+                    fem_boundary_weights=fem_boundary_weights,
+                    bem_source_index=bem_source_index,
                     transducer_index=0,
-                    amplitude=Complex{FloatType}(amplitude, 0),
+                    amplitude=Complex{FloatType}(1, 0),
                 ),
             )
         elseif port_kind == "voltage" && component_kind == "electrodynamic_transducer"
@@ -797,6 +1717,13 @@ function solve_request(request; event_mode=false)
             )
         end
     end
+    prescribed_bem_normal_velocity = sparse(
+        prescribed_bem_rows,
+        prescribed_bem_cols,
+        prescribed_bem_values,
+        length(bem_mesh.faces),
+        prescribed_bem_count,
+    )
 
     quadrature_order = Int(get(solver_options, "quadrature_order", 2))
     singular_order = Int(get(solver_options, "singular_order", 2))
@@ -806,7 +1733,7 @@ function solve_request(request; event_mode=false)
         get(
             solver_options,
             "static_condensation",
-            bem_backend == :cuda && !validation_diagnostics,
+            !validation_diagnostics,
         ),
     )
     static_condensation = static_condensation_requested
@@ -816,6 +1743,39 @@ function solve_request(request; event_mode=false)
     retained_fem_vertices = sort(
         unique(vcat(interface_map.fem_vertex_indices, transducer_fem_vertices)),
     )
+    # CPU condensation is deliberately isolated from the accelerator implementations. CUDA
+    # continues to use cuDSS and ROCm continues to use the hybrid CPU-Schur/ROCm-dense path in
+    # BeatEngineCoupled.
+    use_condensed_solver = static_condensation && bem_backend == :cpu
+    quadrature_selections = if use_condensed_solver
+        mode = lowercase(String(get(solver_options, "regular_quadrature_mode", "fixed")))
+        mode in ("fixed", "wavelength") || error(
+            "Unsupported regular quadrature mode: $mode. Expected fixed or wavelength.",
+        )
+        [
+            mode == "fixed" ?
+            (
+                order=quadrature_order, base_order=quadrature_order, mode=mode,
+                mesh_stat=nothing, area=nothing, length=nothing, kh=nothing,
+                q1_max=nothing, q2_max=nothing,
+            ) :
+            merge(
+                wavelength_quadrature_order(
+                    bem_mesh.areas,
+                    FloatType(frequency_value),
+                    sound_speed,
+                    quadrature_order;
+                    mesh_stat=lowercase(String(get(solver_options, "wavelength_mesh_stat", "p90"))),
+                    q1_max=Float64(get(solver_options, "wavelength_kh_q1_max", 0.0)),
+                    q2_max=Float64(get(solver_options, "wavelength_kh_q2_max", 2.0)),
+                ),
+                (mode=mode,),
+            )
+            for frequency_value in request["frequencies_hz"]
+        ]
+    else
+        nothing
+    end
     coupled_cache = nothing
     cache_setup_s = 0.0
     solved_count = 0
@@ -823,18 +1783,35 @@ function solve_request(request; event_mode=false)
     cancelled && return (cancelled=true, solved_count=solved_count)
     if cache_frequency_invariant
         cache_setup_started = time_ns()
-        coupled_cache = prepare_coupled_cache(
-            fem_mesh,
-            bem_mesh,
-            interface_map;
-            quadrature_order=quadrature_order,
-            singular_order=singular_order,
-            bem_backend=bem_backend,
-            symmetry_mode=symmetry_mode,
-            retained_fem_vertices=retained_fem_vertices,
-            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
-            wall_impedances=fem_domains.wall_impedances,
-        )
+        coupled_cache = if use_condensed_solver
+            prepare_condensed_coupled_cache(
+                fem_mesh,
+                bem_mesh,
+                interface_map;
+                quadrature_order=quadrature_order,
+                regular_quadrature_orders=sort(
+                    unique(selection.order for selection in quadrature_selections),
+                ),
+                singular_order=singular_order,
+                symmetry_mode=symmetry_mode,
+                retained_fem_vertices=retained_fem_vertices,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+            )
+        else
+            prepare_coupled_cache(
+                fem_mesh,
+                bem_mesh,
+                interface_map;
+                quadrature_order=quadrature_order,
+                singular_order=singular_order,
+                bem_backend=bem_backend,
+                symmetry_mode=symmetry_mode,
+                retained_fem_vertices=retained_fem_vertices,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+            )
+        end
         cache_setup_s = (time_ns() - cache_setup_started) / 1.0e9
     end
     outputs = get(request, "outputs", Any[])
@@ -846,28 +1823,53 @@ function solve_request(request; event_mode=false)
         frequency_hz = FloatType(frequency_value)
         println(stderr, "Coupled $(precision_name)/$(bem_backend): assembling $(frequency_hz) Hz")
         assembly_started = time_ns()
-        coupled_system = build_coupled_system(
-            fem_mesh,
-            bem_mesh,
-            interface_map,
-            frequency_hz,
-            sound_speed,
-            density;
-            quadrature_order=quadrature_order,
-            singular_order=singular_order,
-            cache=coupled_cache,
-            validation_diagnostics=validation_diagnostics,
-            bem_backend=bem_backend,
-            symmetry_mode=symmetry_mode,
-            static_condensation=static_condensation,
-            bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
-            wall_impedances=fem_domains.wall_impedances,
-            transducers=transducers,
-            transducer_operators=transducer_operators,
-        )
+        coupled_system = if use_condensed_solver
+            build_condensed_coupled_system(
+                fem_mesh,
+                bem_mesh,
+                interface_map,
+                frequency_hz,
+                sound_speed,
+                density;
+                quadrature_order=quadrature_order,
+                regular_quadrature_order=quadrature_selections[frequency_index].order,
+                singular_order=singular_order,
+                cache=coupled_cache,
+                validation_diagnostics=validation_diagnostics,
+                symmetry_mode=symmetry_mode,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+                transducers=transducers,
+                transducer_operators=transducer_operators,
+                prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
+            )
+        else
+            build_coupled_system(
+                fem_mesh,
+                bem_mesh,
+                interface_map,
+                frequency_hz,
+                sound_speed,
+                density;
+                quadrature_order=quadrature_order,
+                singular_order=singular_order,
+                cache=coupled_cache,
+                validation_diagnostics=validation_diagnostics,
+                bem_backend=bem_backend,
+                symmetry_mode=symmetry_mode,
+                static_condensation=static_condensation,
+                bulk_loss_factor_by_vertex=fem_domains.bulk_loss_factor_by_vertex,
+                wall_impedances=fem_domains.wall_impedances,
+                transducers=transducers,
+                transducer_operators=transducer_operators,
+                prescribed_bem_normal_velocity=prescribed_bem_normal_velocity,
+            )
+        end
         assembly_s = (time_ns() - assembly_started) / 1.0e9
         solve_started = time_ns()
-        solutions = solve_coupled_excitations(coupled_system, excitations)
+        solutions = use_condensed_solver ?
+                    solve_condensed_coupled_excitations(coupled_system, excitations) :
+                    solve_coupled_excitations(coupled_system, excitations)
         solve_s = (time_ns() - solve_started) / 1.0e9
         interface_error_sets = [
             per_interface_errors(
@@ -920,7 +1922,38 @@ function solve_request(request; event_mode=false)
                         rows([solution.bem_pressure for solution in solutions], FloatType),
                         "Pa",
                         ["excitation", "bem_node"],
-                        metadata=Dict("mesh_id" => String(bem_resource["id"])),
+                        metadata=Dict(
+                            "mesh_ids" => String.(unbounded_region["mesh_ids"]),
+                            "vertex_offsets" => [
+                                bem_domain.vertex_offset_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                            "vertex_counts" => [
+                                bem_domain.vertex_count_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                        ),
+                    ),
+                )
+            elseif quantity == "bem_boundary_neumann"
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rows([solution.bem_neumann for solution in solutions], FloatType),
+                        "Pa/m",
+                        ["excitation", "bem_face"],
+                        metadata=Dict(
+                            "mesh_ids" => String.(unbounded_region["mesh_ids"]),
+                            "face_offsets" => [
+                                bem_domain.face_offset_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                            "face_counts" => [
+                                bem_domain.face_count_by_mesh_id[String(mesh_id)]
+                                for mesh_id in unbounded_region["mesh_ids"]
+                            ],
+                        ),
                     ),
                 )
             elseif quantity == "interface_normal_derivative"
@@ -1008,6 +2041,15 @@ function solve_request(request; event_mode=false)
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
+                    elseif bem_backend == :rocm
+                        evaluate_galerkin_field_rocm(
+                            points,
+                            bem_mesh,
+                            solution.bem_pressure,
+                            solution.bem_neumann,
+                            coupled_system.wavenumber,
+                            coupled_system.field_cache,
+                        )
                     else
                         evaluate_galerkin_field_cpu(
                             points,
@@ -1027,7 +2069,14 @@ function solve_request(request; event_mode=false)
                         rows(pressures, FloatType),
                         "Pa",
                         ["excitation", "observation"],
-                        metadata=Dict("points_m" => raw_points),
+                        metadata=Dict(
+                            "points_m" => raw_points,
+                            "observation_domains" => get(
+                                options,
+                                "observation_domains",
+                                Any[],
+                            ),
+                        ),
                     ),
                 )
                 field_s += (time_ns() - field_started) / 1.0e9
@@ -1042,9 +2091,21 @@ function solve_request(request; event_mode=false)
             "linear_backend" => String(coupled_system.linear_backend),
             "symmetry" => String(symmetry_mode),
             "formulation" => String(coupled_system.formulation),
-            "linear_solver" => coupled_system.formulation == :fem_interface_condensed ?
-                               "cuda_cudss_schur_plus_dense_lu" :
-                               "$(coupled_system.linear_backend)_dense_lu",
+            "linear_solver" => if coupled_system.formulation == :fem_interface_condensed
+                if coupled_system.linear_backend == :rocm
+                    "rocm_hybrid_cpu_sparse_schur_plus_rocsolver_dense_lu"
+                elseif coupled_system.linear_backend == :cuda
+                    "cuda_cudss_schur_plus_dense_lu"
+                elseif coupled_system.condensation.backend == :cpu_noop
+                    "cpu_dense_lu_noop_schur"
+                else
+                    "cpu_umfpack_schur_plus_dense_lu"
+                end
+            elseif coupled_system.linear_backend == :rocm
+                "rocm_rocsolver_dense_lu"
+            else
+                "$(coupled_system.linear_backend)_dense_lu"
+            end,
             "full_system_order" => coupled_system.full_system_order,
             "solved_system_order" => coupled_system.solved_system_order,
             "bounded_region_count" => length(bounded_regions),
@@ -1060,6 +2121,19 @@ function solve_request(request; event_mode=false)
             "wall_impedance_boundary_ids" => [spec.boundary_id for spec in fem_domains.wall_impedances],
             "static_condensation_requested" => static_condensation_requested,
             "static_condensation_active" => static_condensation,
+            "fem_condensation_backend" => isnothing(coupled_system.condensation) ?
+                                          nothing :
+                                          String(coupled_system.condensation.backend),
+            "fem_schur_block_size" => isnothing(coupled_system.condensation) ||
+                                      !hasproperty(
+                coupled_system.condensation,
+                :schur_block_size,
+            ) ? 0 : coupled_system.condensation.schur_block_size,
+            "fem_schur_thread_count" => isnothing(coupled_system.condensation) ||
+                                        !hasproperty(
+                coupled_system.condensation,
+                :schur_thread_count,
+            ) ? 0 : coupled_system.condensation.schur_thread_count,
             "pressure_continuity_error" => isempty(interface_pressure_errors) ?
                                            nothing :
                                            maximum(interface_pressure_errors),
@@ -1107,9 +2181,25 @@ function solve_request(request; event_mode=false)
                 "fem_condensation_factorization_s" => isnothing(coupled_system.condensation) ?
                                                       0.0 :
                                                       coupled_system.condensation.timings.factorization_s,
+                "fem_condensation_partition_s" => isnothing(coupled_system.condensation) ||
+                                                   !hasproperty(
+                    coupled_system.condensation.timings,
+                    :partition_s,
+                ) ? 0.0 : coupled_system.condensation.timings.partition_s,
                 "fem_schur_extraction_s" => isnothing(coupled_system.condensation) ?
                                             0.0 :
                                             coupled_system.condensation.timings.schur_extraction_s,
+                "fem_schur_upload_s" => isnothing(coupled_system.condensation) ||
+                                        !hasproperty(
+                    coupled_system.condensation.timings,
+                    :upload_s,
+                ) ? 0.0 : coupled_system.condensation.timings.upload_s,
+                "fem_rhs_condensation_s" => maximum(
+                    something(solution.fem_rhs_condensation_s, 0.0) for solution in solutions
+                ),
+                "fem_reconstruction_s" => maximum(
+                    something(solution.fem_reconstruction_s, 0.0) for solution in solutions
+                ),
                 "block_assembly_s" => coupled_system.timings.block_assembly_s,
                 "coupled_factorization_s" => coupled_system.timings.coupled_factorization_s,
                 "replay_factorization_s" => coupled_system.timings.replay_factorization_s,
@@ -1121,6 +2211,8 @@ function solve_request(request; event_mode=false)
                 solution.all_bem_replay_error for solution in solutions
             )
         end
+        diagnostics["fem_interior_residual"] = use_condensed_solver ?
+            maximum(solution.fem_interior_residual for solution in solutions) : nothing
         result = Dict(
             "schema_version" => 1,
             "freq_hz" => frequency_hz,
@@ -1134,15 +2226,24 @@ function solve_request(request; event_mode=false)
             println(JSON.json(result))
         end
         flush(stdout)
+        use_condensed_solver ? release_condensed_coupled_system!(coupled_system) :
         release_coupled_system!(coupled_system)
         solved_count = frequency_index
     end
-    coupled_cache === nothing || release_coupled_cache!(coupled_cache)
+    if coupled_cache !== nothing
+        use_condensed_solver ? release_condensed_coupled_cache!(coupled_cache) :
+        release_coupled_cache!(coupled_cache)
+    end
     cancelled = cancelled || cancel_requested()
     return (cancelled=cancelled, solved_count=solved_count)
 end
 
 function reclaim_accelerator_memory_after_failure()
+    try
+        release_all_bem_field_evaluation_caches!()
+    catch
+        nothing
+    end
     GC.gc(true)
     try
         cuda = BeatEngineCore.cuda_module()
@@ -1150,7 +2251,265 @@ function reclaim_accelerator_memory_after_failure()
     catch
         nothing
     end
+    try
+        amdgpu = BeatEngineCore.amdgpu_module()
+        amdgpu.reclaim()
+    catch
+        nothing
+    end
     return nothing
+end
+
+function binary_dtype_name(::Type{Float32})
+    return "float32"
+end
+
+function binary_dtype_name(::Type{Float64})
+    return "float64"
+end
+
+function binary_dtype_name(::Type{Int64})
+    return "int64"
+end
+
+function binary_dtype_name(::Type{ComplexF32})
+    return "complex64"
+end
+
+function binary_dtype_name(::Type{ComplexF64})
+    return "complex128"
+end
+
+function read_field_binary_array(request, request_path, name, ::Type{T}) where {T}
+    Int(get(request, "binary_array_schema_version", 0)) == 1 ||
+        error("Unsupported BEM field binary-array schema.")
+    arrays = get(request, "binary_arrays", nothing)
+    arrays isa AbstractDict || error("BEM field request is missing binary-array metadata.")
+    descriptor = get(arrays, name, nothing)
+    descriptor isa AbstractDict || error("BEM field request is missing binary array $(repr(name)).")
+    String(get(descriptor, "dtype", "")) == binary_dtype_name(T) ||
+        error("BEM field binary array $(repr(name)) has the wrong data type.")
+    String(get(descriptor, "order", "")) == "C" ||
+        error("BEM field binary array $(repr(name)) must use row-major order.")
+    String(get(descriptor, "byte_order", "")) == "little" ||
+        error("BEM field binary array $(repr(name)) must use little-endian byte order.")
+    shape = Int.(get(descriptor, "shape", Int[]))
+    all(>=(0), shape) || error("BEM field binary array $(repr(name)) has an invalid shape.")
+    count = prod(shape)
+    offset = Int(get(descriptor, "offset", -1))
+    nbytes = Int(get(descriptor, "nbytes", -1))
+    offset >= 0 || error("BEM field binary array $(repr(name)) has an invalid offset.")
+    nbytes == count * sizeof(T) ||
+        error("BEM field binary array $(repr(name)) has inconsistent byte metadata.")
+    filename = String(get(descriptor, "file", ""))
+    !isempty(filename) && basename(filename) == filename ||
+        error("BEM field binary array $(repr(name)) has an invalid file path.")
+    path = joinpath(dirname(request_path), filename)
+    isfile(path) || error("BEM field binary array file does not exist: $filename")
+    filesize(path) >= offset + nbytes ||
+        error("BEM field binary array $(repr(name)) is incomplete.")
+    values = Vector{T}(undef, count)
+    open(path, "r") do io
+        seek(io, offset)
+        read!(io, values)
+    end
+    return values, shape
+end
+
+function write_field_binary_result(request, request_path, values)
+    filename = String(get(request, "binary_result_file", ""))
+    !isempty(filename) && basename(filename) == filename ||
+        error("BEM field request has an invalid binary result path.")
+    scalar_type = typeof(real(zero(eltype(values))))
+    scalar_type in (Float32, Float64) || error("Unsupported BEM field result precision: $scalar_type")
+    array = Complex{scalar_type}.(values)
+    path = joinpath(dirname(request_path), filename)
+    open(path, "w") do io
+        write(io, array)
+    end
+    return Dict(
+        "file" => filename,
+        "offset" => 0,
+        "nbytes" => sizeof(eltype(array)) * length(array),
+        "dtype" => binary_dtype_name(eltype(array)),
+        "shape" => collect(size(array)),
+        "order" => "C",
+        "byte_order" => "little",
+    )
+end
+
+function release_bem_field_evaluation_cache!(cache_key::String)
+    entry = pop!(BEM_FIELD_EVALUATION_CACHES, cache_key, nothing)
+    if entry !== nothing
+        if entry.backend == :cuda
+            BeatEngineCoupled._unsafe_free_cuda_fields!(
+                entry.field_cache,
+                (
+                    :source_points,
+                    :source_normals,
+                    :source_weights,
+                    :source_faces,
+                    :source_elements,
+                    :basis_values,
+                ),
+            )
+        elseif entry.backend == :rocm
+            release_rocm_field_evaluation_cache!(entry.field_cache)
+        end
+    end
+    filter!(!=(cache_key), BEM_FIELD_EVALUATION_CACHE_ORDER)
+    return nothing
+end
+
+function release_all_bem_field_evaluation_caches!()
+    for cache_key in copy(BEM_FIELD_EVALUATION_CACHE_ORDER)
+        release_bem_field_evaluation_cache!(cache_key)
+    end
+    return nothing
+end
+
+function retained_bem_field_evaluation_cache(
+    request,
+    request_path,
+    ::Type{T},
+    backend,
+    symmetry,
+) where {T<:AbstractFloat}
+    domain_key = strip(String(get(request, "domain_key", "")))
+    isempty(domain_key) && error("Exterior field request is missing its domain cache key.")
+    quadrature_order = Int(get(request, "quadrature_order", 2))
+    cache_key = "$domain_key|$(T)|$backend|$symmetry|q$quadrature_order"
+    cached = get(BEM_FIELD_EVALUATION_CACHES, cache_key, nothing)
+    if cached !== nothing
+        filter!(!=(cache_key), BEM_FIELD_EVALUATION_CACHE_ORDER)
+        push!(BEM_FIELD_EVALUATION_CACHE_ORDER, cache_key)
+        return cached
+    end
+
+    vertex_values, vertex_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_points_m",
+        Float32,
+    )
+    length(vertex_shape) == 2 && vertex_shape[2] == 3 ||
+        error("BEM boundary points must have shape (bem_node, 3).")
+    vertices = [
+        SVector{3,T}(
+            T(vertex_values[3 * index - 2]),
+            T(vertex_values[3 * index - 1]),
+            T(vertex_values[3 * index]),
+        ) for index in 1:vertex_shape[1]
+    ]
+    face_values, face_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_triangles",
+        Int64,
+    )
+    length(face_shape) == 2 && face_shape[2] == 3 ||
+        error("BEM boundary triangles must have shape (bem_face, 3).")
+    faces = [
+        (
+            Int(face_values[3 * index - 2]) + 1,
+            Int(face_values[3 * index - 1]) + 1,
+            Int(face_values[3 * index]) + 1,
+        ) for index in 1:face_shape[1]
+    ]
+    mesh = BoundaryMesh(vertices, faces, ones(Int, length(faces)))
+    rule = triangle_rule(T, quadrature_order)
+    cpu_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry)
+    field_cache = if backend == :cuda
+        build_cuda_field_evaluation_cache(cpu_cache)
+    elseif backend == :rocm
+        build_rocm_field_evaluation_cache(cpu_cache)
+    else
+        cpu_cache
+    end
+    entry = (mesh=mesh, field_cache=field_cache, backend=backend)
+    BEM_FIELD_EVALUATION_CACHES[cache_key] = entry
+    push!(BEM_FIELD_EVALUATION_CACHE_ORDER, cache_key)
+    while length(BEM_FIELD_EVALUATION_CACHE_ORDER) > MAX_BEM_FIELD_EVALUATION_CACHES
+        release_bem_field_evaluation_cache!(first(BEM_FIELD_EVALUATION_CACHE_ORDER))
+    end
+    return entry
+end
+
+function evaluate_bem_field_request(request, request_path)
+    precision_name = lowercase(String(get(request, "precision", "float32")))
+    FloatType = precision_name == "float64" ? Float64 : precision_name == "float32" ? Float32 :
+                error("Exterior field precision must be float32 or float64.")
+    backend = Symbol(lowercase(String(get(request, "bem_backend", "cpu"))))
+    backend in (:cpu, :cuda, :rocm) || error("Exterior field backend must be cpu, cuda, or rocm.")
+    symmetry = BeatEngineCore.normalized_symmetry_mode(get(request, "symmetry", "off"))
+    retained = retained_bem_field_evaluation_cache(request, request_path, FloatType, backend, symmetry)
+    mesh = retained.mesh
+    pressure, pressure_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_pressure",
+        Complex{FloatType},
+    )
+    normal_derivative, normal_shape = read_field_binary_array(
+        request,
+        request_path,
+        "boundary_normal_derivative",
+        Complex{FloatType},
+    )
+    length(pressure_shape) == 1 || error("Retained BEM pressure must be one-dimensional.")
+    length(normal_shape) == 1 || error("Retained BEM normal derivative must be one-dimensional.")
+    length(pressure) == length(mesh.vertices) ||
+        error("Retained BEM pressure does not align with boundary vertices.")
+    length(normal_derivative) == length(mesh.faces) ||
+        error("Retained BEM normal derivative does not align with boundary faces.")
+    point_values, point_shape = read_field_binary_array(
+        request,
+        request_path,
+        "points_m",
+        Float32,
+    )
+    length(point_shape) == 2 && point_shape[2] == 3 ||
+        error("Exterior evaluation points must have shape (point, 3).")
+    points = [
+        SVector{3,FloatType}(
+            FloatType(point_values[3 * index - 2]),
+            FloatType(point_values[3 * index - 1]),
+            FloatType(point_values[3 * index]),
+        ) for index in 1:point_shape[1]
+    ]
+    frequency_hz = FloatType(request["frequency_hz"])
+    sound_speed = FloatType(request["sound_speed_m_per_s"])
+    frequency_hz > zero(FloatType) || error("Exterior field frequency must be positive.")
+    sound_speed > zero(FloatType) || error("Exterior field sound speed must be positive.")
+    field_cache = retained.field_cache
+    wavenumber = FloatType(2pi) * frequency_hz / sound_speed
+    if backend == :cuda
+        return evaluate_galerkin_field_cuda(
+            points,
+            mesh,
+            pressure,
+            normal_derivative,
+            wavenumber,
+            field_cache,
+        )
+    elseif backend == :rocm
+        return evaluate_galerkin_field_rocm(
+            points,
+            mesh,
+            pressure,
+            normal_derivative,
+            wavenumber,
+            field_cache,
+        )
+    end
+    return evaluate_galerkin_field_cpu(
+        points,
+        mesh,
+        pressure,
+        normal_derivative,
+        wavenumber,
+        field_cache,
+    )
 end
 
 function run_worker()
@@ -1162,9 +2521,30 @@ function run_worker()
             submission = JSON.parse(line)
             request_path = String(submission["request"])
             request = JSON.parse(read(request_path, String))
-            outcome = solve_request(request; event_mode=true)
-            event_type = outcome.cancelled ? "cancelled" : "completed"
-            println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
+            operation = String(get(submission, "operation", "solve"))
+            if operation == "bem_field"
+                values = evaluate_bem_field_request(request, request_path)
+                println(
+                    JSON.json(
+                        Dict(
+                            "type" => "field_result",
+                            "values_binary" => write_field_binary_result(
+                                request,
+                                request_path,
+                                values,
+                            ),
+                        ),
+                    ),
+                )
+                println(JSON.json(Dict("type" => "completed")))
+            elseif operation == "solve"
+                release_all_bem_field_evaluation_caches!()
+                outcome = solve_request(request; event_mode=true)
+                event_type = outcome.cancelled ? "cancelled" : "completed"
+                println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
+            else
+                error("Unsupported coupled worker operation: $operation")
+            end
         catch exception
             reclaim_accelerator_memory_after_failure()
             error_text = sprint(showerror, exception, catch_backtrace())

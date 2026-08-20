@@ -12,6 +12,7 @@ from blab.solvers.beat_engine_backend import (
     BeatEngineBackend,
     BeatEngineRocmBackend,
     _friendly_julia_error,
+    _julia_process_env,
     _julia_worker_command,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
@@ -27,10 +28,12 @@ from blab.solvers.http_server import (
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
     available_backend_infos,
+    backend_condenses_fem_interior,
     backend_info,
     backend_label_to_id,
     create_backend,
     normalize_backend_id,
+    supports_physical_system_solves,
 )
 
 
@@ -38,9 +41,10 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     labels = backend_label_to_id()
 
     assert labels["Server"] == "server"
-    assert labels["BEAT Engine (CUDA)"] == "beat_cuda"
+    assert labels["BEAT Engine (Nvidia CUDA)"] == "beat_cuda"
     assert labels["BEAT Engine (CPU)"] == "beat_cpu"
-    assert labels["BEAT Engine (ROCm)"] == "beat_rocm"
+    assert labels["BEAT Engine (AMD ROCm)"] == "beat_rocm"
+    assert "BEAT Engine (CPU Condensed)" not in labels
     assert labels["Bempp (OpenCL CPU)"] == "local"
     assert normalize_backend_id("bempp") == "local"
     assert normalize_backend_id("bempp_cpu") == "local"
@@ -68,6 +72,26 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
+
+
+def test_condensed_cpu_backend_id_is_a_compatibility_alias() -> None:
+    labels = backend_label_to_id()
+
+    assert "BEAT Engine (CPU Condensed)" not in labels
+    assert normalize_backend_id("beat_cpu_condensed") == "beat_cpu"
+    assert backend_info("beat_cpu_condensed").backend_id == "beat_cpu"
+    compatibility_backend = create_backend("beat_cpu_condensed")
+    assert compatibility_backend.backend_id == "beat_cpu"
+    assert compatibility_backend.beat_engine_backend == "cpu"
+
+    assert backend_condenses_fem_interior("beat_cpu_condensed") is True
+    assert backend_condenses_fem_interior("beat_cpu") is True
+    assert backend_condenses_fem_interior("beat_cuda") is True
+    assert backend_condenses_fem_interior("beat_rocm") is True
+
+    for backend_id in ("beat_cpu", "beat_cuda", "beat_rocm"):
+        assert supports_physical_system_solves(backend_id) is True
+    assert supports_physical_system_solves("local") is False
 
 
 def test_local_backend_factory_exposes_contract_metadata() -> None:
@@ -200,7 +224,13 @@ print(json.dumps({
         "vertical_spl_db": [90.0, 92.0, 89.5],
         "sphere_spl_norm_db": None,
         "timings": {"assembly_s": 0.1, "solve_s": 0.2, "field_s": 0.3},
-        "diagnostics": {"convergence_info": 0, "message": os.environ.get("JULIA_NUM_THREADS")},
+        "diagnostics": {
+            "convergence_info": 0,
+            "message": os.environ.get("JULIA_NUM_THREADS"),
+            "backend": "cuda",
+            "symmetry": "off",
+            "regular_assembly_mode": "serial_pair_batched",
+        },
     },
 }), flush=True)
 print(json.dumps({"type": "completed", "solved_count": 1}), flush=True)
@@ -232,6 +262,9 @@ print(json.dumps({"type": "completed", "solved_count": 1}), flush=True)
     assert results[0].impedance.tolist() == [[6.0, 1.0]]
     assert results[0].timings.assembly_s == 0.1
     assert results[0].diagnostics.message == "3"
+    assert results[0].diagnostics.backend == "cuda"
+    assert results[0].diagnostics.symmetry == "off"
+    assert results[0].diagnostics.regular_assembly_mode == "serial_pair_batched"
 
 
 def test_beat_cpu_backend_passes_cpu_selector_to_julia(tmp_path) -> None:
@@ -285,6 +318,41 @@ def test_julia_threads_auto_maps_to_cpu_count() -> None:
     assert _resolve_julia_threads("bad") == str(os.cpu_count() or 1)
 
 
+def test_rocm_project_process_env_uses_boundary_lab_rocm_root(monkeypatch, tmp_path) -> None:
+    rocm_root = tmp_path / "TheRock"
+    rocm_bin = rocm_root / "bin"
+    rocm_bin.mkdir(parents=True)
+    for name in ("amdhip64.dll", "rocblas.dll", "rocsolver.dll", "rocsparse.dll", "hipconfig.exe"):
+        (rocm_bin / name).touch()
+    monkeypatch.setenv("BLAB_ROCM_PATH", str(rocm_root))
+
+    env = _julia_process_env(4, DEFAULT_BEAT_ENGINE_ROCM_PROJECT)
+
+    assert env["JULIA_NUM_THREADS"] == "4"
+    assert env["BLAB_BEAT_ENGINE_GPU_BACKEND"] == "rocm"
+    assert env["ROCM_PATH"] == str(rocm_root)
+    assert env["ROCM_HOME"] == str(rocm_root)
+    assert env["HIP_PATH"] == str(rocm_root)
+    assert env["PATH"].split(os.pathsep)[0] == str(rocm_root / "bin")
+
+
+def test_rocm_project_process_env_discovers_standard_hip_path(monkeypatch, tmp_path) -> None:
+    rocm_root = tmp_path / "AMD" / "ROCm" / "7.2"
+    rocm_bin = rocm_root / "bin"
+    rocm_bin.mkdir(parents=True)
+    for name in ("amdhip64_7.dll", "rocblas.dll", "rocsolver.dll", "rocsparse.dll", "hipInfo.exe"):
+        (rocm_bin / name).touch()
+    monkeypatch.delenv("BLAB_ROCM_PATH", raising=False)
+    monkeypatch.setenv("BLAB_ROCM_CONFIG", str(tmp_path / "absent.txt"))
+    monkeypatch.setenv("HIP_PATH", str(rocm_root))
+
+    env = _julia_process_env(2, DEFAULT_BEAT_ENGINE_ROCM_PROJECT)
+
+    assert env["BLAB_ROCM_PATH"] == str(rocm_root.resolve())
+    assert env["ROCM_PATH"] == str(rocm_root.resolve())
+    assert env["PATH"].split(os.pathsep)[0] == str(rocm_bin.resolve())
+
+
 def test_julia_dependency_load_error_gets_install_hint() -> None:
     message = """Warm BEAT Engine solver exited with code 1.
 ArgumentError: Package CUDA not found in current path.
@@ -299,7 +367,7 @@ Stacktrace:
         beat_engine_backend="cuda",
     )
 
-    assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (CUDA)." in friendly
+    assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (Nvidia CUDA)." in friendly
     assert "julia --project=" in friendly
     assert "src" in friendly
     assert "julia_cuda" in friendly
@@ -438,6 +506,86 @@ for line in sys.stdin:
             assert len(list(session.solve_stream())) == 1
 
         assert starts_path.read_text(encoding="utf-8") == "1"
+    finally:
+        shutdown_beat_engine_workers()
+
+
+def test_julia_backend_restarts_persistent_worker_after_failed_job(tmp_path) -> None:
+    mesh_path = tmp_path / "mesh.msh"
+    mesh_path.write_text("mesh", encoding="utf-8")
+    starts_path = tmp_path / "failure_starts.txt"
+    fake_solver = tmp_path / "fake_julia_failure_worker.py"
+    fake_solver.write_text(
+        f"""
+import json
+import pathlib
+
+starts_path = pathlib.Path({str(starts_path)!r})
+starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
+starts_path.write_text(str(starts + 1), encoding="utf-8")
+
+print(json.dumps({{"type": "ready"}}), flush=True)
+for line in __import__("sys").stdin:
+    message = json.loads(line)
+    with open(message["request"], "r", encoding="utf-8") as handle:
+        request = json.load(handle)
+    print(json.dumps({{
+        "type": "initialized",
+        "polar_angle_deg": [0.0],
+        "radiator_names": ["Woofer"],
+        "sphere_metadata": None,
+    }}), flush=True)
+    if starts == 0:
+        print(json.dumps({{"type": "failed", "error": "synthetic accelerator failure"}}), flush=True)
+        continue
+    print(json.dumps({{
+        "type": "result",
+        "result": {{
+            "freq_hz": request["frequencies_hz"][0],
+            "horizontal_spl_norm_db": [0.0],
+            "vertical_spl_norm_db": [0.0],
+            "impedance": [[6.0, 1.0]],
+            "horizontal_spl_db": [90.0],
+            "vertical_spl_db": [90.0],
+            "sphere_spl_norm_db": None,
+            "timings": {{}},
+            "diagnostics": None,
+        }},
+    }}), flush=True)
+    print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    try:
+        backend = create_backend(
+            "beat_rocm",
+            julia_executable=sys.executable,
+            solver_script=str(fake_solver),
+            julia_project=None,
+            persistent_worker=True,
+        )
+        first = backend.create_session(
+            SolveRequest(
+                config=SimulationConfig(mesh_file=str(mesh_path)),
+                frequencies_hz=np.array([500.0], dtype=np.float32),
+            )
+        )
+        try:
+            list(first.solve_stream())
+        except RuntimeError as exc:
+            assert "synthetic accelerator failure" in str(exc)
+        else:
+            raise AssertionError("Synthetic worker failure was not surfaced.")
+
+        second = backend.create_session(
+            SolveRequest(
+                config=SimulationConfig(mesh_file=str(mesh_path)),
+                frequencies_hz=np.array([1000.0], dtype=np.float32),
+            )
+        )
+        assert len(list(second.solve_stream())) == 1
+        assert starts_path.read_text(encoding="utf-8") == "2"
     finally:
         shutdown_beat_engine_workers()
 

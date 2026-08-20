@@ -6,12 +6,13 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry
+from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
 
 try:  # pragma: no cover - optional visual dependency
@@ -53,6 +54,12 @@ PREVIEW_REGION_MODES = {
 
 
 class MeshPreview(QWidget):
+    newObservationPlaneRequested = Signal(object)
+    observationPlaneChanged = Signal(object)
+    observationPlanePropertiesRequested = Signal(str)
+    observationPlaneDeleteRequested = Signal(str)
+    observationPlaneExteriorFieldRequested = Signal(object)
+
     def __init__(self):
         super().__init__()
         self._hover_picker = None
@@ -60,6 +67,8 @@ class MeshPreview(QWidget):
         self._actor_surface_labels: dict[str, str] = {}
         self._mesh_region_actors: list[tuple[object, str | None]] = []
         self._region_visibility_mode = PREVIEW_REGION_ALL
+        self._observation_clip_active = False
+        self._observation_editor = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         if QtInteractor is None:
@@ -86,6 +95,13 @@ class MeshPreview(QWidget):
         status_row.addWidget(self.total_elements_label)
         layout.addLayout(status_row)
         self._refresh_viewer_theme()
+        self._observation_editor = ObservationPlaneViewport(self.viewer, vtk, self)
+        self._observation_editor.newPlaneRequested.connect(self.newObservationPlaneRequested.emit)
+        self._observation_editor.planeChanged.connect(self.observationPlaneChanged.emit)
+        self._observation_editor.propertiesRequested.connect(self.observationPlanePropertiesRequested.emit)
+        self._observation_editor.deleteRequested.connect(self.observationPlaneDeleteRequested.emit)
+        self._observation_editor.clipStateChanged.connect(self._set_observation_clip_active)
+        self._observation_editor.exteriorFieldRequested.connect(self.observationPlaneExteriorFieldRequested.emit)
         self._install_hover_picker()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override
@@ -97,6 +113,9 @@ class MeshPreview(QWidget):
         viewer = getattr(self, "viewer", None)
         if viewer is not None:
             viewer.set_background(themed_content_background(self.palette()))
+        observation_editor = getattr(self, "_observation_editor", None)
+        if observation_editor is not None:
+            observation_editor.refresh_theme()
 
     def clear(self) -> None:
         self._mesh_region_actors = []
@@ -106,6 +125,52 @@ class MeshPreview(QWidget):
         self._actor_surface_labels = {}
         self.hover_label.setText("")
         self._set_total_element_count(0)
+        self._restore_observation_plane_scene(np.empty((0, 3)))
+
+    def set_observation_planes(self, planes, *, selected_id: str | None = None) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_planes(tuple(planes), selected_id=selected_id)
+
+    def set_observation_plane_results(self, results) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_field_results(results)
+
+    def set_observation_plane_field_preferences(self, *, cache_size_mb: object, translation_target_fps: object) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_field_preferences(
+                cache_size_mb=cache_size_mb,
+                translation_target_fps=translation_target_fps,
+            )
+
+    def set_observation_plane_animation(self, plane_id: str | None, enabled: bool) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_animation(plane_id, enabled)
+
+    def set_observation_plane_active(self, plane_id: str | None) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_active_plane(plane_id)
+
+    def set_observation_plane_exterior_field(self, key, pressure) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_exterior_field_result(key, pressure)
+
+    def set_observation_plane_exterior_field_failed(self, key, message: str) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.set_exterior_field_failed(key, message)
+
+    def discard_observation_plane_exterior_field_request(self, key) -> None:
+        if self._observation_editor is not None:
+            self._observation_editor.discard_exterior_field_request(key)
+
+    def _set_observation_clip_active(self, active: bool) -> None:
+        self._observation_clip_active = bool(active)
+        self._apply_region_visibility(render=False)
+
+    def _restore_observation_plane_scene(self, points: np.ndarray) -> None:
+        if self._observation_editor is None:
+            return
+        self._observation_editor.set_scene_bounds(points)
+        self._observation_editor.scene_cleared()
 
     def set_region_visibility_mode(self, mode: str) -> None:
         normalized = str(mode).strip().lower()
@@ -138,6 +203,7 @@ class MeshPreview(QWidget):
         self._mesh_region_actors = []
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
+        self._restore_observation_plane_scene(display_points)
         self._set_total_element_count(
             int(triangles.shape[0]),
             dimensions_mm=_dimensions_lwh_mm(display_points),
@@ -221,6 +287,7 @@ class MeshPreview(QWidget):
             preview_points.append(mesh_points)
 
         display_points = np.vstack(preview_points) if preview_points else np.empty((0, 3))
+        self._restore_observation_plane_scene(display_points)
         self._set_total_element_count(
             total_elements,
             mirrored=mirrored,
@@ -346,6 +413,8 @@ class MeshPreview(QWidget):
             return
         for actor, mesh_region in self._mesh_region_actors:
             visible = _actor_visible_for_region(mesh_region, self._region_visibility_mode)
+            if self._observation_clip_active and mesh_region == PREVIEW_REGION_INTERIOR:
+                visible = False
             actor.SetVisibility(visible)
         if render:
             self.viewer.render()

@@ -2,18 +2,37 @@ module BeatEngineCore
 
 using Base.Threads, LinearAlgebra, SparseArrays, StaticArrays
 
-const CUDA_MODULE = try
-    @eval import CUDA
-    CUDA
-catch
-    nothing
+const BEAT_ACCELERATOR_HINT = let
+    configured = lowercase(strip(get(ENV, "BLAB_BEAT_ENGINE_GPU_BACKEND", "")))
+    if configured in ("cuda", "rocm")
+        configured
+    else
+        active_project = Base.active_project()
+        project_directory = active_project === nothing ? "" : lowercase(basename(dirname(active_project)))
+        project_directory == "julia_cuda" ? "cuda" : project_directory == "julia_rocm" ? "rocm" : ""
+    end
 end
 
-const AMDGPU_MODULE = try
-    @eval import AMDGPU
-    AMDGPU
-catch
+const CUDA_MODULE = if BEAT_ACCELERATOR_HINT == "rocm"
     nothing
+else
+    try
+        @eval import CUDA
+        CUDA
+    catch
+        nothing
+    end
+end
+
+const AMDGPU_MODULE = if BEAT_ACCELERATOR_HINT == "cuda"
+    nothing
+else
+    try
+        @eval import AMDGPU
+        AMDGPU
+    catch
+        nothing
+    end
 end
 
 export BoundaryMesh,
@@ -27,13 +46,24 @@ export BoundaryMesh,
     build_cuda_field_evaluation_cache,
     build_cuda_image_singular_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    build_rocm_burton_miller_identity_cache,
+    build_rocm_sparse_scatter_cache,
     build_cuda_sparse_scatter_cache,
     release_cuda_image_singular_correction_cache!,
     release_cuda_burton_miller_identity_cache!,
+    release_rocm_burton_miller_identity_cache!,
+    release_rocm_sparse_scatter_cache!,
     release_cuda_sparse_scatter_cache!,
     scatter_cuda_sparse_to_dense!,
+    scatter_rocm_sparse_to_dense!,
+    rocm_dense_lu!,
+    solve_rocm_dense_factorization,
     build_rocm_regular_assembly_cache,
+    release_rocm_regular_assembly_cache!,
+    build_rocm_singular_correction_cache,
+    release_rocm_singular_correction_cache!,
     build_rocm_field_evaluation_cache,
+    release_rocm_field_evaluation_cache!,
     build_field_evaluation_cache,
     build_beat_cpu_assembly_cache,
     build_singular_correction_cache,
@@ -70,6 +100,9 @@ export BoundaryMesh,
     reflect_point,
     reflect_vertices,
     p1_symmetry_orbit_weights,
+    snap_symmetry_planes,
+    snap_symmetry_plane_vertices,
+    symmetry_plane_tolerance,
     symmetry_image_transforms,
     symmetry_reduction_factor,
     symmetry_transforms,
@@ -112,6 +145,11 @@ struct DP0Space
     global_dof_count::Int
 end
 struct CudaBurtonMillerIdentityCache{A,B}
+    identity_p1_p1::A
+    identity_p1_dp0::B
+end
+
+struct RocmBurtonMillerIdentityCache{A,B}
     identity_p1_p1::A
     identity_p1_dp0::B
 end
@@ -316,7 +354,56 @@ reflect_vertices(transform::SymmetryTransform, vertices::NTuple{3,SVector{3,T}})
     reflect_point(transform, vertices[3]),
 )
 
-function validate_symmetry_fundamental_domain!(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+function symmetry_plane_tolerance(
+    vertices::AbstractVector{<:SVector{3,T}};
+    absolute_floor::T=T(1e-9),
+    relative_tolerance::T=T(1e-6),
+) where {T<:AbstractFloat}
+    if isempty(vertices)
+        model_scale = zero(T)
+    else
+        lower = first(vertices)
+        upper = first(vertices)
+        for vertex in Iterators.drop(vertices, 1)
+            lower = min.(lower, vertex)
+            upper = max.(upper, vertex)
+        end
+        model_scale = norm(upper - lower)
+    end
+    return max(absolute_floor, model_scale * relative_tolerance)
+end
+
+function snap_symmetry_plane_vertices(
+    vertices::AbstractVector{<:SVector{3,T}},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(vertices),
+) where {T<:AbstractFloat}
+    mode_symbol = normalized_symmetry_mode(mode)
+    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    return [
+        SVector{3,T}(ntuple(
+            axis -> axis in active_axes && abs(vertex[axis]) <= tolerance ? zero(T) : vertex[axis],
+            3,
+        ))
+        for vertex in vertices
+    ]
+end
+
+function snap_symmetry_planes(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
+    vertices = snap_symmetry_plane_vertices(mesh.vertices, mode; tolerance=tolerance)
+    vertices == mesh.vertices && return mesh
+    return BoundaryMesh(vertices, mesh.faces, mesh.physical_tags)
+end
+
+function validate_symmetry_fundamental_domain!(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
     for axis in active_axes
@@ -333,7 +420,11 @@ function validate_symmetry_fundamental_domain!(mesh::BoundaryMesh{T}, mode; tole
     return nothing
 end
 
-function p1_symmetry_orbit_weights(mesh::BoundaryMesh{T}, mode; tolerance::T=T(1e-9)) where {T<:AbstractFloat}
+function p1_symmetry_orbit_weights(
+    mesh::BoundaryMesh{T},
+    mode;
+    tolerance::T=symmetry_plane_tolerance(mesh.vertices),
+) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     weights = ones(T, length(mesh.vertices))
     active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
@@ -906,6 +997,7 @@ function assemble_regular_galerkin_operators(
     cpu_cache=nothing,
     device_singular_cache=nothing,
     device_image_singular_cache=nothing,
+    rocm_assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     if backend == :cpu
@@ -965,6 +1057,7 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             rocm_singular_cache=device_singular_cache,
+            assembly_mode=rocm_assembly_mode,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1037,6 +1130,51 @@ function build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0
     )
 end
 
+function release_rocm_field_evaluation_cache!(args...; kwargs...)
+    error("ROCm field-evaluation cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_regular_assembly_cache!(args...; kwargs...)
+    error("ROCm regular-pair assembly cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function build_rocm_singular_correction_cache(args...; kwargs...)
+    error("ROCm singular-correction cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_singular_correction_cache!(args...; kwargs...)
+    error("ROCm singular-correction cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+
+function build_rocm_burton_miller_identity_cache(args...; kwargs...)
+    error("ROCm Burton-Miller identity cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_burton_miller_identity_cache!(args...; kwargs...)
+    error("ROCm Burton-Miller identity cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function build_rocm_sparse_scatter_cache(args...; kwargs...)
+    error("ROCm sparse scatter cache requested, but AMDGPU.jl is not loaded.")
+end
+
+function scatter_rocm_sparse_to_dense!(args...; kwargs...)
+    error("ROCm sparse scatter requested, but AMDGPU.jl is not loaded.")
+end
+
+function release_rocm_sparse_scatter_cache!(args...; kwargs...)
+    error("ROCm sparse scatter cache release requested, but AMDGPU.jl is not loaded.")
+end
+
+function rocm_dense_lu!(args...; kwargs...)
+    error("ROCm dense factorization requested, but AMDGPU.jl is not loaded.")
+end
+
+function solve_rocm_dense_factorization(args...; kwargs...)
+    error("ROCm dense solve requested, but AMDGPU.jl is not loaded.")
+end
+
 function _cuda_burton_miller_rhs(operators, identity_cache::CudaBurtonMillerIdentityCache, d_q_neumann, coupling::Complex{T}) where {T<:AbstractFloat}
     d_rhs = similar(d_q_neumann, size(operators.single_layer, 1))
     mul!(d_rhs, operators.single_layer, d_q_neumann, -one(Complex{T}), zero(Complex{T}))
@@ -1080,6 +1218,16 @@ function solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0,
     operators_on_gpu = get(operators, :on_gpu, false)
     if !operators_on_gpu
         return solve_burton_miller_neumann_cpu(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
+    end
+
+    gpu_backend = get(operators, :gpu_backend, :cuda)
+    if gpu_backend == :rocm
+        identity_cache = build_rocm_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)
+        try
+            return solve_burton_miller_neumann(operators, identity_cache, q_neumann, k)
+        finally
+            release_rocm_burton_miller_identity_cache!(identity_cache)
+        end
     end
 
     identity_cache = build_cuda_burton_miller_identity_cache(identity_p1_p1, identity_p1_dp0, T)

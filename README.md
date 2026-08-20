@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM or coupled FEM-BEM-LEM solving from the configured physical system, and presents SPL, directivity, radiation impedance, spinorama-style curves, and 3D balloon plots in the desktop application. Ath is the bundled geometry-generator provider.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is the bundled geometry-generator provider.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -10,7 +10,7 @@ Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeake
 
 - Waveguide design editor with one-click geometry generation through the bundled [Ath4](https://at-horns.eu/) generator
 - 3D mesh viewport for generated geometry and imported `.msh` files
-- Physical-system editor for exterior BEM and coupled FEM-BEM-LEM models
+- Physical-system editor for exterior BEM, interior FEM, and coupled FEM-BEM-LEM models
 - Prescribed-velocity and linear electrodynamic transducer components
 - Channel controls for level, polarity, delay, and HPF/LPF crossover shaping
 - Live horizontal/vertical directivity, on-axis response, spinorama, and radiation-impedance plots
@@ -33,7 +33,9 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab currently has 3 selectable BEM solver backends in the application preferences menu. Solve speed is dependent on hardware; GPU-based solving is generally the fastest option with 20-30x speed gains over CPU-based solving with typical hardware.
+Boundary Lab currently has five selectable BEM solver backends in application
+preferences: Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT Engine AMD
+ROCm, and Bempp OpenCL CPU.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -93,10 +95,11 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-On startup, Boundary Lab updates `ath/ath.cfg` so Ath writes generated files into:
+Boundary Lab captures Ath blab-mode geometry and writes managed generated
+artifacts into:
 
 ```text
-runs/ath_output
+runs/generated_geometry
 ```
 
 
@@ -112,9 +115,8 @@ blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
 ```
 
 Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
-`beat_cuda`, and `beat_rocm`. ROCm is accepted as a server selector but the ROCm
-BEAT Engine implementation is still a placeholder and will report not implemented
-until that engine path is completed. For BEAT Engine solvers, use
+`beat_cuda`, and `beat_rocm`. ROCm supports exterior and coupled FEM-BEM solves,
+including symmetry and hybrid FEM static condensation. For BEAT Engine solvers, use
 `--julia-executable` and `--julia-threads` to point the server at the intended
 Julia installation and thread count.
 
@@ -135,6 +137,7 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [Installation and Setup](docs/Installation%20and%20Setup.md)
 - [User Guide](docs/User%20Guide.md)
 - [Physical System Model](docs/Physical%20System%20Model.md)
+- [Interior FEM Solver](docs/Interior%20FEM%20Solver.md)
 - [Coupled Solver](docs/Coupled%20Solver.md)
 - [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
 - [CUDA Server Docker Image](docs/Docker.md)
@@ -143,5 +146,6 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
+- [BEAT Engine AMD ROCm](docs/advanced/beat-engine-rocm.md)
 - [BEAT Engine CUDA](docs/advanced/beat-engine-CUDA.md)
 - [Forward Beam Shape plot](docs/advanced/forward-beam-shape.md)

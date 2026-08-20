@@ -53,6 +53,12 @@ def _isolate_qsettings(tmp_path_factory) -> None:
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(root))
     QSettings.setPath(QSettings.IniFormat, QSettings.SystemScope, str(root))
 
+    from blab.ui.settings import application_settings
+
+    settings = application_settings()
+    assert settings.format() == QSettings.IniFormat
+    assert pathlib.Path(settings.fileName()).is_relative_to(root)
+
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -63,14 +69,27 @@ def qapp():
 
 def _stub_mesh_preview_class():
     """Stand-in for the VTK mesh preview, which cannot get a GL context offscreen."""
+    from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QWidget
 
     class StubMeshPreview(QWidget):
+        newObservationPlaneRequested = Signal(object)
+        observationPlaneExteriorFieldRequested = Signal(object)
+        observationPlaneChanged = Signal(object)
+        observationPlanePropertiesRequested = Signal(str)
+        observationPlaneDeleteRequested = Signal(str)
+
         def __init__(self, *args, **kwargs):
             super().__init__()
             self.region_visibility_mode: str | None = None
             self.loaded: list[tuple] = []
             self.clear_count = 0
+            self.observation_planes = ()
+            self.selected_observation_plane_id = None
+            self.observation_plane_results = None
+            self.observation_plane_animation = (None, False)
+            self.active_observation_plane_id = None
+            self.observation_plane_field_preferences = None
 
         def clear(self) -> None:
             self.clear_count += 1
@@ -81,6 +100,31 @@ def _stub_mesh_preview_class():
 
         def set_region_visibility_mode(self, mode) -> None:
             self.region_visibility_mode = mode
+
+        def set_observation_planes(self, planes, *, selected_id=None) -> None:
+            self.observation_planes = tuple(planes)
+            self.selected_observation_plane_id = selected_id
+
+        def set_observation_plane_results(self, results) -> None:
+            self.observation_plane_results = results
+
+        def set_observation_plane_field_preferences(self, *, cache_size_mb, translation_target_fps) -> None:
+            self.observation_plane_field_preferences = (cache_size_mb, translation_target_fps)
+
+        def set_observation_plane_animation(self, plane_id, enabled) -> None:
+            self.observation_plane_animation = (plane_id, bool(enabled))
+
+        def set_observation_plane_active(self, plane_id) -> None:
+            self.active_observation_plane_id = plane_id
+
+        def set_observation_plane_exterior_field(self, key, pressure) -> None:
+            self.observation_plane_exterior_field = (key, pressure)
+
+        def set_observation_plane_exterior_field_failed(self, key, message) -> None:
+            self.observation_plane_exterior_field_failed = (key, message)
+
+        def discard_observation_plane_exterior_field_request(self, key) -> None:
+            self.discarded_observation_plane_exterior_field_request = key
 
     return StubMeshPreview
 
@@ -159,9 +203,8 @@ def balloon_window(qapp, monkeypatch):
     """A fully constructed BalloonPlotWindow with the VTK plotter stubbed."""
     require_pyvistaqt()
     import pyvistaqt
-    from PySide6.QtCore import QSettings
 
-    from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
+    from blab.ui.settings import application_settings
 
     monkeypatch.setattr(pyvistaqt, "QtInteractor", _stub_qt_interactor_class())
 
@@ -169,7 +212,7 @@ def balloon_window(qapp, monkeypatch):
 
     # Closing the window saves its dock layout, so without this each test would
     # restore whatever layout the previous one happened to leave behind.
-    settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    settings = application_settings()
     settings.remove("balloon_window")
     settings.sync()
 

@@ -27,6 +27,8 @@ class LiveSolveDataset:
     channel_configs: tuple[ChannelConfig, ...] = ()
     flat_target_normalization_enabled: bool = True
     flat_target_reference_angle_deg: float = 0.0
+    polar_observation_distance_m: float = 0.0
+    exterior_sound_speed_m_per_s: float = 343.0
     sphere_r_distance_m: np.ndarray | None = None
     sphere_theta_polar_rad: np.ndarray | None = None
     sphere_phi_azimuth_rad: np.ndarray | None = None
@@ -140,7 +142,7 @@ class LiveSolveDataset:
 
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
         spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
-        phase_deg = np.rad2deg(np.angle(pressures)).astype(np.float32, copy=False)
+        phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
         return freqs, channel_names, spl_db, phase_deg
 
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
@@ -291,17 +293,53 @@ class LiveSolveDataset:
             return {}
 
         try:
-            export_freqs, channel_names, curves, _phase_deg = self.as_channel_on_axis_export_arrays()
+            export_freqs, channel_names, curves, channel_phase_deg = self.as_channel_on_axis_export_arrays()
         except ValueError:
             return {}
         if not np.array_equal(export_freqs, np.asarray(freqs, dtype=np.float32)):
             return {}
 
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+        summed_pressures = np.asarray(
+            [
+                complex_reference_pressure(
+                    self._synthesized_complex_pressures(result)[0],
+                    angles,
+                    0.0,
+                )
+                for result in self.ordered_results()
+            ],
+            dtype=np.complex64,
+        )
+        summed_phase_deg = self._propagation_aligned_phase_deg(summed_pressures, freqs)
+
         return {
             "channel_on_axis_names": channel_names,
             "channel_on_axis_spl_db": curves,
+            "on_axis_phase_deg": summed_phase_deg,
+            "channel_on_axis_phase_deg": channel_phase_deg,
             "channel_on_axis_freq_hz": freqs,
         }
+
+    def _propagation_aligned_phase_deg(
+        self,
+        pressures: np.ndarray,
+        freqs_hz: np.ndarray,
+    ) -> np.ndarray:
+        distance_m = float(self.polar_observation_distance_m)
+        sound_speed_m_per_s = float(self.exterior_sound_speed_m_per_s)
+        if not np.isfinite(distance_m) or distance_m < 0.0:
+            raise ValueError("Polar observation distance must be finite and non-negative.")
+        if not np.isfinite(sound_speed_m_per_s) or sound_speed_m_per_s <= 0.0:
+            raise ValueError("Exterior sound speed must be finite and greater than zero.")
+
+        freqs = np.asarray(freqs_hz, dtype=np.float64)
+        values = np.asarray(pressures)
+        if values.shape[-1] != freqs.size:
+            raise ValueError("Pressure frequency axis must match freqs_hz.")
+        reference_delay_s = distance_m / sound_speed_m_per_s
+        reference_rotation = np.exp(-1j * 2.0 * np.pi * freqs * reference_delay_s)
+        return np.rad2deg(np.angle(values * reference_rotation)).astype(np.float32, copy=False)
 
 
 def build_log_frequencies(freq_min: float, freq_max: float, freq_count: int) -> np.ndarray:

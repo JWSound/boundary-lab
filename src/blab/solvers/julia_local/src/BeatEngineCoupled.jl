@@ -18,6 +18,7 @@ function _cudss_module()
 end
 
 export VolumeMesh,
+    is_quadratic,
     ConformingInterfaceMap,
     InterfaceOperators,
     ElectrodynamicTransducer,
@@ -25,6 +26,9 @@ export VolumeMesh,
     restrict_volume_mesh,
     physical_tag,
     assemble_p1_fem_matrices,
+    assemble_p2_fem_matrices,
+    assemble_fem_matrices,
+    blend_fem_mass_matrix,
     assemble_fem_dynamic_stiffness,
     assemble_boundary_mass_matrix,
     miki_rigid_backed_surface_admittance,
@@ -51,7 +55,49 @@ struct VolumeMesh{T<:AbstractFloat}
     boundary_faces::Vector{NTuple{3,Int}}
     boundary_physical_tags::Vector{Int}
     physical_names::Dict{Tuple{Int,Int},String}
+    quadratic_tetrahedra::Vector{NTuple{10,Int}}
+    quadratic_boundary_faces::Vector{NTuple{6,Int}}
 end
+
+function VolumeMesh{T}(
+    vertices,
+    tetrahedra,
+    tetra_physical_tags,
+    boundary_faces,
+    boundary_physical_tags,
+    physical_names,
+) where {T<:AbstractFloat}
+    return VolumeMesh{T}(
+        vertices,
+        tetrahedra,
+        tetra_physical_tags,
+        boundary_faces,
+        boundary_physical_tags,
+        physical_names,
+        NTuple{10,Int}[],
+        NTuple{6,Int}[],
+    )
+end
+
+function VolumeMesh(
+    vertices::Vector{SVector{3,T}},
+    tetrahedra,
+    tetra_physical_tags,
+    boundary_faces,
+    boundary_physical_tags,
+    physical_names,
+) where {T<:AbstractFloat}
+    return VolumeMesh{T}(
+        vertices,
+        tetrahedra,
+        tetra_physical_tags,
+        boundary_faces,
+        boundary_physical_tags,
+        physical_names,
+    )
+end
+
+is_quadratic(mesh::VolumeMesh) = !isempty(mesh.quadratic_tetrahedra)
 
 struct ConformingInterfaceMap
     fem_vertex_indices::Vector{Int}
@@ -115,7 +161,11 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         mesh.boundary_faces,
     )
 
-    active_vertices = sort(unique(vcat([collect(tetrahedron) for tetrahedron in selected_tetrahedra]...)))
+    selected_quadratic_tetrahedra = is_quadratic(mesh) ?
+                                      mesh.quadratic_tetrahedra[tetrahedron_indices] :
+                                      NTuple{10,Int}[]
+    active_connectivity = is_quadratic(mesh) ? selected_quadratic_tetrahedra : selected_tetrahedra
+    active_vertices = sort(unique(vcat([collect(tetrahedron) for tetrahedron in active_connectivity]...)))
     vertex_index_map = Dict(vertex => index for (index, vertex) in enumerate(active_vertices))
     boundary_face_index_map = Dict(
         face_index => index
@@ -129,6 +179,14 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         ntuple(local_index -> vertex_index_map[face[local_index]], 3)
         for face in mesh.boundary_faces[boundary_face_indices]
     ]
+    restricted_quadratic_tetrahedra = [
+        ntuple(local_index -> vertex_index_map[tetrahedron[local_index]], 10)
+        for tetrahedron in selected_quadratic_tetrahedra
+    ]
+    restricted_quadratic_boundary_faces = is_quadratic(mesh) ? [
+        ntuple(local_index -> vertex_index_map[face[local_index]], 6)
+        for face in mesh.quadratic_boundary_faces[boundary_face_indices]
+    ] : NTuple{6,Int}[]
     restricted = VolumeMesh{T}(
         mesh.vertices[active_vertices],
         restricted_tetrahedra,
@@ -136,6 +194,8 @@ function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:Abst
         restricted_boundary_faces,
         mesh.boundary_physical_tags[boundary_face_indices],
         mesh.physical_names,
+        restricted_quadratic_tetrahedra,
+        restricted_quadratic_boundary_faces,
     )
     return (
         mesh=restricted,
@@ -162,13 +222,14 @@ function load_gmsh41_volume(filepath::String, scale::T) where {T<:AbstractFloat}
     physical_names = _parse_physical_names(lines)
     entity_physical_tags = _parse_entity_physical_tags(lines)
     vertices, node_index_map = _parse_gmsh41_nodes(lines, scale)
-    tetrahedra, tetra_tags, boundary_faces, boundary_tags = _parse_gmsh41_elements(
+    tetrahedra, tetra_tags, boundary_faces, boundary_tags,
+    quadratic_tetrahedra, quadratic_boundary_faces = _parse_gmsh41_elements(
         lines,
         node_index_map,
         entity_physical_tags,
     )
-    isempty(tetrahedra) && error("FEM volume mesh contains no first-order tetrahedra.")
-    isempty(boundary_faces) && error("FEM volume mesh contains no first-order boundary triangles.")
+    isempty(tetrahedra) && error("FEM volume mesh contains no supported tetrahedra.")
+    isempty(boundary_faces) && error("FEM volume mesh contains no supported boundary triangles.")
     return VolumeMesh{T}(
         vertices,
         tetrahedra,
@@ -176,6 +237,8 @@ function load_gmsh41_volume(filepath::String, scale::T) where {T<:AbstractFloat}
         boundary_faces,
         boundary_tags,
         physical_names,
+        quadratic_tetrahedra,
+        quadratic_boundary_faces,
     )
 end
 
@@ -248,6 +311,133 @@ function assemble_p1_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
     return stiffness, mass
 end
 
+function _p2_tetra_basis_gradients(lambda::AbstractVector{T}) where {T<:AbstractFloat}
+    gradients_lambda = T[
+        -1 1 0 0
+        -1 0 1 0
+        -1 0 0 1
+    ]
+    values = zeros(T, 10)
+    gradients = zeros(T, 3, 10)
+    for index in 1:4
+        values[index] = lambda[index] * (T(2) * lambda[index] - one(T))
+        gradients[:, index] .= (T(4) * lambda[index] - one(T)) .* gradients_lambda[:, index]
+    end
+    edges = ((1, 2), (2, 3), (3, 1), (1, 4), (4, 3), (2, 4))
+    for (offset, (left, right)) in enumerate(edges)
+        index = 4 + offset
+        values[index] = T(4) * lambda[left] * lambda[right]
+        gradients[:, index] .= T(4) .* (
+            lambda[left] .* gradients_lambda[:, right] +
+            lambda[right] .* gradients_lambda[:, left]
+        )
+    end
+    return values, gradients
+end
+
+function _p2_tetra_reference_operators(::Type{T}) where {T<:AbstractFloat}
+    quadrature = Tuple{Vector{T},T}[]
+    push!(quadrature, (fill(T(1) / T(4), 4), T(-0.013155555555555556)))
+    high = T(11) / T(14)
+    low = T(1) / T(14)
+    for high_index in 1:4
+        lambda = fill(low, 4)
+        lambda[high_index] = high
+        push!(quadrature, (lambda, T(0.007622222222222222)))
+    end
+    delta = sqrt(T(5) / T(14))
+    left = (one(T) + delta) / T(4)
+    right = (one(T) - delta) / T(4)
+    for first in 1:3, second in (first + 1):4
+        lambda = fill(right, 4)
+        lambda[first] = left
+        lambda[second] = left
+        push!(quadrature, (lambda, T(0.02488888888888889)))
+    end
+    mass = zeros(T, 10, 10)
+    stiffness_tensor = zeros(T, 10, 10, 3, 3)
+    for (lambda, weight) in quadrature
+        values, gradients = _p2_tetra_basis_gradients(lambda)
+        mass .+= weight .* (values * transpose(values))
+        for row in 1:10, col in 1:10, left_axis in 1:3, right_axis in 1:3
+            stiffness_tensor[row, col, left_axis, right_axis] +=
+                weight * gradients[left_axis, row] * gradients[right_axis, col]
+        end
+    end
+    return mass, stiffness_tensor
+end
+
+function assemble_p2_fem_matrices(mesh::VolumeMesh{T}) where {T<:AbstractFloat}
+    is_quadratic(mesh) || error("P2 FEM assembly requires ten-node tetrahedra.")
+    stiffness_rows = Int[]
+    stiffness_cols = Int[]
+    stiffness_values = T[]
+    mass_rows = Int[]
+    mass_cols = Int[]
+    mass_values = T[]
+    reference_mass, reference_stiffness = _p2_tetra_reference_operators(T)
+
+    for element_index in eachindex(mesh.tetrahedra)
+        corners = mesh.tetrahedra[element_index]
+        tetrahedron = mesh.quadratic_tetrahedra[element_index]
+        x1 = mesh.vertices[corners[1]]
+        jacobian = SMatrix{3,3,T}(
+            hcat(
+                mesh.vertices[corners[2]] - x1,
+                mesh.vertices[corners[3]] - x1,
+                mesh.vertices[corners[4]] - x1,
+            ),
+        )
+        determinant = det(jacobian)
+        edge_scale = maximum(abs, jacobian)
+        abs(determinant) > eps(T) * edge_scale^3 || error(
+            "FEM volume mesh contains a numerically degenerate tetrahedron.",
+        )
+        absolute_determinant = abs(determinant)
+        inverse_jacobian = inv(jacobian)
+        metric = inverse_jacobian * transpose(inverse_jacobian)
+        for local_row in 1:10, local_col in 1:10
+            stiffness_value = zero(T)
+            for left_axis in 1:3, right_axis in 1:3
+                stiffness_value += metric[left_axis, right_axis] * reference_stiffness[
+                    local_row,
+                    local_col,
+                    left_axis,
+                    right_axis,
+                ]
+            end
+            push!(stiffness_rows, tetrahedron[local_row])
+            push!(stiffness_cols, tetrahedron[local_col])
+            push!(stiffness_values, absolute_determinant * stiffness_value)
+            push!(mass_rows, tetrahedron[local_row])
+            push!(mass_cols, tetrahedron[local_col])
+            push!(mass_values, absolute_determinant * reference_mass[local_row, local_col])
+        end
+    end
+    dof_count = length(mesh.vertices)
+    return (
+        sparse(stiffness_rows, stiffness_cols, stiffness_values, dof_count, dof_count),
+        sparse(mass_rows, mass_cols, mass_values, dof_count, dof_count),
+    )
+end
+
+assemble_fem_matrices(mesh::VolumeMesh) = is_quadratic(mesh) ?
+                                         assemble_p2_fem_matrices(mesh) :
+                                         assemble_p1_fem_matrices(mesh)
+
+function blend_fem_mass_matrix(
+    consistent_mass::SparseMatrixCSC{T,Ti},
+    consistent_weight::T,
+) where {T<:AbstractFloat,Ti<:Integer}
+    isfinite(consistent_weight) && zero(T) <= consistent_weight <= one(T) || error(
+        "FEM consistent-mass weight must be finite and between zero and one.",
+    )
+    consistent_weight == one(T) && return consistent_mass
+    lumped_mass = spdiagm(0 => vec(sum(consistent_mass; dims=2)))
+    return consistent_weight .* consistent_mass +
+           (one(T) - consistent_weight) .* lumped_mass
+end
+
 function assemble_fem_dynamic_stiffness(
     stiffness::SparseMatrixCSC{T,Ti},
     mass::SparseMatrixCSC{T,Ti},
@@ -303,6 +493,54 @@ function miki_rigid_backed_surface_admittance(
     return admittance
 end
 
+function _p2_triangle_basis(lambda::AbstractVector{T}) where {T<:AbstractFloat}
+    return T[
+        lambda[1] * (T(2) * lambda[1] - one(T)),
+        lambda[2] * (T(2) * lambda[2] - one(T)),
+        lambda[3] * (T(2) * lambda[3] - one(T)),
+        T(4) * lambda[1] * lambda[2],
+        T(4) * lambda[2] * lambda[3],
+        T(4) * lambda[3] * lambda[1],
+    ]
+end
+
+function _p2_triangle_quadrature(::Type{T}) where {T<:AbstractFloat}
+    first = (
+        T(0.816847572980459),
+        T(0.091576213509771),
+        T(0.109951743655322) / T(2),
+    )
+    second = (
+        T(0.108103018168070),
+        T(0.445948490915965),
+        T(0.223381589678011) / T(2),
+    )
+    quadrature = Tuple{Vector{T},T}[]
+    for (single, repeated, weight) in (first, second), single_index in 1:3
+        lambda = fill(repeated, 3)
+        lambda[single_index] = single
+        push!(quadrature, (lambda, weight))
+    end
+    return quadrature
+end
+
+function _p2_triangle_reference_mass(::Type{T}) where {T<:AbstractFloat}
+    mass = zeros(T, 6, 6)
+    for (lambda, weight) in _p2_triangle_quadrature(T)
+        values = _p2_triangle_basis(lambda)
+        mass .+= weight .* (values * transpose(values))
+    end
+    return mass
+end
+
+function _p2_triangle_reference_load(::Type{T}) where {T<:AbstractFloat}
+    load = zeros(T, 6)
+    for (lambda, weight) in _p2_triangle_quadrature(T)
+        load .+= weight .* _p2_triangle_basis(lambda)
+    end
+    return load
+end
+
 function assemble_boundary_mass_matrix(
     mesh::VolumeMesh{T},
     face_indices,
@@ -318,11 +556,17 @@ function assemble_boundary_mass_matrix(
         1 1 2
     ]
 
+    quadratic_reference_mass = is_quadratic(mesh) ? _p2_triangle_reference_mass(T) : nothing
     for face_index in face_indices
-        face = mesh.boundary_faces[face_index]
+        face = is_quadratic(mesh) ?
+               mesh.quadratic_boundary_faces[face_index] :
+               mesh.boundary_faces[face_index]
         area = _triangle_area(mesh.vertices, face)
-        local_mass = (area / T(12)) .* reference_mass
-        for local_row in 1:3, local_col in 1:3
+        local_mass = is_quadratic(mesh) ?
+                     (T(2) * area) .* quadratic_reference_mass :
+                     (area / T(12)) .* reference_mass
+        local_count = length(face)
+        for local_row in 1:local_count, local_col in 1:local_count
             boundary_col = get(boundary_dof, face[local_col], 0)
             boundary_col == 0 && error("Boundary face references a vertex outside the requested boundary space.")
             push!(rows, face[local_row])
@@ -342,12 +586,23 @@ function assemble_prescribed_velocity_load(
 ) where {T<:AbstractFloat}
     load = zeros(Complex{T}, length(mesh.vertices))
     normal_derivative = Complex{T}(0, density * omega) * velocity
+    quadratic_reference_load = is_quadratic(mesh) ? _p2_triangle_reference_load(T) : nothing
     for face_index in eachindex(mesh.boundary_faces)
         mesh.boundary_physical_tags[face_index] == boundary_tag || continue
-        face = mesh.boundary_faces[face_index]
-        nodal_load = normal_derivative * _triangle_area(mesh.vertices, face) / T(3)
-        for vertex in face
-            load[vertex] += nodal_load
+        face = is_quadratic(mesh) ?
+               mesh.quadratic_boundary_faces[face_index] :
+               mesh.boundary_faces[face_index]
+        area = _triangle_area(mesh.vertices, face)
+        if is_quadratic(mesh)
+            nodal_load = normal_derivative .* (T(2) * area) .* quadratic_reference_load
+            for (local_index, vertex) in enumerate(face)
+                load[vertex] += nodal_load[local_index]
+            end
+        else
+            nodal_load = normal_derivative * area / T(3)
+            for vertex in face
+                load[vertex] += nodal_load
+            end
         end
     end
     return load
@@ -360,7 +615,7 @@ function sealed_cavity_modes(
     zero_tolerance::T=T(1e-8),
 ) where {T<:AbstractFloat}
     count > 0 || error("Mode count must be positive.")
-    stiffness, mass = assemble_p1_fem_matrices(mesh)
+    stiffness, mass = assemble_fem_matrices(mesh)
     decomposition = eigen(Symmetric(Matrix(stiffness)), Symmetric(Matrix(mass)))
     eigenvalues = sort(real.(decomposition.values))
     scale = maximum(abs, eigenvalues; init=one(T))
@@ -378,7 +633,7 @@ function solve_prescribed_velocity_interior(
     velocity::Complex{T}=Complex{T}(1, 0),
     bulk_loss_factor::T=zero(T),
 ) where {T<:AbstractFloat}
-    stiffness, mass = assemble_p1_fem_matrices(mesh)
+    stiffness, mass = assemble_fem_matrices(mesh)
     omega = T(2pi) * frequency_hz
     wavenumber = omega / sound_speed
     system = assemble_fem_dynamic_stiffness(
@@ -670,8 +925,11 @@ function prepare_coupled_cache(
     bulk_loss_factor_by_vertex=zeros(T, length(fem_mesh.vertices)),
     wall_impedances=NamedTuple[],
 ) where {T<:AbstractFloat}
-    bem_backend in (:cpu, :cuda) ||
-        error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu or :cuda.")
+    is_quadratic(fem_mesh) && error(
+        "Quadratic tetrahedra are currently supported only by the pure interior FEM solve.",
+    )
+    bem_backend in (:cpu, :cuda, :rocm) ||
+        error("Unsupported coupled BEM backend: $bem_backend. Expected :cpu, :cuda, or :rocm.")
     normalized_symmetry = BeatEngineCore.normalized_symmetry_mode(symmetry_mode)
     validate_symmetry_fundamental_domain!(bem_mesh, normalized_symmetry)
 
@@ -728,17 +986,34 @@ function prepare_coupled_cache(
     bem_cpu_assembly_cache_s = (time_ns() - cpu_assembly_started) / 1.0e9
 
     device_regular_started = time_ns()
-    device_cache = bem_backend == :cuda ? build_cuda_regular_assembly_cache(bem_mesh, rule) : nothing
+    device_cache = if bem_backend == :cuda
+        build_cuda_regular_assembly_cache(bem_mesh, rule)
+    elseif bem_backend == :rocm
+        build_rocm_regular_assembly_cache(
+            bem_mesh,
+            p1,
+            dp0,
+            rule;
+            singular_order=singular_order,
+            symmetry_mode=normalized_symmetry,
+        )
+    else
+        nothing
+    end
     bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_backend == :rocm && BeatEngineCore.amdgpu_module().synchronize()
     bem_device_regular_cache_s = (time_ns() - device_regular_started) / 1.0e9
 
     device_singular_started = time_ns()
-    device_singular_cache = bem_backend == :cuda ? BeatEngineCore.build_cuda_singular_correction_cache(
-        singular_cache,
-        p1,
-        dp0,
-    ) : nothing
+    device_singular_cache = if bem_backend == :cuda
+        BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1, dp0)
+    elseif bem_backend == :rocm
+        build_rocm_singular_correction_cache(singular_cache)
+    else
+        nothing
+    end
     bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_backend == :rocm && BeatEngineCore.amdgpu_module().synchronize()
     bem_device_singular_cache_s = (time_ns() - device_singular_started) / 1.0e9
 
     device_image_started = time_ns()
@@ -779,34 +1054,50 @@ function prepare_coupled_cache(
     device_identity_cache = nothing
     device_bem_flux = nothing
     device_sparse_blocks = nothing
-    if bem_backend == :cuda
-        cuda = BeatEngineCore.cuda_module()
-        device_identity_cache = build_cuda_burton_miller_identity_cache(
-            identity_p1_p1,
-            identity_p1_dp0,
-            T,
-        )
-        device_bem_flux = cuda.CuArray(Complex{T}.(Matrix(interface_operators.bem_flux)))
+    if bem_backend in (:cuda, :rocm)
+        accelerator = bem_backend == :cuda ?
+                      BeatEngineCore.cuda_module() : BeatEngineCore.amdgpu_module()
+        device_identity_cache = if bem_backend == :cuda
+            build_cuda_burton_miller_identity_cache(
+                identity_p1_p1,
+                identity_p1_dp0,
+                T,
+            )
+        else
+            build_rocm_burton_miller_identity_cache(
+                identity_p1_p1,
+                identity_p1_dp0,
+                T,
+            )
+        end
+        device_bem_flux = if bem_backend == :cuda
+            accelerator.CuArray(Complex{T}.(Matrix(interface_operators.bem_flux)))
+        else
+            accelerator.ROCArray(Complex{T}.(Matrix(interface_operators.bem_flux)))
+        end
+        build_sparse_cache = bem_backend == :cuda ?
+                             build_cuda_sparse_scatter_cache :
+                             build_rocm_sparse_scatter_cache
         gamma = Int.(collect(retained_fem_vertices))
         device_sparse_blocks = (
-            stiffness=build_cuda_sparse_scatter_cache(stiffness),
-            mass=build_cuda_sparse_scatter_cache(mass),
-            bulk_loss_mass=build_cuda_sparse_scatter_cache(bulk_loss_mass),
+            stiffness=build_sparse_cache(stiffness),
+            mass=build_sparse_cache(mass),
+            bulk_loss_mass=build_sparse_cache(bulk_loss_mass),
             wall_impedance=[
-                build_cuda_sparse_scatter_cache(operator.matrix)
+                build_sparse_cache(operator.matrix)
                 for operator in wall_impedance_operators
             ],
-            fem_load=build_cuda_sparse_scatter_cache(interface_operators.fem_load),
-            fem_trace=build_cuda_sparse_scatter_cache(interface_operators.fem_trace),
-            bem_trace=build_cuda_sparse_scatter_cache(interface_operators.bem_trace),
-            condensed_fem_load=build_cuda_sparse_scatter_cache(
+            fem_load=build_sparse_cache(interface_operators.fem_load),
+            fem_trace=build_sparse_cache(interface_operators.fem_trace),
+            bem_trace=build_sparse_cache(interface_operators.bem_trace),
+            condensed_fem_load=build_sparse_cache(
                 interface_operators.fem_load[gamma, :],
             ),
-            condensed_fem_trace=build_cuda_sparse_scatter_cache(
+            condensed_fem_trace=build_sparse_cache(
                 interface_operators.fem_trace[:, gamma],
             ),
         )
-        cuda.synchronize()
+        accelerator.synchronize()
     end
     device_block_cache_s = (time_ns() - device_block_started) / 1.0e9
 
@@ -816,9 +1107,15 @@ function prepare_coupled_cache(
         rule;
         symmetry_mode=normalized_symmetry,
     )
-    field_cache =
-        bem_backend == :cuda ? build_cuda_field_evaluation_cache(cpu_field_cache) : cpu_field_cache
+    field_cache = if bem_backend == :cuda
+        build_cuda_field_evaluation_cache(cpu_field_cache)
+    elseif bem_backend == :rocm
+        build_rocm_field_evaluation_cache(cpu_field_cache)
+    else
+        cpu_field_cache
+    end
     bem_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    bem_backend == :rocm && BeatEngineCore.amdgpu_module().synchronize()
     field_cache_s = (time_ns() - field_started) / 1.0e9
 
     return (
@@ -871,6 +1168,23 @@ function _unsafe_free_cuda_fields!(value, fields)
 end
 
 function release_coupled_cache!(cache)
+    if cache.bem_backend == :rocm
+        release_rocm_regular_assembly_cache!(cache.device_cache)
+        release_rocm_singular_correction_cache!(cache.device_singular_cache)
+        release_rocm_field_evaluation_cache!(cache.field_cache)
+        release_rocm_burton_miller_identity_cache!(cache.device_identity_cache)
+        BeatEngineCore.amdgpu_module().unsafe_free!(cache.device_bem_flux)
+        for (name, sparse_cache) in pairs(cache.device_sparse_blocks)
+            if name == :wall_impedance
+                for wall_cache in sparse_cache
+                    release_rocm_sparse_scatter_cache!(wall_cache)
+                end
+            elseif !isnothing(sparse_cache)
+                release_rocm_sparse_scatter_cache!(sparse_cache)
+            end
+        end
+        return nothing
+    end
     cache.bem_backend == :cuda || return nothing
     _unsafe_free_cuda_fields!(
         cache.device_cache,
@@ -947,7 +1261,9 @@ function release_coupled_cache!(cache)
     return nothing
 end
 
-function _cuda_coupled_bem_blocks(
+function _accelerator_coupled_bem_blocks(
+    accelerator,
+    device_array,
     operators,
     identity_p1_p1,
     identity_p1_dp0,
@@ -957,21 +1273,22 @@ function _cuda_coupled_bem_blocks(
     keep_device::Bool=false,
     inputs_on_device::Bool=false,
     bem_motion_flux=nothing,
+    bem_prescribed_neumann=nothing,
 ) where {T<:AbstractFloat}
-    cuda = BeatEngineCore.cuda_module()
     coupling = Complex{T}(0, 1) / wavenumber
     d_identity_p1_p1 = d_identity_p1_dp0 = d_bem_flux = nothing
     d_lhs = d_interface_block = d_interface_temp = d_rhs_operator = nothing
     d_motion_block = d_motion_temp = nothing
+    d_prescribed_rhs = d_prescribed_temp = nothing
     try
         if inputs_on_device
             d_identity_p1_p1 = identity_p1_p1
             d_identity_p1_dp0 = identity_p1_dp0
             d_bem_flux = bem_flux
         else
-            d_identity_p1_p1 = cuda.CuArray(Complex{T}.(identity_p1_p1))
-            d_identity_p1_dp0 = cuda.CuArray(Complex{T}.(identity_p1_dp0))
-            d_bem_flux = cuda.CuArray(Complex{T}.(Matrix(bem_flux)))
+            d_identity_p1_p1 = device_array(Complex{T}.(identity_p1_p1))
+            d_identity_p1_dp0 = device_array(Complex{T}.(identity_p1_dp0))
+            d_bem_flux = device_array(Complex{T}.(Matrix(bem_flux)))
         end
         d_lhs = (
             Complex{T}(0.5) .* d_identity_p1_p1 .-
@@ -1006,6 +1323,23 @@ function _cuda_coupled_bem_blocks(
             mul!(d_motion_temp, d_identity_p1_dp0, bem_motion_flux)
             d_motion_block .+= Complex{T}(0.5) * coupling .* d_motion_temp
         end
+        if !isnothing(bem_prescribed_neumann)
+            d_prescribed_rhs = similar(
+                operators.single_layer,
+                Complex{T},
+                size(operators.single_layer, 1),
+                size(bem_prescribed_neumann, 2),
+            )
+            d_prescribed_temp = similar(d_prescribed_rhs)
+            mul!(d_prescribed_rhs, operators.single_layer, bem_prescribed_neumann)
+            mul!(d_prescribed_temp, operators.adjoint_double_layer, bem_prescribed_neumann)
+            d_prescribed_rhs .+= coupling .* d_prescribed_temp
+            mul!(d_prescribed_temp, d_identity_p1_dp0, bem_prescribed_neumann)
+            d_prescribed_rhs .+= Complex{T}(0.5) * coupling .* d_prescribed_temp
+            # Prescribed Neumann data is a known RHS term; interface and motion
+            # blocks use the opposite sign because their amplitudes are unknowns.
+            d_prescribed_rhs .*= -one(Complex{T})
+        end
         if validation_diagnostics
             d_rhs_operator = (
                 -operators.single_layer .-
@@ -1015,7 +1349,7 @@ function _cuda_coupled_bem_blocks(
                 )
             )
         end
-        cuda.synchronize()
+        accelerator.synchronize()
         return (
             bem_lhs=keep_device ? d_lhs : Complex{T}.(Array(d_lhs)),
             bem_rhs_operator=if isnothing(d_rhs_operator)
@@ -1035,6 +1369,13 @@ function _cuda_coupled_bem_blocks(
             else
                 Complex{T}.(Array(d_motion_block))
             end,
+            bem_prescribed_rhs=if isnothing(d_prescribed_rhs)
+                nothing
+            elseif keep_device
+                d_prescribed_rhs
+            else
+                Complex{T}.(Array(d_prescribed_rhs))
+            end,
         )
     finally
         input_allocations = inputs_on_device ? () : (
@@ -1042,15 +1383,36 @@ function _cuda_coupled_bem_blocks(
             d_identity_p1_dp0,
             d_bem_flux,
         )
-        for value in (input_allocations..., d_interface_temp, d_motion_temp)
-            isnothing(value) || cuda.unsafe_free!(value)
+        for value in (
+            input_allocations...,
+            d_interface_temp,
+            d_motion_temp,
+            d_prescribed_temp,
+        )
+            isnothing(value) || accelerator.unsafe_free!(value)
         end
         if !keep_device
-            for value in (d_lhs, d_interface_block, d_motion_block, d_rhs_operator)
-                isnothing(value) || cuda.unsafe_free!(value)
+            for value in (
+                d_lhs,
+                d_interface_block,
+                d_motion_block,
+                d_prescribed_rhs,
+                d_rhs_operator,
+            )
+                isnothing(value) || accelerator.unsafe_free!(value)
             end
         end
     end
+end
+
+function _cuda_coupled_bem_blocks(args...; kwargs...)
+    cuda = BeatEngineCore.cuda_module()
+    return _accelerator_coupled_bem_blocks(cuda, cuda.CuArray, args...; kwargs...)
+end
+
+function _rocm_coupled_bem_blocks(args...; kwargs...)
+    amdgpu = BeatEngineCore.amdgpu_module()
+    return _accelerator_coupled_bem_blocks(amdgpu, amdgpu.ROCArray, args...; kwargs...)
 end
 
 function _build_cuda_fem_condensation(
@@ -1112,6 +1474,7 @@ function _build_cuda_fem_condensation(
     cuda.unsafe_free!(device_solution)
 
     return (
+        backend=:cuda_cudss,
         solver=solver,
         device_system=device_system,
         device_schur=device_schur,
@@ -1141,6 +1504,169 @@ function _release_cuda_fem_condensation!(condensation)
     return nothing
 end
 
+const ROCM_HYBRID_SCHUR_BLOCK_SIZE = 64
+
+function _densify_sparse_columns!(
+    dense::AbstractMatrix{ComplexF64},
+    source::SparseMatrixCSC{ComplexF64,Int},
+    columns,
+)
+    fill!(dense, zero(ComplexF64))
+    row_indices = rowvals(source)
+    values = nonzeros(source)
+    for (local_column, source_column) in enumerate(columns)
+        for index in nzrange(source, source_column)
+            dense[row_indices[index], local_column] = values[index]
+        end
+    end
+    return dense
+end
+
+function _resolved_schur_block_size(requested::Int, retained_count::Int)
+    retained_count == 0 && return 0
+    return max(1, min(requested, fld(retained_count, Threads.nthreads())))
+end
+
+function _blocked_umfpack_schur_complement(
+    factorization,
+    interior_to_retained::SparseMatrixCSC{ComplexF64,Int},
+    retained_to_interior::SparseMatrixCSC{ComplexF64,Int},
+    retained_system::Matrix{ComplexF64};
+    block_size::Int=ROCM_HYBRID_SCHUR_BLOCK_SIZE,
+)
+    block_size > 0 || throw(ArgumentError("Schur-complement block size must be positive."))
+    retained_count = size(interior_to_retained, 2)
+    retained_count == 0 && return (
+        schur=copy(retained_system),
+        block_size=0,
+        thread_count=1,
+    )
+
+    resolved_block_size = _resolved_schur_block_size(block_size, retained_count)
+    block_starts = collect(1:resolved_block_size:retained_count)
+    thread_count = max(1, min(Threads.nthreads(), length(block_starts)))
+    schur = copy(retained_system)
+
+    interior_count = size(interior_to_retained, 1)
+    buffer_columns = min(resolved_block_size, retained_count)
+    tasks = map(1:thread_count) do task_index
+        Threads.@spawn begin
+            task_factorization = copy(factorization)
+            dense_columns = Matrix{ComplexF64}(undef, interior_count, buffer_columns)
+            solved_columns = Matrix{ComplexF64}(undef, interior_count, buffer_columns)
+            for block_index in task_index:thread_count:length(block_starts)
+                block_start = block_starts[block_index]
+                columns = block_start:min(
+                    block_start + resolved_block_size - 1,
+                    retained_count,
+                )
+                block_rhs = view(dense_columns, :, 1:length(columns))
+                block_solution = view(solved_columns, :, 1:length(columns))
+                _densify_sparse_columns!(block_rhs, interior_to_retained, columns)
+                ldiv!(block_solution, task_factorization, block_rhs)
+                mul!(
+                    view(schur, :, columns),
+                    retained_to_interior,
+                    block_solution,
+                    -one(ComplexF64),
+                    one(ComplexF64),
+                )
+            end
+        end
+    end
+    foreach(wait, tasks)
+    return (
+        schur=schur,
+        block_size=resolved_block_size,
+        thread_count=thread_count,
+    )
+end
+
+function _build_rocm_hybrid_fem_condensation(
+    fem_system::SparseMatrixCSC{Complex{T}},
+    interface_operators::InterfaceOperators{T},
+    retained_vertices,
+) where {T<:AbstractFloat}
+    amdgpu = BeatEngineCore.amdgpu_module()
+    fem_count = size(fem_system, 1)
+    retained_vertices = Int.(collect(retained_vertices))
+    retained_set = Set(retained_vertices)
+    interior_vertices = [vertex for vertex in 1:fem_count if !(vertex in retained_set)]
+    interior_load = interface_operators.fem_load[interior_vertices, :]
+    nnz(interior_load) == 0 || error(
+        "FEM static condensation requires interface loads to have support only on retained nodes.",
+    )
+
+    partition_started = time_ns()
+    interior_system = SparseMatrixCSC{ComplexF64,Int}(
+        fem_system[interior_vertices, interior_vertices],
+    )
+    interior_to_retained = SparseMatrixCSC{ComplexF64,Int}(
+        fem_system[interior_vertices, retained_vertices],
+    )
+    retained_to_interior = SparseMatrixCSC{ComplexF64,Int}(
+        fem_system[retained_vertices, interior_vertices],
+    )
+    retained_system = Matrix{ComplexF64}(fem_system[retained_vertices, retained_vertices])
+    partition_s = (time_ns() - partition_started) / 1.0e9
+
+    factorization = nothing
+    factorization_started = time_ns()
+    if !isempty(interior_vertices)
+        factorization = lu(interior_system)
+    end
+    factorization_s = (time_ns() - factorization_started) / 1.0e9
+
+    schur_started = time_ns()
+    schur_result = if isempty(interior_vertices)
+        (
+            schur=retained_system,
+            block_size=0,
+            thread_count=1,
+        )
+    else
+        _blocked_umfpack_schur_complement(
+            factorization,
+            interior_to_retained,
+            retained_to_interior,
+            retained_system,
+        )
+    end
+    schur_extraction_s = (time_ns() - schur_started) / 1.0e9
+
+    upload_started = time_ns()
+    device_schur = amdgpu.ROCArray(Complex{T}.(schur_result.schur))
+    amdgpu.synchronize()
+    upload_s = (time_ns() - upload_started) / 1.0e9
+    return (
+        backend=:rocm_hybrid,
+        factorization=factorization,
+        device_schur=device_schur,
+        interior_vertices=interior_vertices,
+        retained_vertices=retained_vertices,
+        interior_to_retained=interior_to_retained,
+        retained_to_interior=retained_to_interior,
+        interior_count=length(interior_vertices),
+        retained_count=length(retained_vertices),
+        schur_block_size=schur_result.block_size,
+        schur_thread_count=schur_result.thread_count,
+        timings=(
+            analysis_s=0.0,
+            partition_s=partition_s,
+            factorization_s=factorization_s,
+            schur_extraction_s=schur_extraction_s,
+            upload_s=upload_s,
+        ),
+    )
+end
+
+function _release_rocm_hybrid_fem_condensation!(condensation)
+    isnothing(condensation) && return nothing
+    isnothing(condensation.factorization) || finalize(condensation.factorization)
+    BeatEngineCore.amdgpu_module().unsafe_free!(condensation.device_schur)
+    return nothing
+end
+
 function build_coupled_system(
     fem_mesh::VolumeMesh{T},
     bem_mesh::BoundaryMesh{T},
@@ -1160,9 +1686,10 @@ function build_coupled_system(
     wall_impedances=NamedTuple[],
     transducers::AbstractVector{ElectrodynamicTransducer{T}}=ElectrodynamicTransducer{T}[],
     transducer_operators=nothing,
+    prescribed_bem_normal_velocity=nothing,
 ) where {T<:AbstractFloat}
-    static_condensation && bem_backend != :cuda && error(
-        "FEM static condensation is currently available only for the CUDA coupled backend.",
+    static_condensation && !(bem_backend in (:cuda, :rocm)) && error(
+        "FEM static condensation is currently available only for CUDA and ROCm coupled backends.",
     )
     static_condensation && validation_diagnostics && error(
         "FEM static condensation cannot be combined with full-matrix validation diagnostics.",
@@ -1235,6 +1762,16 @@ function build_coupled_system(
     bem_motion_flux = normal_derivative_scale .* Complex{T}.(
         resolved_transducer_operators.bem_normal_velocity
     )
+    resolved_prescribed_bem_velocity = isnothing(prescribed_bem_normal_velocity) ?
+                                       spzeros(T, length(bem_mesh.faces), 0) :
+                                       T.(prescribed_bem_normal_velocity)
+    size(resolved_prescribed_bem_velocity, 1) == length(bem_mesh.faces) || error(
+        "Prescribed BEM normal velocity must contain one row per BEM face.",
+    )
+    bem_prescribed_neumann = normal_derivative_scale .* Complex{T}.(
+        resolved_prescribed_bem_velocity
+    )
+    prescribed_bem_count = size(bem_prescribed_neumann, 2)
     fem_system_s = (time_ns() - fem_stage_started) / 1.0e9
 
     bem_operator_started = time_ns()
@@ -1252,36 +1789,51 @@ function build_coupled_system(
         device_cache=prepared.device_cache,
         device_image_singular_cache=prepared.device_image_singular_cache,
         symmetry_mode=prepared.symmetry_mode,
-        return_device=bem_backend == :cuda,
-        accelerator_quadrature=bem_backend == :cuda,
+        return_device=bem_backend in (:cuda, :rocm),
+        accelerator_quadrature=bem_backend in (:cuda, :rocm),
         device_singular_cache=prepared.device_singular_cache,
     )
     bem_operator_s = (time_ns() - bem_operator_started) / 1.0e9
     bem_matrix_started = time_ns()
-    linear_backend = bem_backend == :cuda && !validation_diagnostics ? :cuda : :cpu
-    bem_blocks = if bem_backend == :cuda
+    linear_backend = bem_backend in (:cuda, :rocm) && !validation_diagnostics ?
+                     bem_backend : :cpu
+    bem_blocks = if bem_backend in (:cuda, :rocm)
+        accelerator = bem_backend == :cuda ?
+                      BeatEngineCore.cuda_module() : BeatEngineCore.amdgpu_module()
+        device_array = bem_backend == :cuda ? accelerator.CuArray : accelerator.ROCArray
         device_bem_motion_flux = nothing
+        device_bem_prescribed_neumann = nothing
         try
             if transducer_count > 0
-                device_bem_motion_flux = BeatEngineCore.cuda_module().CuArray(
+                device_bem_motion_flux = device_array(
                     Matrix(bem_motion_flux),
                 )
             end
-            _cuda_coupled_bem_blocks(
+            if prescribed_bem_count > 0
+                device_bem_prescribed_neumann = device_array(
+                    Matrix(bem_prescribed_neumann),
+                )
+            end
+            build_bem_blocks = bem_backend == :cuda ?
+                               _cuda_coupled_bem_blocks : _rocm_coupled_bem_blocks
+            build_bem_blocks(
                 operators,
                 prepared.device_identity_cache.identity_p1_p1,
                 prepared.device_identity_cache.identity_p1_dp0,
                 prepared.device_bem_flux,
                 wavenumber;
                 validation_diagnostics=validation_diagnostics,
-                keep_device=linear_backend == :cuda,
+                keep_device=linear_backend in (:cuda, :rocm),
                 inputs_on_device=true,
                 bem_motion_flux=device_bem_motion_flux,
+                bem_prescribed_neumann=device_bem_prescribed_neumann,
             )
         finally
             release_operator_storage!(operators)
             isnothing(device_bem_motion_flux) ||
-                BeatEngineCore.cuda_module().unsafe_free!(device_bem_motion_flux)
+                accelerator.unsafe_free!(device_bem_motion_flux)
+            isnothing(device_bem_prescribed_neumann) ||
+                accelerator.unsafe_free!(device_bem_prescribed_neumann)
         end
     else
         bem_lhs, bem_rhs_operator = burton_miller_neumann_matrices(
@@ -1297,18 +1849,34 @@ function build_coupled_system(
             bem_motion_block=transducer_count == 0 ?
                              nothing :
                              -(bem_rhs_operator * bem_motion_flux),
+            bem_prescribed_rhs=prescribed_bem_count == 0 ?
+                               nothing :
+                               bem_rhs_operator * bem_prescribed_neumann,
         )
     end
     bem_lhs = bem_blocks.bem_lhs
     bem_rhs_operator = bem_blocks.bem_rhs_operator
+    bem_prescribed_rhs = isnothing(bem_blocks.bem_prescribed_rhs) ?
+                         zeros(Complex{T}, length(bem_mesh.vertices), 0) :
+                         Complex{T}.(Array(bem_blocks.bem_prescribed_rhs))
     bem_matrix_s = (time_ns() - bem_matrix_started) / 1.0e9
 
     condensation_started = time_ns()
-    condensation = static_condensation ? _build_cuda_fem_condensation(
-        fem_system,
-        interface_operators,
-        retained_fem_vertices,
-    ) : nothing
+    condensation = if !static_condensation
+        nothing
+    elseif bem_backend == :cuda
+        _build_cuda_fem_condensation(
+            fem_system,
+            interface_operators,
+            retained_fem_vertices,
+        )
+    else
+        _build_rocm_hybrid_fem_condensation(
+            fem_system,
+            interface_operators,
+            retained_fem_vertices,
+        )
+    end
     fem_condensation_s = (time_ns() - condensation_started) / 1.0e9
 
     block_assembly_started = time_ns()
@@ -1355,36 +1923,40 @@ function build_coupled_system(
         for transducer in transducers
     ]
     force_factor = T[transducer.bl_n_per_a for transducer in transducers]
-    coupled = if linear_backend == :cuda
-        cuda = BeatEngineCore.cuda_module()
-        d_coupled = cuda.zeros(Complex{T}, system_count, system_count)
+    coupled = if linear_backend in (:cuda, :rocm)
+        accelerator = linear_backend == :cuda ?
+                      BeatEngineCore.cuda_module() : BeatEngineCore.amdgpu_module()
+        device_array = linear_backend == :cuda ? accelerator.CuArray : accelerator.ROCArray
+        scatter_sparse! = linear_backend == :cuda ?
+                          scatter_cuda_sparse_to_dense! : scatter_rocm_sparse_to_dense!
+        d_coupled = accelerator.zeros(Complex{T}, system_count, system_count)
         transducer_allocations = Any[]
         try
             if static_condensation
                 view(d_coupled, gamma_range, gamma_range) .= condensation.device_schur
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.condensed_fem_load;
                     column_offset=first(flux_range) - 1,
                     alpha=-one(Complex{T}),
                 )
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.condensed_fem_trace;
                     row_offset=first(flux_range) - 1,
                 )
             else
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.stiffness,
                 )
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.mass;
                     alpha=Complex{T}(-(wavenumber^2), 0),
                     add=true,
                 )
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.bulk_loss_mass;
                     alpha=Complex{T}(0, -(wavenumber^2)),
@@ -1394,20 +1966,20 @@ function build_coupled_system(
                     prepared.device_sparse_blocks.wall_impedance,
                     wall_admittances,
                 )
-                    scatter_cuda_sparse_to_dense!(
+                    scatter_sparse!(
                         d_coupled,
                         wall_cache;
                         alpha=-Complex{T}(0, density * omega) * admittance,
                         add=true,
                     )
                 end
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.fem_load;
                     column_offset=first(flux_range) - 1,
                     alpha=-one(Complex{T}),
                 )
-                scatter_cuda_sparse_to_dense!(
+                scatter_sparse!(
                     d_coupled,
                     prepared.device_sparse_blocks.fem_trace;
                     row_offset=first(flux_range) - 1,
@@ -1415,7 +1987,7 @@ function build_coupled_system(
             end
             view(d_coupled, bem_range, bem_range) .= bem_lhs
             view(d_coupled, bem_range, flux_range) .= bem_blocks.bem_interface_block
-            scatter_cuda_sparse_to_dense!(
+            scatter_sparse!(
                 d_coupled,
                 prepared.device_sparse_blocks.bem_trace;
                 row_offset=first(flux_range) - 1,
@@ -1423,7 +1995,7 @@ function build_coupled_system(
                 alpha=-one(Complex{T}),
             )
             if transducer_count > 0
-                d_fem_motion = cuda.CuArray(
+                d_fem_motion = device_array(
                     -normal_derivative_scale .* Complex{T}.(
                         Matrix(
                             resolved_transducer_operators.fem_surface[
@@ -1433,7 +2005,7 @@ function build_coupled_system(
                         )
                     ),
                 )
-                d_fem_force = cuda.CuArray(
+                d_fem_force = device_array(
                     -Complex{T}.(
                         transpose(
                             Matrix(
@@ -1445,14 +2017,14 @@ function build_coupled_system(
                         )
                     ),
                 )
-                d_bem_force = cuda.CuArray(
+                d_bem_force = device_array(
                     Complex{T}.(
                         transpose(Matrix(resolved_transducer_operators.bem_force))
                     ),
                 )
-                d_mechanical = cuda.CuArray(Matrix(Diagonal(mechanical_impedance)))
-                d_electrical = cuda.CuArray(Matrix(Diagonal(electrical_impedance)))
-                d_force_factor = cuda.CuArray(Matrix(Diagonal(Complex{T}.(force_factor))))
+                d_mechanical = device_array(Matrix(Diagonal(mechanical_impedance)))
+                d_electrical = device_array(Matrix(Diagonal(electrical_impedance)))
+                d_force_factor = device_array(Matrix(Diagonal(Complex{T}.(force_factor))))
                 append!(
                     transducer_allocations,
                     (
@@ -1473,14 +2045,16 @@ function build_coupled_system(
                 view(d_coupled, electrical_range, mechanical_range) .= d_force_factor
                 view(d_coupled, electrical_range, electrical_range) .= d_electrical
             end
-            cuda.synchronize()
+            accelerator.synchronize()
         finally
-            cuda.unsafe_free!(bem_lhs)
-            cuda.unsafe_free!(bem_blocks.bem_interface_block)
+            accelerator.unsafe_free!(bem_lhs)
+            accelerator.unsafe_free!(bem_blocks.bem_interface_block)
             isnothing(bem_blocks.bem_motion_block) ||
-                cuda.unsafe_free!(bem_blocks.bem_motion_block)
+                accelerator.unsafe_free!(bem_blocks.bem_motion_block)
+            isnothing(bem_blocks.bem_prescribed_rhs) ||
+                accelerator.unsafe_free!(bem_blocks.bem_prescribed_rhs)
             for allocation in transducer_allocations
-                cuda.unsafe_free!(allocation)
+                accelerator.unsafe_free!(allocation)
             end
         end
         d_coupled
@@ -1523,8 +2097,15 @@ function build_coupled_system(
     block_assembly_s = (time_ns() - block_assembly_started) / 1.0e9
 
     coupled_factorization_started = time_ns()
-    factorization = validation_diagnostics ? lu(coupled) : lu!(coupled)
+    factorization = if validation_diagnostics
+        lu(coupled)
+    elseif linear_backend == :rocm
+        rocm_dense_lu!(coupled)
+    else
+        lu!(coupled)
+    end
     linear_backend == :cuda && BeatEngineCore.cuda_module().synchronize()
+    linear_backend == :rocm && BeatEngineCore.amdgpu_module().synchronize()
     coupled_factorization_s = (time_ns() - coupled_factorization_started) / 1.0e9
     replay_factorization_started = time_ns()
     bem_factorization = validation_diagnostics ? lu(bem_lhs) : nothing
@@ -1547,6 +2128,7 @@ function build_coupled_system(
         factorization=factorization,
         formulation=formulation,
         condensation=condensation,
+        condensation_timings=isnothing(condensation) ? nothing : condensation.timings,
         fem_range=fem_range,
         gamma_range=gamma_range,
         retained_fem_vertices=retained_fem_vertices,
@@ -1557,6 +2139,8 @@ function build_coupled_system(
         bem_lhs=validation_diagnostics ? bem_lhs : nothing,
         bem_factorization=bem_factorization,
         bem_rhs_operator=validation_diagnostics ? bem_rhs_operator : nothing,
+        prescribed_bem_rhs=bem_prescribed_rhs,
+        prescribed_bem_neumann=bem_prescribed_neumann,
         bem_backend=bem_backend,
         linear_backend=linear_backend,
         symmetry_mode=prepared.symmetry_mode,
@@ -1579,11 +2163,16 @@ function build_coupled_system(
 end
 
 function release_coupled_system!(system)
+    if system.linear_backend in (:cuda, :rocm)
+        accelerator = system.linear_backend == :cuda ?
+                      BeatEngineCore.cuda_module() : BeatEngineCore.amdgpu_module()
+        accelerator.unsafe_free!(system.factorization.factors)
+        accelerator.unsafe_free!(system.factorization.ipiv)
+    end
     if system.linear_backend == :cuda
-        cuda = BeatEngineCore.cuda_module()
-        cuda.unsafe_free!(system.factorization.factors)
-        cuda.unsafe_free!(system.factorization.ipiv)
         _release_cuda_fem_condensation!(system.condensation)
+    elseif system.linear_backend == :rocm && system.formulation == :fem_interface_condensed
+        _release_rocm_hybrid_fem_condensation!(system.condensation)
     end
     system.owns_cache && release_coupled_cache!(system.cache)
     return nothing
@@ -1596,8 +2185,14 @@ function _coupled_solution_from_parts(
     interface_flux;
     diaphragm_velocity=zeros(Complex{system.scalar_type}, length(system.transducers)),
     voice_coil_current=zeros(Complex{system.scalar_type}, length(system.transducers)),
+    prescribed_bem_neumann=zeros(
+        Complex{system.scalar_type},
+        length(system.bem_mesh.faces),
+    ),
     solution=nothing,
     rhs=nothing,
+    fem_rhs_condensation_s=nothing,
+    fem_reconstruction_s=nothing,
 )
     T = system.scalar_type
     bem_neumann = (
@@ -1606,7 +2201,8 @@ function _coupled_solution_from_parts(
         (
             Complex{T}.(system.transducer_operators.bem_normal_velocity) *
             diaphragm_velocity
-        )
+        ) +
+        prescribed_bem_neumann
     )
 
     pressure_jump = (
@@ -1653,6 +2249,8 @@ function _coupled_solution_from_parts(
         bem_neumann=bem_neumann,
         diaphragm_velocity=diaphragm_velocity,
         voice_coil_current=voice_coil_current,
+        fem_rhs_condensation_s=fem_rhs_condensation_s,
+        fem_reconstruction_s=fem_reconstruction_s,
         relative_residual=relative_residual,
         pressure_continuity_error=norm(pressure_jump) / pressure_scale,
         flux_conservation_error=abs(fem_integrated_flux - bem_integrated_flux_along_fem_normal) / flux_scale,
@@ -1662,7 +2260,15 @@ function _coupled_solution_from_parts(
     )
 end
 
-function _coupled_solution_from_vector(system, solution, rhs)
+function _coupled_solution_from_vector(
+    system,
+    solution,
+    rhs;
+    prescribed_bem_neumann=zeros(
+        Complex{system.scalar_type},
+        length(system.bem_mesh.faces),
+    ),
+)
     return _coupled_solution_from_parts(
         system,
         solution[system.fem_range],
@@ -1670,9 +2276,85 @@ function _coupled_solution_from_vector(system, solution, rhs)
         solution[system.flux_range];
         diaphragm_velocity=solution[system.mechanical_range],
         voice_coil_current=solution[system.electrical_range],
+        prescribed_bem_neumann=prescribed_bem_neumann,
         solution=solution,
         rhs=rhs,
     )
+end
+
+function _solve_rocm_hybrid_condensed_excitations(
+    system,
+    fem_rhs,
+    bem_rhs,
+    electrical_rhs,
+    prescribed_bem_neumann,
+)
+    T = system.scalar_type
+    amdgpu = BeatEngineCore.amdgpu_module()
+    condensation = system.condensation
+    excitation_count = size(fem_rhs, 2)
+
+    rhs_condensation_started = time_ns()
+    reduced_fem_rhs = if condensation.interior_count == 0
+        Complex{T}.(fem_rhs[condensation.retained_vertices, :])
+    else
+        interior_rhs = ComplexF64.(fem_rhs[condensation.interior_vertices, :])
+        interior_forward = condensation.factorization \ interior_rhs
+        Complex{T}.(
+            fem_rhs[condensation.retained_vertices, :] .-
+            condensation.retained_to_interior * interior_forward
+        )
+    end
+    host_rhs = zeros(Complex{T}, size(system.factorization, 1), excitation_count)
+    host_rhs[system.gamma_range, :] = reduced_fem_rhs
+    host_rhs[system.bem_range, :] = bem_rhs
+    host_rhs[system.electrical_range, :] = electrical_rhs
+    fem_rhs_condensation_s = (time_ns() - rhs_condensation_started) / 1.0e9
+
+    d_rhs = amdgpu.ROCArray(host_rhs)
+    d_solution = nothing
+    host_solution = nothing
+    try
+        d_solution = solve_rocm_dense_factorization(system.factorization, d_rhs)
+        amdgpu.synchronize()
+        host_solution = Complex{T}.(Array(d_solution))
+    finally
+        amdgpu.unsafe_free!(d_rhs)
+        isnothing(d_solution) || amdgpu.unsafe_free!(d_solution)
+    end
+
+    reconstruction_started = time_ns()
+    retained_pressure = view(host_solution, system.gamma_range, :)
+    fem_pressure = zeros(Complex{T}, length(system.fem_mesh.vertices), excitation_count)
+    fem_pressure[condensation.retained_vertices, :] .= retained_pressure
+    if condensation.interior_count > 0
+        interior_rhs = (
+            ComplexF64.(fem_rhs[condensation.interior_vertices, :]) .-
+            condensation.interior_to_retained * ComplexF64.(retained_pressure)
+        )
+        fem_pressure[condensation.interior_vertices, :] .= Complex{T}.(
+            condensation.factorization \ interior_rhs
+        )
+    end
+    fem_reconstruction_s = (time_ns() - reconstruction_started) / 1.0e9
+    bem_pressure = view(host_solution, system.bem_range, :)
+    interface_flux = view(host_solution, system.flux_range, :)
+    diaphragm_velocity = view(host_solution, system.mechanical_range, :)
+    voice_coil_current = view(host_solution, system.electrical_range, :)
+    return [
+        _coupled_solution_from_parts(
+            system,
+            fem_pressure[:, column],
+            bem_pressure[:, column],
+            interface_flux[:, column];
+            diaphragm_velocity=diaphragm_velocity[:, column],
+            voice_coil_current=voice_coil_current[:, column],
+            prescribed_bem_neumann=prescribed_bem_neumann[:, column],
+            fem_rhs_condensation_s=fem_rhs_condensation_s,
+            fem_reconstruction_s=fem_reconstruction_s,
+        )
+        for column in axes(fem_pressure, 2)
+    ]
 end
 
 function solve_coupled_excitations(system, excitations)
@@ -1685,17 +2367,61 @@ function solve_coupled_excitations(system, excitations)
         length(system.fem_mesh.vertices),
         excitation_count,
     )
+    bem_rhs = zeros(
+        Complex{T},
+        length(system.bem_mesh.vertices),
+        excitation_count,
+    )
+    prescribed_bem_neumann = zeros(
+        Complex{T},
+        length(system.bem_mesh.faces),
+        excitation_count,
+    )
     electrical_rhs = zeros(Complex{T}, length(system.transducers), excitation_count)
     for (column, excitation) in enumerate(requested)
         kind = Symbol(excitation.kind)
         amplitude = Complex{T}(excitation.amplitude)
         if kind == :normal_velocity
-            fem_rhs[:, column] = assemble_prescribed_velocity_load(
-                system.fem_mesh,
-                Int(excitation.radiator_tag),
-                system.density,
-                system.omega,
-                amplitude,
+            fem_boundary_tags = hasproperty(excitation, :fem_boundary_tags) ?
+                                Int.(excitation.fem_boundary_tags) :
+                                [Int(excitation.radiator_tag)]
+            fem_boundary_weights = hasproperty(excitation, :fem_boundary_weights) ?
+                                   T.(excitation.fem_boundary_weights) :
+                                   ones(T, length(fem_boundary_tags))
+            length(fem_boundary_tags) == length(fem_boundary_weights) || error(
+                "Prescribed FEM boundary tags and weights must have the same length.",
+            )
+            all(weight -> isfinite(weight) && weight > zero(T), fem_boundary_weights) ||
+                error("Prescribed FEM boundary weights must be finite and greater than zero.")
+            for (tag, weight) in zip(fem_boundary_tags, fem_boundary_weights)
+                fem_rhs[:, column] .+= assemble_prescribed_velocity_load(
+                    system.fem_mesh,
+                    tag,
+                    system.density,
+                    system.omega,
+                    amplitude * weight,
+                )
+            end
+            bem_source_index = hasproperty(excitation, :bem_source_index) ?
+                               Int(excitation.bem_source_index) :
+                               0
+            if bem_source_index > 0
+                bem_source_index <= size(system.prescribed_bem_rhs, 2) || error(
+                    "Prescribed BEM source index $bem_source_index is unavailable.",
+                )
+                bem_rhs[:, column] .= amplitude .* view(
+                    system.prescribed_bem_rhs,
+                    :,
+                    bem_source_index,
+                )
+                prescribed_bem_neumann[:, column] .= amplitude .* view(
+                    system.prescribed_bem_neumann,
+                    :,
+                    bem_source_index,
+                )
+            end
+            isempty(fem_boundary_tags) && bem_source_index == 0 && error(
+                "A prescribed-velocity excitation must own at least one FEM or BEM moving boundary.",
             )
         elseif kind == :voltage
             transducer_index = Int(excitation.transducer_index)
@@ -1707,7 +2433,15 @@ function solve_coupled_excitations(system, excitations)
             error("Unsupported coupled excitation kind: $kind.")
         end
     end
-    if system.formulation == :fem_interface_condensed
+    if system.formulation == :fem_interface_condensed && system.linear_backend == :rocm
+        return _solve_rocm_hybrid_condensed_excitations(
+            system,
+            fem_rhs,
+            bem_rhs,
+            electrical_rhs,
+            prescribed_bem_neumann,
+        )
+    elseif system.formulation == :fem_interface_condensed
         cuda = BeatEngineCore.cuda_module()
         cudss = _cudss_module()
         condensation = system.condensation
@@ -1719,6 +2453,7 @@ function solve_coupled_excitations(system, excitations)
             size(system.factorization, 1),
             excitation_count,
         )
+        d_bem_rhs = nothing
         d_electrical_rhs = nothing
         d_solution = nothing
         try
@@ -1731,6 +2466,10 @@ function solve_coupled_excitations(system, excitations)
             )
             schur_rows = (condensation.interior_count + 1):length(condensation.permutation)
             view(d_rhs, system.gamma_range, :) .= view(d_forward, schur_rows, :)
+            if size(system.prescribed_bem_rhs, 2) > 0
+                d_bem_rhs = cuda.CuArray(bem_rhs)
+                view(d_rhs, system.bem_range, :) .= d_bem_rhs
+            end
             if !isempty(system.transducers)
                 d_electrical_rhs = cuda.CuArray(electrical_rhs)
                 view(d_rhs, system.electrical_range, :) .= d_electrical_rhs
@@ -1765,6 +2504,7 @@ function solve_coupled_excitations(system, excitations)
                     interface_flux[:, column];
                     diaphragm_velocity=diaphragm_velocity[:, column],
                     voice_coil_current=voice_coil_current[:, column],
+                    prescribed_bem_neumann=prescribed_bem_neumann[:, column],
                 )
                 for column in axes(fem_pressure, 2)
             ]
@@ -1772,6 +2512,7 @@ function solve_coupled_excitations(system, excitations)
             cuda.unsafe_free!(d_fem_rhs)
             cuda.unsafe_free!(d_forward)
             cuda.unsafe_free!(d_rhs)
+            isnothing(d_bem_rhs) || cuda.unsafe_free!(d_bem_rhs)
             isnothing(d_electrical_rhs) || cuda.unsafe_free!(d_electrical_rhs)
             isnothing(d_solution) || cuda.unsafe_free!(d_solution)
         end
@@ -1779,24 +2520,35 @@ function solve_coupled_excitations(system, excitations)
 
     rhs = zeros(Complex{T}, size(system.factorization, 1), excitation_count)
     rhs[system.fem_range, :] = fem_rhs
+    rhs[system.bem_range, :] = bem_rhs
     rhs[system.electrical_range, :] = electrical_rhs
-    solution = if system.linear_backend == :cuda
-        cuda = BeatEngineCore.cuda_module()
-        d_rhs = cuda.CuArray(rhs)
+    solution = if system.linear_backend in (:cuda, :rocm)
+        accelerator = system.linear_backend == :cuda ?
+                      BeatEngineCore.cuda_module() : BeatEngineCore.amdgpu_module()
+        device_array = system.linear_backend == :cuda ?
+                       accelerator.CuArray : accelerator.ROCArray
+        d_rhs = device_array(rhs)
         d_solution = nothing
         try
-            d_solution = system.factorization \ d_rhs
-            cuda.synchronize()
+            d_solution = system.linear_backend == :rocm ?
+                         solve_rocm_dense_factorization(system.factorization, d_rhs) :
+                         system.factorization \ d_rhs
+            accelerator.synchronize()
             Complex{T}.(Array(d_solution))
         finally
-            cuda.unsafe_free!(d_rhs)
-            isnothing(d_solution) || cuda.unsafe_free!(d_solution)
+            accelerator.unsafe_free!(d_rhs)
+            isnothing(d_solution) || accelerator.unsafe_free!(d_solution)
         end
     else
         system.factorization \ rhs
     end
     return [
-        _coupled_solution_from_vector(system, solution[:, column], rhs[:, column])
+        _coupled_solution_from_vector(
+            system,
+            solution[:, column],
+            rhs[:, column];
+            prescribed_bem_neumann=prescribed_bem_neumann[:, column],
+        )
         for column in axes(solution, 2)
     ]
 end
@@ -1952,11 +2704,13 @@ function _parse_gmsh41_elements(lines, node_index_map, entity_physical_tags)
     block_count = parse(Int, tokens[cursor])
     _element_count = parse(Int, tokens[cursor + 1])
     cursor += 4
-    node_counts = Dict(1 => 2, 2 => 3, 4 => 4, 15 => 1)
+    node_counts = Dict(1 => 2, 2 => 3, 4 => 4, 9 => 6, 11 => 10, 15 => 1)
     tetrahedra = NTuple{4,Int}[]
     tetra_tags = Int[]
     boundary_faces = NTuple{3,Int}[]
     boundary_tags = Int[]
+    quadratic_tetrahedra = NTuple{10,Int}[]
+    quadratic_boundary_faces = NTuple{6,Int}[]
     for _ in 1:block_count
         entity_dimension = parse(Int, tokens[cursor])
         entity_tag = parse(Int, tokens[cursor + 1])
@@ -1976,10 +2730,30 @@ function _parse_gmsh41_elements(lines, node_index_map, entity_physical_tags)
             elseif element_type == 4
                 push!(tetrahedra, nodes)
                 push!(tetra_tags, physical)
+            elseif element_type == 9
+                push!(boundary_faces, ntuple(index -> nodes[index], 3))
+                push!(quadratic_boundary_faces, nodes)
+                push!(boundary_tags, physical)
+            elseif element_type == 11
+                push!(tetrahedra, ntuple(index -> nodes[index], 4))
+                push!(quadratic_tetrahedra, nodes)
+                push!(tetra_tags, physical)
             end
         end
     end
-    return tetrahedra, tetra_tags, boundary_faces, boundary_tags
+    isempty(quadratic_tetrahedra) == isempty(quadratic_boundary_faces) || error(
+        "FEM mesh must use the same interpolation order for tetrahedra and boundary triangles.",
+    )
+    if !isempty(quadratic_tetrahedra)
+        length(quadratic_tetrahedra) == length(tetrahedra) || error(
+            "FEM mesh mixes first- and second-order tetrahedra.",
+        )
+        length(quadratic_boundary_faces) == length(boundary_faces) || error(
+            "FEM mesh mixes first- and second-order boundary triangles.",
+        )
+    end
+    return tetrahedra, tetra_tags, boundary_faces, boundary_tags,
+        quadratic_tetrahedra, quadratic_boundary_faces
 end
 
 function _triangle_area(vertices, face)

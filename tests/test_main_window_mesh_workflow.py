@@ -201,6 +201,7 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
     main_window._record_imported_mesh_source_fingerprints()
     fem_path.write_text(fem_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     calls = []
+    warnings = []
 
     def rebuild_interfaces(current_system, available_meshes, **options):
         calls.append((current_system, available_meshes, options))
@@ -208,9 +209,15 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
             system=rebuilt_system,
             mesh_file_overrides_by_name={"Exterior": str(rebuilt_path)},
             rebuilt_interface_ids=("interface",),
+            quality_warning_interface_ids=("interface",),
         )
 
     monkeypatch.setattr(mesh_workflow_module, "rebuild_configured_interfaces", rebuild_interfaces)
+    monkeypatch.setattr(
+        mesh_workflow_module.QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
 
     main_window._last_imported_mesh_focus_check_at = 0.0
     main_window._reload_updated_imported_meshes_on_focus()
@@ -220,6 +227,9 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
     assert main_window.project.physical_system == rebuilt_system
     exterior = next(mesh for mesh in main_window.imported_meshes if mesh.name == "Exterior")
     assert exterior.cleaned_file == str(rebuilt_path)
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Inspect Simplified Interface"
+    assert "Visually inspect the conformed interface" in warnings[0][1]
 
 
 def test_system_interface_mesh_override_is_persisted_as_imported_cleaned_file(tmp_path: Path) -> None:

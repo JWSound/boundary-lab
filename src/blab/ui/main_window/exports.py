@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
+    QDialog,
     QMessageBox,
 )
 
@@ -18,6 +19,7 @@ from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
 )
+from blab.ui.speaker_package_dialog import SpeakerPackageDialog
 
 
 class ExportsMixin:
@@ -121,3 +123,16 @@ class ExportsMixin:
                 self.status_label.setText(f"Exported {len(written)} on-axis channel files to {output_target}")
         except Exception as exc:
             QMessageBox.critical(self, "Export on-axis data failed", str(exc))
+
+    @Slot()
+    def export_speaker_package(self) -> None:
+        system = self._project_document().physical_system
+        default_name = "Speaker" if system is None else system.name
+        dialog = SpeakerPackageDialog(
+            self,
+            default_name=default_name,
+            file_dialogs=self.file_dialogs,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.solve_workflow.start_speaker_package_solve(dialog.config())

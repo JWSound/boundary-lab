@@ -32,7 +32,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
     ),
     "beat_cuda": SolverBackendInfo(
         backend_id="beat_cuda",
-        label="BEAT Engine (CUDA)",
+        label="BEAT Engine (Nvidia CUDA)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
@@ -58,7 +58,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
     ),
     "beat_rocm": SolverBackendInfo(
         backend_id="beat_rocm",
-        label="BEAT Engine (ROCm)",
+        label="BEAT Engine (AMD ROCm)",
         capabilities=SolverCapabilities(
             supports_remote_assets=False,
             supports_parallel_workers=False,
@@ -81,6 +81,24 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         description="Run the bundled bempp-cl OpenCL CPU solver in the GUI process.",
     ),
 }
+
+
+#: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
+PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
+#: Backends that condense the FEM interior onto the retained interface for coupled solves.
+CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
+
+
+def supports_physical_system_solves(backend_id: str) -> bool:
+    """Return whether a backend can run compiled physical-system solves."""
+
+    return normalize_backend_id(backend_id) in PHYSICAL_SYSTEM_BACKEND_IDS
+
+
+def backend_condenses_fem_interior(backend_id: str) -> bool:
+    """Return whether coupled solves use FEM interface condensation."""
+
+    return normalize_backend_id(backend_id) in CONDENSING_BACKEND_IDS
 
 
 def available_backend_infos() -> tuple[SolverBackendInfo, ...]:
@@ -121,6 +139,9 @@ def normalize_backend_id(backend_id: str) -> str:
         "cuda": "beat_cuda",
         "beat_cpu": "beat_cpu",
         "cpu_beat": "beat_cpu",
+        # Compatibility alias for projects, settings, and scripts written before the CPU
+        # monolithic and condensed selectors were consolidated.
+        "beat_cpu_condensed": "beat_cpu",
         "beat_rocm": "beat_rocm",
         "rocm": "beat_rocm",
         "amd": "beat_rocm",
@@ -168,6 +189,8 @@ def _create_beat_engine_backend(
     julia_sysimage: str | None = None,
     persistent_worker: bool = True,
     beat_engine_backend: str = "cuda",
+    backend_id_override: str | None = None,
+    label_override: str | None = None,
     **_kwargs: Any,
 ) -> SolverBackend:
     from blab.solvers.beat_engine_backend import (
@@ -182,12 +205,15 @@ def _create_beat_engine_backend(
         "rocm": "rocm",
         "beat_rocm": "rocm",
     }.get(str(beat_engine_backend).strip().lower(), "cuda")
-    backend_id = f"beat_{normalized_backend}"
-    label = {
-        "cpu": "BEAT Engine (CPU)",
-        "cuda": "BEAT Engine (CUDA)",
-        "rocm": "BEAT Engine (ROCm)",
-    }[normalized_backend]
+    backend_id = backend_id_override or f"beat_{normalized_backend}"
+    label = (
+        label_override
+        or {
+            "cpu": "BEAT Engine (CPU)",
+            "cuda": "BEAT Engine (Nvidia CUDA)",
+            "rocm": "BEAT Engine (AMD ROCm)",
+        }[normalized_backend]
+    )
     default_project = {
         "cpu": DEFAULT_BEAT_ENGINE_CPU_PROJECT,
         "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,

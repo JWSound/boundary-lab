@@ -422,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scale-factor", type=float, default=0.001)
     parser.add_argument(
         "--solver-backend",
-        choices=("beat_cpu", "beat_cuda"),
+        choices=("beat_cpu", "beat_cuda", "beat_rocm"),
         default="beat_cpu",
         help="BEAT Engine backend used by --mode julia (default: beat_cpu).",
     )

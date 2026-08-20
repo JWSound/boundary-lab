@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "boundary-lab"
-version = "0.4.0"
+version = "0.4.1"
 description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ dev = [
 ]
 gui = [
   "PySide6",
-  "pyvista",
+  "pyvista>=0.47",
   "pyvistaqt",
 ]
 
@@ -46,7 +46,6 @@ src = ["src", "tests", "scripts"]
 force-exclude = true
 extend-exclude = [
   "ath/",
-  "gmsh/",
   "runs/",
   "references/",
 ]

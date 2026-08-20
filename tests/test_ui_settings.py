@@ -2,6 +2,8 @@ from blab.ui.settings import (
     GuiPreferences,
     balloon_angle_precision_from_points,
     balloon_sampling_points,
+    field_cache_size_bytes,
+    field_translation_interval_ms,
     gui_preferences_with_project_preferences,
     live_plot_angle_samples,
     live_plot_freq_samples,
@@ -39,6 +41,65 @@ def test_live_plot_quality_sample_mapping() -> None:
     assert live_plot_freq_samples("medium") == 125
     assert live_plot_angle_samples("high") == 500
     assert live_plot_freq_samples("high") == 250
+
+
+def test_field_performance_preferences_round_trip_and_normalize() -> None:
+    defaults = load_gui_preferences(MemorySettings())
+    assert defaults.field_cache_size_mb == 128
+    assert defaults.field_translation_target_fps == 12.5
+    assert field_cache_size_bytes(defaults.field_cache_size_mb) == 128 * 1024 * 1024
+    assert field_translation_interval_ms(defaults.field_translation_target_fps) == 80
+
+    settings = MemorySettings(
+        {
+            "preferences/field_cache_size_mb": 512,
+            "preferences/field_translation_target_fps": 20.0,
+        }
+    )
+    loaded = load_gui_preferences(settings)
+    assert loaded.field_cache_size_mb == 512
+    assert loaded.field_translation_target_fps == 20.0
+    assert field_translation_interval_ms(loaded.field_translation_target_fps) == 50
+
+    saved = MemorySettings()
+    save_gui_preferences(saved, loaded)
+    assert saved.values["preferences/field_cache_size_mb"] == 512
+    assert saved.values["preferences/field_translation_target_fps"] == 20.0
+
+    clamped = load_gui_preferences(
+        MemorySettings(
+            {
+                "preferences/field_cache_size_mb": -1,
+                "preferences/field_translation_target_fps": float("inf"),
+            }
+        )
+    )
+    assert clamped.field_cache_size_mb == 16
+    assert clamped.field_translation_target_fps == 12.5
+
+
+def test_preferences_dialog_exposes_field_settings_with_help(qapp) -> None:
+    from PySide6.QtWidgets import QGroupBox
+
+    from blab.ui.dialogs import PreferencesDialog
+
+    dialog = PreferencesDialog(GuiPreferences(field_cache_size_mb=256, field_translation_target_fps=25.0))
+    try:
+        groups = {group.title() for group in dialog.findChildren(QGroupBox)}
+        assert "Fields" in groups
+        assert dialog.field_cache_size_spin.value() == 256
+        assert dialog.field_translation_target_fps_spin.value() == 25.0
+        assert dialog.field_cache_size_spin.toolTip()
+        assert dialog.field_translation_target_fps_spin.toolTip()
+
+        dialog.field_cache_size_spin.setValue(384)
+        dialog.field_translation_target_fps_spin.setValue(10.0)
+        updated = dialog.preferences()
+        assert updated.field_cache_size_mb == 384
+        assert updated.field_translation_target_fps == 10.0
+    finally:
+        dialog.close()
+        dialog.deleteLater()
 
 
 def test_balloon_angle_precision_point_conversion() -> None:
@@ -149,6 +210,14 @@ def test_preference_change_classification() -> None:
     assert not preferences_require_visualization_refresh(
         baseline,
         GuiPreferences(live_plot_streaming=False),
+    )
+    assert not preferences_require_solve_invalidation(
+        baseline,
+        GuiPreferences(field_cache_size_mb=512, field_translation_target_fps=20.0),
+    )
+    assert not preferences_require_visualization_refresh(
+        baseline,
+        GuiPreferences(field_cache_size_mb=512, field_translation_target_fps=20.0),
     )
 
 

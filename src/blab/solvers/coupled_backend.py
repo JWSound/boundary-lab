@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import subprocess
 import tempfile
 import threading
@@ -26,8 +25,10 @@ from blab.physical_model import (
 )
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineWorkerProcess,
     _get_julia_worker,
+    _julia_process_env,
 )
 from blab.system_contract import (
     SystemFrequencyResult,
@@ -39,7 +40,7 @@ from blab.system_contract import (
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_COUPLED_SOLVER_SCRIPT.parent
-COUPLED_BEM_BACKENDS = {"cpu", "cuda"}
+COUPLED_BEM_BACKENDS = {"cpu", "cuda", "rocm"}
 COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
     BoundaryKind.MOVING,
@@ -115,8 +116,7 @@ class CoupledSession:
         if self.julia_project is not None:
             command.append(f"--project={self.julia_project}")
         command.append(str(self.solver_script))
-        environment = os.environ.copy()
-        environment.setdefault("JULIA_NUM_THREADS", str(self.julia_threads))
+        environment = _julia_process_env(self.julia_threads, self.julia_project)
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -242,6 +242,8 @@ class CoupledSession:
 
 
 class _CoupledBackend:
+    default_static_condensation = False
+
     def __init__(
         self,
         *,
@@ -258,7 +260,7 @@ class _CoupledBackend:
             raise ValueError("Coupled precision must be float32 or float64.")
         normalized_bem_backend = str(bem_backend).strip().lower()
         if normalized_bem_backend not in COUPLED_BEM_BACKENDS:
-            raise ValueError("Coupled BEM backend must be cpu or cuda.")
+            raise ValueError("Coupled BEM backend must be cpu, cuda, or rocm.")
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_project = None if julia_project is None else Path(julia_project)
@@ -268,19 +270,35 @@ class _CoupledBackend:
         self.bem_backend = normalized_bem_backend
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
-        validate_coupled_capabilities(request)
         solver_options = dict(request.solver_options)
-        solver_options["precision"] = self.precision
-        solver_options["bem_backend"] = self.bem_backend
+        has_bounded = any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions)
+        has_unbounded = any(
+            region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in request.compiled_system.regions
+        )
+        is_coupled = has_bounded and has_unbounded
+        is_interior = has_bounded and not has_unbounded
+        solver_options.setdefault(
+            "static_condensation",
+            is_coupled
+            and self.default_static_condensation
+            and not bool(solver_options.get("validation_diagnostics", False)),
+        )
+        # Pure interior FEM uses sparse direct CPU factorization regardless of
+        # the requested production BEM backend. Keep its mesh coordinates and
+        # element Jacobians in Float64: forcing the production backend's FP32
+        # setting can classify valid, highly graded tetrahedra as numerically
+        # degenerate before assembly. Coupled/exterior BEM paths retain their
+        # configured precision.
+        solver_options["precision"] = "float64" if is_interior else self.precision
+        solver_options["bem_backend"] = "cpu" if is_interior else self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
-        if self.bem_backend != "cuda":
-            solver_options["static_condensation"] = False
         typed_request = replace(request, solver_options=solver_options)
+        validate_system_capabilities(typed_request)
         return CoupledSession(
             typed_request,
             julia_executable=self.julia_executable,
             solver_script=self.solver_script,
-            julia_project=self.julia_project,
+            julia_project=DEFAULT_COUPLED_CPU_PROJECT if is_interior else self.julia_project,
             julia_threads=self.julia_threads,
             persistent_worker=self.persistent_worker,
         )
@@ -290,6 +308,10 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     """Reject physical-model features that the current coupled backend cannot solve."""
 
     system = request.compiled_system
+    if request.solver_options.get("static_condensation", False) and request.solver_options.get(
+        "validation_diagnostics", False
+    ):
+        raise ValueError("FEM static condensation cannot be combined with full-matrix validation diagnostics.")
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
     symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
     symmetry_factors = {"off": 1, "x": 2, "xy": 4}
@@ -411,6 +433,204 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             "Coupled solver received excitation ports incompatible with their components: "
             + ", ".join(unsupported_ports)
         )
+
+
+def validate_system_capabilities(request: SystemSolveRequest) -> None:
+    """Dispatch validation according to the acoustic-region topology."""
+
+    bounded_regions = [
+        region for region in request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
+    ]
+    unbounded_regions = [
+        region for region in request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+    ]
+    if bounded_regions and unbounded_regions:
+        validate_coupled_capabilities(request)
+        return
+    if bounded_regions:
+        validate_interior_capabilities(request)
+        return
+    validate_exterior_capabilities(request)
+
+
+def validate_interior_capabilities(request: SystemSolveRequest) -> None:
+    """Reject features unsupported by the sparse interior-FEM branch."""
+
+    system = request.compiled_system
+    bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
+    unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
+    if not bounded_regions or unbounded_regions:
+        raise ValueError("Interior FEM solving requires bounded regions and no unbounded region.")
+    if system.interfaces:
+        raise ValueError("Interior FEM systems cannot contain FEM-BEM interfaces.")
+    if any(len(region.mesh_ids) != 1 for region in bounded_regions):
+        raise ValueError("Each interior FEM region must currently reference exactly one FEM mesh.")
+
+    requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
+    symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
+    symmetry_factors = {"off": 1, "x": 2, "xy": 4}
+    if symmetry_mode not in symmetry_factors:
+        raise ValueError(f"Unsupported interior FEM symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+
+    reference_medium = bounded_regions[0]
+    mismatched_media = [
+        region.id
+        for region in bounded_regions
+        if not math.isclose(
+            region.sound_speed_m_per_s,
+            reference_medium.sound_speed_m_per_s,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+        or not math.isclose(
+            region.density_kg_per_m3,
+            reference_medium.density_kg_per_m3,
+            rel_tol=1e-9,
+            abs_tol=0.0,
+        )
+    ]
+    if mismatched_media:
+        raise ValueError(
+            "Interior FEM solving currently requires one shared sound speed and density; mismatched: "
+            + ", ".join(mismatched_media)
+        )
+
+    supported_boundary_kinds = {
+        BoundaryKind.RIGID,
+        BoundaryKind.MOVING,
+        BoundaryKind.PLANE_WAVE_TUBE_TERMINATION,
+    }
+    unsupported_boundaries = [
+        boundary.id for boundary in system.boundaries if boundary.kind not in supported_boundary_kinds
+    ]
+    if unsupported_boundaries:
+        raise ValueError(
+            "Interior FEM solving supports rigid, moving, and plane-wave tube termination boundaries only: "
+            + ", ".join(unsupported_boundaries)
+        )
+    parameterized_boundaries = [
+        boundary.id
+        for boundary in system.boundaries
+        if boundary.parameters and set(boundary.parameters) != {WALL_IMPEDANCE_KEY}
+    ]
+    if parameterized_boundaries:
+        raise ValueError(
+            "Interior FEM solving does not support the boundary parameters used by: "
+            + ", ".join(parameterized_boundaries)
+        )
+    for boundary in system.boundaries:
+        treatment = wall_impedance_parameters(boundary.parameters)
+        if treatment is not None and boundary.kind != BoundaryKind.RIGID:
+            raise ValueError(f"Wall impedance boundary '{boundary.id}' must use the rigid boundary assignment.")
+    for region in bounded_regions:
+        unknown_loss_keys = set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY}
+        if unknown_loss_keys:
+            raise ValueError(
+                f"Interior FEM solving does not support acoustic loss parameters on '{region.id}': "
+                + ", ".join(sorted(unknown_loss_keys))
+            )
+        region_bulk_loss_factor(region.loss_model)
+
+    supported_component_kinds = {
+        ComponentKind.IDEAL_VELOCITY_SOURCE,
+        ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+    }
+    unsupported_components = [
+        component.id for component in system.components if component.kind not in supported_component_kinds
+    ]
+    if unsupported_components:
+        raise ValueError(
+            "Interior FEM solving supports prescribed-velocity and linear electrodynamic components; unsupported: "
+            + ", ".join(unsupported_components)
+        )
+    for component in system.components:
+        _validate_boundary_motion_weights(component)
+        if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            _validate_electrodynamic_component(
+                component,
+                symmetry_factor=symmetry_factors[symmetry_mode],
+                active_symmetry_axes=(() if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")),
+            )
+            continue
+        unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
+        if unsupported_parameters:
+            raise ValueError(
+                f"Interior FEM solving does not support component parameters on '{component.id}': "
+                + ", ".join(sorted(unsupported_parameters))
+            )
+        if component.parameters.get("motion_profile", "uniform") != "uniform":
+            raise ValueError(f"Interior prescribed-velocity component '{component.id}' must use uniform motion.")
+
+    components_by_id = {component.id: component for component in system.components}
+    incompatible_ports = []
+    for port in system.excitation_ports:
+        component = components_by_id[port.component_id]
+        expected = (
+            ExcitationPortKind.VOLTAGE
+            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            else ExcitationPortKind.NORMAL_VELOCITY
+        )
+        if port.kind != expected:
+            incompatible_ports.append(port.id)
+    if incompatible_ports:
+        raise ValueError(
+            "Interior FEM solving received incompatible excitation ports: " + ", ".join(incompatible_ports)
+        )
+
+
+def validate_exterior_capabilities(request: SystemSolveRequest) -> None:
+    """Reject physical-model features unsupported by the BEAT BEM-only branch."""
+
+    system = request.compiled_system
+    unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
+    if len(unbounded_regions) != 1:
+        raise ValueError("Exterior solver requires exactly one unbounded acoustic region.")
+    if system.interfaces:
+        raise ValueError("Exterior-only systems cannot contain FEM-BEM interfaces.")
+    requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
+    if requested_symmetry not in {"off", "x", "xy"}:
+        raise ValueError(f"Unsupported exterior symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+    unsupported_boundaries = [
+        boundary.id for boundary in system.boundaries if boundary.kind not in {BoundaryKind.RIGID, BoundaryKind.MOVING}
+    ]
+    if unsupported_boundaries:
+        raise ValueError(
+            "Exterior solver supports rigid and prescribed-moving boundaries only: " + ", ".join(unsupported_boundaries)
+        )
+    parameterized_boundaries = [boundary.id for boundary in system.boundaries if boundary.parameters]
+    if parameterized_boundaries:
+        raise ValueError(
+            "Exterior solver does not support boundary parameters on: " + ", ".join(parameterized_boundaries)
+        )
+    unsupported_components = [
+        component.id for component in system.components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+    ]
+    if unsupported_components:
+        raise ValueError(
+            "Exterior solver supports prescribed-velocity components only: " + ", ".join(unsupported_components)
+        )
+    for component in system.components:
+        _validate_boundary_motion_weights(component)
+        unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
+        if unsupported_parameters:
+            raise ValueError(
+                f"Exterior solver does not support component parameters on '{component.id}': "
+                + ", ".join(sorted(unsupported_parameters))
+            )
+        if component.parameters.get("motion_profile", "uniform") != "uniform":
+            raise ValueError(f"Exterior component '{component.id}' must use uniform prescribed motion.")
+    components_by_id = {component.id: component for component in system.components}
+    incompatible_ports = [
+        port.id
+        for port in system.excitation_ports
+        if port.kind != ExcitationPortKind.NORMAL_VELOCITY
+        or components_by_id[port.component_id].kind != ComponentKind.IDEAL_VELOCITY_SOURCE
+    ]
+    if incompatible_ports:
+        raise ValueError("Exterior solver received incompatible excitation ports: " + ", ".join(incompatible_ports))
+    lossy_regions = [region.id for region in system.regions if region.loss_model]
+    if lossy_regions:
+        raise ValueError("Exterior solver does not support region loss models on: " + ", ".join(lossy_regions))
 
 
 def _validate_boundary_motion_weights(component) -> None:
@@ -588,11 +808,12 @@ class CoupledReferenceBackend(_CoupledBackend):
         )
 
 
-class CoupledProductionBackend(_CoupledBackend):
-    """FP32 coupled backend used by interactive BEAT Engine CPU/CUDA solves."""
+class PhysicalSystemProductionBackend(_CoupledBackend):
+    """FP32 physical-system backend for exterior, interior, and coupled BEAT solves."""
 
     backend_id = "coupled_production"
     label = "Coupled FEM-BEM (FP32)"
+    default_static_condensation = True
 
     def __init__(
         self,
@@ -604,10 +825,13 @@ class CoupledProductionBackend(_CoupledBackend):
         persistent_worker: bool = True,
     ):
         normalized_bem_backend = str(bem_backend).strip().lower()
-        resolved_threads = (4 if normalized_bem_backend == "cuda" else 8) if julia_threads is None else julia_threads
-        julia_project = (
-            DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized_bem_backend == "cuda" else DEFAULT_COUPLED_CPU_PROJECT
-        )
+        default_threads = 4 if normalized_bem_backend == "cuda" else 8
+        resolved_threads = default_threads if julia_threads is None else julia_threads
+        julia_project = {
+            "cpu": DEFAULT_COUPLED_CPU_PROJECT,
+            "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+            "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+        }.get(normalized_bem_backend, DEFAULT_COUPLED_CPU_PROJECT)
         super().__init__(
             julia_executable=julia_executable,
             solver_script=solver_script,
@@ -617,3 +841,6 @@ class CoupledProductionBackend(_CoupledBackend):
             precision="float32",
             bem_backend=normalized_bem_backend,
         )
+
+
+CoupledProductionBackend = PhysicalSystemProductionBackend

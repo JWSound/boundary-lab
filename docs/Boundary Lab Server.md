@@ -54,7 +54,7 @@ Supported `--solver` values:
 - `bempp_cpu`: Bempp OpenCL CPU backend.
 - `beat_cpu`: BEAT Engine CPU backend through Julia.
 - `beat_cuda`: BEAT Engine CUDA backend through Julia.
-- `beat_rocm`: BEAT Engine ROCm selector. This is accepted by the server CLI, but the ROCm implementation is currently a placeholder and reports not implemented.
+- `beat_rocm`: BEAT Engine AMD ROCm backend for exterior and coupled FEM-BEM solves, including symmetry.
 
 BEAT Engine server options are intentionally narrow:
 
@@ -79,9 +79,8 @@ In the Boundary Lab GUI:
 
 Server-side symmetry depends on the configured server solver:
 
-- `beat_cpu` and `beat_cuda` advertise symmetry support and can solve `off`, `x`, and `xy` symmetry requests.
+- `beat_cpu`, `beat_cuda`, and `beat_rocm` advertise symmetry support and can solve `off`, `x`, and `xy` symmetry requests.
 - `bempp_cpu` does not support symmetry acceleration.
-- `beat_rocm` advertises the BEAT Engine shape but is not numerically implemented yet.
 
 The GUI uses the checked server health payload to decide whether the symmetry
 control in the **Meshes** window is enabled while the selected BEM Solver is

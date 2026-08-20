@@ -92,6 +92,8 @@ def radiator_to_dict(radiator: RadiatorConfig) -> dict[str, Any]:
         "name": radiator.name,
         "tag": int(radiator.tag),
         "mesh": radiator.mesh,
+        "drive_group": radiator.drive_group,
+        "drive_group_name": radiator.drive_group_name,
         "channel": radiator.channel,
         "velocity_offset_db": float(radiator.velocity_offset_db),
         "level_db": float(radiator.level_db),
@@ -107,6 +109,8 @@ def radiator_from_dict(raw: dict[str, Any]) -> RadiatorConfig:
         name=str(raw["name"]),
         tag=int(raw["tag"]),
         mesh=None if raw.get("mesh") is None else str(raw["mesh"]),
+        drive_group=None if raw.get("drive_group") is None else str(raw["drive_group"]),
+        drive_group_name=(None if raw.get("drive_group_name") is None else str(raw["drive_group_name"])),
         channel=str(raw.get("channel", "main")),
         velocity_offset_db=float(raw.get("velocity_offset_db", 0.0)),
         level_db=float(raw.get("level_db", 0.0)),
@@ -237,6 +241,9 @@ def solver_diagnostics_to_dict(diagnostics: SolverDiagnostics | None) -> dict[st
     return {
         "convergence_info": diagnostics.convergence_info,
         "message": diagnostics.message,
+        "backend": diagnostics.backend,
+        "symmetry": diagnostics.symmetry,
+        "regular_assembly_mode": diagnostics.regular_assembly_mode,
     }
 
 
@@ -247,6 +254,9 @@ def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostic
     return SolverDiagnostics(
         convergence_info=None if convergence_info is None else int(convergence_info),
         message=None if raw.get("message") is None else str(raw["message"]),
+        backend=None if raw.get("backend") is None else str(raw["backend"]),
+        symmetry=None if raw.get("symmetry") is None else str(raw["symmetry"]),
+        regular_assembly_mode=(None if raw.get("regular_assembly_mode") is None else str(raw["regular_assembly_mode"])),
     )
 
 

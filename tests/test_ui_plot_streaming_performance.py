@@ -2,6 +2,8 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
+from cycler import cycler
+from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -181,6 +183,77 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     assert spinorama._di_lines == di_lines
 
 
+def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
+    canvas = OnAxisResponseCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    response = np.asarray(
+        [[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]],
+        dtype=np.float32,
+    )
+
+    canvas.update_plot(freqs, angles, response)
+    canvas.figure.canvas.draw()
+
+    visible_x_minor = {
+        round(float(tick.get_loc()))
+        for tick in canvas.axes.xaxis.get_minor_ticks()
+        if tick.gridline.get_visible() and 20.0 <= tick.get_loc() <= 20_000.0
+    }
+    visible_y_minor = {
+        round(float(tick.get_loc())) for tick in canvas.axes.yaxis.get_minor_ticks() if tick.gridline.get_visible()
+    }
+
+    assert {30, 40, 60, 70, 80, 90, 300, 3000}.issubset(visible_x_minor)
+    assert {35, 45, 55, 65, 75, 85}.issubset(visible_y_minor)
+
+
+def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
+    monkeypatch.setitem(
+        rcParams,
+        "axes.prop_cycle",
+        cycler(color=[(31 / 255, 119 / 255, 180 / 255), (1.0, 0.5, 0.0)]),
+    )
+    canvas = OnAxisResponseCanvas()
+    freqs = np.asarray([100.0, 1000.0, 10_000.0], dtype=np.float32)
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    response = np.asarray([[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]])
+    channel_names = np.asarray(["LF", "HF"])
+    channel_spl = np.asarray([[81.0, 82.0, 83.0], [72.0, 78.0, 84.0]])
+    sum_phase = np.asarray([170.0, -170.0, -90.0])
+    channel_phase = np.asarray([[10.0, 20.0, 30.0], [-10.0, -20.0, -30.0]])
+
+    canvas.update_plot(
+        freqs,
+        angles,
+        response,
+        channel_names,
+        channel_spl,
+        sum_phase,
+        channel_phase,
+    )
+
+    assert canvas._magnitude_lines["Sum"].get_color() == "#000000"
+    assert all(line.get_linestyle() == "-" for line in canvas._magnitude_lines.values())
+    assert all(line.get_linestyle() == ":" for line in canvas._phase_lines.values())
+    assert all(
+        canvas._phase_lines[label].get_color() == canvas._magnitude_lines[label].get_color()
+        for label in canvas._series_labels
+    )
+    assert canvas.show_phase_action.isEnabled()
+    assert not canvas.phase_axes.get_visible()
+
+    canvas.show_phase_action.setChecked(True)
+    assert canvas.phase_axes.get_visible()
+    assert canvas.phase_axes.get_ylim() == (-180.0, 600.0)
+    assert np.isnan(np.asarray(canvas._phase_lines["Sum"].get_ydata())).any()
+
+    canvas._series_actions["HF"].setChecked(False)
+    assert not canvas._magnitude_lines["HF"].get_visible()
+    assert not canvas._phase_lines["HF"].get_visible()
+    assert canvas._magnitude_lines["LF"].get_visible()
+
+
 def test_line_plot_crosshairs_track_raw_coordinates_and_persist_until_double_click() -> None:
     freqs = np.asarray([100.0, 1000.0, 10000.0], dtype=np.float32)
     impedance = ImpedanceCanvas()
@@ -306,6 +379,8 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         vertical_spl_db=np.ones((2, 2)),
         channel_on_axis_names=np.asarray(["main"]),
         channel_on_axis_spl_db=np.zeros((1, 2)),
+        on_axis_phase_deg=np.zeros(2),
+        channel_on_axis_phase_deg=np.zeros((1, 2)),
         spin_horizontal_reference_angle_deg=10.0,
         spin_vertical_reference_angle_deg=-5.0,
     )
@@ -327,6 +402,7 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
+    assert len(plots[3].calls[0][0]) == 7
 
 
 def test_every_chart_panel_gets_the_same_axes_box() -> None:

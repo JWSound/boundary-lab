@@ -14,10 +14,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from blab.ath import (
-    write_ath_gmsh_path,
-    write_ath_output_root,
-)
 from blab.generators.ath import ATH_PROVIDER_ID
 from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.generators.registry import generator_info
@@ -25,7 +21,6 @@ from blab.ui.application_state import OperationPhase
 from blab.ui.main_window.constants import (
     ATH_BUNDLE_DIR,
     GENERATED_GEOMETRY_ROOT,
-    GMSH_BUNDLE_EXE,
 )
 from blab.ui.main_window.workflow_view import GeometryInputs, PlotPresenter, WorkflowView
 from blab.ui.operation_controllers import GeometryController, SolveController
@@ -65,22 +60,14 @@ class GeometryWorkflowController(QObject):
     # -- Ath runtime --------------------------------------------------------
 
     def _find_ath_exe(self) -> Path:
-        bundled = ATH_BUNDLE_DIR / "ath.exe"
+        bundled = ATH_BUNDLE_DIR / "ath202608.exe"
         if bundled.exists():
             return bundled
         for root in (Path.cwd(), Path.cwd().parent):
-            candidate = root / "ath.exe"
+            candidate = root / "ath202608.exe"
             if candidate.exists():
                 return candidate
         return bundled
-
-    def _ensure_ath_runtime_config(self) -> None:
-        ath_exe = self._find_ath_exe()
-        ath_cfg = ath_exe.parent / "ath.cfg"
-        if not ath_cfg.exists():
-            return
-        write_ath_output_root(ath_cfg, GENERATED_GEOMETRY_ROOT)
-        write_ath_gmsh_path(ath_cfg, GMSH_BUNDLE_EXE)
 
     # -- generation ---------------------------------------------------------
 
@@ -99,7 +86,6 @@ class GeometryWorkflowController(QObject):
         try:
             provider = generator_info(document.provider_id)
             if document.provider_id == ATH_PROVIDER_ID:
-                self._ensure_ath_runtime_config()
                 provider_options["ath_exe"] = str(self._find_ath_exe())
         except Exception as exc:
             self._view.show_status("Generate failed")

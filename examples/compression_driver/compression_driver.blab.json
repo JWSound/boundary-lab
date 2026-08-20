@@ -1,0 +1,162 @@
+{
+  "channel_config_by_name": {
+    "main": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1
+    }
+  },
+  "component_channel_by_id": {
+    "component:compression-driver": "main"
+  },
+  "imported_meshes": [
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "frontFEM",
+      "scale_factor": 0.001,
+      "source_file": "frontFEM.msh",
+      "translation_mm": [0.0, 0.0, 0.0]
+    },
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "rearFEM",
+      "scale_factor": 0.001,
+      "source_file": "rearFEM.msh",
+      "translation_mm": [0.0, 0.0, 0.0]
+    }
+  ],
+  "physical_system": {
+    "boundaries": [
+      {
+        "group": {"dimension": 2, "mesh_id": "mesh:front", "name": "termination", "tag": null},
+        "id": "boundary:front-termination",
+        "kind": "plane_wave_tube_termination",
+        "name": "Anechoic tube termination",
+        "parameters": {},
+        "region_id": "region:front"
+      },
+      {
+        "group": {"dimension": 2, "mesh_id": "mesh:front", "name": "diaphragm", "tag": null},
+        "id": "boundary:front-diaphragm",
+        "kind": "moving",
+        "name": "Front diaphragm",
+        "parameters": {},
+        "region_id": "region:front"
+      },
+      {
+        "group": {"dimension": 2, "mesh_id": "mesh:front", "name": "frontFEM_boundary", "tag": null},
+        "id": "boundary:front-wall",
+        "kind": "rigid",
+        "name": "Front chamber wall",
+        "parameters": {},
+        "region_id": "region:front"
+      },
+      {
+        "group": {"dimension": 2, "mesh_id": "mesh:rear", "name": "diaphragm", "tag": null},
+        "id": "boundary:rear-diaphragm",
+        "kind": "moving",
+        "name": "Rear diaphragm",
+        "parameters": {},
+        "region_id": "region:rear"
+      },
+      {
+        "group": {"dimension": 2, "mesh_id": "mesh:rear", "name": "rearFEM_boundary", "tag": null},
+        "id": "boundary:rear-wall",
+        "kind": "rigid",
+        "name": "Rear chamber wall",
+        "parameters": {},
+        "region_id": "region:rear"
+      }
+    ],
+    "components": [
+      {
+        "boundary_ids": ["boundary:front-diaphragm", "boundary:rear-diaphragm"],
+        "id": "component:compression-driver",
+        "kind": "electrodynamic_transducer",
+        "name": "Compression driver",
+        "parameters": {
+          "bl_n_per_a": 9.5,
+          "cms_m_per_n": 0.00003,
+          "le_h": 0.00014,
+          "mmd_kg": 0.0008,
+          "motion_axis": [0.0, 0.0, 1.0],
+          "motion_profile": "rigid_translation",
+          "re_ohm": 5.2,
+          "rms_n_s_per_m": 1.2
+        }
+      }
+    ],
+    "excitation_ports": [
+      {
+        "component_id": "component:compression-driver",
+        "id": "excitation:compression-driver-voltage",
+        "kind": "voltage",
+        "name": "Compression driver 2.83 V"
+      }
+    ],
+    "id": "system:compression-driver",
+    "interfaces": [],
+    "meshes": [
+      {
+        "file": "frontFEM.msh",
+        "id": "mesh:front",
+        "name": "frontFEM",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [0.0, 0.0, 0.0]
+      },
+      {
+        "file": "rearFEM.msh",
+        "id": "mesh:rear",
+        "name": "rearFEM",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [0.0, 0.0, 0.0]
+      }
+    ],
+    "metadata": {},
+    "model_version": 1,
+    "name": "Compression driver internals",
+    "regions": [
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:front",
+        "kind": "bounded_air",
+        "loss_model": {"bulk_loss_factor": 0.002},
+        "mesh_ids": ["mesh:front"],
+        "name": "Front chamber",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {"dimension": 3, "mesh_id": "mesh:front", "name": "frontFEM", "tag": null}
+        ]
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:rear",
+        "kind": "bounded_air",
+        "loss_model": {"bulk_loss_factor": 0.002},
+        "mesh_ids": ["mesh:rear"],
+        "name": "Rear chamber",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {"dimension": 3, "mesh_id": "mesh:rear", "name": "rearFEM", "tag": null}
+        ]
+      }
+    ]
+  },
+  "project_preferences": {
+    "freq_count": 80,
+    "freq_max_hz": 20000,
+    "freq_min_hz": 500,
+    "polar_angle_step_deg": 5.0,
+    "polar_observation_distance_m": 1.0,
+    "spherical_sampling_enabled": false
+  },
+  "schema_version": 8,
+  "stitch_exterior_meshes": false,
+  "symmetry": "off"
+}

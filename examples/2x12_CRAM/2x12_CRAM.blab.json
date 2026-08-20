@@ -1,0 +1,350 @@
+{
+  "active_generator_document_id": "63e681859985",
+  "channel_config_by_name": {},
+  "component_channel_by_id": {
+    "component:12nw100-a": "main",
+    "component:12nw100-b": "main"
+  },
+  "generator_documents": [
+    {
+      "artifact": null,
+      "id": "63e681859985",
+      "mesh_enabled": true,
+      "mesh_scale_factor": 0.001,
+      "mesh_translation_mm": [
+        0,
+        0,
+        0
+      ],
+      "name": "waveguide",
+      "provider_id": "ath",
+      "provider_schema_version": 1,
+      "source": {
+        "format": "ath_cfg",
+        "text": ""
+      }
+    }
+  ],
+  "imported_meshes": [
+    {
+      "cleaned_file": null,
+      "enabled": true,
+      "name": "2x12CRAMInterior",
+      "scale_factor": 0.001,
+      "source_file": "2x12CRAMInterior.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "cleaned_file": "2x12CRAMExterior_interface_conformed.msh",
+      "enabled": true,
+      "name": "2x12CRAMExterior",
+      "scale_factor": 0.001,
+      "source_file": "2x12CRAMExterior.msh",
+      "translation_mm": [
+        0,
+        0,
+        0
+      ]
+    }
+  ],
+  "observation_planes": [],
+  "physical_system": {
+    "boundaries": [
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12cramexterior",
+          "name": "exterior",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:2x12cramexterior:exterior",
+        "kind": "rigid",
+        "name": "exterior",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12cramexterior",
+          "name": "interface",
+          "tag": null
+        },
+        "id": "boundary:region-exterior-air:2x12cramexterior:interface",
+        "kind": "interface",
+        "name": "interface",
+        "parameters": {},
+        "region_id": "region:exterior-air"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "ConeAFront",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:coneafront",
+        "kind": "moving",
+        "name": "ConeAFront",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "ConeARear",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:conearear",
+        "kind": "moving",
+        "name": "ConeARear",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "ConeBFront",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:conebfront",
+        "kind": "moving",
+        "name": "ConeBFront",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "ConeBRear",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:conebrear",
+        "kind": "moving",
+        "name": "ConeBRear",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "Interface",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:interface",
+        "kind": "interface",
+        "name": "Interface",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:2x12craminterior",
+          "name": "interior_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-interior-air-1:interior_boundary",
+        "kind": "rigid",
+        "name": "interior_boundary",
+        "parameters": {},
+        "region_id": "region:interior-air-1"
+      }
+    ],
+    "components": [
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:coneafront",
+          "boundary:region-interior-air-1:conearear"
+        ],
+        "id": "component:12nw100-a",
+        "kind": "electrodynamic_transducer",
+        "name": "12NW100 A",
+        "parameters": {
+          "bl_n_per_a": 28.0,
+          "boundary_motion_weights": {
+            "boundary:region-interior-air-1:coneafront": 1.0,
+            "boundary:region-interior-air-1:conearear": 1.0
+          },
+          "cms_m_per_n": 0.000117,
+          "fractional_symmetry_axes": [
+            "x"
+          ],
+          "le_h": 0.0019,
+          "mmd_kg": 0.11,
+          "motion_axis": [
+            0.0,
+            -0.0001610278356468163,
+            0.999999987035018
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 1,
+          "re_ohm": 5.1,
+          "rms_n_s_per_m": 8.72,
+          "surface_completion_factor": 2,
+          "symmetry_role": "fractional_driver"
+        }
+      },
+      {
+        "boundary_ids": [
+          "boundary:region-interior-air-1:conebfront",
+          "boundary:region-interior-air-1:conebrear"
+        ],
+        "id": "component:12nw100-b",
+        "kind": "electrodynamic_transducer",
+        "name": "12NW100 B",
+        "parameters": {
+          "bl_n_per_a": 28.0,
+          "boundary_motion_weights": {
+            "boundary:region-interior-air-1:conebfront": 1.0,
+            "boundary:region-interior-air-1:conebrear": 1.0
+          },
+          "cms_m_per_n": 0.000117,
+          "fractional_symmetry_axes": [
+            "x"
+          ],
+          "le_h": 0.0019,
+          "mmd_kg": 0.11,
+          "motion_axis": [
+            0.0,
+            7.184124350510739e-05,
+            0.9999999974194179
+          ],
+          "motion_profile": "rigid_translation",
+          "physical_driver_orbit_count": 1,
+          "re_ohm": 5.1,
+          "rms_n_s_per_m": 8.72,
+          "surface_completion_factor": 2,
+          "symmetry_role": "fractional_driver"
+        }
+      }
+    ],
+    "excitation_ports": [
+      {
+        "component_id": "component:12nw100-a",
+        "id": "excitation:component-12nw100-a",
+        "kind": "voltage",
+        "name": "12NW100 A voltage"
+      },
+      {
+        "component_id": "component:12nw100-b",
+        "id": "excitation:component-12nw100-b",
+        "kind": "voltage",
+        "name": "12NW100 B voltage"
+      }
+    ],
+    "id": "system:loudspeaker",
+    "interfaces": [
+      {
+        "bounded_boundary_id": "boundary:region-interior-air-1:interface",
+        "coordinate_tolerance_m": 1e-08,
+        "id": "interface:interface-interface",
+        "name": "Interface / interface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:2x12cramexterior:interface"
+      }
+    ],
+    "meshes": [
+      {
+        "file": "2x12CRAMExterior_interface_conformed.msh",
+        "id": "mesh:2x12cramexterior",
+        "name": "2x12CRAMExterior",
+        "purpose": "bem_surface",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "file": "2x12CRAMInterior.msh",
+        "id": "mesh:2x12craminterior",
+        "name": "2x12CRAMInterior",
+        "purpose": "fem_volume",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "metadata": {
+      "component_editor": {
+        "component:12nw100-a": {
+          "motion_axis_mode": "automatic"
+        },
+        "component:12nw100-b": {
+          "motion_axis_mode": "automatic"
+        }
+      }
+    },
+    "model_version": 1,
+    "name": "Loudspeaker System",
+    "regions": [
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:exterior-air",
+        "kind": "unbounded_air",
+        "loss_model": {},
+        "mesh_ids": [
+          "mesh:2x12cramexterior"
+        ],
+        "name": "Exterior Air",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": []
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:interior-air-1",
+        "kind": "bounded_air",
+        "loss_model": {
+          "bulk_loss_factor": 0.05
+        },
+        "mesh_ids": [
+          "mesh:2x12craminterior"
+        ],
+        "name": "Interior Air 1",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:2x12craminterior",
+            "name": "interior",
+            "tag": null
+          }
+        ]
+      }
+    ]
+  },
+  "project_preferences": {
+    "balloon_angle_precision_deg": 2.5,
+    "freq_count": 200,
+    "freq_max_hz": 400,
+    "freq_min_hz": 20,
+    "horizontal_normalization_angle": 0.0,
+    "isobar_contour_step_db": 3.0,
+    "normalized_channel_correction": false,
+    "polar_angle_step_deg": 1.0,
+    "polar_observation_distance_m": 10.0,
+    "polar_smoothing": null,
+    "spherical_sampling_enabled": true,
+    "spin_horizontal_reference_angle": 0.0,
+    "spin_vertical_reference_angle": 0.0,
+    "spl_max_db": 0.0,
+    "spl_min_db": -30.0,
+    "stitch_tolerance_mm": 3.0,
+    "vertical_normalization_angle": 0.0
+  },
+  "schema_version": 8,
+  "stitch_exterior_meshes": false,
+  "symmetry": "x"
+}

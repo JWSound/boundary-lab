@@ -1,6 +1,13 @@
+from pathlib import Path
+
+import meshio
+import numpy as np
+
 from blab.config import ChannelConfig, CrossoverConfig, RadiatorConfig
+from blab.generators.base import GeneratedGeometry
 from blab.ui.source_channel_config import (
     apply_saved_imported_source_config,
+    apply_saved_source_config_to_result,
     channel_config_payload,
     channel_configs,
     channel_configs_from_payload,
@@ -108,6 +115,54 @@ def test_apply_saved_imported_source_config_ignores_generated_meshes() -> None:
             velocity_offset_db=2.0,
         ),
     )
+
+
+def test_saved_surface_settings_preserve_generated_ath_drive_group(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "ath.msh"
+    meshio.write(
+        mesh_path,
+        meshio.Mesh(
+            points=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
+            cell_data={"gmsh:physical": [np.array([2], dtype=np.int32)]},
+            field_data={"SD1D1001": np.array([2, 2], dtype=np.int32)},
+        ),
+        file_format="gmsh22",
+        binary=False,
+    )
+    result = GeneratedGeometry(
+        provider_id="ath",
+        output_dir=tmp_path,
+        mesh_path=mesh_path,
+        radiators=(
+            RadiatorConfig(
+                name="SD1D1001",
+                tag=2,
+                drive_group="ath:0",
+                drive_group_name="horn_driver",
+                velocity_offset_db=-12.042,
+            ),
+        ),
+    )
+
+    updated = apply_saved_source_config_to_result(
+        result,
+        "2way",
+        {
+            "2way:SD1D1001": {
+                "driven": True,
+                "channel": "High",
+                "velocity_offset_db": -12.0,
+            }
+        },
+    )
+
+    assert updated is not None
+    assert updated.radiators[0].name == "2way:SD1D1001"
+    assert updated.radiators[0].channel == "High"
+    assert updated.radiators[0].velocity_offset_db == -12.0
+    assert updated.radiators[0].drive_group == "ath:0"
+    assert updated.radiators[0].drive_group_name == "horn_driver"
 
 
 def test_imported_source_assignment_follows_surface_name_when_tag_changes() -> None:

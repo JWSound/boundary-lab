@@ -38,13 +38,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, help="Boundary Lab project containing a physical_system.")
     parser.add_argument("--julia", default="julia", help="Julia executable or absolute path.")
-    parser.add_argument("--julia-threads", default="1", help="Julia worker thread count or 'auto'.")
+    parser.add_argument(
+        "--julia-threads",
+        help="Julia worker thread count or 'auto' (defaults by backend).",
+    )
     parser.add_argument("--frequencies", default="500,1000", help="Comma-separated frequencies in Hz.")
     parser.add_argument("--angle-step", type=float, default=90.0, help="Polar observation angle step.")
     parser.add_argument("--quadrature-order", type=int, default=2)
     parser.add_argument("--singular-order", type=int, default=2)
     parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
-    parser.add_argument("--bem-backend", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument("--bem-backend", choices=("cpu", "cuda", "rocm"), default="cpu")
+    parser.add_argument(
+        "--condensed",
+        action="store_true",
+        help="Use exact CPU FEM interface condensation; CUDA and ROCm condense automatically.",
+    )
     parser.add_argument("--symmetry", choices=("off", "x", "xy"), default="off")
     parser.add_argument(
         "--persistent",
@@ -53,23 +61,41 @@ def main() -> int:
     )
     parser.add_argument("--repeat", type=int, default=1, help="Number of runs per mode.")
     parser.add_argument(
+        "--warmup-runs",
+        type=int,
+        default=0,
+        help=(
+            "Number of full, reported warm-up jobs before measured runs. The Julia process is reused, "
+            "but job-local mesh and operator caches are rebuilt, matching application behavior."
+        ),
+    )
+    parser.add_argument(
         "--mode",
         choices=("interactive", "reference", "uncached", "all"),
         default="all",
         help="Interactive skips replay diagnostics; uncached also disables invariant caching.",
     )
     args = parser.parse_args()
+    if args.warmup_runs < 0:
+        parser.error("--warmup-runs must be zero or greater.")
     frequencies = tuple(float(value.strip()) for value in args.frequencies.split(",") if value.strip())
     if not frequencies:
         parser.error("--frequencies must contain at least one value.")
+    if args.condensed and args.bem_backend != "cpu":
+        parser.error("--condensed requires --bem-backend cpu; CUDA and ROCm already condense.")
+    if args.condensed and args.mode == "reference":
+        parser.error("--condensed cannot use reference mode because no monolithic matrix exists.")
     system = _fixture_system() if args.project is None else _system_from_project(args.project)
     modes = ("interactive", "reference", "uncached") if args.mode == "all" else (args.mode,)
+    if args.condensed:
+        modes = tuple(mode for mode in modes if mode != "reference")
     for mode in modes:
-        for run_index in range(max(1, args.repeat)):
+        for warmup_index in range(args.warmup_runs):
             _run_mode(
                 system,
                 mode=mode,
-                run_index=run_index + 1,
+                run_index=warmup_index + 1,
+                phase="warmup",
                 frequencies=frequencies,
                 angle_step=args.angle_step,
                 julia_executable=args.julia,
@@ -80,6 +106,25 @@ def main() -> int:
                 precision=args.precision,
                 bem_backend=args.bem_backend,
                 symmetry_mode=args.symmetry,
+                condensed=args.condensed,
+            )
+        for run_index in range(max(1, args.repeat)):
+            _run_mode(
+                system,
+                mode=mode,
+                run_index=run_index + 1,
+                phase="measured",
+                frequencies=frequencies,
+                angle_step=args.angle_step,
+                julia_executable=args.julia,
+                julia_threads=args.julia_threads,
+                quadrature_order=args.quadrature_order,
+                singular_order=args.singular_order,
+                persistent_worker=args.persistent,
+                precision=args.precision,
+                bem_backend=args.bem_backend,
+                symmetry_mode=args.symmetry,
+                condensed=args.condensed,
             )
     return 0
 
@@ -89,6 +134,7 @@ def _run_mode(
     *,
     mode: str,
     run_index: int,
+    phase: str,
     frequencies: tuple[float, ...],
     angle_step: float,
     julia_executable: str,
@@ -99,7 +145,9 @@ def _run_mode(
     precision: str,
     bem_backend: str,
     symmetry_mode: str,
+    condensed: bool = False,
 ) -> None:
+    backend_id = f"beat_{bem_backend}"
     prepared = prepare_coupled_ui_solve(
         system,
         freq_min_hz=min(frequencies),
@@ -107,13 +155,20 @@ def _run_mode(
         freq_count=len(frequencies),
         observation_distance_m=2.0,
         polar_angle_step_deg=angle_step,
+        backend_id=backend_id,
         symmetry_mode=symmetry_mode,
     )
     options = dict(prepared.request.solver_options)
     options["quadrature_order"] = int(quadrature_order)
     options["singular_order"] = int(singular_order)
-    options["validation_diagnostics"] = mode != "interactive"
+    options["validation_diagnostics"] = mode != "interactive" and not condensed
     options["cache_frequency_invariant"] = mode != "uncached"
+    if bem_backend == "cpu":
+        options["static_condensation"] = condensed
+    if mode != "interactive" and not condensed:
+        # Full-matrix replay diagnostics intentionally benchmark the
+        # monolithic formulation on every accelerator backend.
+        options["static_condensation"] = False
     request = replace(
         prepared.request,
         frequencies_hz=frequencies,
@@ -136,22 +191,57 @@ def _run_mode(
             persistent_worker=persistent_worker,
         )
     started = time.perf_counter()
-    results = list(backend.create_system_session(request).solve_stream())
+    results = []
+    result_arrival_s = []
+    for result in backend.create_system_session(request).solve_stream():
+        results.append(result)
+        result_arrival_s.append(time.perf_counter() - started)
     wall_s = time.perf_counter() - started
     measured_s = 0.0
     detail_keys = (
         "fem_system_s",
         "bem_operator_s",
         "bem_matrix_s",
+        "fem_condensation_s",
+        "fem_condensation_analysis_s",
+        "fem_condensation_partition_s",
+        "fem_condensation_factorization_s",
+        "fem_schur_extraction_s",
+        "fem_schur_upload_s",
+        "fem_rhs_condensation_s",
+        "fem_reconstruction_s",
         "block_assembly_s",
         "coupled_factorization_s",
         "replay_factorization_s",
     )
     detail_totals = {key: 0.0 for key in detail_keys}
+    setup_detail_keys = (
+        "fem_matrix_cache_s",
+        "interface_operator_cache_s",
+        "bem_space_cache_s",
+        "bem_singular_cache_s",
+        "bem_cpu_assembly_cache_s",
+        "bem_device_regular_cache_s",
+        "bem_device_singular_cache_s",
+        "bem_device_image_cache_s",
+        "bem_identity_cache_s",
+        "device_block_cache_s",
+        "field_cache_s",
+    )
+    setup_detail_totals = {key: 0.0 for key in setup_detail_keys}
     print(
-        f"\n{mode.upper()} run={run_index}  precision={precision}  bem={bem_backend}"
+        f"\n{mode.upper()} {phase}={run_index}  backend={backend_id}  precision={precision}  bem={bem_backend}"
         f"  symmetry={symmetry_mode}  frequencies={len(results)}  wall={wall_s:.3f}s"
     )
+    if result_arrival_s:
+        print(f"first_result_wall={result_arrival_s[0]:.3f}s")
+    if results:
+        diagnostics = results[0].diagnostics
+        print(
+            f"formulation={diagnostics.get('formulation', 'unknown')}  "
+            f"full_order={diagnostics.get('full_system_order', 'unknown')}  "
+            f"solved_order={diagnostics.get('solved_system_order', 'unknown')}"
+        )
     print("frequency       assembly       solve       field       setup")
     for result in results:
         timings = result.diagnostics.get("timings", {})
@@ -161,12 +251,18 @@ def _run_mode(
         setup_s = float(timings.get("mesh_setup_s", 0.0)) + float(timings.get("cache_setup_s", 0.0))
         for key in detail_keys:
             detail_totals[key] += float(timings.get(key, 0.0))
+        for key in setup_detail_keys:
+            setup_detail_totals[key] += float(timings.get(key, 0.0))
         measured_s += assembly_s + solve_s + field_s + setup_s
         print(f"{result.freq_hz:8.1f} Hz  {assembly_s:10.3f}s  {solve_s:8.3f}s  {field_s:8.3f}s  {setup_s:8.3f}s")
     print(f"reported stages={measured_s:.3f}s  process startup/JIT/serialization={wall_s - measured_s:.3f}s")
     print(
         "assembly detail: "
         + "  ".join(f"{key.removesuffix('_s')}={value:.3f}s" for key, value in detail_totals.items())
+    )
+    print(
+        "setup detail: "
+        + "  ".join(f"{key.removesuffix('_s')}={value:.3f}s" for key, value in setup_detail_totals.items())
     )
 
 

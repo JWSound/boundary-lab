@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import faulthandler
+import logging
 import multiprocessing as mp
 import os
 import sys
@@ -55,15 +56,50 @@ class StartupReporter:
         self.finished = threading.Event()
         self.log_path = _startup_log_path()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._log_file = self.log_path.open("a", encoding="utf-8")
+        self._log_file = self.log_path.open("a", encoding="utf-8", buffering=1)
+        self._closed = False
+        self._previous_faulthandler_enabled = faulthandler.is_enabled()
+        self._faulthandler_enabled = False
+        try:
+            faulthandler.enable(file=self._log_file, all_threads=True)
+            self._faulthandler_enabled = True
+        except (OSError, RuntimeError):
+            pass
+        self._runtime_logger = logging.getLogger("blab.runtime")
+        self._previous_runtime_log_level = self._runtime_logger.level
+        self._previous_runtime_log_propagate = self._runtime_logger.propagate
+        self._runtime_handler = logging.StreamHandler(self._log_file)
+        self._runtime_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        self._runtime_logger.addHandler(self._runtime_handler)
+        self._runtime_logger.setLevel(logging.INFO)
+        self._runtime_logger.propagate = False
         self._log("Boundary Lab GUI startup")
         if self.splash is not None:
             self.splash.setFont(SPLASH_TEXT_FONT)
 
-    def close(self) -> None:
+    def finish_startup(self) -> None:
+        if self.finished.is_set():
+            return
         self.finished.set()
         faulthandler.cancel_dump_traceback_later()
         self._log("Startup completed")
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.finished.set()
+        faulthandler.cancel_dump_traceback_later()
+        self._log("Boundary Lab GUI session ended")
+        self._runtime_logger.removeHandler(self._runtime_handler)
+        self._runtime_handler.close()
+        self._runtime_logger.setLevel(self._previous_runtime_log_level)
+        self._runtime_logger.propagate = self._previous_runtime_log_propagate
+        if self._faulthandler_enabled:
+            if self._previous_faulthandler_enabled:
+                faulthandler.enable(all_threads=True)
+            else:
+                faulthandler.disable()
         self._log_file.close()
 
     def update(self, stage: str) -> None:
@@ -311,7 +347,7 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         window.show()
         if splash is not None:
             splash.finish(window)
-        reporter.close()
+        reporter.finish_startup()
     except Exception as exc:  # pragma: no cover - exercised only by manual GUI launch
         if splash is not None:
             splash.close()
@@ -319,7 +355,11 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
         reporter.close()
         raise
 
-    sys.exit(app.exec())
+    try:
+        exit_code = app.exec()
+    finally:
+        reporter.close()
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

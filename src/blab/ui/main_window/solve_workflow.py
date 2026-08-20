@@ -19,12 +19,26 @@ from PySide6.QtCore import QObject, Signal, Slot
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
+    build_log_frequencies,
 )
 from blab.physical_model import (
+    AcousticRegionKind,
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.solve_results import (
+    SolvedSystemBuilder,
+    SolveProvenance,
+    legacy_result_domains,
+    legacy_result_to_system_result,
+)
+from blab.speaker_package import (
+    SpeakerPackageConfig,
+    export_speaker_package,
+    prepare_speaker_package_solve,
+)
 from blab.symmetry import SymmetryValidationError
+from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
 from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.main_window.solve_session import SolveSession
@@ -52,7 +66,10 @@ from blab.ui.system_config import (
     inspect_system_meshes,
     sync_physical_system_meshes,
 )
-from blab.ui.system_solve import prepare_coupled_ui_solve
+from blab.ui.system_solve import (
+    prepare_system_ui_solve,
+    supports_exterior_system_protocol,
+)
 
 
 class SolveWorkflowController(QObject):
@@ -86,6 +103,7 @@ class SolveWorkflowController(QObject):
         self._assembler = assembler
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
+        self._pending_speaker_package: SpeakerPackageConfig | None = None
 
     # -- starting a run -----------------------------------------------------
 
@@ -188,6 +206,63 @@ class SolveWorkflowController(QObject):
             self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
         )
 
+    def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
+        """Prepare the requested package outputs, run once, then export on completion."""
+
+        if self._geometry_controller.active or self._solve_controller.active:
+            return False
+        if not self._inputs.has_solver_meshes():
+            self._view.warn(
+                "No mesh", "Enable at least one generated or imported mesh before exporting a speaker package."
+            )
+            return False
+        try:
+            normalized = config.normalized()
+        except ValueError as exc:
+            self._view.warn("Speaker package", str(exc))
+            return False
+        self._inputs.ensure_seeded_exterior_system()
+        project = self._project()
+        if project.physical_system is None:
+            self._view.warn(
+                "Speaker package",
+                "Open System and configure a physical system before exporting a speaker package.",
+            )
+            return False
+        preferences = self._read_preferences()
+        try:
+            meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(project.symmetry))
+            system = sync_physical_system_meshes(project.physical_system, meshes)
+            project.physical_system = system
+            frequencies = self._view.frequency_range()
+            prepared = prepare_system_ui_solve(
+                system,
+                freq_min_hz=float(frequencies.min_hz),
+                freq_max_hz=float(frequencies.max_hz),
+                freq_count=frequencies.count,
+                observation_distance_m=preferences.polar_observation_distance_m,
+                polar_angle_step_deg=preferences.polar_angle_step_deg,
+                spherical_sampling_enabled=False,
+                spherical_sampling_points=0,
+                component_channel_by_id=project.component_channel_by_id,
+                backend_id=preferences.solve_backend,
+                symmetry_mode=project.symmetry,
+                observation_planes=(),
+            )
+            prepared = prepare_speaker_package_solve(
+                prepared,
+                fidelity=normalized.fidelity,
+                sphere_point_count=balloon_sampling_points(preferences.balloon_angle_precision_deg),
+                sphere_radius_m=preferences.polar_observation_distance_m,
+            )
+        except Exception as exc:
+            self._view.show_stitch_or_generic_error("Speaker package preparation failed", exc)
+            return False
+
+        self._pending_speaker_package = normalized
+        self._start_prepared_system_solve(prepared, "Initializing speaker package solve...")
+        return True
+
     def _start_exterior_system_solve(self) -> None:
         if self._inputs.reconcile_symmetry_with_backend():
             self.mesh_state_changed.emit("symmetry_disabled_for_backend")
@@ -198,6 +273,28 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
+            if supports_exterior_system_protocol(
+                system,
+                backend_id=preferences.solve_backend,
+                stitch_exterior_meshes=project.stitch_imported_meshes,
+            ):
+                frequencies = self._view.frequency_range()
+                prepared = prepare_system_ui_solve(
+                    system,
+                    freq_min_hz=float(frequencies.min_hz),
+                    freq_max_hz=float(frequencies.max_hz),
+                    freq_count=frequencies.count,
+                    observation_distance_m=preferences.polar_observation_distance_m,
+                    polar_angle_step_deg=preferences.polar_angle_step_deg,
+                    spherical_sampling_enabled=preferences.spherical_sampling_enabled,
+                    spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
+                    component_channel_by_id=project.component_channel_by_id,
+                    backend_id=preferences.solve_backend,
+                    symmetry_mode=symmetry,
+                    observation_planes=project.observation_planes,
+                )
+                self._start_prepared_system_solve(prepared, "Initializing exterior solver...")
+                return
             inputs = exterior_bem_inputs(
                 system,
                 component_channel_by_id=project.component_channel_by_id,
@@ -233,7 +330,7 @@ class SolveWorkflowController(QObject):
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
             coupled_frequencies = self._view.frequency_range()
-            prepared = prepare_coupled_ui_solve(
+            prepared = prepare_system_ui_solve(
                 system,
                 freq_min_hz=float(coupled_frequencies.min_hz),
                 freq_max_hz=float(coupled_frequencies.max_hz),
@@ -245,12 +342,32 @@ class SolveWorkflowController(QObject):
                 component_channel_by_id=project.component_channel_by_id,
                 backend_id=preferences.solve_backend,
                 symmetry_mode=project.symmetry,
+                observation_planes=project.observation_planes,
             )
         except Exception as exc:
-            self._view.warn("Coupled solve", str(exc))
+            self._view.warn("FEM system solve", str(exc))
             return
 
-        self._begin_run("Initializing coupled solver...")
+        status = (
+            "Initializing interior FEM solver..."
+            if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
+            else "Initializing coupled solver..."
+        )
+        self._start_prepared_system_solve(prepared, status)
+
+    def _start_prepared_system_solve(self, prepared, status: str) -> None:
+        self._begin_run(status)
+        self._session.result_builder = SolvedSystemBuilder(
+            frequencies_hz=prepared.request.frequencies_hz,
+            excitation_ids=prepared.request.excitation_port_ids,
+            provenance=SolveProvenance(
+                backend_id=prepared.backend_id,
+                solve_kind=prepared.solve_kind.value,
+                solver_options=dict(prepared.request.solver_options),
+            ),
+            domains=prepared.result_domains,
+            compiled_system=prepared.request.compiled_system,
+        )
         self._solve_controller.start(prepared)
 
     # -- cancelling ---------------------------------------------------------
@@ -286,12 +403,23 @@ class SolveWorkflowController(QObject):
     ) -> None:
         sphere_metadata = sphere_metadata or {}
         preferences = self._read_preferences()
+        system = self._project().physical_system
+        exterior_sound_speed = next(
+            (
+                region.sound_speed_m_per_s
+                for region in (() if system is None else system.regions)
+                if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+            ),
+            343.0,
+        )
         self._session.live_dataset = LiveSolveDataset(
             polar_angle_deg=np.asarray(angles, dtype=np.float32),
             radiator_names=np.asarray(radiator_names),
             channel_configs=self._inputs.channel_configs(),
             flat_target_normalization_enabled=preferences.normalized_channel_correction,
             flat_target_reference_angle_deg=preferences.horizontal_normalization_angle,
+            polar_observation_distance_m=preferences.polar_observation_distance_m,
+            exterior_sound_speed_m_per_s=exterior_sound_speed,
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
             sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),
@@ -304,13 +432,44 @@ class SolveWorkflowController(QObject):
         if live_dataset is None:
             return
         live_dataset.add(result)
+        if self._session.result_builder is None:
+            canonical = legacy_result_to_system_result(result)
+            frequencies = self._view.frequency_range().normalized()
+            self._session.result_builder = SolvedSystemBuilder(
+                frequencies_hz=build_log_frequencies(
+                    float(frequencies.min_hz),
+                    float(frequencies.max_hz),
+                    int(frequencies.count),
+                ),
+                excitation_ids=canonical.excitation_port_ids,
+                provenance=SolveProvenance(
+                    backend_id=self._read_preferences().solve_backend,
+                    solve_kind="exterior_bem",
+                ),
+                domains=legacy_result_domains(live_dataset),
+            )
+            self._session.result_builder.add(canonical)
+        elif self._session.result_builder.compiled_system is None:
+            self._session.result_builder.add(legacy_result_to_system_result(result))
         self._view.show_status(
             f"Solved {live_dataset.solved_count}/{self._view.frequency_range().count} "
             f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
         )
         if not self._read_preferences().live_plot_streaming:
             return
+        if (
+            self._session.result_builder is not None
+            and self._session.result_builder.provenance.solve_kind == "interior_fem"
+        ):
+            return
         self._plots.request_live_refresh()
+
+    @Slot(object)
+    def _on_system_frequency_result(self, result: SystemFrequencyResult) -> None:
+        builder = self._session.result_builder
+        if builder is None:
+            raise RuntimeError("Received a physical-system result before its result builder was initialized.")
+        builder.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:
@@ -322,17 +481,35 @@ class SolveWorkflowController(QObject):
         self._plots.cancel_live_refresh()
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session
+        session.finalize_results(status=completion.phase.value)
+        pending_package = self._pending_speaker_package
+        self._pending_speaker_package = None
+        package_result = None
+        if pending_package is not None and completion.completed:
+            solved = session.solved_system
+            if solved is not None and solved.complete:
+                try:
+                    package_result = export_speaker_package(solved, pending_package)
+                except Exception as exc:
+                    self._view.show_error("Speaker package export failed", str(exc))
+        observation_planes = getattr(self._view, "observation_plane_controller", None)
+        if observation_planes is not None:
+            observation_planes.sync_view()
         elapsed_s = completion.elapsed_s
         if session.has_solved_data():
             solved_count = session.solved_count
             solve_completed = completion.completed
+            interior_fem = (
+                session.result_builder is not None and session.result_builder.provenance.solve_kind == "interior_fem"
+            )
             session.use_final_isobar_resolution = solve_completed
-            if solve_completed:
+            if solve_completed and not interior_fem:
                 self._view.show_status("Rendering final high-resolution plots...")
             refreshed_dataset = None
             if self._read_preferences().live_plot_streaming or solve_completed:
-                refreshed_dataset = self._plots.refresh_plots()
-            if solve_completed:
+                if not interior_fem:
+                    refreshed_dataset = self._plots.refresh_plots()
+            if solve_completed and not interior_fem:
                 if refreshed_dataset is None:
                     refreshed_dataset = self._plots.prepared_live_dataset(
                         angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -340,11 +517,15 @@ class SolveWorkflowController(QObject):
                     )
                 if refreshed_dataset is not None:
                     session.last_completed_visualization = refreshed_dataset.snapshot()
-            session.final_isobar_plots_rendered = solve_completed and bool(self._plots.visible_isobar_plots())
-            self._view.set_plot_exports_available(True)
-            self._view.set_polar_export_available(True)
-            self._view.set_on_axis_export_available(session.live_dataset.supports_channel_resynthesis)
-            self._view.set_balloon_plot_available(session.live_dataset.has_balloon_data)
+            session.final_isobar_plots_rendered = (
+                solve_completed and not interior_fem and bool(self._plots.visible_isobar_plots())
+            )
+            self._view.set_plot_exports_available(not interior_fem)
+            self._view.set_polar_export_available(not interior_fem)
+            self._view.set_on_axis_export_available(
+                not interior_fem and session.live_dataset.supports_channel_resynthesis
+            )
+            self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
             self._plots.refresh_contour_controls()
             elapsed_text = f" in {elapsed_s:.1f} s"
             if completion.phase == OperationPhase.CANCELLED:
@@ -353,7 +534,10 @@ class SolveWorkflowController(QObject):
             if completion.phase == OperationPhase.FAILED:
                 self._view.show_status(f"Solve failed after {solved_count} frequencies{elapsed_text}")
                 return
-            self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
+            if package_result is not None:
+                self._view.show_status(f"Exported speaker package to {package_result.path}")
+            else:
+                self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
         elif completion.phase == OperationPhase.CANCELLED:
             self._view.show_status("Solve stopped")
         self._plots.refresh_contour_controls()

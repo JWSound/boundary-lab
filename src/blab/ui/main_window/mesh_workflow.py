@@ -37,6 +37,7 @@ from blab.ui.project_state import (
     replace_generator_document,
 )
 from blab.ui.system_config import (
+    INTERFACE_SEAM_SIMPLIFICATION_WARNING,
     inspect_system_meshes,
     interface_bem_mesh_names_for_changes,
     rebuild_configured_interfaces,
@@ -174,6 +175,8 @@ class MeshWorkflowMixin:
         self._last_imported_mesh_focus_check_at = now
 
         cursor_set = False
+        quality_warning_interface_ids: tuple[str, ...] = ()
+        reload_succeeded = False
         try:
             updated_names = self._updated_imported_mesh_names()
             if not updated_names:
@@ -205,6 +208,7 @@ class MeshWorkflowMixin:
                 )
                 self._project_document().physical_system = rebuild.system
                 rebuilt_interface_count = len(rebuild.rebuilt_interface_ids)
+                quality_warning_interface_ids = rebuild.quality_warning_interface_ids
             self.imported_meshes = reloaded_meshes
             self._record_imported_mesh_source_fingerprints()
             self.mesh_state_changed.emit("imported_mesh_files_reloaded")
@@ -218,12 +222,19 @@ class MeshWorkflowMixin:
             self.show_status(
                 f"Reloaded updated mesh file{'s' if len(updated_names) != 1 else ''}: {names}{interface_text}"
             )
+            reload_succeeded = True
         except Exception as exc:
             self.solve_results_invalidated.emit("imported_mesh_files_reloaded")
             self.show_status(f"Imported mesh reload failed: {exc}")
         finally:
             if cursor_set:
                 QApplication.restoreOverrideCursor()
+        if reload_succeeded and quality_warning_interface_ids:
+            QMessageBox.warning(
+                self,
+                "Inspect Simplified Interface",
+                INTERFACE_SEAM_SIMPLIFICATION_WARNING,
+            )
 
     def _cleaned_imported_mesh_path(self, mesh: MeshDialogEntry) -> Path:
         return self.mesh_service().cleaned_imported_mesh_path(

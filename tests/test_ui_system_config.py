@@ -15,6 +15,7 @@ from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.ath import read_surface_physical_names
 from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
+from blab.observation_planes import ObservationPlaneType, new_observation_plane
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
     AcousticRegionKind,
@@ -27,7 +28,17 @@ from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.solve_results import (
+    BEM_BOUNDARY_DOMAIN_ID,
+    BEM_BOUNDARY_NEUMANN_ID,
+    BEM_BOUNDARY_PRESSURE_ID,
+    FEM_NODAL_PRESSURE_ID,
+    FEM_VOLUME_DOMAIN_ID,
+    RADIATION_IMPEDANCE_ID,
+    RADIATOR_DOMAIN_ID,
+)
 from blab.solvers.coupled_backend import CoupledProductionBackend
+from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.mesh_assembly import MeshAssemblyService
@@ -213,6 +224,25 @@ def test_interfaces_tab_is_disabled_until_a_bounded_region_exists() -> None:
     assert dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
 
 
+def test_interior_only_editor_offers_tube_termination_without_enabling_interfaces() -> None:
+    dialog = SystemConfigDialog(
+        inspect_system_meshes((_fixture_mesh_entries()[0],)),
+        None,
+        ("main",),
+    )
+    dialog._refresh_boundaries()
+
+    assert [dialog._region_kind(row) for row in range(dialog.regions_table.rowCount())] == [
+        AcousticRegionKind.BOUNDED_AIR
+    ]
+    assert not dialog.tabs.isTabEnabled(dialog.tabs.indexOf(dialog.interfaces_tab))
+    assert dialog.boundaries_table.rowCount() > 0
+    for row in range(dialog.boundaries_table.rowCount()):
+        combo = dialog.boundaries_table.cellWidget(row, 3)
+        assert isinstance(combo, QComboBox)
+        assert combo.findData(BoundaryKind.PLANE_WAVE_TUBE_TERMINATION) >= 0
+
+
 def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
     _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
     second = replace(bem, name="Exterior B")
@@ -262,6 +292,193 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
     )
     with pytest.raises(ValueError, match="prescribed-velocity components only"):
         exterior_bem_inputs(unsupported, component_channel_by_id=channels)
+
+
+def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "ath_two_way.msh"
+    points = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [2.0, 1.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            [4.0, 1.0, 0.0],
+            [6.0, 0.0, 0.0],
+            [7.0, 0.0, 0.0],
+            [6.0, 1.0, 0.0],
+        ]
+    )
+    meshio.write(
+        mesh_path,
+        meshio.Mesh(
+            points=points,
+            cells=[("triangle", np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]))],
+            cell_data={"gmsh:physical": [np.array([2, 3, 4, 5], dtype=np.int32)]},
+            field_data={
+                "SD1D1001": np.array([2, 2], dtype=np.int32),
+                "SD1D1002": np.array([3, 2], dtype=np.int32),
+                "SD1D1003": np.array([4, 2], dtype=np.int32),
+                "SD1D1004": np.array([5, 2], dtype=np.int32),
+            },
+        ),
+        file_format="gmsh22",
+        binary=False,
+    )
+    mesh = inspect_system_meshes((MeshDialogEntry(name="2way", source_file=str(mesh_path), scale_factor=0.001),))[0]
+    radiators = tuple(
+        RadiatorConfig(
+            name=f"2way:{surface}",
+            mesh="2way",
+            tag=tag,
+            drive_group=drive_group,
+            drive_group_name=drive_name,
+            channel=channel,
+            velocity_offset_db=offset_db,
+        )
+        for surface, tag, drive_group, drive_name, channel, offset_db in (
+            ("SD1D1001", 2, "ath:0", "horn_driver", "High", -12.042),
+            ("SD1D1002", 3, "ath:0", "horn_driver", "High", -2.499),
+            ("SD1D1003", 4, "ath:0", "horn_driver", "High", 0.0),
+            ("SD1D1004", 5, "ath:2", "woofer_B", "Low", 0.0),
+        )
+    )
+
+    system, channels = seed_exterior_system((mesh,), radiators)
+
+    assert [(component.name, len(component.boundary_ids)) for component in system.components] == [
+        ("horn_driver", 3),
+        ("woofer_B", 1),
+    ]
+    tweeter = system.components[0]
+    boundary_names = {boundary.id: boundary.name for boundary in system.boundaries}
+    weights_by_surface = {
+        boundary_names[boundary_id]: weight
+        for boundary_id, weight in tweeter.parameters["boundary_motion_weights"].items()
+    }
+    assert weights_by_surface == pytest.approx(
+        {
+            "SD1D1001": 10.0 ** (-12.042 / 20.0),
+            "SD1D1002": 10.0 ** (-2.499 / 20.0),
+            "SD1D1003": 1.0,
+        }
+    )
+    assert channels[tweeter.id] == "High"
+
+    inputs = exterior_bem_inputs(system, component_channel_by_id=channels)
+    assert [(radiator.tag, radiator.channel, radiator.velocity_offset_db) for radiator in inputs.radiators] == [
+        (2, "High", pytest.approx(-12.042)),
+        (3, "High", pytest.approx(-2.499)),
+        (4, "High", pytest.approx(0.0)),
+        (5, "Low", pytest.approx(0.0)),
+    ]
+
+    ungrouped, _channels = seed_exterior_system(
+        (mesh,),
+        tuple(replace(radiator, drive_group=None, drive_group_name=None) for radiator in radiators),
+    )
+    assert len(ungrouped.components) == 4
+
+
+def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    tags = read_surface_physical_names(Path(bem.file))
+    group_name, tag = next(iter(tags.items()))
+    system, channels = seed_exterior_system(
+        (bem,),
+        (RadiatorConfig(name=f"{bem.name}:{group_name}", mesh=bem.name, tag=tag, channel="High"),),
+    )
+    exterior_plane = replace(
+        new_observation_plane("Exterior Field"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+    )
+
+    prepared = system_solve_module.prepare_system_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        component_channel_by_id=channels,
+        backend_id="beat_cpu",
+        observation_planes=(exterior_plane,),
+    )
+
+    outputs = {output.id: output for output in prepared.request.outputs}
+    domains = {domain.id: domain for domain in prepared.result_domains}
+    assert prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM
+    assert prepared.excitation_channel_names.tolist() == ["High"]
+    assert prepared.request.solver_options["quadrature_order"] == 4
+    assert prepared.request.solver_options["singular_order"] == 4
+    assert prepared.request.solver_options["static_condensation"] is False
+    assert outputs[RADIATION_IMPEDANCE_ID].quantity == "radiation_impedance"
+    assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID} <= outputs.keys()
+    assert {RADIATOR_DOMAIN_ID, BEM_BOUNDARY_DOMAIN_ID} <= domains.keys()
+    assert system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="beat_cpu",
+        stitch_exterior_meshes=False,
+    )
+    assert not system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="beat_cpu",
+        stitch_exterior_meshes=True,
+    )
+    assert not system_solve_module.supports_exterior_system_protocol(
+        system,
+        backend_id="bempp_cpu",
+        stitch_exterior_meshes=False,
+    )
+
+
+def test_system_worker_projects_exterior_radiation_impedance_to_live_result() -> None:
+    _fem, bem = inspect_system_meshes(_fixture_mesh_entries())
+    tags = read_surface_physical_names(Path(bem.file))
+    group_name, tag = next(iter(tags.items()))
+    system, channels = seed_exterior_system(
+        (bem,),
+        (RadiatorConfig(name=f"{bem.name}:{group_name}", mesh=bem.name, tag=tag, channel="main"),),
+    )
+    prepared = system_solve_module.prepare_system_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        component_channel_by_id=channels,
+        backend_id="beat_cpu",
+    )
+    point_count = prepared.horizontal_count + prepared.vertical_count
+    result = SystemFrequencyResult(
+        freq_hz=500.0,
+        excitation_port_ids=prepared.request.excitation_port_ids,
+        quantities=(
+            QuantityResult(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.ones((1, point_count), dtype=np.complex64),
+            ),
+            QuantityResult(
+                id=RADIATION_IMPEDANCE_ID,
+                quantity="radiation_impedance",
+                unit="Pa*s/m^3",
+                target_id=RADIATOR_DOMAIN_ID,
+                axes=("radiator",),
+                values=np.asarray([2.5 - 1.25j], dtype=np.complex64),
+            ),
+        ),
+    )
+
+    live = system_solve_module.SystemSolveWorker(prepared)._to_live_result(result)
+
+    assert live.impedance.tolist() == [[2.5, -1.25]]
 
 
 def test_saved_unused_boundary_is_presented_and_collected_as_rigid() -> None:
@@ -638,6 +855,12 @@ def test_electrodynamic_component_collection_uses_voltage_port_and_preserves_aut
     session = CoupledProductionBackend(bem_backend="cpu", persistent_worker=False).create_system_session(
         prepared.request
     )
+    assert [output.id for output in prepared.request.outputs] == [
+        "ui:exterior-pressure",
+        "mechanical:diaphragm-velocity",
+        "electrical:voice-coil-current",
+    ]
+    assert prepared.result_domains[-1].id == "components:electrodynamic-transducers"
     assert session.request.solver_options["transducer_reference_voltage_v"] == pytest.approx(2.83)
 
 
@@ -743,6 +966,29 @@ def test_build_identify_interfaces_writes_and_uses_a_conformed_bem_asset(tmp_pat
         )
 
 
+def test_build_identify_warns_when_ordered_seam_simplification_was_used(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    original_match = dialog._match_interface_pair
+    warnings = []
+
+    def marked_match(*args, **kwargs):
+        return replace(original_match(*args, **kwargs), seam_simplification_used=True)
+
+    monkeypatch.setattr(dialog, "_match_interface_pair", marked_match)
+    monkeypatch.setattr(
+        system_config_module.QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    dialog._identify_interfaces()
+
+    assert dialog.interfaces_table.item(0, 3).text() == "Built (inspect)"
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Inspect Simplified Interface"
+    assert "Visually inspect the conformed interface" in warnings[0][1]
+
+
 def test_configured_interface_dependencies_identify_the_bem_mesh_to_rebuild(tmp_path: Path) -> None:
     system = _configured_fixture_dialog(
         bem_filename="exterior.msh",
@@ -798,6 +1044,7 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
         freq_count=3,
         observation_distance_m=2.0,
         polar_angle_step_deg=90.0,
+        observation_planes=(new_observation_plane("Interior Slice"),),
     )
 
     assert prepared.polar_angle_deg.tolist() == [-180.0, -90.0, 0.0, 90.0, 180.0]
@@ -809,8 +1056,21 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     )
     assert prepared.request.solver_options["validation_diagnostics"] is False
     assert prepared.request.solver_options["cache_frequency_invariant"] is True
-    assert prepared.request.solver_options["static_condensation"] is False
+    assert prepared.request.solver_options["static_condensation"] is True
     assert prepared.request.solver_options["symmetry"] == "off"
+
+    compatibility_request = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(new_observation_plane("Interior Slice"),),
+        backend_id="beat_cpu_condensed",
+    )
+    assert compatibility_request.request.solver_options["static_condensation"] is True
+    assert compatibility_request.backend_id == "beat_cpu"
     interior = next(
         region for region in prepared.request.compiled_system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     )
@@ -820,6 +1080,103 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
     assert prepared.backend_id == "beat_cpu"
     points = np.asarray(prepared.request.outputs[0].options["points_m"])
     assert points.shape == (10, 3)
+    observation_domains = prepared.request.outputs[0].options["observation_domains"]
+    assert [domain["id"] for domain in observation_domains] == [
+        "observation:horizontal-polar",
+        "observation:vertical-polar",
+    ]
+    assert {domain.id for domain in prepared.result_domains} == {
+        "observation:horizontal-polar",
+        "observation:vertical-polar",
+        FEM_VOLUME_DOMAIN_ID,
+    }
+    fem_domain = next(domain for domain in prepared.result_domains if domain.id == FEM_VOLUME_DOMAIN_ID)
+    assert fem_domain.coordinates["points_m"].shape == (842, 3)
+    assert fem_domain.topology["tetrahedra"].shape == (2925, 4)
+    assert fem_domain.metadata["node_offsets"] == [0]
+    assert fem_domain.metadata["node_counts"] == [842]
+    fem_output = next(output for output in prepared.request.outputs if output.id == FEM_NODAL_PRESSURE_ID)
+    assert fem_output.quantity == "fem_nodal_pressure"
+    assert fem_output.target_ids == (FEM_VOLUME_DOMAIN_ID,)
+
+    raw_result = SystemFrequencyResult(
+        freq_hz=500.0,
+        excitation_port_ids=prepared.request.excitation_port_ids,
+        quantities=(
+            QuantityResult(
+                id="ui:exterior-pressure",
+                quantity="exterior_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.arange(10, dtype=np.float32).reshape(1, 10).astype(np.complex64),
+            ),
+        ),
+    )
+    worker = CoupledSolveWorker(prepared)
+    canonical = worker._canonical_result(raw_result)
+    canonical_by_id = {quantity.id: quantity for quantity in canonical.quantities}
+
+    assert canonical_by_id["acoustic:pressure:horizontal-polar"].target_id == ("observation:horizontal-polar")
+    assert canonical_by_id["acoustic:pressure:horizontal-polar"].values.tolist() == [[0.0, 1.0, 2.0, 3.0, 4.0]]
+    assert canonical_by_id["acoustic:pressure:vertical-polar"].values.tolist() == [[5.0, 6.0, 7.0, 8.0, 9.0]]
+    assert worker._to_live_result(raw_result).horizontal_pressure.shape == (1, 5)
+
+
+def test_coupled_ui_request_retains_bem_traces_for_exterior_analysis() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    exterior_plane = replace(
+        new_observation_plane("Exterior Field"),
+        plane_type=ObservationPlaneType.EXTERIOR,
+    )
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(exterior_plane,),
+    )
+
+    outputs = {output.id: output for output in prepared.request.outputs}
+    domains = {domain.id: domain for domain in prepared.result_domains}
+    assert outputs[BEM_BOUNDARY_PRESSURE_ID].quantity == "bem_boundary_pressure"
+    assert outputs[BEM_BOUNDARY_PRESSURE_ID].target_ids == (BEM_BOUNDARY_DOMAIN_ID,)
+    assert outputs[BEM_BOUNDARY_NEUMANN_ID].quantity == "bem_boundary_neumann"
+    assert outputs[BEM_BOUNDARY_NEUMANN_ID].target_ids == (BEM_BOUNDARY_DOMAIN_ID,)
+    assert FEM_NODAL_PRESSURE_ID not in outputs
+
+    domain = domains[BEM_BOUNDARY_DOMAIN_ID]
+    node_count = domain.coordinates["points_m"].shape[0]
+    face_count = domain.topology["triangles"].shape[0]
+    assert node_count == sum(domain.metadata["node_counts"])
+    assert face_count == sum(domain.metadata["face_counts"])
+    assert domain.metadata["pressure_space"] == "P1"
+    assert domain.metadata["normal_derivative_space"] == "DP0"
+
+
+def test_combined_plane_requests_both_fem_and_bem_spatial_fields() -> None:
+    system = _configured_fixture_dialog().physical_system()
+    combined_plane = replace(
+        new_observation_plane("Combined Field"),
+        plane_type=ObservationPlaneType.COMBINED,
+    )
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=1000.0,
+        freq_count=3,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        observation_planes=(combined_plane,),
+    )
+
+    output_ids = {output.id for output in prepared.request.outputs}
+    domain_ids = {domain.id for domain in prepared.result_domains}
+    assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID, FEM_NODAL_PRESSURE_ID} <= output_ids
+    assert {BEM_BOUNDARY_DOMAIN_ID, FEM_VOLUME_DOMAIN_ID} <= domain_ids
 
 
 def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:
@@ -944,7 +1301,7 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
             request.status_callback("initializing coupled backend detail")
             return Session(request)
 
-    monkeypatch.setattr(system_solve_module, "CoupledProductionBackend", Backend)
+    monkeypatch.setattr(system_solve_module, "PhysicalSystemProductionBackend", Backend)
     worker = CoupledSolveWorker(prepared)
     statuses = []
     worker.status.connect(statuses.append)
@@ -955,6 +1312,42 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
     assert statuses == []
     assert "initializing coupled backend detail" in caplog.text
     assert "assembling coupled backend detail" in caplog.text
+
+
+def test_coupled_worker_selects_rocm_backend(monkeypatch) -> None:
+    system = _configured_fixture_dialog().physical_system()
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        backend_id="beat_rocm",
+    )
+    backend_options = []
+
+    class Session:
+        def solve_stream(self, *, stop_requested=None):
+            del stop_requested
+            return iter(())
+
+        def stop(self) -> None:
+            pass
+
+    class Backend:
+        def __init__(self, **kwargs):
+            backend_options.append(kwargs)
+
+        def create_system_session(self, request):
+            del request
+            return Session()
+
+    monkeypatch.setattr(system_solve_module, "PhysicalSystemProductionBackend", Backend)
+
+    CoupledSolveWorker(prepared).run()
+
+    assert backend_options[0]["bem_backend"] == "rocm"
 
 
 @pytest.mark.skipif(
@@ -1016,6 +1409,25 @@ def test_coupled_ui_request_routes_cuda_backend() -> None:
     )
 
     assert prepared.backend_id == "beat_cuda"
+    assert prepared.request.solver_options["static_condensation"] is True
+    assert "precision" not in prepared.request.solver_options
+    assert "bem_backend" not in prepared.request.solver_options
+
+
+def test_coupled_ui_request_routes_rocm_backend_with_hybrid_condensation() -> None:
+    system = _configured_fixture_dialog().physical_system()
+
+    prepared = prepare_coupled_ui_solve(
+        system,
+        freq_min_hz=500.0,
+        freq_max_hz=500.0,
+        freq_count=1,
+        observation_distance_m=2.0,
+        polar_angle_step_deg=90.0,
+        backend_id="beat_rocm",
+    )
+
+    assert prepared.backend_id == "beat_rocm"
     assert prepared.request.solver_options["static_condensation"] is True
     assert "precision" not in prepared.request.solver_options
     assert "bem_backend" not in prepared.request.solver_options

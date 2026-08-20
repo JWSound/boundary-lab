@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPixmap
 
@@ -35,3 +37,25 @@ def test_splash_status_is_drawn_inside_transparent_padded_artwork(qapp) -> None:
         splash.close()
         splash.deleteLater()
         qapp.processEvents()
+
+
+def test_runtime_log_remains_open_after_startup_and_records_events(qapp, tmp_path, monkeypatch) -> None:
+    import blab.gui as gui_module
+
+    log_path = tmp_path / "session.log"
+    monkeypatch.setattr(gui_module, "_startup_log_path", lambda: log_path)
+    reporter = gui_module.StartupReporter(qapp, None)
+    try:
+        reporter.finish_startup()
+        assert not reporter._log_file.closed
+        logging.getLogger("blab.runtime").info("Exterior field regression breadcrumb")
+        reporter._runtime_handler.flush()
+        contents = log_path.read_text(encoding="utf-8")
+        assert "Startup completed" in contents
+        assert "Exterior field regression breadcrumb" in contents
+        assert "session ended" not in contents
+    finally:
+        reporter.close()
+
+    assert reporter._log_file.closed
+    assert "Boundary Lab GUI session ended" in log_path.read_text(encoding="utf-8")

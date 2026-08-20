@@ -1,6 +1,7 @@
 import os
 import sys
 from dataclasses import replace
+from io import StringIO
 from pathlib import Path
 
 import meshio
@@ -8,6 +9,7 @@ import numpy as np
 import pytest
 
 from blab.acoustic_materials import miki_wall_impedance_parameters
+from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.interface_conform import conform_bem_interface_to_fem
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import (
@@ -28,8 +30,11 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
+from blab.solvers.base import SolveRequest
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    BeatEngineCpuBackend,
     shutdown_beat_engine_workers,
 )
 from blab.solvers.coupled_backend import (
@@ -162,6 +167,7 @@ def test_coupled_reference_backend_exposes_system_metadata_without_starting_juli
     assert session.metadata.available_quantity_ids == ("output:fem",)
     assert session.request.solver_options["precision"] == "float64"
     assert session.request.solver_options["bem_backend"] == "cpu"
+    assert session.request.solver_options["static_condensation"] is False
 
 
 def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> None:
@@ -179,9 +185,92 @@ def test_coupled_production_backend_forces_fp32_and_selects_cuda_project() -> No
 
     assert session.request.solver_options["precision"] == "float32"
     assert session.request.solver_options["bem_backend"] == "cuda"
+    assert session.request.solver_options["static_condensation"] is True
     assert session.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
     assert session.julia_threads == 4
-    assert CoupledProductionBackend(bem_backend="cpu").create_system_session(request).julia_threads == 8
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.julia_threads == 8
+    assert cpu_session.request.solver_options["static_condensation"] is True
+
+
+def test_coupled_production_backend_keeps_full_matrix_diagnostics_monolithic() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+        solver_options={"validation_diagnostics": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert session.request.solver_options["static_condensation"] is False
+
+
+def test_coupled_production_backend_selects_rocm_project() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+        solver_options={"static_condensation": True},
+    )
+
+    session = CoupledProductionBackend(bem_backend="rocm").create_system_session(request)
+
+    assert session.request.solver_options["precision"] == "float32"
+    assert session.request.solver_options["bem_backend"] == "rocm"
+    assert session.request.solver_options["static_condensation"] is True
+    assert session.julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
+    assert session.julia_threads == 8
+
+
+def test_coupled_nonpersistent_rocm_worker_uses_shared_julia_environment(monkeypatch) -> None:
+    import blab.solvers.coupled_backend as backend_module
+
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=(OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),),
+    )
+    environment_calls = []
+    process_calls = []
+
+    class Process:
+        def __init__(self):
+            self.stdin = StringIO()
+            self.stdout = StringIO()
+            self.stderr = StringIO()
+
+        def wait(self, timeout=None):
+            del timeout
+            return 0
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    def process_environment(threads, project):
+        environment_calls.append((threads, project))
+        return {"ROCM_PATH": "test-rocm"}
+
+    def popen(command, **kwargs):
+        process_calls.append((command, kwargs))
+        return Process()
+
+    monkeypatch.setattr(backend_module, "_julia_process_env", process_environment)
+    monkeypatch.setattr(backend_module.subprocess, "Popen", popen)
+    session = CoupledProductionBackend(bem_backend="rocm", persistent_worker=False).create_system_session(request)
+
+    assert list(session.solve_stream()) == []
+    assert environment_calls == [(8, DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve())]
+    assert process_calls[0][1]["env"] == {"ROCM_PATH": "test-rocm"}
 
 
 def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
@@ -228,6 +317,29 @@ def test_coupled_backend_accepts_disconnected_exterior_mesh_resources() -> None:
         region for region in session.request.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
     )
     assert exterior.mesh_ids == ("mesh:bem", "mesh:bem-phase-plug")
+
+
+def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
+    compiled = PhysicalSystemCompiler().compile(_mixed_prescribed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator", "excitation:exterior-radiator"),
+    )
+
+    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    exterior_component = next(
+        component
+        for component in session.request.compiled_system.components
+        if component.id == "component:exterior-radiator"
+    )
+    exterior_boundary = next(
+        boundary for boundary in session.request.compiled_system.boundaries if boundary.id == "boundary:exterior"
+    )
+    assert exterior_component.boundary_ids == (exterior_boundary.id,)
+    assert exterior_component.parameters["boundary_motion_weights"][exterior_boundary.id] == pytest.approx(0.5)
+    assert exterior_boundary.kind == BoundaryKind.MOVING
 
 
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
@@ -395,10 +507,28 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     session = CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
 
     assert session.request.solver_options["static_condensation"] is True
+    cpu_session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+    assert cpu_session.request.solver_options["static_condensation"] is True
     assert compiled.excitation_ports[0].kind == ExcitationPortKind.VOLTAGE
     assert DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V == pytest.approx(2.83)
     assumptions = {item.statement for item in compiled.assumptions}
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
+
+
+def test_coupled_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
+    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        solver_options={"static_condensation": True, "validation_diagnostics": True},
+    )
+
+    with pytest.raises(ValueError, match="static condensation cannot be combined"):
+        CoupledProductionBackend(bem_backend="cuda").create_system_session(request)
+
+    with pytest.raises(ValueError, match="static condensation cannot be combined"):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
 
 
 @pytest.mark.parametrize(
@@ -574,6 +704,7 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
         outputs=(
             OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
             OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
             OutputRequest(id="output:interface", quantity="interface_normal_derivative"),
             OutputRequest(
                 id="output:field",
@@ -594,6 +725,9 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     quantities = {quantity.id: quantity for quantity in result.quantities}
     assert quantities["output:fem"].values.shape == (1, 842)
     assert quantities["output:bem"].values.shape == (1, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (1, 2424)
+    assert quantities["output:bem-neumann"].unit == "Pa/m"
+    assert quantities["output:bem-neumann"].axes == ("excitation", "bem_face")
     assert quantities["output:interface"].values.shape == (1, 106)
     assert quantities["output:field"].values.shape == (1, 1)
     assert quantities["output:fem"].values.dtype == np.complex128
@@ -601,6 +735,137 @@ def test_coupled_reference_backend_solves_fixture_and_returns_basis_quantities()
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the mixed prescribed-source integration.",
+)
+def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources() -> None:
+    compiled = PhysicalSystemCompiler().compile(_mixed_prescribed_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator", "excitation:exterior-radiator"),
+        outputs=(
+            OutputRequest(id="output:fem", quantity="fem_nodal_pressure"),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+        ),
+        solver_options={"quadrature_order": 1, "singular_order": 1},
+    )
+
+    (result,) = tuple(
+        CoupledReferenceBackend(
+            julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
+            persistent_worker=False,
+        )
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert result.excitation_port_ids == request.excitation_port_ids
+    assert quantities["output:fem"].values.shape == (2, 842)
+    assert quantities["output:bem"].values.shape == (2, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (2, 2424)
+    assert quantities["output:field"].values.shape == (2, 1)
+    assert np.all(np.isfinite(quantities["output:field"].values))
+    assert np.linalg.norm(quantities["output:bem-neumann"].values[1]) > 0.0
+    assert result.diagnostics["relative_residual"] < 1e-8
+    assert result.diagnostics["pressure_continuity_error"] < 1e-8
+    assert result.diagnostics["flux_conservation_error"] < 1e-10
+    assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run the Julia exterior-system integration.",
+)
+def test_system_backend_solves_exterior_fixture_and_returns_retained_bem_traces() -> None:
+    compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:exterior-radiator",),
+        outputs=(
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2]]},
+            ),
+            OutputRequest(id="output:bem", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:bem-neumann", quantity="bem_boundary_neumann"),
+            OutputRequest(id="output:impedance", quantity="radiation_impedance"),
+        ),
+        solver_options={"quadrature_order": 4, "singular_order": 4},
+    )
+    results = list(
+        CoupledReferenceBackend(julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"))
+        .create_system_session(request)
+        .solve_stream()
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    quantities = {quantity.id: quantity for quantity in result.quantities}
+    assert result.excitation_port_ids == request.excitation_port_ids
+    assert quantities["output:field"].values.shape == (1, 1)
+    assert quantities["output:bem"].values.shape == (1, 1214)
+    assert quantities["output:bem-neumann"].values.shape == (1, 2424)
+    assert quantities["output:impedance"].values.shape == (1,)
+    assert np.all(np.isfinite(quantities["output:field"].values))
+    assert np.all(np.isfinite(quantities["output:impedance"].values))
+    assert result.diagnostics["bounded_region_count"] == 0
+    assert result.diagnostics["formulation"] == "exterior_burton_miller_neumann"
+
+    radiator_boundary = next(
+        boundary for boundary in compiled.boundaries if boundary.id == "boundary:exterior-radiator"
+    )
+    legacy_config = SimulationConfig(
+        mesh_file=str(BEM_FIXTURE),
+        meshes=(
+            MeshConfig(
+                name="Exterior boundary",
+                file=str(BEM_FIXTURE),
+                scale_factor=0.001,
+            ),
+        ),
+        radiators=(
+            RadiatorConfig(
+                name="Exterior boundary:Interface",
+                mesh="Exterior boundary",
+                tag=radiator_boundary.group.tag,
+                channel="main",
+            ),
+        ),
+        channels=(ChannelConfig(name="main"),),
+        distance=0.2,
+        step_size=180.0,
+        flat_target_normalization_enabled=False,
+    )
+    legacy_result = next(
+        BeatEngineCpuBackend(julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"))
+        .create_session(SolveRequest(legacy_config, np.asarray([500.0], dtype=np.float32)))
+        .solve_stream()
+    )
+    np.testing.assert_allclose(
+        quantities["output:field"].values[0, 0],
+        legacy_result.horizontal_pressure[0, 1],
+        rtol=2e-3,
+        atol=2e-4,
+    )
+    np.testing.assert_allclose(
+        quantities["output:impedance"].values[0],
+        complex(*legacy_result.impedance[0]),
+        rtol=2e-3,
+        atol=2e-4,
+    )
 
 
 @pytest.mark.skipif(
@@ -710,6 +975,61 @@ def test_coupled_reference_backend_solves_sealed_zero_interface_fixture() -> Non
 
 
 @pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_COUPLED_REFERENCE") != "1",
+    reason="Set BLAB_RUN_COUPLED_REFERENCE=1 to run CPU condensed/monolithic parity.",
+)
+def test_coupled_cpu_condensed_matches_cpu_monolithic() -> None:
+    compiled = PhysicalSystemCompiler().compile(_bidirectional_electrodynamic_fixture_system())
+    outputs = (
+        OutputRequest(id="output:velocity", quantity="diaphragm_velocity"),
+        OutputRequest(id="output:current", quantity="voice_coil_current"),
+        OutputRequest(
+            id="output:field",
+            quantity="exterior_pressure",
+            options={"points_m": [[0.0, 0.0, 0.2]]},
+        ),
+    )
+    base_options = {
+        "quadrature_order": 1,
+        "singular_order": 1,
+        "validation_diagnostics": False,
+    }
+    monolithic_request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+        outputs=outputs,
+        solver_options={**base_options, "static_condensation": False},
+    )
+    condensed_request = replace(
+        monolithic_request,
+        solver_options={**base_options, "static_condensation": True},
+    )
+    julia_executable = os.environ.get("BLAB_JULIA_EXE", "julia")
+    backend = CoupledReferenceBackend(
+        julia_executable=julia_executable,
+        persistent_worker=False,
+    )
+
+    (monolithic,) = tuple(backend.create_system_session(monolithic_request).solve_stream())
+    (condensed,) = tuple(backend.create_system_session(condensed_request).solve_stream())
+
+    reference = {quantity.id: quantity.values for quantity in monolithic.quantities}
+    candidate = {quantity.id: quantity.values for quantity in condensed.quantities}
+    for quantity_id, values in reference.items():
+        scale = max(float(np.linalg.norm(values)), np.finfo(float).eps)
+        relative_error = float(np.linalg.norm(candidate[quantity_id] - values)) / scale
+        assert relative_error < 1e-9, (quantity_id, relative_error)
+
+    assert monolithic.diagnostics["formulation"] == "monolithic"
+    assert condensed.diagnostics["formulation"] == "fem_interface_condensed"
+    assert condensed.diagnostics["linear_backend"] == "cpu"
+    assert condensed.diagnostics["linear_solver"] == "cpu_umfpack_schur_plus_dense_lu"
+    assert condensed.diagnostics["fem_interior_residual"] < 1e-9
+    assert condensed.diagnostics["solved_system_order"] < condensed.diagnostics["full_system_order"]
+
+
+@pytest.mark.skipif(
     os.environ.get("BLAB_RUN_COUPLED_CUDA") != "1",
     reason="Set BLAB_RUN_COUPLED_CUDA=1 to run electrodynamic CPU/CUDA parity.",
 )
@@ -747,7 +1067,11 @@ def test_coupled_electrodynamic_cuda_matches_cpu() -> None:
         persistent_worker=True,
     )
 
-    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    cpu_request = replace(
+        request,
+        solver_options={**request.solver_options, "static_condensation": False},
+    )
+    (cpu_result,) = tuple(cpu_backend.create_system_session(cpu_request).solve_stream())
     (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
 
     cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}
@@ -807,7 +1131,11 @@ def test_coupled_sealed_zero_interface_cuda_matches_cpu() -> None:
         persistent_worker=True,
     )
 
-    (cpu_result,) = tuple(cpu_backend.create_system_session(request).solve_stream())
+    cpu_request = replace(
+        request,
+        solver_options={**request.solver_options, "static_condensation": False},
+    )
+    (cpu_result,) = tuple(cpu_backend.create_system_session(cpu_request).solve_stream())
     (cuda_result,) = tuple(cuda_backend.create_system_session(request).solve_stream())
 
     cpu_quantities = {quantity.id: quantity.values for quantity in cpu_result.quantities}
@@ -1525,6 +1853,91 @@ def _fixture_system() -> PhysicalSystem:
                 id="excitation:radiator",
                 name="Radiator unit normal velocity",
                 component_id="component:radiator",
+                kind=ExcitationPortKind.NORMAL_VELOCITY,
+            ),
+        ),
+    )
+
+
+def _mixed_prescribed_fixture_system() -> PhysicalSystem:
+    system = _fixture_system()
+    exterior_component = PhysicalComponent(
+        id="component:exterior-radiator",
+        name="Exterior ideal radiator",
+        kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+        boundary_ids=("boundary:exterior",),
+        parameters={
+            "motion_profile": "uniform",
+            "boundary_motion_weights": {"boundary:exterior": 0.5},
+        },
+    )
+    exterior_port = ExcitationPort(
+        id="excitation:exterior-radiator",
+        name="Exterior unit normal velocity",
+        component_id=exterior_component.id,
+        kind=ExcitationPortKind.NORMAL_VELOCITY,
+    )
+    return replace(
+        system,
+        boundaries=tuple(
+            replace(boundary, kind=BoundaryKind.MOVING) if boundary.id == "boundary:exterior" else boundary
+            for boundary in system.boundaries
+        ),
+        components=(*system.components, exterior_component),
+        excitation_ports=(*system.excitation_ports, exterior_port),
+    )
+
+
+def _exterior_fixture_system() -> PhysicalSystem:
+    component = PhysicalComponent(
+        id="component:exterior-radiator",
+        name="Exterior radiator",
+        kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+        boundary_ids=("boundary:exterior-radiator",),
+        parameters={"motion_profile": "uniform", "boundary_motion_weights": {"boundary:exterior-radiator": 1.0}},
+    )
+    return PhysicalSystem(
+        id="system:exterior-fixture",
+        name="Exterior BEM fixture",
+        meshes=(
+            MeshResource(
+                id="mesh:bem",
+                name="Exterior boundary",
+                file=str(BEM_FIXTURE),
+                purpose=MeshPurpose.BEM_SURFACE,
+                scale_to_m=0.001,
+            ),
+        ),
+        regions=(
+            AcousticRegion(
+                id="region:exterior",
+                name="Exterior air",
+                kind=AcousticRegionKind.UNBOUNDED_AIR,
+                mesh_ids=("mesh:bem",),
+            ),
+        ),
+        boundaries=(
+            Boundary(
+                id="boundary:exterior-wall",
+                name="Exterior box",
+                region_id="region:exterior",
+                group=PhysicalGroupRef(mesh_id="mesh:bem", dimension=2, name="ExteriorBox"),
+                kind=BoundaryKind.RIGID,
+            ),
+            Boundary(
+                id="boundary:exterior-radiator",
+                name="Radiator",
+                region_id="region:exterior",
+                group=PhysicalGroupRef(mesh_id="mesh:bem", dimension=2, name="Interface"),
+                kind=BoundaryKind.MOVING,
+            ),
+        ),
+        components=(component,),
+        excitation_ports=(
+            ExcitationPort(
+                id="excitation:exterior-radiator",
+                name="Exterior unit velocity",
+                component_id=component.id,
                 kind=ExcitationPortKind.NORMAL_VELOCITY,
             ),
         ),

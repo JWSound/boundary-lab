@@ -119,6 +119,11 @@ class ViewBuilderMixin:
         self.export_on_axis_data_action.triggered.connect(self.export_on_axis_data)
         file_menu.addAction(self.export_on_axis_data_action)
 
+        self.export_speaker_package_action = QAction("Export Speaker Package...", self)
+        self.export_speaker_package_action.setToolTip("Configure, solve, and export a .blabsp speaker package")
+        self.export_speaker_package_action.triggered.connect(self.export_speaker_package)
+        file_menu.addAction(self.export_speaker_package_action)
+
         view_menu = self.menuBar().addMenu("View")
         self.balloon_plot_action = QAction("Balloon Plot", self)
         self.balloon_plot_action.setEnabled(False)
@@ -227,19 +232,22 @@ class ViewBuilderMixin:
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
         previous_plot_dock = None
         for entry in self.plot_entries:
+            tool_actions = [
+                action
+                for action in (
+                    self.capture_contour_actions.get(entry.plot_id),
+                    self.clear_contour_actions.get(entry.plot_id),
+                )
+                if action is not None
+            ]
+            if entry.plot_id == "on_axis_frequency_response":
+                tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,
                 entry.widget,
                 save_action=self.export_plot_actions.get(entry.plot_id),
-                tool_actions=tuple(
-                    action
-                    for action in (
-                        self.capture_contour_actions.get(entry.plot_id),
-                        self.clear_contour_actions.get(entry.plot_id),
-                    )
-                    if action is not None
-                ),
+                tool_actions=tuple(tool_actions),
             )
             self.plot_docks[entry.plot_id] = dock
             self.workspace.addDockWidget(Qt.RightDockWidgetArea, dock)
@@ -419,6 +427,7 @@ class ViewBuilderMixin:
         self.mesh_config_button.setEnabled(controls.mesh_config)
         self.system_config_button.setEnabled(controls.system_config)
         self.channel_config_button.setEnabled(controls.channel_config)
+        self.export_speaker_package_action.setEnabled(controls.speaker_package)
 
     def set_workflow_phase(self, phase: OperationPhase, *, cancel_available: bool = True) -> None:
         """Convenience for controllers: map a phase and apply it in one step."""
@@ -442,12 +451,19 @@ class ViewBuilderMixin:
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)
+        self.export_speaker_package_action.setEnabled(available and self.solve_button.isEnabled())
 
     def clear_mesh_preview(self) -> None:
         self.preview.clear()
+        controller = getattr(self, "observation_plane_controller", None)
+        if controller is not None:
+            controller.sync_view()
 
     def show_mesh_preview(self, meshes, **options) -> None:
         self.preview.load_mesh_configs(meshes, **options)
+        controller = getattr(self, "observation_plane_controller", None)
+        if controller is not None:
+            controller.sync_view()
 
     def set_preview_region_mode(self, mode: str) -> None:
         self.preview.set_region_visibility_mode(mode)

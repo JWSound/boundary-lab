@@ -33,6 +33,7 @@ class StateSyncMixin:
         self.geometry_controller.finished.connect(self.geometry_workflow._on_geometry_generation_finished)
         self.solve_controller.initialized.connect(self.solve_workflow._on_solver_initialized)
         self.solve_controller.result_ready.connect(self.solve_workflow._on_frequency_result)
+        self.solve_controller.system_result_ready.connect(self.solve_workflow._on_system_frequency_result)
         self.solve_controller.status.connect(self.show_status)
         self.solve_controller.failed.connect(self.solve_workflow._on_solve_failed)
         self.solve_controller.finished.connect(self.solve_workflow._on_solve_finished)

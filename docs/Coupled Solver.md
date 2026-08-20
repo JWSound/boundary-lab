@@ -16,26 +16,24 @@ details, see [Inputs and Outputs](Inputs%20and%20Outputs.md).
 
 ## Production paths at a glance
 
-Coupled application solves require **BEAT Engine (CPU)** or
-**BEAT Engine (CUDA)**. Both use `Float32/ComplexF32`, solve all configured
-excitation ports as independent reference bases, and stream one result per
-frequency.
+Coupled application solves require **BEAT Engine (CPU)**,
+**BEAT Engine (Nvidia CUDA)**, or **BEAT Engine (AMD ROCm)**. They use
+`Float32/ComplexF32`, solve all configured excitation ports as independent
+reference bases, and stream one result per frequency.
 
-| | BEAT Engine CPU | BEAT Engine CUDA |
-|---|---|---|
-| FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU |
-| BEM operators | Assembled on CPU | Assembled on GPU |
-| Coupled system | Full monolithic dense system on CPU | Schur-condensed acoustic/electromechanical system on GPU |
-| Factorization | CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic |
-| Exterior field | Evaluated on CPU | Evaluated on GPU |
-| Default Julia threads | 8 | 4 |
+| | BEAT Engine CPU | BEAT Engine Nvidia CUDA | BEAT Engine AMD ROCm |
+|---|---|---|---|
+| FEM matrices | Sparse assembly on CPU | Sparse assembly on CPU, copied to GPU | Sparse assembly and interior factorization on CPU |
+| BEM operators | Assembled on CPU | Assembled on GPU | Assembled on GPU |
+| Coupled system | Schur-condensed acoustic/electromechanical system on CPU | Schur-condensed acoustic/electromechanical system on GPU | Schur-condensed retained system uploaded to GPU |
+| Factorization | UMFPACK interior Schur complement plus CPU dense LU | cuDSS plus GPU dense LU when condensed; GPU dense LU when monolithic | UMFPACK interior Schur complement plus rocSOLVER dense LU |
+| Exterior field | Evaluated on CPU | Evaluated on GPU | Evaluated on GPU |
+| Default Julia threads | 8 | 4 | 4 |
 
-CUDA therefore accelerates more than BEM assembly. FEM volume-interior
-unknowns are eliminated with an exact Schur complement, the reduced coupled
-matrix is assembled and factored on the GPU, and eliminated FEM pressure is
-reconstructed after the coupled solve. Electrodynamic models retain the FEM
-nodes on their diaphragm surfaces in addition to the port-interface nodes, so
-the condensed coupling remains exact.
+Production backends eliminate FEM volume-interior unknowns with an exact Schur
+complement and reconstruct eliminated FEM pressure after the coupled solve.
+Electrodynamic models retain the FEM nodes on their diaphragm surfaces in
+addition to the port-interface nodes, so the condensed coupling remains exact.
 
 A separate backend-only **reference path** uses `Float64/ComplexF64` on the CPU.
 It retains the full monolithic matrix and enables additional residual and
@@ -77,13 +75,14 @@ still participating in the same acoustic boundary-integral solve.
 Every tagged surface belonging to an active region must have one boundary
 assignment. The System editor offers only `rigid`, `moving`, and `interface`;
 new surfaces and legacy `unused` assignments default to `rigid`. The coupled
-backend supports those same three assignments. A source used by an ideal
-prescribed-velocity component must act on a moving FEM boundary. An
-electrodynamic component may couple the same rigid-body degree of freedom to
-moving boundaries in several FEM regions, as well as to BEM moving boundaries.
-The independently meshed front and rear diaphragm surfaces do not need a
-node-to-node map because they communicate through the shared mechanical degree
-of freedom.
+backend supports those same three assignments. An ideal prescribed-velocity
+component may drive one or more moving boundaries in bounded FEM regions, the
+exterior BEM region, or both; per-boundary motion weights are applied to the
+component's canonical velocity. An electrodynamic component may likewise
+couple the same rigid-body degree of freedom to moving boundaries in several
+FEM regions, as well as to BEM moving boundaries. The independently meshed
+front and rear diaphragm surfaces do not need a node-to-node map because they
+communicate through the shared mechanical degree of freedom.
 
 A sealed enclosure therefore has no FEM-BEM acoustic interface: its rear
 diaphragm is a moving FEM boundary, its front diaphragm is a moving BEM
@@ -107,8 +106,8 @@ derivative. Differing fluids are rejected.
 2. In **System > Regions**, create a bounded-air region for each FEM chamber
    and one unbounded-air region. Select each active FEM volume group.
 3. In **Boundaries**, classify every active physical surface. Use `moving` for
-   prescribed FEM radiators, `interface` for both sides of the opening, and
-   `rigid` for the remaining walls.
+   prescribed FEM or BEM radiators, `interface` for both sides of the opening,
+   and `rigid` for the remaining walls.
 4. In **Interfaces**, use **Build/Identify Interfaces** to create and validate
    every FEM-to-BEM port connection.
 5. In **Components**, attach prescribed-velocity or electrodynamic components
@@ -116,8 +115,9 @@ derivative. Differing fluids are rejected.
    offsets and transducer parameters, and assign application channels.
 6. Set **FEM Bulk Loss Factor** on any bounded region that requires volume
    damping, and optionally configure **Wall Impedance** on bounded rigid
-   surfaces. Select **BEAT Engine (CPU)** or **BEAT Engine (CUDA)** in
-   Preferences, then choose full, X-half, or XY-quarter symmetry in **Meshes**.
+   surfaces. Select **BEAT Engine (CPU)**, **BEAT Engine (Nvidia CUDA)**, or
+   **BEAT Engine (AMD ROCm)** in Preferences, then choose full, X-half, or
+   XY-quarter symmetry in **Meshes**.
 7. Run the normal application solve.
 
 The component editor accepts direct Re, Le, Bl, Mmd, Cms, and Rms values for an
@@ -226,15 +226,17 @@ Only tetrahedra in the selected physical volume groups are retained. Each
 domain's vertices and facets are compacted, and boundary tags are remapped into
 a collision-free aggregate namespace before assembly.
 
-A prescribed normal velocity \(v_n\) on a moving FEM surface is converted to
-the implemented pressure normal derivative
+A prescribed normal velocity \(v_n\) on a moving FEM or BEM surface is
+converted to the implemented pressure normal derivative
 
 $$
 q_v=i\rho\omega v_n
 $$
 
-and integrated against the triangular P1 boundary basis. Each excitation port
-uses \(v_n=1\ \mathrm{m/s}\) as its canonical basis input.
+and integrated against the triangular P1 boundary basis for FEM surfaces or
+inserted directly into the facewise DP0 Neumann data for BEM surfaces. Each
+excitation port uses \(v_n=1\ \mathrm{m/s}\) as its canonical basis input;
+per-surface velocity weights scale that basis before assembly.
 
 ### BEM region
 
@@ -385,8 +387,9 @@ backward sparse solve reconstructs every FEM domain's pressure. Static
 condensation changes the work and memory requirements, not the mathematical
 solution.
 
-CPU production and FP64 reference solves remain monolithic. CUDA
-electrodynamic solves use the retained-surface condensed formulation.
+CPU, CUDA, and ROCm production solves use the retained-surface condensed
+formulation. The FP64 reference path and explicit full-matrix diagnostic runs
+remain monolithic.
 
 The matrix is assembled and factored once per frequency. All requested
 excitation ports are then solved together as multiple right-hand sides, so an
@@ -484,15 +487,31 @@ specialized callers:
 |---|---:|---|
 | `fem_nodal_pressure` | Pa | excitation, FEM node |
 | `bem_boundary_pressure` | Pa | excitation, BEM node |
+| `bem_boundary_neumann` | Pa/m | excitation, BEM face |
 | `interface_normal_derivative` | Pa/m | excitation, interface node |
 | `diaphragm_velocity` | m/s | excitation, transducer |
 | `voice_coil_current` | A | excitation, transducer |
 | `exterior_pressure` | Pa | excitation, observation |
 
-The main application path currently requests only `exterior_pressure` and does
-not yet project transducer velocity, current, or derived electrical impedance
-into its plots. Impedance fields in the legacy live-result shape remain
+The main application path always requests `exterior_pressure`. For systems
+containing electrodynamic transducers it also retains `diaphragm_velocity` and
+`voice_coil_current`, from which diaphragm excursion and electrical input
+impedance can be derived. These raw complex quantities are assembled into the
+in-memory solved-system model even though dedicated reporting plots have not
+yet been added. Impedance fields in the legacy live-plot shape remain
 unavailable.
+
+When an exterior or combined observation plane is declared, the application
+also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.
+Together with the frequency-invariant boundary mesh domain, these traces are
+sufficient to evaluate additional exterior field points after the solve
+without retaining the coupled matrices or factorization.
+
+The solved-system model keeps the original excitation-port basis and stores
+frequency-invariant observation coordinates separately from the quantity
+arrays. Channel grouping and plot normalization remain presentation steps, so
+they do not destroy component-level physical results. Solved-system data is
+currently session-only and is not written into `.blab.json` project files.
 
 ## Diagnostics
 
@@ -538,10 +557,10 @@ The frequency-dependent FEM Helmholtz matrix, BEM operators, coupled blocks, and
 factorizations are rebuilt at every frequency.
 
 The solver is still limited by dense BEM and coupled algebra. BEM assembly grows
-approximately quadratically with boundary size. CPU monolithic LU grows
-approximately cubically with \(N_F+N_B+N_I+2N_T\). CUDA condensation removes FEM
+approximately quadratically with boundary size. Static condensation removes FEM
 interior nodes from the dense block, but the remaining interface, diaphragm,
-BEM, and transducer system is still dense and requires substantial GPU memory.
+BEM, and transducer system is still dense. Its factorization grows approximately
+cubically with the reduced order and requires substantial host or GPU memory.
 Symmetry can reduce these costs dramatically for both prescribed-velocity and
 electrodynamic models. The current backend is not an iterative or large-scale
 fast-multipole solver.

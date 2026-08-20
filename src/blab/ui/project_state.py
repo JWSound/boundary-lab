@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+from blab.observation_planes import ObservationPlane
 from blab.physical_model import PhysicalSystem
 
 DEFAULT_DESIGN_NAME = "waveguide"
@@ -129,6 +130,7 @@ class ProjectDocument:
     project_preferences: ProjectPreferencesState | None = None
     physical_system: PhysicalSystem | None = None
     component_channel_by_id: dict[str, str] = field(default_factory=dict)
+    observation_planes: tuple[ObservationPlane, ...] = ()
 
 
 def new_generator_document(
