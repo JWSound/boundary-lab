@@ -27,6 +27,7 @@ from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
 )
+from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.main_window.backend_health import BackendHealthController
 from blab.ui.main_window.channels import ChannelsMixin
@@ -420,6 +421,7 @@ class MainWindow(
         self.vertical_plot = IsobarCanvas("Vertical Isobar")
         self.impedance_plot = ImpedanceCanvas()
         self.on_axis_plot = OnAxisResponseCanvas()
+        self.excursion_plot = ExcursionCanvas()
         self.spinorama_plot = SpinoramaCanvas()
         self.plot_entries = (
             PlotEntry(
@@ -449,6 +451,13 @@ class MainWindow(
                 "on_axis_frequency_response.png",
                 self.on_axis_plot,
                 self._update_on_axis_plot,
+            ),
+            PlotEntry(
+                "transducer_excursion",
+                "Transducer Excursion",
+                "transducer_excursion.png",
+                self.excursion_plot,
+                self._update_excursion_plot,
             ),
             PlotEntry(
                 "spinorama",

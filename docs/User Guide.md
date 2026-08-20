@@ -89,6 +89,12 @@ the acoustic origin to the configured polar observation distance. On-axis text
 exports use the same reference, including any channel delay changes made after
 the solve.
 
+The **Transducer Excursion** dock is available for systems containing
+electrodynamic transducers. It plots synthesized excursion magnitude in
+millimetres for each transducer, with a **Traces** menu for hiding individual
+components. Excursion uses the same channel gain, polarity, delay, crossover,
+and normalized channel correction as the acoustic response.
+
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder
 if the saved location disappears, and changes only after a selection is

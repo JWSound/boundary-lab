@@ -17,7 +17,9 @@ from blab.channel_synthesis import (
 )
 from blab.config import ChannelConfig, SimulationConfig
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
+from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID
 from blab.solvers.base import FrequencyResult, SolveRequest
+from blab.system_contract import SystemFrequencyResult
 
 
 @dataclass
@@ -272,6 +274,11 @@ class LiveSolveDataset:
             dtype=np.complex64,
         )
 
+    def channel_basis_weights(self, result: FrequencyResult) -> np.ndarray:
+        """Return the complex drive applied to each grouped channel basis."""
+
+        return self._channel_basis_weights(result)
+
     def _synthesized_sphere(self, result: FrequencyResult) -> np.ndarray | None:
         if result.has_channel_basis and result.sphere_pressure is not None:
             synthesized = synthesize_channel_basis_spl(
@@ -340,6 +347,66 @@ class LiveSolveDataset:
         reference_delay_s = distance_m / sound_speed_m_per_s
         reference_rotation = np.exp(-1j * 2.0 * np.pi * freqs * reference_delay_s)
         return np.rad2deg(np.angle(values * reference_rotation)).astype(np.float32, copy=False)
+
+
+@dataclass
+class TransducerMotionDataset:
+    """Small live cache of the canonical transducer-velocity result rows."""
+
+    excitation_channel_names: np.ndarray
+    transducer_names: np.ndarray
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        quantity = next((item for item in result.quantities if item.id == DIAPHRAGM_VELOCITY_ID), None)
+        if quantity is None:
+            return
+        if quantity.axes != ("excitation", "transducer"):
+            raise ValueError("Diaphragm velocity must use excitation and transducer axes.")
+        values = np.asarray(quantity.values, dtype=np.complex64)
+        expected_shape = (self.excitation_channel_names.size, self.transducer_names.size)
+        if values.shape != expected_shape:
+            raise ValueError(
+                f"Diaphragm velocity has shape {values.shape}, expected {expected_shape}."
+            )
+        self.results[float(result.freq_hz)] = values.copy()
+
+    def as_excursion_arrays(
+        self,
+        acoustic: LiveSolveDataset,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return frequency, transducer names, and synthesized excursion in mm."""
+
+        frequencies = sorted(set(self.results).intersection(acoustic.results))
+        if not frequencies:
+            return None
+        rows: list[np.ndarray] = []
+        excitation_channels = [str(value) for value in self.excitation_channel_names.tolist()]
+        for frequency in frequencies:
+            live_result = acoustic.results[frequency]
+            if live_result.channel_names is None:
+                return None
+            grouped_names = [str(value) for value in np.asarray(live_result.channel_names).tolist()]
+            grouped_weights = acoustic.channel_basis_weights(live_result)
+            if grouped_weights.shape != (len(grouped_names),):
+                raise ValueError("Channel synthesis weights do not match the grouped channel names.")
+            weight_by_name = dict(zip(grouped_names, grouped_weights, strict=True))
+            try:
+                excitation_weights = np.asarray(
+                    [weight_by_name[name] for name in excitation_channels],
+                    dtype=np.complex64,
+                )
+            except KeyError as exc:
+                raise ValueError(f"No synthesized channel basis is available for {exc.args[0]!r}.") from exc
+            velocity = self.results[frequency]
+            synthesized_velocity = np.sum(velocity * excitation_weights[:, np.newaxis], axis=0)
+            excursion_mm = np.abs(synthesized_velocity / (-1j * 2.0 * np.pi * frequency)) * 1000.0
+            rows.append(excursion_mm.astype(np.float32, copy=False))
+        return (
+            np.asarray(frequencies, dtype=np.float32),
+            np.asarray(self.transducer_names).copy(),
+            np.vstack(rows).T.astype(np.float32, copy=False),
+        )
 
 
 def build_log_frequencies(freq_min: float, freq_max: float, freq_count: int) -> np.ndarray:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from blab.live import LiveSolveDataset
+from blab.live import LiveSolveDataset, TransducerMotionDataset
 from blab.solve_results import SolvedSystem, SolvedSystemBuilder
 from blab.ui.result_projection import VisualizationProjection
 
@@ -28,6 +28,9 @@ class SolveSession:
 
     #: Canonical raw quantities accumulated by the active solve.
     result_builder: SolvedSystemBuilder | None = None
+
+    #: Lightweight live transducer motion rows used by the excursion plot.
+    transducer_motion: TransducerMotionDataset | None = None
 
     #: Immutable canonical snapshot of the most recent complete or partial run.
     solved_system: SolvedSystem | None = None
@@ -66,6 +69,7 @@ class SolveSession:
         """
         self.live_dataset = None
         self.result_builder = None
+        self.transducer_motion = None
         self.solved_system = None
         self.use_final_isobar_resolution = False
         self.final_isobar_plots_rendered = False

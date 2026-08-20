@@ -497,9 +497,10 @@ The main application path always requests `exterior_pressure`. For systems
 containing electrodynamic transducers it also retains `diaphragm_velocity` and
 `voice_coil_current`, from which diaphragm excursion and electrical input
 impedance can be derived. These raw complex quantities are assembled into the
-in-memory solved-system model even though dedicated reporting plots have not
-yet been added. Impedance fields in the legacy live-plot shape remain
-unavailable.
+in-memory solved-system model. The application synthesizes the complex
+excitation basis before converting diaphragm velocity to excursion magnitude
+for the Transducer Excursion plot. Electrical input impedance does not yet
+have a dedicated reporting plot.
 
 When an exterior or combined observation plane is declared, the application
 also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.

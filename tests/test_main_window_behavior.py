@@ -71,6 +71,7 @@ PLOT_IDS = {
     "vertical_isobar",
     "acoustic_impedance",
     "on_axis_frequency_response",
+    "transducer_excursion",
     "spinorama",
 }
 ISOBAR_IDS = ("horizontal_isobar", "vertical_isobar")
@@ -176,6 +177,14 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
         button for button in title_bar.tool_buttons if button.menu() is main_window.on_axis_plot.trace_filter_menu
     )
     assert trace_button.text() == "Traces"
+
+    excursion_title_bar = main_window.plot_docks["transducer_excursion"].titleBarWidget()
+    excursion_trace_button = next(
+        button
+        for button in excursion_title_bar.tool_buttons
+        if button.menu() is main_window.excursion_plot.trace_filter_menu
+    )
+    assert excursion_trace_button.text() == "Traces"
 
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:

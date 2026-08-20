@@ -166,6 +166,14 @@ class PlotPresenterMixin:
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
         )
+        if dataset.excursion is None:
+            self.excursion_plot.clear_comparison_plot()
+        else:
+            self.excursion_plot.set_comparison_plot(
+                dataset.excursion.freq_hz,
+                dataset.excursion.transducer_names,
+                dataset.excursion.excursion_mm,
+            )
         self.spinorama_plot.set_comparison_plot(
             response.freq_hz,
             response.angle_deg,
@@ -263,6 +271,7 @@ class PlotPresenterMixin:
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
             ),
+            transducer_motion=self._solve_session().transducer_motion,
         )
 
     def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:
@@ -346,6 +355,18 @@ class PlotPresenterMixin:
             response.channel_on_axis_spl_db,
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
+        )
+
+    def _update_excursion_plot(self, dataset: VisualizationProjection) -> None:
+        excursion = dataset.excursion
+        if excursion is None:
+            if self.excursion_plot._plot_state is not None:
+                self.excursion_plot._draw_empty()
+            return
+        self.excursion_plot.update_plot(
+            excursion.freq_hz,
+            excursion.transducer_names,
+            excursion.excursion_mm,
         )
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:

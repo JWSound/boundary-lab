@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from blab.live import LiveSolveDataset
+from blab.config import ChannelConfig
+from blab.live import LiveSolveDataset, TransducerMotionDataset
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind, MeshPurpose
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
     BEM_BOUNDARY_PRESSURE_ID,
+    DIAPHRAGM_VELOCITY_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
     VOICE_COIL_CURRENT_ID,
     ResultDomain,
@@ -278,6 +280,94 @@ def test_velocity_to_excursion_uses_the_solver_phasor_convention() -> None:
 
     assert excursion.unit == "m"
     assert excursion.values[0, 0, 0] == pytest.approx(-1.0 + 0.0j)
+
+
+def test_live_transducer_excursion_uses_normalized_channel_drive_before_magnitude() -> None:
+    frequency_hz = 1.0 / (2.0 * np.pi)
+    acoustic = LiveSolveDataset(
+        polar_angle_deg=np.asarray([0.0], dtype=np.float32),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=True,
+    )
+    acoustic.add(
+        FrequencyResult(
+            freq_hz=frequency_hz,
+            horizontal_spl_norm_db=np.zeros(1),
+            vertical_spl_norm_db=np.zeros(1),
+            impedance=np.zeros((1, 2)),
+            channel_names=np.asarray(["main"]),
+            horizontal_pressure=np.asarray([[2.0 + 0.0j]], dtype=np.complex64),
+            vertical_pressure=np.asarray([[2.0 + 0.0j]], dtype=np.complex64),
+        )
+    )
+    motion = TransducerMotionDataset(
+        excitation_channel_names=np.asarray(["main"]),
+        transducer_names=np.asarray(["Woofer"]),
+    )
+    motion.add(
+        SystemFrequencyResult(
+            freq_hz=frequency_hz,
+            excitation_port_ids=("port:woofer",),
+            quantities=(
+                QuantityResult(
+                    id=DIAPHRAGM_VELOCITY_ID,
+                    quantity="diaphragm_velocity",
+                    unit="m/s",
+                    axes=("excitation", "transducer"),
+                    values=np.asarray([[2.0j]], dtype=np.complex64),
+                ),
+            ),
+        )
+    )
+
+    freqs, names, excursion_mm = motion.as_excursion_arrays(acoustic)
+
+    assert freqs.tolist() == pytest.approx([frequency_hz])
+    assert names.tolist() == ["Woofer"]
+    # The 2 Pa on-axis channel basis applies a 0.5 normalized correction.
+    assert excursion_mm[0, 0] == pytest.approx(1000.0)
+
+
+def test_live_transducer_excursion_sums_complex_excitation_bases_before_magnitude() -> None:
+    acoustic = LiveSolveDataset(
+        polar_angle_deg=np.asarray([0.0], dtype=np.float32),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+    )
+    acoustic.add(
+        FrequencyResult(
+            freq_hz=100.0,
+            horizontal_spl_norm_db=np.zeros(1),
+            vertical_spl_norm_db=np.zeros(1),
+            impedance=np.zeros((2, 2)),
+            channel_names=np.asarray(["main"]),
+            horizontal_pressure=np.asarray([[1.0 + 0.0j]], dtype=np.complex64),
+            vertical_pressure=np.asarray([[1.0 + 0.0j]], dtype=np.complex64),
+        )
+    )
+    motion = TransducerMotionDataset(
+        excitation_channel_names=np.asarray(["main", "main"]),
+        transducer_names=np.asarray(["Woofer"]),
+    )
+    motion.add(
+        SystemFrequencyResult(
+            freq_hz=100.0,
+            excitation_port_ids=("port:a", "port:b"),
+            quantities=(
+                QuantityResult(
+                    id=DIAPHRAGM_VELOCITY_ID,
+                    quantity="diaphragm_velocity",
+                    unit="m/s",
+                    axes=("excitation", "transducer"),
+                    values=np.asarray([[1.0j], [-1.0j]], dtype=np.complex64),
+                ),
+            ),
+        )
+    )
+
+    _freqs, _names, excursion_mm = motion.as_excursion_arrays(acoustic)
+
+    assert excursion_mm[0, 0] == pytest.approx(0.0)
 
 
 def test_electrical_impedance_uses_the_matching_voltage_basis_current() -> None:

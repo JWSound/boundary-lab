@@ -10,9 +10,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from blab.spinorama import SpinoramaCurves
+from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.main_window import MainWindow
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
 from blab.ui.result_projection import (
+    ExcursionProjection,
     ImpedanceProjection,
     IsobarProjection,
     PolarResponseProjection,
@@ -173,6 +175,12 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     on_axis.update_plot(freqs, angles, response + 1.0)
     assert tuple(on_axis._lines) == on_axis_lines
 
+    excursion = ExcursionCanvas()
+    excursion.update_plot(freqs, np.asarray(["Woofer"]), np.asarray([[1.0, 2.0, 3.0]]))
+    excursion_lines = dict(excursion._lines)
+    excursion.update_plot(freqs, np.asarray(["Woofer"]), np.asarray([[2.0, 3.0, 4.0]]))
+    assert excursion._lines == excursion_lines
+
     spinorama = SpinoramaCanvas()
     curves = _spinorama_curves()
     spinorama.update_curves(curves)
@@ -206,6 +214,24 @@ def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
 
     assert {30, 40, 60, 70, 80, 90, 300, 3000}.issubset(visible_x_minor)
     assert {35, 45, 55, 65, 75, 85}.issubset(visible_y_minor)
+
+
+def test_excursion_plot_uses_audio_frequency_axis_zero_baseline_and_trace_filter() -> None:
+    canvas = ExcursionCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Woofer", "Passive radiator"]),
+        np.asarray([[1.0, 2.0, 1.5], [0.5, 3.0, 2.0]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylim()[0] == 0.0
+    assert canvas.axes.get_ylabel() == "Excursion (mm)"
+    canvas._series_actions["Passive radiator"].setChecked(False)
+    assert not canvas._lines["Passive radiator"].get_visible()
+    assert canvas._lines["Woofer"].get_visible()
 
 
 def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
@@ -384,21 +410,23 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         spin_horizontal_reference_angle_deg=10.0,
         spin_vertical_reference_angle_deg=-5.0,
     )
-    plots = [PlotRecorder() for _index in range(5)]
+    excursion = ExcursionProjection(freqs, np.asarray(["Woofer"]), np.ones((1, 2)))
+    plots = [PlotRecorder() for _index in range(6)]
     window = SimpleNamespace(
-        _last_completed_visualization_dataset=VisualizationProjection(isobar, impedance, response),
+        _last_completed_visualization_dataset=VisualizationProjection(isobar, impedance, response, excursion),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
         impedance_plot=plots[2],
         on_axis_plot=plots[3],
-        spinorama_plot=plots[4],
+        excursion_plot=plots[4],
+        spinorama_plot=plots[5],
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
     MainWindow.apply_last_completed_comparison(window)
 
-    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1]
-    assert plots[4].calls[0][1] == {
+    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1]
+    assert plots[5].calls[0][1] == {
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
@@ -410,6 +438,7 @@ def test_every_chart_panel_gets_the_same_axes_box() -> None:
     canvases = (
         ImpedanceCanvas(),
         OnAxisResponseCanvas(),
+        ExcursionCanvas(),
         SpinoramaCanvas(),
         IsobarCanvas("Horizontal Isobar"),
     )

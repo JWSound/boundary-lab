@@ -19,10 +19,12 @@ from PySide6.QtCore import QObject, Signal, Slot
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
+    TransducerMotionDataset,
     build_log_frequencies,
 )
 from blab.physical_model import (
     AcousticRegionKind,
+    ComponentKind,
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
@@ -357,6 +359,18 @@ class SolveWorkflowController(QObject):
 
     def _start_prepared_system_solve(self, prepared, status: str) -> None:
         self._begin_run(status)
+        transducer_names = np.asarray(
+            [
+                component.name
+                for component in prepared.request.compiled_system.components
+                if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            ]
+        )
+        if transducer_names.size:
+            self._session.transducer_motion = TransducerMotionDataset(
+                excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                transducer_names=transducer_names,
+            )
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
             excitation_ids=prepared.request.excitation_port_ids,
@@ -470,6 +484,9 @@ class SolveWorkflowController(QObject):
         if builder is None:
             raise RuntimeError("Received a physical-system result before its result builder was initialized.")
         builder.add(result)
+        motion = self._session.transducer_motion
+        if motion is not None:
+            motion.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:

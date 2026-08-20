@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from blab.config import ChannelConfig
-from blab.live import LiveSolveDataset
+from blab.live import LiveSolveDataset, TransducerMotionDataset
 from blab.postprocess import PrepConfig
 
 
@@ -95,16 +95,32 @@ class PolarResponseProjection:
 
 
 @dataclass(frozen=True)
+class ExcursionProjection:
+    freq_hz: np.ndarray
+    transducer_names: np.ndarray
+    excursion_mm: np.ndarray
+
+    def snapshot(self) -> ExcursionProjection:
+        return ExcursionProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            transducer_names=np.asarray(self.transducer_names).copy(),
+            excursion_mm=np.asarray(self.excursion_mm).copy(),
+        )
+
+
+@dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
     response: PolarResponseProjection
+    excursion: ExcursionProjection | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
             isobar=self.isobar.snapshot(),
             impedance=self.impedance.snapshot(),
             response=self.response.snapshot(),
+            excursion=None if self.excursion is None else self.excursion.snapshot(),
         )
 
 
@@ -116,6 +132,7 @@ class ResultProjectionService:
         dataset: LiveSolveDataset,
         channels: tuple[ChannelConfig, ...],
         options: ProjectionOptions,
+        transducer_motion: TransducerMotionDataset | None = None,
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -138,6 +155,11 @@ class ResultProjectionService:
         )
         if arrays is None:
             return None
+        excursion = None
+        if transducer_motion is not None:
+            excursion_arrays = transducer_motion.as_excursion_arrays(dataset)
+            if excursion_arrays is not None:
+                excursion = ExcursionProjection(*excursion_arrays)
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -165,4 +187,5 @@ class ResultProjectionService:
                 spin_horizontal_reference_angle_deg=float(arrays["spin_horizontal_reference_angle_deg"]),
                 spin_vertical_reference_angle_deg=float(arrays["spin_vertical_reference_angle_deg"]),
             ),
+            excursion=excursion,
         )
