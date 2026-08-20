@@ -1299,7 +1299,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._phase_lines: dict[str, object] = {}
         self._series_labels: tuple[str, ...] = ()
         self._series_visibility: dict[str, bool] = {}
-        self._channel_colors: dict[str, str] = {}
+        self._channel_colors: dict[str, Any] = {}
         self._series_actions: dict[str, QAction] = {}
         self._phase_available = False
         self._plot_state = None
@@ -1564,12 +1564,12 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             self._redraw_crosshair()
         self.draw_idle()
 
-    def _series_color(self, label: str, index: int) -> str:
+    def _series_color(self, label: str, index: int) -> Any:
         if label == "Sum":
             return "#000000"
         if label not in self._channel_colors:
             cycle = rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
-            self._channel_colors[label] = str(cycle[(index - 1) % len(cycle)])
+            self._channel_colors[label] = cycle[(index - 1) % len(cycle)]
         return self._channel_colors[label]
 
     def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:

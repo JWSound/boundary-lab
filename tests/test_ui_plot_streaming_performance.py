@@ -2,6 +2,8 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
+from cycler import cycler
+from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -206,7 +208,12 @@ def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
     assert {35, 45, 55, 65, 75, 85}.issubset(visible_y_minor)
 
 
-def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase() -> None:
+def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
+    monkeypatch.setitem(
+        rcParams,
+        "axes.prop_cycle",
+        cycler(color=[(31 / 255, 119 / 255, 180 / 255), (1.0, 0.5, 0.0)]),
+    )
     canvas = OnAxisResponseCanvas()
     freqs = np.asarray([100.0, 1000.0, 10_000.0], dtype=np.float32)
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
