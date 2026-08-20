@@ -335,9 +335,7 @@ def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
         if component.id == "component:exterior-radiator"
     )
     exterior_boundary = next(
-        boundary
-        for boundary in session.request.compiled_system.boundaries
-        if boundary.id == "boundary:exterior"
+        boundary for boundary in session.request.compiled_system.boundaries if boundary.id == "boundary:exterior"
     )
     assert exterior_component.boundary_ids == (exterior_boundary.id,)
     assert exterior_component.parameters["boundary_motion_weights"][exterior_boundary.id] == pytest.approx(0.5)
@@ -1882,9 +1880,7 @@ def _mixed_prescribed_fixture_system() -> PhysicalSystem:
     return replace(
         system,
         boundaries=tuple(
-            replace(boundary, kind=BoundaryKind.MOVING)
-            if boundary.id == "boundary:exterior"
-            else boundary
+            replace(boundary, kind=BoundaryKind.MOVING) if boundary.id == "boundary:exterior" else boundary
             for boundary in system.boundaries
         ),
         components=(*system.components, exterior_component),

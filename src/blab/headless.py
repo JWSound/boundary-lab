@@ -168,9 +168,7 @@ def load_headless_solve_spec(path: str | Path | None) -> HeadlessSolveSpec:
         raise ValueError("Headless solve request must contain a JSON object.")
     version = int(raw.get("schema_version", 0))
     if version != HEADLESS_REQUEST_VERSION:
-        raise ValueError(
-            f"Unsupported headless request schema_version {version}; expected {HEADLESS_REQUEST_VERSION}."
-        )
+        raise ValueError(f"Unsupported headless request schema_version {version}; expected {HEADLESS_REQUEST_VERSION}.")
 
     frequencies = _request_frequencies(raw)
     excitation_ids = raw.get("excitation_port_ids")
@@ -308,8 +306,7 @@ def validation_summary(
         "output_ids": [output.id for output in request.outputs],
         "meshes": mesh_entries,
         "assumptions": [
-            {"status": item.status.value, "statement": item.statement}
-            for item in request.compiled_system.assumptions
+            {"status": item.status.value, "statement": item.statement} for item in request.compiled_system.assumptions
         ],
     }
 
@@ -682,7 +679,10 @@ def _with_retained_fields(
                 target_ids=(BEM_BOUNDARY_DOMAIN_ID,),
             )
         )
-    if retain_set.intersection({"bem_boundary_pressure", "bem_boundary_neumann"}) and BEM_BOUNDARY_DOMAIN_ID not in domain_ids:
+    if (
+        retain_set.intersection({"bem_boundary_pressure", "bem_boundary_neumann"})
+        and BEM_BOUNDARY_DOMAIN_ID not in domain_ids
+    ):
         domains.append(bem_boundary_result_domain(compiled_system, symmetry=symmetry))
     if "fem_nodal_pressure" in retain_set and FEM_NODAL_PRESSURE_ID not in output_ids:
         outputs.append(

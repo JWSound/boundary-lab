@@ -256,9 +256,7 @@ def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostic
         message=None if raw.get("message") is None else str(raw["message"]),
         backend=None if raw.get("backend") is None else str(raw["backend"]),
         symmetry=None if raw.get("symmetry") is None else str(raw["symmetry"]),
-        regular_assembly_mode=(
-            None if raw.get("regular_assembly_mode") is None else str(raw["regular_assembly_mode"])
-        ),
+        regular_assembly_mode=(None if raw.get("regular_assembly_mode") is None else str(raw["regular_assembly_mode"])),
     )
 
 

@@ -83,7 +83,9 @@ def inspect_rocm_root(root: str | Path, *, source: str = "argument") -> RocmInst
     if not candidate.is_dir():
         return RocmInstallation(candidate, source, False, ("SDK directory",))
 
-    library_dirs = tuple(path for path in (candidate, candidate / "bin", candidate / "lib", candidate / "lib64") if path.is_dir())
+    library_dirs = tuple(
+        path for path in (candidate, candidate / "bin", candidate / "lib", candidate / "lib64") if path.is_dir()
+    )
     required_libraries = {
         "HIP runtime (amdhip64)": ("amdhip64*.dll", "libamdhip64.so*"),
         "rocBLAS": ("rocblas*.dll", "librocblas.so*"),

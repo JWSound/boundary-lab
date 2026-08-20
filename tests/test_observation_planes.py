@@ -55,12 +55,10 @@ def test_particle_velocity_display_round_trips_only_for_interior_planes() -> Non
 
     assert ObservationPlane.from_payload(interior.to_payload()) == interior
     assert (
-        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display
-        == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.EXTERIOR).validated().display == ObservationPlaneDisplay.SPL
     )
     assert (
-        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display
-        == ObservationPlaneDisplay.SPL
+        replace(interior, plane_type=ObservationPlaneType.COMBINED).validated().display == ObservationPlaneDisplay.SPL
     )
 
 
@@ -118,9 +116,7 @@ def test_relative_rotation_overlay_reports_signed_angle() -> None:
 def test_particle_velocity_scalar_bar_title_wraps_for_narrow_viewports() -> None:
     from blab.ui.observation_plane_viewport import _scalar_bar_position_x, _scalar_bar_title
 
-    assert _scalar_bar_title("Particle Velocity Magnitude (m/s)") == (
-        "Particle Velocity\nMagnitude (m/s)\n "
-    )
+    assert _scalar_bar_title("Particle Velocity Magnitude (m/s)") == ("Particle Velocity\nMagnitude (m/s)\n ")
     assert _scalar_bar_title("SPL (dB re 20 µPa)") == "SPL (dB re 20 µPa)"
     assert _scalar_bar_position_x(SimpleNamespace(width=lambda: 342)) == pytest.approx(0.70)
     assert _scalar_bar_position_x(SimpleNamespace(width=lambda: 754)) == pytest.approx(0.84)
@@ -463,9 +459,7 @@ def test_interior_particle_velocity_uses_exact_p1_pressure_gradient() -> None:
     )
     from blab.ui.observation_plane_results import interior_field_results_from_solved_system
 
-    points = np.asarray(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    )
+    points = np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
     pressure = SolvedQuantity(
         id=FEM_NODAL_PRESSURE_ID,
         quantity="fem_nodal_pressure",

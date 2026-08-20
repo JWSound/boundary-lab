@@ -50,9 +50,10 @@ def test_compression_driver_fixture_compiles_as_interior_fem() -> None:
     assert prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
     assert compiled.interfaces == ()
     assert len(compiled.regions) == 2
-    assert next(
-        boundary for boundary in compiled.boundaries if boundary.id == "boundary:front-termination"
-    ).kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION
+    assert (
+        next(boundary for boundary in compiled.boundaries if boundary.id == "boundary:front-termination").kind
+        == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION
+    )
     assert "boundary_motion_signs" not in compiled.components[0].parameters
     assert compiled.components[0].parameters["motion_axis"] == [0.0, 0.0, 1.0]
 
@@ -104,9 +105,7 @@ def test_plane_wave_termination_requires_parameter_free_bounded_boundary() -> No
             replace(
                 system,
                 boundaries=tuple(
-                    replace(boundary, parameters={"impedance": 1.0})
-                    if boundary.id == termination.id
-                    else boundary
+                    replace(boundary, parameters={"impedance": 1.0}) if boundary.id == termination.id else boundary
                     for boundary in system.boundaries
                 ),
             )
@@ -118,9 +117,7 @@ def test_plane_wave_termination_requires_parameter_free_bounded_boundary() -> No
             replace(
                 system,
                 regions=tuple(
-                    replace(region, kind=AcousticRegionKind.UNBOUNDED_AIR)
-                    if region.id == front_region.id
-                    else region
+                    replace(region, kind=AcousticRegionKind.UNBOUNDED_AIR) if region.id == front_region.id else region
                     for region in system.regions
                 ),
             )

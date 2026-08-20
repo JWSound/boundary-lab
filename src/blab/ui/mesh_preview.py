@@ -101,9 +101,7 @@ class MeshPreview(QWidget):
         self._observation_editor.propertiesRequested.connect(self.observationPlanePropertiesRequested.emit)
         self._observation_editor.deleteRequested.connect(self.observationPlaneDeleteRequested.emit)
         self._observation_editor.clipStateChanged.connect(self._set_observation_clip_active)
-        self._observation_editor.exteriorFieldRequested.connect(
-            self.observationPlaneExteriorFieldRequested.emit
-        )
+        self._observation_editor.exteriorFieldRequested.connect(self.observationPlaneExteriorFieldRequested.emit)
         self._install_hover_picker()
 
     def changeEvent(self, event) -> None:  # noqa: N802 - Qt override

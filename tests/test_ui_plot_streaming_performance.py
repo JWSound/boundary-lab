@@ -199,9 +199,7 @@ def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
         if tick.gridline.get_visible() and 20.0 <= tick.get_loc() <= 20_000.0
     }
     visible_y_minor = {
-        round(float(tick.get_loc()))
-        for tick in canvas.axes.yaxis.get_minor_ticks()
-        if tick.gridline.get_visible()
+        round(float(tick.get_loc())) for tick in canvas.axes.yaxis.get_minor_ticks() if tick.gridline.get_visible()
     }
 
     assert {30, 40, 60, 70, 80, 90, 300, 3000}.issubset(visible_x_minor)

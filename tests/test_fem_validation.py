@@ -17,9 +17,7 @@ from blab.fem_validation import (
 
 
 def _quadratic_tetrahedron_points() -> np.ndarray:
-    vertices = np.asarray(
-        ((0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 3.0, 0.0), (0.0, 0.0, 4.0))
-    )
+    vertices = np.asarray(((0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (0.0, 3.0, 0.0), (0.0, 0.0, 4.0)))
     edge_pairs = ((0, 1), (1, 2), (2, 0), (0, 3), (3, 2), (1, 3))
     return np.vstack((vertices, [0.5 * (vertices[left] + vertices[right]) for left, right in edge_pairs]))
 

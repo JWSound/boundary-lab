@@ -328,9 +328,7 @@ def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tm
         file_format="gmsh22",
         binary=False,
     )
-    mesh = inspect_system_meshes(
-        (MeshDialogEntry(name="2way", source_file=str(mesh_path), scale_factor=0.001),)
-    )[0]
+    mesh = inspect_system_meshes((MeshDialogEntry(name="2way", source_file=str(mesh_path), scale_factor=0.001),))[0]
     radiators = tuple(
         RadiatorConfig(
             name=f"2way:{surface}",

@@ -78,9 +78,7 @@ class _FakeAthProcess:
         return self.returncode
 
 
-def test_ath_process_runner_captures_blaba_output_and_launches_gmsh_worker(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_ath_process_runner_captures_blaba_output_and_launches_gmsh_worker(tmp_path: Path, monkeypatch) -> None:
     ath_dir = tmp_path / "ath"
     ath_dir.mkdir()
     ath_exe = ath_dir / "ath.exe"
@@ -306,10 +304,7 @@ def test_build_ath_mesh_artifacts_uses_geo_drive_metadata(tmp_path: Path) -> Non
     )
 
     assert result.drive_definitions == definitions
-    assert [
-        (r.name, r.tag, r.drive_group, r.drive_group_name, r.velocity_offset_db)
-        for r in result.radiators
-    ] == [
+    assert [(r.name, r.tag, r.drive_group, r.drive_group_name, r.velocity_offset_db) for r in result.radiators] == [
         ("SD1D1001", 2, "ath:0", "horn_driver", -12.0412)
     ]
 

@@ -186,9 +186,7 @@ def prepare_system_ui_solve(
 
     normalized_backend_id = normalize_backend_id(backend_id)
     if not supports_physical_system_solves(normalized_backend_id):
-        raise ValueError(
-            "Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm."
-        )
+        raise ValueError("Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.")
     outputs = []
     if has_exterior:
         outputs.append(
@@ -288,8 +286,7 @@ def prepare_system_ui_solve(
             "singular_order": 2 if has_fem else 4,
             "validation_diagnostics": False,
             "cache_frequency_invariant": True,
-            "static_condensation": is_coupled
-            and backend_condenses_fem_interior(normalized_backend_id),
+            "static_condensation": is_coupled and backend_condenses_fem_interior(normalized_backend_id),
             "symmetry": symmetry,
         },
     )

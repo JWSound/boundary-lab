@@ -338,10 +338,7 @@ class ObservationPlanePropertiesDialog(QDialog):
                     if not interior_only
                     else "Derived from the complex FEM pressure gradient."
                 )
-        if (
-            not interior_only
-            and self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
-        ):
+        if not interior_only and self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value:
             self._select_data(self.display_combo, ObservationPlaneDisplay.SPL.value)
         supports_interior = plane_type in {
             ObservationPlaneType.INTERIOR.value,
@@ -364,9 +361,7 @@ class ObservationPlanePropertiesDialog(QDialog):
             ObservationPlaneDisplay.IMAGINARY_PRESSURE.value,
         }
         velocity_display = self.display_combo.currentData() == ObservationPlaneDisplay.PARTICLE_VELOCITY.value
-        pressure_controls_available = not velocity_display and (
-            pressure_display or self.animate_button.isChecked()
-        )
+        pressure_controls_available = not velocity_display and (pressure_display or self.animate_button.isChecked())
         self.pressure_range_auto_check.setEnabled(pressure_controls_available)
         self.pressure_limit_spin.setEnabled(
             pressure_controls_available and not self.pressure_range_auto_check.isChecked()

@@ -68,8 +68,7 @@ class ObservationPlaneController(QObject):
         # the persisted plane here would restore an older frequency/response
         # until the user moved the corresponding control again.
         preview_planes = tuple(
-            self._dialogs[plane.id].plane if plane.id in self._dialogs else plane
-            for plane in project_planes
+            self._dialogs[plane.id].plane if plane.id in self._dialogs else plane for plane in project_planes
         )
         self._preview.set_observation_planes(preview_planes, selected_id=selected_id)
         if hasattr(self._preview, "set_observation_plane_active"):

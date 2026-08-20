@@ -271,9 +271,7 @@ class _CoupledBackend:
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
         solver_options = dict(request.solver_options)
-        has_bounded = any(
-            region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions
-        )
+        has_bounded = any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions)
         has_unbounded = any(
             region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in request.compiled_system.regions
         )
@@ -551,9 +549,7 @@ def validate_interior_capabilities(request: SystemSolveRequest) -> None:
             _validate_electrodynamic_component(
                 component,
                 symmetry_factor=symmetry_factors[symmetry_mode],
-                active_symmetry_axes=(
-                    () if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")
-                ),
+                active_symmetry_axes=(() if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")),
             )
             continue
         unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
@@ -577,7 +573,9 @@ def validate_interior_capabilities(request: SystemSolveRequest) -> None:
         if port.kind != expected:
             incompatible_ports.append(port.id)
     if incompatible_ports:
-        raise ValueError("Interior FEM solving received incompatible excitation ports: " + ", ".join(incompatible_ports))
+        raise ValueError(
+            "Interior FEM solving received incompatible excitation ports: " + ", ".join(incompatible_ports)
+        )
 
 
 def validate_exterior_capabilities(request: SystemSolveRequest) -> None:

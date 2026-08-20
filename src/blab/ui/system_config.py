@@ -1124,7 +1124,7 @@ class SystemConfigDialog(QDialog):
             for boundary in (() if system is None else system.boundaries)
         }
         self._existing_boundaries_by_mesh_group: dict[tuple[str, str | None], list[Boundary]] = {}
-        for boundary in (() if system is None else system.boundaries):
+        for boundary in () if system is None else system.boundaries:
             self._existing_boundaries_by_mesh_group.setdefault(
                 (boundary.group.mesh_id, boundary.group.name), []
             ).append(boundary)
@@ -1451,8 +1451,7 @@ class SystemConfigDialog(QDialog):
             self._region_kind(row) == AcousticRegionKind.BOUNDED_AIR for row in range(self.regions_table.rowCount())
         )
         has_unbounded_region = any(
-            self._region_kind(row) == AcousticRegionKind.UNBOUNDED_AIR
-            for row in range(self.regions_table.rowCount())
+            self._region_kind(row) == AcousticRegionKind.UNBOUNDED_AIR for row in range(self.regions_table.rowCount())
         )
         interfaces_available = has_bounded_region and has_unbounded_region
         tab_index = self.tabs.indexOf(self.interfaces_tab)
@@ -1533,11 +1532,8 @@ class SystemConfigDialog(QDialog):
                     if existing is None:
                         candidates = [
                             boundary
-                            for boundary in self._existing_boundaries_by_mesh_group.get(
-                                (mesh_id, group_name), ()
-                            )
-                            if boundary.id not in used_boundary_ids
-                            and boundary.id in self._relocatable_boundary_ids
+                            for boundary in self._existing_boundaries_by_mesh_group.get((mesh_id, group_name), ())
+                            if boundary.id not in used_boundary_ids and boundary.id in self._relocatable_boundary_ids
                         ]
                         if len(candidates) == 1:
                             existing = candidates[0]

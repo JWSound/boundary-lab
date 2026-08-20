@@ -199,8 +199,7 @@ def main() -> int:
                 "validation_diagnostics": args.validation_diagnostics,
                 "cache_frequency_invariant": True,
                 "symmetry": spec.symmetry,
-                "static_condensation": backend_name in {"cuda", "rocm"}
-                and not args.validation_diagnostics,
+                "static_condensation": backend_name in {"cuda", "rocm"} and not args.validation_diagnostics,
             }
             if args.static_condensation is not None:
                 solver_options["static_condensation"] = args.static_condensation
@@ -530,19 +529,11 @@ def _mode_report(
         "linear_backend": str(results[0].diagnostics["linear_backend"]),
         "linear_solver": str(results[0].diagnostics["linear_solver"]),
         "formulation": str(results[0].diagnostics["formulation"]),
-        "fem_condensation_backend": results[0].diagnostics.get(
-            "fem_condensation_backend"
-        ),
+        "fem_condensation_backend": results[0].diagnostics.get("fem_condensation_backend"),
         "fem_schur_block_size": int(results[0].diagnostics.get("fem_schur_block_size", 0)),
-        "fem_schur_thread_count": int(
-            results[0].diagnostics.get("fem_schur_thread_count", 0)
-        ),
-        "static_condensation_requested": bool(
-            results[0].diagnostics.get("static_condensation_requested", False)
-        ),
-        "static_condensation_active": bool(
-            results[0].diagnostics.get("static_condensation_active", False)
-        ),
+        "fem_schur_thread_count": int(results[0].diagnostics.get("fem_schur_thread_count", 0)),
+        "static_condensation_requested": bool(results[0].diagnostics.get("static_condensation_requested", False)),
+        "static_condensation_active": bool(results[0].diagnostics.get("static_condensation_active", False)),
         "full_system_order": int(results[0].diagnostics["full_system_order"]),
         "solved_system_order": int(results[0].diagnostics["solved_system_order"]),
         "wall_s": float(wall_s),

@@ -289,7 +289,9 @@ def speaker_package_issues(
             or values.shape != expected
             or not np.iscomplexobj(values)
         ):
-            issues.append(SpeakerPackageIssue("invalid_sphere_data", "Spherical pressure geometry or shape is invalid."))
+            issues.append(
+                SpeakerPackageIssue("invalid_sphere_data", "Spherical pressure geometry or shape is invalid.")
+            )
         elif not np.all(np.asarray(sphere_pressure.available_frequency_mask, dtype=bool)):
             issues.append(SpeakerPackageIssue("incomplete_sphere_pressure", "Spherical pressure is incomplete."))
 
@@ -448,9 +450,7 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             )
         for source_key, target in (("mesh_index", "face_mesh_index"), ("source_physical_tag", "source_physical_tag")):
             if source_key in domain.topology:
-                payload[target] = np.take(
-                    np.asarray(domain.topology[source_key]), expanded.source_face_index, axis=0
-                )
+                payload[target] = np.take(np.asarray(domain.topology[source_key]), expanded.source_face_index, axis=0)
         members["data/fixed-sources.npz"] = _npz_bytes(**payload)
         members["geometry/exterior.msh"] = _gmsh22_surface_bytes(payload["points_m"], payload["triangles"])
         capabilities.append("fixed_distributed_sources")
@@ -625,9 +625,7 @@ def expand_bem_boundary_symmetry(
 def _exterior_medium(solved: SolvedSystem) -> dict[str, float]:
     if solved.compiled_system is None:
         raise ValueError("Speaker package export requires the compiled physical system.")
-    exterior = [
-        region for region in solved.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
-    ]
+    exterior = [region for region in solved.compiled_system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
     if len(exterior) != 1:
         raise ValueError("Speaker package export requires exactly one unbounded acoustic region.")
     return {
@@ -651,10 +649,7 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
     return {
         "id": system.id,
         "name": system.name,
-        "meshes": [
-            {"id": item.id, "name": item.name, "purpose": item.purpose.value}
-            for item in system.meshes
-        ],
+        "meshes": [{"id": item.id, "name": item.name, "purpose": item.purpose.value} for item in system.meshes],
         "regions": [
             {
                 "id": item.id,

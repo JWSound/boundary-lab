@@ -173,9 +173,7 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
     assert not phase_button.icon().isNull()
     assert phase_button.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
     trace_button = next(
-        button
-        for button in title_bar.tool_buttons
-        if button.menu() is main_window.on_axis_plot.trace_filter_menu
+        button for button in title_bar.tool_buttons if button.menu() is main_window.on_axis_plot.trace_filter_menu
     )
     assert trace_button.text() == "Traces"
 

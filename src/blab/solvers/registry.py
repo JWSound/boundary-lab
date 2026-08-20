@@ -84,9 +84,7 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
 
 
 #: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
-PHYSICAL_SYSTEM_BACKEND_IDS = frozenset(
-    {"beat_cpu", "beat_cuda", "beat_rocm"}
-)
+PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
 #: Backends that condense the FEM interior onto the retained interface for coupled solves.
 CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
 
@@ -208,11 +206,14 @@ def _create_beat_engine_backend(
         "beat_rocm": "rocm",
     }.get(str(beat_engine_backend).strip().lower(), "cuda")
     backend_id = backend_id_override or f"beat_{normalized_backend}"
-    label = label_override or {
-        "cpu": "BEAT Engine (CPU)",
-        "cuda": "BEAT Engine (Nvidia CUDA)",
-        "rocm": "BEAT Engine (AMD ROCm)",
-    }[normalized_backend]
+    label = (
+        label_override
+        or {
+            "cpu": "BEAT Engine (CPU)",
+            "cuda": "BEAT Engine (Nvidia CUDA)",
+            "rocm": "BEAT Engine (AMD ROCm)",
+        }[normalized_backend]
+    )
     default_project = {
         "cpu": DEFAULT_BEAT_ENGINE_CPU_PROJECT,
         "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,

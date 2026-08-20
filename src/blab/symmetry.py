@@ -77,9 +77,7 @@ def snap_points_to_symmetry_planes(
 
     mode = normalize_symmetry(symmetry)
     points = np.asarray(points_m, dtype=float)
-    resolved_tolerance = (
-        symmetry_plane_tolerance_m(points) if tolerance_m is None else float(tolerance_m)
-    )
+    resolved_tolerance = symmetry_plane_tolerance_m(points) if tolerance_m is None else float(tolerance_m)
     if not np.isfinite(resolved_tolerance) or resolved_tolerance < 0.0:
         raise ValueError("Symmetry-plane tolerance must be finite and non-negative.")
 

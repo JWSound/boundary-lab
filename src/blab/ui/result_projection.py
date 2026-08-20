@@ -85,13 +85,9 @@ class PolarResponseProjection:
             channel_on_axis_spl_db=(
                 None if self.channel_on_axis_spl_db is None else np.asarray(self.channel_on_axis_spl_db).copy()
             ),
-            on_axis_phase_deg=(
-                None if self.on_axis_phase_deg is None else np.asarray(self.on_axis_phase_deg).copy()
-            ),
+            on_axis_phase_deg=(None if self.on_axis_phase_deg is None else np.asarray(self.on_axis_phase_deg).copy()),
             channel_on_axis_phase_deg=(
-                None
-                if self.channel_on_axis_phase_deg is None
-                else np.asarray(self.channel_on_axis_phase_deg).copy()
+                None if self.channel_on_axis_phase_deg is None else np.asarray(self.channel_on_axis_phase_deg).copy()
             ),
             spin_horizontal_reference_angle_deg=self.spin_horizontal_reference_angle_deg,
             spin_vertical_reference_angle_deg=self.spin_vertical_reference_angle_deg,

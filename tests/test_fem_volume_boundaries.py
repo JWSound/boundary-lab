@@ -116,9 +116,7 @@ def test_system_dialog_filters_surfaces_for_each_volume_group(tmp_path: Path) ->
     dialog = SystemConfigDialog((available,), None, ("main",))
 
     assert available.surface_groups_for_volume("volume_A") == ("exit_A", "source_A", "walls")
-    assert _boundary_names_by_region(dialog) == {
-        "Interior Air 1": {"exit_A", "source_A", "walls"}
-    }
+    assert _boundary_names_by_region(dialog) == {"Interior Air 1": {"exit_A", "source_A", "walls"}}
 
     dialog._add_default_region()
     volume_combo = dialog.regions_table.cellWidget(1, 3)

@@ -48,12 +48,8 @@ from blab.system_solve import SystemUiSolveRequest
 def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> SolvedSystem:
     frequencies = np.asarray([100.0, 1000.0])
     excitation_ids = ("port:a", "port:b")
-    sphere_points = np.asarray(
-        [[0.0, 0.0, 2.0], [0.0, 2.0, 0.0], [0.0, -2.0, 0.0], [2.0, 0.0, 0.0]]
-    )
-    sphere_pressure = (
-        np.arange(16).reshape(2, 2, 4) + 1j * np.arange(101, 117).reshape(2, 2, 4)
-    ).astype(np.complex64)
+    sphere_points = np.asarray([[0.0, 0.0, 2.0], [0.0, 2.0, 0.0], [0.0, -2.0, 0.0], [2.0, 0.0, 0.0]])
+    sphere_pressure = (np.arange(16).reshape(2, 2, 4) + 1j * np.arange(101, 117).reshape(2, 2, 4)).astype(np.complex64)
     domains = {
         SPHERE_DOMAIN_ID: ResultDomain(
             id=SPHERE_DOMAIN_ID,
@@ -74,9 +70,7 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
         )
     }
     if include_bem:
-        bem_points = np.asarray(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        )
+        bem_points = np.asarray([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         triangles = np.asarray([[0, 1, 2], [0, 3, 1]], dtype=np.int64)
         domains[BEM_BOUNDARY_DOMAIN_ID] = ResultDomain(
             id=BEM_BOUNDARY_DOMAIN_ID,
@@ -95,9 +89,7 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
             quantity="bem_boundary_pressure",
             unit="Pa",
             dimensions=("frequency", "excitation", "bem_node"),
-            values=(
-                np.arange(16).reshape(2, 2, 4) + 1j * np.arange(201, 217).reshape(2, 2, 4)
-            ).astype(np.complex64),
+            values=(np.arange(16).reshape(2, 2, 4) + 1j * np.arange(201, 217).reshape(2, 2, 4)).astype(np.complex64),
             domain_id=BEM_BOUNDARY_DOMAIN_ID,
             available_frequency_mask=np.ones(2, dtype=bool),
         )
@@ -106,9 +98,7 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
             quantity="bem_boundary_neumann",
             unit="Pa/m",
             dimensions=("frequency", "excitation", "bem_face"),
-            values=(
-                np.arange(8).reshape(2, 2, 2) + 1j * np.arange(301, 309).reshape(2, 2, 2)
-            ).astype(np.complex64),
+            values=(np.arange(8).reshape(2, 2, 2) + 1j * np.arange(301, 309).reshape(2, 2, 2)).astype(np.complex64),
             domain_id=BEM_BOUNDARY_DOMAIN_ID,
             available_frequency_mask=np.ones(2, dtype=bool),
         )
@@ -276,12 +266,15 @@ def test_bem_symmetry_expansion_welds_seams_and_preserves_trace_parity(
         expanded.normal_derivative_pa_per_m,
         source_neumann[..., expanded.source_face_index],
     )
-    assert len(
-        {
-            (int(source_index), *sorted(int(node) for node in face))
-            for source_index, face in zip(expanded.source_face_index, expanded.triangles, strict=True)
-        }
-    ) == expected_faces
+    assert (
+        len(
+            {
+                (int(source_index), *sorted(int(node) for node in face))
+                for source_index, face in zip(expanded.source_face_index, expanded.triangles, strict=True)
+            }
+        )
+        == expected_faces
+    )
 
     for face, source_index, image_index in zip(
         expanded.triangles,
@@ -344,9 +337,7 @@ def test_level_two_xy_symmetry_is_materialized_before_package_rotation(tmp_path:
         fixed = _read_npz(archive, "data/fixed-sources.npz")
     source_pressure = solved.quantities[BEM_BOUNDARY_PRESSURE_ID].values
     source_neumann = solved.quantities[BEM_BOUNDARY_NEUMANN_ID].values
-    np.testing.assert_array_equal(
-        fixed["pressure_pa"], source_pressure[..., fixed["source_bem_node_index"]]
-    )
+    np.testing.assert_array_equal(fixed["pressure_pa"], source_pressure[..., fixed["source_bem_node_index"]])
     np.testing.assert_array_equal(
         fixed["normal_derivative_pa_per_m"], source_neumann[..., fixed["source_bem_face_index"]]
     )
@@ -355,9 +346,7 @@ def test_level_two_xy_symmetry_is_materialized_before_package_rotation(tmp_path:
     assert set(np.sign(fixed["points_m"][:, 2])) == {-1.0, 0.0, 1.0}
 
 
-def test_archive_paths_are_portable_and_atomic_failure_preserves_destination(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_archive_paths_are_portable_and_atomic_failure_preserves_destination(tmp_path: Path, monkeypatch) -> None:
     solved = _solved_system(include_bem=False)
     output = tmp_path / "speaker.blabsp"
     output.write_bytes(b"old package")

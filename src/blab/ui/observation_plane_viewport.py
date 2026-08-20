@@ -546,9 +546,7 @@ class ObservationPlaneViewport(QObject):
         if plane is None:
             return
         mode, control = tool
-        normalized_reference_db = (
-            self._capture_normalized_spl_reference(plane) if mode in {"move", "rotate"} else None
-        )
+        normalized_reference_db = self._capture_normalized_spl_reference(plane) if mode in {"move", "rotate"} else None
         if mode == "move":
             axis = plane.local_axes[control]
             parameter = self._axis_parameter(position, np.asarray(plane.center_m), axis)
@@ -839,10 +837,7 @@ class ObservationPlaneViewport(QObject):
 
     def _add_interior_field(self, plane: ObservationPlane) -> bool:
         results = None if self._field_results is None else self._field_results.interior
-        if (
-            results is None
-            or plane.plane_type not in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}
-        ):
+        if results is None or plane.plane_type not in {ObservationPlaneType.INTERIOR, ObservationPlaneType.COMBINED}:
             return False
         try:
             mesh, complex_values, association, clipped = self._field_mesh_and_pressure(plane)
@@ -884,9 +879,7 @@ class ObservationPlaneViewport(QObject):
             raise ValueError("Particle velocity is available for Interior observation planes only.")
         pressure = None if particle_velocity else results.pressure(plane.frequency_hz, plane.response_id)
         tetrahedron_velocity = (
-            results.particle_velocity(plane.frequency_hz, plane.response_id)
-            if particle_velocity
-            else None
+            results.particle_velocity(plane.frequency_hz, plane.response_id) if particle_velocity else None
         )
         if plane.interior_rendering == InteriorRenderingMode.ELEMENT_FIELD:
             geometry = self._element_field_mesh(
@@ -896,10 +889,7 @@ class ObservationPlaneViewport(QObject):
                 results.symmetry,
             )
             if particle_velocity:
-                values = (
-                    tetrahedron_velocity[geometry.source_tetrahedron_ids]
-                    * geometry.vector_signs
-                )
+                values = tetrahedron_velocity[geometry.source_tetrahedron_ids] * geometry.vector_signs
             else:
                 source_pressure = np.mean(pressure[np.asarray(results.tetrahedra, dtype=np.int64)], axis=1)
                 values = source_pressure[geometry.source_tetrahedron_ids]
@@ -911,10 +901,7 @@ class ObservationPlaneViewport(QObject):
             results.symmetry,
         )
         if particle_velocity:
-            values = (
-                tetrahedron_velocity[geometry.source_tetrahedron_ids]
-                * geometry.vector_signs
-            )
+            values = tetrahedron_velocity[geometry.source_tetrahedron_ids] * geometry.vector_signs
         else:
             values = np.sum(
                 pressure[geometry.source_node_ids] * geometry.interpolation_weights,
@@ -1402,9 +1389,7 @@ class ObservationPlaneViewport(QObject):
         sampled_source_node_ids = source_node_ids[expanded_node_ids]
         source_tetrahedron_count = np.asarray(tetrahedra).shape[0]
         source_tetrahedron_ids = sampled_cell_ids % source_tetrahedron_count
-        vector_signs = _symmetry_image_signs(symmetry)[
-            sampled_cell_ids // source_tetrahedron_count
-        ]
+        vector_signs = _symmetry_image_signs(symmetry)[sampled_cell_ids // source_tetrahedron_count]
         _axis_u, _axis_v, normal = plane.local_axes
         clipped = volume.clip(
             normal=normal,
@@ -1544,9 +1529,7 @@ class ObservationPlaneViewport(QObject):
         result = _ElementFieldGeometry(
             mesh=clipped,
             source_tetrahedron_ids=clipped_source_ids % np.asarray(tetrahedra).shape[0],
-            vector_signs=_symmetry_image_signs(symmetry)[
-                clipped_source_ids // np.asarray(tetrahedra).shape[0]
-            ],
+            vector_signs=_symmetry_image_signs(symmetry)[clipped_source_ids // np.asarray(tetrahedra).shape[0]],
         )
         self._field_cache[key] = (signature, result)
         return result
@@ -1591,11 +1574,7 @@ class ObservationPlaneViewport(QObject):
 
     def _capture_normalized_spl_reference(self, plane: ObservationPlane) -> float | None:
         state = getattr(self, "_active_field", None)
-        if (
-            plane.display != ObservationPlaneDisplay.NORMALIZED_SPL
-            or state is None
-            or state.plane_id != plane.id
-        ):
+        if plane.display != ObservationPlaneDisplay.NORMALIZED_SPL or state is None or state.plane_id != plane.id:
             return None
         return normalized_spl_reference_db(state.pressure)
 
@@ -1608,11 +1587,7 @@ class ObservationPlaneViewport(QObject):
     ) -> FieldScalarProjection:
         drag = getattr(self, "_drag", None)
         normalized_reference = None
-        if (
-            drag is not None
-            and drag.original.id == plane.id
-            and drag.mode in {"move", "rotate"}
-        ):
+        if drag is not None and drag.original.id == plane.id and drag.mode in {"move", "rotate"}:
             normalized_reference = drag.normalized_reference_db
         return project_field_scalars(
             pressure,

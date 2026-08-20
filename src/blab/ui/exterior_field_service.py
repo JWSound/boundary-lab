@@ -108,6 +108,7 @@ class ExteriorFieldEvaluationService(QObject):
             if queued is not None:
                 self._start_locked(queued)
 
+
 def _task_plane_id(task: ExteriorFieldTask) -> object:
     return task.key[2] if len(task.key) > 2 else "unknown"
 

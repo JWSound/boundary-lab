@@ -124,9 +124,7 @@ class DockTitleBar(QFrame):
                 button.setMenu(action.menu())
                 button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
                 _sync_menu_tool_button(button, action)
-                action.changed.connect(
-                    lambda button=button, action=action: _sync_menu_tool_button(button, action)
-                )
+                action.changed.connect(lambda button=button, action=action: _sync_menu_tool_button(button, action))
             else:
                 button.setDefaultAction(action)
                 if not action.icon().isNull():

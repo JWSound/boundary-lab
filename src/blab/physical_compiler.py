@@ -239,13 +239,9 @@ class PhysicalSystemCompiler:
             if boundary.kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION:
                 region = regions.get(boundary.region_id)
                 if region is not None and region.kind != AcousticRegionKind.BOUNDED_AIR:
-                    issues.append(
-                        f"Plane-wave tube termination '{boundary.id}' requires a bounded-air FEM region."
-                    )
+                    issues.append(f"Plane-wave tube termination '{boundary.id}' requires a bounded-air FEM region.")
                 if boundary.parameters:
-                    issues.append(
-                        f"Plane-wave tube termination '{boundary.id}' does not accept boundary parameters."
-                    )
+                    issues.append(f"Plane-wave tube termination '{boundary.id}' does not accept boundary parameters.")
 
         component_by_boundary: Counter[str] = Counter()
         for component in system.components:
@@ -606,10 +602,7 @@ class PhysicalSystemCompiler:
                     )
                 inactive_tags = sorted(assigned_tags - present_tags)
                 if inactive_tags:
-                    names = [
-                        self._name_for_tag(mesh, tag, 2, required=False) or str(tag)
-                        for tag in inactive_tags
-                    ]
+                    names = [self._name_for_tag(mesh, tag, 2, required=False) or str(tag) for tag in inactive_tags]
                     issues.append(
                         f"Region '{region.id}' assigns physical surface groups outside its selected "
                         f"volume groups on mesh '{mesh_id}': {', '.join(names)}."
@@ -666,11 +659,7 @@ class PhysicalSystemCompiler:
         physical_blocks = mesh.cell_data.get("gmsh:physical")
         if physical_blocks is None:
             raise PhysicalModelCompileError("Mesh elements do not contain gmsh:physical tags.")
-        cell_types = (
-            {"triangle", "triangle3", "triangle6"}
-            if dimension == 2
-            else {"tetra", "tetra4", "tetra10"}
-        )
+        cell_types = {"triangle", "triangle3", "triangle6"} if dimension == 2 else {"tetra", "tetra4", "tetra10"}
         values = [
             np.asarray(physical_blocks[index], dtype=np.int64)
             for index, block in enumerate(mesh.cells)
@@ -757,10 +746,7 @@ class PhysicalSystemCompiler:
                     "Locally reacting rigid-backed Miki porous wall treatments",
                 )
             )
-        if any(
-            boundary.kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION
-            for boundary in system.boundaries
-        ):
+        if any(boundary.kind == BoundaryKind.PLANE_WAVE_TUBE_TERMINATION for boundary in system.boundaries):
             assumptions.append(
                 PhysicsAssumption(
                     AssumptionStatus.INCLUDED,

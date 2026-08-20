@@ -107,10 +107,7 @@ def quadratic_tetrahedral_shape_gradients(
     )
     reference = np.empty((cells.shape[0], 3, 10), dtype=float)
     for index in range(4):
-        reference[:, :, index] = (
-            (4.0 * barycentric[:, index] - 1.0)[:, np.newaxis]
-            * gradient_lambda[:, index]
-        )
+        reference[:, :, index] = (4.0 * barycentric[:, index] - 1.0)[:, np.newaxis] * gradient_lambda[:, index]
     for offset, (left, right) in enumerate(((0, 1), (1, 2), (2, 0), (0, 3), (3, 2), (1, 3))):
         reference[:, :, 4 + offset] = 4.0 * (
             barycentric[:, left, np.newaxis] * gradient_lambda[:, right]
@@ -136,9 +133,7 @@ def tetrahedron_edge_statistics_m(
     # six additional P2 nodes are interpolation nodes, not mesh edges.
     vertices = points[cells[:, :4]]
     pairs = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
-    lengths = np.concatenate(
-        [np.linalg.norm(vertices[:, right] - vertices[:, left], axis=1) for left, right in pairs]
-    )
+    lengths = np.concatenate([np.linalg.norm(vertices[:, right] - vertices[:, left], axis=1) for left, right in pairs])
     return {
         "minimum": float(np.min(lengths)),
         "median": float(np.quantile(lengths, 0.5)),
@@ -156,12 +151,15 @@ def frequency_mesh_resolution(
 ) -> dict[str, Any]:
     """Describe P1 mesh resolution at one frequency using the slowest region."""
 
-    if min(
-        frequency_hz,
-        minimum_sound_speed_m_per_s,
-        minimum_points_per_wavelength_p95,
-        minimum_points_per_wavelength_maximum_edge,
-    ) <= 0.0:
+    if (
+        min(
+            frequency_hz,
+            minimum_sound_speed_m_per_s,
+            minimum_points_per_wavelength_p95,
+            minimum_points_per_wavelength_maximum_edge,
+        )
+        <= 0.0
+    ):
         raise ValueError("Frequency, sound speed, and resolution gate must be positive.")
     wavelength = minimum_sound_speed_m_per_s / frequency_hz
     p95_edge = float(edge_statistics_m["p95"])
@@ -173,13 +171,9 @@ def frequency_mesh_resolution(
         "points_per_wavelength_at_p95_edge": p95_points,
         "points_per_wavelength_at_maximum_edge": minimum_points,
         "minimum_points_per_wavelength_p95": minimum_points_per_wavelength_p95,
-        "minimum_points_per_wavelength_maximum_edge": (
-            minimum_points_per_wavelength_maximum_edge
-        ),
+        "minimum_points_per_wavelength_maximum_edge": (minimum_points_per_wavelength_maximum_edge),
         "required_p95_edge_m": wavelength / minimum_points_per_wavelength_p95,
-        "required_maximum_edge_m": (
-            wavelength / minimum_points_per_wavelength_maximum_edge
-        ),
+        "required_maximum_edge_m": (wavelength / minimum_points_per_wavelength_maximum_edge),
         "adequate": (
             p95_points >= minimum_points_per_wavelength_p95
             and minimum_points >= minimum_points_per_wavelength_maximum_edge
@@ -198,9 +192,7 @@ def surface_pressure_metrics(
     cells = np.asarray(triangles, dtype=np.int64)
     values = np.asarray(pressure, dtype=complex)
     vertices = points[cells]
-    areas = 0.5 * np.linalg.norm(
-        np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]), axis=1
-    )
+    areas = 0.5 * np.linalg.norm(np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]), axis=1)
     area = float(np.sum(areas))
     if area <= 0.0:
         raise ValueError("Validation surface has zero area.")
@@ -211,12 +203,7 @@ def surface_pressure_metrics(
         raise ValueError("Validation surface triangles must have three or six nodes.")
     mean = np.sum(areas * np.mean(nodal, axis=1)) / area
     mass = np.asarray([[2.0, 1.0, 1.0], [1.0, 2.0, 1.0], [1.0, 1.0, 2.0]])
-    energy = float(
-        np.sum(
-            areas
-            * np.real(np.einsum("ti,ij,tj->t", np.conj(nodal), mass / 12.0, nodal))
-        )
-    )
+    energy = float(np.sum(areas * np.real(np.einsum("ti,ij,tj->t", np.conj(nodal), mass / 12.0, nodal))))
     plane_fraction = float(area * abs(mean) ** 2 / energy) if energy > 0.0 else 0.0
 
     barycentric = np.asarray(
@@ -347,9 +334,7 @@ def evaluate_fem_run(
     configured_gates = gates or FEMValidationGates()
     edge_statistics = tetrahedron_edge_statistics_m(result_points, result_tetrahedra)
     bounded_sound_speeds = [
-        float(region.sound_speed_m_per_s)
-        for region in system.regions
-        if region.kind == AcousticRegionKind.BOUNDED_AIR
+        float(region.sound_speed_m_per_s) for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR
     ]
     if not bounded_sound_speeds:
         raise ValueError("FEM result does not contain a bounded acoustic region.")
@@ -445,13 +430,9 @@ def compare_fem_validation_reports(
             raise ValueError(f"{label.capitalize()} input is not a FEM validation report.")
     configured = gates or FEMConvergenceGates()
     coarse_results = {
-        (float(item["frequency_hz"]), str(item["excitation_port_id"])): item
-        for item in coarse["results"]
+        (float(item["frequency_hz"]), str(item["excitation_port_id"])): item for item in coarse["results"]
     }
-    fine_results = {
-        (float(item["frequency_hz"]), str(item["excitation_port_id"])): item
-        for item in fine["results"]
-    }
+    fine_results = {(float(item["frequency_hz"]), str(item["excitation_port_id"])): item for item in fine["results"]}
     common_results = set(coarse_results) & set(fine_results)
     if not common_results:
         raise ValueError("Convergence reports have no common frequency/excitation pairs.")
@@ -463,27 +444,17 @@ def compare_fem_validation_reports(
         coarse_surfaces = {item["name"]: item for item in coarse_result["surfaces"]}
         fine_surfaces = {item["name"]: item for item in fine_result["surfaces"]}
         if set(coarse_surfaces) != set(fine_surfaces):
-            raise ValueError(
-                f"Surface names differ at {frequency_hz:g} Hz for {excitation_id!r}."
-            )
+            raise ValueError(f"Surface names differ at {frequency_hz:g} Hz for {excitation_id!r}.")
         names = sorted(coarse_surfaces)
         areas = np.asarray([fine_surfaces[name]["area_m2"] for name in names], dtype=float)
-        coarse_pressure = np.asarray(
-            [_complex_from_dict(coarse_surfaces[name]["mean_pressure_pa"]) for name in names]
-        )
-        fine_pressure = np.asarray(
-            [_complex_from_dict(fine_surfaces[name]["mean_pressure_pa"]) for name in names]
-        )
+        coarse_pressure = np.asarray([_complex_from_dict(coarse_surfaces[name]["mean_pressure_pa"]) for name in names])
+        fine_pressure = np.asarray([_complex_from_dict(fine_surfaces[name]["mean_pressure_pa"]) for name in names])
         coarse_reference = np.sum(areas * coarse_pressure)
         fine_reference = np.sum(areas * fine_pressure)
         if min(abs(coarse_reference), abs(fine_reference)) <= np.finfo(float).eps:
             raise ValueError(f"Mean surface pressure is zero at {frequency_hz:g} Hz.")
         phase_delta = np.degrees(
-            np.angle(
-                fine_pressure
-                * np.conj(fine_reference)
-                * np.conj(coarse_pressure * np.conj(coarse_reference))
-            )
+            np.angle(fine_pressure * np.conj(fine_reference) * np.conj(coarse_pressure * np.conj(coarse_reference)))
         )
         area_sum = float(np.sum(areas))
         phase_rms = float(np.sqrt(np.sum(areas * phase_delta**2) / area_sum))
@@ -494,21 +465,14 @@ def compare_fem_validation_reports(
         amplitude_delta = fine_magnitude - coarse_magnitude
         amplitude_rms = float(np.sqrt(np.sum(areas * amplitude_delta**2) / area_sum))
         plane_delta = max(
-            abs(
-                float(fine_surfaces[name]["plane_mode_fraction"])
-                - float(coarse_surfaces[name]["plane_mode_fraction"])
-            )
+            abs(float(fine_surfaces[name]["plane_mode_fraction"]) - float(coarse_surfaces[name]["plane_mode_fraction"]))
             for name in names
         )
         checks = {
-            "surface_phase_rms": phase_rms
-            <= configured.maximum_surface_phase_rms_delta_deg,
-            "surface_phase_max": float(np.max(np.abs(phase_delta)))
-            <= configured.maximum_surface_phase_delta_deg,
-            "normalized_amplitude_rms": amplitude_rms
-            <= configured.maximum_normalized_amplitude_rms_delta,
-            "plane_mode_fraction": plane_delta
-            <= configured.maximum_plane_mode_fraction_delta,
+            "surface_phase_rms": phase_rms <= configured.maximum_surface_phase_rms_delta_deg,
+            "surface_phase_max": float(np.max(np.abs(phase_delta))) <= configured.maximum_surface_phase_delta_deg,
+            "normalized_amplitude_rms": amplitude_rms <= configured.maximum_normalized_amplitude_rms_delta,
+            "plane_mode_fraction": plane_delta <= configured.maximum_plane_mode_fraction_delta,
         }
         comparisons.append(
             {
@@ -520,9 +484,7 @@ def compare_fem_validation_reports(
                 "surface_phase_max_delta_deg": float(np.max(np.abs(phase_delta))),
                 "normalized_amplitude_rms_delta": amplitude_rms,
                 "maximum_plane_mode_fraction_delta": plane_delta,
-                "surface_phase_delta_deg": {
-                    name: float(value) for name, value in zip(names, phase_delta, strict=True)
-                },
+                "surface_phase_delta_deg": {name: float(value) for name, value in zip(names, phase_delta, strict=True)},
             }
         )
     return {
@@ -531,12 +493,8 @@ def compare_fem_validation_reports(
         "coarse_report": str(coarse_path),
         "fine_report": str(fine_path),
         "gates": asdict(configured),
-        "coarse_only_frequency_excitations": [
-            list(item) for item in sorted(set(coarse_results) - common_results)
-        ],
-        "fine_only_frequency_excitations": [
-            list(item) for item in sorted(set(fine_results) - common_results)
-        ],
+        "coarse_only_frequency_excitations": [list(item) for item in sorted(set(coarse_results) - common_results)],
+        "fine_only_frequency_excitations": [list(item) for item in sorted(set(fine_results) - common_results)],
         "passed": all(item["passed"] for item in comparisons),
         "comparisons": comparisons,
     }
@@ -576,9 +534,7 @@ def _evaluate_frequency(
                     for face_node in face_nodes:
                         positions = np.flatnonzero(tet[:4] == face_node)
                         if len(positions) != 1:
-                            raise ValueError(
-                                "Quadratic validation face does not match its adjacent tetrahedron."
-                            )
+                            raise ValueError("Quadratic validation face does not match its adjacent tetrahedron.")
                         barycentric[tet_index, positions[0]] = 1.0 / 3.0
                 gradients = quadratic_tetrahedral_shape_gradients(
                     points,
@@ -589,8 +545,8 @@ def _evaluate_frequency(
                 gradients = tetrahedral_shape_gradients(points, adjacent_tetrahedra)
             tet_pressure = pressure[adjacent_tetrahedra]
             pressure_gradient = np.einsum("ti,tij->tj", tet_pressure, gradients)
-            normal_velocity = pressure_gradient @ normal / (
-                1j * 2.0 * np.pi * frequency_hz * float(region.density_kg_per_m3)
+            normal_velocity = (
+                pressure_gradient @ normal / (1j * 2.0 * np.pi * frequency_hz * float(region.density_kg_per_m3))
             )
             velocity_values.append(complex(np.mean(normal_velocity)))
             if len(normal_velocity) > 1:
@@ -610,7 +566,9 @@ def _evaluate_frequency(
                 "region_id": surface.region_id,
                 "mean_outward_normal_velocity_m_per_s": _complex_dict(mean_velocity),
                 "mean_specific_impedance_pa_s_per_m": _complex_dict(
-                    mean_pressure / mean_velocity if abs(mean_velocity) > np.finfo(float).eps else complex(np.nan, np.nan)
+                    mean_pressure / mean_velocity
+                    if abs(mean_velocity) > np.finfo(float).eps
+                    else complex(np.nan, np.nan)
                 ),
                 "forward_pressure_pa": _complex_dict(forward),
                 "backward_pressure_pa": _complex_dict(backward),
@@ -641,8 +599,7 @@ def _evaluate_frequency(
         <= gates.maximum_within_surface_phase_rms_deg,
         "inter_surface_phase_rms": aggregate["inter_surface_phase_rms_deg"]
         <= gates.maximum_inter_surface_phase_rms_deg,
-        "inter_surface_phase_max": aggregate["inter_surface_phase_max_deg"]
-        <= gates.maximum_inter_surface_phase_deg,
+        "inter_surface_phase_max": aggregate["inter_surface_phase_max_deg"] <= gates.maximum_inter_surface_phase_deg,
         "plane_mode_fraction": aggregate["minimum_plane_mode_fraction"] >= gates.minimum_plane_mode_fraction,
         "mesh_resolution": bool(mesh_resolution["adequate"]),
     }
@@ -700,7 +657,12 @@ def _reconstruct_surfaces(
         source_to_result[active_vertices] = np.arange(active_vertices.size) + int(node_offsets[region_position])
         face_adjacency: dict[tuple[int, int, int], list[int]] = {}
         for local_tet, tet in enumerate(selected_tets):
-            for face in ((tet[0], tet[1], tet[2]), (tet[0], tet[1], tet[3]), (tet[0], tet[2], tet[3]), (tet[1], tet[2], tet[3])):
+            for face in (
+                (tet[0], tet[1], tet[2]),
+                (tet[0], tet[1], tet[3]),
+                (tet[0], tet[2], tet[3]),
+                (tet[1], tet[2], tet[3]),
+            ):
                 face_adjacency.setdefault(tuple(sorted(int(value) for value in face)), []).append(
                     int(tetra_offsets[region_position]) + local_tet
                 )
@@ -711,9 +673,8 @@ def _reconstruct_surfaces(
                 fnmatch.fnmatchcase(name, pattern) for pattern in patterns
             ):
                 continue
-            transformed_points = (
-                np.asarray(mesh.points, dtype=float) * float(mesh_resource.scale_to_m)
-                + np.asarray(mesh_resource.translation_m, dtype=float)
+            transformed_points = np.asarray(mesh.points, dtype=float) * float(mesh_resource.scale_to_m) + np.asarray(
+                mesh_resource.translation_m, dtype=float
             )
             source_triangles, geometrical_tags = _selected_cells_with_entities(
                 mesh,
@@ -731,9 +692,7 @@ def _reconstruct_surfaces(
                 entities = _ordered_split_surface_entities(entities)
                 groups = [
                     (
-                        f"{name}_s{index // 2}{index % 2}"
-                        if len(entities) == 4
-                        else f"{name}_entity_{entity_tag}",
+                        f"{name}_s{index // 2}{index % 2}" if len(entities) == 4 else f"{name}_entity_{entity_tag}",
                         triangles,
                     )
                     for index, (entity_tag, triangles, _center) in enumerate(entities)
@@ -742,9 +701,7 @@ def _reconstruct_surfaces(
             for surface_name, triangles in groups:
                 mapped = source_to_result[triangles]
                 if np.any(mapped < 0):
-                    raise ValueError(
-                        f"Surface {surface_name!r} contains nodes outside bounded region {region.id!r}."
-                    )
+                    raise ValueError(f"Surface {surface_name!r} contains nodes outside bounded region {region.id!r}.")
                 triangle_points = transformed_points[triangles]
                 crosses = np.cross(
                     triangle_points[:, 1] - triangle_points[:, 0],
@@ -761,9 +718,7 @@ def _reconstruct_surfaces(
                         )
                     )
                     if not tetra_indices:
-                        raise ValueError(
-                            f"Surface triangle on {surface_name!r} has no adjacent selected tetrahedron."
-                        )
+                        raise ValueError(f"Surface triangle on {surface_name!r} has no adjacent selected tetrahedron.")
                     adjacent.append(tetra_indices)
                     if len(tetra_indices) == 1:
                         face_center = np.mean(result_points[mapped[index, :3]], axis=0)
@@ -902,9 +857,7 @@ def _verify_source_meshes(manifest: dict[str, Any]) -> None:
     for mesh in meshes:
         path = Path(str(mesh["file"])).resolve()
         if not path.is_file():
-            raise ValueError(
-                f"Source FEM mesh is unavailable for tagged-surface reconstruction: {path}"
-            )
+            raise ValueError(f"Source FEM mesh is unavailable for tagged-surface reconstruction: {path}")
         expected = str(mesh.get("sha256", ""))
         actual = _sha256(path)
         if expected and actual != expected:

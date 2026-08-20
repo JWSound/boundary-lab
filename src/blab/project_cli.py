@@ -224,9 +224,7 @@ def _evaluate_fem(args: argparse.Namespace) -> None:
         maximum_inter_surface_phase_deg=args.max_inter_phase_deg,
         minimum_plane_mode_fraction=args.min_plane_mode_fraction,
         minimum_points_per_wavelength_p95=args.min_points_per_wavelength_p95,
-        minimum_points_per_wavelength_maximum_edge=(
-            args.min_points_per_wavelength_maximum_edge
-        ),
+        minimum_points_per_wavelength_maximum_edge=(args.min_points_per_wavelength_maximum_edge),
     )
     report = evaluate_fem_run(
         args.run_dir,
@@ -240,9 +238,7 @@ def _evaluate_fem(args: argparse.Namespace) -> None:
         "output": str(output.resolve()),
         "surface_count": report["surface_count"],
         "frequencies_hz": report["frequencies_hz"],
-        "sampled_coherence_ceiling_hz_by_excitation": report[
-            "sampled_coherence_ceiling_hz_by_excitation"
-        ],
+        "sampled_coherence_ceiling_hz_by_excitation": report["sampled_coherence_ceiling_hz_by_excitation"],
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
 
@@ -251,9 +247,7 @@ def _compare_fem(args: argparse.Namespace) -> None:
     gates = FEMConvergenceGates(
         maximum_surface_phase_rms_delta_deg=args.max_phase_rms_delta_deg,
         maximum_surface_phase_delta_deg=args.max_phase_delta_deg,
-        maximum_normalized_amplitude_rms_delta=(
-            args.max_normalized_amplitude_rms_delta
-        ),
+        maximum_normalized_amplitude_rms_delta=(args.max_normalized_amplitude_rms_delta),
         maximum_plane_mode_fraction_delta=args.max_plane_mode_fraction_delta,
     )
     report = compare_fem_validation_reports(

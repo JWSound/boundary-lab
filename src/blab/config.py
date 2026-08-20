@@ -156,9 +156,7 @@ def load_external_config(
                 tag=int(item["tag"]),
                 mesh=None if item.get("mesh") is None else str(item.get("mesh")),
                 drive_group=None if item.get("drive_group") is None else str(item.get("drive_group")),
-                drive_group_name=(
-                    None if item.get("drive_group_name") is None else str(item.get("drive_group_name"))
-                ),
+                drive_group_name=(None if item.get("drive_group_name") is None else str(item.get("drive_group_name"))),
                 channel=str(item.get("channel", "main")),
                 velocity_offset_db=float(item.get("velocity_offset_db", 0.0)),
                 level_db=float(item.get("level_db", 0.0)),

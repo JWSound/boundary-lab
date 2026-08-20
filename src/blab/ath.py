@@ -74,8 +74,7 @@ def parse_ath_drive_definitions(geo_text: str) -> tuple[AthDriveDefinition, ...]
             continue
         if len(fields) != 8:
             raise ValueError(
-                f"Malformed Ath DRV metadata on GEO line {line_number}: expected 8 fields, "
-                f"found {len(fields)}."
+                f"Malformed Ath DRV metadata on GEO line {line_number}: expected 8 fields, found {len(fields)}."
             )
         try:
             definition = AthDriveDefinition(
@@ -92,9 +91,7 @@ def parse_ath_drive_definitions(geo_text: str) -> tuple[AthDriveDefinition, ...]
         if not math.isfinite(definition.weight_absolute) or not math.isfinite(definition.weight_db):
             raise ValueError(f"Ath DRV metadata on GEO line {line_number} contains a non-finite weight.")
         if definition.ref_elements in referenced_elements:
-            raise ValueError(
-                f"Ath DRV metadata references {definition.ref_elements!r} more than once."
-            )
+            raise ValueError(f"Ath DRV metadata references {definition.ref_elements!r} more than once.")
         referenced_elements.add(definition.ref_elements)
         definitions.append(definition)
     return tuple(definitions)
@@ -403,9 +400,7 @@ def _meshio_from_current_gmsh_model(gmsh_module) -> meshio.Mesh:
 
     node_tags, coordinates, _parameters = gmsh_module.model.mesh.getNodes()
     coordinate_rows = np.asarray(coordinates, dtype=np.float64).reshape((-1, 3))
-    coordinates_by_tag = {
-        int(node_tag): coordinate_rows[index] for index, node_tag in enumerate(np.asarray(node_tags))
-    }
+    coordinates_by_tag = {int(node_tag): coordinate_rows[index] for index, node_tag in enumerate(np.asarray(node_tags))}
 
     triangle_node_tags: list[np.ndarray] = []
     triangle_physical_tags: list[np.ndarray] = []
@@ -432,9 +427,7 @@ def _meshio_from_current_gmsh_model(gmsh_module) -> meshio.Mesh:
         if len(entity_physical_tags) != 1:
             detail = "no physical surface group" if not entity_physical_tags else "multiple physical surface groups"
             raise RuntimeError(f"Ath GEO surface {int(entity_tag)} belongs to {detail}.")
-        triangle_physical_tags.append(
-            np.full(triangle_count, entity_physical_tags[0], dtype=np.int32)
-        )
+        triangle_physical_tags.append(np.full(triangle_count, entity_physical_tags[0], dtype=np.int32))
         triangle_geometrical_tags.append(np.full(triangle_count, int(entity_tag), dtype=np.int32))
 
     if not triangle_node_tags:
@@ -504,9 +497,7 @@ def _radiators_from_physical_names(
 ) -> tuple[RadiatorConfig, ...]:
     if drive_definitions:
         missing = [
-            definition.ref_elements
-            for definition in drive_definitions
-            if definition.ref_elements not in physical_names
+            definition.ref_elements for definition in drive_definitions if definition.ref_elements not in physical_names
         ]
         if missing:
             names = ", ".join(repr(name) for name in missing)
@@ -581,9 +572,7 @@ def build_ath_mesh_artifacts(
         meshio.write(reduced_path, reduced_mesh, file_format="gmsh22", binary=False)
 
     physical_names = {
-        name: int(value[0])
-        for name, value in raw_mesh.field_data.items()
-        if len(value) >= 2 and int(value[1]) == 2
+        name: int(value[0]) for name, value in raw_mesh.field_data.items() if len(value) >= 2 and int(value[1]) == 2
     }
     try:
         driven_tag = physical_names[DRIVEN_DIAPHRAGM_PHYSICAL_NAME]
@@ -672,13 +661,9 @@ def ath_run_result_from_payload(payload: dict) -> AthRunResult:
             RadiatorConfig(
                 name=str(radiator["name"]),
                 tag=int(radiator["tag"]),
-                drive_group=(
-                    None if radiator.get("drive_group") is None else str(radiator["drive_group"])
-                ),
+                drive_group=(None if radiator.get("drive_group") is None else str(radiator["drive_group"])),
                 drive_group_name=(
-                    None
-                    if radiator.get("drive_group_name") is None
-                    else str(radiator["drive_group_name"])
+                    None if radiator.get("drive_group_name") is None else str(radiator["drive_group_name"])
                 ),
                 velocity_offset_db=float(radiator.get("velocity_offset_db", 0.0)),
                 level_db=float(radiator.get("level_db", 0.0)),
@@ -702,9 +687,7 @@ def ath_run_result_from_payload(payload: dict) -> AthRunResult:
         mirror_axes=tuple(str(axis) for axis in payload.get("mirror_axes", [])),
         cleaned_msh_path=(Path(payload["cleaned_msh_path"]) if payload.get("cleaned_msh_path") else None),
         reduced_cleaned_msh_path=(
-            Path(payload["reduced_cleaned_msh_path"])
-            if payload.get("reduced_cleaned_msh_path")
-            else None
+            Path(payload["reduced_cleaned_msh_path"]) if payload.get("reduced_cleaned_msh_path") else None
         ),
         quality_warning=warning,
     )

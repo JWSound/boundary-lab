@@ -69,9 +69,7 @@ class StartupReporter:
         self._previous_runtime_log_level = self._runtime_logger.level
         self._previous_runtime_log_propagate = self._runtime_logger.propagate
         self._runtime_handler = logging.StreamHandler(self._log_file)
-        self._runtime_handler.setFormatter(
-            logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-        )
+        self._runtime_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
         self._runtime_logger.addHandler(self._runtime_handler)
         self._runtime_logger.setLevel(logging.INFO)
         self._runtime_logger.propagate = False

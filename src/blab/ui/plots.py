@@ -1427,15 +1427,18 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
 
     def _current_plot_state(
         self,
-    ) -> tuple[
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-        np.ndarray | None,
-    ] | None:
+    ) -> (
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray | None,
+            np.ndarray | None,
+            np.ndarray | None,
+            np.ndarray | None,
+        ]
+        | None
+    ):
         if self._plot_state is None:
             return None
         return tuple(None if values is None else values.copy() for values in self._plot_state)
@@ -1510,10 +1513,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
                         continue
                     label = str(name)
                     series.append((label, channel_curves[index]))
-                    if (
-                        channel_on_axis_phase_deg is not None
-                        and index < np.asarray(channel_on_axis_phase_deg).shape[0]
-                    ):
+                    if channel_on_axis_phase_deg is not None and index < np.asarray(channel_on_axis_phase_deg).shape[0]:
                         phase = np.asarray(channel_on_axis_phase_deg[index], dtype=float)
                         if phase.shape == freqs_hz.shape:
                             phase_series[label] = phase
@@ -1579,9 +1579,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             action = self.trace_filter_menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(
-                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
-            )
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
             self._series_actions[label] = action
         self.trace_filter_action.setEnabled(bool(labels))
 
@@ -1617,9 +1615,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         if legend is not None:
             legend.remove()
         visible_lines = [
-            self._magnitude_lines[label]
-            for label in self._series_labels
-            if self._series_visibility.get(label, True)
+            self._magnitude_lines[label] for label in self._series_labels if self._series_visibility.get(label, True)
         ]
         if visible_lines:
             self.axes.legend(visible_lines, [line.get_label() for line in visible_lines], loc="best")

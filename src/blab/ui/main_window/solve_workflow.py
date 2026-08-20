@@ -212,7 +212,9 @@ class SolveWorkflowController(QObject):
         if self._geometry_controller.active or self._solve_controller.active:
             return False
         if not self._inputs.has_solver_meshes():
-            self._view.warn("No mesh", "Enable at least one generated or imported mesh before exporting a speaker package.")
+            self._view.warn(
+                "No mesh", "Enable at least one generated or imported mesh before exporting a speaker package."
+            )
             return False
         try:
             normalized = config.normalized()
@@ -498,8 +500,7 @@ class SolveWorkflowController(QObject):
             solved_count = session.solved_count
             solve_completed = completion.completed
             interior_fem = (
-                session.result_builder is not None
-                and session.result_builder.provenance.solve_kind == "interior_fem"
+                session.result_builder is not None and session.result_builder.provenance.solve_kind == "interior_fem"
             )
             session.use_final_isobar_resolution = solve_completed
             if solve_completed and not interior_fem:

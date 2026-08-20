@@ -250,21 +250,19 @@ def conform_bem_interface_to_fem(
     )
     if seam_simplification is not None:
         aligned_bem_path, bem_to_fem_path_indices, seam_deviation = seam_simplification
-        output_mesh, interface_orientation_flipped, simplified_edges = (
-            _replace_bem_interface_with_simplified_seam(
-                fem_mesh,
-                bem_mesh,
-                fem_interface,
-                bem_data,
-                bem_interface_mask,
-                bem_interface_tag,
-                fem_seam_path=fem_opening_path,
-                bem_seam_path=aligned_bem_path,
-                bem_to_fem_path_indices=bem_to_fem_path_indices,
-                merge_tolerance=merge_tolerance,
-                closed=not interface_symmetry_axes,
-                protected_bem_tags=protected_bem_tags,
-            )
+        output_mesh, interface_orientation_flipped, simplified_edges = _replace_bem_interface_with_simplified_seam(
+            fem_mesh,
+            bem_mesh,
+            fem_interface,
+            bem_data,
+            bem_interface_mask,
+            bem_interface_tag,
+            fem_seam_path=fem_opening_path,
+            bem_seam_path=aligned_bem_path,
+            bem_to_fem_path_indices=bem_to_fem_path_indices,
+            merge_tolerance=merge_tolerance,
+            closed=not interface_symmetry_axes,
+            protected_bem_tags=protected_bem_tags,
         )
         identity = validate_conforming_interfaces(
             fem_mesh,
@@ -1120,9 +1118,7 @@ def _replace_bem_interface_with_simplified_seam(
     path_mapping = np.asarray(bem_to_fem_path_indices, dtype=np.int64)
     edge_stop = len(bem_path) if closed else len(bem_path) - 1
     collapsed_edge_positions = [
-        index
-        for index in range(edge_stop)
-        if path_mapping[index] == path_mapping[(index + 1) % len(bem_path)]
+        index for index in range(edge_stop) if path_mapping[index] == path_mapping[(index + 1) % len(bem_path)]
     ]
     expected_collapses = len(bem_path) - len(fem_path)
     if len(collapsed_edge_positions) != expected_collapses or expected_collapses <= 0:
@@ -1202,9 +1198,7 @@ def _replace_bem_interface_with_simplified_seam(
     normal_alignment = np.sum(old_cross * new_cross, axis=1) / (old_magnitudes * new_magnitudes)
     area_ratio = new_magnitudes / old_magnitudes
     if np.any(normal_alignment <= 0.0):
-        raise InterfaceConformError(
-            "Ordered seam simplification rejected: it would invert a surrounding triangle."
-        )
+        raise InterfaceConformError("Ordered seam simplification rejected: it would invert a surrounding triangle.")
     if np.any((area_ratio < 0.05) | (area_ratio > 20.0)):
         raise InterfaceConformError(
             "Ordered seam simplification rejected: surrounding triangle area would change by more than 20x."
@@ -1229,9 +1223,7 @@ def _replace_bem_interface_with_simplified_seam(
         appended_start + len(appended_fem_vertices),
         dtype=np.int64,
     )
-    combined_points = np.vstack(
-        (simplified_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices])
-    )
+    combined_points = np.vstack((simplified_points, np.asarray(fem_mesh.points, dtype=float)[appended_fem_vertices]))
     copied_interface = fem_vertex_map[copied_interface]
     combined_triangles = np.vstack((retained_triangles, copied_interface))
     connectivity_keys = np.sort(combined_triangles, axis=1)
@@ -1642,10 +1634,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
         f"{result.fem_interface_triangles} FEM facets"
     )
     if result.seam_simplification_used:
-        print(
-            "Surrounding BEM seam simplified: "
-            f"{result.simplified_bem_seam_edges} redundant boundary edges collapsed"
-        )
+        print(f"Surrounding BEM seam simplified: {result.simplified_bem_seam_edges} redundant boundary edges collapsed")
         print("Warning: inspect the conformed interface and surrounding triangles before solving.")
     elif result.original_adjacent_triangles == result.remeshed_adjacent_triangles == 0:
         print("Surrounding BEM surface preserved: interface seams already matched discretely")

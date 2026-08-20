@@ -94,9 +94,7 @@ class InteriorFieldResults:
             optimize=True,
         )
         omega = 2.0 * np.pi * frequency
-        velocity = pressure_gradient / (
-            1j * omega * self.tetrahedron_density_kg_per_m3[:, np.newaxis]
-        )
+        velocity = pressure_gradient / (1j * omega * self.tetrahedron_density_kg_per_m3[:, np.newaxis])
         return velocity.astype(np.complex64, copy=False)
 
 
@@ -495,9 +493,7 @@ def project_field_scalars(
             values = complex_magnitude
             title = "Particle Velocity Magnitude (m/s)"
         else:
-            instantaneous = np.real(
-                pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg)))
-            )
+            instantaneous = np.real(pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg))))
             values = np.linalg.norm(instantaneous, axis=1)
             title = "Instantaneous Particle Speed (m/s)"
         maximum = _finite_abs_max(complex_magnitude)
