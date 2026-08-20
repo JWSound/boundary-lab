@@ -11,7 +11,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
-from PySide6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -56,7 +56,7 @@ from blab.ui.plots import (
     apply_compact_plot_text,
     clear_plot_axes,
 )
-from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
+from blab.ui.settings import application_settings
 from blab.ui.theme import themed_content_background
 
 SPL_SCALAR_NAME = "Normalized SPL (dB)"
@@ -128,7 +128,7 @@ class BalloonPlotWindow(QMainWindow):
         self._hover_observer = None
         self._slice_plot_high_res = False
         self._wavefront_shape_summary_cache = None
-        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.settings = application_settings()
         self.file_dialogs = file_dialog_service or FileDialogService(self.settings)
 
         menu_bar = self.menuBar()

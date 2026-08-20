@@ -25,7 +25,7 @@ dev = [
 ]
 gui = [
   "PySide6",
-  "pyvista",
+  "pyvista>=0.47",
   "pyvistaqt",
 ]
 

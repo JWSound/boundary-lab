@@ -27,6 +27,16 @@ FIELD_TRANSLATION_TARGET_FPS_MIN = 1.0
 FIELD_TRANSLATION_TARGET_FPS_MAX = 60.0
 
 
+def application_settings() -> QSettings:
+    """Return the shared application settings using the configured default format."""
+    return QSettings(
+        QSettings.defaultFormat(),
+        QSettings.UserScope,
+        SETTINGS_ORG,
+        SETTINGS_APP,
+    )
+
+
 @dataclass
 class GuiPreferences:
     theme: str = "system"

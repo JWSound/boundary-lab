@@ -53,6 +53,12 @@ def _isolate_qsettings(tmp_path_factory) -> None:
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(root))
     QSettings.setPath(QSettings.IniFormat, QSettings.SystemScope, str(root))
 
+    from blab.ui.settings import application_settings
+
+    settings = application_settings()
+    assert settings.format() == QSettings.IniFormat
+    assert pathlib.Path(settings.fileName()).is_relative_to(root)
+
 
 @pytest.fixture(scope="session")
 def qapp():
@@ -197,9 +203,8 @@ def balloon_window(qapp, monkeypatch):
     """A fully constructed BalloonPlotWindow with the VTK plotter stubbed."""
     require_pyvistaqt()
     import pyvistaqt
-    from PySide6.QtCore import QSettings
 
-    from blab.ui.settings import SETTINGS_APP, SETTINGS_ORG
+    from blab.ui.settings import application_settings
 
     monkeypatch.setattr(pyvistaqt, "QtInteractor", _stub_qt_interactor_class())
 
@@ -207,7 +212,7 @@ def balloon_window(qapp, monkeypatch):
 
     # Closing the window saves its dock layout, so without this each test would
     # restore whatever layout the previous one happened to leave behind.
-    settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+    settings = application_settings()
     settings.remove("balloon_window")
     settings.sync()
 

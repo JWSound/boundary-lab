@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QSettings, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
@@ -80,8 +80,7 @@ from blab.ui.result_projection import (
     VisualizationProjection,
 )
 from blab.ui.settings import (
-    SETTINGS_APP,
-    SETTINGS_ORG,
+    application_settings,
     load_syntax_highlighting_enabled,
     settings_int,
 )
@@ -287,7 +286,7 @@ class MainWindow(
                 startup_status(stage)
 
         startup("Loading saved settings...")
-        self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self.settings = application_settings()
         self.file_dialogs = FileDialogService(self.settings)
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
