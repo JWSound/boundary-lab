@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable
 
 from blab.solvers.base import SolverBackend, SolverCapabilities
@@ -16,6 +17,18 @@ class SolverBackendInfo:
     factory: Callable[..., SolverBackend] | None = None
     available: bool = True
     description: str = ""
+
+
+@lru_cache(maxsize=1)
+def _hornlab_metal_probe() -> tuple[bool, SolverCapabilities]:
+    """Return the installed Metal adapter's availability and capabilities."""
+    try:
+        from hornlab_metal_bem.boundary_lab import create_backend as create_hornlab_backend
+
+        backend = create_hornlab_backend()
+        return bool(backend.supports()), backend.capabilities
+    except Exception:
+        return False, SolverCapabilities()
 
 
 _BACKENDS: dict[str, SolverBackendInfo] = {
@@ -79,6 +92,14 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         ),
         factory=lambda **_kwargs: _create_bempp_local_backend(),
         description="Run the bundled bempp-cl OpenCL CPU solver in the GUI process.",
+    ),
+    "hornlab_metal": SolverBackendInfo(
+        backend_id="hornlab_metal",
+        label="HornLab Metal BEM",
+        capabilities=_hornlab_metal_probe()[1],
+        factory=lambda **kwargs: _create_hornlab_metal_backend(**kwargs),
+        available=_hornlab_metal_probe()[0],
+        description="Run the native HornLab Apple Metal solver on Apple Silicon macOS.",
     ),
 }
 
@@ -146,6 +167,10 @@ def normalize_backend_id(backend_id: str) -> str:
         "rocm": "beat_rocm",
         "amd": "beat_rocm",
         "amdgpu": "beat_rocm",
+        "hornlab": "hornlab_metal",
+        "hornlab_metal": "hornlab_metal",
+        "metal": "hornlab_metal",
+        "apple_metal": "hornlab_metal",
     }
     return aliases.get(text, text or "local")
 
@@ -158,6 +183,24 @@ def _create_bempp_local_backend() -> SolverBackend:
     from blab.solvers.bempp_local import BemppLocalBackend
 
     return BemppLocalBackend()
+
+
+def _create_hornlab_metal_backend(**_kwargs: Any) -> SolverBackend:
+    from hornlab_metal_bem.boundary_lab import create_backend as create_hornlab_backend
+
+    return create_hornlab_backend()
+
+
+def backend_provenance(backend_id: str) -> dict[str, str]:
+    """Return backend build details worth recording with a run's results."""
+    if normalize_backend_id(backend_id) != "hornlab_metal":
+        return {}
+    try:
+        from importlib import metadata
+
+        return {"hornlab_metal_bem_version": metadata.version("hornlab-metal-bem")}
+    except Exception:
+        return {}
 
 
 def _create_bempp_server_backend(

@@ -90,6 +90,13 @@ class SimulationConfig:
     spherical_sampling_enabled: bool = False
     spherical_sampling_points: int = 6000
     symmetry: str = "off"
+    # When a mirror-reduced (symmetric) mesh is solved, native backends that
+    # validate cut planes require every open boundary edge to lie on a symmetry
+    # plane unless this is False. An open-mouth horn's mouth rim is a real free
+    # edge off the planes, so reduced-symmetry horn solves must opt out. Only
+    # consulted when a symmetry plane is active (symmetry != "off"); ignored by
+    # backends without native symmetry.
+    native_check_open_edges: bool = True
     output_npz: str = str(SOLVER_OUTPUT_NPZ)
 
     def __post_init__(self) -> None:
