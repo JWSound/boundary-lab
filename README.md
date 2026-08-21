@@ -35,7 +35,8 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 Boundary Lab currently has five selectable BEM solver backends in application
 preferences: Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT Engine AMD
-ROCm, and Bempp OpenCL CPU.
+ROCm, and Bempp OpenCL CPU. Apple Silicon macOS installs also offer HornLab Metal
+BEM (see [macOS HornLab Integration](docs/macOS%20HornLab%20Integration.md)).
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -88,6 +89,13 @@ From the repository root run:
 ```bash
 python -m pip install -e ".[gui]"
 ```
+
+On macOS and Linux this also installs the HornLab waveguide mesher, which
+generates supported OSSE/R-OSSE geometry natively instead of running Ath through
+Wine, and on Apple Silicon the HornLab Metal BEM backend. Unsupported Ath
+geometry still falls back to Ath/Wine. See
+[macOS HornLab Integration](docs/macOS%20HornLab%20Integration.md). Windows
+installs are unchanged.
 
 ## Run The GUI
 
@@ -143,6 +151,7 @@ For Docker image deployment with the BEAT Engine CUDA solver, see
 - [CUDA Server Docker Image](docs/Docker.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
+- [macOS HornLab Integration](docs/macOS%20HornLab%20Integration.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
