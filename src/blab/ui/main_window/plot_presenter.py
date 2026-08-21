@@ -292,6 +292,7 @@ class PlotPresenterMixin:
             ),
             transducer_motion=self._solve_session().transducer_motion,
             electrical_impedance=self._solve_session().electrical_impedance,
+            acoustic_load_impedance=self._solve_session().acoustic_load_impedance,
         )
 
     def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:

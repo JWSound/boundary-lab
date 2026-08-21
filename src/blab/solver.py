@@ -947,15 +947,15 @@ class HornBEMSolver:
             p_avg = np.mean(p_at_vertices, axis=1)
 
             # Force = Integral(p dS) ~ sum(p_avg * area).
-            total_force = np.sum(p_avg * radiator.element_areas) * 10
+            total_force = np.sum(p_avg * radiator.element_areas)
             drive = radiator_drives[i]
             if np.isclose(np.abs(drive), 0.0):
                 z_data[i, :] = np.nan
                 continue
 
             z_complex = total_force / drive
-            z_data[i, 0] = np.real(z_complex) / 2
-            z_data[i, 1] = -np.imag(z_complex) / 2
+            z_data[i, 0] = np.real(z_complex)
+            z_data[i, 1] = -np.imag(z_complex)
 
         return z_data
 

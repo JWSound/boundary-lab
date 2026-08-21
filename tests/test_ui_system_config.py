@@ -468,10 +468,10 @@ def test_system_worker_projects_exterior_radiation_impedance_to_live_result() ->
             QuantityResult(
                 id=RADIATION_IMPEDANCE_ID,
                 quantity="radiation_impedance",
-                unit="Pa*s/m^3",
+                unit="N*s/m",
                 target_id=RADIATOR_DOMAIN_ID,
                 axes=("radiator",),
-                values=np.asarray([2.5 - 1.25j], dtype=np.complex64),
+                values=np.asarray([2.5 + 1.25j], dtype=np.complex64),
             ),
         ),
     )

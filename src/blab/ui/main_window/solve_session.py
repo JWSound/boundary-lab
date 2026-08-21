@@ -14,7 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
+from blab.live import (
+    AcousticLoadImpedanceDataset,
+    ElectricalImpedanceDataset,
+    LiveSolveDataset,
+    TransducerMotionDataset,
+)
 from blab.solve_results import SolvedSystem, SolvedSystemBuilder
 from blab.ui.result_projection import VisualizationProjection
 
@@ -34,6 +39,9 @@ class SolveSession:
 
     #: Voltage-basis currents projected into parallel per-channel loads.
     electrical_impedance: ElectricalImpedanceDataset | None = None
+
+    #: Intrinsic coupled acoustic load recovered from the voltage basis.
+    acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None
 
     #: Physical-system channels whose grouped basis contains voltage ports only.
     voltage_channel_names: frozenset[str] = frozenset()
@@ -77,6 +85,7 @@ class SolveSession:
         self.result_builder = None
         self.transducer_motion = None
         self.electrical_impedance = None
+        self.acoustic_load_impedance = None
         self.voltage_channel_names = frozenset()
         self.solved_system = None
         self.use_final_isobar_resolution = False

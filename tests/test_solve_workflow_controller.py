@@ -153,22 +153,29 @@ def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> Non
 
 
 @pytest.mark.parametrize(
-    ("solve_kind", "expects_electrical_impedance"),
+    ("solve_kind", "expects_electrical_impedance", "expects_acoustic_load"),
     [
-        (PhysicalSolveKind.COUPLED_BEM_FEM, True),
-        (PhysicalSolveKind.INTERIOR_FEM, False),
+        (PhysicalSolveKind.COUPLED_BEM_FEM, True, True),
+        (PhysicalSolveKind.INTERIOR_FEM, False, False),
     ],
 )
 def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
     controller,
     solve_kind,
     expects_electrical_impedance,
+    expects_acoustic_load,
 ) -> None:
     component = SimpleNamespace(
         id="component:woofer",
         name="Woofer",
         kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
-        parameters={"physical_driver_orbit_count": 2},
+        parameters={
+            "physical_driver_orbit_count": 2,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 5.0e-4,
+            "rms_n_s_per_m": 1.0,
+        },
     )
     port = SimpleNamespace(
         id="port:woofer",
@@ -194,9 +201,13 @@ def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
     controller._start_prepared_system_solve(prepared, "Starting")
 
     assert (controller.session.electrical_impedance is not None) is expects_electrical_impedance
+    assert (controller.session.acoustic_load_impedance is not None) is expects_acoustic_load
     if expects_electrical_impedance:
         assert controller.session.electrical_impedance.channel_names.tolist() == ["main"]
         assert controller.session.electrical_impedance.physical_driver_orbit_counts.tolist() == [2]
+    if expects_acoustic_load:
+        assert controller.session.acoustic_load_impedance.transducer_names.tolist() == ["Woofer"]
+        assert controller.session.acoustic_load_impedance.bl_n_per_a.tolist() == [7.0]
 
 
 def test_solving_without_a_mesh_warns_instead_of_starting(controller) -> None:

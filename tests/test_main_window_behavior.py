@@ -167,6 +167,14 @@ def test_dock_title_bar_uses_a_native_raised_frame(main_window) -> None:
 
 
 def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> None:
+    acoustic_title_bar = main_window.plot_docks["acoustic_impedance"].titleBarWidget()
+    acoustic_trace_button = next(
+        button
+        for button in acoustic_title_bar.tool_buttons
+        if button.menu() is main_window.impedance_plot.trace_filter_menu
+    )
+    assert acoustic_trace_button.text() == "Traces"
+
     title_bar = main_window.plot_docks["on_axis_frequency_response"].titleBarWidget()
     actions = [button.defaultAction() for button in title_bar.tool_buttons]
 

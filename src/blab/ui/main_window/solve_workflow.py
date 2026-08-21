@@ -17,6 +17,7 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.live import (
+    AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
     FrequencyResult,
     LiveSolveDataset,
@@ -432,6 +433,38 @@ class SolveWorkflowController(QObject):
                     ),
                     channel_names=voltage_channel_names,
                 )
+                if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM:
+                    self._session.acoustic_load_impedance = AcousticLoadImpedanceDataset(
+                        excitation_port_ids=tuple(prepared.request.excitation_port_ids),
+                        excitation_port_kinds=np.asarray(
+                            [port.kind.value for port in excitation_ports]
+                        ),
+                        excitation_component_ids=np.asarray(
+                            [port.component_id for port in excitation_ports]
+                        ),
+                        transducer_component_ids=np.asarray(
+                            [component.id for component in transducers]
+                        ),
+                        transducer_names=np.asarray(
+                            [component.name for component in transducers]
+                        ),
+                        bl_n_per_a=np.asarray(
+                            [component.parameters["bl_n_per_a"] for component in transducers],
+                            dtype=np.float64,
+                        ),
+                        mmd_kg=np.asarray(
+                            [component.parameters["mmd_kg"] for component in transducers],
+                            dtype=np.float64,
+                        ),
+                        cms_m_per_n=np.asarray(
+                            [component.parameters["cms_m_per_n"] for component in transducers],
+                            dtype=np.float64,
+                        ),
+                        rms_n_s_per_m=np.asarray(
+                            [component.parameters["rms_n_s_per_m"] for component in transducers],
+                            dtype=np.float64,
+                        ),
+                    )
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
             excitation_ids=prepared.request.excitation_port_ids,
@@ -552,6 +585,9 @@ class SolveWorkflowController(QObject):
         electrical_impedance = self._session.electrical_impedance
         if electrical_impedance is not None:
             electrical_impedance.add(result)
+        acoustic_load_impedance = self._session.acoustic_load_impedance
+        if acoustic_load_impedance is not None:
+            acoustic_load_impedance.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:

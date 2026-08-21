@@ -42,6 +42,23 @@ def test_fibonacci_sphere_rejects_invalid_point_count() -> None:
         build_fibonacci_sphere_observation_points(0, distance_m=2.0)
 
 
+def test_legacy_acoustic_impedance_is_generalized_force_per_velocity_in_n_s_per_m() -> None:
+    solver = object.__new__(HornBEMSolver)
+    solver.radiator_geometries = [
+        SimpleNamespace(
+            p1_dofs=np.asarray([[0, 1, 2]], dtype=np.int64),
+            element_areas=np.asarray([1.0]),
+        )
+    ]
+
+    impedance = solver._calculate_impedance_from_pressure_coefficients(
+        np.asarray([4.0 + 6.0j, 4.0 + 6.0j, 4.0 + 6.0j]),
+        np.asarray([2.0 + 0.0j]),
+    )
+
+    np.testing.assert_allclose(impedance, [[2.0, -3.0]])
+
+
 def test_linkwitz_riley_response_is_complex_and_bounded() -> None:
     crossover = CrossoverConfig(
         type="lowpass",

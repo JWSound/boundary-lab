@@ -253,15 +253,15 @@ end
 
 function exterior_component_impedance(mesh, pressure, excitation, symmetry_mode, ::Type{T}) where {T<:AbstractFloat}
     force = zero(Complex{T})
-    selected_tags = Set(excitation.tags)
+    amplitude_by_tag = Dict(zip(excitation.tags, excitation.amplitudes))
     for face_index in eachindex(mesh.faces)
-        mesh.physical_tags[face_index] in selected_tags || continue
+        tag = mesh.physical_tags[face_index]
+        haskey(amplitude_by_tag, tag) || continue
         face = mesh.faces[face_index]
         average_pressure = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / T(3)
-        force += average_pressure * T(mesh.areas[face_index])
+        force += average_pressure * T(mesh.areas[face_index]) * amplitude_by_tag[tag]
     end
-    force *= T(symmetry_reduction_factor(symmetry_mode)) * T(10)
-    return Complex{T}(real(force) / T(2), -imag(force) / T(2))
+    return force * T(symmetry_reduction_factor(symmetry_mode))
 end
 
 function solve_exterior_request(request, system, unbounded_region; event_mode=false)
@@ -509,7 +509,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                         quantity_wire(
                             output,
                             impedance_by_component,
-                            "Pa*s/m^3",
+                            "N*s/m",
                             ["radiator"],
                         ),
                     )

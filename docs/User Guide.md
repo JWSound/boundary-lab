@@ -107,6 +107,16 @@ millimetres for each transducer, with a **Traces** menu for hiding individual
 components. Excursion uses the same channel gain, polarity, delay, crossover,
 and normalized channel correction as the acoustic response.
 
+The **Acoustic Impedance** dock reports generalized acoustic load impedance in
+N·s/m. Exterior-only prescribed-velocity solves integrate the pressure load on
+each component. Coupled FEM-BEM solves report each electrodynamic transducer's
+net acoustic self load, including its interior and exterior loading; the other
+transducer velocities are mathematically held at zero when each self trace is
+recovered. Real and imaginary traces can be hidden together per component with
+the **Traces** menu. Frequencies at which the coupled velocity basis is too
+small or ill-conditioned are left as gaps. Interior-FEM-only solves do not
+currently populate this plot.
+
 The **Electrical Impedance** dock reports the driving-point load of each
 voltage-driven channel in ohms. Electrodynamic transducers assigned to the same
 channel are treated as electrically paralleled, including the full driver count

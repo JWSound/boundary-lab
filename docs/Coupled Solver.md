@@ -507,6 +507,23 @@ current. Its phase traces wrap at +/-180 degrees. Prescribed-velocity and mixed
 channels are excluded, and the plot remains disabled for interior-FEM-only
 solves.
 
+The Acoustic Impedance plot uses the same independent voltage basis to recover
+the intrinsic generalized acoustic load matrix. For each excitation, mechanical
+equilibrium gives the net load force as `Bl * current - Zm * velocity`; solving
+that force matrix against the transducer velocity matrix isolates each diagonal
+self impedance. Each displayed trace is therefore the transducer's net interior
+plus exterior acoustic load in N·s/m with the other transducer generalized
+velocities held at zero. It is not the impedance under the current channel
+drive mix, and it is not normalized by diaphragm volume velocity or area.
+
+This first implementation plots electrodynamic transducers only. A coupled
+prescribed-velocity component does not expose the current and mechanical model
+needed for the equilibrium recovery, although such components may coexist in
+the solve. A singular, ill-conditioned, or near-zero transducer velocity basis
+is masked at that frequency and appears as a plot gap. Front and rear loads are
+combined rather than decomposed. Interior-FEM-only impedance plotting remains
+disabled.
+
 When an exterior or combined observation plane is declared, the application
 also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.
 Together with the frequency-invariant boundary mesh domain, these traces are

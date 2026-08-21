@@ -6,7 +6,12 @@ import numpy as np
 import pytest
 
 from blab.config import ChannelConfig
-from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
+from blab.live import (
+    AcousticLoadImpedanceDataset,
+    ElectricalImpedanceDataset,
+    LiveSolveDataset,
+    TransducerMotionDataset,
+)
 from blab.physical_model import AcousticRegionKind, ExcitationPortKind, MeshPurpose
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
@@ -263,6 +268,7 @@ def test_legacy_result_adapter_preserves_complex_pressure_and_impedance() -> Non
     assert canonical.excitation_port_ids == ("main",)
     assert quantities[HORIZONTAL_POLAR_PRESSURE_ID].values.shape == (1, 3)
     assert quantities["acoustic:radiation-impedance"].values.tolist() == [2.0 - 3.0j]
+    assert quantities["acoustic:radiation-impedance"].unit == "N*s/m"
     assert domains["observation:horizontal-polar"].coordinates["angle_deg"].tolist() == [-90.0, 0.0, 90.0]
 
 
@@ -460,3 +466,112 @@ def test_live_electrical_impedance_aggregates_parallel_channel_current_and_symme
     assert names.tolist() == ["A", "B"]
     np.testing.assert_allclose(magnitude[:, 0], [2.0, 4.0], atol=1e-6)
     np.testing.assert_allclose(phase[:, 0], [90.0, 0.0], atol=1e-6)
+
+
+def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
+    frequency_hz = 100.0
+    bl = np.asarray([7.0, 5.0])
+    mmd = np.asarray([0.015, 0.01])
+    cms = np.asarray([5.0e-4, 8.0e-4])
+    rms = np.asarray([1.0, 0.8])
+    velocity_basis = np.asarray(
+        [[1.0 + 0.1j, 0.0 + 0.2j], [0.3 + 0.0j, 1.2 - 0.1j]],
+        dtype=np.complex128,
+    )
+    native_acoustic_impedance = np.asarray(
+        [[3.0 - 4.0j, 0.4 + 0.2j], [-0.1 + 0.3j, 5.0 + 6.0j]],
+        dtype=np.complex128,
+    )
+    omega = 2.0 * np.pi * frequency_hz
+    mechanical_impedance = rms + 1j * (1.0 / (omega * cms) - omega * mmd)
+    load_force = native_acoustic_impedance @ velocity_basis
+    current_basis = (load_force + mechanical_impedance[:, np.newaxis] * velocity_basis) / bl[
+        :, np.newaxis
+    ]
+    dataset = AcousticLoadImpedanceDataset(
+        excitation_port_ids=("port:a", "port:b", "port:velocity"),
+        excitation_port_kinds=np.asarray(["voltage", "voltage", "normal_velocity"]),
+        excitation_component_ids=np.asarray(["component:a", "component:b", "component:source"]),
+        transducer_component_ids=np.asarray(["component:a", "component:b"]),
+        transducer_names=np.asarray(["Woofer", "Tweeter"]),
+        bl_n_per_a=bl,
+        mmd_kg=mmd,
+        cms_m_per_n=cms,
+        rms_n_s_per_m=rms,
+    )
+    extra_row = np.asarray([[9.0 + 2.0j, 8.0 - 1.0j]])
+    dataset.add(
+        SystemFrequencyResult(
+            freq_hz=frequency_hz,
+            excitation_port_ids=("port:a", "port:b", "port:velocity"),
+            quantities=(
+                QuantityResult(
+                    id=DIAPHRAGM_VELOCITY_ID,
+                    quantity="diaphragm_velocity",
+                    unit="m/s",
+                    axes=("excitation", "transducer"),
+                    metadata={"component_ids": ["component:a", "component:b"]},
+                    values=np.vstack((velocity_basis.T, extra_row)).astype(np.complex64),
+                ),
+                QuantityResult(
+                    id=VOICE_COIL_CURRENT_ID,
+                    quantity="voice_coil_current",
+                    unit="A",
+                    axes=("excitation", "transducer"),
+                    metadata={"component_ids": ["component:a", "component:b"]},
+                    values=np.vstack((current_basis.T, extra_row)).astype(np.complex64),
+                ),
+            ),
+        )
+    )
+
+    frequencies, names, real, imaginary = dataset.as_impedance_arrays()
+
+    assert frequencies.tolist() == [frequency_hz]
+    assert names.tolist() == ["Woofer", "Tweeter"]
+    np.testing.assert_allclose(real[:, 0], [3.0, 5.0], atol=2e-5)
+    np.testing.assert_allclose(imaginary[:, 0], [4.0, -6.0], atol=2e-5)
+    assert dataset.velocity_condition_numbers[frequency_hz] < 10.0
+
+
+def test_coupled_acoustic_load_masks_ill_conditioned_velocity_basis() -> None:
+    dataset = AcousticLoadImpedanceDataset(
+        excitation_port_ids=("port:a", "port:b"),
+        excitation_port_kinds=np.asarray(["voltage", "voltage"]),
+        excitation_component_ids=np.asarray(["component:a", "component:b"]),
+        transducer_component_ids=np.asarray(["component:a", "component:b"]),
+        transducer_names=np.asarray(["A", "B"]),
+        bl_n_per_a=np.asarray([7.0, 7.0]),
+        mmd_kg=np.asarray([0.015, 0.015]),
+        cms_m_per_n=np.asarray([5.0e-4, 5.0e-4]),
+        rms_n_s_per_m=np.asarray([1.0, 1.0]),
+    )
+    singular_rows = np.asarray([[1.0, 2.0], [2.0, 4.0]], dtype=np.complex64)
+    dataset.add(
+        SystemFrequencyResult(
+            freq_hz=200.0,
+            excitation_port_ids=("port:a", "port:b"),
+            quantities=(
+                QuantityResult(
+                    id=DIAPHRAGM_VELOCITY_ID,
+                    quantity="diaphragm_velocity",
+                    unit="m/s",
+                    axes=("excitation", "transducer"),
+                    values=singular_rows,
+                ),
+                QuantityResult(
+                    id=VOICE_COIL_CURRENT_ID,
+                    quantity="voice_coil_current",
+                    unit="A",
+                    axes=("excitation", "transducer"),
+                    values=np.ones((2, 2), dtype=np.complex64),
+                ),
+            ),
+        )
+    )
+
+    _frequencies, _names, real, imaginary = dataset.as_impedance_arrays()
+
+    assert np.isnan(real).all()
+    assert np.isnan(imaginary).all()
+    assert dataset.velocity_condition_numbers[200.0] > 1.0e6

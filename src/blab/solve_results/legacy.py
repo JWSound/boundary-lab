@@ -133,7 +133,7 @@ def legacy_result_to_system_result(result: FrequencyResult) -> SystemFrequencyRe
             QuantityResult(
                 id=RADIATION_IMPEDANCE_ID,
                 quantity="radiation_impedance",
-                unit="Pa*s/m^3",
+                unit="N*s/m",
                 values=complex_impedance.astype(np.complex64, copy=False),
                 target_id=RADIATOR_DOMAIN_ID,
                 axes=("radiator",),

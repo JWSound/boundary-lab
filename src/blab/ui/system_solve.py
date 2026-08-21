@@ -9,6 +9,7 @@ from dataclasses import replace
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.phasor import solver_to_standard_phasor
 from blab.physical_model import PhysicalSolveKind
 from blab.solve_results import (
     HORIZONTAL_POLAR_PRESSURE_ID,
@@ -213,7 +214,11 @@ class SystemSolveWorker(QObject):
         values = np.asarray(quantity.values, dtype=np.complex64)
         if values.shape != (self.prepared.excitation_component_names.size,):
             raise ValueError("Radiation impedance does not align with the physical components.")
-        return np.column_stack((values.real, values.imag)).astype(np.float32, copy=False)
+        display_values = solver_to_standard_phasor(values)
+        return np.column_stack((display_values.real, display_values.imag)).astype(
+            np.float32,
+            copy=False,
+        )
 
 
 __all__ = [

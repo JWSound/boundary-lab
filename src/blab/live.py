@@ -24,6 +24,8 @@ from blab.solvers.base import FrequencyResult, SolveRequest
 from blab.system_contract import SystemFrequencyResult
 
 GROUP_DELAY_VALID_RELATIVE_DB = -40.0
+ACOUSTIC_LOAD_MAX_VELOCITY_CONDITION = 1.0e6
+ACOUSTIC_LOAD_MIN_VELOCITY_M_PER_S = 1.0e-12
 
 
 @dataclass
@@ -638,6 +640,177 @@ class ElectricalImpedanceDataset:
         magnitude_ohm = np.abs(complex_impedance).astype(np.float32, copy=False)
         phase_deg = solver_phase_deg(complex_impedance)
         return frequencies, np.asarray(self.channel_names).copy(), magnitude_ohm, phase_deg
+
+
+@dataclass
+class AcousticLoadImpedanceDataset:
+    """Intrinsic transducer acoustic loads recovered from a voltage-basis solve.
+
+    The coupled solve returns diaphragm velocity and voice-coil current for every
+    independent voltage excitation. Mechanical equilibrium gives the acoustic
+    load force as ``Bl * current - Zm * velocity``. Solving that force matrix
+    against the velocity matrix isolates the self impedance of each transducer
+    with all other generalized transducer velocities held at zero.
+    """
+
+    excitation_port_ids: tuple[str, ...]
+    excitation_port_kinds: np.ndarray
+    excitation_component_ids: np.ndarray
+    transducer_component_ids: np.ndarray
+    transducer_names: np.ndarray
+    bl_n_per_a: np.ndarray
+    mmd_kg: np.ndarray
+    cms_m_per_n: np.ndarray
+    rms_n_s_per_m: np.ndarray
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+    velocity_condition_numbers: dict[float, float] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        velocity_quantity = next(
+            (item for item in result.quantities if item.id == DIAPHRAGM_VELOCITY_ID),
+            None,
+        )
+        current_quantity = next(
+            (item for item in result.quantities if item.id == VOICE_COIL_CURRENT_ID),
+            None,
+        )
+        if velocity_quantity is None or current_quantity is None:
+            return
+        expected_axes = ("excitation", "transducer")
+        if velocity_quantity.axes != expected_axes or current_quantity.axes != expected_axes:
+            raise ValueError(
+                "Coupled acoustic load recovery requires excitation and transducer axes."
+            )
+
+        result_port_ids = tuple(str(value) for value in result.excitation_port_ids)
+        if set(result_port_ids) != set(self.excitation_port_ids):
+            raise ValueError("Coupled acoustic load excitation ports do not match the prepared solve.")
+        row_by_port_id = {port_id: index for index, port_id in enumerate(result_port_ids)}
+        row_order = [row_by_port_id[port_id] for port_id in self.excitation_port_ids]
+
+        expected_component_ids = tuple(str(value) for value in self.transducer_component_ids.tolist())
+        velocity_component_ids = tuple(
+            str(value) for value in velocity_quantity.metadata.get("component_ids", ())
+        ) or expected_component_ids
+        current_component_ids = tuple(
+            str(value) for value in current_quantity.metadata.get("component_ids", ())
+        ) or expected_component_ids
+        if set(velocity_component_ids) != set(expected_component_ids):
+            raise ValueError("Diaphragm-velocity transducers do not match the prepared solve.")
+        if set(current_component_ids) != set(expected_component_ids):
+            raise ValueError("Voice-coil-current transducers do not match the prepared solve.")
+
+        velocity = self._ordered_quantity_values(
+            velocity_quantity.values,
+            result_port_ids,
+            velocity_component_ids,
+            row_order,
+            expected_component_ids,
+            "Diaphragm velocity",
+        )
+        current = self._ordered_quantity_values(
+            current_quantity.values,
+            result_port_ids,
+            current_component_ids,
+            row_order,
+            expected_component_ids,
+            "Voice-coil current",
+        )
+
+        excitation_kinds = np.asarray(self.excitation_port_kinds).astype(str)
+        excitation_components = np.asarray(self.excitation_component_ids).astype(str)
+        voltage_rows: list[int] = []
+        for component_id in expected_component_ids:
+            candidates = np.flatnonzero(
+                (excitation_kinds == "voltage") & (excitation_components == component_id)
+            )
+            if candidates.size != 1:
+                self._store_unavailable(float(result.freq_hz))
+                return
+            voltage_rows.append(int(candidates[0]))
+
+        velocity_basis = velocity[voltage_rows, :].T.astype(np.complex128, copy=False)
+        current_basis = current[voltage_rows, :].T.astype(np.complex128, copy=False)
+        singular_values = np.linalg.svd(velocity_basis, compute_uv=False)
+        maximum_singular = float(singular_values[0]) if singular_values.size else 0.0
+        minimum_singular = float(singular_values[-1]) if singular_values.size else 0.0
+        condition = (
+            maximum_singular / minimum_singular
+            if minimum_singular > 0.0
+            else float("inf")
+        )
+        self.velocity_condition_numbers[float(result.freq_hz)] = condition
+        if (
+            not np.isfinite(condition)
+            or condition > ACOUSTIC_LOAD_MAX_VELOCITY_CONDITION
+            or maximum_singular <= ACOUSTIC_LOAD_MIN_VELOCITY_M_PER_S
+        ):
+            self._store_unavailable(float(result.freq_hz), record_condition=False)
+            return
+
+        omega = 2.0 * np.pi * float(result.freq_hz)
+        mechanical_impedance = np.asarray(self.rms_n_s_per_m, dtype=np.float64) + 1j * (
+            1.0 / (omega * np.asarray(self.cms_m_per_n, dtype=np.float64))
+            - omega * np.asarray(self.mmd_kg, dtype=np.float64)
+        )
+        load_force = (
+            np.asarray(self.bl_n_per_a, dtype=np.float64)[:, np.newaxis] * current_basis
+            - mechanical_impedance[:, np.newaxis] * velocity_basis
+        )
+        try:
+            impedance_matrix = np.linalg.solve(velocity_basis.T, load_force.T).T
+        except np.linalg.LinAlgError:
+            self._store_unavailable(float(result.freq_hz), record_condition=False)
+            return
+        diagonal = np.diag(impedance_matrix)
+        diagonal = np.where(np.isfinite(diagonal), diagonal, np.nan + 1j * np.nan)
+        self.results[float(result.freq_hz)] = diagonal.astype(np.complex64, copy=False)
+
+    @staticmethod
+    def _ordered_quantity_values(
+        raw_values: np.ndarray,
+        result_port_ids: tuple[str, ...],
+        result_component_ids: tuple[str, ...],
+        row_order: list[int],
+        expected_component_ids: tuple[str, ...],
+        label: str,
+    ) -> np.ndarray:
+        values = np.asarray(raw_values, dtype=np.complex64)
+        expected_shape = (len(result_port_ids), len(result_component_ids))
+        if values.shape != expected_shape:
+            raise ValueError(f"{label} has shape {values.shape}, expected {expected_shape}.")
+        column_by_component_id = {
+            component_id: index for index, component_id in enumerate(result_component_ids)
+        }
+        column_order = [column_by_component_id[value] for value in expected_component_ids]
+        return values[np.ix_(row_order, column_order)]
+
+    def _store_unavailable(self, frequency_hz: float, *, record_condition: bool = True) -> None:
+        if record_condition:
+            self.velocity_condition_numbers[frequency_hz] = float("inf")
+        self.results[frequency_hz] = np.full(
+            self.transducer_names.size,
+            np.nan + 1j * np.nan,
+            dtype=np.complex64,
+        )
+
+    def as_impedance_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return standard-convention real and imaginary acoustic load in N*s/m."""
+
+        if not self.results or not self.transducer_names.size:
+            return None
+        ordered = sorted(self.results.items())
+        frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
+        native_impedance = np.vstack([values for _frequency, values in ordered]).T
+        display_impedance = solver_to_standard_phasor(native_impedance)
+        return (
+            frequencies,
+            np.asarray(self.transducer_names).copy(),
+            display_impedance.real.astype(np.float32, copy=False),
+            display_impedance.imag.astype(np.float32, copy=False),
+        )
 
 
 def build_log_frequencies(freq_min: float, freq_max: float, freq_count: int) -> np.ndarray:

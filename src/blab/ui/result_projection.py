@@ -7,7 +7,12 @@ from dataclasses import dataclass
 import numpy as np
 
 from blab.config import ChannelConfig
-from blab.live import ElectricalImpedanceDataset, LiveSolveDataset, TransducerMotionDataset
+from blab.live import (
+    AcousticLoadImpedanceDataset,
+    ElectricalImpedanceDataset,
+    LiveSolveDataset,
+    TransducerMotionDataset,
+)
 from blab.postprocess import PrepConfig
 
 
@@ -172,6 +177,7 @@ class ResultProjectionService:
         options: ProjectionOptions,
         transducer_motion: TransducerMotionDataset | None = None,
         electrical_impedance: ElectricalImpedanceDataset | None = None,
+        acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None,
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -208,6 +214,16 @@ class ResultProjectionService:
         group_delay_arrays = dataset.as_group_delay_arrays()
         if group_delay_arrays is not None:
             group_delay_projection = GroupDelayProjection(*group_delay_arrays)
+        impedance_projection = ImpedanceProjection(
+            freq_hz=arrays["impedance_freq_hz"],
+            radiator_names=arrays["impedance_radiator_names"],
+            real=arrays["impedance_real"],
+            imaginary=arrays["impedance_imag"],
+        )
+        if acoustic_load_impedance is not None:
+            acoustic_load_arrays = acoustic_load_impedance.as_impedance_arrays()
+            if acoustic_load_arrays is not None:
+                impedance_projection = ImpedanceProjection(*acoustic_load_arrays)
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -217,12 +233,7 @@ class ResultProjectionService:
                 clip_min_db=float(arrays["clip_min_db"]),
                 clip_max_db=float(arrays["clip_max_db"]),
             ),
-            impedance=ImpedanceProjection(
-                freq_hz=arrays["impedance_freq_hz"],
-                radiator_names=arrays["impedance_radiator_names"],
-                real=arrays["impedance_real"],
-                imaginary=arrays["impedance_imag"],
-            ),
+            impedance=impedance_projection,
             response=PolarResponseProjection(
                 freq_hz=arrays["freq_hz"],
                 angle_deg=arrays["polar_angle_deg"],

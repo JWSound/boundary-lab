@@ -1177,8 +1177,14 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self.axes = self.figure.add_subplot(111)
         self._lines: list[object] = []
         self._series_labels: tuple[str, ...] = ()
+        self._series_visibility: dict[str, bool] = {}
+        self._series_actions: dict[str, QAction] = {}
         self._plot_state = None
         super().__init__(self.figure, "Acoustic Impedance")
+        self.trace_filter_menu = QMenu("Traces", self)
+        self.trace_filter_action = QAction("Traces", self)
+        self.trace_filter_action.setToolTip("Choose visible acoustic load impedance traces")
+        self.trace_filter_action.setMenu(self.trace_filter_menu)
         self.figure.subplots_adjust(
             left=PLOT_LEFT_MARGIN,
             right=PLOT_RIGHT_MARGIN,
@@ -1190,7 +1196,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
     def _configure_axes(self) -> None:
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
+        self.axes.set_ylabel("Acoustic Load Impedance (N*s/m)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
@@ -1203,6 +1209,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
         self._configure_axes()
+        self._sync_trace_filter_actions(())
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1258,35 +1265,92 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._plot_state = state
         self._invalidate_crosshair_background()
 
-        labels: list[str] = []
-        for index in range(impedance_real.shape[0]):
-            name = str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
-            labels.extend((f"{name} Z real", f"{name} Z imag"))
-        series_labels = tuple(labels)
+        series_labels = tuple(
+            str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
+            for index in range(impedance_real.shape[0])
+        )
         if series_labels != self._series_labels:
             for line in self._lines:
                 line.remove()
             self._lines = []
-            for index in range(impedance_real.shape[0]):
-                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=series_labels[index * 2])
-                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=series_labels[index * 2 + 1])
+            for name in series_labels:
+                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=f"{name} Z real")
+                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=f"{name} Z imag")
                 self._lines.extend((real_line, imag_line))
-            legend = self.axes.get_legend()
-            if legend is not None:
-                legend.remove()
-            if self._lines:
-                self.axes.legend(loc="best")
             self._series_labels = series_labels
+            for label in series_labels:
+                self._series_visibility.setdefault(label, True)
+            self._sync_trace_filter_actions(series_labels)
 
         for index in range(impedance_real.shape[0]):
             self._lines[index * 2].set_data(freqs_hz, impedance_real[index])
             self._lines[index * 2 + 1].set_data(freqs_hz, impedance_imag[index])
-        self.axes.relim()
-        self.axes.autoscale_view(scalex=False, scaley=True)
+        self._apply_series_visibility()
+        self._update_y_limits()
         apply_compact_plot_text(self.axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
+
+    def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:
+        self.trace_filter_menu.clear()
+        self._series_actions = {}
+        for label in labels:
+            action = self.trace_filter_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self._series_visibility.get(label, True))
+            action.toggled.connect(
+                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
+            )
+            self._series_actions[label] = action
+        self.trace_filter_action.setEnabled(bool(labels))
+
+    def set_series_visible(self, label: str, visible: bool) -> None:
+        if label not in self._series_labels:
+            return
+        self._series_visibility[label] = bool(visible)
+        self._apply_series_visibility()
+        self._update_y_limits()
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _apply_series_visibility(self) -> None:
+        visible_lines = []
+        for index, label in enumerate(self._series_labels):
+            visible = self._series_visibility.get(label, True)
+            pair = self._lines[index * 2 : index * 2 + 2]
+            for line in pair:
+                line.set_visible(visible)
+                if visible:
+                    visible_lines.append(line)
+        legend = self.axes.get_legend()
+        if legend is not None:
+            legend.remove()
+        if visible_lines:
+            self.axes.legend(
+                visible_lines,
+                [line.get_label() for line in visible_lines],
+                loc="best",
+            )
+
+    def _update_y_limits(self) -> None:
+        finite_rows = []
+        for line in self._lines:
+            if not line.get_visible():
+                continue
+            values = np.asarray(line.get_ydata(), dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                finite_rows.append(finite)
+        if not finite_rows:
+            self.axes.set_ylim(-0.1, 0.1)
+            return
+        values = np.concatenate(finite_rows)
+        minimum = float(np.min(values))
+        maximum = float(np.max(values))
+        span = maximum - minimum
+        padding = max(0.08 * span, 1.0e-3)
+        self.axes.set_ylim(minimum - padding, maximum + padding)
 
 
 class OnAxisResponseCanvas(RawCoordinatePlotCanvas):

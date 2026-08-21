@@ -268,6 +268,25 @@ def test_excursion_plot_uses_audio_frequency_axis_zero_baseline_and_trace_filter
     assert canvas._lines["Woofer"].get_visible()
 
 
+def test_acoustic_impedance_trace_filter_hides_real_and_imaginary_pair() -> None:
+    canvas = ImpedanceCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Woofer", "Tweeter"]),
+        np.asarray([[2.0, 8.0, 4.0], [1.0, 3.0, 2.0]], dtype=np.float32),
+        np.asarray([[0.0, 6.0, -2.0], [0.5, 1.0, -0.5]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_ylabel() == "Acoustic Load Impedance (N*s/m)"
+    assert set(canvas._series_actions) == {"Woofer", "Tweeter"}
+    canvas._series_actions["Woofer"].setChecked(False)
+    assert not canvas._lines[0].get_visible()
+    assert not canvas._lines[1].get_visible()
+    assert canvas._lines[2].get_visible()
+    assert canvas._lines[3].get_visible()
+
+
 def test_electrical_impedance_plot_uses_parallel_load_magnitude_and_phase_toggle() -> None:
     canvas = ElectricalImpedanceCanvas()
     freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
