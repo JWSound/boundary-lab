@@ -11,6 +11,10 @@ requires-python = ">=3.11"
 dependencies = [
   "bempp-cl",
   "gmsh",
+  # HornLab integrations for platforms where Ath needs Wine. Windows installs are
+  # unaffected: pip skips both markers, so no extra download happens there.
+  "hornlab-waveguide-mesher @ git+https://github.com/m3gnus/hornlab-waveguide-mesher.git@50a8d7e1ae47253e01d80bd36a13fbec99e9624a ; platform_system != 'Windows'",
+  "hornlab-metal-bem @ git+https://github.com/m3gnus/hornlab-metal-bem.git@585ea197b89c335aba6a2060c294bf10b0929fa2 ; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "matplotlib",
   "meshio",
   "numpy",
@@ -31,6 +35,10 @@ gui = [
 
 [project.scripts]
 blab = "blab.cli:main"
+
+[tool.hatch.metadata]
+# Required for the direct git references above.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/blab"]
