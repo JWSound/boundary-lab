@@ -59,6 +59,8 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert normalize_backend_id("beat_rocm") == "beat_rocm"
     assert normalize_backend_id("rocm") == "beat_rocm"
     assert normalize_backend_id("amdgpu") == "beat_rocm"
+    assert normalize_backend_id("metal") == "hornlab_metal"
+    assert normalize_backend_id("hornlab") == "hornlab_metal"
     assert JuliaLocalBackend is BeatEngineBackend
     assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
     assert BemppServerBackend is HttpServerBackend
@@ -69,6 +71,7 @@ def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
     assert backend_info("beat_cuda").capabilities.supports_symmetry is True
     assert backend_info("beat_cpu").capabilities.supports_symmetry is True
     assert backend_info("beat_rocm").capabilities.supports_symmetry is True
+    assert backend_info("hornlab_metal").label == "HornLab Metal BEM"
     assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
     assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
     assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}

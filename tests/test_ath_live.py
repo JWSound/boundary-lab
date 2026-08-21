@@ -79,6 +79,8 @@ class _FakeAthProcess:
 
 
 def test_ath_process_runner_captures_blaba_output_and_launches_gmsh_worker(tmp_path: Path, monkeypatch) -> None:
+    # This test drives Ath directly, so pin a platform that runs it without Wine.
+    monkeypatch.setattr("blab.ath.sys.platform", "win32")
     ath_dir = tmp_path / "ath"
     ath_dir.mkdir()
     ath_exe = ath_dir / "ath.exe"
