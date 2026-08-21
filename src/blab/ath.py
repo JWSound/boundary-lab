@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -365,6 +365,396 @@ def run_ath(
         timeout_s=timeout_s,
         status_callback=status_callback,
     )
+
+
+class HornlabWaveguideGenerationError(RuntimeError):
+    """Raised when the HornLab waveguide mesher cannot generate a mesh."""
+
+
+HORNLAB_RESULT_PREFIX = "HORNLAB_RESULT "
+HORNLAB_PROVENANCE_FILENAME = "hornlab_mesher.json"
+# Quadrant coverage the mesher reports, expressed as the mirror axes Boundary Lab
+# expands. Mirrors ath_mirror_axes_from_config_text, which reads the same Ath key.
+HORNLAB_QUADRANT_MIRROR_AXES = {
+    "1": ("x", "y"),
+    "14": ("x",),
+    "1234": (),
+}
+
+_HORNLAB_MESHER_BUILD_SCRIPT = """
+import json
+import sys
+from importlib import metadata
+from pathlib import Path
+
+from hornlab_mesher import build_from_config, load_config
+
+config = load_config(Path(sys.argv[1]))
+# Boundary Lab treats every Ath-family mesh as millimetres (matching real Ath
+# output), so request millimetre output rather than the mesher's default metres.
+# The project's mesh scale factor then applies uniformly.
+mesh_section = config.get("mesh")
+if not isinstance(mesh_section, dict):
+    mesh_section = {}
+    config["mesh"] = mesh_section
+mesh_section["scale_to_metres"] = False
+result = build_from_config(config, Path(sys.argv[2])).as_dict()
+try:
+    result["mesher_version"] = metadata.version("hornlab-waveguide-mesher")
+except metadata.PackageNotFoundError:
+    result["mesher_version"] = "unknown"
+print("HORNLAB_RESULT " + json.dumps(result))
+""".strip()
+
+
+class HornlabMesherRunner:
+    """Small cancellable subprocess wrapper around the HornLab waveguide mesher."""
+
+    def __init__(self) -> None:
+        self._process: subprocess.Popen[str] | None = None
+        self._cancel_requested = False
+
+    def run(self, config_path: Path, msh_path: Path, *, timeout_s: float | None = None) -> dict[str, object]:
+        self._cancel_requested = False
+        command = [sys.executable, "-c", _HORNLAB_MESHER_BUILD_SCRIPT, str(config_path), str(msh_path)]
+        self._process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = self._process.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            self.stop()
+            raise
+        finally:
+            process = self._process
+            self._process = None
+
+        if self._cancel_requested:
+            raise AthCancelledError("HornLab mesh generation cancelled")
+
+        returncode = 0 if process is None else process.returncode
+        if returncode == 0:
+            return _parse_hornlab_mesher_result(stdout)
+
+        if _hornlab_mesher_missing(stderr):
+            raise HornlabWaveguideGenerationError(
+                "HornLab waveguide mesher is not installed. Install hornlab-waveguide-mesher "
+                "or install Wine so Boundary Lab can run Ath."
+            )
+        raise RuntimeError(
+            _subprocess_failure_details(subprocess.CompletedProcess(command, returncode, stdout, stderr))
+        )
+
+    def stop(self) -> None:
+        self._cancel_requested = True
+        process = self._process
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+
+
+def _hornlab_mesher_missing(details: str) -> bool:
+    return "ModuleNotFoundError" in details and (
+        "No module named 'hornlab_mesher'" in details or 'No module named "hornlab_mesher"' in details
+    )
+
+
+def _subprocess_failure_details(completed: subprocess.CompletedProcess[str]) -> str:
+    output = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+    if not output:
+        return f"process exited with code {completed.returncode}"
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1] if lines else output
+
+
+def _parse_hornlab_mesher_result(stdout: str) -> dict[str, object]:
+    result_lines = [
+        line.removeprefix(HORNLAB_RESULT_PREFIX)
+        for line in stdout.splitlines()
+        if line.startswith(HORNLAB_RESULT_PREFIX)
+    ]
+    if len(result_lines) != 1:
+        raise RuntimeError("HornLab mesher did not emit a single structured result line.")
+    try:
+        result = json.loads(result_lines[0])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"HornLab mesher emitted invalid structured result JSON: {exc}") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("HornLab mesher structured result was not a JSON object.")
+    return result
+
+
+_THROAT_EXT_LENGTH_RE = re.compile(
+    r"^[^\S\n]*Throat\.Ext\.Length[^\S\n]*=[^\S\n]*([^;#\n]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Multi-source keys/blocks the mesher cannot build. ``Source.VelocityProfile`` is a
+# supported import and must NOT match, hence the mandatory dot after ``Velocity``.
+_MULTI_SOURCE_RE = re.compile(
+    r"^[^\S\n]*(?:Source\.Contours|LFSource[\w.]*|Source\.Velocity(?:\.[\w.]*)?)[^\S\n]*=",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SIM_TYPE_RE = re.compile(
+    r"^[^\S\n]*ABEC\.SimType[^\S\n]*=[^\S\n]*([^;#\n]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_ENCLOSURE_RE = re.compile(
+    r"^[^\S\n]*Mesh\.Enclosure(?:\.[\w.]+)?[^\S\n]*=",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SUBDOMAIN_SLICES_RE = re.compile(
+    r"^[^\S\n]*Mesh\.SubdomainSlices[^\S\n]*=[^\S\n]*([^;#\n]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_INTERFACE_OFFSET_RE = re.compile(
+    r"^[^\S\n]*Mesh\.InterfaceOffset[^\S\n]*=[^\S\n]*([^;#\n]*)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _last_config_value(regex: re.Pattern[str], config_text: str) -> str | None:
+    """Last assignment wins, matching the Ath/mesher parsers for duplicate keys."""
+    values = regex.findall(config_text)
+    return values[-1].strip() if values else None
+
+
+def _throat_ext_requested(config_text: str) -> bool:
+    match = _THROAT_EXT_LENGTH_RE.search(config_text)
+    if match is None:
+        return False
+    value = match.group(1).strip()
+    if not value:
+        return False
+    try:
+        return float(value) != 0.0
+    except ValueError:
+        return True  # a non-numeric (expression) extension length -- assume non-zero
+
+
+def _is_freestanding_config(config_text: str) -> bool:
+    """True for a free-standing build: ``ABEC.SimType = 2`` without ``Mesh.Enclosure``.
+
+    Matches the mesher's text-import topology rules: SimType defaults to 1 (infinite
+    baffle), a ``Mesh.Enclosure`` section implies an enclosure build, and invalid
+    SimType values make the mesher itself fail loudly (which routes to Ath anyway).
+    """
+    if _ENCLOSURE_RE.search(config_text) is not None:
+        return False
+    sim_type = _last_config_value(_SIM_TYPE_RE, config_text)
+    if sim_type is None:
+        return False
+    try:
+        return float(sim_type) == 2.0
+    except ValueError:
+        return False
+
+
+def _requests_subdomain_interfaces(config_text: str) -> bool:
+    slices = _last_config_value(_SUBDOMAIN_SLICES_RE, config_text)
+    if slices:
+        return True
+    offset = _last_config_value(_INTERFACE_OFFSET_RE, config_text)
+    if not offset:
+        return False
+    for part in offset.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            if float(part) > 0.0:
+                return True
+        except ValueError:
+            return True  # a non-numeric (expression) offset -- assume a real request
+    return False
+
+
+def _mesher_unsupported_reason(config_text: str) -> str | None:
+    """Return a reason to skip the HornLab mesher and go straight to Ath.
+
+    Routes configs the mesher cannot (or, on older releases, silently could not)
+    build to the Ath toolchain up front -- a clearer message than a mesher subprocess
+    failure, and no wasted subprocess:
+
+    - ``Throat.Ext.Length``: the pinned mesher builds OSSE and R-OSSE throat
+      extensions, but Boundary Lab has no test that pins their geometry against Ath,
+      and older mesher releases silently shrank the horn (16-32% mouth-radius error).
+      Keep routing throat extensions to Ath until that equivalence is covered here.
+      ``Throat.Ext.Angle`` alone is fine.
+    - Multi-source models (``Source.Contours`` membranes, secondary ``LFSource.*``
+      drivers, ``Source.Velocity`` profiles): the mesher only builds the single
+      cap/disc throat source. Current mesher versions reject these at parse time;
+      older ones meshed a default cap source, silently dropping the rest of the
+      crossover model (e.g. the bundled 2-way example's dome and woofer).
+    - ``Mesh.SubdomainSlices``/``Mesh.InterfaceOffset`` on a free-standing model:
+      Ath builds a two-subdomain free-standing model; the mesher supports subdomain
+      interfaces only for enclosure and infinite-baffle builds and rejects the rest
+      at build time.
+    """
+    if _throat_ext_requested(config_text):
+        return (
+            "Throat.Ext.Length (throat extension tube) is routed to Ath until Boundary Lab "
+            "covers the mesher's throat-extension geometry against Ath."
+        )
+    if _MULTI_SOURCE_RE.search(config_text) is not None:
+        return (
+            "Source.Contours/LFSource/Source.Velocity define a multi-source model; the "
+            "HornLab mesher only builds the single throat source, so using Ath instead."
+        )
+    if _is_freestanding_config(config_text) and _requests_subdomain_interfaces(config_text):
+        return (
+            "Mesh.SubdomainSlices/Mesh.InterfaceOffset on a free-standing model needs Ath's "
+            "two-subdomain construction, which the HornLab mesher does not build; using Ath instead."
+        )
+    return None
+
+
+def _verify_hornlab_quadrants(mesher_result: Mapping[str, object], mirror_axes: tuple[str, ...]) -> None:
+    """Fail loudly when the built quadrant disagrees with the config's Mesh.Quadrants.
+
+    Boundary Lab mirrors the mesh back to the full model using the axes it reads from
+    the config, so a mesher that built a different quadrant would silently produce a
+    different acoustic model.
+    """
+    quadrants = mesher_result.get("quadrants")
+    if quadrants is None:
+        return
+    built_axes = HORNLAB_QUADRANT_MIRROR_AXES.get(str(quadrants))
+    if built_axes is None:
+        raise HornlabWaveguideGenerationError(
+            f"HornLab mesher built unsupported quadrant coverage {quadrants!r}; using Ath instead."
+        )
+    if built_axes != mirror_axes:
+        raise HornlabWaveguideGenerationError(
+            f"HornLab mesher built quadrants {quadrants!r} but the config implies mirror axes "
+            f"{mirror_axes or ('none',)}; using Ath instead."
+        )
+
+
+def _write_hornlab_provenance(output_dir: Path, mesher_result: Mapping[str, object]) -> None:
+    """Record which mesher build produced this run's geometry."""
+    payload = {
+        key: mesher_result.get(key)
+        for key in ("mesher_version", "formula", "mode", "units", "quadrants", "n_vertices", "n_triangles")
+    }
+    (output_dir / HORNLAB_PROVENANCE_FILENAME).write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def run_hornlab_waveguide(
+    *,
+    config_text: str,
+    run_root: Path,
+    case_name: str = "waveguide",
+    runner: HornlabMesherRunner | None = None,
+    timeout_s: float | None = None,
+) -> AthRunResult:
+    """Generate an Ath-compatible mesh with the HornLab waveguide mesher.
+
+    Produces the same :class:`AthRunResult` artifacts as the Ath toolchain by handing
+    the mesher's raw mesh to the shared cleaning/mirroring stage.
+    """
+    reason = _mesher_unsupported_reason(config_text)
+    if reason is not None:
+        raise HornlabWaveguideGenerationError(reason)
+
+    mirror_axes = ath_mirror_axes_from_config_text(config_text)
+    run_root = Path(run_root)
+    run_root.mkdir(parents=True, exist_ok=True)
+    run_root = run_root.resolve()
+    output_dir = run_root / case_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config_path = output_dir / f"{case_name}.cfg"
+    config_path.write_text(config_text, encoding="utf-8")
+    raw_msh_path = output_dir / f".{case_name}_hornlab_raw.msh"
+
+    try:
+        mesher_result = (runner or HornlabMesherRunner()).run(config_path, raw_msh_path, timeout_s=timeout_s)
+        _verify_hornlab_quadrants(mesher_result, mirror_axes)
+        raw_mesh = meshio.read(raw_msh_path)
+    except (AthCancelledError, HornlabWaveguideGenerationError):
+        raise
+    except Exception as exc:
+        raise HornlabWaveguideGenerationError(
+            "HornLab waveguide mesher could not generate this geometry. It supports OSSE/R-OSSE "
+            f"waveguide configs with ABEC-compatible physical tags. Details: {exc}"
+        ) from exc
+    finally:
+        raw_msh_path.unlink(missing_ok=True)
+
+    _write_hornlab_provenance(output_dir, mesher_result)
+    return build_ath_mesh_artifacts(
+        raw_mesh,
+        output_dir=output_dir,
+        case_name=case_name,
+        config_path=config_path,
+        mirror_axes=mirror_axes,
+    )
+
+
+def generate_waveguide_mesh(
+    *,
+    ath_exe: Path,
+    config_text: str,
+    run_root: Path,
+    case_name: str = "waveguide",
+    runner: AthProcessRunner | None = None,
+    mesher_runner: HornlabMesherRunner | None = None,
+    timeout_s: float | None = None,
+    status_callback: Callable[[str], None] | None = None,
+) -> AthRunResult:
+    """Generate a waveguide mesh, preferring the native HornLab mesher.
+
+    The HornLab waveguide mesher is the fast path: it is native Python (no Wine, no
+    Ath subprocess) and covers OSSE/R-OSSE-style waveguides. When it cannot handle a
+    geometry -- or is not installed -- it raises
+    :class:`HornlabWaveguideGenerationError`, and we fall back to the Ath toolchain
+    (Ath.exe, via Wine on macOS/Linux), which supports every Ath geometry but is
+    slower and needs Wine off Windows.
+    """
+
+    def _status(message: str) -> None:
+        if status_callback is not None:
+            status_callback(message)
+
+    try:
+        _status("Generating mesh (HornLab waveguide mesher)...")
+        return run_hornlab_waveguide(
+            config_text=config_text,
+            run_root=run_root,
+            case_name=case_name,
+            runner=mesher_runner,
+            timeout_s=timeout_s,
+        )
+    except AthCancelledError:
+        raise
+    except HornlabWaveguideGenerationError as mesher_exc:
+        _status("HornLab mesher unavailable for this geometry; running Ath...")
+        runner = runner or AthProcessRunner()
+        try:
+            return runner.run(
+                ath_exe=ath_exe,
+                config_text=config_text,
+                run_root=run_root,
+                case_name=case_name,
+                timeout_s=timeout_s,
+                status_callback=status_callback,
+            )
+        except AthCancelledError:
+            raise
+        except (RuntimeError, FileNotFoundError, ValueError) as ath_exc:
+            raise RuntimeError(
+                f"HornLab mesher could not generate this geometry ({mesher_exc}); Ath fallback also failed: {ath_exc}"
+            ) from ath_exc
 
 
 def _strip_ath_geo_batch_commands(geo_text: str) -> str:

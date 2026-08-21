@@ -11,9 +11,11 @@ from blab.ath import (
     AthDriveDefinition,
     AthProcessRunner,
     AthRunResult,
+    HornlabMesherRunner,
     ath_mirror_axes_from_config_text,
     detect_ath_radiators,
     find_physical_tag_by_name,
+    generate_waveguide_mesh,
     parse_ath_drive_definitions,
 )
 from blab.generators.base import (
@@ -113,17 +115,18 @@ class AthGeneratorSession:
     def __init__(self, request: GenerationRequest, *, ath_exe: Path):
         self.request = request
         self.ath_exe = ath_exe
-        self._runner = AthProcessRunner()
+        self._ath_runner = AthProcessRunner()
+        self._mesher_runner = HornlabMesherRunner()
 
     def generate(self, *, status_callback=None, stop_requested=None) -> GeneratedGeometry:
-        if status_callback is not None:
-            status_callback("Running Ath...")
         try:
-            raw_result = self._runner.run(
+            raw_result = generate_waveguide_mesh(
                 ath_exe=self.ath_exe,
                 config_text=str(self.request.source.get("text", "")),
                 run_root=self.request.run_root,
                 case_name=self.request.case_name,
+                runner=self._ath_runner,
+                mesher_runner=self._mesher_runner,
                 status_callback=status_callback,
             )
             if stop_requested is not None and stop_requested():
@@ -136,7 +139,8 @@ class AthGeneratorSession:
             raise GenerationCancelledError(str(exc)) from exc
 
     def stop(self) -> None:
-        self._runner.stop()
+        self._mesher_runner.stop()
+        self._ath_runner.stop()
 
 
 class AthGeneratorBackend(GeneratorBackend):

@@ -11,7 +11,7 @@ from blab.generators.ath import (
     ath_source,
     generated_geometry_to_ath_result,
 )
-from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+from blab.generators.base import GeneratedGeometryReference, GenerationRequest, GeneratorDocument
 from blab.generators.registry import available_generator_infos, create_generator, generator_info
 
 
@@ -86,3 +86,37 @@ def test_ath_backend_restores_generic_geometry_from_document_artifact(tmp_path: 
     assert restored.radiators[0].drive_group == "ath:0"
     assert restored.radiators[0].drive_group_name == "horn_driver"
     assert restored.radiators[0].velocity_offset_db == -6.0206
+
+
+def test_ath_generator_session_prefers_the_hornlab_mesher(tmp_path: Path, monkeypatch) -> None:
+    """The session must route through generate_waveguide_mesh, not straight to Ath."""
+    mesh_path = tmp_path / "waveguide.msh"
+    raw_result = AthRunResult(
+        output_dir=tmp_path,
+        msh_path=mesh_path,
+        config_path=tmp_path / "waveguide.cfg",
+        driven_tag=2,
+        radiators=(),
+    )
+    captured: dict = {}
+
+    def fake_generate_waveguide_mesh(**kwargs):
+        captured.update(kwargs)
+        return raw_result
+
+    monkeypatch.setattr("blab.generators.ath.generate_waveguide_mesh", fake_generate_waveguide_mesh)
+    request = GenerationRequest(
+        provider_id=ATH_PROVIDER_ID,
+        document_id="design1",
+        mesh_name="waveguide",
+        source=ath_source("Length = 100"),
+        run_root=tmp_path,
+        case_name="waveguide",
+    )
+
+    generated = AthGeneratorBackend(ath_exe="ath/ath202608.exe").create_session(request).generate()
+
+    assert generated.mesh_path == mesh_path
+    assert captured["config_text"] == "Length = 100"
+    assert type(captured["mesher_runner"]).__name__ == "HornlabMesherRunner"
+    assert type(captured["runner"]).__name__ == "AthProcessRunner"
