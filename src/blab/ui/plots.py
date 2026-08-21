@@ -798,10 +798,17 @@ class IsobarCanvas(InteractivePlotCanvas):
             )
         )
 
-    def _color_mapping(self, clip_min_db: float, clip_max_db: float, contour_step_db: float):
+    def _color_mapping(
+        self,
+        clip_min_db: float,
+        clip_max_db: float,
+        contour_step_db: float,
+        *,
+        discrete: bool = True,
+    ):
         cmap = self._isobar_colormap()
         boundaries = self._color_boundaries(clip_min_db, clip_max_db, contour_step_db)
-        if boundaries.size >= 2:
+        if discrete and boundaries.size >= 2:
             return cmap, BoundaryNorm(boundaries, cmap.N)
         return cmap, Normalize(vmin=clip_min_db, vmax=clip_max_db)
 
@@ -846,16 +853,6 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
         self._colorbar_state = state
 
-    def _image_from_values(
-        self,
-        clipped: np.ndarray,
-        clip_min_db: float,
-        clip_max_db: float,
-        contour_step_db: float,
-    ) -> np.ndarray:
-        cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
-        return np.asarray(cmap(norm(clipped)), dtype=np.float32)
-
     def update_plot(
         self,
         freqs_hz: np.ndarray,
@@ -870,9 +867,12 @@ class IsobarCanvas(InteractivePlotCanvas):
         freqs_hz = np.asarray(freqs_hz, dtype=np.float32)
         angles_deg = np.asarray(angles_deg, dtype=np.float32)
         clipped = np.clip(np.asarray(values_db, dtype=np.float32), clip_min_db, clip_max_db)
+        finite = clipped[np.isfinite(clipped)]
+        data_span_db = 0.0 if finite.size == 0 else float(np.max(finite) - np.min(finite))
         clip = (float(clip_min_db), float(clip_max_db))
         shading = str(shading or LIVE_ISOBAR_SHADING)
         contour_step_db = max(0.0, float(contour_step_db))
+        discrete_colors = contour_step_db <= 0.0 or data_span_db >= 2.0 * contour_step_db
         render_mode = "image" if shading == FINAL_ISOBAR_SHADING else "mesh"
         state = (
             freqs_hz.copy(),
@@ -889,7 +889,12 @@ class IsobarCanvas(InteractivePlotCanvas):
 
         if freqs_hz.size >= 2 and angles_deg.size >= 2:
             self._remove_artist("_line_artist")
-            cmap, norm = self._color_mapping(clip_min_db, clip_max_db, contour_step_db)
+            cmap, norm = self._color_mapping(
+                clip_min_db,
+                clip_max_db,
+                contour_step_db,
+                discrete=discrete_colors,
+            )
             self._update_colorbar(clip_min_db, clip_max_db, contour_step_db, cmap, norm)
             if render_mode == "image":
                 self._x_axis_mode = "log_image"
