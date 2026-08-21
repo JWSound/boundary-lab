@@ -459,4 +459,4 @@ def test_live_electrical_impedance_aggregates_parallel_channel_current_and_symme
     assert frequencies.tolist() == [100.0]
     assert names.tolist() == ["A", "B"]
     np.testing.assert_allclose(magnitude[:, 0], [2.0, 4.0], atol=1e-6)
-    np.testing.assert_allclose(phase[:, 0], [-90.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(phase[:, 0], [90.0, 0.0], atol=1e-6)

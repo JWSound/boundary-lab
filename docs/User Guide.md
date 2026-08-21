@@ -87,7 +87,10 @@ and the summed response is always black. Phase is available when the solve retai
 complex channel-basis pressure. On-axis phase removes the propagation time from
 the acoustic origin to the configured polar observation distance. On-axis text
 exports use the same reference, including any channel delay changes made after
-the solve.
+the solve. Solver quantities retain BEAT's `exp(-i omega t)` convention
+internally; displayed and exported phase is converted to the standard audio
+`exp(+i omega t)` convention before channel delay and crossover phase is
+reported.
 
 The **Group Delay** dock derives source-referenced delay in milliseconds from
 the complex on-axis response. It provides **Sum** and per-channel traces with a

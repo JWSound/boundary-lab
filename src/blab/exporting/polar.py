@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from blab.live import LiveSolveDataset
+from blab.phasor import solver_phase_deg
 
 
 def export_polar_text_files(
@@ -51,7 +52,7 @@ def export_polar_text_files(
 def _polar_phase_deg(pressure: np.ndarray, *, reference_index: int, relative: bool) -> np.ndarray:
     pressure = np.asarray(pressure, dtype=np.complex64)
     if not relative:
-        return np.rad2deg(np.angle(pressure)).astype(np.float32, copy=False)
+        return solver_phase_deg(pressure)
 
     reference = pressure[:, int(reference_index)]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -60,7 +61,7 @@ def _polar_phase_deg(pressure: np.ndarray, *, reference_index: int, relative: bo
             pressure / reference[:, np.newaxis],
             pressure,
         )
-    return np.rad2deg(np.angle(relative_pressure)).astype(np.float32, copy=False)
+    return solver_phase_deg(relative_pressure)
 
 
 def _format_angle_for_filename(angle_deg: float) -> str:

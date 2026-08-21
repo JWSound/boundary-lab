@@ -6,11 +6,14 @@ import numpy as np
 from scipy import signal
 
 from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, CrossoverConfig
+from blab.phasor import standard_to_solver_phasor
 
 REFERENCE_PRESSURE_PA = 20e-6
 
 
 def crossover_response(crossover: CrossoverConfig, freq_hz: float) -> complex:
+    """Return a crossover coefficient in the solver's ``exp(-i omega t)`` convention."""
+
     crossover_type = crossover.type.lower()
     if crossover_type == "none":
         return 1.0 + 0.0j
@@ -32,13 +35,15 @@ def butterworth_response(crossover_type: str, order: int, cutoff_hz: float, freq
         analog=True,
     )
     _, h = signal.freqs(b, a, worN=[2.0 * np.pi * freq_hz])
-    return complex(h[0])
+    return complex(standard_to_solver_phasor(h[0]))
 
 
 def channel_drive(channel: ChannelConfig, freq_hz: float) -> complex:
+    """Return channel DSP in the solver's ``exp(-i omega t)`` convention."""
+
     omega = 2.0 * np.pi * freq_hz
     level = 10.0 ** (channel.level_db / 20.0)
-    delay = np.exp(-1j * omega * (channel.delay_ms / 1000.0))
+    delay = np.exp(1j * omega * (channel.delay_ms / 1000.0))
     crossover = 1.0 + 0.0j
     for crossover_config in (channel.hpf, channel.lpf):
         if crossover_config.type.lower() != "none":

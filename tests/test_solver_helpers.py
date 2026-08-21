@@ -56,6 +56,24 @@ def test_linkwitz_riley_response_is_complex_and_bounded() -> None:
     assert 0.0 < abs(response) <= 1.0
 
 
+def test_channel_dsp_uses_native_solver_phasor_convention() -> None:
+    channel = ChannelConfig(
+        name="main",
+        delay_ms=0.25,
+        lpf=CrossoverConfig(type="lowpass", filter="butterworth", order=1, frequency_hz=1000.0),
+    )
+
+    delay_only = HornBEMSolver._channel_drive(
+        SimpleNamespace(),
+        ChannelConfig(name="main", delay_ms=0.25),
+        1000.0,
+    )
+    lowpass = HornBEMSolver._crossover_response(None, channel.lpf, 1000.0)
+
+    np.testing.assert_allclose(np.angle(delay_only, deg=True), 90.0, atol=1e-8)
+    np.testing.assert_allclose(np.angle(lowpass, deg=True), 45.0, atol=1e-8)
+
+
 def test_sixth_order_crossover_responses_are_supported() -> None:
     for filter_name in ("butterworth", "linkwitz_riley"):
         crossover = CrossoverConfig(

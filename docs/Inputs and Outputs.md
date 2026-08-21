@@ -108,6 +108,12 @@ Users can export simulated polar data as individual .txt files per angle sampled
 
 Users can export each solved channel's on-axis response as a tab-separated .txt file containing frequency in Hz, SPL in dB, and phase in degrees. Single-channel solves use a save-file dialog. Multi-channel solves use a directory picker and write one file per channel; the combined system response is not exported. The files use the original solved frequency samples and can be imported into tools such as REW and VituixCAD.
 
+BEAT and canonical solved-result artifacts use the `exp(-i omega t)` phasor
+convention. Boundary Lab converts phase shown in plots, observation planes, and
+REW/VituixCAD-compatible text exports to the standard audio
+`exp(+i omega t)` convention. Channel delays and crossover filters are converted
+to BEAT's convention before they are combined with solver-native pressures.
+
 ## Exporting Balloon Data
 
 The balloon viewer exports a schema-versioned directory containing:

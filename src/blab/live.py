@@ -17,6 +17,7 @@ from blab.channel_synthesis import (
     synthesize_channel_basis_spl,
 )
 from blab.config import ChannelConfig, SimulationConfig
+from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult, SolveRequest
@@ -170,7 +171,9 @@ class LiveSolveDataset:
             freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
         except ValueError:
             return None
-        aligned_pressures = self._propagation_aligned_values(pressures, freqs)
+        aligned_pressures = solver_to_standard_phasor(
+            self._propagation_aligned_values(pressures, freqs)
+        )
         configs_by_name = {channel.name: channel for channel in self.channel_configs}
         configured_delay_s = np.asarray(
             [
@@ -387,7 +390,7 @@ class LiveSolveDataset:
         freqs_hz: np.ndarray,
     ) -> np.ndarray:
         values = self._propagation_aligned_values(pressures, freqs_hz)
-        return np.rad2deg(np.angle(values)).astype(np.float32, copy=False)
+        return solver_phase_deg(values)
 
     def _propagation_aligned_values(
         self,
@@ -417,7 +420,7 @@ def group_delay_from_channel_pressures(
     configured_delay_s: np.ndarray | None = None,
     valid_relative_db: float = GROUP_DELAY_VALID_RELATIVE_DB,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Derive channel and summed group delay from complex sampled responses.
+    """Derive channel and summed group delay from standard-audio responses.
 
     Known pure channel delays are removed before phase unwrapping and added
     back analytically. The summed derivative is assembled from the channel
@@ -633,7 +636,7 @@ class ElectricalImpedanceDataset:
         frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
         complex_impedance = np.vstack([values for _frequency, values in ordered]).T
         magnitude_ohm = np.abs(complex_impedance).astype(np.float32, copy=False)
-        phase_deg = np.rad2deg(np.angle(complex_impedance)).astype(np.float32, copy=False)
+        phase_deg = solver_phase_deg(complex_impedance)
         return frequencies, np.asarray(self.channel_names).copy(), magnitude_ohm, phase_deg
 
 

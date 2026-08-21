@@ -1166,11 +1166,13 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
         ObservationPlaneDisplay.SPL,
         animation_phase_deg=90.0,
     )
+    phase = project_field_scalars(pressure, ObservationPlaneDisplay.PHASE)
 
     assert normalized.clim == (-40.0, 0.0)
     np.testing.assert_allclose(normalized.values, [0.0, 0.0])
     np.testing.assert_allclose(animated.values, [0.0, 1.0], atol=1e-12)
     assert animated.clim == (-1.0, 1.0)
+    np.testing.assert_allclose(phase.values, [0.0, -90.0], atol=1e-12)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
     relative_to_initial = project_field_scalars(

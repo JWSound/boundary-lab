@@ -22,7 +22,7 @@ from blab.ath import (
     read_surface_physical_names,
 )
 from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
-from blab.config import ChannelConfig
+from blab.config import ChannelConfig, CrossoverConfig
 from blab.exporting import export_balloon_data, export_on_axis_text_files, export_polar_text_files
 from blab.live import (
     FrequencyResult,
@@ -685,8 +685,8 @@ def test_live_dataset_exposes_channel_on_axis_curves() -> None:
     assert prepared["channel_on_axis_names"].tolist() == ["LF", "HF"]
     assert prepared["channel_on_axis_spl_db"].shape == (2, 1)
     assert prepared["channel_on_axis_spl_db"][1, 0] < prepared["channel_on_axis_spl_db"][0, 0]
-    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"][:, 0], [0.0, 90.0])
-    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [26.5], atol=0.2)
+    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"][:, 0], [0.0, -90.0])
+    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-26.5], atol=0.2)
 
 
 def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_delay() -> None:
@@ -725,6 +725,40 @@ def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_d
     np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-45.0], atol=1e-4)
 
 
+def test_channel_delay_is_converted_before_summing_solver_native_pressures() -> None:
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(
+            ChannelConfig(name="reference"),
+            ChannelConfig(name="delayed", delay_ms=0.25),
+        ),
+        flat_target_normalization_enabled=False,
+    )
+    horizontal_pressure = np.asarray(
+        [
+            np.ones(angles.size, dtype=np.complex64),
+            np.full(angles.size, 0.5j, dtype=np.complex64),
+        ]
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            impedance=np.zeros((2, 2), dtype=np.float32),
+            channel_names=np.asarray(["reference", "delayed"]),
+            horizontal_pressure=horizontal_pressure,
+            vertical_pressure=horizontal_pressure.copy(),
+        )
+    )
+
+    _freqs, _angles, horizontal_spl, _vertical_spl = dataset.as_raw_polar_arrays()
+
+    expected_spl = 20.0 * np.log10(0.5 / 20.0e-6)
+    np.testing.assert_allclose(horizontal_spl, expected_spl, atol=1e-4)
+
+
 def test_group_delay_removes_propagation_and_tracks_configured_delay_exactly() -> None:
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     frequencies = np.asarray([100.0, 250.0, 700.0, 2000.0, 6000.0], dtype=np.float32)
@@ -761,6 +795,94 @@ def test_group_delay_removes_propagation_and_tracks_configured_delay_exactly() -
     dataset.set_channel_synthesis((ChannelConfig(name="main", delay_ms=7.0),))
     _freqs, _names, changed_ms = dataset.as_group_delay_arrays()
     np.testing.assert_allclose(changed_ms, 7.0, atol=3e-3)
+
+
+def test_group_delay_converts_native_solver_phase_before_differentiating() -> None:
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    frequencies = np.geomspace(20.0, 400.0, 101).astype(np.float32)
+    omega = 2.0 * np.pi * frequencies
+    cutoff_rad_s = 2.0 * np.pi * 50.0
+    native_response = 1.0 / (1.0 - 1j * omega / cutoff_rad_s)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=False,
+    )
+    for frequency, pressure_value in zip(frequencies, native_response, strict=True):
+        pressure = np.full((1, angles.size), pressure_value, dtype=np.complex64)
+        dataset.add(
+            FrequencyResult(
+                freq_hz=float(frequency),
+                horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                impedance=np.zeros((1, 2), dtype=np.float32),
+                channel_names=np.asarray(["main"]),
+                horizontal_pressure=pressure,
+                vertical_pressure=pressure.copy(),
+            )
+        )
+
+    group_delay = dataset.as_group_delay_arrays()
+
+    assert group_delay is not None
+    solved_frequencies, _names, values_ms = group_delay
+    expected_ms = cutoff_rad_s / (cutoff_rad_s**2 + (2.0 * np.pi * solved_frequencies) ** 2) * 1000.0
+    np.testing.assert_allclose(values_ms[0, 1:-1], expected_ms[1:-1], rtol=2e-3, atol=2e-3)
+    assert np.all(values_ms[:, 1:-1] > 0.0)
+
+
+def test_group_delay_combines_standard_crossover_and_configured_delay() -> None:
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    frequencies = np.geomspace(20.0, 1000.0, 121).astype(np.float32)
+    cutoff_hz = 100.0
+    configured_delay_ms = 2.0
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(
+            ChannelConfig(
+                name="main",
+                delay_ms=configured_delay_ms,
+                lpf=CrossoverConfig(
+                    type="lowpass",
+                    filter="butterworth",
+                    order=1,
+                    frequency_hz=cutoff_hz,
+                ),
+            ),
+        ),
+        flat_target_normalization_enabled=False,
+    )
+    for frequency in frequencies:
+        pressure = np.ones((1, angles.size), dtype=np.complex64)
+        dataset.add(
+            FrequencyResult(
+                freq_hz=float(frequency),
+                horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+                impedance=np.zeros((1, 2), dtype=np.float32),
+                channel_names=np.asarray(["main"]),
+                horizontal_pressure=pressure,
+                vertical_pressure=pressure.copy(),
+            )
+        )
+
+    group_delay = dataset.as_group_delay_arrays()
+
+    assert group_delay is not None
+    solved_frequencies, _names, values_ms = group_delay
+    cutoff_rad_s = 2.0 * np.pi * cutoff_hz
+    crossover_delay_ms = (
+        cutoff_rad_s / (cutoff_rad_s**2 + (2.0 * np.pi * solved_frequencies) ** 2) * 1000.0
+    )
+    np.testing.assert_allclose(
+        values_ms[:, 1:-1],
+        np.broadcast_to(
+            configured_delay_ms + crossover_delay_ms[np.newaxis, 1:-1],
+            values_ms[:, 1:-1].shape,
+        ),
+        rtol=2e-3,
+        atol=2e-3,
+    )
 
 
 def test_group_delay_masks_channel_and_sum_below_relative_magnitude_floor() -> None:
@@ -1057,10 +1179,10 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
         "1000.000000\t0.000\t0.000",
     ]
     assert (tmp_path / "H 90.txt").read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t0.000\t90.000",
+        "1000.000000\t0.000\t-90.000",
     ]
     assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t0.000\t-90.000",
+        "1000.000000\t0.000\t90.000",
     ]
 
 
@@ -1091,7 +1213,7 @@ def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_pa
 
     assert written == [tmp_path / "selected-response.txt"]
     assert written[0].read_text(encoding="utf-8").splitlines() == [
-        "200.000000\t93.979\t18.000",
+        "200.000000\t93.979\t-18.000",
         "1000.000000\t93.979\t0.000",
     ]
 
@@ -1130,6 +1252,6 @@ def test_export_on_axis_text_files_writes_only_individual_channels_with_safe_nam
         "1000.000000\t93.979\t0.000",
     ]
     assert written[1].read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t93.979\t-90.000",
+        "1000.000000\t93.979\t90.000",
     ]
     assert len(list((tmp_path / "channels").glob("*.txt"))) == 2

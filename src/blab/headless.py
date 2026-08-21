@@ -16,6 +16,7 @@ import numpy as np
 
 from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.physical_model import PhysicalSolveKind, PhysicalSystem, physical_system_from_dict
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
@@ -359,7 +360,7 @@ class HeadlessResultWriter:
             "domains_metadata_file": "domains.json",
             "backend_id": backend_id,
             "solve_kind": prepared.solve_kind.value,
-            "phasor_convention": "exp(-i omega t)",
+            "phasor_convention": SOLVER_PHASOR_CONVENTION,
             "frequencies_hz": self.frequencies.tolist(),
             "excitation_port_ids": list(prepared.request.excitation_port_ids),
             "solver_options": _json_safe(prepared.request.solver_options),
