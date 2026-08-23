@@ -13,6 +13,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import blab.ui.main_window.solve_workflow as solve_workflow_module  # noqa: E402
+from blab.config import MeshConfig  # noqa: E402
 from blab.physical_model import ComponentKind, ExcitationPortKind, PhysicalSolveKind  # noqa: E402
 from blab.ui.application_state import OperationPhase, SolveCompletion  # noqa: E402
 from blab.ui.main_window.solve_session import SolveSession  # noqa: E402
@@ -35,6 +37,8 @@ class FakeView:
         self.polar_exports: list[bool] = []
         self.on_axis_exports: list[bool] = []
         self.balloon: list[bool] = []
+        self.topology_reports: list[object] = []
+        self.topology_confirmation = False
 
     def show_status(self, message):
         self.status.append(message)
@@ -47,6 +51,12 @@ class FakeView:
 
     def show_stitch_or_generic_error(self, title, exc):
         self.stitch_errors.append((title, exc))
+
+    def show_mesh_topology_issues(self, report):
+        self.topology_reports.append(report)
+
+    def confirm_mesh_topology_warning(self, _report):
+        return self.topology_confirmation
 
     def set_workflow_phase(self, phase, *, cancel_available=True):
         self.phases.append((phase, cancel_available))
@@ -238,6 +248,39 @@ def test_solving_with_no_driven_surfaces_explains_what_to_add(controller) -> Non
         )
     ]
     assert controller.inputs.seeded == 1, "seeding is attempted before the radiator check"
+
+
+@pytest.mark.parametrize(("confirmed", "expected"), [(False, False), (True, True)])
+def test_exterior_topology_warning_can_cancel_or_override(
+    controller,
+    monkeypatch,
+    confirmed: bool,
+    expected: bool,
+) -> None:
+    report = SimpleNamespace(has_warnings=True)
+    monkeypatch.setattr(solve_workflow_module, "analyze_exterior_mesh_topology", lambda *_args, **_kwargs: report)
+    controller.view.topology_confirmation = confirmed
+
+    accepted = controller._confirm_exterior_mesh_topology(
+        (MeshConfig("exterior", "unused.msh"),),
+        symmetry="off",
+    )
+
+    assert accepted is expected
+    assert controller.view.topology_reports == [report]
+
+
+def test_clean_exterior_topology_does_not_show_confirmation(controller, monkeypatch) -> None:
+    report = SimpleNamespace(has_warnings=False)
+    monkeypatch.setattr(solve_workflow_module, "analyze_exterior_mesh_topology", lambda *_args, **_kwargs: report)
+
+    accepted = controller._confirm_exterior_mesh_topology(
+        (MeshConfig("exterior", "unused.msh"),),
+        symmetry="off",
+    )
+
+    assert accepted is True
+    assert controller.view.topology_reports == [report]
 
 
 def test_cancelling_prefers_the_geometry_run_when_one_is_active(controller) -> None:

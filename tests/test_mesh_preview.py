@@ -16,6 +16,7 @@ from blab.ui.mesh_preview import (
     PREVIEW_HOME_ZOOM,
     _actor_visible_for_region,
     _dimensions_lwh_mm,
+    _line_segments_with_symmetry_images,
     _mesh_stats_label,
     _mirrored_triangle_images_for_preview,
     _preview_axis_label_points,
@@ -256,3 +257,18 @@ def test_xy_mirrored_preview_suppresses_duplicate_axis_images() -> None:
 
     assert [label for label, _points, _triangles, _indices in images] == ["Y"]
     assert images[0][2].tolist() == [[0, 2, 1]]
+
+
+def test_topology_issue_segments_are_mirrored_and_plane_duplicates_are_suppressed() -> None:
+    segments = np.array(
+        [
+            [[1.0, 1.0, 0.0], [2.0, 1.0, 0.0]],
+            [[0.0, 1.0, 0.0], [0.0, 2.0, 0.0]],
+        ]
+    )
+
+    displayed = _line_segments_with_symmetry_images(segments, "x")
+
+    assert displayed.shape == (3, 2, 3)
+    assert np.sum(np.all(displayed == segments[1], axis=(1, 2))) == 1
+    assert np.any(np.all(displayed == np.array([[-1.0, 1.0, 0.0], [-2.0, 1.0, 0.0]]), axis=(1, 2)))

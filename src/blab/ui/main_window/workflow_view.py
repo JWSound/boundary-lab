@@ -282,6 +282,12 @@ class WorkflowView(Protocol):
     def confirm(self, title: str, message: str) -> bool:
         """Ask a yes/no question, returning True for yes."""
 
+    def confirm_mesh_topology_warning(self, report) -> bool:
+        """Offer a cancel-safe override for an exterior mesh topology warning."""
+
+    def show_mesh_topology_issues(self, report) -> None:
+        """Highlight invalid exterior mesh edges, or clear an earlier highlight."""
+
     def ask_unsaved_changes(self, *, closing: bool) -> UnsavedChoice:
         """Warn that the project has unsaved work and report the choice.
 

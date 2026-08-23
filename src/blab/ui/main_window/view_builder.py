@@ -384,6 +384,25 @@ class ViewBuilderMixin:
             == QMessageBox.Yes
         )
 
+    def confirm_mesh_topology_warning(self, report) -> bool:
+        from blab.mesh_topology import exterior_mesh_topology_warning_text
+
+        message = QMessageBox(
+            QMessageBox.Warning,
+            "Exterior Mesh Is Not Watertight",
+            exterior_mesh_topology_warning_text(report),
+            QMessageBox.NoButton,
+            self,
+        )
+        continue_button = message.addButton("Continue", QMessageBox.AcceptRole)
+        cancel_button = message.addButton("Cancel Solve", QMessageBox.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+        return message.clickedButton() is continue_button
+
+    def show_mesh_topology_issues(self, report) -> None:
+        self.preview.set_topology_report(report)
+
     def ask_unsaved_changes(self, *, closing: bool) -> UnsavedChoice:
         message = QMessageBox(
             QMessageBox.Warning,

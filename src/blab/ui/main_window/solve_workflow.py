@@ -16,6 +16,7 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.config import MeshConfig
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
@@ -24,6 +25,7 @@ from blab.live import (
     TransducerMotionDataset,
     build_log_frequencies,
 )
+from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
     AcousticRegionKind,
     ComponentKind,
@@ -206,6 +208,12 @@ class SolveWorkflowController(QObject):
             self._view.warn("Symmetry validation failed", str(exc))
             return
 
+        if not self._confirm_exterior_mesh_topology(
+            prepared_simulation.config.meshes,
+            symmetry=prepared_simulation.config.symmetry,
+        ):
+            return
+
         self._begin_run("Initializing Solver...")
         self._solve_controller.start(
             self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
@@ -265,7 +273,9 @@ class SolveWorkflowController(QObject):
             return False
 
         self._pending_speaker_package = normalized
-        self._start_prepared_system_solve(prepared, "Initializing speaker package solve...")
+        if not self._start_prepared_system_solve(prepared, "Initializing speaker package solve..."):
+            self._pending_speaker_package = None
+            return False
         return True
 
     def _start_exterior_system_solve(self) -> None:
@@ -322,6 +332,12 @@ class SolveWorkflowController(QObject):
             self._view.show_stitch_or_generic_error("Exterior system preparation failed", exc)
             return
 
+        if not self._confirm_exterior_mesh_topology(
+            prepared_simulation.config.meshes,
+            symmetry=prepared_simulation.config.symmetry,
+        ):
+            return
+
         self._begin_run("Initializing exterior solver...")
         self._solve_controller.start(
             self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
@@ -360,7 +376,13 @@ class SolveWorkflowController(QObject):
         )
         self._start_prepared_system_solve(prepared, status)
 
-    def _start_prepared_system_solve(self, prepared, status: str) -> None:
+    def _start_prepared_system_solve(self, prepared, status: str) -> bool:
+        if prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+            if not self._confirm_exterior_mesh_topology(
+                self._prepared_exterior_mesh_configs(prepared),
+                symmetry=str(prepared.request.solver_options.get("symmetry", "off")),
+            ):
+                return False
         self._begin_run(status)
         channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
         ports_by_id = {
@@ -477,6 +499,38 @@ class SolveWorkflowController(QObject):
             compiled_system=prepared.request.compiled_system,
         )
         self._solve_controller.start(prepared)
+        return True
+
+    def _confirm_exterior_mesh_topology(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        *,
+        symmetry: str,
+    ) -> bool:
+        try:
+            report = analyze_exterior_mesh_topology(mesh_configs, symmetry=symmetry)
+        except (OSError, ValueError) as exc:
+            self._view.warn("Mesh topology validation failed", str(exc))
+            return False
+        self._view.show_mesh_topology_issues(report)
+        if not report.has_warnings:
+            return True
+        return self._view.confirm_mesh_topology_warning(report)
+
+    @staticmethod
+    def _prepared_exterior_mesh_configs(prepared) -> tuple[MeshConfig, ...]:
+        compiled = prepared.request.compiled_system
+        exterior = next(region for region in compiled.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR)
+        meshes_by_id = {mesh.id: mesh for mesh in compiled.meshes}
+        return tuple(
+            MeshConfig(
+                name=meshes_by_id[mesh_id].name,
+                file=meshes_by_id[mesh_id].file,
+                scale_factor=meshes_by_id[mesh_id].scale_to_m,
+                translation_m=meshes_by_id[mesh_id].translation_m,
+            )
+            for mesh_id in exterior.mesh_ids
+        )
 
     # -- cancelling ---------------------------------------------------------
 

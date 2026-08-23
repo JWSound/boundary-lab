@@ -452,6 +452,28 @@ def test_no_confirmation_when_there_is_nothing_solved_to_lose(main_window, messa
     assert message_box.instances == []
 
 
+def test_exterior_topology_override_uses_cancel_as_the_safe_default(main_window, message_box) -> None:
+    mesh = SimpleNamespace(mesh_name="cabinet", open_edge_count=4, nonmanifold_edge_count=0)
+    report = SimpleNamespace(
+        meshes=(mesh,),
+        open_edge_count=4,
+        nonmanifold_edge_count=0,
+        symmetry_edge_count=0,
+    )
+
+    message_box.click = "Cancel Solve"
+    assert main_window.confirm_mesh_topology_warning(report) is False
+
+    box = message_box.instances[-1]
+    assert box.button_texts == ["Continue", "Cancel Solve"]
+    assert box.default is not None and box.default.text == "Cancel Solve"
+    assert "highlighted red" in box.text
+    assert "Open edges: 4" in box.text
+
+    message_box.click = "Continue"
+    assert main_window.confirm_mesh_topology_warning(report) is True
+
+
 # --------------------------------------------------------------- unsaved project guard
 
 

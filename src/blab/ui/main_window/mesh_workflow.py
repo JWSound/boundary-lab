@@ -18,6 +18,7 @@ from blab.ath import (
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
+from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.ui.dialogs import (
     MeshDialogEntry,
 )
@@ -410,11 +411,16 @@ class MeshWorkflowMixin:
             if not mesh_configs:
                 self.clear_mesh_preview()
                 return
-            interface_surfaces, component_surfaces, mesh_regions, _has_interior = _physical_system_preview_metadata(
+            interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
                 self._project_document().physical_system,
                 assembly.surface_tags_by_mesh,
             )
             driven_surfaces = {(radiator.mesh, radiator.tag) for radiator in assembly.radiators} | component_surfaces
+            topology_report = self._mesh_preview_topology_report(
+                mesh_configs,
+                mesh_regions=mesh_regions,
+                has_interior=has_interior,
+            )
             self.show_mesh_preview(
                 mesh_configs,
                 driven_surfaces=driven_surfaces,
@@ -422,6 +428,7 @@ class MeshWorkflowMixin:
                 interface_surfaces=interface_surfaces,
                 mesh_regions=mesh_regions,
                 symmetry=self.symmetry,
+                topology_report=topology_report,
             )
         except Exception as exc:
             if str(exc) == STITCH_FAILURE_MESSAGE and self.stitch_imported_meshes:
@@ -438,11 +445,16 @@ class MeshWorkflowMixin:
             surface_tags_by_mesh = {
                 mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
             }
-            interface_surfaces, component_surfaces, mesh_regions, _has_interior = _physical_system_preview_metadata(
+            interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
                 self._project_document().physical_system,
                 surface_tags_by_mesh,
             )
             driven_surfaces = {(radiator.mesh, radiator.tag) for radiator in self.all_radiators()} | component_surfaces
+            topology_report = self._mesh_preview_topology_report(
+                mesh_configs,
+                mesh_regions=mesh_regions,
+                has_interior=has_interior,
+            )
             self.show_mesh_preview(
                 mesh_configs,
                 driven_surfaces=driven_surfaces,
@@ -450,7 +462,29 @@ class MeshWorkflowMixin:
                 interface_surfaces=interface_surfaces,
                 mesh_regions=mesh_regions,
                 symmetry=self.symmetry,
+                topology_report=topology_report,
             )
             self.show_status("Mesh preview showing unstitched meshes; stitching failed")
         except Exception:
             self.clear_mesh_preview()
+
+    def _mesh_preview_topology_report(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        *,
+        mesh_regions: dict[str, str],
+        has_interior: bool,
+    ):
+        exterior_meshes = (
+            tuple(mesh for mesh in mesh_configs if mesh_regions.get(mesh.name) == "exterior")
+            if has_interior
+            else mesh_configs
+        )
+        if not exterior_meshes:
+            return None
+        try:
+            return analyze_exterior_mesh_topology(exterior_meshes, symmetry=self.symmetry)
+        except (OSError, ValueError):
+            # Preview rendering remains useful when a topology diagnostic cannot
+            # be produced. The solve path reports the validation error directly.
+            return None

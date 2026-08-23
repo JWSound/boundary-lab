@@ -43,6 +43,8 @@ INTERFACE_COLOR = "#1cad0c"
 INTERFACE_MIRROR_COLOR = "#116b07"
 INTERFACE_EDGE_COLOR = "#155b0d"
 INTERFACE_MIRROR_EDGE_COLOR = "#0b3506"
+TOPOLOGY_ISSUE_COLOR = "#ff2020"
+TOPOLOGY_ISSUE_LINE_WIDTH = 6.0
 PREVIEW_REGION_ALL = "all"
 PREVIEW_REGION_INTERIOR = "interior"
 PREVIEW_REGION_EXTERIOR = "exterior"
@@ -66,6 +68,7 @@ class MeshPreview(QWidget):
         self._hover_observer = None
         self._actor_surface_labels: dict[str, str] = {}
         self._mesh_region_actors: list[tuple[object, str | None]] = []
+        self._topology_issue_actors: list[object] = []
         self._region_visibility_mode = PREVIEW_REGION_ALL
         self._observation_clip_active = False
         self._observation_editor = None
@@ -119,6 +122,7 @@ class MeshPreview(QWidget):
 
     def clear(self) -> None:
         self._mesh_region_actors = []
+        self._topology_issue_actors = []
         if self.viewer is None:
             return
         self.viewer.clear()
@@ -201,6 +205,7 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._mesh_region_actors = []
+        self._topology_issue_actors = []
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
         self._restore_observation_plane_scene(display_points)
@@ -262,6 +267,7 @@ class MeshPreview(QWidget):
         interface_surfaces: set[tuple[str, int]] | None = None,
         mesh_regions: dict[str, str] | None = None,
         symmetry: str = "off",
+        topology_report=None,
     ) -> None:
         if self.viewer is None:
             return
@@ -269,6 +275,7 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._mesh_region_actors = []
+        self._topology_issue_actors = []
         self.hover_label.setText("")
         total_elements = 0
         preview_points = []
@@ -295,8 +302,45 @@ class MeshPreview(QWidget):
         )
         if preview_points:
             self._add_orientation_guides(display_points)
+        self.set_topology_report(topology_report, render=False)
         self._apply_region_visibility(render=False)
         self._restore_camera_or_reset(camera_position)
+
+    def set_topology_report(self, report, *, render: bool = True) -> None:
+        """Replace the red invalid-edge overlay without rebuilding the mesh scene."""
+
+        if self.viewer is None:
+            return
+        old_actor_ids = {id(actor) for actor in self._topology_issue_actors}
+        self._mesh_region_actors = [
+            (actor, region) for actor, region in self._mesh_region_actors if id(actor) not in old_actor_ids
+        ]
+        for actor in self._topology_issue_actors:
+            self.viewer.remove_actor(actor, render=False)
+        self._topology_issue_actors = []
+
+        if report is not None:
+            source_segments = [
+                mesh.problem_edge_segments_m
+                for mesh in report.meshes
+                if len(mesh.problem_edge_segments_m)
+            ]
+            if source_segments:
+                segments = _line_segments_with_symmetry_images(
+                    np.concatenate(source_segments, axis=0),
+                    report.symmetry,
+                )
+                actor = self.viewer.add_mesh(
+                    _line_segments_to_polydata(segments),
+                    color=TOPOLOGY_ISSUE_COLOR,
+                    line_width=TOPOLOGY_ISSUE_LINE_WIDTH,
+                    render_lines_as_tubes=True,
+                    lighting=False,
+                    pickable=False,
+                )
+                self._topology_issue_actors.append(actor)
+                self._register_mesh_actor(actor, PREVIEW_REGION_EXTERIOR)
+        self._apply_region_visibility(render=render)
 
     def _add_msh_mesh(
         self,
@@ -723,6 +767,41 @@ def _triangle_geometry_key(
     scale = 1.0 / max(float(tolerance), 1e-12)
     coords = np.rint(np.asarray(points, dtype=float)[triangle] * scale).astype(np.int64)
     return tuple(sorted(tuple(int(value) for value in coord) for coord in coords))
+
+
+def _line_segments_with_symmetry_images(
+    segments: np.ndarray,
+    symmetry: str,
+    *,
+    tolerance: float = 1e-12,
+) -> np.ndarray:
+    source = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
+    transforms = (("base", (1.0, 1.0, 1.0)), *_symmetry_preview_transforms(symmetry))
+    unique_segments = []
+    seen = set()
+    scale = 1.0 / max(float(tolerance), 1e-15)
+    for _label, signs in transforms:
+        transformed = source * np.asarray(signs, dtype=float)
+        for segment in transformed:
+            quantized = np.rint(segment * scale).astype(np.int64)
+            key = tuple(sorted(tuple(int(value) for value in point) for point in quantized))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_segments.append(segment)
+    if not unique_segments:
+        return np.empty((0, 2, 3), dtype=float)
+    return np.asarray(unique_segments, dtype=float)
+
+
+def _line_segments_to_polydata(segments: np.ndarray):
+    values = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
+    points = values.reshape((-1, 3))
+    line_indices = np.arange(len(points), dtype=np.int64).reshape((-1, 2))
+    lines = np.column_stack((np.full(len(line_indices), 2, dtype=np.int64), line_indices)).ravel()
+    polydata = pv.PolyData(points)
+    polydata.lines = lines
+    return polydata
 
 
 def _triangles_to_polydata(points: np.ndarray, triangles: np.ndarray):
