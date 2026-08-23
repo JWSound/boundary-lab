@@ -29,6 +29,8 @@ class PreparedMeshAssembly:
     mesh_configs: tuple[MeshConfig, ...]
     radiators: tuple[RadiatorConfig, ...]
     surface_tags_by_mesh: dict[str, dict[str, int]]
+    source_surface_tags_by_mesh: dict[str, dict[str, int]]
+    solver_surface_by_source: dict[tuple[str, int | None], tuple[str, int | None]]
 
     @property
     def surface_tags(self) -> dict[str, tuple[str, int]]:
@@ -106,12 +108,21 @@ class MeshAssemblyService:
             symmetry=symmetry,
         )
         surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
+        source_surface_tags_by_mesh = {
+            mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in candidates
+        }
+        solver_surface_by_source = self.solver_surface_map(
+            tuple(candidates),
+            stitched=bool(stitch_imported_meshes and len(candidates) > 1),
+        )
         return PreparedMeshAssembly(
             imported_meshes=cleaned_imported,
             source_mesh_configs=tuple(candidates),
             mesh_configs=mesh_configs,
             radiators=resolved_radiators,
             surface_tags_by_mesh=surface_tags_by_mesh,
+            source_surface_tags_by_mesh=source_surface_tags_by_mesh,
+            solver_surface_by_source=solver_surface_by_source,
         )
 
     def prepare_mesh_configs(
@@ -267,10 +278,37 @@ class MeshAssemblyService:
                 mapping[(mesh_config.name, old_tag)] = (f"{STITCHED_MESH_NAME}:{stitched_name}", new_tag)
         return mapping
 
+    def solver_surface_map(
+        self,
+        mesh_configs: tuple[MeshConfig, ...],
+        *,
+        stitched: bool,
+    ) -> dict[tuple[str, int | None], tuple[str, int | None]]:
+        """Map source physical surfaces to the actor identity in solver geometry."""
+
+        if stitched:
+            return {
+                source: (STITCHED_MESH_NAME, stitched_surface[1])
+                for source, stitched_surface in self.stitched_radiator_map(mesh_configs).items()
+            }
+        mapping: dict[tuple[str, int | None], tuple[str, int | None]] = {}
+        for mesh_config in mesh_configs:
+            tags = self.used_surface_tags(mesh_config)
+            if tags:
+                mapping.update(
+                    ((mesh_config.name, int(tag)), (mesh_config.name, int(tag))) for tag in tags
+                )
+            else:
+                mapping[(mesh_config.name, None)] = (mesh_config.name, None)
+        return mapping
+
     @staticmethod
     def used_surface_tags(mesh_config: MeshConfig) -> tuple[int, ...]:
         mesh = meshio.read(mesh_config.file)
-        triangle_tags = mesh.cell_data_dict.get("gmsh:physical", {}).get("triangle")
+        physical = mesh.cell_data_dict.get("gmsh:physical", {})
+        triangle_tags = physical.get("triangle")
+        if triangle_tags is None:
+            triangle_tags = physical.get("triangle3")
         if triangle_tags is None:
             return ()
         return tuple(sorted(int(tag) for tag in np.unique(triangle_tags)))

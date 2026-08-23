@@ -12,15 +12,11 @@ from blab.ui.dialogs import (
     PreferencesDialog,
 )
 from blab.ui.main_window.constants import (
-    BEM_PREVIEW_DARK_ICON,
-    BEM_PREVIEW_LIGHT_ICON,
     CAPTURE_CONTOURS_DARK_ICON,
     CAPTURE_CONTOURS_LIGHT_ICON,
     CLEAR_CONTOURS_DARK_ICON,
     CLEAR_CONTOURS_LIGHT_ICON,
     DEFAULT_DOCK_STATE_B64,
-    FEM_PREVIEW_DARK_ICON,
-    FEM_PREVIEW_LIGHT_ICON,
     PHASE_DARK_ICON,
     PHASE_LIGHT_ICON,
     SAVE_DARK_ICON,
@@ -70,7 +66,7 @@ class PreferencesMixin:
             )
 
     def _refresh_plot_export_icons(self) -> None:
-        if not hasattr(self, "export_plot_actions") and not hasattr(self, "show_interior_regions_action"):
+        if not hasattr(self, "export_plot_actions"):
             return
         palette = self.palette()
         window_color = palette.color(QPalette.Window)
@@ -78,8 +74,6 @@ class PreferencesMixin:
         icon = QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))
         capture_icon = QIcon(str(CAPTURE_CONTOURS_LIGHT_ICON if light_theme else CAPTURE_CONTOURS_DARK_ICON))
         clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
-        fem_icon = QIcon(str(FEM_PREVIEW_LIGHT_ICON if light_theme else FEM_PREVIEW_DARK_ICON))
-        bem_icon = QIcon(str(BEM_PREVIEW_LIGHT_ICON if light_theme else BEM_PREVIEW_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
         phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
@@ -88,10 +82,6 @@ class PreferencesMixin:
             action.setIcon(capture_icon)
         for action in getattr(self, "clear_contour_actions", {}).values():
             action.setIcon(clear_icon)
-        if hasattr(self, "show_interior_regions_action"):
-            self.show_interior_regions_action.setIcon(fem_icon)
-        if hasattr(self, "show_exterior_region_action"):
-            self.show_exterior_region_action.setIcon(bem_icon)
         if hasattr(self, "syntax_highlighting_action"):
             self.syntax_highlighting_action.setIcon(syntax_icon)
         on_axis_plot = getattr(self, "on_axis_plot", None)

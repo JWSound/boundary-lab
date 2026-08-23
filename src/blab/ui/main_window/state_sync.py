@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSignalBlocker, Slot
+from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from blab.physical_model import (
-    AcousticRegionKind,
-)
 from blab.ui.application_state import solve_invalidation_policy
 
 
@@ -50,49 +47,6 @@ class StateSyncMixin:
         self._refresh_mesh_preview()
         self._record_imported_mesh_source_fingerprints()
         self.set_system_config_available(self.has_solver_meshes())
-
-    @Slot(bool)
-    def _on_show_interior_regions(self, checked: bool) -> None:
-        if checked:
-            blocker = QSignalBlocker(self.show_exterior_region_action)
-            self.show_exterior_region_action.setChecked(False)
-            del blocker
-        self._apply_preview_region_action_state()
-
-    @Slot(bool)
-    def _on_show_exterior_region(self, checked: bool) -> None:
-        if checked:
-            blocker = QSignalBlocker(self.show_interior_regions_action)
-            self.show_interior_regions_action.setChecked(False)
-            del blocker
-        self._apply_preview_region_action_state()
-
-    def _apply_preview_region_action_state(self) -> None:
-        if self.show_interior_regions_action.isChecked():
-            mode = "interior"
-        elif self.show_exterior_region_action.isChecked():
-            mode = "exterior"
-        else:
-            mode = "all"
-        self.set_preview_region_mode(mode)
-
-    def _sync_preview_region_actions(self) -> None:
-        if not hasattr(self, "show_interior_regions_action"):
-            return
-        system = getattr(self._project_document(), "physical_system", None)
-        has_interior_region = system is not None and any(
-            region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions
-        )
-        self.show_interior_regions_action.setEnabled(has_interior_region)
-        self.show_exterior_region_action.setEnabled(has_interior_region)
-        if has_interior_region:
-            return
-        interior_blocker = QSignalBlocker(self.show_interior_regions_action)
-        exterior_blocker = QSignalBlocker(self.show_exterior_region_action)
-        self.show_interior_regions_action.setChecked(False)
-        self.show_exterior_region_action.setChecked(False)
-        del interior_blocker, exterior_blocker
-        self.set_preview_region_mode("all")
 
     @Slot(str)
     def _on_solve_results_invalidated(self, reason: str) -> None:

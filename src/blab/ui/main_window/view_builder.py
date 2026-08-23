@@ -211,21 +211,10 @@ class ViewBuilderMixin:
             self.editor_container,
             tool_actions=(self.syntax_highlighting_action,),
         )
-        self.show_interior_regions_action = QAction("Show interior regions", self)
-        self.show_interior_regions_action.setToolTip("Show interior regions")
-        self.show_interior_regions_action.setCheckable(True)
-        self.show_interior_regions_action.setEnabled(False)
-        self.show_interior_regions_action.triggered.connect(self._on_show_interior_regions)
-        self.show_exterior_region_action = QAction("Show exterior region", self)
-        self.show_exterior_region_action.setToolTip("Show exterior region")
-        self.show_exterior_region_action.setCheckable(True)
-        self.show_exterior_region_action.setEnabled(False)
-        self.show_exterior_region_action.triggered.connect(self._on_show_exterior_region)
         self.preview_dock = self._make_panel_dock(
             "mesh_preview_dock",
             "Mesh Preview",
             self.preview,
-            tool_actions=(self.show_interior_regions_action, self.show_exterior_region_action),
         )
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
@@ -485,9 +474,6 @@ class ViewBuilderMixin:
         controller = getattr(self, "observation_plane_controller", None)
         if controller is not None:
             controller.sync_view()
-
-    def set_preview_region_mode(self, mode: str) -> None:
-        self.preview.set_region_visibility_mode(mode)
 
     def set_balloon_plot_available(self, available: bool) -> None:
         self.balloon_plot_action.setEnabled(available)

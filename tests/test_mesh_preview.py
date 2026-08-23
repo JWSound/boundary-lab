@@ -1,6 +1,9 @@
 import numpy as np
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QWidget
 
+from blab.ui import mesh_preview as mesh_preview_module
 from blab.ui.mesh_preview import (
     AXIS_LABELS,
     DRIVEN_COLOR,
@@ -14,7 +17,7 @@ from blab.ui.mesh_preview import (
     PREVIEW_HOME_CAMERA_DIRECTION,
     PREVIEW_HOME_VIEW_UP,
     PREVIEW_HOME_ZOOM,
-    _actor_visible_for_region,
+    MeshPreview,
     _dimensions_lwh_mm,
     _line_segments_with_symmetry_images,
     _mesh_stats_label,
@@ -24,6 +27,8 @@ from blab.ui.mesh_preview import (
     _preview_points_with_images,
     _surface_hover_label,
     _surface_preview_colors,
+    _visibility_check_state,
+    _visible_tree_row_count,
 )
 from repo_paths import source_text
 
@@ -82,20 +87,73 @@ def test_interface_elements_use_requested_green_colors_and_take_precedence() -> 
     )
 
 
-@pytest.mark.parametrize(
-    ("mesh_region", "mode", "visible"),
-    [
-        ("interior", "all", True),
-        ("exterior", "all", True),
-        ("interior", "interior", True),
-        ("exterior", "interior", False),
-        ("interior", "exterior", False),
-        ("exterior", "exterior", True),
-        (None, "interior", True),
-    ],
-)
-def test_preview_region_filter_visibility(mesh_region: str | None, mode: str, visible: bool) -> None:
-    assert _actor_visible_for_region(mesh_region, mode) is visible
+def test_body_tree_parent_check_state_tracks_descendant_visibility() -> None:
+    keys = (("exterior", 1), ("exterior", 2))
+
+    assert _visibility_check_state(keys, {keys[0]: True, keys[1]: True}) == Qt.CheckState.Checked
+    assert _visibility_check_state(keys, {keys[0]: False, keys[1]: False}) == Qt.CheckState.Unchecked
+    assert _visibility_check_state(keys, {keys[0]: True, keys[1]: False}) == Qt.CheckState.PartiallyChecked
+
+
+def test_body_tree_is_a_translucent_viewport_overlay_with_collapsed_project_root() -> None:
+    source = source_text("ui", "mesh_preview.py")
+
+    assert 'self.body_tree_overlay.setObjectName("mesh_body_tree_overlay")' in source
+    assert "background-color: rgba(38, 44, 55, 120)" in source
+    assert "scene_layout.addWidget(self.viewer, 0, 0)" in source
+    assert '"Project",' in source
+    assert "project_item.setExpanded(False)" in source
+    assert "QSplitter" not in source
+
+
+def test_body_tree_overlay_height_counts_only_visible_rows(qapp) -> None:
+    del qapp
+    tree = QTreeWidget()
+    project = QTreeWidgetItem(["Project"])
+    region = QTreeWidgetItem(["Exterior"])
+    mesh = QTreeWidgetItem(["Mesh"])
+    tree.addTopLevelItem(project)
+    project.addChild(region)
+    region.addChild(mesh)
+
+    assert _visible_tree_row_count(tree) == 1
+    project.setExpanded(True)
+    assert _visible_tree_row_count(tree) == 2
+    region.setExpanded(True)
+    assert _visible_tree_row_count(tree) == 3
+
+
+def test_mesh_preview_constructs_overlay_above_viewer_with_project_collapsed(qapp, monkeypatch) -> None:
+    class StubViewer(QWidget):
+        def set_background(self, _color) -> None:
+            pass
+
+    class StubSignal:
+        def connect(self, _slot) -> None:
+            pass
+
+    class StubObservationPlaneViewport:
+        def __init__(self, *_args) -> None:
+            self.newPlaneRequested = StubSignal()
+            self.planeChanged = StubSignal()
+            self.propertiesRequested = StubSignal()
+            self.deleteRequested = StubSignal()
+            self.clipStateChanged = StubSignal()
+            self.exteriorFieldRequested = StubSignal()
+
+    monkeypatch.setattr(mesh_preview_module, "QtInteractor", StubViewer)
+    monkeypatch.setattr(mesh_preview_module, "ObservationPlaneViewport", StubObservationPlaneViewport)
+    monkeypatch.setattr(MeshPreview, "_install_hover_picker", lambda _self: None)
+
+    preview = MeshPreview()
+    qapp.processEvents()
+    project = preview.body_tree.topLevelItem(0)
+
+    assert project.text(0) == "Project"
+    assert not project.isExpanded()
+    assert preview.viewer.parentWidget() is preview.body_tree_overlay.parentWidget()
+    assert preview.body_tree_overlay.height() < preview.body_tree_overlay.width()
+    preview.close()
 
 
 def test_preview_axis_length_scales_with_mesh_bounds() -> None:

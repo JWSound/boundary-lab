@@ -359,6 +359,3 @@ class WorkflowView(Protocol):
 
     def show_mesh_preview(self, meshes, **options) -> None:
         """Render the given solver meshes in the 3D preview."""
-
-    def set_preview_region_mode(self, mode: str) -> None:
-        """Filter which acoustic regions the preview shows."""

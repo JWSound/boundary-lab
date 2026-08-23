@@ -609,17 +609,12 @@ def test_add_design_tab_is_a_button_not_a_closable_document(main_window) -> None
     assert bar.tabButton(add_index, QTabBar.ButtonPosition.LeftSide) is None
 
 
-# ------------------------------------------------------------------- preview regions
+# --------------------------------------------------------------------- preview tree
 
 
-def test_preview_region_filters_reach_the_mesh_preview(main_window) -> None:
-    assert not main_window.show_interior_regions_action.icon().isNull()
-    assert not main_window.show_exterior_region_action.icon().isNull()
-
-    main_window._on_show_interior_regions(True)
-    main_window._on_show_exterior_region(True)
-
-    assert main_window.preview.region_visibility_mode is not None
+def test_preview_region_toolbar_buttons_were_replaced_by_body_tree(main_window) -> None:
+    assert not hasattr(main_window, "show_interior_regions_action")
+    assert not hasattr(main_window, "show_exterior_region_action")
 
 
 # ------------------------------------------------------------------ contracts
