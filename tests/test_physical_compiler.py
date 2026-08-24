@@ -515,6 +515,76 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
+def test_coupled_backend_accepts_enabled_semi_inductance_model() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "semi_inductance": {
+                "enabled": True,
+                "re_prime_ohm": 6.2,
+                "leb_h": 0.0001,
+                "le_h": 0.001,
+                "ke_semi_h": 0.04,
+                "rss_ohm": 1000.0,
+            },
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert compiled.components[0].parameters["semi_inductance"]["ke_semi_h"] == pytest.approx(0.04)
+    assumptions = {(item.status, item.statement) for item in compiled.assumptions}
+    assert (
+        AssumptionStatus.INCLUDED,
+        "Thorborg-Futtrup semi-inductance voice-coil impedance",
+    ) in assumptions
+
+
+@pytest.mark.parametrize(
+    ("semi_inductance", "message"),
+    (
+        ({"enabled": True, "re_prime_ohm": 6.2}, "enabled semi_inductance is missing"),
+        (
+            {
+                "enabled": True,
+                "re_prime_ohm": 6.2,
+                "leb_h": 0.0001,
+                "le_h": 0.001,
+                "ke_semi_h": 0.04,
+                "rss_ohm": 0.0,
+            },
+            "rss_ohm.*greater than zero",
+        ),
+    ),
+)
+def test_coupled_backend_rejects_invalid_semi_inductance_model(
+    semi_inductance: dict[str, object],
+    message: str,
+) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={**system.components[0].parameters, "semi_inductance": semi_inductance},
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
 def test_coupled_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
     request = SystemSolveRequest(

@@ -48,6 +48,7 @@ from blab.ui.system_config import (
     SystemConfigDialog,
     _ComponentDraft,
     _ComponentEditorDialog,
+    _SemiInductanceDialog,
     _WallImpedanceDialog,
     infer_component_motion_axis,
     inspect_system_meshes,
@@ -704,6 +705,47 @@ def test_component_editor_persists_per_surface_velocity_weights() -> None:
     assert updated.parameters["boundary_motion_weights"][boundary.id] == pytest.approx(10.0 ** (-12.0 / 20.0))
 
 
+def test_semi_inductance_dialog_converts_display_units_and_preserves_disabled_values() -> None:
+    dialog = _SemiInductanceDialog(None)
+    dialog.enabled_check.setChecked(True)
+    for key, value in {
+        "re_prime_ohm": "5.7",
+        "leb_h": "0.12",
+        "le_h": "1.2",
+        "ke_semi_h": "0.04",
+        "rss_ohm": "1000",
+    }.items():
+        dialog.parameter_edits[key].setText(value)
+
+    enabled = dialog.model_parameters()
+    assert enabled is not None
+    assert enabled.pop("enabled") is True
+    assert enabled == pytest.approx(
+        {
+            "re_prime_ohm": 5.7,
+            "leb_h": 0.00012,
+            "le_h": 0.0012,
+            "ke_semi_h": 0.04,
+            "rss_ohm": 1000.0,
+        }
+    )
+
+    dialog.enabled_check.setChecked(False)
+    disabled = dialog.model_parameters()
+    assert disabled is not None
+    assert disabled["enabled"] is False
+    assert disabled["le_h"] == pytest.approx(0.0012)
+
+
+def test_semi_inductance_dialog_requires_a_complete_enabled_model() -> None:
+    dialog = _SemiInductanceDialog(None)
+    dialog.enabled_check.setChecked(True)
+    dialog.parameter_edits["re_prime_ohm"].setText("5.7")
+
+    with pytest.raises(ValueError, match="Leb is required"):
+        dialog.model_parameters()
+
+
 def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
     resources = {
         "mesh:front": MeshResource(
@@ -743,6 +785,14 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
         "cms_m_per_n": 0.0005,
         "rms_n_s_per_m": 1.0,
         "motion_axis": [1.0, 0.0, 0.0],
+        "semi_inductance": {
+            "enabled": True,
+            "re_prime_ohm": 6.2,
+            "leb_h": 0.0001,
+            "le_h": 0.001,
+            "ke_semi_h": 0.04,
+            "rss_ohm": 1000.0,
+        },
     }
     editor = _ComponentEditorDialog(
         _ComponentDraft(
@@ -769,6 +819,8 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
     assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
     assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
+    assert not editor.parameter_edits["le_h"].isEnabled()
+    assert editor.semi_inductance_button.text() == "Semi-Inductance: On…"
     editor.parameter_edits["le_h"].setText("0.75")
     editor.parameter_edits["mmd_kg"].setText("18")
     editor.parameter_edits["cms_m_per_n"].setText("625")
@@ -779,6 +831,7 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert updated.parameters["le_h"] == pytest.approx(0.00075)
     assert updated.parameters["mmd_kg"] == pytest.approx(0.018)
     assert updated.parameters["cms_m_per_n"] == pytest.approx(0.000625)
+    assert updated.parameters["semi_inductance"] == parameters["semi_inductance"]
     assert updated.motion_axis_mode == "automatic"
     assert "High confidence" in editor.axis_confidence_label.text()
 

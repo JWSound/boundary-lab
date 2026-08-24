@@ -65,6 +65,14 @@ ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
     "surface_completion_factor",
     "physical_driver_orbit_count",
     "fractional_symmetry_axes",
+    "semi_inductance",
+}
+SEMI_INDUCTANCE_PARAMETERS = {
+    "re_prime_ohm",
+    "leb_h",
+    "le_h",
+    "ke_semi_h",
+    "rss_ohm",
 }
 
 
@@ -655,6 +663,40 @@ def _validate_boundary_motion_weights(component) -> None:
             )
 
 
+def _validate_semi_inductance(component_id: str, raw_model) -> None:
+    if raw_model is None:
+        return
+    if not isinstance(raw_model, dict):
+        raise ValueError(f"Electrodynamic component '{component_id}' semi_inductance must be an object.")
+    unsupported = sorted(set(raw_model) - SEMI_INDUCTANCE_PARAMETERS - {"enabled"})
+    if unsupported:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' has unsupported semi_inductance parameters: "
+            + ", ".join(unsupported)
+        )
+    enabled = raw_model.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Electrodynamic component '{component_id}' semi_inductance enabled must be a boolean.")
+    missing = sorted(SEMI_INDUCTANCE_PARAMETERS - set(raw_model))
+    if enabled and missing:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' enabled semi_inductance is missing: "
+            + ", ".join(missing)
+        )
+    for name in sorted(SEMI_INDUCTANCE_PARAMETERS & set(raw_model)):
+        value = raw_model[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(
+                f"Electrodynamic component '{component_id}' semi_inductance parameter "
+                f"'{name}' must be a finite number greater than zero."
+            )
+
+
 def _validate_electrodynamic_component(
     component,
     *,
@@ -684,6 +726,8 @@ def _validate_electrodynamic_component(
             raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must be greater than zero.")
         if name in nonnegative and float(value) < 0.0:
             raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative.")
+
+    _validate_semi_inductance(component.id, parameters.get("semi_inductance"))
 
     raw_axis = parameters["motion_axis"]
     if (

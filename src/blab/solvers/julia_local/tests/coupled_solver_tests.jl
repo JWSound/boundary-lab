@@ -6,6 +6,52 @@ const COUPLED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..",
 const COUPLED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 
+@testset "electrodynamic voice-coil impedance models" begin
+    simple = ElectrodynamicTransducer{Float64}(
+        "component:simple",
+        Int[],
+        Float64[],
+        Int[],
+        Float64[],
+        SVector(0.0, 0.0, 1.0),
+        1.0,
+        1,
+        6.0,
+        0.0005,
+        7.0,
+        0.015,
+        0.0005,
+        1.0,
+    )
+    omega = 2pi * 1000.0
+    @test electrical_impedance(simple, omega) == ComplexF64(6.0, -omega * 0.0005)
+
+    model = SemiInductanceModel{Float64}(6.2, 0.0001, 0.001, 0.04, 1000.0)
+    advanced = ElectrodynamicTransducer{Float64}(
+        "component:advanced",
+        Int[],
+        Float64[],
+        Int[],
+        Float64[],
+        SVector(0.0, 0.0, 1.0),
+        1.0,
+        1,
+        6.0,
+        0.0005,
+        7.0,
+        0.015,
+        0.0005,
+        1.0,
+        model,
+    )
+    s = -im * omega
+    expected = 6.2 + s * 0.0001 + inv(inv(1000.0) + inv(s * 0.001) + inv(sqrt(s) * 0.04))
+    impedance = electrical_impedance(advanced, omega)
+    @test impedance ≈ expected
+    @test real(impedance) > 6.2
+    @test imag(impedance) < 0.0
+end
+
 @testset "FEM consistent/lumped mass blending" begin
     consistent = sparse(Float64[2 1; 1 2] ./ 6)
     lumped = blend_fem_mass_matrix(consistent, 0.0)

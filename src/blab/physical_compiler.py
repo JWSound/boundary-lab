@@ -725,7 +725,19 @@ class PhysicalSystemCompiler:
             assumptions.append(
                 PhysicsAssumption(
                     AssumptionStatus.EXCLUDED,
-                    "Cone breakup, nonlinear motor behavior, and lossy voice-coil inductance",
+                    "Cone breakup, nonlinear motor behavior, and thermal effects",
+                )
+            )
+            semi_inductance_enabled = any(
+                isinstance(component.parameters.get("semi_inductance"), dict)
+                and component.parameters["semi_inductance"].get("enabled") is True
+                for component in system.components
+                if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            )
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED if semi_inductance_enabled else AssumptionStatus.EXCLUDED,
+                    "Thorborg-Futtrup semi-inductance voice-coil impedance",
                 )
             )
         if system.excitation_ports:

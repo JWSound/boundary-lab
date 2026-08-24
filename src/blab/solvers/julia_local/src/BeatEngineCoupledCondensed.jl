@@ -694,7 +694,7 @@ function build_condensed_coupled_system(
         for transducer in transducers
     ]
     electrical_impedance = Complex{T}[
-        Complex{T}(transducer.re_ohm, -omega * transducer.le_h)
+        BeatEngineCoupled.electrical_impedance(transducer, omega)
         for transducer in transducers
     ]
     force_factor = T[transducer.bl_n_per_a for transducer in transducers]

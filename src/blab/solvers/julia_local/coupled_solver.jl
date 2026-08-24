@@ -868,6 +868,59 @@ function combined_interface_map_from_wire(
     )
 end
 
+function semi_inductance_from_wire(parameters, component_id, ::Type{T}) where {T<:AbstractFloat}
+    haskey(parameters, "semi_inductance") || return nothing
+    raw_model = parameters["semi_inductance"]
+    raw_model isa AbstractDict || error(
+        "Electrodynamic component $(repr(component_id)) semi_inductance must be an object.",
+    )
+    scalar_names = ("re_prime_ohm", "leb_h", "le_h", "ke_semi_h", "rss_ohm")
+    allowed = (scalar_names..., "enabled")
+    unsupported = [String(name) for name in keys(raw_model) if !(String(name) in allowed)]
+    isempty(unsupported) || error(
+        "Electrodynamic component $(repr(component_id)) has unsupported semi_inductance " *
+        "parameters: " * join(sort(unsupported), ", "),
+    )
+    enabled = get(raw_model, "enabled", false)
+    enabled isa Bool || error(
+        "Electrodynamic component $(repr(component_id)) semi_inductance enabled must be boolean.",
+    )
+    missing = [name for name in scalar_names if !haskey(raw_model, name)]
+    enabled && !isempty(missing) && error(
+        "Electrodynamic component $(repr(component_id)) enabled semi_inductance is missing: " *
+        join(missing, ", "),
+    )
+    for name in scalar_names
+        haskey(raw_model, name) || continue
+        raw_value = raw_model[name]
+        raw_value isa Bool && error(
+            "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+            "$(repr(name)) must be a number, not a boolean.",
+        )
+        value = try
+            T(raw_value)
+        catch
+            error(
+                "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+                "$(repr(name)) must be a finite number.",
+            )
+        end
+        isfinite(value) && value > zero(T) || error(
+            "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+            "$(repr(name)) must be finite and greater than zero.",
+        )
+    end
+    enabled || return nothing
+    values = Dict(name => T(raw_model[name]) for name in scalar_names)
+    return SemiInductanceModel{T}(
+        values["re_prime_ohm"],
+        values["leb_h"],
+        values["le_h"],
+        values["ke_semi_h"],
+        values["rss_ohm"],
+    )
+end
+
 function electrodynamic_transducers_from_wire(
     components,
     boundaries,
@@ -900,6 +953,7 @@ function electrodynamic_transducers_from_wire(
             "surface_completion_factor",
             "physical_driver_orbit_count",
             "fractional_symmetry_axes",
+            "semi_inductance",
         )
         missing = [name for name in required if !haskey(parameters, name)]
         isempty(missing) || error(
@@ -1044,6 +1098,11 @@ function electrodynamic_transducers_from_wire(
         values["mmd_kg"] > zero(T) || error("mmd_kg must be greater than zero.")
         values["cms_m_per_n"] > zero(T) || error("cms_m_per_n must be greater than zero.")
         values["rms_n_s_per_m"] >= zero(T) || error("rms_n_s_per_m must not be negative.")
+        semi_inductance = semi_inductance_from_wire(
+            parameters,
+            String(component["id"]),
+            T,
+        )
         push!(
             transducers,
             ElectrodynamicTransducer{T}(
@@ -1061,6 +1120,7 @@ function electrodynamic_transducers_from_wire(
                 values["mmd_kg"],
                 values["cms_m_per_n"],
                 values["rms_n_s_per_m"],
+                semi_inductance,
             ),
         )
         index_by_component_id[String(component["id"])] = length(transducers)
@@ -1319,7 +1379,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
                 for transducer in transducers
             ]
             electrical_impedance = Complex{FloatType}[
-                Complex{FloatType}(transducer.re_ohm, -omega * transducer.le_h)
+                BeatEngineCoupled.electrical_impedance(transducer, omega)
                 for transducer in transducers
             ]
             force_factor = Complex{FloatType}[transducer.bl_n_per_a for transducer in transducers]

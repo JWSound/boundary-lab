@@ -344,6 +344,8 @@ Ath-generated driver groups are initially seeded as prescribed-velocity
 components.
 
 Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters.
+The **Semi-Inductance** button beside Le optionally opens the advanced Re′,
+Leb, Le, Ke, and Rss voice-coil impedance model.
 The solver retains a 2.83 V reference basis, while the channel Voltage control
 scales that basis after the solve. Their rigid-translation motion axis can be
 inferred from the selected surface normals or entered manually. In a symmetry

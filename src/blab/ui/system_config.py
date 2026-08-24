@@ -151,6 +151,7 @@ class _ComponentDraft:
 
 _COMPONENT_UI_METADATA_KEY = "component_editor"
 _BOUNDARY_MOTION_WEIGHTS_KEY = "boundary_motion_weights"
+_SEMI_INDUCTANCE_KEY = "semi_inductance"
 _TRANSDUCER_PARAMETER_FIELDS = (
     ("re_ohm", "Re", "Ω", 1.0),
     ("le_h", "Le", "mH", 1_000.0),
@@ -158,6 +159,13 @@ _TRANSDUCER_PARAMETER_FIELDS = (
     ("mmd_kg", "Mmd", "g", 1_000.0),
     ("cms_m_per_n", "Cms", "µm/N", 1_000_000.0),
     ("rms_n_s_per_m", "Rms", "N·s/m", 1.0),
+)
+_SEMI_INDUCTANCE_PARAMETER_FIELDS = (
+    ("re_prime_ohm", "Re′", "Ω", 1.0),
+    ("leb_h", "Leb", "mH", 1_000.0),
+    ("le_h", "Le", "mH", 1_000.0),
+    ("ke_semi_h", "Ke", "sH", 1.0),
+    ("rss_ohm", "Rss", "Ω", 1.0),
 )
 
 
@@ -653,6 +661,81 @@ def rebuild_configured_interfaces(
     )
 
 
+class _SemiInductanceDialog(QDialog):
+    """Edit the optional Thorborg-Futtrup voice-coil impedance model."""
+
+    def __init__(self, parameters: dict | None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Semi-Inductance")
+        raw = parameters if isinstance(parameters, dict) else {}
+
+        self.enabled_check = QCheckBox("Enable semi-inductance model")
+        self.enabled_check.setChecked(raw.get("enabled") is True)
+        self.parameter_edits: dict[str, QLineEdit] = {}
+        form = QFormLayout()
+        for key, label, unit, display_per_si in _SEMI_INDUCTANCE_PARAMETER_FIELDS:
+            edit = QLineEdit()
+            value = raw.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                edit.setText(f"{float(value) * display_per_si:.12g}")
+            edit.setPlaceholderText(unit)
+            self.parameter_edits[key] = edit
+            form.addRow(f"{label} ({unit})", edit)
+
+        note = QLabel(
+            "Re′ and Leb are the series terms. Le, Ke, and Rss form the parallel "
+            "bound-inductance, semi-inductance, and shunt-loss network."
+        )
+        note.setWordWrap(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.enabled_check)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addWidget(buttons)
+
+        self.enabled_check.toggled.connect(self._refresh_enabled)
+        self._refresh_enabled(self.enabled_check.isChecked())
+        self.resize(390, 280)
+
+    def model_parameters(self) -> dict | None:
+        enabled = self.enabled_check.isChecked()
+        values: dict[str, float | bool] = {"enabled": enabled}
+        populated = False
+        for key, label, _unit, display_per_si in _SEMI_INDUCTANCE_PARAMETER_FIELDS:
+            text = self.parameter_edits[key].text().strip()
+            if not text:
+                if enabled:
+                    raise ValueError(f"{label} is required when semi-inductance is enabled.")
+                continue
+            try:
+                display_value = float(text)
+            except ValueError as exc:
+                raise ValueError(f"{label} must be a finite number.") from exc
+            if not np.isfinite(display_value):
+                raise ValueError(f"{label} must be a finite number.")
+            if display_value <= 0.0:
+                raise ValueError(f"{label} must be greater than zero.")
+            values[key] = display_value / display_per_si
+            populated = True
+        return values if enabled or populated else None
+
+    def _accept(self) -> None:
+        try:
+            self._parameters = self.model_parameters()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Semi-Inductance", str(exc))
+            return
+        self.accept()
+
+    def _refresh_enabled(self, enabled: bool) -> None:
+        for edit in self.parameter_edits.values():
+            edit.setEnabled(enabled)
+
+
 class _ComponentEditorDialog(QDialog):
     """Edit one component while keeping the Components table an overview."""
 
@@ -681,6 +764,10 @@ class _ComponentEditorDialog(QDialog):
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._symmetry_inference: ComponentSymmetryInference | None = None
         self._symmetry_inference_error: str | None = None
+        raw_semi_inductance = draft.parameters.get(_SEMI_INDUCTANCE_KEY)
+        self._semi_inductance_parameters = (
+            dict(raw_semi_inductance) if isinstance(raw_semi_inductance, dict) else None
+        )
 
         self.name_edit = QLineEdit(draft.name)
         self.type_combo = QComboBox()
@@ -785,6 +872,7 @@ class _ComponentEditorDialog(QDialog):
         axis_form.addRow("Inference", self.axis_confidence_label)
 
         self.parameter_edits: dict[str, QLineEdit] = {}
+        self.semi_inductance_button = QPushButton()
         transducer_form = QFormLayout()
         for key, label, unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
             edit = QLineEdit()
@@ -792,7 +880,13 @@ class _ComponentEditorDialog(QDialog):
                 edit.setText(f"{float(draft.parameters[key]) * display_per_si:.12g}")
             edit.setPlaceholderText(unit)
             self.parameter_edits[key] = edit
-            transducer_form.addRow(f"{label} ({unit})", edit)
+            if key == "le_h":
+                le_row = QHBoxLayout()
+                le_row.addWidget(edit)
+                le_row.addWidget(self.semi_inductance_button)
+                transducer_form.addRow(f"{label} ({unit})", le_row)
+            else:
+                transducer_form.addRow(f"{label} ({unit})", edit)
         self.symmetry_inference_label = QLabel()
         self.symmetry_inference_label.setWordWrap(True)
         transducer_form.addRow("Symmetry", self.symmetry_inference_label)
@@ -818,6 +912,8 @@ class _ComponentEditorDialog(QDialog):
         self.axis_mode_combo.currentIndexChanged.connect(self._refresh_axis_controls)
         self.boundary_table.itemChanged.connect(self._selected_boundaries_changed)
         self.flip_axis_button.clicked.connect(self._flip_axis)
+        self.semi_inductance_button.clicked.connect(self._edit_semi_inductance)
+        self._refresh_semi_inductance_controls()
         self._refresh_type_controls()
         self._refresh_axis_controls()
         self._infer_component_symmetry()
@@ -868,6 +964,8 @@ class _ComponentEditorDialog(QDialog):
                 elif display_value <= 0.0:
                     raise ValueError(f"{label} must be greater than zero.")
                 parameters[key] = display_value / display_per_si
+            if self._semi_inductance_parameters is not None:
+                parameters[_SEMI_INDUCTANCE_KEY] = dict(self._semi_inductance_parameters)
             mode = str(self.axis_mode_combo.currentData())
             if mode == "automatic":
                 inference = self._infer_axis()
@@ -927,6 +1025,38 @@ class _ComponentEditorDialog(QDialog):
         self.transducer_group.setVisible(electrodynamic)
         if electrodynamic:
             self._infer_component_symmetry()
+
+    def _edit_semi_inductance(self) -> None:
+        dialog = _SemiInductanceDialog(self._semi_inductance_parameters, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._semi_inductance_parameters = dialog._parameters
+        if (
+            isinstance(self._semi_inductance_parameters, dict)
+            and self._semi_inductance_parameters.get("enabled") is True
+        ):
+            if not self.parameter_edits["re_ohm"].text().strip():
+                self.parameter_edits["re_ohm"].setText(
+                    f"{float(self._semi_inductance_parameters['re_prime_ohm']):.12g}"
+                )
+            if not self.parameter_edits["le_h"].text().strip():
+                self.parameter_edits["le_h"].setText(
+                    f"{float(self._semi_inductance_parameters['le_h']) * 1_000.0:.12g}"
+                )
+        self._refresh_semi_inductance_controls()
+
+    def _refresh_semi_inductance_controls(self) -> None:
+        enabled = (
+            isinstance(self._semi_inductance_parameters, dict)
+            and self._semi_inductance_parameters.get("enabled") is True
+        )
+        self.semi_inductance_button.setText("Semi-Inductance: On…" if enabled else "Semi-Inductance…")
+        self.parameter_edits["le_h"].setEnabled(not enabled)
+        self.parameter_edits["le_h"].setToolTip(
+            "The simple-model Le is retained as a fallback while semi-inductance is enabled."
+            if enabled
+            else "Simple voice-coil inductance."
+        )
 
     def _refresh_axis_controls(self, _index: int = -1) -> None:
         automatic = self.axis_mode_combo.currentData() == "automatic"

@@ -298,6 +298,23 @@ $$
 Z_e=R_e-i\omega L_e,
 $$
 
+by default. A transducer may instead enable the optional Thorborg-Futtrup
+semi-inductance model. With (s=-i\omega), its electrical impedance is
+
+$$
+Z_e=R_e' + sL_{eb}+
+\left(
+\frac{1}{R_{ss}}+\frac{1}{sL_e}+\frac{1}{K_e\sqrt{s}}
+\right)^{-1}.
+$$
+
+The component editor opens these settings from the **Semi-Inductance** button
+beside the simple `Le` input. `Re'` is the fitted series resistance, `Leb` is
+the free or out-of-gap inductance, `Le` is the bound or air-gap inductance,
+`Ke` is the semi-inductance coefficient in sH, and `Rss` is the shunt-loss
+resistance. Disabling the option preserves its values and restores the simple
+top-level `Re` and `Le` model.
+
 $$
 Z_m=R_\mathrm{ms}
 +i\left(\frac{1}{\omega C_\mathrm{ms}}-\omega M_\mathrm{md}\right).
@@ -605,8 +622,8 @@ rejected during application preparation or backend validation:
 - `Mms` input or automatic conversion from conventional T/S parameter sets;
 - passive radiators;
 - nonideal amplifier/source impedance;
-- cone breakup, nonlinear or asymmetric `Bl`, thermal effects, and lossy or
-  frequency-dependent voice-coil inductance;
+- cone breakup, nonlinear or asymmetric `Bl`, thermal effects, and
+  excursion-dependent voice-coil impedance;
 - nonuniform prescribed-motion profiles;
 - more than one unbounded exterior region;
 - different fluid properties among coupled acoustic regions;

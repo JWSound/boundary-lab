@@ -312,6 +312,12 @@ both use each face's projection onto the motion axis. Diaphragm projected area
 and pressure force are therefore integrated from the attached moving meshes,
 including shaped rigid cones.
 
+An optional nested `semi_inductance` parameter object replaces the simple
+`Re`-`Le` electrical impedance when its `enabled` flag is true. It contains
+`re_prime_ohm`, `leb_h`, `le_h`, `ke_semi_h`, and `rss_ohm`. The object may be
+retained with `enabled` false so advanced values survive switching back to the
+simple model.
+
 Reduced electrodynamic models keep full physical-driver T/S parameters. The
 compiler determines whether a driver is cut by each active symmetry plane by
 examining perimeter edges in the union of its selected moving surface groups.

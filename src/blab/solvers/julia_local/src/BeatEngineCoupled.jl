@@ -21,7 +21,9 @@ export VolumeMesh,
     is_quadratic,
     ConformingInterfaceMap,
     InterfaceOperators,
+    SemiInductanceModel,
     ElectrodynamicTransducer,
+    electrical_impedance,
     load_gmsh41_volume,
     restrict_volume_mesh,
     physical_tag,
@@ -123,6 +125,14 @@ function offset_interface_map(
     )
 end
 
+struct SemiInductanceModel{T<:AbstractFloat}
+    re_prime_ohm::T
+    leb_h::T
+    le_h::T
+    ke_semi_h::T
+    rss_ohm::T
+end
+
 struct ElectrodynamicTransducer{T<:AbstractFloat}
     id::String
     fem_boundary_tags::Vector{Int}
@@ -138,6 +148,54 @@ struct ElectrodynamicTransducer{T<:AbstractFloat}
     mmd_kg::T
     cms_m_per_n::T
     rms_n_s_per_m::T
+    semi_inductance::Union{Nothing,SemiInductanceModel{T}}
+end
+
+function ElectrodynamicTransducer{T}(
+    id,
+    fem_boundary_tags,
+    fem_motion_signs,
+    bem_boundary_tags,
+    bem_motion_signs,
+    motion_axis,
+    surface_completion_factor,
+    physical_driver_orbit_count,
+    re_ohm,
+    le_h,
+    bl_n_per_a,
+    mmd_kg,
+    cms_m_per_n,
+    rms_n_s_per_m,
+) where {T<:AbstractFloat}
+    return ElectrodynamicTransducer{T}(
+        id,
+        fem_boundary_tags,
+        fem_motion_signs,
+        bem_boundary_tags,
+        bem_motion_signs,
+        motion_axis,
+        surface_completion_factor,
+        physical_driver_orbit_count,
+        re_ohm,
+        le_h,
+        bl_n_per_a,
+        mmd_kg,
+        cms_m_per_n,
+        rms_n_s_per_m,
+        nothing,
+    )
+end
+
+function electrical_impedance(transducer::ElectrodynamicTransducer{T}, omega) where {T<:AbstractFloat}
+    angular_frequency = T(omega)
+    s = Complex{T}(zero(T), -angular_frequency)
+    model = transducer.semi_inductance
+    isnothing(model) && return Complex{T}(transducer.re_ohm) + s * transducer.le_h
+    parallel_admittance =
+        inv(Complex{T}(model.rss_ohm)) +
+        inv(s * model.le_h) +
+        inv(sqrt(s) * model.ke_semi_h)
+    return Complex{T}(model.re_prime_ohm) + s * model.leb_h + inv(parallel_admittance)
 end
 
 function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:AbstractFloat}
@@ -1919,7 +1977,7 @@ function build_coupled_system(
         for transducer in transducers
     ]
     electrical_impedance = Complex{T}[
-        Complex{T}(transducer.re_ohm, -omega * transducer.le_h)
+        BeatEngineCoupled.electrical_impedance(transducer, omega)
         for transducer in transducers
     ]
     force_factor = T[transducer.bl_n_per_a for transducer in transducers]
