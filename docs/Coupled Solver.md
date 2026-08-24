@@ -56,6 +56,8 @@ system:
 - single-axis rigid-body piston motion with an explicit `motion_axis`;
 - one or more FEM or BEM moving boundaries per electrodynamic transducer;
 - direct `Re`, `Le`, `Bl`, `Mmd`, `Cms`, and `Rms` transducer parameters;
+- an optional ideal lumped sealed rear-chamber compliance for an unmeshed rear
+  volume;
 - rigid boundaries everywhere else except configured interface boundaries;
 - linear pressure acoustics, with optional homogeneous bulk loss in every
   bounded FEM air volume;
@@ -124,6 +126,12 @@ The component editor accepts direct Re, Le, Bl, Mmd, Cms, and Rms values for an
 electrodynamic transducer, plus an automatic or manual motion axis. Component
 symmetry completion and physical-driver count are inferred from moving-surface
 adjacency to the active symmetry planes rather than selected manually.
+It also integrates the completed projected diaphragm area. If an enabled
+lumped sealed rear chamber has volume `V` and projected area `Sd`, every solve
+path adds `rho*c^2*Sd^2/V` to the transducer's mechanical stiffness. The model
+assumes a uniform, perfectly sealed, linear adiabatic air volume with no
+frequency-dependent cavity modes, leakage, stuffing loss, or thermal loss.
+It must not be combined with an FEM model of the same rear chamber.
 
 The physical-system compiler resolves group names to Gmsh tags, checks boundary
 coverage and model relationships, and records explicit interface vertex, face,

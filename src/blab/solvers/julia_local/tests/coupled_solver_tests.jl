@@ -50,6 +50,36 @@ const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER"
     @test impedance ≈ expected
     @test real(impedance) > 6.2
     @test imag(impedance) < 0.0
+
+    chamber = LumpedSealedRearChamber{Float64}(0.001, 0.01)
+    chamber_loaded = ElectrodynamicTransducer{Float64}(
+        "component:chamber-loaded",
+        Int[],
+        Float64[],
+        Int[],
+        Float64[],
+        SVector(0.0, 0.0, 1.0),
+        1.0,
+        1,
+        6.0,
+        0.0005,
+        7.0,
+        0.015,
+        0.0005,
+        1.0,
+        nothing,
+        chamber,
+    )
+    density = 1.21
+    sound_speed = 343.0
+    chamber_stiffness = density * sound_speed^2 * chamber.projected_area_m2^2 / chamber.volume_m3
+    expected_mechanical = ComplexF64(
+        chamber_loaded.rms_n_s_per_m,
+        -omega * chamber_loaded.mmd_kg +
+        inv(omega * chamber_loaded.cms_m_per_n) +
+        chamber_stiffness / omega,
+    )
+    @test mechanical_impedance(chamber_loaded, omega, density, sound_speed) ≈ expected_mechanical
 end
 
 @testset "FEM consistent/lumped mass blending" begin

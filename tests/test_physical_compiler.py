@@ -548,6 +548,74 @@ def test_coupled_backend_accepts_enabled_semi_inductance_model() -> None:
     ) in assumptions
 
 
+def test_coupled_backend_accepts_lumped_sealed_rear_chamber() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "lumped_sealed_rear_chamber": {
+                "enabled": True,
+                "volume_m3": 0.005,
+                "projected_area_m2": 0.012,
+            },
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    chamber = compiled.components[0].parameters["lumped_sealed_rear_chamber"]
+    assert chamber["volume_m3"] == pytest.approx(0.005)
+    assumptions = {(item.status, item.statement) for item in compiled.assumptions}
+    assert (
+        AssumptionStatus.INCLUDED,
+        "Ideal adiabatic lumped sealed rear-chamber compliance",
+    ) in assumptions
+
+
+@pytest.mark.parametrize(
+    ("rear_chamber", "message"),
+    (
+        ({"enabled": True, "volume_m3": 0.005}, "is missing: projected_area_m2"),
+        (
+            {"enabled": True, "volume_m3": 0.0, "projected_area_m2": 0.012},
+            "volume_m3.*greater than zero",
+        ),
+        (
+            {"enabled": "yes", "volume_m3": 0.005, "projected_area_m2": 0.012},
+            "enabled must be a boolean",
+        ),
+    ),
+)
+def test_coupled_backend_rejects_invalid_lumped_sealed_rear_chamber(
+    rear_chamber: dict[str, object],
+    message: str,
+) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "lumped_sealed_rear_chamber": rear_chamber,
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
 @pytest.mark.parametrize(
     ("semi_inductance", "message"),
     (

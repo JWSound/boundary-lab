@@ -66,6 +66,7 @@ ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
     "physical_driver_orbit_count",
     "fractional_symmetry_axes",
     "semi_inductance",
+    "lumped_sealed_rear_chamber",
 }
 SEMI_INDUCTANCE_PARAMETERS = {
     "re_prime_ohm",
@@ -73,6 +74,10 @@ SEMI_INDUCTANCE_PARAMETERS = {
     "le_h",
     "ke_semi_h",
     "rss_ohm",
+}
+LUMPED_SEALED_REAR_CHAMBER_PARAMETERS = {
+    "volume_m3",
+    "projected_area_m2",
 }
 
 
@@ -697,6 +702,45 @@ def _validate_semi_inductance(component_id: str, raw_model) -> None:
             )
 
 
+def _validate_lumped_sealed_rear_chamber(component_id: str, raw_model) -> None:
+    if raw_model is None:
+        return
+    if not isinstance(raw_model, dict):
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber must be an object."
+        )
+    unsupported = sorted(set(raw_model) - LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - {"enabled"})
+    if unsupported:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' has unsupported "
+            "lumped_sealed_rear_chamber parameters: " + ", ".join(unsupported)
+        )
+    enabled = raw_model.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber "
+            "enabled must be a boolean."
+        )
+    missing = sorted(LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - set(raw_model))
+    if enabled and missing:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' enabled lumped_sealed_rear_chamber "
+            "is missing: " + ", ".join(missing)
+        )
+    for name in sorted(LUMPED_SEALED_REAR_CHAMBER_PARAMETERS & set(raw_model)):
+        value = raw_model[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(
+                f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber "
+                f"parameter '{name}' must be a finite number greater than zero."
+            )
+
+
 def _validate_electrodynamic_component(
     component,
     *,
@@ -728,6 +772,10 @@ def _validate_electrodynamic_component(
             raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative.")
 
     _validate_semi_inductance(component.id, parameters.get("semi_inductance"))
+    _validate_lumped_sealed_rear_chamber(
+        component.id,
+        parameters.get("lumped_sealed_rear_chamber"),
+    )
 
     raw_axis = parameters["motion_axis"]
     if (

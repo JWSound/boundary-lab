@@ -118,6 +118,7 @@
       ]
     }
   ],
+  "observation_planes": [],
   "physical_system": {
     "boundaries": [
       {
@@ -381,16 +382,24 @@
         "name": "5CCN125D",
         "parameters": {
           "bl_n_per_a": 10.6,
+          "boundary_motion_weights": {
+            "boundary:region-interior-air-1:mf": 1.0
+          },
           "cms_m_per_n": 0.0003,
           "fractional_symmetry_axes": [
             "y"
           ],
           "le_h": 2.9999999999999997e-05,
+          "lumped_sealed_rear_chamber": {
+            "enabled": true,
+            "projected_area_m2": 0.01002547697697043,
+            "volume_m3": 0.00034
+          },
           "mmd_kg": 0.0072,
           "motion_axis": [
-            -0.9135452493092732,
+            -0.9135454767673672,
             0.0,
-            0.40673711099979293
+            0.40673660012086915
           ],
           "motion_profile": "rigid_translation",
           "physical_driver_orbit_count": 2,
@@ -635,7 +644,7 @@
     "freq_min_hz": 20,
     "horizontal_normalization_angle": 10.0,
     "isobar_contour_step_db": 3.0,
-    "normalized_channel_correction": true,
+    "normalized_channel_correction": false,
     "polar_angle_step_deg": 1.0,
     "polar_observation_distance_m": 3.0,
     "polar_smoothing": null,

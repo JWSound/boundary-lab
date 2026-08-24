@@ -8,6 +8,7 @@ from blab.component_symmetry import (
     ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
     infer_component_symmetry,
+    infer_projected_diaphragm_area,
 )
 from blab.physical_model import (
     Boundary,
@@ -139,6 +140,61 @@ def test_front_and_rear_driver_surfaces_infer_one_shared_x_cut_driver() -> None:
     assert inferred.surface_completion_factor == 2
     assert inferred.physical_driver_orbit_count == 1
     assert inferred.surface_patch_count == 2
+
+
+def test_projected_diaphragm_area_averages_opposing_sides_and_reports_mismatch() -> None:
+    front_resource = MeshResource("mesh:front", "Front", "unused-front.msh", MeshPurpose.FEM_VOLUME)
+    rear_resource = MeshResource("mesh:rear", "Rear", "unused-rear.msh", MeshPurpose.FEM_VOLUME)
+    front_mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Front": np.asarray((1, 2))},
+    )
+    rear_mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.1), (0.0, 0.8, 0.1), (0.8, 0.0, 0.1))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Rear": np.asarray((1, 2))},
+    )
+
+    inferred = infer_projected_diaphragm_area(
+        (
+            _boundary(front_resource, "Front", "boundary:front"),
+            _boundary(rear_resource, "Rear", "boundary:rear"),
+        ),
+        {front_resource.id: front_resource, rear_resource.id: rear_resource},
+        (0.0, 0.0, 1.0),
+        1,
+        mesh_cache={front_resource.id: front_mesh, rear_resource.id: rear_mesh},
+    )
+
+    assert inferred.positive_side_area_m2 == pytest.approx(0.5)
+    assert inferred.negative_side_area_m2 == pytest.approx(0.32)
+    assert inferred.projected_area_m2 == pytest.approx(0.41)
+    assert inferred.relative_side_mismatch == pytest.approx(0.36)
+
+
+def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
+    resource = MeshResource("mesh:front", "Front", "unused-front.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.1, 0.0))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Front": np.asarray((1, 2))},
+    )
+
+    inferred = infer_projected_diaphragm_area(
+        (_boundary(resource, "Front", "boundary:front"),),
+        {resource.id: resource},
+        (0.0, 0.0, 1.0),
+        2,
+        mesh_cache={resource.id: mesh},
+    )
+
+    assert inferred.projected_area_m2 == pytest.approx(0.01)
+    assert not inferred.has_opposing_sides
+    assert inferred.relative_side_mismatch is None
 
 
 def test_adjacent_surface_groups_are_unioned_before_perimeter_classification() -> None:

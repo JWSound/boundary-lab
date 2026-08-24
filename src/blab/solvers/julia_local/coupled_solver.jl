@@ -921,6 +921,61 @@ function semi_inductance_from_wire(parameters, component_id, ::Type{T}) where {T
     )
 end
 
+function lumped_sealed_rear_chamber_from_wire(
+    parameters,
+    component_id,
+    ::Type{T},
+) where {T<:AbstractFloat}
+    haskey(parameters, "lumped_sealed_rear_chamber") || return nothing
+    raw_model = parameters["lumped_sealed_rear_chamber"]
+    raw_model isa AbstractDict || error(
+        "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+        "must be an object.",
+    )
+    scalar_names = ("volume_m3", "projected_area_m2")
+    allowed = (scalar_names..., "enabled")
+    unsupported = [String(name) for name in keys(raw_model) if !(String(name) in allowed)]
+    isempty(unsupported) || error(
+        "Electrodynamic component $(repr(component_id)) has unsupported " *
+        "lumped_sealed_rear_chamber parameters: " * join(sort(unsupported), ", "),
+    )
+    enabled = get(raw_model, "enabled", false)
+    enabled isa Bool || error(
+        "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+        "enabled must be boolean.",
+    )
+    missing = [name for name in scalar_names if !haskey(raw_model, name)]
+    enabled && !isempty(missing) && error(
+        "Electrodynamic component $(repr(component_id)) enabled " *
+        "lumped_sealed_rear_chamber is missing: " * join(missing, ", "),
+    )
+    for name in scalar_names
+        haskey(raw_model, name) || continue
+        raw_value = raw_model[name]
+        raw_value isa Bool && error(
+            "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+            "parameter $(repr(name)) must be a number, not a boolean.",
+        )
+        value = try
+            T(raw_value)
+        catch
+            error(
+                "Electrodynamic component $(repr(component_id)) " *
+                "lumped_sealed_rear_chamber parameter $(repr(name)) must be a finite number.",
+            )
+        end
+        isfinite(value) && value > zero(T) || error(
+            "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+            "parameter $(repr(name)) must be finite and greater than zero.",
+        )
+    end
+    enabled || return nothing
+    return LumpedSealedRearChamber{T}(
+        T(raw_model["volume_m3"]),
+        T(raw_model["projected_area_m2"]),
+    )
+end
+
 function electrodynamic_transducers_from_wire(
     components,
     boundaries,
@@ -954,6 +1009,7 @@ function electrodynamic_transducers_from_wire(
             "physical_driver_orbit_count",
             "fractional_symmetry_axes",
             "semi_inductance",
+            "lumped_sealed_rear_chamber",
         )
         missing = [name for name in required if !haskey(parameters, name)]
         isempty(missing) || error(
@@ -1103,6 +1159,11 @@ function electrodynamic_transducers_from_wire(
             String(component["id"]),
             T,
         )
+        lumped_sealed_rear_chamber = lumped_sealed_rear_chamber_from_wire(
+            parameters,
+            String(component["id"]),
+            T,
+        )
         push!(
             transducers,
             ElectrodynamicTransducer{T}(
@@ -1121,6 +1182,7 @@ function electrodynamic_transducers_from_wire(
                 values["cms_m_per_n"],
                 values["rms_n_s_per_m"],
                 semi_inductance,
+                lumped_sealed_rear_chamber,
             ),
         )
         index_by_component_id[String(component["id"])] = length(transducers)
@@ -1372,9 +1434,11 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             )
             fem_force = -Complex{FloatType}.(transpose(transducer_operators.fem_force))
             mechanical_impedance = Complex{FloatType}[
-                Complex{FloatType}(
-                    transducer.rms_n_s_per_m,
-                    -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
+                BeatEngineCoupled.mechanical_impedance(
+                    transducer,
+                    omega,
+                    density,
+                    sound_speed,
                 )
                 for transducer in transducers
             ]

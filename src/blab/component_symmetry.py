@@ -33,6 +33,26 @@ class ComponentSymmetryInferenceError(ValueError):
 
 
 @dataclass(frozen=True)
+class ProjectedDiaphragmAreaInference:
+    """Completed projected area of one physical diaphragm and its acoustic sides."""
+
+    projected_area_m2: float
+    positive_side_area_m2: float
+    negative_side_area_m2: float
+
+    @property
+    def has_opposing_sides(self) -> bool:
+        return self.positive_side_area_m2 > 0.0 and self.negative_side_area_m2 > 0.0
+
+    @property
+    def relative_side_mismatch(self) -> float | None:
+        if not self.has_opposing_sides:
+            return None
+        maximum = max(self.positive_side_area_m2, self.negative_side_area_m2)
+        return abs(self.positive_side_area_m2 - self.negative_side_area_m2) / maximum
+
+
+@dataclass(frozen=True)
 class ComponentSymmetryInference:
     symmetry_mode: str
     fractional_symmetry_axes: tuple[str, ...]
@@ -180,6 +200,121 @@ def infer_component_symmetry(
     )
 
 
+def infer_projected_diaphragm_area(
+    boundaries: tuple[Boundary, ...],
+    resources_by_id: dict[str, MeshResource],
+    motion_axis: tuple[float, float, float] | np.ndarray,
+    surface_completion_factor: int,
+    *,
+    boundary_motion_weights: dict[str, float] | None = None,
+    mesh_cache: dict[str, meshio.Mesh] | None = None,
+) -> ProjectedDiaphragmAreaInference:
+    """Integrate the solver's projected rigid-translation area by acoustic side."""
+
+    if not boundaries:
+        raise ComponentSymmetryInferenceError(
+            "Select at least one moving boundary before calculating projected area."
+        )
+    axis = np.asarray(motion_axis, dtype=float)
+    axis_norm = float(np.linalg.norm(axis))
+    if not np.isfinite(axis).all() or axis_norm <= 0.0:
+        raise ComponentSymmetryInferenceError("The motion axis must contain a finite nonzero direction.")
+    axis /= axis_norm
+    completion = int(surface_completion_factor)
+    if completion not in {1, 2, 4}:
+        raise ComponentSymmetryInferenceError("Surface completion factor must be 1, 2, or 4.")
+    weights = {} if boundary_motion_weights is None else boundary_motion_weights
+    cache = {} if mesh_cache is None else mesh_cache
+    positive_area = 0.0
+    negative_area = 0.0
+    for boundary in boundaries:
+        resource = resources_by_id.get(boundary.group.mesh_id)
+        if resource is None:
+            raise ComponentSymmetryInferenceError(
+                f"Moving surface references unavailable mesh '{boundary.group.mesh_id}'."
+            )
+        mesh = cache.get(resource.id)
+        if mesh is None:
+            mesh = _transformed_mesh(resource)
+            cache[resource.id] = mesh
+        tag = _boundary_surface_tag(mesh, boundary)
+        triangles = _triangles_for_tags(mesh, {tag}, resource.name)
+        points = np.asarray(mesh.points, dtype=float)
+        vertices = points[triangles]
+        cross = np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
+        double_area = np.linalg.norm(cross, axis=1)
+        nondegenerate = double_area > np.finfo(float).eps
+        if not np.any(nondegenerate):
+            continue
+        triangles = triangles[nondegenerate]
+        vertices = vertices[nondegenerate]
+        cross = cross[nondegenerate]
+        double_area = double_area[nondegenerate]
+        normals = cross / double_area[:, np.newaxis]
+        normals = _orient_surface_normals_outward(mesh, triangles, vertices, normals)
+        try:
+            coefficient = float(weights.get(boundary.id, 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ComponentSymmetryInferenceError(
+                f"Moving boundary '{boundary.name}' has an invalid motion coefficient."
+            ) from exc
+        if not np.isfinite(coefficient) or coefficient <= 0.0:
+            raise ComponentSymmetryInferenceError(
+                f"Moving boundary '{boundary.name}' has a non-finite or non-positive motion weight."
+            )
+        projected = completion * coefficient * (normals @ axis) * (0.5 * double_area)
+        positive_area += float(np.sum(projected[projected > 0.0]))
+        negative_area += float(np.sum(-projected[projected < 0.0]))
+
+    scale = max(positive_area, negative_area)
+    tolerance = max(np.finfo(float).eps, scale * 1.0e-9)
+    positive_area = positive_area if positive_area > tolerance else 0.0
+    negative_area = negative_area if negative_area > tolerance else 0.0
+    side_areas = [value for value in (positive_area, negative_area) if value > 0.0]
+    if not side_areas:
+        raise ComponentSymmetryInferenceError(
+            "Selected moving surfaces have zero projected area along the motion axis."
+        )
+    return ProjectedDiaphragmAreaInference(
+        projected_area_m2=float(np.mean(side_areas)),
+        positive_side_area_m2=positive_area,
+        negative_side_area_m2=negative_area,
+    )
+
+
+def _orient_surface_normals_outward(
+    mesh: meshio.Mesh,
+    triangles: np.ndarray,
+    vertices: np.ndarray,
+    normals: np.ndarray,
+) -> np.ndarray:
+    opposite_vertex_by_face: dict[tuple[int, int, int], int] = {}
+    for block in mesh.cells:
+        if block.type not in {"tetra", "tetra4", "tetra10"}:
+            continue
+        for raw_tetrahedron in np.asarray(block.data, dtype=np.int64):
+            a, b, c, d = map(int, raw_tetrahedron[:4])
+            for face, opposite in (
+                ((a, b, c), d),
+                ((a, b, d), c),
+                ((a, c, d), b),
+                ((b, c, d), a),
+            ):
+                opposite_vertex_by_face.setdefault(tuple(sorted(face)), opposite)
+    if not opposite_vertex_by_face:
+        return normals
+    oriented = normals.copy()
+    points = np.asarray(mesh.points, dtype=float)
+    for index, triangle in enumerate(triangles):
+        opposite = opposite_vertex_by_face.get(tuple(sorted(map(int, triangle))))
+        if opposite is None:
+            continue
+        face_center = np.mean(vertices[index], axis=0)
+        if float(np.dot(oriented[index], points[opposite] - face_center)) > 0.0:
+            oriented[index] *= -1.0
+    return oriented
+
+
 def _transformed_mesh(resource: MeshResource) -> meshio.Mesh:
     try:
         mesh = meshio.read(Path(resource.file))
@@ -290,6 +425,8 @@ def _perimeter_edges(triangles: np.ndarray) -> np.ndarray:
 __all__ = [
     "ComponentSymmetryInference",
     "ComponentSymmetryInferenceError",
+    "ProjectedDiaphragmAreaInference",
     "SYMMETRY_PARAMETER_KEYS",
     "infer_component_symmetry",
+    "infer_projected_diaphragm_area",
 ]

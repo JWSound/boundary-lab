@@ -48,7 +48,9 @@ from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
+    ProjectedDiaphragmAreaInference,
     infer_component_symmetry,
+    infer_projected_diaphragm_area,
 )
 from blab.config import normalize_symmetry
 from blab.fem_topology import selected_volume_surface_tags
@@ -152,6 +154,7 @@ class _ComponentDraft:
 _COMPONENT_UI_METADATA_KEY = "component_editor"
 _BOUNDARY_MOTION_WEIGHTS_KEY = "boundary_motion_weights"
 _SEMI_INDUCTANCE_KEY = "semi_inductance"
+_LUMPED_SEALED_REAR_CHAMBER_KEY = "lumped_sealed_rear_chamber"
 _TRANSDUCER_PARAMETER_FIELDS = (
     ("re_ohm", "Re", "Ω", 1.0),
     ("le_h", "Le", "mH", 1_000.0),
@@ -764,10 +767,15 @@ class _ComponentEditorDialog(QDialog):
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._symmetry_inference: ComponentSymmetryInference | None = None
         self._symmetry_inference_error: str | None = None
+        self._projected_area_inference: ProjectedDiaphragmAreaInference | None = None
+        self._projected_area_error: str | None = None
         raw_semi_inductance = draft.parameters.get(_SEMI_INDUCTANCE_KEY)
         self._semi_inductance_parameters = (
             dict(raw_semi_inductance) if isinstance(raw_semi_inductance, dict) else None
         )
+        raw_rear_chamber = draft.parameters.get(_LUMPED_SEALED_REAR_CHAMBER_KEY)
+        self._rear_chamber_was_configured = isinstance(raw_rear_chamber, dict)
+        rear_chamber = raw_rear_chamber if isinstance(raw_rear_chamber, dict) else {}
 
         self.name_edit = QLineEdit(draft.name)
         self.type_combo = QComboBox()
@@ -873,6 +881,23 @@ class _ComponentEditorDialog(QDialog):
 
         self.parameter_edits: dict[str, QLineEdit] = {}
         self.semi_inductance_button = QPushButton()
+        self.rear_chamber_check = QCheckBox("Lumped sealed rear chamber")
+        self.rear_chamber_check.setChecked(rear_chamber.get("enabled") is True)
+        self.rear_chamber_volume_spin = QDoubleSpinBox()
+        self.rear_chamber_volume_spin.setRange(0.001, 1_000_000.0)
+        self.rear_chamber_volume_spin.setDecimals(3)
+        self.rear_chamber_volume_spin.setSingleStep(0.1)
+        self.rear_chamber_volume_spin.setSuffix(" L")
+        try:
+            rear_volume_l = 1000.0 * float(rear_chamber.get("volume_m3", 0.001))
+        except (TypeError, ValueError):
+            rear_volume_l = 1.0
+        self.rear_chamber_volume_spin.setValue(max(0.001, rear_volume_l))
+        self.rear_chamber_volume_spin.setEnabled(self.rear_chamber_check.isChecked())
+        self.rear_chamber_check.setToolTip(
+            "Add an ideal lumped compliance for an unmeshed sealed rear chamber."
+        )
+        self.rear_chamber_volume_spin.setToolTip("Net enclosed air volume in litres.")
         transducer_form = QFormLayout()
         for key, label, unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
             edit = QLineEdit()
@@ -887,10 +912,18 @@ class _ComponentEditorDialog(QDialog):
                 transducer_form.addRow(f"{label} ({unit})", le_row)
             else:
                 transducer_form.addRow(f"{label} ({unit})", edit)
+        rear_chamber_row = QHBoxLayout()
+        rear_chamber_row.addWidget(self.rear_chamber_check)
+        rear_chamber_row.addWidget(self.rear_chamber_volume_spin)
+        transducer_form.addRow("", rear_chamber_row)
         self.symmetry_inference_label = QLabel()
         self.symmetry_inference_label.setWordWrap(True)
         transducer_form.addRow("Symmetry", self.symmetry_inference_label)
-        transducer_form.addRow("", QLabel("The voltage excitation uses the solver's 2.83 V reference signal."))
+        self.projected_area_warning_label = QLabel()
+        self.projected_area_warning_label.setWordWrap(True)
+        self.projected_area_warning_label.setStyleSheet("color: #d97706; font-weight: 600;")
+        self.projected_area_warning_label.setVisible(False)
+        transducer_form.addRow("", self.projected_area_warning_label)
 
         self.transducer_group = QGroupBox("Rigid-piston transducer")
         transducer_layout = QVBoxLayout(self.transducer_group)
@@ -913,6 +946,9 @@ class _ComponentEditorDialog(QDialog):
         self.boundary_table.itemChanged.connect(self._selected_boundaries_changed)
         self.flip_axis_button.clicked.connect(self._flip_axis)
         self.semi_inductance_button.clicked.connect(self._edit_semi_inductance)
+        self.rear_chamber_check.toggled.connect(self.rear_chamber_volume_spin.setEnabled)
+        for spin in (*self.axis_spins, *self.boundary_weight_spins):
+            spin.valueChanged.connect(lambda _value: self._update_projected_area_readout())
         self._refresh_semi_inductance_controls()
         self._refresh_type_controls()
         self._refresh_axis_controls()
@@ -995,6 +1031,23 @@ class _ComponentEditorDialog(QDialog):
                 }
                 if signs:
                     parameters["boundary_motion_signs"] = signs
+            projected_area = self._update_projected_area_readout(
+                symmetry_inference,
+                axis=axis / norm,
+            )
+            rear_chamber_enabled = self.rear_chamber_check.isChecked()
+            if projected_area is None and rear_chamber_enabled:
+                raise ValueError(
+                    self._projected_area_error or "Projected diaphragm area could not be calculated."
+                )
+            rear_chamber_parameters: dict[str, float | bool] = {
+                "enabled": rear_chamber_enabled,
+                "volume_m3": float(self.rear_chamber_volume_spin.value()) / 1000.0,
+            }
+            if projected_area is not None:
+                rear_chamber_parameters["projected_area_m2"] = projected_area.projected_area_m2
+            if rear_chamber_enabled or self._rear_chamber_was_configured:
+                parameters[_LUMPED_SEALED_REAR_CHAMBER_KEY] = rear_chamber_parameters
             confidence = None if self._axis_inference is None else self._axis_inference.confidence
         else:
             parameters = {"motion_profile": "uniform"}
@@ -1093,11 +1146,70 @@ class _ComponentEditorDialog(QDialog):
             self._symmetry_inference = None
             self._symmetry_inference_error = str(exc)
             self.symmetry_inference_label.setText(str(exc))
+            self._projected_area_inference = None
+            self._projected_area_error = str(exc)
+            self.projected_area_warning_label.setVisible(False)
             return None
         self._symmetry_inference = inference
         self._symmetry_inference_error = None
-        self.symmetry_inference_label.setText(inference.summary())
+        self._update_projected_area_readout(inference)
         return inference
+
+    def _update_projected_area_readout(
+        self,
+        symmetry_inference: ComponentSymmetryInference | None = None,
+        *,
+        axis: np.ndarray | None = None,
+    ) -> ProjectedDiaphragmAreaInference | None:
+        inference = self._symmetry_inference if symmetry_inference is None else symmetry_inference
+        if inference is None or not hasattr(self, "symmetry_inference_label"):
+            return None
+        selected = tuple(
+            self._boundaries_by_id[boundary_id]
+            for boundary_id in self.selected_boundary_ids()
+            if boundary_id in self._boundaries_by_id
+        )
+        if axis is None:
+            axis = (
+                np.asarray(self._automatic_axis, dtype=float)
+                if self.axis_mode_combo.currentData() == "automatic" and self._automatic_axis is not None
+                else np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
+            )
+        try:
+            area = infer_projected_diaphragm_area(
+                selected,
+                self._resources_by_id,
+                axis,
+                inference.surface_completion_factor,
+                boundary_motion_weights=self.boundary_motion_weights(),
+                mesh_cache=self._mesh_cache,
+            )
+        except ComponentSymmetryInferenceError as exc:
+            self._projected_area_inference = None
+            self._projected_area_error = str(exc)
+            self.symmetry_inference_label.setText(
+                f"{inference.summary()} Projected diaphragm area unavailable: {exc}"
+            )
+            self.projected_area_warning_label.setVisible(False)
+            return None
+        self._projected_area_inference = area
+        self._projected_area_error = None
+        self.symmetry_inference_label.setText(
+            f"{inference.summary()} Projected diaphragm area of "
+            f"{area.projected_area_m2 * 10_000.0:.2f} cm²."
+        )
+        mismatch = area.relative_side_mismatch
+        if mismatch is not None and mismatch > 0.10:
+            self.projected_area_warning_label.setText(
+                "Front/rear projected diaphragm areas deviate by "
+                f"{mismatch:.1%} ({area.positive_side_area_m2 * 10_000.0:.2f} cm² versus "
+                f"{area.negative_side_area_m2 * 10_000.0:.2f} cm²)."
+            )
+            self.projected_area_warning_label.setVisible(True)
+        else:
+            self.projected_area_warning_label.clear()
+            self.projected_area_warning_label.setVisible(False)
+        return area
 
     def _infer_axis(self) -> MotionAxisInference | None:
         selected = tuple(
@@ -1142,6 +1254,7 @@ class _ComponentEditorDialog(QDialog):
             f"{inference.triangle_count} triangles, projected-normal alignment "
             f"{inference.mean_squared_alignment:.0%}."
         )
+        self._update_projected_area_readout(symmetry_inference, axis=inferred_axis)
         return inference
 
     def _flip_axis(self) -> None:

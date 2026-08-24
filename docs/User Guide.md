@@ -351,7 +351,17 @@ scales that basis after the solve. Their rigid-translation motion axis can be
 inferred from the selected surface normals or entered manually. In a symmetry
 model, Boundary Lab also infers whether moving surfaces are cut by the active
 planes and reports how many distinct components exist in the fully mirrored
-system; there is no manual component-symmetry multiplier.
+system. The same readout includes the completed projected diaphragm area in
+cm². When explicit front and rear faces differ in projected area by more than
+10%, a highlighted warning identifies both values.
+
+Enable **Lumped sealed rear chamber** and enter its net air volume in litres to
+represent a small sealed chamber that is not included as a FEM acoustic
+region. The volume field is locked while the option is disabled. This adds an
+ideal linear air-spring load using the automatically calculated projected
+area; do not enable it when the rear chamber is already meshed, because that
+would model the same compliance twice. There is no manual component-symmetry
+multiplier.
 
 See [Physical System Model](Physical%20System%20Model.md) for the object model
 and [Coupled Solver](Coupled%20Solver.md) for numerical requirements and

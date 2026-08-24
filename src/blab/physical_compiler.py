@@ -740,6 +740,18 @@ class PhysicalSystemCompiler:
                     "Thorborg-Futtrup semi-inductance voice-coil impedance",
                 )
             )
+            sealed_rear_chamber_enabled = any(
+                isinstance(component.parameters.get("lumped_sealed_rear_chamber"), dict)
+                and component.parameters["lumped_sealed_rear_chamber"].get("enabled") is True
+                for component in system.components
+                if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            )
+            assumptions.append(
+                PhysicsAssumption(
+                    AssumptionStatus.INCLUDED if sealed_rear_chamber_enabled else AssumptionStatus.EXCLUDED,
+                    "Ideal adiabatic lumped sealed rear-chamber compliance",
+                )
+            )
         if system.excitation_ports:
             assumptions.append(
                 PhysicsAssumption(AssumptionStatus.INCLUDED, "Independent reference-excitation transfer basis")

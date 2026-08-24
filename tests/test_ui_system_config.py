@@ -119,14 +119,15 @@ def _planar_surface_mesh(
     group_name: str,
     z_m: float,
     reverse: bool,
+    scale: float = 1.0,
 ) -> meshio.Mesh:
     triangle = [0, 2, 1] if reverse else [0, 1, 2]
     return meshio.Mesh(
         points=np.asarray(
             [
                 [0.0, 0.0, z_m],
-                [1.0, 0.0, z_m],
-                [0.0, 1.0, z_m],
+                [scale, 0.0, z_m],
+                [0.0, scale, z_m],
             ]
         ),
         cells=[("triangle", np.asarray([triangle], dtype=np.int32))],
@@ -654,7 +655,8 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
 
     assert not hasattr(editor, "symmetry_combo")
     assert editor.symmetry_inference_label.text() == (
-        "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system."
+        "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system. "
+        "Projected diaphragm area of 100.25 cm²."
     )
     assert all(spin.decimals() == 3 for spin in editor.axis_spins)
     assert all(spin.singleStep() == pytest.approx(0.005) for spin in editor.axis_spins)
@@ -793,6 +795,11 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
             "ke_semi_h": 0.04,
             "rss_ohm": 1000.0,
         },
+        "lumped_sealed_rear_chamber": {
+            "enabled": True,
+            "volume_m3": 0.0125,
+            "projected_area_m2": 0.5,
+        },
     }
     editor = _ComponentEditorDialog(
         _ComponentDraft(
@@ -812,7 +819,12 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
         symmetry_mode="off",
         mesh_cache={
             "mesh:front": _planar_surface_mesh(group_name="Front", z_m=0.0, reverse=False),
-            "mesh:rear": _planar_surface_mesh(group_name="Rear", z_m=0.01, reverse=True),
+            "mesh:rear": _planar_surface_mesh(
+                group_name="Rear",
+                z_m=0.01,
+                reverse=True,
+                scale=0.8,
+            ),
         },
     )
 
@@ -821,6 +833,15 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
     assert not editor.parameter_edits["le_h"].isEnabled()
     assert editor.semi_inductance_button.text() == "Semi-Inductance: On…"
+    assert editor.rear_chamber_check.isChecked()
+    assert editor.rear_chamber_volume_spin.isEnabled()
+    assert editor.rear_chamber_volume_spin.value() == pytest.approx(12.5)
+    editor.rear_chamber_check.setChecked(False)
+    assert not editor.rear_chamber_volume_spin.isEnabled()
+    editor.rear_chamber_check.setChecked(True)
+    assert "Projected diaphragm area of 4100.00 cm²" in editor.symmetry_inference_label.text()
+    assert not editor.projected_area_warning_label.isHidden()
+    assert "deviate by 36.0%" in editor.projected_area_warning_label.text()
     editor.parameter_edits["le_h"].setText("0.75")
     editor.parameter_edits["mmd_kg"].setText("18")
     editor.parameter_edits["cms_m_per_n"].setText("625")
@@ -832,6 +853,11 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert updated.parameters["mmd_kg"] == pytest.approx(0.018)
     assert updated.parameters["cms_m_per_n"] == pytest.approx(0.000625)
     assert updated.parameters["semi_inductance"] == parameters["semi_inductance"]
+    assert updated.parameters["lumped_sealed_rear_chamber"] == {
+        "enabled": True,
+        "volume_m3": pytest.approx(0.0125),
+        "projected_area_m2": pytest.approx(0.41),
+    }
     assert updated.motion_axis_mode == "automatic"
     assert "High confidence" in editor.axis_confidence_label.text()
 
