@@ -95,12 +95,15 @@ def test_body_tree_parent_check_state_tracks_descendant_visibility() -> None:
     assert _visibility_check_state(keys, {keys[0]: True, keys[1]: False}) == Qt.CheckState.PartiallyChecked
 
 
-def test_body_tree_is_a_translucent_viewport_overlay_with_collapsed_project_root() -> None:
+def test_body_tree_is_a_transparent_viewport_overlay_with_collapsed_project_root() -> None:
     source = source_text("ui", "mesh_preview.py")
 
     assert 'self.body_tree_overlay.setObjectName("mesh_body_tree_overlay")' in source
-    assert "background-color: rgba(38, 44, 55, 120)" in source
+    assert "background: transparent" in source
+    assert "border: none" in source
     assert "scene_layout.addWidget(self.viewer, 0, 0)" in source
+    assert "WA_TranslucentBackground" in source
+    assert "Qt.WindowType.FramelessWindowHint" in source
     assert '"Project",' in source
     assert "project_item.setExpanded(False)" in source
     assert "QSplitter" not in source
@@ -152,6 +155,7 @@ def test_mesh_preview_constructs_overlay_above_viewer_with_project_collapsed(qap
     assert project.text(0) == "Project"
     assert not project.isExpanded()
     assert preview.viewer.parentWidget() is preview.body_tree_overlay.parentWidget()
+    assert preview.body_tree_overlay.isWindow()
     assert preview.body_tree_overlay.height() < preview.body_tree_overlay.width()
     preview.close()
 

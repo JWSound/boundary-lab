@@ -7,7 +7,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -77,6 +77,54 @@ class _PreviewActorRecord:
     diagnostic: bool = False
 
 
+class _ViewportTreeOverlay(QFrame):
+    """Compositor-backed transparent window kept over a native VTK viewport."""
+
+    _SYNC_EVENTS = {
+        QEvent.Type.Hide,
+        QEvent.Type.Move,
+        QEvent.Type.ParentChange,
+        QEvent.Type.Resize,
+        QEvent.Type.Show,
+        QEvent.Type.WindowStateChange,
+    }
+
+    def __init__(self, anchor: QWidget):
+        flags = (
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        super().__init__(anchor, flags)
+        self._anchor = anchor
+        self._tracked_window: QWidget | None = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        anchor.installEventFilter(self)
+        QTimer.singleShot(0, self.sync_to_anchor)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() in self._SYNC_EVENTS:
+            QTimer.singleShot(0, self.sync_to_anchor)
+        return super().eventFilter(watched, event)
+
+    def sync_to_anchor(self) -> None:
+        owner = self._anchor.window()
+        if owner is not self and owner is not self._tracked_window:
+            if self._tracked_window is not None:
+                self._tracked_window.removeEventFilter(self)
+            self._tracked_window = owner
+            owner.installEventFilter(self)
+
+        owner_minimized = bool(owner.windowState() & Qt.WindowState.WindowMinimized)
+        if not self._anchor.isVisible() or not owner.isVisible() or owner_minimized:
+            self.hide()
+            return
+        self.move(self._anchor.mapToGlobal(QPoint(0, 0)))
+        self.show()
+        self.raise_()
+
+
 class MeshPreview(QWidget):
     newObservationPlaneRequested = Signal(object)
     observationPlaneChanged = Signal(object)
@@ -112,7 +160,7 @@ class MeshPreview(QWidget):
         self.viewer = QtInteractor(scene)
         scene_layout.addWidget(self.viewer, 0, 0)
 
-        self.body_tree_overlay = QFrame(scene)
+        self.body_tree_overlay = _ViewportTreeOverlay(scene)
         self.body_tree_overlay.setObjectName("mesh_body_tree_overlay")
         self.body_tree_overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.body_tree_overlay.setFixedWidth(BODY_TREE_OVERLAY_WIDTH)
@@ -130,6 +178,7 @@ class MeshPreview(QWidget):
         self.body_tree.setUniformRowHeights(True)
         self.body_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body_tree.setAlternatingRowColors(False)
+        self.body_tree.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.body_tree.setStyleSheet(
             """
             QTreeWidget#mesh_body_tree {
@@ -151,6 +200,8 @@ class MeshPreview(QWidget):
             }
             """
         )
+        self.body_tree.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.body_tree.viewport().setAutoFillBackground(False)
         self.body_tree.viewport().setStyleSheet("background: transparent;")
         self.body_tree.itemChanged.connect(self._on_body_tree_item_changed)
         self.body_tree.itemExpanded.connect(self._resize_body_tree_overlay)
@@ -159,19 +210,11 @@ class MeshPreview(QWidget):
         self.body_tree_overlay.setStyleSheet(
             """
             QFrame#mesh_body_tree_overlay {
-                background-color: rgba(38, 44, 55, 120);
-                border: 1px solid rgba(170, 180, 195, 90);
-                border-radius: 2px;
+                background: transparent;
+                border: none;
             }
             """
         )
-        scene_layout.addWidget(
-            self.body_tree_overlay,
-            0,
-            0,
-            alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-        )
-        self.body_tree_overlay.raise_()
         self._rebuild_body_tree()
 
         viewport = QWidget()
@@ -544,7 +587,7 @@ class MeshPreview(QWidget):
         )
         self.body_tree.setFixedHeight(tree_height)
         self.body_tree_overlay.setFixedHeight(tree_height + (2 * BODY_TREE_OVERLAY_MARGIN))
-        self.body_tree_overlay.raise_()
+        self.body_tree_overlay.sync_to_anchor()
 
     def _on_body_tree_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
         if self._tree_updating:
