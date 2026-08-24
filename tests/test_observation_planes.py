@@ -113,6 +113,20 @@ def test_relative_rotation_overlay_reports_signed_angle() -> None:
     assert _relative_rotation_text(-2.25) == "Relative rotation: -2.2°"
 
 
+def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
+    from blab.ui.observation_plane_viewport import _observation_plane_help_text
+    from repo_paths import source_text
+
+    assert _observation_plane_help_text("Listening Plane", "rotate") == (
+        "Listening Plane\nW - Move\nE - Rotate\nR - Scale\nMode: Rotate"
+    )
+    source = source_text("ui", "observation_plane_viewport.py")
+    assert 'position="upper_right"' in source
+    assert "font_size=8" in source
+    assert source.count("font=OBSERVATION_PLANE_FONT") == 3
+    assert '"font_family": OBSERVATION_PLANE_FONT' in source
+
+
 def test_particle_velocity_scalar_bar_title_wraps_for_narrow_viewports() -> None:
     from blab.ui.observation_plane_viewport import _scalar_bar_position_x, _scalar_bar_title
 

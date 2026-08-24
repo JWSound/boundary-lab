@@ -46,6 +46,7 @@ PARTICLE_VELOCITY_SCALAR_BAR_TITLE = "Particle Velocity\nMagnitude (m/s)\n "
 SCALAR_BAR_MIN_POSITION_X = 0.70
 SCALAR_BAR_MAX_POSITION_X = 0.84
 SCALAR_BAR_RIGHT_TEXT_ALLOWANCE_PX = 103.0
+OBSERVATION_PLANE_FONT = "arial"
 
 
 @dataclass
@@ -820,6 +821,7 @@ class ObservationPlaneViewport(QObject):
                 self._field_message,
                 position="lower_left",
                 font_size=9,
+                font=OBSERVATION_PLANE_FONT,
                 color=self._text_color,
                 name=FIELD_MESSAGE_ACTOR_NAME,
                 render=False,
@@ -1638,6 +1640,7 @@ class ObservationPlaneViewport(QObject):
                 "color": self._text_color,
                 "title_font_size": 11,
                 "label_font_size": 10,
+                "font_family": OBSERVATION_PLANE_FONT,
                 "position_x": _scalar_bar_position_x(self.viewer),
                 "width": 0.10,
             },
@@ -1841,12 +1844,11 @@ class ObservationPlaneViewport(QObject):
         return True
 
     def _add_help_text(self, plane: ObservationPlane) -> None:
-        mode_name = {"move": "Move", "rotate": "Rotate", "size": "Scale"}.get(self._mode, "")
-        mode = f"\nMode: {mode_name}" if mode_name else ""
         self.viewer.add_text(
-            f"{plane.name}\nW - Move    E - Rotate    R - Scale{mode}",
-            position="upper_left",
-            font_size=10,
+            _observation_plane_help_text(plane.name, self._mode),
+            position="upper_right",
+            font_size=8,
+            font=OBSERVATION_PLANE_FONT,
             color=self._text_color,
             name=HELP_ACTOR_NAME,
             render=False,
@@ -1858,6 +1860,7 @@ class ObservationPlaneViewport(QObject):
             _relative_rotation_text(angle_deg),
             position="upper_edge",
             font_size=12,
+            font=OBSERVATION_PLANE_FONT,
             color=self._text_color,
             name=ANGLE_ACTOR_NAME,
             render=False,
@@ -2129,6 +2132,14 @@ def _position_array(position) -> np.ndarray:
 
 def _relative_rotation_text(angle_deg: float) -> str:
     return f"Relative rotation: {float(angle_deg):+.1f}°"
+
+
+def _observation_plane_help_text(plane_name: str, mode: str | None) -> str:
+    mode_name = {"move": "Move", "rotate": "Rotate", "size": "Scale"}.get(mode or "", "")
+    lines = [str(plane_name), "W - Move", "E - Rotate", "R - Scale"]
+    if mode_name:
+        lines.append(f"Mode: {mode_name}")
+    return "\n".join(lines)
 
 
 def _scalar_bar_title(title: str) -> str:
