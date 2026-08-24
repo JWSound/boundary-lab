@@ -16,8 +16,10 @@ from blab.physical_model import (
     MeshResource,
     PhysicalGroupRef,
 )
+from repo_paths import REPO_ROOT
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+SKRAM_EXAMPLE_ROOT = REPO_ROOT / "examples" / "SKRAM"
 
 
 @pytest.mark.parametrize(
@@ -121,8 +123,8 @@ def test_sawmod_component_symmetry_is_inferred_from_surface_perimeter(
 
 
 def test_front_and_rear_driver_surfaces_infer_one_shared_x_cut_driver() -> None:
-    front = _resource(FIXTURE_ROOT / "SKRAM" / "SkramFrontChamber.msh", "mesh:front")
-    rear = _resource(FIXTURE_ROOT / "SKRAM" / "SkramRearChamber.msh", "mesh:rear")
+    front = _resource(SKRAM_EXAMPLE_ROOT / "SkramFrontChamber.msh", "mesh:front")
+    rear = _resource(SKRAM_EXAMPLE_ROOT / "SkramRearChamber.msh", "mesh:rear")
 
     inferred = infer_component_symmetry(
         (

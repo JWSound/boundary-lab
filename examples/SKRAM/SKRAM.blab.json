@@ -1,13 +1,22 @@
 {
-  "active_generator_document_id": "353486b10a3d",
-  "channel_config_by_name": {},
+  "active_generator_document_id": "06e048974933",
+  "channel_config_by_name": {
+    "main": {
+      "delay_ms": 0.0,
+      "hpf": {},
+      "level_db": 0.0,
+      "lpf": {},
+      "polarity": 1,
+      "voltage_v": 100.0
+    }
+  },
   "component_channel_by_id": {
-    "component:18ds115-4": "main"
+    "component:21sw152-4": "main"
   },
   "generator_documents": [
     {
       "artifact": null,
-      "id": "353486b10a3d",
+      "id": "06e048974933",
       "mesh_enabled": true,
       "mesh_scale_factor": 0.001,
       "mesh_translation_mm": [
@@ -28,9 +37,9 @@
     {
       "cleaned_file": null,
       "enabled": true,
-      "name": "SideChamber",
+      "name": "SkramRearChamber",
       "scale_factor": 0.001,
-      "source_file": "SideChamber.msh",
+      "source_file": "SkramRearChamber.msh",
       "translation_mm": [
         0,
         0,
@@ -38,11 +47,11 @@
       ]
     },
     {
-      "cleaned_file": "Exterior_interface_conformed.msh",
+      "cleaned_file": "SkramExterior_interface_conformed.msh",
       "enabled": true,
-      "name": "Exterior",
+      "name": "SkramExterior",
       "scale_factor": 0.001,
-      "source_file": "Exterior.msh",
+      "source_file": "SkramExterior.msh",
       "translation_mm": [
         0,
         0,
@@ -52,9 +61,9 @@
     {
       "cleaned_file": null,
       "enabled": true,
-      "name": "REARCHAMBER",
+      "name": "SkramFrontChamber",
       "scale_factor": 0.001,
-      "source_file": "REARCHAMBER.msh",
+      "source_file": "SkramFrontChamber.msh",
       "translation_mm": [
         0,
         0,
@@ -68,11 +77,11 @@
       {
         "group": {
           "dimension": 2,
-          "mesh_id": "mesh:exterior",
+          "mesh_id": "mesh:skramexterior",
           "name": "Exterior",
           "tag": null
         },
-        "id": "boundary:region-exterior-air:exterior:exterior",
+        "id": "boundary:region-exterior-air:skramexterior:exterior",
         "kind": "rigid",
         "name": "Exterior",
         "parameters": {},
@@ -81,72 +90,98 @@
       {
         "group": {
           "dimension": 2,
-          "mesh_id": "mesh:exterior",
-          "name": "RearInterface",
+          "mesh_id": "mesh:skramexterior",
+          "name": "FrontChamberInterface",
           "tag": null
         },
-        "id": "boundary:region-exterior-air:exterior:rearinterface",
+        "id": "boundary:region-exterior-air:skramexterior:frontchamberinterface",
         "kind": "interface",
-        "name": "RearInterface",
+        "name": "FrontChamberInterface",
         "parameters": {},
         "region_id": "region:exterior-air"
       },
       {
         "group": {
           "dimension": 2,
-          "mesh_id": "mesh:exterior",
-          "name": "SideInterface",
+          "mesh_id": "mesh:skramexterior",
+          "name": "RearChamberInterface",
           "tag": null
         },
-        "id": "boundary:region-exterior-air:exterior:sideinterface",
+        "id": "boundary:region-exterior-air:skramexterior:rearchamberinterface",
         "kind": "interface",
-        "name": "SideInterface",
+        "name": "RearChamberInterface",
         "parameters": {},
         "region_id": "region:exterior-air"
       },
       {
         "group": {
           "dimension": 2,
-          "mesh_id": "mesh:rearchamber",
-          "name": "INTERFACE",
+          "mesh_id": "mesh:skramfrontchamber",
+          "name": "Diaphragm",
+          "tag": null
+        },
+        "id": "boundary:region-front-chamber:diaphragm",
+        "kind": "moving",
+        "name": "Diaphragm",
+        "parameters": {},
+        "region_id": "region:front-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramfrontchamber",
+          "name": "FrontChamber_boundary",
+          "tag": null
+        },
+        "id": "boundary:region-front-chamber:frontchamber_boundary",
+        "kind": "rigid",
+        "name": "FrontChamber_boundary",
+        "parameters": {},
+        "region_id": "region:front-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramfrontchamber",
+          "name": "Interface",
+          "tag": null
+        },
+        "id": "boundary:region-front-chamber:interface",
+        "kind": "interface",
+        "name": "Interface",
+        "parameters": {},
+        "region_id": "region:front-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramrearchamber",
+          "name": "Diaphragm",
+          "tag": null
+        },
+        "id": "boundary:region-rear-chamber:diaphragm",
+        "kind": "moving",
+        "name": "Diaphragm",
+        "parameters": {},
+        "region_id": "region:rear-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramrearchamber",
+          "name": "Interface",
           "tag": null
         },
         "id": "boundary:region-rear-chamber:interface",
         "kind": "interface",
-        "name": "INTERFACE",
+        "name": "Interface",
         "parameters": {},
         "region_id": "region:rear-chamber"
       },
       {
         "group": {
           "dimension": 2,
-          "mesh_id": "mesh:rearchamber",
-          "name": "LFCone",
-          "tag": null
-        },
-        "id": "boundary:region-rear-chamber:lfcone",
-        "kind": "moving",
-        "name": "LFCone",
-        "parameters": {},
-        "region_id": "region:rear-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:rearchamber",
-          "name": "LFSurround",
-          "tag": null
-        },
-        "id": "boundary:region-rear-chamber:lfsurround",
-        "kind": "moving",
-        "name": "LFSurround",
-        "parameters": {},
-        "region_id": "region:rear-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:rearchamber",
+          "mesh_id": "mesh:skramrearchamber",
           "name": "RearChamber_boundary",
           "tag": null
         },
@@ -155,114 +190,45 @@
         "name": "RearChamber_boundary",
         "parameters": {},
         "region_id": "region:rear-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:rearchamber",
-          "name": "WALLTREATMENT",
-          "tag": null
-        },
-        "id": "boundary:region-rear-chamber:walltreatment",
-        "kind": "rigid",
-        "name": "WALLTREATMENT",
-        "parameters": {},
-        "region_id": "region:rear-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:sidechamber",
-          "name": "Interface",
-          "tag": null
-        },
-        "id": "boundary:region-side-chamber:interface",
-        "kind": "interface",
-        "name": "Interface",
-        "parameters": {},
-        "region_id": "region:side-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:sidechamber",
-          "name": "LFCone",
-          "tag": null
-        },
-        "id": "boundary:region-side-chamber:lfcone",
-        "kind": "moving",
-        "name": "LFCone",
-        "parameters": {},
-        "region_id": "region:side-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:sidechamber",
-          "name": "LFSurround",
-          "tag": null
-        },
-        "id": "boundary:region-side-chamber:lfsurround",
-        "kind": "moving",
-        "name": "LFSurround",
-        "parameters": {},
-        "region_id": "region:side-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:sidechamber",
-          "name": "SideChamber_boundary",
-          "tag": null
-        },
-        "id": "boundary:region-side-chamber:sidechamber_boundary",
-        "kind": "rigid",
-        "name": "SideChamber_boundary",
-        "parameters": {},
-        "region_id": "region:side-chamber"
       }
     ],
     "components": [
       {
         "boundary_ids": [
-          "boundary:region-rear-chamber:lfcone",
-          "boundary:region-rear-chamber:lfsurround",
-          "boundary:region-side-chamber:lfcone",
-          "boundary:region-side-chamber:lfsurround"
+          "boundary:region-front-chamber:diaphragm",
+          "boundary:region-rear-chamber:diaphragm"
         ],
-        "id": "component:18ds115-4",
+        "id": "component:21sw152-4",
         "kind": "electrodynamic_transducer",
-        "name": "18DS115-8",
+        "name": "21SW152-4",
         "parameters": {
-          "bl_n_per_a": 39.0,
+          "bl_n_per_a": 32.5,
           "boundary_motion_weights": {
-            "boundary:region-rear-chamber:lfcone": 1.0,
-            "boundary:region-rear-chamber:lfsurround": 1.0,
-            "boundary:region-side-chamber:lfcone": 1.0,
-            "boundary:region-side-chamber:lfsurround": 1.0
+            "boundary:region-front-chamber:diaphragm": 1.0,
+            "boundary:region-rear-chamber:diaphragm": 1.0
           },
-          "cms_m_per_n": 8.3e-05,
+          "cms_m_per_n": 5e-05,
           "fractional_symmetry_axes": [
-            "y"
+            "x"
           ],
-          "le_h": 0.00385,
-          "mmd_kg": 0.301,
+          "le_h": 0.0015,
+          "mmd_kg": 0.412,
           "motion_axis": [
-            1.0,
             0.0,
-            0.0
+            1.8857402735766402e-06,
+            0.9999999999982221
           ],
           "motion_profile": "rigid_translation",
-          "physical_driver_orbit_count": 2,
-          "re_ohm": 5.0,
-          "rms_n_s_per_m": 14.5,
+          "physical_driver_orbit_count": 1,
+          "re_ohm": 3.3,
+          "rms_n_s_per_m": 13.2,
           "semi_inductance": {
             "enabled": true,
-            "ke_semi_h": 0.34,
-            "le_h": 0.009069,
-            "leb_h": 0.001495,
-            "re_prime_ohm": 5.3,
-            "rss_ohm": 265.54
+            "ke_semi_h": 0.113,
+            "le_h": 0.0041340000000000005,
+            "leb_h": 0.000521,
+            "re_prime_ohm": 3.701,
+            "rss_ohm": 392.204
           },
           "surface_completion_factor": 2,
           "symmetry_role": "fractional_driver"
@@ -271,34 +237,34 @@
     ],
     "excitation_ports": [
       {
-        "component_id": "component:18ds115-4",
-        "id": "excitation:component-18ds115-4",
+        "component_id": "component:21sw152-4",
+        "id": "excitation:component-21sw152-4",
         "kind": "voltage",
-        "name": "18DS115-4 voltage"
+        "name": "21SW152-4 voltage"
       }
     ],
     "id": "system:loudspeaker",
     "interfaces": [
       {
-        "bounded_boundary_id": "boundary:region-rear-chamber:interface",
+        "bounded_boundary_id": "boundary:region-front-chamber:interface",
         "coordinate_tolerance_m": 1e-08,
-        "id": "interface:interface-rearinterface",
-        "name": "INTERFACE / RearInterface",
-        "unbounded_boundary_id": "boundary:region-exterior-air:exterior:rearinterface"
+        "id": "interface:interface-frontchamberinterface",
+        "name": "Interface / FrontChamberInterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:skramexterior:frontchamberinterface"
       },
       {
-        "bounded_boundary_id": "boundary:region-side-chamber:interface",
+        "bounded_boundary_id": "boundary:region-rear-chamber:interface",
         "coordinate_tolerance_m": 1e-08,
-        "id": "interface:interface-sideinterface",
-        "name": "Interface / SideInterface",
-        "unbounded_boundary_id": "boundary:region-exterior-air:exterior:sideinterface"
+        "id": "interface:interface-rearchamberinterface",
+        "name": "Interface / RearChamberInterface",
+        "unbounded_boundary_id": "boundary:region-exterior-air:skramexterior:rearchamberinterface"
       }
     ],
     "meshes": [
       {
-        "file": "Exterior_interface_conformed.msh",
-        "id": "mesh:exterior",
-        "name": "Exterior",
+        "file": "SkramExterior_interface_conformed.msh",
+        "id": "mesh:skramexterior",
+        "name": "SkramExterior",
         "purpose": "bem_surface",
         "scale_to_m": 0.001,
         "translation_m": [
@@ -308,9 +274,9 @@
         ]
       },
       {
-        "file": "REARCHAMBER.msh",
-        "id": "mesh:rearchamber",
-        "name": "REARCHAMBER",
+        "file": "SkramFrontChamber.msh",
+        "id": "mesh:skramfrontchamber",
+        "name": "SkramFrontChamber",
         "purpose": "fem_volume",
         "scale_to_m": 0.001,
         "translation_m": [
@@ -320,9 +286,9 @@
         ]
       },
       {
-        "file": "SideChamber.msh",
-        "id": "mesh:sidechamber",
-        "name": "SideChamber",
+        "file": "SkramRearChamber.msh",
+        "id": "mesh:skramrearchamber",
+        "name": "SkramRearChamber",
         "purpose": "fem_volume",
         "scale_to_m": 0.001,
         "translation_m": [
@@ -334,8 +300,8 @@
     ],
     "metadata": {
       "component_editor": {
-        "component:18ds115-4": {
-          "motion_axis_mode": "manual"
+        "component:21sw152-4": {
+          "motion_axis_mode": "automatic"
         }
       }
     },
@@ -348,11 +314,32 @@
         "kind": "unbounded_air",
         "loss_model": {},
         "mesh_ids": [
-          "mesh:exterior"
+          "mesh:skramexterior"
         ],
         "name": "Exterior Air",
         "sound_speed_m_per_s": 343.0,
         "volume_groups": []
+      },
+      {
+        "density_kg_per_m3": 1.21,
+        "id": "region:front-chamber",
+        "kind": "bounded_air",
+        "loss_model": {
+          "bulk_loss_factor": 0.05
+        },
+        "mesh_ids": [
+          "mesh:skramfrontchamber"
+        ],
+        "name": "front chamber",
+        "sound_speed_m_per_s": 343.0,
+        "volume_groups": [
+          {
+            "dimension": 3,
+            "mesh_id": "mesh:skramfrontchamber",
+            "name": "FrontChamber",
+            "tag": null
+          }
+        ]
       },
       {
         "density_kg_per_m3": 1.21,
@@ -362,36 +349,15 @@
           "bulk_loss_factor": 0.05
         },
         "mesh_ids": [
-          "mesh:rearchamber"
+          "mesh:skramrearchamber"
         ],
-        "name": "REAR CHAMBER",
+        "name": "rear chamber",
         "sound_speed_m_per_s": 343.0,
         "volume_groups": [
           {
             "dimension": 3,
-            "mesh_id": "mesh:rearchamber",
+            "mesh_id": "mesh:skramrearchamber",
             "name": "RearChamber",
-            "tag": null
-          }
-        ]
-      },
-      {
-        "density_kg_per_m3": 1.21,
-        "id": "region:side-chamber",
-        "kind": "bounded_air",
-        "loss_model": {
-          "bulk_loss_factor": 0.05
-        },
-        "mesh_ids": [
-          "mesh:sidechamber"
-        ],
-        "name": "SIDE CHAMBER",
-        "sound_speed_m_per_s": 343.0,
-        "volume_groups": [
-          {
-            "dimension": 3,
-            "mesh_id": "mesh:sidechamber",
-            "name": "SideChamber",
             "tag": null
           }
         ]
@@ -419,5 +385,5 @@
   },
   "schema_version": 8,
   "stitch_exterior_meshes": false,
-  "symmetry": "xy"
+  "symmetry": "x"
 }

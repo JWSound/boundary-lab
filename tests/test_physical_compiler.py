@@ -59,7 +59,7 @@ from repo_paths import REPO_ROOT
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
-SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "SKRAM"
+SKRAM_EXAMPLE_ROOT = REPO_ROOT / "examples" / "SKRAM"
 SIMPLE_SEALED_FIXTURE_ROOT = REPO_ROOT / "examples" / "Simple_Sealed"
 
 
@@ -1585,9 +1585,9 @@ def _simple_sealed_fixture_system() -> PhysicalSystem:
 
 
 def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
-    front_file = SKRAM_FIXTURE_ROOT / "SkramFrontChamber.msh"
-    rear_file = SKRAM_FIXTURE_ROOT / "SkramRearChamber.msh"
-    exterior_file = SKRAM_FIXTURE_ROOT / "SkramExterior.msh"
+    front_file = SKRAM_EXAMPLE_ROOT / "SkramFrontChamber.msh"
+    rear_file = SKRAM_EXAMPLE_ROOT / "SkramRearChamber.msh"
+    exterior_file = SKRAM_EXAMPLE_ROOT / "SkramExterior.msh"
     front_mesh = meshio.read(front_file)
     rear_mesh = meshio.read(rear_file)
     exterior_mesh = meshio.read(exterior_file)
