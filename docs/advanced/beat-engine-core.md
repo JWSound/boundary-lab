@@ -183,6 +183,12 @@ $$
 
 Horizontal, vertical, and spherical observation points are concatenated into one field evaluation per frequency, then sliced back into result arrays. This avoids rebuilding source strengths for each observation set.
 
+Physical-system result schema version 2 carries numeric arrays as typed,
+little-endian, row-major base64 payloads. Observation coordinates remain in the
+frequency-invariant result domains and are not repeated in each streamed
+frequency result. The Python decoder continues to accept schema version 1
+real/imaginary decimal arrays for compatibility with older workers.
+
 ## Performance Shape
 
 The expensive stages are:

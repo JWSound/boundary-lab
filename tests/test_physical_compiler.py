@@ -1424,12 +1424,72 @@ def test_generalized_frequency_result_preserves_complex_double_precision() -> No
         diagnostics={"coupled_residual": 1e-10},
     )
 
-    restored = system_frequency_result_from_dict(system_frequency_result_to_dict(result))
+    wire = system_frequency_result_to_dict(result)
+    values_wire = wire["quantities"][0]["values"]
+    restored = system_frequency_result_from_dict(wire)
 
+    assert wire["schema_version"] == 2
+    assert values_wire["encoding"] == "base64"
+    assert values_wire["order"] == "C"
+    assert values_wire["byte_order"] == "little"
+    assert "real" not in values_wire
+    assert "imag" not in values_wire
     assert restored.freq_hz == result.freq_hz
     assert restored.quantities[0].values.dtype == np.complex128
     assert np.array_equal(restored.quantities[0].values, result.quantities[0].values)
     assert restored.diagnostics == result.diagnostics
+
+
+def test_generalized_frequency_result_accepts_legacy_decimal_arrays() -> None:
+    restored = system_frequency_result_from_dict(
+        {
+            "schema_version": 1,
+            "freq_hz": 1000.0,
+            "excitation_port_ids": ["excitation:radiator"],
+            "quantities": [
+                {
+                    "id": "pressure:field",
+                    "quantity": "acoustic_pressure",
+                    "unit": "Pa",
+                    "axes": ["excitation", "observation"],
+                    "values": {
+                        "dtype": "complex64",
+                        "shape": [1, 2],
+                        "real": [1.0, 3.0],
+                        "imag": [2.0, -4.0],
+                    },
+                }
+            ],
+            "diagnostics": {},
+        }
+    )
+
+    assert restored.quantities[0].values.dtype == np.complex64
+    np.testing.assert_array_equal(
+        restored.quantities[0].values,
+        np.asarray([[1.0 + 2.0j, 3.0 - 4.0j]], dtype=np.complex64),
+    )
+
+
+def test_generalized_frequency_result_rejects_incomplete_binary_arrays() -> None:
+    result = SystemFrequencyResult(
+        freq_hz=1000.0,
+        quantities=(
+            QuantityResult(
+                id="pressure:field",
+                quantity="acoustic_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.asarray([[1.0 + 2.0j, 3.0 - 4.0j]], dtype=np.complex64),
+            ),
+        ),
+        excitation_port_ids=("excitation:radiator",),
+    )
+    wire = system_frequency_result_to_dict(result)
+    wire["quantities"][0]["values"]["content_base64"] = "AAAA"
+
+    with pytest.raises(ValueError, match="contains 3 bytes, expected 16"):
+        system_frequency_result_from_dict(wire)
 
 
 def test_system_contract_rejects_unknown_ports_and_misaligned_excitation_axes() -> None:

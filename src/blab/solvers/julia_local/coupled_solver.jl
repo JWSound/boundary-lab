@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
+using Base64, JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
@@ -131,13 +131,16 @@ end
 function complex_array_wire(values)
     scalar_type = typeof(real(zero(eltype(values))))
     scalar_type in (Float32, Float64) || error("Unsupported coupled result precision: $scalar_type")
+    Base.ENDIAN_BOM == 0x04030201 || error("Coupled binary results require a little-endian host.")
     array = Complex{scalar_type}.(values)
     flattened = row_major_values(array)
     return Dict(
+        "encoding" => "base64",
         "dtype" => scalar_type == Float32 ? "complex64" : "complex128",
         "shape" => collect(size(array)),
-        "real" => real.(flattened),
-        "imag" => imag.(flattened),
+        "order" => "C",
+        "byte_order" => "little",
+        "content_base64" => base64encode(reinterpret(UInt8, flattened)),
     )
 end
 
@@ -458,7 +461,6 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                             rows(values, FloatType),
                             "Pa",
                             ["excitation", "observation"],
-                            metadata=Dict("points_m" => raw_points),
                         ),
                     )
                     field_s += (time_ns() - field_started) / 1.0e9
@@ -539,7 +541,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                 ),
             )
             result = Dict(
-                "schema_version" => 1,
+                "schema_version" => 2,
                 "freq_hz" => frequency_hz,
                 "excitation_port_ids" => excitation_port_ids,
                 "quantities" => quantities,
@@ -1569,7 +1571,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             ),
         )
         result = Dict(
-            "schema_version" => 1,
+            "schema_version" => 2,
             "freq_hz" => frequency_hz_value,
             "excitation_port_ids" => excitation_port_ids,
             "quantities" => quantities,
@@ -2193,14 +2195,6 @@ function solve_request(request; event_mode=false)
                         rows(pressures, FloatType),
                         "Pa",
                         ["excitation", "observation"],
-                        metadata=Dict(
-                            "points_m" => raw_points,
-                            "observation_domains" => get(
-                                options,
-                                "observation_domains",
-                                Any[],
-                            ),
-                        ),
                     ),
                 )
                 field_s += (time_ns() - field_started) / 1.0e9
@@ -2338,7 +2332,7 @@ function solve_request(request; event_mode=false)
         diagnostics["fem_interior_residual"] = use_condensed_solver ?
             maximum(solution.fem_interior_residual for solution in solutions) : nothing
         result = Dict(
-            "schema_version" => 1,
+            "schema_version" => 2,
             "freq_hz" => frequency_hz,
             "excitation_port_ids" => excitation_port_ids,
             "quantities" => quantities,
