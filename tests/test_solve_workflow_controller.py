@@ -34,8 +34,6 @@ class FakeView:
         self.stitch_errors: list[tuple[str, Exception]] = []
         self.phases: list[tuple[OperationPhase, bool]] = []
         self.plot_exports: list[bool] = []
-        self.polar_exports: list[bool] = []
-        self.on_axis_exports: list[bool] = []
         self.balloon: list[bool] = []
         self.max_spl: list[bool] = []
         self.max_spl_exports: list[bool] = []
@@ -68,12 +66,6 @@ class FakeView:
 
     def set_plot_exports_available(self, available):
         self.plot_exports.append(available)
-
-    def set_polar_export_available(self, available):
-        self.polar_exports.append(available)
-
-    def set_on_axis_export_available(self, available):
-        self.on_axis_exports.append(available)
 
     def set_balloon_plot_available(self, available):
         self.balloon.append(available)
@@ -165,8 +157,6 @@ def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> Non
     controller._begin_run("Initializing solver...")
 
     assert controller.view.plot_exports == [False]
-    assert controller.view.polar_exports == [False]
-    assert controller.view.on_axis_exports == [False]
     assert controller.view.balloon == [False]
     assert controller.view.max_spl == [False]
     assert controller.view.max_spl_exports == [False]

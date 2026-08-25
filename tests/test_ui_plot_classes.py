@@ -65,15 +65,12 @@ def test_main_window_uses_detachable_panel_docks() -> None:
 
     assert "QDockWidget" in source
     assert "class DockTitleBar" in widgets_source
-    assert "save_action: QAction | None = None" in widgets_source
     assert "tool_actions: tuple[QAction, ...] = ()" in widgets_source
     assert "button.setDefaultAction(action)" in widgets_source
     assert "self.tool_buttons.append(button)" in widgets_source
-    assert (
-        "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))"
-        in source
-    )
-    assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
+    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, tool_actions=tool_actions))" in source
+    assert "self.export_plot_actions.get(entry.plot_id)" in source
+    assert "self.export_plot_data_actions.get(entry.plot_id)" in source
     assert "tool_actions=tuple(" in source
     assert "close_button.clicked.connect(dock.close)" in widgets_source
     assert "event.ignore()" in widgets_source
@@ -277,14 +274,9 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "QApplication.processEvents()" not in solve_finished
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
-    assert (
-        'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
-        in main_source
-    )
-    assert (
-        'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
-        in main_source
-    )
+    exports_source = main_window_source("exports")
+    assert "FINAL_ISOBAR_ANGLE_SAMPLES" in exports_source
+    assert "FINAL_ISOBAR_FREQ_SAMPLES" in exports_source
     assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
     assert "contour_step_db=self.preferences.isobar_contour_step_db" in main_source
 

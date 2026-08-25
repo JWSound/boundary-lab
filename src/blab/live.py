@@ -154,6 +154,16 @@ class LiveSolveDataset:
             pressures,
         )
 
+    def as_summed_on_axis_export_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return synthesized sum SPL and propagation-aligned phase on axis."""
+
+        freqs, _channel_names, pressures = self._channel_on_axis_complex_pressures()
+        summed_pressure = np.sum(pressures, axis=0)
+        return (
+            pressure_to_spl(summed_pressure).astype(np.float32, copy=False),
+            self._propagation_aligned_phase_deg(summed_pressure, freqs),
+        )
+
     def _channel_on_axis_complex_pressures(
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -5,18 +5,31 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import numpy as np
+
 from blab.live import LiveSolveDataset
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def export_on_axis_text_files(dataset: LiveSolveDataset, output_target: str | Path) -> list[Path]:
+def export_on_axis_text_files(
+    dataset: LiveSolveDataset,
+    output_target: str | Path,
+    *,
+    include_sum: bool = False,
+) -> list[Path]:
     """Write REW-compatible frequency, SPL, and propagation-aligned phase columns.
 
-    ``output_target`` is the exact file path for a single-channel solve and an
-    output directory for a multi-channel solve.
+    ``output_target`` is the exact file path for one output trace and an output
+    directory for multiple traces. Requesting the synthesized sum therefore
+    always uses a directory when at least one channel is present.
     """
     freqs, channel_names, spl_db, phase_deg = dataset.as_channel_on_axis_export_arrays()
+    if include_sum:
+        summed_spl_db, summed_phase_deg = dataset.as_summed_on_axis_export_arrays()
+        channel_names = np.concatenate((np.asarray(["Sum"]), channel_names.astype(str)))
+        spl_db = np.vstack((summed_spl_db, spl_db))
+        phase_deg = np.vstack((summed_phase_deg, phase_deg))
     target = Path(output_target)
 
     if channel_names.size == 1:

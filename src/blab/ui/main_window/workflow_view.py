@@ -347,12 +347,6 @@ class WorkflowView(Protocol):
     def set_max_spl_export_available(self, available: bool) -> None:
         """Offer or withdraw image export for a calculated maximum-SPL plot."""
 
-    def set_polar_export_available(self, available: bool) -> None:
-        """Offer or withdraw polar data export."""
-
-    def set_on_axis_export_available(self, available: bool) -> None:
-        """Offer or withdraw per-channel on-axis data export."""
-
     def set_system_config_available(self, available: bool) -> None:
         """Offer or withdraw the System Config entry point.
 

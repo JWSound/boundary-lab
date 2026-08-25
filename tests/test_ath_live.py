@@ -23,7 +23,13 @@ from blab.ath import (
 )
 from blab.balloon import BalloonPrepConfig, BalloonSurfaceSampler, prepare_balloon_data
 from blab.config import ChannelConfig, CrossoverConfig
-from blab.exporting import export_balloon_data, export_on_axis_text_files, export_polar_text_files
+from blab.exporting import (
+    TraceQuantity,
+    export_balloon_data,
+    export_frequency_trace_table,
+    export_on_axis_text_files,
+    export_polar_text_files,
+)
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -1186,6 +1192,53 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
     ]
 
 
+def test_export_polar_text_files_can_write_one_selected_plane(tmp_path: Path) -> None:
+    angles = np.array([-10.0, 0.0, 10.0], dtype=np.float32)
+    dataset = LiveSolveDataset(angles, radiator_names=np.array(["throat"]))
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.array([-2.0, 0.0, -3.0]),
+            vertical_spl_norm_db=np.array([-4.0, 0.0, -5.0]),
+            impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+        )
+    )
+
+    written = export_polar_text_files(dataset, tmp_path, planes=("V",))
+
+    assert len(written) == 3
+    assert all(path.name.startswith("V ") for path in written)
+    assert not list(tmp_path.glob("H *.txt"))
+
+
+def test_export_polar_text_files_uses_the_plot_plane_reference_angle(tmp_path: Path) -> None:
+    angles = np.array([-10.0, 0.0, 10.0], dtype=np.float32)
+    dataset = LiveSolveDataset(angles, radiator_names=np.array(["throat"]))
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.array([-2.0, 0.0, -3.0]),
+            vertical_spl_norm_db=np.array([-8.0, -1.0, -4.0]),
+            impedance=np.array([[1.0, 0.0]], dtype=np.float32),
+        )
+    )
+
+    export_polar_text_files(
+        dataset,
+        tmp_path,
+        include_phase=False,
+        planes=("V",),
+        reference_angles_deg={"V": 10.0},
+    )
+
+    assert (tmp_path / "V 10.txt").read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t0.000",
+    ]
+    assert (tmp_path / "V 0.txt").read_text(encoding="utf-8").splitlines() == [
+        "1000.000000\t3.000",
+    ]
+
+
 def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_path: Path) -> None:
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
     dataset = LiveSolveDataset(
@@ -1255,3 +1308,54 @@ def test_export_on_axis_text_files_writes_only_individual_channels_with_safe_nam
         "1000.000000\t93.979\t90.000",
     ]
     assert len(list((tmp_path / "channels").glob("*.txt"))) == 2
+
+
+def test_export_on_axis_text_files_can_include_the_synthesized_sum(tmp_path: Path) -> None:
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    dataset = LiveSolveDataset(
+        angles,
+        channel_configs=(ChannelConfig(name="left"), ChannelConfig(name="right")),
+        flat_target_normalization_enabled=False,
+    )
+    pressure = np.ones((2, 3), dtype=np.complex64)
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.ones((2, 2), dtype=np.float32),
+            channel_names=np.array(["left", "right"]),
+            horizontal_pressure=pressure,
+            vertical_pressure=pressure.copy(),
+        )
+    )
+
+    written = export_on_axis_text_files(dataset, tmp_path / "responses", include_sum=True)
+
+    assert [path.name for path in written] == [
+        "on_axis_Sum.txt",
+        "on_axis_left.txt",
+        "on_axis_right.txt",
+    ]
+    sum_columns = (tmp_path / "responses" / "on_axis_Sum.txt").read_text(encoding="utf-8").split()
+    assert float(sum_columns[1]) == pytest.approx(100.0, abs=0.001)
+
+
+def test_export_frequency_trace_table_writes_named_quantities_and_nonfinite_values(tmp_path: Path) -> None:
+    output = export_frequency_trace_table(
+        tmp_path / "electrical_impedance",
+        title="Electrical Impedance",
+        frequency_hz=np.array([100.0, 1000.0]),
+        trace_names=np.array(["LF\tchannel"]),
+        quantities=(
+            TraceQuantity("Magnitude", "ohm", np.array([[4.25, np.nan]])),
+            TraceQuantity("Phase", "deg", np.array([[12.0, -8.0]])),
+        ),
+    )
+
+    assert output.name == "electrical_impedance.txt"
+    lines = output.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "# Boundary Lab - Electrical Impedance"
+    assert lines[1] == "# Frequency (Hz)\tLF channel Magnitude (ohm)\tLF channel Phase (deg)"
+    assert lines[2] == "100\t4.25\t12"
+    assert lines[3] == "1000\tnan\t-8"

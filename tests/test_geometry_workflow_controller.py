@@ -25,8 +25,6 @@ class FakeView:
         self.cursor: list[bool] = []
         self.quality_warnings: list[object] = []
         self.plot_exports: list[bool] = []
-        self.polar_exports: list[bool] = []
-        self.on_axis_exports: list[bool] = []
 
     def show_status(self, message):
         self.status.append(message)
@@ -48,13 +46,6 @@ class FakeView:
 
     def set_plot_exports_available(self, available):
         self.plot_exports.append(available)
-
-    def set_polar_export_available(self, available):
-        self.polar_exports.append(available)
-
-    def set_on_axis_export_available(self, available):
-        self.on_axis_exports.append(available)
-
 
 class FakePlots:
     def __init__(self) -> None:

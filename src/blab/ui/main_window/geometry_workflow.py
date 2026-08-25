@@ -97,8 +97,6 @@ class GeometryWorkflowController(QObject):
         # Stop is withheld until _enable_geometry_cancel_if_active fires.
         self._view.set_workflow_phase(OperationPhase.RUNNING, cancel_available=False)
         self._view.set_plot_exports_available(False)
-        self._view.set_polar_export_available(False)
-        self._view.set_on_axis_export_available(False)
         self._plots.refresh_contour_controls()
         self._view.set_busy_cursor(True)
 

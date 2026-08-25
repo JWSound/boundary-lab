@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Literal
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QColor, QFont, QFontDatabase, QPalette
@@ -24,12 +24,22 @@ from blab.ui.result_projection import VisualizationProjection
 
 
 @dataclass(frozen=True)
+class PlotDataExportSpec:
+    """File-dialog metadata for one plot's numerical export."""
+
+    default_filename: str
+    target_kind: Literal["file", "directory"] = "file"
+    file_filter: str = "Text files (*.txt);;All files (*)"
+
+
+@dataclass(frozen=True)
 class PlotEntry:
     plot_id: str
     title: str
     default_filename: str
     widget: QWidget
     update: Callable[[VisualizationProjection], None]
+    data_export: PlotDataExportSpec
 
 
 def format_frequency_solve_timings(result: FrequencyResult) -> str:
@@ -100,7 +110,6 @@ class DockTitleBar(QFrame):
         title: str,
         dock: QDockWidget,
         *,
-        save_action: QAction | None = None,
         tool_actions: tuple[QAction, ...] = (),
     ):
         super().__init__(dock)
@@ -116,7 +125,7 @@ class DockTitleBar(QFrame):
         layout.setSpacing(4)
         label = QLabel(title)
         label.setObjectName("dockTitleBarLabel")
-        for action in (*(() if save_action is None else (save_action,)), *tool_actions):
+        for action in tool_actions:
             button = QToolButton()
             button.setAutoRaise(True)
             if action.menu() is not None:
@@ -174,6 +183,7 @@ def _sync_menu_tool_button(button: QToolButton, action: QAction) -> None:
 __all__ = [
     "TAB_CLOSE_GLYPH_WEIGHT",
     "DockTitleBar",
+    "PlotDataExportSpec",
     "PlotEntry",
     "TabCloseButton",
     "dimmed_button_text_color",

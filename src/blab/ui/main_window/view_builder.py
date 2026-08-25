@@ -88,11 +88,18 @@ class ViewBuilderMixin:
         file_menu.addAction(export_cfg_action)
 
         for entry in self.plot_entries:
-            action = QAction(entry.title, self)
-            action.setToolTip(f"Export {entry.title}")
+            action = QAction("Save Plot Image", self)
+            action.setToolTip(f"Save {entry.title} image")
             action.setEnabled(False)
             action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot(plot_id))
             self.export_plot_actions[entry.plot_id] = action
+            data_action = QAction("Export Plot Data", self)
+            data_action.setToolTip(f"Export {entry.title} data")
+            data_action.setEnabled(False)
+            data_action.triggered.connect(
+                lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id)
+            )
+            self.export_plot_data_actions[entry.plot_id] = data_action
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
@@ -108,16 +115,6 @@ class ViewBuilderMixin:
                     lambda _checked=False, plot_id=entry.plot_id: self.clear_isobar_contours(plot_id)
                 )
                 self.clear_contour_actions[entry.plot_id] = clear_action
-
-        self.export_polar_data_action = QAction("Export Polar Data", self)
-        self.export_polar_data_action.setEnabled(False)
-        self.export_polar_data_action.triggered.connect(self.export_polar_data)
-        file_menu.addAction(self.export_polar_data_action)
-
-        self.export_on_axis_data_action = QAction("Export On-Axis Data", self)
-        self.export_on_axis_data_action.setEnabled(False)
-        self.export_on_axis_data_action.triggered.connect(self.export_on_axis_data)
-        file_menu.addAction(self.export_on_axis_data_action)
 
         self.export_speaker_package_action = QAction("Export Speaker Package...", self)
         self.export_speaker_package_action.setToolTip("Configure, solve, and export a .blabsp speaker package")
@@ -171,7 +168,6 @@ class ViewBuilderMixin:
         title: str,
         widget: QWidget,
         *,
-        save_action: QAction | None = None,
         tool_actions: tuple[QAction, ...] = (),
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
@@ -181,7 +177,7 @@ class ViewBuilderMixin:
         dock.setFeatures(
             QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         )
-        dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))
+        dock.setTitleBarWidget(DockTitleBar(title, dock, tool_actions=tool_actions))
         return dock
 
     def _build_layout(self) -> None:
@@ -224,6 +220,8 @@ class ViewBuilderMixin:
             tool_actions = [
                 action
                 for action in (
+                    self.export_plot_actions.get(entry.plot_id),
+                    self.export_plot_data_actions.get(entry.plot_id),
                     self.capture_contour_actions.get(entry.plot_id),
                     self.clear_contour_actions.get(entry.plot_id),
                 )
@@ -239,7 +237,6 @@ class ViewBuilderMixin:
                 f"{entry.plot_id}_dock",
                 entry.title,
                 entry.widget,
-                save_action=self.export_plot_actions.get(entry.plot_id),
                 tool_actions=tuple(tool_actions),
             )
             self.plot_docks[entry.plot_id] = dock
@@ -451,15 +448,11 @@ class ViewBuilderMixin:
             )
         )
 
-    def set_polar_export_available(self, available: bool) -> None:
-        self.export_polar_data_action.setEnabled(available)
-
-    def set_on_axis_export_available(self, available: bool) -> None:
-        self.export_on_axis_data_action.setEnabled(available)
-
     def set_plot_exports_available(self, available: bool) -> None:
         for plot_id, action in self.export_plot_actions.items():
-            action.setEnabled(available and plot_id != "max_spl")
+            action.setEnabled(available and self.plot_data_is_available(plot_id))
+        for plot_id, action in self.export_plot_data_actions.items():
+            action.setEnabled(available and self.plot_data_is_available(plot_id))
 
     def set_max_spl_available(self, available: bool) -> None:
         self.max_spl_plot.calculate_action.setEnabled(available)
@@ -468,6 +461,9 @@ class ViewBuilderMixin:
         action = self.export_plot_actions.get("max_spl")
         if action is not None:
             action.setEnabled(available)
+        data_action = self.export_plot_data_actions.get("max_spl")
+        if data_action is not None:
+            data_action.setEnabled(available)
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)

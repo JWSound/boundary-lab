@@ -14,9 +14,13 @@ GENERATED_GEOMETRY_ROOT = APP_ROOT / "runs" / "generated_geometry"
 
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 
-SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
+EXPORT_DARK_ICON = APP_ROOT / "assets" / "export_dark.ico"
 
-SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+EXPORT_LIGHT_ICON = APP_ROOT / "assets" / "export_light.ico"
+
+SNAPSHOT_DARK_ICON = APP_ROOT / "assets" / "snapshot_dark.ico"
+
+SNAPSHOT_LIGHT_ICON = APP_ROOT / "assets" / "snapshot_light.ico"
 
 CAPTURE_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "capturecontours_dark.ico"
 

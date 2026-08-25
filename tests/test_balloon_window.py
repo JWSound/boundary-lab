@@ -89,6 +89,7 @@ def test_the_controls_live_below_the_workspace_not_inside_it(balloon_window) -> 
 @pytest.mark.parametrize(
     ("attribute", "dock_id"),
     [
+        ("export_balloon_data_action", "balloon_3d"),
         ("save_wavefront_shape_action", "forward_beam_shape"),
         ("hires_slice_action", "isobar_angle_slice"),
         ("save_slice_action", "isobar_angle_slice"),
@@ -100,6 +101,10 @@ def test_plot_tool_actions_exist_with_icons_and_tooltips(balloon_window, attribu
     assert action.toolTip(), f"{attribute} needs a tooltip; it renders as an icon-only button"
     assert not action.icon().isNull(), f"{attribute} icon failed to resolve from APP_ROOT"
     assert dock_id in _docks(balloon_window)
+
+
+def test_balloon_data_export_is_not_a_file_menu_action(balloon_window) -> None:
+    assert all(action.text() != "File" for action in balloon_window.menuBar().actions())
 
 
 def test_the_high_resolution_action_re_renders_the_slice_at_final_quality(balloon_window) -> None:

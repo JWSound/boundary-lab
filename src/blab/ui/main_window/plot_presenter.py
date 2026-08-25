@@ -119,8 +119,6 @@ class PlotPresenterMixin:
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self.set_plot_exports_available(False)
-        self.set_polar_export_available(False)
-        self.set_on_axis_export_available(False)
         self.set_balloon_plot_available(False)
         self.set_max_spl_available(False)
         self.refresh_contour_controls()

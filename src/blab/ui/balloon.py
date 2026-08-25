@@ -74,8 +74,10 @@ WAVEFRONT_RAY_COUNT = 145
 WAVEFRONT_RAY_SAMPLES = 181
 WAVEFRONT_MAX_FRONT_ANGLE_DEG = 89.0
 _WAVEFRONT_RAY_SAMPLE_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
-SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+EXPORT_DARK_ICON = APP_ROOT / "assets" / "export_dark.ico"
+EXPORT_LIGHT_ICON = APP_ROOT / "assets" / "export_light.ico"
+SNAPSHOT_DARK_ICON = APP_ROOT / "assets" / "snapshot_dark.ico"
+SNAPSHOT_LIGHT_ICON = APP_ROOT / "assets" / "snapshot_light.ico"
 HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"
 HIRES_RENDER_LIGHT_ICON = APP_ROOT / "assets" / "hiresrender_light.ico"
 
@@ -132,12 +134,12 @@ class BalloonPlotWindow(QMainWindow):
         self.file_dialogs = file_dialog_service or FileDialogService(self.settings)
 
         menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu("File")
-        export_action = QAction("Export Balloon Data", self)
-        export_action.triggered.connect(self._export_balloon_data)
-        file_menu.addAction(export_action)
-
         view_menu = menu_bar.addMenu("View")
+
+        self.export_balloon_data_action = QAction("Export Balloon Data", self)
+        self.export_balloon_data_action.setToolTip("Export complete balloon data")
+        self.export_balloon_data_action.setEnabled(False)
+        self.export_balloon_data_action.triggered.connect(self._export_balloon_data)
 
         self.plotter = QtInteractor(self)
         self._refresh_3d_view_theme()
@@ -236,7 +238,12 @@ class BalloonPlotWindow(QMainWindow):
         workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.workspace.setCentralWidget(workspace_placeholder)
 
-        self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")
+        self.balloon_dock = self._make_dock(
+            "3D Balloon Plot",
+            viewport,
+            object_name="balloon_3d",
+            tool_actions=(self.export_balloon_data_action,),
+        )
         self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")
         self.wavefront_shape_dock = self._make_dock(
             "Forward Beam Shape",
@@ -369,6 +376,7 @@ class BalloonPlotWindow(QMainWindow):
         self.hires_slice_action.setEnabled(frequency_count > 0)
         self.save_slice_action.setEnabled(frequency_count > 0)
         self.save_wavefront_shape_action.setEnabled(frequency_count > 0)
+        self.export_balloon_data_action.setEnabled(frequency_count > 0)
 
         if not self.wavefront_shape_dock.isHidden():
             self._render_wavefront_shape_plot()
@@ -404,8 +412,12 @@ class BalloonPlotWindow(QMainWindow):
         window_color = palette.color(QPalette.Window)
         light_theme = window_color.lightness() >= 128
         self.hires_slice_action.setIcon(QIcon(str(HIRES_RENDER_LIGHT_ICON if light_theme else HIRES_RENDER_DARK_ICON)))
-        self.save_slice_action.setIcon(QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON)))
-        self.save_wavefront_shape_action.setIcon(QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON)))
+        snapshot_icon = QIcon(str(SNAPSHOT_LIGHT_ICON if light_theme else SNAPSHOT_DARK_ICON))
+        self.save_slice_action.setIcon(snapshot_icon)
+        self.save_wavefront_shape_action.setIcon(snapshot_icon)
+        self.export_balloon_data_action.setIcon(
+            QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON))
+        )
 
     @Slot()
     def _render_high_resolution_isobar_slice(self) -> None:

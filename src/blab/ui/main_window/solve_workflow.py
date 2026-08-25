@@ -127,8 +127,6 @@ class SolveWorkflowController(QObject):
         self._view.set_balloon_plot_available(False)
         self._view.set_workflow_phase(OperationPhase.RUNNING)
         self._view.set_plot_exports_available(False)
-        self._view.set_polar_export_available(False)
-        self._view.set_on_axis_export_available(False)
         self._view.set_max_spl_available(False)
         self._view.set_max_spl_export_available(False)
         self._plots.refresh_contour_controls()
@@ -715,10 +713,6 @@ class SolveWorkflowController(QObject):
                 solve_completed and not interior_fem and bool(self._plots.visible_isobar_plots())
             )
             self._view.set_plot_exports_available(not interior_fem)
-            self._view.set_polar_export_available(not interior_fem)
-            self._view.set_on_axis_export_available(
-                not interior_fem and session.live_dataset.supports_channel_resynthesis
-            )
             self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
             self._view.set_max_spl_available(
                 solve_completed and not interior_fem and bool(eligible_max_spl_channels)

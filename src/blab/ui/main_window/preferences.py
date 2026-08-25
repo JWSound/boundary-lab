@@ -17,10 +17,12 @@ from blab.ui.main_window.constants import (
     CLEAR_CONTOURS_DARK_ICON,
     CLEAR_CONTOURS_LIGHT_ICON,
     DEFAULT_DOCK_STATE_B64,
+    EXPORT_DARK_ICON,
+    EXPORT_LIGHT_ICON,
     PHASE_DARK_ICON,
     PHASE_LIGHT_ICON,
-    SAVE_DARK_ICON,
-    SAVE_LIGHT_ICON,
+    SNAPSHOT_DARK_ICON,
+    SNAPSHOT_LIGHT_ICON,
     SYNTAX_HIGHLIGHT_DARK_ICON,
     SYNTAX_HIGHLIGHT_LIGHT_ICON,
 )
@@ -71,13 +73,16 @@ class PreferencesMixin:
         palette = self.palette()
         window_color = palette.color(QPalette.Window)
         light_theme = window_color.lightness() >= 128
-        icon = QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))
+        snapshot_icon = QIcon(str(SNAPSHOT_LIGHT_ICON if light_theme else SNAPSHOT_DARK_ICON))
+        export_icon = QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON))
         capture_icon = QIcon(str(CAPTURE_CONTOURS_LIGHT_ICON if light_theme else CAPTURE_CONTOURS_DARK_ICON))
         clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
         phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
-            action.setIcon(icon)
+            action.setIcon(snapshot_icon)
+        for action in getattr(self, "export_plot_data_actions", {}).values():
+            action.setIcon(export_icon)
         for action in getattr(self, "capture_contour_actions", {}).values():
             action.setIcon(capture_icon)
         for action in getattr(self, "clear_contour_actions", {}).values():

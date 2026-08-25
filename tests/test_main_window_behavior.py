@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar, QToolButton  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
@@ -29,7 +29,8 @@ def test_app_root_resolves_to_the_repository_root() -> None:
 
     assert (APP_ROOT / "pyproject.toml").is_file(), f"APP_ROOT resolved to {APP_ROOT}"
     assert (APP_ROOT / "assets").is_dir()
-    assert asset("save_dark.ico").is_file()
+    assert asset("snapshot_dark.ico").is_file()
+    assert asset("export_dark.ico").is_file()
 
 
 def test_every_bundled_resource_path_actually_exists() -> None:
@@ -299,33 +300,39 @@ def test_plot_export_is_offered_per_dock_and_not_in_the_file_menu(main_window) -
     assert "Export Plot" not in [a.text() for a in file_menu.actions()]
 
     assert set(main_window.export_plot_actions) == PLOT_IDS
+    assert set(main_window.export_plot_data_actions) == PLOT_IDS
     for entry in main_window.plot_entries:
-        action = main_window.export_plot_actions[entry.plot_id]
-        assert action.toolTip() == f"Export {entry.title}"
-        assert not action.icon().isNull(), entry.plot_id
+        snapshot_action = main_window.export_plot_actions[entry.plot_id]
+        data_action = main_window.export_plot_data_actions[entry.plot_id]
+        assert snapshot_action.toolTip() == f"Save {entry.title} image"
+        assert data_action.toolTip() == f"Export {entry.title} data"
+        assert not snapshot_action.icon().isNull(), entry.plot_id
+        assert not data_action.icon().isNull(), entry.plot_id
+        title_bar = main_window.plot_docks[entry.plot_id].titleBarWidget()
+        dock_actions = {
+            button.defaultAction()
+            for button in title_bar.findChildren(QToolButton)
+            if button.defaultAction() is not None
+        }
+        assert {snapshot_action, data_action} <= dock_actions
 
 
-def test_data_exports_are_explicit_file_menu_actions(main_window) -> None:
+def test_plot_data_exports_are_removed_from_the_file_menu(main_window) -> None:
     file_action = next(action for action in main_window.menuBar().actions() if action.text() == "File")
     labels = [action.text() for action in file_action.menu().actions()]
 
-    assert "Export Polar Data" in labels
-    assert "Export On-Axis Data" in labels
+    assert "Export Polar Data" not in labels
+    assert "Export On-Axis Data" not in labels
     assert "Export Speaker Package..." in labels
-    assert not main_window.export_polar_data_action.isEnabled()
-    assert not main_window.export_on_axis_data_action.isEnabled()
-
-    main_window.set_on_axis_export_available(True)
-    assert main_window.export_on_axis_data_action.isEnabled()
-
-    main_window.set_on_axis_export_available(False)
-    assert not main_window.export_on_axis_data_action.isEnabled()
+    assert all(not action.isEnabled() for action in main_window.export_plot_data_actions.values())
 
 
 def test_export_and_contour_icons_survive_a_palette_refresh(main_window) -> None:
     main_window._refresh_plot_export_icons()
 
     for action in main_window.export_plot_actions.values():
+        assert not action.icon().isNull()
+    for action in main_window.export_plot_data_actions.values():
         assert not action.icon().isNull()
     for plot_id in ISOBAR_IDS:
         assert not main_window.capture_contour_actions[plot_id].icon().isNull()
