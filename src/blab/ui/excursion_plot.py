@@ -11,11 +11,8 @@ from PySide6.QtWidgets import QMenu
 from blab.ui.plots import (
     GRID_LINE_ALPHA,
     MINOR_GRID_LINE_ALPHA,
-    PLOT_BOTTOM_MARGIN,
-    PLOT_LEFT_MARGIN,
-    PLOT_RIGHT_MARGIN,
     PLOT_TITLE_PAD,
-    PLOT_TOP_MARGIN,
+    SINGLE_AXIS_LAYOUT,
     RawCoordinatePlotCanvas,
     apply_audio_frequency_axis,
     apply_compact_plot_text,
@@ -39,12 +36,7 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
         self.trace_filter_action = QAction("Traces", self)
         self.trace_filter_action.setToolTip("Choose visible transducer excursion traces")
         self.trace_filter_action.setMenu(self.trace_filter_menu)
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.set_layout_profile(SINGLE_AXIS_LAYOUT)
         self._draw_empty()
 
     def _configure_axes(self) -> None:

@@ -11,13 +11,10 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu
 
 from blab.ui.plots import (
+    DUAL_AXIS_LAYOUT,
     GRID_LINE_ALPHA,
     MINOR_GRID_LINE_ALPHA,
-    PLOT_BOTTOM_MARGIN,
-    PLOT_LEFT_MARGIN,
-    PLOT_RIGHT_MARGIN,
     PLOT_TITLE_PAD,
-    PLOT_TOP_MARGIN,
     RawCoordinatePlotCanvas,
     _phase_curve_with_wrap_breaks,
     apply_audio_frequency_axis,
@@ -51,12 +48,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self.show_phase_action.setCheckable(True)
         self.show_phase_action.setEnabled(False)
         self.show_phase_action.toggled.connect(self._set_phase_visible)
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.set_layout_profile(DUAL_AXIS_LAYOUT)
         self.phase_axes.yaxis.set_label_position("right")
         self.phase_axes.yaxis.tick_right()
         self._draw_empty()

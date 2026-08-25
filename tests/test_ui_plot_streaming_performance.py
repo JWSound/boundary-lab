@@ -2,6 +2,7 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from cycler import cycler
 from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
@@ -10,6 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from blab.spinorama import SpinoramaCurves
+from blab.ui.balloon import SliceRadarCanvas, WavefrontShapeCanvas
 from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.group_delay_plot import GroupDelayCanvas
@@ -600,27 +602,135 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
     assert len(plots[4].calls[0][0]) == 7
 
 
-def test_every_chart_panel_gets_the_same_axes_box() -> None:
-    """The spinorama used to reserve extra bottom margin for its legend."""
-    canvases = (
+def test_chart_panels_share_layout_profiles_by_artist_requirements() -> None:
+    single_axis = (
         ImpedanceCanvas(),
-        ElectricalImpedanceCanvas(),
-        OnAxisResponseCanvas(),
         GroupDelayCanvas(),
         ExcursionCanvas(),
         MaxSplCanvas(),
-        SpinoramaCanvas(),
-        IsobarCanvas("Horizontal Isobar"),
     )
-    boxes = {type(canvas).__name__: canvas.axes.get_position().bounds[1::2] for canvas in canvases}
+    dual_axis = (ElectricalImpedanceCanvas(), OnAxisResponseCanvas())
 
-    assert len(set(boxes.values())) == 1, f"axes boxes disagree: {boxes}"
+    single_boxes = {canvas.axes.get_position().bounds for canvas in single_axis}
+    dual_boxes = {canvas.axes.get_position().bounds for canvas in dual_axis}
+
+    assert len(single_boxes) == 1
+    assert len(dual_boxes) == 1
+    assert single_axis[0].axes.get_position().x1 > dual_axis[0].axes.get_position().x1
+    assert SpinoramaCanvas().axes.get_position().y0 > single_axis[0].axes.get_position().y0
+    assert IsobarCanvas("Horizontal Isobar").axes.get_position().x1 < single_axis[0].axes.get_position().x1
+
+
+def test_adaptive_layout_keeps_physical_margins_constant_as_a_plot_grows() -> None:
+    canvas = ExcursionCanvas()
+
+    for width, height in ((420, 260), (900, 520)):
+        canvas.resize(width, height)
+        _APP.processEvents()
+        canvas.figure.canvas.draw()
+        position = canvas.axes.get_position()
+        width_pt, height_pt = canvas.figure.get_size_inches() * 72.0
+
+        assert position.x0 * width_pt == pytest.approx(52.0, abs=1.0)
+        assert (1.0 - position.x1) * width_pt == pytest.approx(14.0, abs=1.0)
+        assert position.y0 * height_pt == pytest.approx(36.0, abs=1.0)
+        assert (1.0 - position.y1) * height_pt == pytest.approx(22.0, abs=1.0)
+
+
+def _assert_visible_axes_artists_fit_figure(canvas, *, tolerance_px: float = 1.5) -> None:
+    canvas.figure.canvas.draw()
+    renderer = canvas.figure.canvas.get_renderer()
+    figure_bounds = canvas.figure.bbox
+
+    for axes in canvas.figure.axes:
+        if not axes.get_visible():
+            continue
+        bounds = axes.get_tightbbox(renderer)
+        assert bounds.x0 >= figure_bounds.x0 - tolerance_px
+        assert bounds.y0 >= figure_bounds.y0 - tolerance_px
+        assert bounds.x1 <= figure_bounds.x1 + tolerance_px
+        assert bounds.y1 <= figure_bounds.y1 + tolerance_px
+
+
+def test_adaptive_layout_keeps_plot_text_colorbars_and_legends_visible() -> None:
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    response = np.asarray(
+        [[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]],
+        dtype=np.float32,
+    )
+
+    acoustic = ImpedanceCanvas()
+    acoustic.update_plot(
+        freqs,
+        np.asarray(["Woofer"]),
+        np.asarray([[2.0, 8.0, 4.0]], dtype=np.float32),
+        np.asarray([[0.0, 6.0, -2.0]], dtype=np.float32),
+    )
+
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[4.0, 20.0, 8.0]], dtype=np.float32),
+        np.asarray([[170.0, -170.0, -90.0]], dtype=np.float32),
+    )
+    electrical.show_phase_action.setChecked(True)
+
+    on_axis = OnAxisResponseCanvas()
+    on_axis.update_plot(
+        freqs,
+        angles,
+        response,
+        np.asarray(["LF"]),
+        np.asarray([[81.0, 82.0, 83.0]], dtype=np.float32),
+        np.asarray([170.0, -170.0, -90.0], dtype=np.float32),
+        np.asarray([[10.0, 20.0, 30.0]], dtype=np.float32),
+    )
+    on_axis.show_phase_action.setChecked(True)
+
+    isobar = IsobarCanvas("Horizontal Isobar")
+    isobar.update_plot(freqs, angles, response, -30.0, 6.0)
+
+    spinorama = SpinoramaCanvas()
+    spinorama.update_curves(_spinorama_curves())
+
+    for canvas in (acoustic, electrical, on_axis, isobar):
+        canvas.resize(420, 260)
+        _APP.processEvents()
+        _assert_visible_axes_artists_fit_figure(canvas)
+
+    spinorama.resize(480, 300)
+    _APP.processEvents()
+    _assert_visible_axes_artists_fit_figure(spinorama)
+
+
+def test_specialized_balloon_charts_use_resize_aware_layouts() -> None:
+    frequencies = np.asarray([100.0, 1000.0, 10_000.0], dtype=np.float32)
+    wavefront = WavefrontShapeCanvas()
+    wavefront.update_plot(
+        {
+            "freq_hz": frequencies,
+            "shape_exponent": np.asarray([1.0, 2.5, 5.0], dtype=np.float32),
+            "fit_residual_percent": np.asarray([2.0, 6.0, 12.0], dtype=np.float32),
+            "directivity_index_db": np.asarray([2.0, 8.0, 18.0], dtype=np.float32),
+            "valid": np.ones(3, dtype=bool),
+        }
+    )
+    radar = SliceRadarCanvas(-30.0, 6.0)
+    radar.update_plot(
+        np.arange(0.0, 360.0, 30.0),
+        np.linspace(0.0, -24.0, 12, dtype=np.float32),
+    )
+
+    for canvas, size in ((wavefront, (420, 260)), (radar, (320, 320))):
+        canvas.resize(*size)
+        _APP.processEvents()
+        _assert_visible_axes_artists_fit_figure(canvas)
 
 
 def test_spinorama_legend_clears_the_x_label_at_panel_height() -> None:
-    """Both are sized in points while the margin is a figure fraction, so
-    they collide only on a short panel. Checked at the dock's real height.
-    """
+    """The external legend and x label remain separate at a representative dock height."""
     canvas = SpinoramaCanvas()
     canvas.resize(520, 740)
     canvas.update_curves(_spinorama_curves())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -37,13 +38,8 @@ PLOT_LEGEND_SIZE = 9
 PLOT_TITLE_PAD = 7
 GRID_LINE_ALPHA = 0.6
 MINOR_GRID_LINE_ALPHA = 0.3
-PLOT_LEFT_MARGIN = 0.14
-PLOT_RIGHT_MARGIN = 0.86
-PLOT_TOP_MARGIN = 0.9
-# Shared, so panels in the same units get the same axes height.
-PLOT_BOTTOM_MARGIN = 0.2
-ISOBAR_COLORBAR_GAP = 0.025
-ISOBAR_COLORBAR_WIDTH = 0.025
+ISOBAR_COLORBAR_GAP_PT = 7.0
+ISOBAR_COLORBAR_WIDTH_PT = 10.0
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
@@ -54,6 +50,68 @@ ISOBAR_CROSSHAIR_COLOR = "#101214"
 ISOBAR_CROSSHAIR_LABEL_FACE = "#f8fbff"
 ISOBAR_CROSSHAIR_LABEL_EDGE = "#2868ff"
 ISOBAR_CROSSHAIR_DB_FACE = "#101214"
+
+
+@dataclass(frozen=True)
+class PlotLayoutProfile:
+    """Physical padding around plot axes, independent of dock dimensions."""
+
+    left_pt: float
+    right_pt: float
+    top_pt: float = 22.0
+    bottom_pt: float = 36.0
+    min_axes_width_pt: float = 110.0
+    min_axes_height_pt: float = 72.0
+
+
+SINGLE_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=14.0)
+DUAL_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=52.0)
+ISOBAR_LAYOUT = PlotLayoutProfile(left_pt=50.0, right_pt=58.0)
+SPINORAMA_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=52.0, bottom_pt=58.0)
+
+
+def apply_figure_layout(figure: Figure, profile: PlotLayoutProfile) -> None:
+    """Apply point-based margins, scaling them only when a figure is exceptionally small."""
+
+    width_pt, height_pt = np.asarray(figure.get_size_inches(), dtype=float) * 72.0
+    left, right = _layout_axis_edges(
+        width_pt,
+        profile.left_pt,
+        profile.right_pt,
+        profile.min_axes_width_pt,
+    )
+    bottom, top = _layout_axis_edges(
+        height_pt,
+        profile.bottom_pt,
+        profile.top_pt,
+        profile.min_axes_height_pt,
+    )
+    figure.subplots_adjust(left=left, right=right, top=top, bottom=bottom)
+
+
+def figure_point_fraction(figure: Figure, points: float, *, axis: str) -> float:
+    """Convert physical points into a normalized figure-coordinate distance."""
+
+    dimension_inches = figure.get_figwidth() if axis == "x" else figure.get_figheight()
+    return float(points) / max(float(dimension_inches) * 72.0, 1.0)
+
+
+def _layout_axis_edges(
+    total_pt: float,
+    leading_pt: float,
+    trailing_pt: float,
+    minimum_content_pt: float,
+) -> tuple[float, float]:
+    total = max(float(total_pt), 1.0)
+    leading = max(float(leading_pt), 0.0)
+    trailing = max(float(trailing_pt), 0.0)
+    requested = leading + trailing
+    available = max(total - min(float(minimum_content_pt), total * 0.72), total * 0.08)
+    if requested > available and requested > 0.0:
+        scale = available / requested
+        leading *= scale
+        trailing *= scale
+    return leading / total, 1.0 - trailing / total
 
 
 def apply_audio_frequency_axis(axes) -> None:
@@ -133,6 +191,7 @@ class InteractivePlotCanvas(FigureCanvas):
 
     def __init__(self, figure: Figure, title: str) -> None:
         self.title = title
+        self._layout_profile: PlotLayoutProfile | None = None
         self._comparison_plot: Any | None = None
         self._comparison_restore_plot: Any | None = None
         self._comparison_active = False
@@ -141,6 +200,24 @@ class InteractivePlotCanvas(FigureCanvas):
         self._crosshair_background = None
         super().__init__(figure)
         self._connect_interaction_events()
+
+    def set_layout_profile(self, profile: PlotLayoutProfile) -> None:
+        self._layout_profile = profile
+        self._apply_layout_profile()
+
+    def _apply_layout_profile(self) -> None:
+        if self._layout_profile is None:
+            return
+        apply_figure_layout(self.figure, self._layout_profile)
+        self._after_layout_profile_applied()
+
+    def _after_layout_profile_applied(self) -> None:
+        """Reposition manually managed artists after the axes rectangle changes."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._apply_layout_profile()
+        self.draw_idle()
 
     def _connect_interaction_events(self) -> None:
         self.mpl_connect("button_press_event", self._on_crosshair_button_press)
@@ -304,9 +381,22 @@ class IsobarCanvas(InteractivePlotCanvas):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure, title)
-        self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)
-        self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)
         self.show_colorbar = bool(show_colorbar)
+        profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT
+        if left_margin is not None or right_margin is not None:
+            figure_width_pt = self.figure.get_figwidth() * 72.0
+            profile = PlotLayoutProfile(
+                left_pt=(
+                    profile.left_pt
+                    if left_margin is None
+                    else float(left_margin) * figure_width_pt
+                ),
+                right_pt=(
+                    profile.right_pt
+                    if right_margin is None
+                    else (1.0 - float(right_margin)) * figure_width_pt
+                ),
+            )
         self.colors = VisualizerConfig.custom_colors
         self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
         self._mesh_artist = None
@@ -334,19 +424,11 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._crosshair_freq_label = None
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
-        self._apply_layout()
+        self.set_layout_profile(profile)
         self._draw_empty()
 
-    def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(
-            left=self.left_margin,
-            right=self.right_margin,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
-
     def _configure_axes(self) -> None:
-        self._apply_layout()
+        self._apply_layout_profile()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Angle (deg)")
@@ -835,9 +917,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         else:
             self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
             self._colorbar_mappable.set_array([])
-            self._colorbar_axes = self.figure.add_axes(
-                [self.right_margin + ISOBAR_COLORBAR_GAP, 0.2, ISOBAR_COLORBAR_WIDTH, 0.71]
-            )
+            self._colorbar_axes = self.figure.add_axes(self._colorbar_bounds())
             self._colorbar = self.figure.colorbar(
                 self._colorbar_mappable,
                 cax=self._colorbar_axes,
@@ -845,6 +925,21 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
         self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
         self._colorbar_state = state
+
+    def _after_layout_profile_applied(self) -> None:
+        if self._colorbar_axes is not None:
+            self._colorbar_axes.set_position(self._colorbar_bounds())
+
+    def _colorbar_bounds(self) -> list[float]:
+        axes_position = self.axes.get_position()
+        gap = figure_point_fraction(self.figure, ISOBAR_COLORBAR_GAP_PT, axis="x")
+        width = figure_point_fraction(self.figure, ISOBAR_COLORBAR_WIDTH_PT, axis="x")
+        return [
+            axes_position.x1 + gap,
+            axes_position.y0,
+            width,
+            axes_position.height,
+        ]
 
     def _image_from_values(
         self,
@@ -1185,12 +1280,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self.trace_filter_action = QAction("Traces", self)
         self.trace_filter_action.setToolTip("Choose visible acoustic load impedance traces")
         self.trace_filter_action.setMenu(self.trace_filter_menu)
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.set_layout_profile(SINGLE_AXIS_LAYOUT)
         self._draw_empty()
 
     def _configure_axes(self) -> None:
@@ -1377,12 +1467,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self.show_phase_action.setCheckable(True)
         self.show_phase_action.setEnabled(False)
         self.show_phase_action.toggled.connect(self._set_phase_visible)
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.set_layout_profile(DUAL_AXIS_LAYOUT)
         self.phase_axes.yaxis.set_label_position("right")
         self.phase_axes.yaxis.tick_right()
         self._draw_empty()
@@ -1746,16 +1831,11 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self._series_labels: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
         self._plot_state = None
         super().__init__(self.figure, "Spinorama", secondary_axes=self.di_axes)
-        self._apply_layout()
+        self.set_layout_profile(SPINORAMA_LAYOUT)
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self._apply_layout_profile()
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
 

@@ -32,14 +32,12 @@ def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> Non
     assert "vertical_spl_db: np.ndarray," in spinorama_block
 
 
-def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
+def test_spinorama_canvas_uses_adaptive_layout_and_external_legend() -> None:
     source = source_text("ui", "plots.py")
     spinorama_block = source[source.index("class SpinoramaCanvas") :]
 
     assert "tight_layout=True" not in spinorama_block
-    assert "subplots_adjust" in spinorama_block
-    assert "left=PLOT_LEFT_MARGIN" in spinorama_block
-    assert "right=PLOT_RIGHT_MARGIN" in spinorama_block
+    assert "set_layout_profile(SPINORAMA_LAYOUT)" in spinorama_block
     assert 'set_label_position("right")' in spinorama_block
     assert "bbox_to_anchor=(0.5, SPINORAMA_LEGEND_BOTTOM)" in spinorama_block
     # Figure coords: an axes-relative drop scales with the axes height.
@@ -53,6 +51,9 @@ def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = source_text("ui", "plots.py")
 
     assert "PLOT_TITLE_PAD = 7" in plot_source
+    assert "class PlotLayoutProfile" in plot_source
+    assert "SINGLE_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
+    assert "DUAL_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
@@ -281,16 +282,15 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "contour_step_db=self.preferences.isobar_contour_step_db" in main_source
 
 
-def test_isobar_canvas_allows_custom_right_margin() -> None:
+def test_isobar_canvas_uses_a_colorbar_aware_adaptive_layout() -> None:
     source = source_text("ui", "plots.py")
 
     assert "left_margin: float | None = None" in source
     assert "right_margin: float | None = None" in source
     assert "show_colorbar: bool = True" in source
-    assert "self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)" in source
-    assert "self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)" in source
-    assert "left=self.left_margin" in source
-    assert "right=self.right_margin" in source
+    assert "profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT" in source
+    assert "self.set_layout_profile(profile)" in source
+    assert "figure_point_fraction" in source
 
 
 def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
@@ -317,6 +317,7 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "BoundaryNorm(boundaries, cmap.N)" in isobar_block
     assert "ScalarMappable(norm=norm, cmap=cmap)" in isobar_block
     assert "self.figure.add_axes" in isobar_block
+    assert "self._colorbar_bounds()" in isobar_block
     assert "cax=self._colorbar_axes" in isobar_block
     assert "ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0" in source
     assert "tick_step_db = max(ISOBAR_COLORBAR_MIN_TICK_STEP_DB, contour_step_db)" in isobar_block
