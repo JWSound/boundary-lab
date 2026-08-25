@@ -6,7 +6,7 @@ from PySide6.QtCore import Slot
 
 from blab.config import ChannelConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
-from blab.physical_model import ExcitationPortKind
+from blab.physical_model import ComponentKind, ExcitationPortKind
 from blab.ui.dialogs import (
     ChannelConfigDialog,
 )
@@ -58,6 +58,39 @@ class ChannelsMixin:
             str(channel_by_component.get(port.component_id, "main"))
             for port in system.excitation_ports
             if port.kind == ExcitationPortKind.NORMAL_VELOCITY
+        )
+
+    def max_spl_channel_names(self) -> tuple[str, ...]:
+        """Voltage-only channels containing electrodynamic components."""
+
+        system = self.project.physical_system
+        if system is None:
+            return ()
+        electrodynamic_component_ids = {
+            component.id
+            for component in system.components
+            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        }
+        channel_by_component = self.project.component_channel_by_id
+        kinds_by_channel: dict[str, set[ExcitationPortKind]] = {}
+        has_transducer_by_channel: dict[str, bool] = {}
+        discovered_order: list[str] = []
+        for port in system.excitation_ports:
+            channel_name = str(channel_by_component.get(port.component_id, "main"))
+            if channel_name not in kinds_by_channel:
+                discovered_order.append(channel_name)
+            kinds_by_channel.setdefault(channel_name, set()).add(port.kind)
+            has_transducer_by_channel[channel_name] = (
+                has_transducer_by_channel.get(channel_name, False)
+                or port.component_id in electrodynamic_component_ids
+            )
+        configured_order = [channel.name for channel in self.channel_configs()]
+        ordered_names = tuple(dict.fromkeys((*configured_order, *discovered_order)))
+        return tuple(
+            name
+            for name in ordered_names
+            if kinds_by_channel.get(name) == {ExcitationPortKind.VOLTAGE}
+            and has_transducer_by_channel.get(name, False)
         )
 
     def discard_channel_config_dialog(self) -> None:

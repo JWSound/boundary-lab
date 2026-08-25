@@ -15,7 +15,7 @@ from typing import Any
 from blab.observation_planes import observation_planes_from_payload
 from blab.ui.project_state import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 8
+PROJECT_SCHEMA_VERSION = 9
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -27,6 +27,7 @@ PROJECT_PAYLOAD_KEYS = (
     "symmetry",
     "source_config_by_name",
     "channel_config_by_name",
+    "max_spl_limits_by_channel",
     "project_preferences",
     "physical_system",
     "component_channel_by_id",
@@ -177,6 +178,7 @@ def _normalize_project_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "symmetry": _normalize_symmetry(payload.get("symmetry", "off")),
         "source_config_by_name": _dict_or_empty(payload.get("source_config_by_name")),
         "channel_config_by_name": _dict_or_empty(payload.get("channel_config_by_name")),
+        "max_spl_limits_by_channel": _dict_or_empty(payload.get("max_spl_limits_by_channel")),
         "component_channel_by_id": {
             str(component_id): str(channel_name)
             for component_id, channel_name in _dict_or_empty(payload.get("component_channel_by_id")).items()
@@ -348,6 +350,7 @@ def build_project_payload(
     stitch_imported_meshes: bool = False,
     symmetry: str = "off",
     channel_config_by_name: dict[str, Any] | None = None,
+    max_spl_limits_by_channel: dict[str, Any] | None = None,
     project_preferences: dict[str, Any] | None = None,
     physical_system: dict[str, Any] | None = None,
     component_channel_by_id: dict[str, str] | None = None,
@@ -361,6 +364,7 @@ def build_project_payload(
         "stitch_exterior_meshes": bool(stitch_imported_meshes),
         "symmetry": _normalize_symmetry(symmetry),
         "channel_config_by_name": channel_config_by_name or {},
+        "max_spl_limits_by_channel": max_spl_limits_by_channel or {},
         "component_channel_by_id": component_channel_by_id or {},
         "observation_planes": [
             plane.to_payload() for plane in observation_planes_from_payload(observation_planes or [])

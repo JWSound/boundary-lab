@@ -127,6 +127,7 @@ class ProjectDocument:
     symmetry: str = "off"
     source_config_by_name: dict[str, dict] = field(default_factory=dict)
     channel_config_by_name: dict[str, dict] = field(default_factory=dict)
+    max_spl_limits_by_channel: dict[str, dict] = field(default_factory=dict)
     project_preferences: ProjectPreferencesState | None = None
     physical_system: PhysicalSystem | None = None
     component_channel_by_id: dict[str, str] = field(default_factory=dict)

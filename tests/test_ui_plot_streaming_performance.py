@@ -14,6 +14,7 @@ from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
 from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window import MainWindow
+from blab.ui.max_spl_plot import MaxSplCanvas
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
 from blab.ui.result_projection import (
     ElectricalImpedanceProjection,
@@ -21,6 +22,7 @@ from blab.ui.result_projection import (
     GroupDelayProjection,
     ImpedanceProjection,
     IsobarProjection,
+    MaxSplProjection,
     PolarResponseProjection,
     VisualizationProjection,
 )
@@ -564,7 +566,8 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         np.asarray(["Sum", "main"]),
         np.ones((2, 2)),
     )
-    plots = [PlotRecorder() for _index in range(8)]
+    maximum = MaxSplProjection(freqs, np.asarray(["main"]), np.full((1, 2), 110.0))
+    plots = [PlotRecorder() for _index in range(9)]
     window = SimpleNamespace(
         _last_completed_visualization_dataset=VisualizationProjection(
             isobar,
@@ -573,6 +576,7 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
             excursion,
             electrical,
             group_delay,
+            maximum,
         ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
@@ -581,14 +585,15 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         on_axis_plot=plots[4],
         group_delay_plot=plots[5],
         excursion_plot=plots[6],
-        spinorama_plot=plots[7],
+        max_spl_plot=plots[7],
+        spinorama_plot=plots[8],
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
     MainWindow.apply_last_completed_comparison(window)
 
-    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1, 1]
-    assert plots[7].calls[0][1] == {
+    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    assert plots[8].calls[0][1] == {
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
@@ -603,6 +608,7 @@ def test_every_chart_panel_gets_the_same_axes_box() -> None:
         OnAxisResponseCanvas(),
         GroupDelayCanvas(),
         ExcursionCanvas(),
+        MaxSplCanvas(),
         SpinoramaCanvas(),
         IsobarCanvas("Horizontal Isobar"),
     )

@@ -47,12 +47,14 @@ class StateSyncMixin:
         self._refresh_mesh_preview()
         self._record_imported_mesh_source_fingerprints()
         self.set_system_config_available(self.has_solver_meshes())
+        self.set_max_spl_available(bool(self.max_spl_channel_names()))
 
     @Slot(str)
     def _on_solve_results_invalidated(self, reason: str) -> None:
         policy = solve_invalidation_policy(reason)
         if policy.clear_solve_results:
             self.clear_plots()
+            self.set_max_spl_available(bool(self.max_spl_channel_names()))
         if policy.clear_comparison_history:
             self.clear_comparison_history()
 

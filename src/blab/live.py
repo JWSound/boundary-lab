@@ -16,7 +16,8 @@ from blab.channel_synthesis import (
     pressure_to_spl,
     synthesize_channel_basis_spl,
 )
-from blab.config import ChannelConfig, SimulationConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, SimulationConfig
+from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
@@ -119,6 +120,39 @@ class LiveSolveDataset:
         spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
         phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
         return freqs, channel_names, spl_db, phase_deg
+
+    def as_raw_channel_on_axis_pressure_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the unweighted equal-voltage channel basis at zero degrees."""
+
+        if not self.results or not self.supports_channel_resynthesis:
+            raise ValueError("No solved channel-basis pressure data available.")
+        ordered = self.ordered_results()
+        first_names = ordered[0].channel_names
+        if first_names is None:
+            raise ValueError("Channel names are unavailable.")
+        channel_names = np.asarray(first_names).astype(str)
+        pressures = np.empty((channel_names.size, len(ordered)), dtype=np.complex64)
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+        if not angles.size:
+            raise ValueError("On-axis pressure is unavailable for this solve.")
+        for frequency_index, result in enumerate(ordered):
+            result_names = None if result.channel_names is None else np.asarray(result.channel_names).astype(str)
+            horizontal = None if result.horizontal_pressure is None else np.asarray(result.horizontal_pressure)
+            if result_names is None or horizontal is None or not np.array_equal(result_names, channel_names):
+                raise ValueError("Solved channel-basis pressure data is inconsistent.")
+            if horizontal.shape != (channel_names.size, angles.size):
+                raise ValueError("Channel-basis pressure dimensions do not match the polar samples.")
+            for channel_index in range(channel_names.size):
+                pressures[channel_index, frequency_index] = complex_reference_pressure(
+                    horizontal[channel_index], angles, 0.0
+                )
+        return (
+            np.asarray([item.freq_hz for item in ordered], dtype=np.float32),
+            channel_names,
+            pressures,
+        )
 
     def _channel_on_axis_complex_pressures(
         self,
@@ -496,7 +530,10 @@ class TransducerMotionDataset:
 
     excitation_channel_names: np.ndarray
     transducer_names: np.ndarray
+    transducer_channel_names: np.ndarray = field(default_factory=lambda: np.asarray([]))
+    transducer_resistance_ohm: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
     results: dict[float, np.ndarray] = field(default_factory=dict)
+    reference_voltages_v: dict[float, float] = field(default_factory=dict)
 
     def add(self, result: SystemFrequencyResult) -> None:
         quantity = next((item for item in result.quantities if item.id == DIAPHRAGM_VELOCITY_ID), None)
@@ -511,6 +548,11 @@ class TransducerMotionDataset:
                 f"Diaphragm velocity has shape {values.shape}, expected {expected_shape}."
             )
         self.results[float(result.freq_hz)] = values.copy()
+        try:
+            reference_voltage_v = float(result.diagnostics["transducer_reference_voltage_v"])
+        except (KeyError, TypeError, ValueError):
+            reference_voltage_v = DEFAULT_CHANNEL_VOLTAGE_V
+        self.reference_voltages_v[float(result.freq_hz)] = reference_voltage_v
 
     def as_excursion_arrays(
         self,
@@ -547,6 +589,59 @@ class TransducerMotionDataset:
             np.asarray(frequencies, dtype=np.float32),
             np.asarray(self.transducer_names).copy(),
             np.vstack(rows).T.astype(np.float32, copy=False),
+        )
+
+    def eligible_max_spl_channel_names(
+        self,
+        voltage_channel_names: frozenset[str],
+    ) -> tuple[str, ...]:
+        """Return voltage-only channels containing electrodynamic components."""
+
+        transducer_channels = np.asarray(self.transducer_channel_names).astype(str)
+        return tuple(
+            name
+            for name in dict.fromkeys(str(value) for value in self.excitation_channel_names.tolist())
+            if name in voltage_channel_names and np.any(transducer_channels == name)
+        )
+
+    def as_max_spl_arrays(
+        self,
+        acoustic: LiveSolveDataset,
+        limits_by_channel: dict[str, MaxSplLimit],
+        voltage_channel_names: frozenset[str],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return isolated channel maximum-SPL curves from the raw solve basis."""
+
+        eligible = set(self.eligible_max_spl_channel_names(voltage_channel_names))
+        selected_limits = {
+            name: limit
+            for name, limit in limits_by_channel.items()
+            if name in eligible and limit.validated().enabled
+        }
+        if not selected_limits:
+            return None
+        frequencies, channel_names, pressure = acoustic.as_raw_channel_on_axis_pressure_arrays()
+        ordered_frequencies = [float(result.freq_hz) for result in acoustic.ordered_results()]
+        if any(frequency not in self.results for frequency in ordered_frequencies):
+            return None
+        velocity = np.stack([self.results[frequency] for frequency in ordered_frequencies], axis=0)
+        reference_voltage = np.asarray(
+            [
+                self.reference_voltages_v.get(frequency, DEFAULT_CHANNEL_VOLTAGE_V)
+                for frequency in ordered_frequencies
+            ],
+            dtype=np.float64,
+        )
+        return calculate_max_spl_curves(
+            frequencies_hz=frequencies,
+            channel_names=channel_names,
+            on_axis_pressure_pa=pressure,
+            excitation_channel_names=self.excitation_channel_names,
+            transducer_channel_names=self.transducer_channel_names,
+            transducer_resistance_ohm=self.transducer_resistance_ohm,
+            diaphragm_velocity_m_per_s=velocity,
+            limits_by_channel=selected_limits,
+            reference_voltage_v=reference_voltage,
         )
 
 

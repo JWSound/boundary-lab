@@ -37,6 +37,8 @@ class FakeView:
         self.polar_exports: list[bool] = []
         self.on_axis_exports: list[bool] = []
         self.balloon: list[bool] = []
+        self.max_spl: list[bool] = []
+        self.max_spl_exports: list[bool] = []
         self.topology_reports: list[object] = []
         self.topology_confirmation = False
 
@@ -75,6 +77,12 @@ class FakeView:
 
     def set_balloon_plot_available(self, available):
         self.balloon.append(available)
+
+    def set_max_spl_available(self, available):
+        self.max_spl.append(available)
+
+    def set_max_spl_export_available(self, available):
+        self.max_spl_exports.append(available)
 
 
 class FakePlots:
@@ -160,6 +168,8 @@ def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> Non
     assert controller.view.polar_exports == [False]
     assert controller.view.on_axis_exports == [False]
     assert controller.view.balloon == [False]
+    assert controller.view.max_spl == [False]
+    assert controller.view.max_spl_exports == [False]
 
 
 @pytest.mark.parametrize(
@@ -180,6 +190,7 @@ def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
         name="Woofer",
         kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
         parameters={
+            "re_ohm": 6.0,
             "physical_driver_orbit_count": 2,
             "bl_n_per_a": 7.0,
             "mmd_kg": 0.015,
@@ -331,3 +342,43 @@ def test_a_cancelled_empty_solve_says_so(controller) -> None:
     )
 
     assert "Solve stopped" in controller.view.status
+
+
+def test_completed_solve_automatically_requests_configured_max_spl(controller) -> None:
+    class CompletedSession:
+        live_dataset = SimpleNamespace(
+            supports_channel_resynthesis=True,
+            has_balloon_data=False,
+        )
+        transducer_motion = SimpleNamespace(
+            eligible_max_spl_channel_names=lambda _channels: ("main",)
+        )
+        voltage_channel_names = frozenset({"main"})
+        solved_system = SimpleNamespace(provenance=SimpleNamespace(solve_kind="exterior_bem"))
+        max_spl_requested = False
+        use_final_isobar_resolution = False
+        final_isobar_plots_rendered = False
+        last_completed_visualization = None
+        solved_count = 1
+
+        @staticmethod
+        def finalize_results(*, status):
+            assert status == "completed"
+
+        @staticmethod
+        def has_solved_data():
+            return True
+
+    project = new_project_document()
+    project.max_spl_limits_by_channel = {"main": {"xmax_mm": 5.0, "pmax_w": 200.0}}
+    session = CompletedSession()
+    controller._session = session
+    controller.session = session
+    controller._project = lambda: project
+
+    controller._on_solve_finished(
+        SolveCompletion(phase=OperationPhase.COMPLETED, solved_count=1, expected_count=1, elapsed_s=1.0)
+    )
+
+    assert session.max_spl_requested is True
+    assert controller.view.max_spl[-1] is True

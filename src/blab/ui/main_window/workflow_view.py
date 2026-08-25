@@ -341,6 +341,12 @@ class WorkflowView(Protocol):
     def set_balloon_plot_available(self, available: bool) -> None:
         """Offer or withdraw the balloon plot entry point."""
 
+    def set_max_spl_available(self, available: bool) -> None:
+        """Offer or withdraw maximum-SPL configuration."""
+
+    def set_max_spl_export_available(self, available: bool) -> None:
+        """Offer or withdraw image export for a calculated maximum-SPL plot."""
+
     def set_polar_export_available(self, available: bool) -> None:
         """Offer or withdraw polar data export."""
 

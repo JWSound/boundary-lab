@@ -13,7 +13,7 @@ Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeake
 - Physical-system editor for exterior BEM, interior FEM, and coupled FEM-BEM-LEM models
 - Prescribed-velocity and linear electrodynamic transducer components
 - Channel controls for level, polarity, delay, and HPF/LPF crossover shaping
-- Live horizontal/vertical directivity, on-axis response, spinorama, and acoustic-load impedance plots
+- Live horizontal/vertical directivity, on-axis response, spinorama, excursion, maximum-SPL, and impedance plots
 - Plot-image, polar-data, on-axis channel-data, and balloon-data export
 - 3D balloon viewer built directly from Fibonacci-sphere solve samples
 - Project save/load with readable, backward-compatible `.blab.json` files

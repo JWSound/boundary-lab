@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa:
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
 from blab.config import ChannelConfig  # noqa: E402
-from blab.physical_model import ExcitationPortKind  # noqa: E402
+from blab.physical_model import ComponentKind, ExcitationPortKind  # noqa: E402
 from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
@@ -77,6 +77,7 @@ PLOT_IDS = {
     "on_axis_frequency_response",
     "group_delay",
     "transducer_excursion",
+    "max_spl",
     "spinorama",
 }
 ISOBAR_IDS = ("horizontal_isobar", "vertical_isobar")
@@ -207,6 +208,17 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
     )
     assert excursion_trace_button.text() == "Traces"
 
+    max_spl_title_bar = main_window.plot_docks["max_spl"].titleBarWidget()
+    max_spl_actions = [button.defaultAction() for button in max_spl_title_bar.tool_buttons]
+    assert main_window.max_spl_plot.calculate_action in max_spl_actions
+    max_spl_button = next(
+        button
+        for button in max_spl_title_bar.tool_buttons
+        if button.defaultAction() is main_window.max_spl_plot.calculate_action
+    )
+    assert max_spl_button.text() == "M"
+    assert "Configure maximum SPL" in max_spl_button.toolTip()
+
     electrical_title_bar = main_window.plot_docks["electrical_impedance"].titleBarWidget()
     electrical_actions = [button.defaultAction() for button in electrical_title_bar.tool_buttons]
     assert main_window.electrical_impedance_plot.show_phase_action in electrical_actions
@@ -231,6 +243,28 @@ def test_prescribed_velocity_channel_detection_uses_physical_excitation_ports(ma
     }
 
     assert main_window.prescribed_velocity_channel_names() == frozenset({"mixed"})
+
+
+def test_max_spl_configuration_channels_are_available_before_solving(main_window) -> None:
+    main_window.project.physical_system = SimpleNamespace(
+        components=(
+            SimpleNamespace(id="component:woofer", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
+            SimpleNamespace(id="component:mixed-driver", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
+            SimpleNamespace(id="component:port", kind=ComponentKind.IDEAL_VELOCITY_SOURCE),
+        ),
+        excitation_ports=(
+            SimpleNamespace(component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:mixed-driver", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:port", kind=ExcitationPortKind.NORMAL_VELOCITY),
+        ),
+    )
+    main_window.project.component_channel_by_id = {
+        "component:woofer": "low",
+        "component:mixed-driver": "mixed",
+        "component:port": "mixed",
+    }
+
+    assert main_window.max_spl_channel_names() == ("low",)
 
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:

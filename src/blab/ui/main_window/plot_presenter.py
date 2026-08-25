@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Slot
 
+from blab.max_spl import max_spl_limits_from_payload, max_spl_limits_payload
 from blab.ui.main_window.plot_controls import contour_controls
 from blab.ui.main_window_widgets import (
     PlotEntry,
 )
+from blab.ui.max_spl_dialog import MaxSplLimitsDialog
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
@@ -120,6 +122,7 @@ class PlotPresenterMixin:
         self.set_polar_export_available(False)
         self.set_on_axis_export_available(False)
         self.set_balloon_plot_available(False)
+        self.set_max_spl_available(False)
         self.refresh_contour_controls()
 
     def apply_last_completed_comparison(self) -> None:
@@ -192,6 +195,14 @@ class PlotPresenterMixin:
                 dataset.excursion.freq_hz,
                 dataset.excursion.transducer_names,
                 dataset.excursion.excursion_mm,
+            )
+        if dataset.max_spl is None:
+            self.max_spl_plot.clear_comparison_plot()
+        else:
+            self.max_spl_plot.set_comparison_plot(
+                dataset.max_spl.freq_hz,
+                dataset.max_spl.channel_names,
+                dataset.max_spl.spl_db,
             )
         self.spinorama_plot.set_comparison_plot(
             response.freq_hz,
@@ -293,6 +304,12 @@ class PlotPresenterMixin:
             transducer_motion=self._solve_session().transducer_motion,
             electrical_impedance=self._solve_session().electrical_impedance,
             acoustic_load_impedance=self._solve_session().acoustic_load_impedance,
+            max_spl_limits=(
+                max_spl_limits_from_payload(self.project.max_spl_limits_by_channel)
+                if self._solve_session().max_spl_requested
+                else None
+            ),
+            voltage_channel_names=self._solve_session().voltage_channel_names,
         )
 
     def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:
@@ -414,6 +431,55 @@ class PlotPresenterMixin:
             excursion.transducer_names,
             excursion.excursion_mm,
         )
+
+    def _update_max_spl_plot(self, dataset: VisualizationProjection) -> None:
+        maximum = dataset.max_spl
+        if maximum is None:
+            if self.max_spl_plot._plot_state is not None:
+                self.max_spl_plot._draw_empty()
+            return
+        self.max_spl_plot.update_plot(
+            maximum.freq_hz,
+            maximum.channel_names,
+            maximum.spl_db,
+        )
+
+    @Slot()
+    def calculate_max_spl(self) -> None:
+        session = self._solve_session()
+        motion = session.transducer_motion
+        channel_names = self.max_spl_channel_names()
+        if not channel_names and motion is not None:
+            channel_names = motion.eligible_max_spl_channel_names(session.voltage_channel_names)
+        if not channel_names:
+            self.warn("Maximum SPL", "No voltage-only electrodynamic channels are available.")
+            return
+        dialog = MaxSplLimitsDialog(
+            channel_names,
+            max_spl_limits_from_payload(self.project.max_spl_limits_by_channel),
+            self,
+        )
+        if not dialog.exec():
+            return
+        limits = dialog.limits()
+        self.project.max_spl_limits_by_channel = max_spl_limits_payload(limits)
+        session.max_spl_requested = any(limit.enabled for limit in limits.values())
+        if motion is None or self.live_dataset is None:
+            self.show_status("Maximum SPL configuration updated")
+            return
+        if not session.max_spl_requested:
+            self.max_spl_plot._draw_empty()
+            self.set_max_spl_export_available(False)
+            self.show_status("Maximum SPL configuration updated; all channels disabled")
+            return
+        dataset = self.prepared_live_dataset()
+        if dataset is None or dataset.max_spl is None:
+            self.warn("Maximum SPL", "Maximum SPL could not be calculated from the current solve.")
+            return
+        self._update_max_spl_plot(dataset)
+        self.set_max_spl_export_available(True)
+        enabled_count = sum(limit.enabled for limit in limits.values())
+        self.show_status(f"Maximum SPL configuration updated: {enabled_count} channel(s) enabled")
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:
         response = dataset.response

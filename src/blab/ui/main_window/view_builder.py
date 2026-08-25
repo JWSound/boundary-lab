@@ -233,6 +233,8 @@ class ViewBuilderMixin:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id in {"acoustic_impedance", "group_delay", "transducer_excursion"}:
                 tool_actions.append(entry.widget.trace_filter_action)
+            elif entry.plot_id == "max_spl":
+                tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,
@@ -456,7 +458,15 @@ class ViewBuilderMixin:
         self.export_on_axis_data_action.setEnabled(available)
 
     def set_plot_exports_available(self, available: bool) -> None:
-        for action in self.export_plot_actions.values():
+        for plot_id, action in self.export_plot_actions.items():
+            action.setEnabled(available and plot_id != "max_spl")
+
+    def set_max_spl_available(self, available: bool) -> None:
+        self.max_spl_plot.calculate_action.setEnabled(available)
+
+    def set_max_spl_export_available(self, available: bool) -> None:
+        action = self.export_plot_actions.get("max_spl")
+        if action is not None:
             action.setEnabled(available)
 
     def set_system_config_available(self, available: bool) -> None:

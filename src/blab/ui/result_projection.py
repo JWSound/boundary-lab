@@ -13,6 +13,7 @@ from blab.live import (
     LiveSolveDataset,
     TransducerMotionDataset,
 )
+from blab.max_spl import MaxSplLimit
 from blab.postprocess import PrepConfig
 
 
@@ -144,6 +145,20 @@ class GroupDelayProjection:
 
 
 @dataclass(frozen=True)
+class MaxSplProjection:
+    freq_hz: np.ndarray
+    channel_names: np.ndarray
+    spl_db: np.ndarray
+
+    def snapshot(self) -> MaxSplProjection:
+        return MaxSplProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            channel_names=np.asarray(self.channel_names).copy(),
+            spl_db=np.asarray(self.spl_db).copy(),
+        )
+
+
+@dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
@@ -151,6 +166,7 @@ class VisualizationProjection:
     excursion: ExcursionProjection | None = None
     electrical_impedance: ElectricalImpedanceProjection | None = None
     group_delay: GroupDelayProjection | None = None
+    max_spl: MaxSplProjection | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
@@ -164,6 +180,7 @@ class VisualizationProjection:
                 else self.electrical_impedance.snapshot()
             ),
             group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
+            max_spl=None if self.max_spl is None else self.max_spl.snapshot(),
         )
 
 
@@ -178,6 +195,8 @@ class ResultProjectionService:
         transducer_motion: TransducerMotionDataset | None = None,
         electrical_impedance: ElectricalImpedanceDataset | None = None,
         acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None,
+        max_spl_limits: dict[str, MaxSplLimit] | None = None,
+        voltage_channel_names: frozenset[str] = frozenset(),
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -214,6 +233,15 @@ class ResultProjectionService:
         group_delay_arrays = dataset.as_group_delay_arrays()
         if group_delay_arrays is not None:
             group_delay_projection = GroupDelayProjection(*group_delay_arrays)
+        max_spl_projection = None
+        if transducer_motion is not None and max_spl_limits is not None:
+            max_spl_arrays = transducer_motion.as_max_spl_arrays(
+                dataset,
+                max_spl_limits,
+                voltage_channel_names,
+            )
+            if max_spl_arrays is not None:
+                max_spl_projection = MaxSplProjection(*max_spl_arrays)
         impedance_projection = ImpedanceProjection(
             freq_hz=arrays["impedance_freq_hz"],
             radiator_names=arrays["impedance_radiator_names"],
@@ -249,4 +277,5 @@ class ResultProjectionService:
             excursion=excursion,
             electrical_impedance=electrical_projection,
             group_delay=group_delay_projection,
+            max_spl=max_spl_projection,
         )

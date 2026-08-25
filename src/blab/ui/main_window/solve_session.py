@@ -46,6 +46,9 @@ class SolveSession:
     #: Physical-system channels whose grouped basis contains voltage ports only.
     voltage_channel_names: frozenset[str] = frozenset()
 
+    #: Whether the user has requested a maximum-SPL projection for this solve.
+    max_spl_requested: bool = False
+
     #: Immutable canonical snapshot of the most recent complete or partial run.
     solved_system: SolvedSystem | None = None
 
@@ -87,6 +90,7 @@ class SolveSession:
         self.electrical_impedance = None
         self.acoustic_load_impedance = None
         self.voltage_channel_names = frozenset()
+        self.max_spl_requested = False
         self.solved_system = None
         self.use_final_isobar_resolution = False
         self.final_isobar_plots_rendered = False

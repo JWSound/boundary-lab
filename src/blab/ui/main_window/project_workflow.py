@@ -183,6 +183,7 @@ class ProjectWorkflowController(QObject):
             symmetry=project.symmetry,
             source_config_by_name=self._inputs.source_config_by_name(),
             channel_config_by_name=self._inputs.channel_config_by_name(),
+            max_spl_limits_by_channel=project.max_spl_limits_by_channel,
             project_preferences=project_preferences.to_payload(),
             physical_system=(
                 None if project.physical_system is None else physical_system_to_dict(project.physical_system)
@@ -336,6 +337,9 @@ class ProjectWorkflowController(QObject):
         channel_config = payload.get("channel_config_by_name", {})
         if not isinstance(channel_config, dict):
             channel_config = {}
+        max_spl_limits = payload.get("max_spl_limits_by_channel", {})
+        if not isinstance(max_spl_limits, dict):
+            max_spl_limits = {}
 
         documents = generator_documents_from_payload(payload.get("generator_documents"))
         active_id = payload.get("active_generator_document_id")
@@ -377,6 +381,7 @@ class ProjectWorkflowController(QObject):
             symmetry=symmetry,
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
+            max_spl_limits_by_channel=max_spl_limits,
             project_preferences=self.current_project_preferences(),
             physical_system=physical_system,
             component_channel_by_id={

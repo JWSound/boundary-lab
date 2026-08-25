@@ -25,6 +25,7 @@ from blab.live import (
     TransducerMotionDataset,
     build_log_frequencies,
 )
+from blab.max_spl import max_spl_limits_from_payload, transducer_rated_resistance_ohm
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
     AcousticRegionKind,
@@ -128,6 +129,8 @@ class SolveWorkflowController(QObject):
         self._view.set_plot_exports_available(False)
         self._view.set_polar_export_available(False)
         self._view.set_on_axis_export_available(False)
+        self._view.set_max_spl_available(False)
+        self._view.set_max_spl_export_available(False)
         self._plots.refresh_contour_controls()
         self._view.show_status(status)
 
@@ -410,24 +413,29 @@ class SolveWorkflowController(QObject):
             if port.kind == ExcitationPortKind.NORMAL_VELOCITY
         }
         self._session.voltage_channel_names = frozenset(voltage_channels - prescribed_velocity_channels)
-        transducer_names = np.asarray(
-            [
-                component.name
-                for component in prepared.request.compiled_system.components
-                if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-            ]
-        )
+        transducers = [
+            component
+            for component in prepared.request.compiled_system.components
+            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+        ]
+        transducer_names = np.asarray([component.name for component in transducers])
         if transducer_names.size:
+            channel_by_component_id = {
+                port.component_id: channel_name
+                for channel_name, port in zip(channel_names, excitation_ports, strict=True)
+            }
             self._session.transducer_motion = TransducerMotionDataset(
                 excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
                 transducer_names=transducer_names,
+                transducer_channel_names=np.asarray(
+                    [channel_by_component_id.get(component.id, "main") for component in transducers]
+                ),
+                transducer_resistance_ohm=np.asarray(
+                    [transducer_rated_resistance_ohm(component.parameters) for component in transducers],
+                    dtype=np.float64,
+                ),
             )
             if prepared.solve_kind != PhysicalSolveKind.INTERIOR_FEM:
-                transducers = [
-                    component
-                    for component in prepared.request.compiled_system.components
-                    if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
-                ]
                 voltage_channel_names = np.asarray(
                     list(
                         dict.fromkeys(
@@ -672,7 +680,21 @@ class SolveWorkflowController(QObject):
             solved_count = session.solved_count
             solve_completed = completion.completed
             interior_fem = (
-                session.result_builder is not None and session.result_builder.provenance.solve_kind == "interior_fem"
+                session.solved_system is not None
+                and session.solved_system.provenance.solve_kind == "interior_fem"
+            )
+            eligible_max_spl_channels = (
+                ()
+                if session.transducer_motion is None
+                else session.transducer_motion.eligible_max_spl_channel_names(session.voltage_channel_names)
+            )
+            configured_max_spl_limits = max_spl_limits_from_payload(
+                self._project().max_spl_limits_by_channel
+            )
+            session.max_spl_requested = solve_completed and not interior_fem and any(
+                configured_max_spl_limits.get(name) is not None
+                and configured_max_spl_limits[name].enabled
+                for name in eligible_max_spl_channels
             )
             session.use_final_isobar_resolution = solve_completed
             if solve_completed and not interior_fem:
@@ -698,6 +720,15 @@ class SolveWorkflowController(QObject):
                 not interior_fem and session.live_dataset.supports_channel_resynthesis
             )
             self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
+            self._view.set_max_spl_available(
+                solve_completed and not interior_fem and bool(eligible_max_spl_channels)
+            )
+            self._view.set_max_spl_export_available(
+                solve_completed
+                and not interior_fem
+                and refreshed_dataset is not None
+                and refreshed_dataset.max_spl is not None
+            )
             self._plots.refresh_contour_controls()
             elapsed_text = f" in {elapsed_s:.1f} s"
             if completion.phase == OperationPhase.CANCELLED:
@@ -712,4 +743,7 @@ class SolveWorkflowController(QObject):
                 self._view.show_status(f"Solve complete: {solved_count} frequencies{elapsed_text}")
         elif completion.phase == OperationPhase.CANCELLED:
             self._view.show_status("Solve stopped")
+        else:
+            self._view.set_max_spl_available(False)
+            self._view.set_max_spl_export_available(False)
         self._plots.refresh_contour_controls()

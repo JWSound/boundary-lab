@@ -107,6 +107,24 @@ millimetres for each transducer, with a **Traces** menu for hiding individual
 components. Excursion uses the same channel gain, polarity, delay, crossover,
 and normalized channel correction as the acoustic response.
 
+The **Maximum SPL** dock is initially empty. Press **M** to configure the
+one-way peak Xmax in millimetres and rated Pmax in watts per physical driver
+for each voltage-only electrodynamic channel. Set both values to zero to
+disable a channel. Boundary Lab saves the ratings in the project, immediately
+refreshes an existing compatible solve, and automatically calculates the
+configured curves after subsequent completed exterior or coupled solves. The
+calculation applies the same voltage to parallel components and uses the most
+restrictive component. Mixed prescribed-velocity/electrodynamic channels are
+omitted.
+
+Maximum SPL is a physical capacity projection from the raw equal-voltage solve
+basis. Channel Voltage, Trim, crossover, polarity, delay, and Normalized
+Channel Correction do not alter it. Pmax is converted to an RMS voltage limit
+using each component's Re (or Re' when semi-inductance is enabled), while Xmax
+is treated as peak and compared with the peak displacement derived from the
+RMS solve basis. The linear model does not include thermal compression,
+amplifier voltage/current limits, or excursion-dependent motor parameters.
+
 The **Acoustic Impedance** dock reports generalized acoustic load impedance in
 N·s/m. Exterior-only prescribed-velocity solves integrate the pressure load on
 each component. Coupled FEM-BEM solves report each electrodynamic transducer's

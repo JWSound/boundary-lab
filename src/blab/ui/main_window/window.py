@@ -56,6 +56,7 @@ from blab.ui.main_window.view_builder import ViewBuilderMixin
 from blab.ui.main_window_widgets import (
     PlotEntry,
 )
+from blab.ui.max_spl_plot import MaxSplCanvas
 from blab.ui.mesh_assembly import (
     MeshAssemblyService,
 )
@@ -426,6 +427,8 @@ class MainWindow(
         self.on_axis_plot = OnAxisResponseCanvas()
         self.group_delay_plot = GroupDelayCanvas()
         self.excursion_plot = ExcursionCanvas()
+        self.max_spl_plot = MaxSplCanvas()
+        self.max_spl_plot.calculate_action.triggered.connect(self.calculate_max_spl)
         self.spinorama_plot = SpinoramaCanvas()
         self.plot_entries = (
             PlotEntry(
@@ -476,6 +479,13 @@ class MainWindow(
                 "transducer_excursion.png",
                 self.excursion_plot,
                 self._update_excursion_plot,
+            ),
+            PlotEntry(
+                "max_spl",
+                "Maximum SPL",
+                "maximum_spl.png",
+                self.max_spl_plot,
+                self._update_max_spl_plot,
             ),
             PlotEntry(
                 "spinorama",
