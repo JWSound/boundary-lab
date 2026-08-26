@@ -47,6 +47,7 @@ export interface LoadedSpeakerPackage {
 }
 
 export interface SourceConfiguration {
+  id: string;
   positionX: number;
   positionHeightM: number;
   positionZ: number;
@@ -100,11 +101,15 @@ export interface Level2SolveResult {
   timings: { assembly_s: number; solve_s: number; field_s: number };
   diagnostics: {
     backend: string;
+    source_count: number;
     node_count: number;
     face_count: number;
     singular_pair_count: number;
     quadrature_order: number;
     singular_order: number;
-    isolated_trace_relative_error: number;
+    isolated_trace_relative_difference: number;
+    minimum_surface_distance_m: number | null;
+    close_pair_count: number;
+    surface_padding_m: number;
   };
 }

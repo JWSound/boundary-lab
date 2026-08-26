@@ -1,5 +1,4 @@
-function deploy_source_transform(request, ::Type{T}) where {T<:AbstractFloat}
-    raw = get_value(request, "source_transform", Dict{String,Any}())
+function deploy_source_transform(raw, ::Type{T}) where {T<:AbstractFloat}
     position = get_value(raw, "position_m", [0.0, 0.0, 0.0])
     length(position) == 3 || error("Deploy source position_m must contain three values.")
     yaw = T(pi) * T(get_value(raw, "yaw_deg", 0.0)) / T(180.0)
@@ -8,6 +7,15 @@ function deploy_source_transform(request, ::Type{T}) where {T<:AbstractFloat}
         cosine=cos(yaw),
         sine=sin(yaw),
     )
+end
+
+function deploy_source_transforms(request, ::Type{T}) where {T<:AbstractFloat}
+    raw_transforms = get_value(request, "source_transforms", nothing)
+    if raw_transforms === nothing
+        raw_transforms = [get_value(request, "source_transform", Dict{String,Any}())]
+    end
+    isempty(raw_transforms) && error("Deploy solve requires at least one source transform.")
+    return [deploy_source_transform(raw, T) for raw in raw_transforms]
 end
 
 function transform_deploy_mesh(mesh::BoundaryMesh{T}, transform) where {T<:AbstractFloat}
@@ -50,7 +58,7 @@ end
 
 function solve_deploy_request_impl(request)
     schema_version = Int(get_value(request, "schema_version", 1))
-    schema_version == 1 || error("Unsupported Deploy solve schema_version $(schema_version).")
+    schema_version in (1, 2) || error("Unsupported Deploy solve schema_version $(schema_version).")
     beat_backend = beat_backend_from_request(request)
     beat_backend in (:cuda, :cpu) || error("Deploy Level 2 currently supports BEAT CUDA or CPU.")
 
@@ -68,7 +76,9 @@ function solve_deploy_request_impl(request)
         String(request["mesh_file"]),
         FloatType(get_value(request, "mesh_scale_factor", 1.0)),
     )
-    mesh = transform_deploy_mesh(package_mesh, deploy_source_transform(request, FloatType))
+    source_transforms = deploy_source_transforms(request, FloatType)
+    source_meshes = [transform_deploy_mesh(package_mesh, transform) for transform in source_transforms]
+    mesh = combine_boundary_meshes(source_meshes).mesh
     q_neumann = deploy_complex_vector(request["boundary_neumann"], FloatType)
     length(q_neumann) == length(mesh.faces) || error(
         "Deploy boundary trace contains $(length(q_neumann)) faces, but the mesh contains $(length(mesh.faces)).",
@@ -101,6 +111,7 @@ function solve_deploy_request_impl(request)
         frequency_hz=frequency,
         node_count=length(mesh.vertices),
         face_count=length(mesh.faces),
+        source_count=length(source_meshes),
         observation_count=length(observation_points),
     )
 
@@ -175,9 +186,12 @@ function solve_deploy_request_impl(request)
             )
         end
         spl_db = pressure_to_spl(field_pressure, FloatType)
-        isolated_trace_relative_error = Float32(
+        isolated_trace_relative_difference = Float32(
             norm(pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
         )
+        proximity = get_value(request, "proximity", Dict{String,Any}())
+        proximity_pairs = get_value(proximity, "pairs", Any[])
+        close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
         emit_event(
             "result";
             result=Dict(
@@ -196,12 +210,16 @@ function solve_deploy_request_impl(request)
                 ),
                 "diagnostics" => Dict(
                     "backend" => String(beat_backend),
+                    "source_count" => length(source_meshes),
                     "node_count" => length(mesh.vertices),
                     "face_count" => length(mesh.faces),
                     "singular_pair_count" => singular_cache.pair_count,
                     "quadrature_order" => quadrature_order,
                     "singular_order" => singular_order,
-                    "isolated_trace_relative_error" => isolated_trace_relative_error,
+                    "isolated_trace_relative_difference" => isolated_trace_relative_difference,
+                    "minimum_surface_distance_m" => get_value(proximity, "minimum_surface_distance_m", nothing),
+                    "close_pair_count" => close_pair_count,
+                    "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.002)),
                 ),
             ),
         )

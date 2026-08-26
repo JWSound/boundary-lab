@@ -34,10 +34,26 @@ export function PackageCard({ pkg, onOpen }: { pkg: LoadedSpeakerPackage; onOpen
   );
 }
 
-export function SceneTree({ pkg }: { pkg: LoadedSpeakerPackage }) {
+export function SceneTree({
+  pkg,
+  sources,
+  selectedId,
+  onSelect,
+}: {
+  pkg: LoadedSpeakerPackage;
+  sources: SourceConfiguration[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
   return (
     <div className="scene-tree">
-      <div className="tree-row selected"><Speaker size={15} /><span>{pkg.manifest.name}</span><em>SUB</em></div>
+      {sources.map((source, index) => (
+        <button
+          key={source.id}
+          className={`tree-row tree-button ${selectedId === source.id ? "selected" : ""}`}
+          onClick={() => onSelect(source.id)}
+        ><Speaker size={15} /><span>{pkg.manifest.name} {index + 1}</span><em>SUB</em></button>
+      ))}
       <div className="tree-row"><Grid3X3 size={15} /><span>Audience plane</span></div>
     </div>
   );
@@ -75,27 +91,31 @@ export function NumberField({
   value,
   unit,
   step,
+  minimum,
   onChange,
 }: {
   label: string;
   value: number;
   unit: string;
   step: number;
+  minimum?: number;
   onChange: (value: number) => void;
 }) {
   return (
     <label className="control-row number-row">
       <span>{label}</span>
-      <div><input type="number" value={value} step={step} onChange={(event) => onChange(Number(event.target.value))} /><em>{unit}</em></div>
+      <div><input type="number" value={value} min={minimum} step={step} onChange={(event) => onChange(minimum === undefined ? Number(event.target.value) : Math.max(minimum, Number(event.target.value)))} /><em>{unit}</em></div>
     </label>
   );
 }
 
 export function SourceInspector({
   config,
+  minimumHeightM,
   onChange,
 }: {
   config: SourceConfiguration;
+  minimumHeightM: number;
   onChange: (next: SourceConfiguration) => void;
 }) {
   const set = <K extends keyof SourceConfiguration>(key: K, value: SourceConfiguration[K]) => onChange({ ...config, [key]: value });
@@ -104,7 +124,7 @@ export function SourceInspector({
       <SectionHeader icon={CircleDot} title="Placement" />
       <div className="inspector-section two-column-fields">
         <NumberField label="X" value={config.positionX} unit="m" step={0.1} onChange={(value) => set("positionX", value)} />
-        <NumberField label="Height" value={config.positionHeightM} unit="m" step={0.1} onChange={(value) => set("positionHeightM", value)} />
+        <NumberField label="Height" value={config.positionHeightM} unit="m" step={0.1} minimum={minimumHeightM} onChange={(value) => set("positionHeightM", value)} />
         <NumberField label="Depth" value={config.positionZ} unit="m" step={0.1} onChange={(value) => set("positionZ", value)} />
         <NumberField label="Yaw" value={config.yawDeg} unit="°" step={0.5} onChange={(value) => set("yawDeg", value)} />
       </div>
@@ -137,7 +157,7 @@ export function ObservationInspector({
       <span><Grid3X3 size={14} /> Audience plane</span>
       <NumberField label="Width" value={value.widthM} unit="m" step={1} onChange={(next) => set("widthM", next)} />
       <NumberField label="Depth" value={value.depthM} unit="m" step={1} onChange={(next) => set("depthM", next)} />
-      <NumberField label="Height" value={value.heightM} unit="m" step={0.1} onChange={(next) => set("heightM", next)} />
+      <NumberField label="Height" value={value.heightM} unit="m" step={0.1} minimum={0} onChange={(next) => set("heightM", next)} />
     </div>
   );
 }

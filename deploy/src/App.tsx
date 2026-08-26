@@ -30,19 +30,37 @@ import {
   buildPatternLookup,
   computeFieldFrame,
   fieldFrameFromSpl,
+  minimumSourceHeightM,
   nearestFrequencyIndex,
 } from "./model/field";
 import type { Fidelity, FieldFrame, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "./model/types";
 
-const defaultSource: SourceConfiguration = {
-  positionX: 0,
-  positionHeightM: 0.4,
-  positionZ: 0,
-  yawDeg: 0,
-  levelDb: -3,
-  delayMs: 0,
-  polarity: 1,
-};
+function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
+  const centerSpacingM = pkg.boundsM[0] + 2;
+  const positionHeightM = minimumSourceHeightM(pkg);
+  return [
+    {
+      id: "subwoofer-1",
+      positionX: -centerSpacingM / 2,
+      positionHeightM,
+      positionZ: 0,
+      yawDeg: 0,
+      levelDb: -3,
+      delayMs: 0,
+      polarity: 1,
+    },
+    {
+      id: "subwoofer-2",
+      positionX: centerSpacingM / 2,
+      positionHeightM,
+      positionZ: 0,
+      yawDeg: 0,
+      levelDb: -3,
+      delayMs: 0,
+      polarity: 1,
+    },
+  ];
+}
 
 const defaultObservation: ObservationPlane = {
   widthM: 24,
@@ -97,7 +115,7 @@ function FidelitySwitcher({
 
 export function App() {
   const [pkg, setPackage] = useState<LoadedSpeakerPackage>(() => createDemoPackage());
-  const [sourceConfig, setSourceConfig] = useState(defaultSource);
+  const [sourceConfigs, setSourceConfigs] = useState<SourceConfiguration[]>(() => defaultSources(pkg));
   const [observation, setObservation] = useState(defaultObservation);
   const [frequencyIndex, setFrequencyIndex] = useState(() => nearestFrequencyIndex(pkg, 80));
   const [fidelity, setFidelity] = useState<Fidelity>("pattern");
@@ -118,18 +136,21 @@ export function App() {
     [pkg],
   );
   const sortedPosition = Math.max(0, sortedFrequencyIndices.indexOf(frequencyIndex));
-  const source = useMemo(() => buildSourceInstance(sourceConfig), [sourceConfig]);
+  const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
+  const selectedSourceIndex = Math.max(0, sourceConfigs.findIndex((source) => source.id === selectedInstance));
+  const selectedSource = sourceConfigs[selectedSourceIndex];
+  const sourceMinimumHeightM = minimumSourceHeightM(pkg);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
   const patternField = useMemo(
-    () => computeFieldFrame(pkg, source, sourceConfig, observation, frequencyIndex, lookup),
-    [pkg, source, sourceConfig, observation, frequencyIndex, lookup],
+    () => computeFieldFrame(pkg, sources, sourceConfigs, observation, frequencyIndex, lookup),
+    [pkg, sources, sourceConfigs, observation, frequencyIndex, lookup],
   );
   const currentSolveKey = useMemo(() => JSON.stringify({
     package: pkg.id,
     frequency: pkg.frequenciesHz[frequencyIndex],
-    source: sourceConfig,
+    sources: sourceConfigs,
     observation,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfig, observation]);
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observation]);
   const field = fidelity === "boundary" && boundaryField && boundarySolveKey === currentSolveKey
     ? boundaryField
     : patternField;
@@ -139,6 +160,8 @@ export function App() {
   const applyPackage = (next: LoadedSpeakerPackage) => {
     solveGeneration.current += 1;
     setPackage(next);
+    setSourceConfigs(defaultSources(next));
+    setSelectedInstance("subwoofer-1");
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
     setFidelity("pattern");
     setBoundaryField(null);
@@ -191,14 +214,14 @@ export function App() {
   const saveProject = async () => {
     const project = JSON.stringify({
       schema: "boundary-lab-deploy-project",
-      schema_version: 1,
+      schema_version: 2,
       name: "S218BP Subwoofer Study",
       package: {
         id: pkg.id,
         name: pkg.manifest.name,
         source_file: pkg.sourcePath,
       },
-      source: sourceConfig,
+      sources: sourceConfigs,
       observation_plane: observation,
       selected_frequency_hz: pkg.frequenciesHz[frequencyIndex],
       requested_fidelity: fidelity,
@@ -229,7 +252,7 @@ export function App() {
         packagePath: pkg.sourcePath,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
-        source: sourceConfig,
+        sources: sourceConfigs,
         observation,
       });
       if (generation !== solveGeneration.current) return;
@@ -245,7 +268,15 @@ export function App() {
       setSolveMessage("Level 2 solve failed");
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [currentSolveKey, frequencyIndex, observation, pkg.frequenciesHz, pkg.sourcePath, sourceConfig]);
+  }, [currentSolveKey, frequencyIndex, observation, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
+
+  const updateSelectedSource = (next: SourceConfiguration) => {
+    const grounded = {
+      ...next,
+      positionHeightM: Math.max(sourceMinimumHeightM, next.positionHeightM),
+    };
+    setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
+  };
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
@@ -290,14 +321,14 @@ export function App() {
             <SectionHeader icon={Import} title="Speaker package" action={<button className="text-button" onClick={openPackage}>Open</button>} />
             <div className="panel-content"><PackageCard pkg={pkg} onOpen={openPackage} /></div>
             <SectionHeader icon={Speaker} title="Scene objects" />
-            <SceneTree pkg={pkg} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={setSelectedInstance} />
           </>
         ) : (
           <>
             <SectionHeader icon={Speaker} title="Scene hierarchy" />
-            <SceneTree pkg={pkg} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={setSelectedInstance} />
             <div className="scene-summary">
-              <span>Subwoofer sources</span><strong>1</strong>
+              <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
               <span>Excitation ports</span><strong>{pkg.manifest.excitation_port_ids.length}</strong>
             </div>
@@ -308,7 +339,7 @@ export function App() {
       <section className="viewport">
         <SceneView
           pkg={pkg}
-          source={source}
+          sources={sources}
           observation={observation}
           field={field}
           selectedInstance={selectedInstance}
@@ -335,10 +366,10 @@ export function App() {
       <aside className="right-panel panel">
         <div className="inspector-heading">
           <div className="object-icon"><Speaker size={19} /></div>
-          <div><small>SELECTED OBJECT</small><strong>{pkg.manifest.name}</strong><span>Subwoofer source</span></div>
+          <div><small>SELECTED OBJECT</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
           <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
         </div>
-        <SourceInspector config={sourceConfig} onChange={setSourceConfig} />
+        <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
       </aside>
 
       <section className="analysis-drawer">
@@ -360,7 +391,7 @@ export function App() {
             <div><span>Average</span><strong>{field.averageDb.toFixed(1)}<small> dB</small></strong></div>
             <div><span>Peak</span><strong>{field.maximumDb.toFixed(1)}<small> dB</small></strong></div>
             <div><span>P10–P90</span><strong>{field.spreadDb.toFixed(1)}<small> dB</small></strong></div>
-            <div><span>Sources</span><strong>1<small>{boundaryCurrent ? " BEM" : " live"}</small></strong></div>
+            <div><span>Sources</span><strong>{sourceConfigs.length}<small>{boundaryCurrent ? " BEM" : " live"}</small></strong></div>
           </div>
           <div className="legend-block">
             <div className="legend-title"><span>SPL</span></div>

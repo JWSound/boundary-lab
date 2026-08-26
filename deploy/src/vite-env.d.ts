@@ -10,7 +10,7 @@ interface DesktopLevel2SolveRequest {
   packagePath: string;
   frequencyHz: number;
   backend: "cuda";
-  source: import("./model/types").SourceConfiguration;
+  sources: import("./model/types").SourceConfiguration[];
   observation: import("./model/types").ObservationPlane;
 }
 

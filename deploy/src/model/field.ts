@@ -45,11 +45,22 @@ export function fieldFrameFromSpl(
 
 export function buildSourceInstance(config: SourceConfiguration): SpeakerInstance {
   return {
-    id: "subwoofer-1",
+    id: config.id,
     position: [config.positionX, config.positionHeightM, config.positionZ],
     pitchDeg: 0,
     yawDeg: config.yawDeg,
   };
+}
+
+export const SOURCE_SURFACE_PADDING_M = 0.002;
+
+export function minimumSourceHeightM(pkg: LoadedSpeakerPackage): number {
+  if (!pkg.mesh) return pkg.boundsM[2] / 2 + SOURCE_SURFACE_PADDING_M;
+  let maximumPackageZ = -Infinity;
+  for (let index = 2; index < pkg.mesh.positions.length; index += 3) {
+    maximumPackageZ = Math.max(maximumPackageZ, pkg.mesh.positions[index]);
+  }
+  return Math.max(0, maximumPackageZ) + SOURCE_SURFACE_PADDING_M;
 }
 
 export function nearestFrequencyIndex(pkg: LoadedSpeakerPackage, targetHz: number): number {
@@ -123,8 +134,8 @@ function lookupPattern(lookup: PatternLookup, x: number, y: number, z: number): 
 
 export function computeFieldFrame(
   pkg: LoadedSpeakerPackage,
-  source: SpeakerInstance,
-  config: SourceConfiguration,
+  sources: SpeakerInstance[],
+  configs: SourceConfiguration[],
   observation: ObservationPlane,
   frequencyIndex: number,
   lookup: PatternLookup,
@@ -133,13 +144,22 @@ export function computeFieldFrame(
   const values = new Float32Array(pointCount);
   const frequency = pkg.frequenciesHz[frequencyIndex];
   const wavenumber = (2 * Math.PI * frequency) / pkg.manifest.medium.sound_speed_m_per_s;
-  const level = Math.pow(10, config.levelDb / 20) * config.polarity;
-  const drivePhase = 2 * Math.PI * frequency * config.delayMs / 1000;
-  const driveReal = level * Math.cos(drivePhase);
-  const driveImag = level * Math.sin(drivePhase);
-  const inverseRotation = new Quaternion()
-    .setFromEuler(new Euler(MathUtils.degToRad(source.pitchDeg), MathUtils.degToRad(source.yawDeg), 0, "YXZ"))
-    .invert();
+  if (sources.length !== configs.length || sources.length === 0) {
+    throw new Error("Pattern field requires matching non-empty source instances and configurations.");
+  }
+  const sourceData = sources.map((source, index) => {
+    const config = configs[index];
+    const level = Math.pow(10, config.levelDb / 20) * config.polarity;
+    const drivePhase = 2 * Math.PI * frequency * config.delayMs / 1000;
+    return {
+      source,
+      driveReal: level * Math.cos(drivePhase),
+      driveImag: level * Math.sin(drivePhase),
+      inverseRotation: new Quaternion()
+        .setFromEuler(new Euler(MathUtils.degToRad(source.pitchDeg), MathUtils.degToRad(source.yawDeg), 0, "YXZ"))
+        .invert(),
+    };
+  });
   const direction = new Vector3();
   const sorted: number[] = [];
   let sum = 0;
@@ -154,29 +174,31 @@ export function computeFieldFrame(
       const worldY = observation.heightM;
       let totalReal = 0;
       let totalImag = 0;
-      direction.set(
-        worldX - source.position[0],
-        worldY - source.position[1],
-        worldZ - source.position[2],
-      );
-      const distance = Math.max(0.02, direction.length());
-      direction.multiplyScalar(1 / distance).applyQuaternion(inverseRotation);
-      // Scene X/Y/Z -> package X/Y/Z: X right, package Y forward, package Z opposite scene up.
-      const [sampleReal, sampleImag, referenceRadius] = lookupPattern(
-        lookup,
-        direction.x,
-        direction.z,
-        -direction.y,
-      );
-      if (distance < referenceRadius) clippedNearFieldPoints += 1;
-      const scale = referenceRadius / distance;
-      const propagationPhase = wavenumber * (distance - referenceRadius);
-      const propagationReal = Math.cos(propagationPhase) * scale;
-      const propagationImag = Math.sin(propagationPhase) * scale;
-      const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
-      const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
-      totalReal = fieldReal * driveReal - fieldImag * driveImag;
-      totalImag = fieldReal * driveImag + fieldImag * driveReal;
+      for (const sourceDatum of sourceData) {
+        direction.set(
+          worldX - sourceDatum.source.position[0],
+          worldY - sourceDatum.source.position[1],
+          worldZ - sourceDatum.source.position[2],
+        );
+        const distance = Math.max(0.02, direction.length());
+        direction.multiplyScalar(1 / distance).applyQuaternion(sourceDatum.inverseRotation);
+        // Scene X/Y/Z -> package X/Y/Z: X right, package Y forward, package Z opposite scene up.
+        const [sampleReal, sampleImag, referenceRadius] = lookupPattern(
+          lookup,
+          direction.x,
+          direction.z,
+          -direction.y,
+        );
+        if (distance < referenceRadius) clippedNearFieldPoints += 1;
+        const scale = referenceRadius / distance;
+        const propagationPhase = wavenumber * (distance - referenceRadius);
+        const propagationReal = Math.cos(propagationPhase) * scale;
+        const propagationImag = Math.sin(propagationPhase) * scale;
+        const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
+        const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
+        totalReal += fieldReal * sourceDatum.driveReal - fieldImag * sourceDatum.driveImag;
+        totalImag += fieldReal * sourceDatum.driveImag + fieldImag * sourceDatum.driveReal;
+      }
       const magnitude = Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag));
       const spl = 20 * Math.log10(magnitude / PRESSURE_REFERENCE_PA);
       const index = row * observation.columns + column;

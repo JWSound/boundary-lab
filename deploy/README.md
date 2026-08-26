@@ -22,20 +22,22 @@ npm start
 
 - Opens Boundary Lab speaker-package schema v1 `.blabsp` archives.
 - Reads the package manifest, complex spherical pressure, frequency order, excitation shape, and exterior Gmsh surface.
-- Opens new desktop projects with the coarse `S218BP_LOD.blabsp` package placed as a single source.
+- Opens new desktop projects with two coarse `S218BP_LOD.blabsp` cabinets separated by a 2 m surface gap.
 - Provides source position, yaw, level, delay, and polarity controls without line-array layout concepts.
 - Complex-sums Level 1 pattern pressure on an editable audience plane using Boundary Lab's `exp(-i omega t)` convention.
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
 - Reports average, peak, and P10-P90 coverage spread while the scene changes.
-- Runs an explicit single-frequency Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
+- Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
+- Keeps cabinet geometry and audience planes above the ground plane and reserves 2 mm between cabinet surfaces.
+- Uses a triangle BVH to measure exact inter-cabinet surface spacing before a solve.
 - Saves the editable scene as a readable `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
 Boundary fidelity is available in the desktop app for Level 2 packages loaded from disk. Coupled fidelity remains unavailable, and browser-only sessions retain the Level 1 preview.
 
-The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The initial slice is free-field and supports one fixed-source package at an exact exported frequency.
+The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice is free-field, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
 
 ## Verification
 
@@ -50,4 +52,4 @@ npm run test:level2
 
 ## Next solver milestone
 
-Extend the Level 2 path with multiple manually placed cabinets, close-pair detection and correction quadrature, followed by a rigid half-space ground image.
+Use the BVH candidates to apply selective close-pair correction quadrature, followed by a rigid half-space ground image.

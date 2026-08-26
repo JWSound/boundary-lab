@@ -173,6 +173,7 @@ button { color: inherit; }
 
 .scene-tree { padding: 7px 8px; }
 .tree-row { height: 31px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 5px; color: #909991; font-size: 10px; }
+.tree-button { width: 100%; border: 0; background: transparent; text-align: left; cursor: pointer; }
 .tree-row.selected { color: #e0e6dc; background: #242a25; }
 .tree-row em { margin-left: auto; color: var(--muted-2); font: 500 8px/1 "Cascadia Mono", "Consolas", monospace; font-style: normal; }
 .tree-children { margin: 2px 0 4px 14px; padding-left: 8px; border-left: 1px solid #303630; }

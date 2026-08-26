@@ -172,7 +172,7 @@ function createWindow() {
           const input = document.querySelector('.right-panel .number-row input');
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
           if (!input || !setter) return resolve({ initialRevision, moved: false });
-          setter.call(input, '1');
+          setter.call(input, '-1');
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
           const deadline = Date.now() + 30000;
@@ -181,7 +181,7 @@ function createWindow() {
             const revision = Number(statusPanel?.getAttribute('data-solve-revision') || 0);
             const error = document.querySelector('.error-toast span')?.textContent || '';
             if ((status.includes('Boundary solution') && revision > initialRevision) || error || Date.now() >= deadline) {
-              resolve({ initialRevision, revision, moved: input.value === '1' && revision > initialRevision, status, error });
+              resolve({ initialRevision, revision, moved: input.value === '-1' && revision > initialRevision, status, error });
             } else setTimeout(check, 50);
           };
           check();
@@ -194,6 +194,7 @@ function createWindow() {
         packageName: document.querySelector('.package-name')?.textContent,
         packageSource: document.querySelector('.package-subtitle')?.textContent,
         metricCount: document.querySelectorAll('.metrics-grid > div').length,
+        sourceCount: document.querySelectorAll('.scene-tree .tree-button').length,
         activeFidelity: document.querySelector('.fidelity-switcher button.active span')?.textContent,
         solveButtonEnabled: !document.querySelector('.primary-button')?.disabled,
         solveButtonLabel: document.querySelector('.primary-button')?.textContent?.trim(),

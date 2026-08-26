@@ -18,7 +18,7 @@ import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstanc
 
 interface SceneViewProps {
   pkg: LoadedSpeakerPackage;
-  source: SpeakerInstance;
+  sources: SpeakerInstance[];
   observation: ObservationPlane;
   field: FieldFrame;
   selectedInstance: string | null;
@@ -177,12 +177,15 @@ function AcousticScene(props: SceneViewProps) {
       />
       <directionalLight position={[9, 5, 10]} intensity={0.85} color="#acc7d2" />
       <group onPointerMissed={() => props.onSelectInstance(null)}>
-        <SpeakerGeometry
-          pkg={props.pkg}
-          instance={props.source}
-          selected={props.selectedInstance === props.source.id}
-          onSelect={() => props.onSelectInstance(props.source.id)}
-        />
+        {props.sources.map((source) => (
+          <SpeakerGeometry
+            key={source.id}
+            pkg={props.pkg}
+            instance={source}
+            selected={props.selectedInstance === source.id}
+            onSelect={() => props.onSelectInstance(source.id)}
+          />
+        ))}
       </group>
       <FieldPlane observation={props.observation} field={props.field} />
       <gridHelper args={[50, 50, "#303831", "#242a25"]} position={[0, 0, 12]} />

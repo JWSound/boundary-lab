@@ -35,6 +35,7 @@ assert.equal(speaker.pressure.real.length, speaker.pressure.imag.length);
 assert.ok(speaker.mesh?.indices.length > 0);
 const frequencyIndex = nearestFrequencyIndex(speaker, 80);
 const sourceConfig = {
+  id: "subwoofer-1",
   positionX: 0,
   positionHeightM: 0.4,
   positionZ: 0,
@@ -47,8 +48,8 @@ const source = buildSourceInstance(sourceConfig);
 const lookup = buildPatternLookup(speaker, frequencyIndex);
 const field = computeFieldFrame(
   speaker,
-  source,
-  sourceConfig,
+  [source],
+  [sourceConfig],
   { widthM: 12, depthM: 12, nearM: 2, heightM: 1.2, columns: 24, rows: 20 },
   frequencyIndex,
   lookup,

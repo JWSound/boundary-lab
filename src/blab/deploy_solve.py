@@ -12,14 +12,19 @@ from typing import Any
 
 import numpy as np
 
+from blab.deploy_geometry import minimum_surface_distance, transform_package_points
 from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
-DEPLOY_SOLVE_SCHEMA_VERSION = 1
+DEPLOY_SOLVE_SCHEMA_VERSION = 2
+SOURCE_SURFACE_PADDING_M = 0.002
+CLOSE_PAIR_DISTANCE_M = 0.05
+GROUND_TOLERANCE_M = 1e-6
 
 
 @dataclass(frozen=True)
 class DeploySourcePlacement:
+    id: str
     position_x_m: float
     position_height_m: float
     position_z_m: float
@@ -36,6 +41,7 @@ class DeploySourcePlacement:
         if polarity not in (-1, 1):
             raise ValueError("Deploy source polarity must be -1 or +1.")
         values = cls(
+            id=str(raw.get("id", "")).strip(),
             position_x_m=float(raw.get("positionX", 0.0)),
             position_height_m=float(raw.get("positionHeightM", 0.0)),
             position_z_m=float(raw.get("positionZ", 0.0)),
@@ -44,7 +50,19 @@ class DeploySourcePlacement:
             delay_ms=float(raw.get("delayMs", 0.0)),
             polarity=polarity,
         )
-        if not all(math.isfinite(value) for value in values.__dict__.values()):
+        if not values.id:
+            raise ValueError("Deploy source id must not be empty.")
+        if not all(
+            math.isfinite(value)
+            for value in (
+                values.position_x_m,
+                values.position_height_m,
+                values.position_z_m,
+                values.yaw_deg,
+                values.level_db,
+                values.delay_ms,
+            )
+        ):
             raise ValueError("Deploy source values must be finite.")
         return values
 
@@ -81,6 +99,8 @@ class DeployObservationPlane:
             raise ValueError("Deploy observation plane must contain at least two rows and columns.")
         if value.columns * value.rows > 250_000:
             raise ValueError("Deploy observation plane exceeds the 250,000 point limit.")
+        if value.height_m < 0.0:
+            raise ValueError("Deploy observation planes cannot be placed below the ground plane.")
         return value
 
     def points(self) -> np.ndarray:
@@ -97,7 +117,7 @@ class DeployObservationPlane:
 
 
 def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple[Path, dict[str, Any]]:
-    """Validate a renderer request and stage one fixed-source package for BEAT."""
+    """Validate a renderer request and stage fixed-source instances for BEAT."""
 
     if not isinstance(payload, dict):
         raise ValueError("Deploy solve request must be an object.")
@@ -121,7 +141,17 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     if abs(frequency_hz - requested_frequency) > tolerance_hz:
         raise ValueError("Deploy Level 2 initially requires an exact exported package frequency.")
 
-    source = DeploySourcePlacement.from_payload(payload.get("source"))
+    raw_sources = payload.get("sources")
+    if raw_sources is None and payload.get("source") is not None:
+        raw_sources = [{"id": "subwoofer-1", **payload["source"]}]
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ValueError("Deploy solve requires at least one source.")
+    if len(raw_sources) > 16:
+        raise ValueError("Deploy solve supports at most 16 sources.")
+    sources = [DeploySourcePlacement.from_payload(raw) for raw in raw_sources]
+    source_ids = [source.id for source in sources]
+    if len(set(source_ids)) != len(source_ids):
+        raise ValueError("Deploy source ids must be unique.")
     observation = DeployObservationPlane.from_payload(payload.get("observation"))
     work_path = Path(work_dir)
     work_path.mkdir(parents=True, exist_ok=True)
@@ -157,10 +187,63 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     if pressure.shape[1] != normal.shape[1]:
         raise ValueError("Fixed-source pressure and Neumann traces have different excitation counts.")
 
-    phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-    gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
-    q_neumann = np.asarray(normal[frequency_index, 0] * gain, dtype=np.complex64)
-    reference_pressure = np.asarray(pressure[frequency_index, 0] * gain, dtype=np.complex64)
+    transformed_sources = [
+        transform_package_points(
+            points,
+            position_x_m=source.position_x_m,
+            position_height_m=source.position_height_m,
+            position_z_m=source.position_z_m,
+            yaw_deg=source.yaw_deg,
+        )
+        for source in sources
+    ]
+    for source, transformed in zip(sources, transformed_sources, strict=True):
+        minimum_y = float(np.min(transformed[:, 1]))
+        if minimum_y < -GROUND_TOLERANCE_M:
+            raise ValueError(
+                f"Deploy source {source.id!r} extends {abs(minimum_y):.6f} m below the ground plane."
+            )
+
+    proximity_pairs: list[dict[str, Any]] = []
+    minimum_surface_distance_m: float | None = None
+    for first_index in range(len(sources)):
+        for second_index in range(first_index + 1, len(sources)):
+            distance = minimum_surface_distance(
+                transformed_sources[first_index],
+                triangles,
+                transformed_sources[second_index],
+                triangles,
+            )
+            minimum_surface_distance_m = (
+                distance.distance_m
+                if minimum_surface_distance_m is None
+                else min(minimum_surface_distance_m, distance.distance_m)
+            )
+            pair = {
+                "source_a": sources[first_index].id,
+                "source_b": sources[second_index].id,
+                "distance_m": distance.distance_m,
+                "face_a": distance.face_a,
+                "face_b": distance.face_b,
+                "close": distance.distance_m <= CLOSE_PAIR_DISTANCE_M,
+            }
+            proximity_pairs.append(pair)
+            if distance.distance_m + GROUND_TOLERANCE_M < SOURCE_SURFACE_PADDING_M:
+                raise ValueError(
+                    f"Deploy sources {pair['source_a']!r} and {pair['source_b']!r} have "
+                    f"{distance.distance_m * 1000.0:.3f} mm surface spacing; at least "
+                    f"{SOURCE_SURFACE_PADDING_M * 1000.0:.1f} mm is required."
+                )
+
+    q_parts: list[np.ndarray] = []
+    reference_parts: list[np.ndarray] = []
+    for source in sources:
+        phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
+        gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+        q_parts.append(np.asarray(normal[frequency_index, 0] * gain, dtype=np.complex64))
+        reference_parts.append(np.asarray(pressure[frequency_index, 0] * gain, dtype=np.complex64))
+    q_neumann = np.concatenate(q_parts)
+    reference_pressure = np.concatenate(reference_parts)
     if not np.all(np.isfinite(q_neumann)) or not np.all(np.isfinite(reference_pressure)):
         raise ValueError("Fixed-source boundary traces contain non-finite values.")
 
@@ -175,10 +258,14 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         "frequency_hz": frequency_hz,
         "mesh_file": str(staged_mesh),
         "mesh_scale_factor": 1.0,
-        "source_transform": {
-            "position_m": [source.position_x_m, source.position_height_m, source.position_z_m],
-            "yaw_deg": source.yaw_deg,
-        },
+        "source_transforms": [
+            {
+                "id": source.id,
+                "position_m": [source.position_x_m, source.position_height_m, source.position_z_m],
+                "yaw_deg": source.yaw_deg,
+            }
+            for source in sources
+        ],
         "boundary_neumann": {
             "real": q_neumann.real.tolist(),
             "imag": q_neumann.imag.tolist(),
@@ -193,12 +280,22 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
         "singular_order": int(payload.get("singularOrder", 3)),
+        "proximity": {
+            "surface_padding_m": SOURCE_SURFACE_PADDING_M,
+            "close_pair_distance_m": CLOSE_PAIR_DISTANCE_M,
+            "minimum_surface_distance_m": minimum_surface_distance_m,
+            "pairs": proximity_pairs,
+        },
         "provenance": {
             "package_path": str(package_path),
             "package_name": str(manifest.get("name", package_path.stem)),
             "frequency_index": frequency_index,
-            "node_count": int(points.shape[0]),
-            "face_count": int(triangles.shape[0]),
+            "source_count": len(sources),
+            "source_ids": source_ids,
+            "package_node_count": int(points.shape[0]),
+            "package_face_count": int(triangles.shape[0]),
+            "node_count": int(points.shape[0] * len(sources)),
+            "face_count": int(triangles.shape[0] * len(sources)),
             "excitation_index": 0,
         },
     }
