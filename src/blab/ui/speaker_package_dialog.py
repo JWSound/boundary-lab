@@ -45,6 +45,10 @@ class SpeakerPackageDialog(QDialog):
             "Level 2 — Exterior BEM with fixed distributed sources",
             int(SpeakerPackageFidelity.FIXED_SOURCES),
         )
+        self.fidelity_combo.addItem(
+            "Level 3 — Condensed interior with coupled exterior BEM",
+            int(SpeakerPackageFidelity.COUPLED),
+        )
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("speaker.blabsp")
         browse_button = QPushButton("Browse…")

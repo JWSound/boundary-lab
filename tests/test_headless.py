@@ -154,7 +154,7 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     validate = parser.parse_args(["validate", "speaker.blab.json", "--json"])
     solve = parser.parse_args(["solve", "speaker.blab.json", "--events", "ndjson"])
     export = parser.parse_args(
-        ["export-speaker", "speaker.blab.json", "--output", "speaker.blabsp", "--fidelity", "fixed"]
+        ["export-speaker", "speaker.blab.json", "--output", "speaker.blabsp", "--fidelity", "coupled"]
     )
     evaluate_fem = parser.parse_args(["evaluate-fem", "runs/case"])
     compare_fem = parser.parse_args(["compare-fem", "coarse.json", "fine.json"])
@@ -166,7 +166,7 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     assert solve.events == "ndjson"
     assert export.project_command == "export-speaker"
     assert export.output == Path("speaker.blabsp")
-    assert export.fidelity == "fixed"
+    assert export.fidelity == "coupled"
     assert evaluate_fem.project_command == "evaluate-fem"
     assert evaluate_fem.run_dir == Path("runs/case")
     assert evaluate_fem.min_points_per_wavelength_p95 == 8.0

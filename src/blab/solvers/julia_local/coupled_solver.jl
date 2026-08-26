@@ -13,6 +13,13 @@ const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
 const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
 const MAX_BEM_FIELD_EVALUATION_CACHES = 2
+const SPEAKER_MACRO_QUANTITIES = Set([
+    "speaker_macro_k",
+    "speaker_macro_c",
+    "speaker_macro_d",
+    "speaker_macro_b",
+    "speaker_macro_e",
+])
 
 function object_by_id(items, object_id, label)
     for item in items
@@ -34,6 +41,163 @@ function translated_volume_mesh(resource, ::Type{T}) where {T<:AbstractFloat}
         mesh.physical_names,
         mesh.quadratic_tetrahedra,
         mesh.quadratic_boundary_faces,
+    )
+end
+
+function speaker_macro_matrices(system, excitations, interface_ids, interface_ranges)
+    system.formulation == :fem_interface_condensed || error(
+        "Speaker macro export requires the FEM-interface-condensed formulation.",
+    )
+    system.linear_backend == :cpu || error(
+        "Speaker macro export currently requires the BEAT CPU condensation backend.",
+    )
+    hasproperty(system.condensation, :schur) || error(
+        "Speaker macro export requires a retained FEM Schur complement.",
+    )
+    T = system.scalar_type
+    gamma_count = length(system.gamma_range)
+    interface_count = length(system.flux_range)
+    transducer_count = length(system.transducers)
+    bem_node_count = length(system.bem_mesh.vertices)
+    bem_face_count = length(system.bem_mesh.faces)
+    excitation_count = length(excitations)
+    gamma_range = 1:gamma_count
+    flux_range = (gamma_count + 1):(gamma_count + interface_count)
+    mechanical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(flux_range) + 1):(last(flux_range) + transducer_count))
+    electrical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(mechanical_range) + 1):(last(mechanical_range) + transducer_count))
+    state_count = gamma_count + interface_count + 2 * transducer_count
+
+    retained = system.retained_fem_vertices
+    interface_operators = system.interface_operators
+    transducer_operators = system.transducer_operators
+    normal_derivative_scale = Complex{T}(0, system.density * system.omega)
+
+    k_matrix = zeros(Complex{T}, state_count, state_count)
+    k_matrix[gamma_range, gamma_range] .= Complex{T}.(system.condensation.schur)
+    k_matrix[gamma_range, flux_range] .= -Complex{T}.(
+        Matrix(interface_operators.fem_load[retained, :]),
+    )
+    k_matrix[flux_range, gamma_range] .= Complex{T}.(
+        Matrix(interface_operators.fem_trace[:, retained]),
+    )
+    if transducer_count > 0
+        k_matrix[gamma_range, mechanical_range] .= -normal_derivative_scale .* Complex{T}.(
+            Matrix(transducer_operators.fem_surface[retained, :]),
+        )
+        k_matrix[mechanical_range, gamma_range] .= -Complex{T}.(
+            transpose(Matrix(transducer_operators.fem_force[retained, :])),
+        )
+        mechanical = Complex{T}[
+            BeatEngineCoupled.mechanical_impedance(
+                transducer,
+                system.omega,
+                system.density,
+                system.wavenumber == zero(T) ? one(T) : system.omega / system.wavenumber,
+            ) for transducer in system.transducers
+        ]
+        electrical = Complex{T}[
+            BeatEngineCoupled.electrical_impedance(transducer, system.omega)
+            for transducer in system.transducers
+        ]
+        force_factor = Complex{T}[transducer.bl_n_per_a for transducer in system.transducers]
+        k_matrix[mechanical_range, mechanical_range] .= Matrix(Diagonal(mechanical))
+        k_matrix[mechanical_range, electrical_range] .= -Matrix(Diagonal(force_factor))
+        k_matrix[electrical_range, mechanical_range] .= Matrix(Diagonal(force_factor))
+        k_matrix[electrical_range, electrical_range] .= Matrix(Diagonal(electrical))
+    end
+
+    c_matrix = zeros(Complex{T}, state_count, bem_node_count)
+    c_matrix[flux_range, :] .= -Complex{T}.(Matrix(interface_operators.bem_trace))
+    if transducer_count > 0
+        c_matrix[mechanical_range, :] .= Complex{T}.(
+            transpose(Matrix(transducer_operators.bem_force)),
+        )
+    end
+
+    d_matrix = zeros(Complex{T}, bem_face_count, state_count)
+    d_matrix[:, flux_range] .= Complex{T}.(Matrix(interface_operators.bem_flux))
+    if transducer_count > 0
+        d_matrix[:, mechanical_range] .= normal_derivative_scale .* Complex{T}.(
+            Matrix(transducer_operators.bem_normal_velocity),
+        )
+    end
+
+    fem_rhs = zeros(Complex{T}, length(system.fem_mesh.vertices), excitation_count)
+    b_matrix = zeros(Complex{T}, state_count, excitation_count)
+    e_matrix = zeros(Complex{T}, bem_face_count, excitation_count)
+    for (column, excitation) in enumerate(excitations)
+        kind = Symbol(excitation.kind)
+        if kind == :normal_velocity
+            fem_boundary_tags = hasproperty(excitation, :fem_boundary_tags) ?
+                                Int.(excitation.fem_boundary_tags) :
+                                [Int(excitation.radiator_tag)]
+            fem_boundary_weights = hasproperty(excitation, :fem_boundary_weights) ?
+                                   T.(excitation.fem_boundary_weights) :
+                                   ones(T, length(fem_boundary_tags))
+            for (tag, weight) in zip(fem_boundary_tags, fem_boundary_weights)
+                fem_rhs[:, column] .+= assemble_prescribed_velocity_load(
+                    system.fem_mesh,
+                    tag,
+                    system.density,
+                    system.omega,
+                    Complex{T}(weight),
+                )
+            end
+            bem_source_index = hasproperty(excitation, :bem_source_index) ?
+                               Int(excitation.bem_source_index) :
+                               0
+            if bem_source_index > 0
+                e_matrix[:, column] .= view(
+                    system.prescribed_bem_neumann,
+                    :,
+                    bem_source_index,
+                )
+            end
+        elseif kind == :voltage
+            transducer_index = Int(excitation.transducer_index)
+            b_matrix[first(electrical_range) + transducer_index - 1, column] = one(Complex{T})
+        else
+            error("Unsupported speaker macro excitation kind: $kind.")
+        end
+    end
+    reduced_rhs, _interior_rhs = BeatEngineCoupledCondensed._forward_schur(
+        system.condensation,
+        fem_rhs,
+    )
+    b_matrix[gamma_range, :] .+= reduced_rhs
+
+    metadata = Dict{String,Any}(
+        "format_version" => 1,
+        "state_count" => state_count,
+        "state_blocks" => [
+            Dict("name" => "retained_fem_pressure", "offset" => 0, "count" => gamma_count, "unit" => "Pa"),
+            Dict("name" => "interface_normal_derivative", "offset" => gamma_count, "count" => interface_count, "unit" => "Pa/m"),
+            Dict("name" => "diaphragm_velocity", "offset" => gamma_count + interface_count, "count" => transducer_count, "unit" => "m/s"),
+            Dict("name" => "voice_coil_current", "offset" => gamma_count + interface_count + transducer_count, "count" => transducer_count, "unit" => "A"),
+        ],
+        "retained_fem_vertex_indices" => Int.(retained) .- 1,
+        "interface_ids" => String.(interface_ids),
+        "interface_offsets" => [first(range) - 1 for range in interface_ranges],
+        "interface_counts" => [length(range) for range in interface_ranges],
+        "transducer_component_ids" => [transducer.id for transducer in system.transducers],
+        "pressure_space" => "P1",
+        "normal_derivative_space" => "DP0",
+        "boundary_pressure_definition" => "exterior BEM Dirichlet trace in exported bem_node order",
+        "boundary_normal_derivative_definition" => "mesh-oriented exterior BEM normal derivative in exported bem_face order",
+        "input_normalization" => Dict("voltage" => "1 V", "normal_velocity" => "1 m/s"),
+        "equations" => ["K z + C p = B u", "q = D z + E u"],
+    )
+    return Dict(
+        "speaker_macro_k" => k_matrix,
+        "speaker_macro_c" => c_matrix,
+        "speaker_macro_d" => d_matrix,
+        "speaker_macro_b" => b_matrix,
+        "speaker_macro_e" => e_matrix,
+        "metadata" => metadata,
     )
 end
 
@@ -2018,6 +2182,15 @@ function solve_request(request; event_mode=false)
         ]
         field_s = 0.0
         quantities = Dict{String,Any}[]
+        macro_requested = any(
+            String(output["quantity"]) in SPEAKER_MACRO_QUANTITIES for output in outputs
+        )
+        macro_matrices = macro_requested ? speaker_macro_matrices(
+            coupled_system,
+            excitations,
+            [String(interface["id"]) for interface in interfaces],
+            combined_interfaces.ranges,
+        ) : nothing
         for output in outputs
             quantity = String(output["quantity"])
             if quantity == "fem_nodal_pressure"
@@ -2198,6 +2371,31 @@ function solve_request(request; event_mode=false)
                     ),
                 )
                 field_s += (time_ns() - field_started) / 1.0e9
+            elseif quantity in SPEAKER_MACRO_QUANTITIES
+                axes = if quantity == "speaker_macro_k"
+                    ["state_row", "state_column"]
+                elseif quantity == "speaker_macro_c"
+                    ["state_row", "bem_node"]
+                elseif quantity == "speaker_macro_d"
+                    ["bem_face", "state_column"]
+                elseif quantity == "speaker_macro_b"
+                    ["state_row", "excitation"]
+                else
+                    ["bem_face", "excitation"]
+                end
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        macro_matrices[quantity],
+                        "mixed",
+                        axes,
+                        metadata=merge(
+                            copy(macro_matrices["metadata"]),
+                            Dict("matrix" => uppercase(last(split(quantity, "_")))),
+                        ),
+                    ),
+                )
             else
                 error("Unsupported coupled output quantity: $quantity")
             end

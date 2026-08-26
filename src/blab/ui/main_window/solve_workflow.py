@@ -11,6 +11,7 @@ Follows the shape of :mod:`blab.ui.main_window.backend_health`.
 
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 
 import numpy as np
@@ -42,9 +43,11 @@ from blab.solve_results import (
 )
 from blab.speaker_package import (
     SpeakerPackageConfig,
+    SpeakerPackageFidelity,
     export_speaker_package,
     prepare_speaker_package_solve,
 )
+from blab.speaker_symmetry import expand_speaker_system_for_export
 from blab.symmetry import SymmetryValidationError
 from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
@@ -112,6 +115,7 @@ class SolveWorkflowController(QObject):
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
         self._pending_speaker_package: SpeakerPackageConfig | None = None
+        self._pending_speaker_package_temp_dir: tempfile.TemporaryDirectory[str] | None = None
 
     # -- starting a run -----------------------------------------------------
 
@@ -244,10 +248,32 @@ class SolveWorkflowController(QObject):
             )
             return False
         preferences = self._read_preferences()
+        temporary: tempfile.TemporaryDirectory[str] | None = None
         try:
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(project.symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
+            solve_symmetry = project.symmetry
+            component_channels = project.component_channel_by_id
+            if normalized.fidelity >= SpeakerPackageFidelity.COUPLED and project.symmetry != "off":
+                temporary = tempfile.TemporaryDirectory(prefix="blab-speaker-full-")
+                preferred_full_meshes = {
+                    entry.name: entry.source_file
+                    for entry in self._inputs.mesh_entries_for_symmetry("off")
+                    if entry.locked
+                }
+                expanded = expand_speaker_system_for_export(
+                    system,
+                    symmetry=project.symmetry,
+                    output_dir=temporary.name,
+                    preferred_full_mesh_by_name=preferred_full_meshes,
+                )
+                system = expanded.system
+                solve_symmetry = "off"
+                component_channels = {
+                    component_id: project.component_channel_by_id.get(source_id, "main")
+                    for component_id, source_id in expanded.component_source_ids.items()
+                }
             frequencies = self._view.frequency_range()
             prepared = prepare_system_ui_solve(
                 system,
@@ -258,9 +284,9 @@ class SolveWorkflowController(QObject):
                 polar_angle_step_deg=preferences.polar_angle_step_deg,
                 spherical_sampling_enabled=False,
                 spherical_sampling_points=0,
-                component_channel_by_id=project.component_channel_by_id,
+                component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
-                symmetry_mode=project.symmetry,
+                symmetry_mode=solve_symmetry,
                 observation_planes=(),
             )
             prepared = prepare_speaker_package_solve(
@@ -270,12 +296,18 @@ class SolveWorkflowController(QObject):
                 sphere_radius_m=preferences.polar_observation_distance_m,
             )
         except Exception as exc:
+            if temporary is not None:
+                temporary.cleanup()
             self._view.show_stitch_or_generic_error("Speaker package preparation failed", exc)
             return False
 
         self._pending_speaker_package = normalized
+        self._pending_speaker_package_temp_dir = temporary
         if not self._start_prepared_system_solve(prepared, "Initializing speaker package solve..."):
             self._pending_speaker_package = None
+            self._pending_speaker_package_temp_dir = None
+            if temporary is not None:
+                temporary.cleanup()
             return False
         return True
 
@@ -386,12 +418,8 @@ class SolveWorkflowController(QObject):
                 return False
         self._begin_run(status)
         channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
-        ports_by_id = {
-            port.id: port for port in prepared.request.compiled_system.excitation_ports
-        }
-        excitation_ports = [
-            ports_by_id[port_id] for port_id in prepared.request.excitation_port_ids
-        ]
+        ports_by_id = {port.id: port for port in prepared.request.compiled_system.excitation_ports}
+        excitation_ports = [ports_by_id[port_id] for port_id in prepared.request.excitation_port_ids]
         voltage_channels = {
             channel_name
             for channel_name, port in zip(
@@ -435,28 +463,15 @@ class SolveWorkflowController(QObject):
             )
             if prepared.solve_kind != PhysicalSolveKind.INTERIOR_FEM:
                 voltage_channel_names = np.asarray(
-                    list(
-                        dict.fromkeys(
-                            name
-                            for name in channel_names
-                            if name in self._session.voltage_channel_names
-                        )
-                    )
+                    list(dict.fromkeys(name for name in channel_names if name in self._session.voltage_channel_names))
                 )
                 self._session.electrical_impedance = ElectricalImpedanceDataset(
                     excitation_port_ids=tuple(prepared.request.excitation_port_ids),
                     excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
-                    excitation_component_ids=np.asarray(
-                        [port.component_id for port in excitation_ports]
-                    ),
-                    transducer_component_ids=np.asarray(
-                        [component.id for component in transducers]
-                    ),
+                    excitation_component_ids=np.asarray([port.component_id for port in excitation_ports]),
+                    transducer_component_ids=np.asarray([component.id for component in transducers]),
                     physical_driver_orbit_counts=np.asarray(
-                        [
-                            int(component.parameters.get("physical_driver_orbit_count", 1))
-                            for component in transducers
-                        ],
+                        [int(component.parameters.get("physical_driver_orbit_count", 1)) for component in transducers],
                         dtype=np.int64,
                     ),
                     channel_names=voltage_channel_names,
@@ -464,18 +479,10 @@ class SolveWorkflowController(QObject):
                 if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM:
                     self._session.acoustic_load_impedance = AcousticLoadImpedanceDataset(
                         excitation_port_ids=tuple(prepared.request.excitation_port_ids),
-                        excitation_port_kinds=np.asarray(
-                            [port.kind.value for port in excitation_ports]
-                        ),
-                        excitation_component_ids=np.asarray(
-                            [port.component_id for port in excitation_ports]
-                        ),
-                        transducer_component_ids=np.asarray(
-                            [component.id for component in transducers]
-                        ),
-                        transducer_names=np.asarray(
-                            [component.name for component in transducers]
-                        ),
+                        excitation_port_kinds=np.asarray([port.kind.value for port in excitation_ports]),
+                        excitation_component_ids=np.asarray([port.component_id for port in excitation_ports]),
+                        transducer_component_ids=np.asarray([component.id for component in transducers]),
+                        transducer_names=np.asarray([component.name for component in transducers]),
                         bl_n_per_a=np.asarray(
                             [component.parameters["bl_n_per_a"] for component in transducers],
                             dtype=np.float64,
@@ -662,14 +669,20 @@ class SolveWorkflowController(QObject):
         session.finalize_results(status=completion.phase.value)
         pending_package = self._pending_speaker_package
         self._pending_speaker_package = None
+        pending_package_temp_dir = self._pending_speaker_package_temp_dir
+        self._pending_speaker_package_temp_dir = None
         package_result = None
-        if pending_package is not None and completion.completed:
-            solved = session.solved_system
-            if solved is not None and solved.complete:
-                try:
-                    package_result = export_speaker_package(solved, pending_package)
-                except Exception as exc:
-                    self._view.show_error("Speaker package export failed", str(exc))
+        try:
+            if pending_package is not None and completion.completed:
+                solved = session.solved_system
+                if solved is not None and solved.complete:
+                    try:
+                        package_result = export_speaker_package(solved, pending_package)
+                    except Exception as exc:
+                        self._view.show_error("Speaker package export failed", str(exc))
+        finally:
+            if pending_package_temp_dir is not None:
+                pending_package_temp_dir.cleanup()
         observation_planes = getattr(self._view, "observation_plane_controller", None)
         if observation_planes is not None:
             observation_planes.sync_view()
@@ -678,21 +691,21 @@ class SolveWorkflowController(QObject):
             solved_count = session.solved_count
             solve_completed = completion.completed
             interior_fem = (
-                session.solved_system is not None
-                and session.solved_system.provenance.solve_kind == "interior_fem"
+                session.solved_system is not None and session.solved_system.provenance.solve_kind == "interior_fem"
             )
             eligible_max_spl_channels = (
                 ()
                 if session.transducer_motion is None
                 else session.transducer_motion.eligible_max_spl_channel_names(session.voltage_channel_names)
             )
-            configured_max_spl_limits = max_spl_limits_from_payload(
-                self._project().max_spl_limits_by_channel
-            )
-            session.max_spl_requested = solve_completed and not interior_fem and any(
-                configured_max_spl_limits.get(name) is not None
-                and configured_max_spl_limits[name].enabled
-                for name in eligible_max_spl_channels
+            configured_max_spl_limits = max_spl_limits_from_payload(self._project().max_spl_limits_by_channel)
+            session.max_spl_requested = (
+                solve_completed
+                and not interior_fem
+                and any(
+                    configured_max_spl_limits.get(name) is not None and configured_max_spl_limits[name].enabled
+                    for name in eligible_max_spl_channels
+                )
             )
             session.use_final_isobar_resolution = solve_completed
             if solve_completed and not interior_fem:
@@ -714,9 +727,7 @@ class SolveWorkflowController(QObject):
             )
             self._view.set_plot_exports_available(not interior_fem)
             self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
-            self._view.set_max_spl_available(
-                solve_completed and not interior_fem and bool(eligible_max_spl_channels)
-            )
+            self._view.set_max_spl_available(solve_completed and not interior_fem and bool(eligible_max_spl_channels))
             self._view.set_max_spl_export_available(
                 solve_completed
                 and not interior_fem

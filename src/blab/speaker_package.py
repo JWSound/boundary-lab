@@ -16,7 +16,7 @@ from typing import Any, Callable
 import numpy as np
 
 from blab.config import normalize_symmetry
-from blab.physical_model import AcousticRegionKind
+from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -36,6 +36,18 @@ from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_res
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
+SPEAKER_MACRO_K_ID = "speaker:macro:k"
+SPEAKER_MACRO_C_ID = "speaker:macro:c"
+SPEAKER_MACRO_D_ID = "speaker:macro:d"
+SPEAKER_MACRO_B_ID = "speaker:macro:b"
+SPEAKER_MACRO_E_ID = "speaker:macro:e"
+SPEAKER_MACRO_QUANTITIES = (
+    (SPEAKER_MACRO_K_ID, "speaker_macro_k"),
+    (SPEAKER_MACRO_C_ID, "speaker_macro_c"),
+    (SPEAKER_MACRO_D_ID, "speaker_macro_d"),
+    (SPEAKER_MACRO_B_ID, "speaker_macro_b"),
+    (SPEAKER_MACRO_E_ID, "speaker_macro_e"),
+)
 
 # A proper right-handed rotation about X by -90 degrees. Boundary Lab +Z
 # becomes package +Y; source +Y becomes package -Z.
@@ -48,6 +60,7 @@ SOURCE_TO_PACKAGE_ROTATION = np.asarray(
 class SpeakerPackageFidelity(IntEnum):
     PATTERN = 1
     FIXED_SOURCES = 2
+    COUPLED = 3
 
     @classmethod
     def parse(cls, value: int | str | SpeakerPackageFidelity) -> SpeakerPackageFidelity:
@@ -62,17 +75,23 @@ class SpeakerPackageFidelity(IntEnum):
                 "2": cls.FIXED_SOURCES,
                 "fixed": cls.FIXED_SOURCES,
                 "fixed_sources": cls.FIXED_SOURCES,
+                "3": cls.COUPLED,
+                "coupled": cls.COUPLED,
+                "dynamic": cls.COUPLED,
+                "condensed": cls.COUPLED,
             }
             if normalized in names:
                 return names[normalized]
         try:
             return cls(int(value))
         except (TypeError, ValueError) as exc:
-            raise ValueError("Speaker package fidelity must be 'pattern' or 'fixed'.") from exc
+            raise ValueError("Speaker package fidelity must be 'pattern', 'fixed', or 'coupled'.") from exc
 
     @property
     def cli_name(self) -> str:
-        return "pattern" if self == self.PATTERN else "fixed"
+        if self == self.PATTERN:
+            return "pattern"
+        return "fixed" if self == self.FIXED_SOURCES else "coupled"
 
 
 @dataclass(frozen=True)
@@ -204,10 +223,37 @@ def prepare_speaker_package_solve(
         if BEM_BOUNDARY_DOMAIN_ID not in domain_ids:
             domains.append(bem_boundary_result_domain(request.compiled_system, symmetry=symmetry))
 
-    updated_request = replace(request, outputs=tuple(outputs))
+    if level >= SpeakerPackageFidelity.COUPLED:
+        if prepared.solve_kind != PhysicalSolveKind.COUPLED_BEM_FEM:
+            raise ValueError("Level-3 speaker packages require a coupled FEM-BEM physical system.")
+        symmetry = normalize_symmetry(request.solver_options.get("symmetry", "off"))
+        if symmetry != "off":
+            raise ValueError(
+                "Level-3 speaker package preparation requires a temporary full-domain system with symmetry off."
+            )
+        existing_output_ids = {item.id for item in outputs}
+        for identifier, quantity in SPEAKER_MACRO_QUANTITIES:
+            if identifier not in existing_output_ids:
+                outputs.append(OutputRequest(id=identifier, quantity=quantity))
+
+    solver_options = dict(request.solver_options)
+    if level >= SpeakerPackageFidelity.COUPLED:
+        solver_options.update(
+            {
+                "validation_diagnostics": False,
+                "static_condensation": True,
+                "symmetry": "off",
+            }
+        )
+    updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
     validate_system_solve_request(updated_request)
     validate_system_capabilities(updated_request)
-    return replace(prepared, request=updated_request, result_domains=tuple(domains))
+    return replace(
+        prepared,
+        request=updated_request,
+        result_domains=tuple(domains),
+        backend_id="beat_cpu" if level >= SpeakerPackageFidelity.COUPLED else prepared.backend_id,
+    )
 
 
 def solve_speaker_package_system(
@@ -325,6 +371,69 @@ def speaker_package_issues(
                 np.asarray(neumann.available_frequency_mask, dtype=bool)
             ):
                 issues.append(SpeakerPackageIssue("incomplete_bem_traces", "BEM boundary traces are incomplete."))
+    if level >= SpeakerPackageFidelity.COUPLED:
+        matrices = {identifier: solved.quantities.get(identifier) for identifier, _quantity in SPEAKER_MACRO_QUANTITIES}
+        for identifier, matrix in matrices.items():
+            if matrix is None:
+                issues.append(
+                    SpeakerPackageIssue(
+                        "missing_coupled_macro_matrix",
+                        f"Coupled macro-model matrix {identifier!r} was not retained.",
+                    )
+                )
+        if all(matrix is not None for matrix in matrices.values()):
+            k = np.asarray(matrices[SPEAKER_MACRO_K_ID].values)
+            c = np.asarray(matrices[SPEAKER_MACRO_C_ID].values)
+            d = np.asarray(matrices[SPEAKER_MACRO_D_ID].values)
+            b = np.asarray(matrices[SPEAKER_MACRO_B_ID].values)
+            e = np.asarray(matrices[SPEAKER_MACRO_E_ID].values)
+            frequency_count = solved.frequencies_hz.size
+            excitation_count = len(solved.excitation_ids)
+            state_count = k.shape[1] if k.ndim == 3 else -1
+            bem_domain = solved.domains.get(BEM_BOUNDARY_DOMAIN_ID)
+            bem_points = (
+                np.asarray(bem_domain.coordinates.get("points_m")) if bem_domain is not None else np.asarray(None)
+            )
+            bem_triangles = (
+                np.asarray(bem_domain.topology.get("triangles")) if bem_domain is not None else np.asarray(None)
+            )
+            bem_node_count = bem_points.shape[0] if bem_points.ndim == 2 else -1
+            bem_face_count = bem_triangles.shape[0] if bem_triangles.ndim == 2 else -1
+            expected_dimensions = {
+                SPEAKER_MACRO_K_ID: ("frequency", "state_row", "state_column"),
+                SPEAKER_MACRO_C_ID: ("frequency", "state_row", "bem_node"),
+                SPEAKER_MACRO_D_ID: ("frequency", "bem_face", "state_column"),
+                SPEAKER_MACRO_B_ID: ("frequency", "state_row", "excitation"),
+                SPEAKER_MACRO_E_ID: ("frequency", "bem_face", "excitation"),
+            }
+            expected = (
+                k.shape == (frequency_count, state_count, state_count)
+                and c.shape == (frequency_count, state_count, bem_node_count)
+                and d.shape == (frequency_count, bem_face_count, state_count)
+                and b.shape == (frequency_count, state_count, excitation_count)
+                and e.shape == (frequency_count, bem_face_count, excitation_count)
+                and all(
+                    matrices[identifier].dimensions == dimensions
+                    for identifier, dimensions in expected_dimensions.items()
+                )
+            )
+            if not expected or not all(np.iscomplexobj(value) for value in (k, c, d, b, e)):
+                issues.append(
+                    SpeakerPackageIssue(
+                        "invalid_coupled_macro_model",
+                        "Coupled macro-model matrix shapes or complex dtypes are invalid.",
+                    )
+                )
+            elif any(
+                not np.all(np.asarray(matrices[identifier].available_frequency_mask, dtype=bool))
+                for identifier, _quantity in SPEAKER_MACRO_QUANTITIES
+            ):
+                issues.append(
+                    SpeakerPackageIssue(
+                        "incomplete_coupled_macro_model",
+                        "Coupled macro-model matrices are incomplete.",
+                    )
+                )
     return tuple(issues)
 
 
@@ -478,6 +587,46 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                 "pressure": ["frequency", "excitation", "bem_node"],
                 "normal_derivative": ["frequency", "excitation", "bem_face"],
             },
+        }
+    if config.fidelity >= SpeakerPackageFidelity.COUPLED:
+        matrix_by_name = {
+            "K": np.asarray(solved.quantities[SPEAKER_MACRO_K_ID].values),
+            "C": np.asarray(solved.quantities[SPEAKER_MACRO_C_ID].values),
+            "D": np.asarray(solved.quantities[SPEAKER_MACRO_D_ID].values),
+            "B": np.asarray(solved.quantities[SPEAKER_MACRO_B_ID].values),
+            "E": np.asarray(solved.quantities[SPEAKER_MACRO_E_ID].values),
+        }
+        macro_metadata = dict(solved.quantities[SPEAKER_MACRO_K_ID].metadata)
+        macro_metadata.pop("matrix", None)
+        members["data/coupled-model.npz"] = _npz_bytes(
+            frequencies_hz=np.asarray(solved.frequencies_hz, dtype=np.float64),
+            **{f"matrix_{name.lower()}": values for name, values in matrix_by_name.items()},
+        )
+        capabilities.append("dynamic_boundary_macro_model")
+        files["coupled_model"] = {
+            "path": "data/coupled-model.npz",
+            "format_version": 1,
+            "equations": ["K z + C p = B u", "q = D z + E u"],
+            "exterior_pressure_space": "P1",
+            "exterior_normal_derivative_space": "DP0",
+            "matrix_dimensions": {
+                "K": ["frequency", "state_row", "state_column"],
+                "C": ["frequency", "state_row", "bem_node"],
+                "D": ["frequency", "bem_face", "state_column"],
+                "B": ["frequency", "state_row", "excitation"],
+                "E": ["frequency", "bem_face", "excitation"],
+            },
+            "input_ports": [
+                {
+                    "id": port.id,
+                    "kind": port.kind.value,
+                    "unit": "V" if port.kind.value == "voltage" else "m/s",
+                    "normalization": 1.0,
+                }
+                for port in (solved.compiled_system.excitation_ports if solved.compiled_system is not None else ())
+                if port.id in solved.excitation_ids
+            ],
+            "metadata": macro_metadata,
         }
     manifest = {
         "schema": SPEAKER_PACKAGE_SCHEMA,
@@ -672,6 +821,17 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
             }
             for item in system.boundaries
         ],
+        "interfaces": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "bounded_boundary_id": item.bounded_boundary_id,
+                "unbounded_boundary_id": item.unbounded_boundary_id,
+                "node_count": len(item.topology.fem_vertex_indices),
+                "face_count": len(item.topology.fem_face_indices),
+            }
+            for item in system.interfaces
+        ],
         "components": [
             {
                 "id": item.id,
@@ -691,6 +851,7 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
             }
             for item in system.excitation_ports
         ],
+        "metadata": system.metadata,
     }
 
 
@@ -744,6 +905,11 @@ __all__ = [
     "SpeakerPackageConfig",
     "SpeakerPackageExportResult",
     "SpeakerPackageFidelity",
+    "SPEAKER_MACRO_B_ID",
+    "SPEAKER_MACRO_C_ID",
+    "SPEAKER_MACRO_D_ID",
+    "SPEAKER_MACRO_E_ID",
+    "SPEAKER_MACRO_K_ID",
     "SpeakerPackageIssue",
     "export_speaker_package",
     "expand_bem_boundary_symmetry",

@@ -204,9 +204,20 @@ Create a level 2 package with fixed distributed BEM sources:
 blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity fixed
 ```
 
+Create a level 3 package with the condensed interior/exterior boundary
+macro-model used for mutual coupling:
+
+```bash
+blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity coupled
+```
+
+Level 3 requires a coupled FEM-BEM physical system. It uses the CPU condensed
+solver and temporarily expands X/XY symmetry to a full-domain system before
+compilation; the project file is not changed.
+
 The command accepts the same `--request`, `--backend`, `--julia-executable`,
 `--julia-threads`, and `--events` controls as the headless solve. It forces the
-spherical pressure and boundary traces required by the selected fidelity and
+spherical pressure, boundary traces, and macro-model matrices required by the selected fidelity and
 publishes the archive atomically only after every requested frequency has
 completed.
 

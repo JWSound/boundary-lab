@@ -32,6 +32,11 @@ from blab.solve_results import (
 )
 from blab.speaker_package import (
     SOURCE_TO_PACKAGE_ROTATION,
+    SPEAKER_MACRO_B_ID,
+    SPEAKER_MACRO_C_ID,
+    SPEAKER_MACRO_D_ID,
+    SPEAKER_MACRO_E_ID,
+    SPEAKER_MACRO_K_ID,
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
     expand_bem_boundary_symmetry,
@@ -141,6 +146,68 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
     )
 
 
+def _coupled_macro_solved_system() -> SolvedSystem:
+    solved = _solved_system()
+    frequency_count = solved.frequencies_hz.size
+    excitation_count = len(solved.excitation_ids)
+    state_count = 3
+    bem_node_count = solved.domains[BEM_BOUNDARY_DOMAIN_ID].coordinates["points_m"].shape[0]
+    bem_face_count = solved.domains[BEM_BOUNDARY_DOMAIN_ID].topology["triangles"].shape[0]
+    quantities = dict(solved.quantities)
+    definitions = (
+        (
+            SPEAKER_MACRO_K_ID,
+            "speaker_macro_k",
+            (frequency_count, state_count, state_count),
+            ("frequency", "state_row", "state_column"),
+        ),
+        (
+            SPEAKER_MACRO_C_ID,
+            "speaker_macro_c",
+            (frequency_count, state_count, bem_node_count),
+            ("frequency", "state_row", "bem_node"),
+        ),
+        (
+            SPEAKER_MACRO_D_ID,
+            "speaker_macro_d",
+            (frequency_count, bem_face_count, state_count),
+            ("frequency", "bem_face", "state_column"),
+        ),
+        (
+            SPEAKER_MACRO_B_ID,
+            "speaker_macro_b",
+            (frequency_count, state_count, excitation_count),
+            ("frequency", "state_row", "excitation"),
+        ),
+        (
+            SPEAKER_MACRO_E_ID,
+            "speaker_macro_e",
+            (frequency_count, bem_face_count, excitation_count),
+            ("frequency", "bem_face", "excitation"),
+        ),
+    )
+    for index, (identifier, quantity, shape, dimensions) in enumerate(definitions, start=1):
+        values = np.full(shape, complex(index, -index), dtype=np.complex64)
+        quantities[identifier] = SolvedQuantity(
+            id=identifier,
+            quantity=quantity,
+            unit="mixed",
+            dimensions=dimensions,
+            values=values,
+            metadata={
+                "format_version": 1,
+                "state_count": state_count,
+                "state_blocks": [{"name": "test", "offset": 0, "count": state_count}],
+            },
+            available_frequency_mask=np.ones(frequency_count, dtype=bool),
+        )
+    return replace(
+        solved,
+        quantities=quantities,
+        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
+    )
+
+
 def _read_npz(archive: zipfile.ZipFile, member: str) -> dict[str, np.ndarray]:
     with np.load(archive.open(member)) as arrays:
         return {name: arrays[name].copy() for name in arrays.files}
@@ -194,6 +261,33 @@ def test_level_two_contains_progressive_pattern_and_fixed_source_data(tmp_path: 
     np.testing.assert_array_equal(
         fixed["normal_derivative_pa_per_m"], solved.quantities[BEM_BOUNDARY_NEUMANN_ID].values
     )
+
+
+def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
+    solved = _coupled_macro_solved_system()
+    output = tmp_path / "speaker-coupled.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(output, "Coupled speaker", SpeakerPackageFidelity.COUPLED),
+    )
+
+    manifest = validate_speaker_package(output)
+    assert manifest["fidelity_level"] == 3
+    assert manifest["fidelity"] == "coupled"
+    assert manifest["capabilities"] == [
+        "complex_spherical_pattern",
+        "fixed_distributed_sources",
+        "dynamic_boundary_macro_model",
+    ]
+    assert manifest["files"]["coupled_model"]["equations"] == [
+        "K z + C p = B u",
+        "q = D z + E u",
+    ]
+    with zipfile.ZipFile(output) as archive:
+        model = _read_npz(archive, "data/coupled-model.npz")
+    np.testing.assert_array_equal(model["matrix_k"], solved.quantities[SPEAKER_MACRO_K_ID].values)
+    np.testing.assert_array_equal(model["matrix_e"], solved.quantities[SPEAKER_MACRO_E_ID].values)
 
 
 def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path) -> None:
