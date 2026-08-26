@@ -279,6 +279,129 @@ end
     @test cached_operators.hypersingular ≈ operators.hypersingular
 end
 
+@testset "close-pair higher-order correction" begin
+    T = Float32
+    vertices = [
+        SVector{3,T}(0, 0, 0),
+        SVector{3,T}(0.04, 0, 0),
+        SVector{3,T}(0, 0.04, 0),
+        SVector{3,T}(0, 0, 0.01),
+        SVector{3,T}(0.04, 0, 0.01),
+        SVector{3,T}(0, 0.04, 0.01),
+    ]
+    mesh = BoundaryMesh(vertices, [(1, 2, 3), (4, 5, 6)], [1, 1])
+    p1 = build_p1_space(mesh)
+    dp0 = build_dp0_space(mesh)
+    base_rule = triangle_rule(T, 2)
+    near_cache = build_near_correction_cache(mesh, [(1, 2, 4), (2, 1, 6)], 6)
+    empty_near_cache = build_near_correction_cache(mesh, Tuple{Int,Int}[], 6)
+    singular_cache = build_singular_correction_cache(mesh, 2)
+    k = T(2pi * 100.0 / 343.0)
+
+    @test near_cache.pair_count == 2
+    @test empty_near_cache.pair_count == 0
+    @test empty_near_cache.correction_orders == Int[]
+    @test near_cache.correction_order == 6
+    @test near_cache.correction_orders == [4, 6]
+    @test length(near_cache.correction_rules[1].points) == 16
+    @test length(near_cache.correction_rules[2].points) == 36
+    @test sum(near_cache.correction_rules[1].weights) ≈ T(0.5) atol=T(1e-6)
+    @test sum(near_cache.correction_rules[2].weights) ≈ T(0.5) atol=T(1e-6)
+
+    base = assemble_regular_galerkin_operators(
+        mesh, p1, dp0, k, base_rule;
+        backend=:cpu, skip_singular=false, singular_cache=singular_cache,
+    )
+    corrected = assemble_regular_galerkin_operators(
+        mesh, p1, dp0, k, base_rule;
+        backend=:cpu, skip_singular=false, singular_cache=singular_cache,
+        near_correction_cache=near_cache,
+    )
+    reference_forward = assemble_regular_galerkin_operators(
+        mesh, p1, dp0, k, near_cache.correction_rules[1];
+        backend=:cpu, skip_singular=false, singular_cache=singular_cache,
+    )
+    reference_reverse = assemble_regular_galerkin_operators(
+        mesh, p1, dp0, k, near_cache.correction_rules[2];
+        backend=:cpu, skip_singular=false, singular_cache=singular_cache,
+    )
+
+    @test corrected.near_pair_count == 2
+    @test corrected.near_pair_quadrature_order == 6
+    @test corrected.single_layer[1:3, 2] ≈ reference_forward.single_layer[1:3, 2] rtol=T(2e-5)
+    @test corrected.double_layer[1:3, 4:6] ≈ reference_forward.double_layer[1:3, 4:6] rtol=T(2e-5) atol=T(2e-7)
+    @test corrected.adjoint_double_layer[1:3, 2] ≈ reference_forward.adjoint_double_layer[1:3, 2] rtol=T(2e-5) atol=T(2e-7)
+    @test corrected.hypersingular[1:3, 4:6] ≈ reference_forward.hypersingular[1:3, 4:6] rtol=T(2e-5) atol=T(2e-5)
+    @test corrected.single_layer[4:6, 1] ≈ reference_reverse.single_layer[4:6, 1] rtol=T(2e-5)
+    @test norm(corrected.single_layer[1:3, 2] - base.single_layer[1:3, 2]) > T(1e-9)
+
+    ground_image = SymmetryTransform(:ground_image, SVector{3,Int}(1, -1, 1), -1)
+    image_cache = build_near_correction_cache(
+        mesh,
+        [(1, 2)],
+        6;
+        trial_transform=ground_image,
+    )
+    @test image_cache.pair_count == 1
+    @test image_cache.trial_transform == ground_image
+
+    image_mesh = BoundaryMesh(
+        [
+            SVector{3,T}(0.01, 0, 0),
+            SVector{3,T}(0.01, 0.04, 0),
+            SVector{3,T}(0.01, 0, 0.04),
+        ],
+        [(1, 2, 3)],
+        [1],
+    )
+    image_p1 = build_p1_space(image_mesh)
+    image_dp0 = build_dp0_space(image_mesh)
+    x_image = SymmetryTransform(:reflect_x, SVector{3,Int}(-1, 1, 1), -1)
+    reflected_near_cache = build_near_correction_cache(
+        image_mesh,
+        [(1, 1)],
+        6;
+        trial_transform=x_image,
+    )
+    image_singular_cache = build_singular_correction_cache(image_mesh, 2)
+    reflected_corrected = assemble_regular_galerkin_operators(
+        image_mesh, image_p1, image_dp0, k, base_rule;
+        backend=:cpu, skip_singular=false, singular_cache=image_singular_cache,
+        near_correction_cache=reflected_near_cache, symmetry_mode=:x,
+    )
+    reflected_reference = assemble_regular_galerkin_operators(
+        image_mesh, image_p1, image_dp0, k, reflected_near_cache.correction_rules[1];
+        backend=:cpu, skip_singular=false, singular_cache=image_singular_cache,
+        symmetry_mode=:x,
+    )
+    @test reflected_corrected.single_layer ≈ reflected_reference.single_layer rtol=T(2e-5)
+    @test reflected_corrected.double_layer ≈ reflected_reference.double_layer rtol=T(2e-5) atol=T(2e-7)
+    @test reflected_corrected.adjoint_double_layer ≈ reflected_reference.adjoint_double_layer rtol=T(2e-5) atol=T(2e-7)
+    @test reflected_corrected.hypersingular ≈ reflected_reference.hypersingular rtol=T(2e-5) atol=T(2e-5)
+
+    if cuda_available()
+        cuda_regular = build_cuda_regular_assembly_cache(mesh, base_rule)
+        cuda_singular = BeatEngineCore.build_cuda_singular_correction_cache(singular_cache, p1, dp0)
+        cuda_near = build_cuda_near_correction_cache(near_cache, p1, dp0)
+        cuda_corrected = assemble_regular_galerkin_operators(
+            mesh, p1, dp0, k, base_rule;
+            skip_singular=false,
+            device_cache=cuda_regular,
+            singular_cache=singular_cache,
+            device_singular_cache=cuda_singular,
+            near_correction_cache=near_cache,
+            device_near_correction_cache=cuda_near,
+        )
+        @test cuda_corrected.near_pair_count == near_cache.pair_count
+        @test Array(cuda_corrected.single_layer) ≈ corrected.single_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_corrected.double_layer) ≈ corrected.double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_corrected.adjoint_double_layer) ≈ corrected.adjoint_double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_corrected.hypersingular) ≈ corrected.hypersingular rtol=T(5e-3) atol=T(5e-3)
+        release_operator_storage!(cuda_corrected)
+        release_cuda_image_singular_correction_cache!(cuda_near)
+    end
+end
+
 @testset "cuda production pipeline" begin
     if !cuda_available()
         @test_skip "CUDA unavailable; skipping CUDA-only BEAT Engine tests."

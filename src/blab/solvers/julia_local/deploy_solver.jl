@@ -110,10 +110,24 @@ function solve_deploy_request_impl(request)
     dp0_space = build_dp0_space(mesh)
     quadrature_order = Int(get_value(request, "quadrature_order", 2))
     singular_order = Int(get_value(request, "singular_order", 3))
+    close_pair_quadrature_order = Int(get_value(request, "close_pair_quadrature_order", 8))
+    close_pair_quadrature_order >= 4 || error("Deploy close-pair quadrature order must be at least 4.")
     rule = triangle_rule(FloatType, quadrature_order)
     identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
     identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
     singular_cache = build_singular_correction_cache(mesh, singular_order)
+    proximity = get_value(request, "proximity", Dict{String,Any}())
+    raw_close_face_pairs = get_value(proximity, "close_face_pairs", Any[])
+    close_face_pairs = [
+        length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
+        (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
+        for pair in raw_close_face_pairs
+    ]
+    near_correction_cache = build_near_correction_cache(
+        mesh,
+        close_face_pairs,
+        close_pair_quadrature_order,
+    )
     cpu_field_cache = build_field_evaluation_cache(mesh, rule)
 
     emit_event(
@@ -128,6 +142,7 @@ function solve_deploy_request_impl(request)
 
     device_cache = nothing
     device_singular_cache = nothing
+    device_near_correction_cache = nothing
     cuda_identity_cache = nothing
     field_cache = cpu_field_cache
     operators = nothing
@@ -145,6 +160,13 @@ function solve_deploy_request_impl(request)
                 p1_space,
                 dp0_space,
             )
+            if near_correction_cache.pair_count > 0
+                device_near_correction_cache = build_cuda_near_correction_cache(
+                    near_correction_cache,
+                    p1_space,
+                    dp0_space,
+                )
+            end
             cuda_identity_cache = build_cuda_burton_miller_identity_cache(
                 identity_p1_p1,
                 identity_p1_dp0,
@@ -171,6 +193,8 @@ function solve_deploy_request_impl(request)
                 accelerator_quadrature=beat_backend == :cuda,
                 singular_cache=singular_cache,
                 device_singular_cache=device_singular_cache,
+                near_correction_cache=near_correction_cache,
+                device_near_correction_cache=device_near_correction_cache,
                 symmetry_mode=:off,
             )
         end
@@ -200,7 +224,6 @@ function solve_deploy_request_impl(request)
         isolated_trace_relative_difference = Float32(
             norm(pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
         )
-        proximity = get_value(request, "proximity", Dict{String,Any}())
         proximity_pairs = get_value(proximity, "pairs", Any[])
         close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
         emit_event(
@@ -226,18 +249,23 @@ function solve_deploy_request_impl(request)
                     "node_count" => length(mesh.vertices),
                     "face_count" => length(mesh.faces),
                     "singular_pair_count" => singular_cache.pair_count,
+                    "near_face_pair_count" => near_correction_cache.pair_count,
+                    "close_pair_quadrature_order" => close_pair_quadrature_order,
+                    "close_pair_distance_m" => Float32(get_value(proximity, "close_pair_distance_m", 0.05)),
                     "quadrature_order" => quadrature_order,
                     "singular_order" => singular_order,
                     "isolated_trace_relative_difference" => isolated_trace_relative_difference,
                     "minimum_surface_distance_m" => get_value(proximity, "minimum_surface_distance_m", nothing),
                     "close_pair_count" => close_pair_count,
-                    "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.002)),
+                    "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.01)),
                 ),
             ),
         )
     finally
         operators === nothing || release_operator_storage!(operators)
         cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
+        device_near_correction_cache === nothing ||
+            release_cuda_image_singular_correction_cache!(device_near_correction_cache)
     end
     emit_event("completed"; solved_count=1)
 end

@@ -19,7 +19,7 @@ import {
   Vector3,
 } from "three";
 import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstance } from "../model/types";
-import { SOURCE_SURFACE_PADDING_M } from "../model/field";
+import { SOURCE_GROUND_CLEARANCE_M, SOURCE_SURFACE_PADDING_M } from "../model/field";
 
 export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
 
@@ -492,7 +492,7 @@ function SpeakerGeometry({
     const minimumRotatedY = Math.min(...bounds.corners.map((corner) => (
       new Vector3(...corner).applyQuaternion(object.quaternion).y
     )));
-    const minimumHeight = SOURCE_SURFACE_PADDING_M - minimumRotatedY;
+    const minimumHeight = SOURCE_GROUND_CLEARANCE_M - minimumRotatedY;
     object.position.y = Math.max(minimumHeight, object.position.y);
     const rotation = new Euler().setFromQuaternion(object.quaternion, "YXZ");
     onTransform({

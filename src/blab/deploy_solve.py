@@ -12,13 +12,14 @@ from typing import Any
 
 import numpy as np
 
-from blab.deploy_geometry import minimum_surface_distance, transform_package_points
+from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_within, transform_package_points
 from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
 DEPLOY_SOLVE_SCHEMA_VERSION = 2
-SOURCE_SURFACE_PADDING_M = 0.002
+SOURCE_SURFACE_PADDING_M = 0.01
 CLOSE_PAIR_DISTANCE_M = 0.05
+CLOSE_PAIR_QUADRATURE_ORDER = 8
 GROUND_TOLERANCE_M = 1e-6
 
 
@@ -179,6 +180,14 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     tolerance_hz = max(1e-4, abs(frequency_hz) * 1e-6)
     if abs(frequency_hz - requested_frequency) > tolerance_hz:
         raise ValueError("Deploy Level 2 initially requires an exact exported package frequency.")
+    close_pair_quadrature_override = payload.get("closePairQuadratureOrder")
+    close_pair_quadrature_order = int(
+        CLOSE_PAIR_QUADRATURE_ORDER
+        if close_pair_quadrature_override is None
+        else close_pair_quadrature_override
+    )
+    if not 4 <= close_pair_quadrature_order <= 16:
+        raise ValueError("Deploy close-pair quadrature order must be between 4 and 16.")
 
     raw_sources = payload.get("sources")
     if raw_sources is None and payload.get("source") is not None:
@@ -246,6 +255,7 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
             )
 
     proximity_pairs: list[dict[str, Any]] = []
+    close_face_pairs: list[list[int]] = []
     minimum_surface_distance_m: float | None = None
     for first_index in range(len(sources)):
         for second_index in range(first_index + 1, len(sources)):
@@ -260,6 +270,12 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
                 if minimum_surface_distance_m is None
                 else min(minimum_surface_distance_m, distance.distance_m)
             )
+            if distance.distance_m + GROUND_TOLERANCE_M < SOURCE_SURFACE_PADDING_M:
+                raise ValueError(
+                    f"Deploy sources {sources[first_index].id!r} and {sources[second_index].id!r} have "
+                    f"{distance.distance_m * 1000.0:.3f} mm surface spacing; at least "
+                    f"{SOURCE_SURFACE_PADDING_M * 1000.0:.1f} mm is required."
+                )
             pair = {
                 "source_a": sources[first_index].id,
                 "source_b": sources[second_index].id,
@@ -268,13 +284,29 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
                 "face_b": distance.face_b,
                 "close": distance.distance_m <= CLOSE_PAIR_DISTANCE_M,
             }
-            proximity_pairs.append(pair)
-            if distance.distance_m + GROUND_TOLERANCE_M < SOURCE_SURFACE_PADDING_M:
-                raise ValueError(
-                    f"Deploy sources {pair['source_a']!r} and {pair['source_b']!r} have "
-                    f"{distance.distance_m * 1000.0:.3f} mm surface spacing; at least "
-                    f"{SOURCE_SURFACE_PADDING_M * 1000.0:.1f} mm is required."
+            if pair["close"]:
+                face_pairs = surface_face_pairs_within(
+                    transformed_sources[first_index],
+                    triangles,
+                    transformed_sources[second_index],
+                    triangles,
+                    CLOSE_PAIR_DISTANCE_M,
+                    exact=False,
                 )
+                first_offset = first_index * triangles.shape[0]
+                second_offset = second_index * triangles.shape[0]
+                for face_pair in face_pairs:
+                    first_face = first_offset + face_pair.face_a
+                    second_face = second_offset + face_pair.face_b
+                    correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
+                        8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+                    )
+                    close_face_pairs.append([first_face, second_face, correction_order])
+                    close_face_pairs.append([second_face, first_face, correction_order])
+                pair["near_face_pair_count"] = len(face_pairs)
+            else:
+                pair["near_face_pair_count"] = 0
+            proximity_pairs.append(pair)
 
     q_parts: list[np.ndarray] = []
     reference_parts: list[np.ndarray] = []
@@ -326,11 +358,13 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
         "singular_order": int(payload.get("singularOrder", 3)),
+        "close_pair_quadrature_order": close_pair_quadrature_order,
         "proximity": {
             "surface_padding_m": SOURCE_SURFACE_PADDING_M,
             "close_pair_distance_m": CLOSE_PAIR_DISTANCE_M,
             "minimum_surface_distance_m": minimum_surface_distance_m,
             "pairs": proximity_pairs,
+            "close_face_pairs": close_face_pairs,
         },
         "provenance": {
             "package_path": str(package_path),

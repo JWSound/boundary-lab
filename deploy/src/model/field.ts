@@ -68,7 +68,8 @@ export function buildSourceInstance(config: SourceConfiguration): SpeakerInstanc
   };
 }
 
-export const SOURCE_SURFACE_PADDING_M = 0.002;
+export const SOURCE_SURFACE_PADDING_M = 0.01;
+export const SOURCE_GROUND_CLEARANCE_M = 0;
 
 export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, rollDeg = 0): number {
   const rotation = new Quaternion().setFromEuler(new Euler(
@@ -86,7 +87,7 @@ export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, ro
         }
       }
     }
-    return SOURCE_SURFACE_PADDING_M - minimumY;
+    return SOURCE_GROUND_CLEARANCE_M - minimumY;
   }
   let minimumSceneY = Infinity;
   for (let index = 0; index < pkg.mesh.positions.length; index += 3) {
@@ -97,7 +98,7 @@ export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, ro
     ).applyQuaternion(rotation);
     minimumSceneY = Math.min(minimumSceneY, point.y);
   }
-  return SOURCE_SURFACE_PADDING_M - minimumSceneY;
+  return SOURCE_GROUND_CLEARANCE_M - minimumSceneY;
 }
 
 export function nearestFrequencyIndex(pkg: LoadedSpeakerPackage, targetHz: number): number {

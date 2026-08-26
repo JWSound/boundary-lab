@@ -45,6 +45,7 @@ export BoundaryMesh,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
     build_cuda_image_singular_correction_cache,
+    build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
     build_rocm_burton_miller_identity_cache,
     build_rocm_sparse_scatter_cache,
@@ -67,6 +68,7 @@ export BoundaryMesh,
     build_field_evaluation_cache,
     build_beat_cpu_assembly_cache,
     build_singular_correction_cache,
+    build_near_correction_cache,
     assemble_regular_galerkin_operators_cpu,
     assemble_regular_galerkin_operators_cuda_regular,
     assemble_regular_galerkin_operators_rocm_regular,
@@ -107,6 +109,7 @@ export BoundaryMesh,
     symmetry_reduction_factor,
     symmetry_transforms,
     triangle_rule,
+    tensor_triangle_rule,
     validate_symmetry_fundamental_domain!
 
 function cuda_module()
@@ -253,6 +256,16 @@ function BoundaryMesh(vertices::Vector{SVector{3,T}}, faces::Vector{NTuple{3,Int
     end
 
     return BoundaryMesh{T}(vertices, faces, physical_tags, centroids, normals, areas, face_vertices)
+end
+
+struct NearCorrectionCache{T<:AbstractFloat}
+    pairs_by_test::Vector{Vector{SingularCorrectionPair{T}}}
+    pairs::Vector{SingularCorrectionPair{T}}
+    correction_rules::Vector{TriangleRule{T}}
+    correction_orders::Vector{Int}
+    trial_transform::SymmetryTransform
+    correction_order::Int
+    pair_count::Int
 end
 
 """
@@ -548,6 +561,25 @@ function triangle_rule(::Type{T}, order::Int=2) where {T<:AbstractFloat}
     )
 end
 
+"""Conical tensor-product Gauss rule for demanding regular triangle integrals."""
+function tensor_triangle_rule(::Type{T}, order::Int) where {T<:AbstractFloat}
+    order > 0 || error("Tensor triangle quadrature order must be positive.")
+    nodes, weights = gauss_rule_1d(T, order)
+    points = SVector{2,T}[]
+    triangle_weights = T[]
+    sizehint!(points, order * order)
+    sizehint!(triangle_weights, order * order)
+    for i in eachindex(nodes)
+        u = nodes[i]
+        jacobian = one(T) - u
+        for j in eachindex(nodes)
+            push!(points, SVector{2,T}(u, jacobian * nodes[j]))
+            push!(triangle_weights, weights[i] * weights[j] * jacobian)
+        end
+    end
+    return TriangleRule(points, triangle_weights)
+end
+
 function gauss_rule_1d(::Type{T}, order::Int) where {T<:AbstractFloat}
     if order == 1
         return [T(0.5)], [T(1.0)]
@@ -565,7 +597,16 @@ function gauss_rule_1d(::Type{T}, order::Int) where {T<:AbstractFloat}
         return [T(0.5) - x2, T(0.5) - x1, T(0.5) + x1, T(0.5) + x2], [w2, w1, w1, w2]
     end
 
-    error("Duffy 1D Gauss order must be between 1 and 4 in this implementation.")
+    if order > 4
+        diagonal = zeros(Float64, order)
+        off_diagonal = [index / sqrt(4.0 * index * index - 1.0) for index in 1:(order - 1)]
+        decomposition = eigen(SymTridiagonal(diagonal, off_diagonal))
+        nodes = T.((decomposition.values .+ 1.0) ./ 2.0)
+        weights = T.(decomposition.vectors[1, :] .^ 2)
+        return collect(nodes), collect(weights)
+    end
+
+    error("Gauss order must be positive.")
 end
 
 function duffy_rule(::Type{T}, order::Int, adjacency::Symbol) where {T<:AbstractFloat}
@@ -914,6 +955,67 @@ function build_singular_correction_cache(
     )
 end
 
+function build_near_correction_cache(
+    mesh::BoundaryMesh{T},
+    face_pairs,
+    correction_order::Int;
+    trial_transform::SymmetryTransform=SymmetryTransform(:identity, SVector{3,Int}(1, 1, 1), 1),
+) where {T<:AbstractFloat}
+    correction_order > 0 || error("Near-pair correction order must be positive.")
+    pairs_by_test = [SingularCorrectionPair{T}[] for _ in eachindex(mesh.faces)]
+    pairs = SingularCorrectionPair{T}[]
+    correction_orders = sort(unique(Int[
+        length(pair) >= 3 ? Int(pair[3]) : correction_order
+        for pair in face_pairs
+    ]))
+    all(order -> order > 0, correction_orders) || error("Near-pair correction orders must be positive.")
+    rule_index_by_order = Dict(order => index for (index, order) in enumerate(correction_orders))
+    identity_transform = trial_transform.signs == SVector{3,Int}(1, 1, 1)
+    seen = Set{Tuple{Int,Int}}()
+    for raw_pair in face_pairs
+        length(raw_pair) in (2, 3) || error(
+            "Every near-pair entry must contain test and trial face indices, with an optional quadrature order.",
+        )
+        test_index = Int(raw_pair[1])
+        trial_index = Int(raw_pair[2])
+        pair_order = length(raw_pair) >= 3 ? Int(raw_pair[3]) : correction_order
+        checkbounds(Bool, mesh.faces, test_index) || error("Near-pair test face index $(test_index) is outside the mesh.")
+        checkbounds(Bool, mesh.faces, trial_index) || error("Near-pair trial face index $(trial_index) is outside the mesh.")
+        candidate = (test_index, trial_index)
+        candidate in seen && continue
+        push!(seen, candidate)
+        if identity_transform && elements_are_adjacent(mesh.faces[test_index], mesh.faces[trial_index])
+            continue
+        elseif !identity_transform
+            transformed_trial = reflect_vertices(trial_transform, mesh.face_vertices[trial_index])
+            geometric_adjacency_info(
+                mesh.face_vertices[test_index],
+                transformed_trial;
+                tolerance=T(1e-8),
+            ).kind == :regular || continue
+        end
+        trial_normal = reflect_normal(trial_transform, mesh.normals[trial_index])
+        pair = SingularCorrectionPair(
+            test_index,
+            trial_index,
+            rule_index_by_order[pair_order],
+            (T(2) * mesh.areas[test_index]) * (T(2) * mesh.areas[trial_index]),
+            dot(mesh.normals[test_index], trial_normal),
+        )
+        push!(pairs_by_test[test_index], pair)
+        push!(pairs, pair)
+    end
+    return NearCorrectionCache(
+        pairs_by_test,
+        pairs,
+        [tensor_triangle_rule(T, order) for order in correction_orders],
+        correction_orders,
+        trial_transform,
+        isempty(correction_orders) ? correction_order : maximum(correction_orders),
+        length(pairs),
+    )
+end
+
 function image_singular_candidates(mesh::BoundaryMesh{T}, element_indices, transform::SymmetryTransform; tolerance::T=T(1e-8)) where {T<:AbstractFloat}
     indices = collect(element_indices)
     index_set = Set(indices)
@@ -997,6 +1099,8 @@ function assemble_regular_galerkin_operators(
     cpu_cache=nothing,
     device_singular_cache=nothing,
     device_image_singular_cache=nothing,
+    near_correction_cache=nothing,
+    device_near_correction_cache=nothing,
     rocm_assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
@@ -1014,6 +1118,7 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             cpu_cache=cpu_cache,
+            near_correction_cache=near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1036,6 +1141,8 @@ function assemble_regular_galerkin_operators(
             singular_cache=singular_cache,
             cuda_singular_cache=device_singular_cache,
             cuda_image_singular_cache=device_image_singular_cache,
+            near_correction_cache=near_correction_cache,
+            cuda_near_correction_cache=device_near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end

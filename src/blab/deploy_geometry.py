@@ -17,6 +17,15 @@ class SurfaceDistanceResult:
 
 
 @dataclass(frozen=True)
+class SurfaceFacePair:
+    """A directed-independent pair of surface faces within a distance limit."""
+
+    distance_m: float
+    face_a: int
+    face_b: int
+
+
+@dataclass(frozen=True)
 class _BvhNode:
     bounds_min: np.ndarray
     bounds_max: np.ndarray
@@ -246,3 +255,81 @@ def minimum_surface_distance(
                 if child_bound < best_squared:
                     heapq.heappush(queue, (child_bound, next(counter), child_a, child_b))
     return SurfaceDistanceResult(float(np.sqrt(best_squared)), best_faces[0], best_faces[1])
+
+
+def surface_face_pairs_within(
+    points_a: np.ndarray,
+    triangles_a: np.ndarray,
+    points_b: np.ndarray,
+    triangles_b: np.ndarray,
+    max_distance_m: float,
+    *,
+    leaf_size: int = 8,
+    exact: bool = True,
+) -> list[SurfaceFacePair]:
+    """Return every triangle pair whose exact surface distance is within a limit.
+
+    The paired BVH traversal prunes node pairs farther apart than the inclusive
+    threshold. When ``exact`` is false, face-AABB lower bounds are emitted as a
+    conservative broad phase; this is appropriate for correction caches where
+    a small number of false positives is cheaper than thousands of scalar
+    triangle-distance evaluations. Results are deterministic and sorted by the
+    two local face indices so the cache is reproducible.
+    """
+
+    maximum = float(max_distance_m)
+    if not np.isfinite(maximum) or maximum < 0.0:
+        raise ValueError("Surface-pair distance limit must be finite and non-negative.")
+    faces_a = np.asarray(points_a, dtype=np.float64)[np.asarray(triangles_a, dtype=np.int64)]
+    faces_b = np.asarray(points_b, dtype=np.float64)[np.asarray(triangles_b, dtype=np.int64)]
+    if faces_a.size == 0 or faces_b.size == 0:
+        raise ValueError("Surface-pair checks require non-empty triangle meshes.")
+    root_a = _build_bvh(faces_a, np.arange(faces_a.shape[0], dtype=np.int64), leaf_size)
+    root_b = _build_bvh(faces_b, np.arange(faces_b.shape[0], dtype=np.int64), leaf_size)
+    maximum_squared = maximum * maximum
+    stack: list[tuple[_BvhNode, _BvhNode]] = [(root_a, root_b)]
+    pairs: list[SurfaceFacePair] = []
+    while stack:
+        node_a, node_b = stack.pop()
+        if _aabb_distance_squared(node_a, node_b) > maximum_squared:
+            continue
+        if node_a.leaf and node_b.leaf:
+            leaf_faces_a = faces_a[node_a.face_indices]
+            leaf_faces_b = faces_b[node_b.face_indices]
+            minimum_a = np.min(leaf_faces_a, axis=1)
+            maximum_a = np.max(leaf_faces_a, axis=1)
+            minimum_b = np.min(leaf_faces_b, axis=1)
+            maximum_b = np.max(leaf_faces_b, axis=1)
+            separation = np.maximum(
+                0.0,
+                np.maximum(
+                    minimum_a[:, np.newaxis, :] - maximum_b[np.newaxis, :, :],
+                    minimum_b[np.newaxis, :, :] - maximum_a[:, np.newaxis, :],
+                ),
+            )
+            candidate_rows = np.argwhere(np.sum(separation * separation, axis=2) <= maximum_squared)
+            for local_a, local_b in candidate_rows:
+                face_a = int(node_a.face_indices[local_a])
+                face_b = int(node_b.face_indices[local_b])
+                aabb_distance_squared = float(np.dot(separation[local_a, local_b], separation[local_a, local_b]))
+                if not exact:
+                    pairs.append(SurfaceFacePair(float(np.sqrt(aabb_distance_squared)), face_a, face_b))
+                    continue
+                distance_squared = _triangle_distance_squared(faces_a[face_a], faces_b[face_b])
+                if distance_squared <= maximum_squared:
+                    pairs.append(
+                        SurfaceFacePair(
+                            float(np.sqrt(distance_squared)),
+                            face_a,
+                            face_b,
+                        )
+                    )
+            continue
+        children_a = (node_a,) if node_a.leaf else (node_a.left, node_a.right)
+        children_b = (node_b,) if node_b.leaf else (node_b.left, node_b.right)
+        for child_a in children_a:
+            for child_b in children_b:
+                if child_a is not None and child_b is not None:
+                    stack.append((child_a, child_b))
+    pairs.sort(key=lambda pair: (pair.face_a, pair.face_b))
+    return pairs

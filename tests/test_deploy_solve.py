@@ -8,8 +8,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from blab.deploy_geometry import minimum_surface_distance
-from blab.deploy_solve import DEPLOY_SOLVE_SCHEMA, SOURCE_SURFACE_PADDING_M, prepare_deploy_solve_request
+from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_within
+from blab.deploy_solve import (
+    CLOSE_PAIR_DISTANCE_M,
+    CLOSE_PAIR_QUADRATURE_ORDER,
+    DEPLOY_SOLVE_SCHEMA,
+    SOURCE_SURFACE_PADDING_M,
+    prepare_deploy_solve_request,
+)
 
 PACKAGE_PATH = Path(__file__).parents[1] / "deploy" / "library" / "S218BP_LOD.blabsp"
 
@@ -77,6 +83,8 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
         "roll_deg": 0.0,
     }
     assert request["proximity"]["surface_padding_m"] == SOURCE_SURFACE_PADDING_M
+    assert request["close_pair_quadrature_order"] == CLOSE_PAIR_QUADRATURE_ORDER
+    assert request["proximity"]["close_face_pairs"] == []
     assert request["proximity"]["minimum_surface_distance_m"] > 2.0
 
     with zipfile.ZipFile(PACKAGE_PATH, "r") as archive:
@@ -176,6 +184,19 @@ def test_prepare_deploy_solve_request_enforces_surface_padding(tmp_path: Path) -
         prepare_deploy_solve_request(payload, tmp_path)
 
 
+def test_prepare_deploy_solve_request_rejects_old_two_mm_padding_target(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["sources"][0].update(
+        {"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
+    )
+    payload["sources"][1].update(
+        {"positionX": 1.202, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
+    )
+
+    with pytest.raises(ValueError, match="at least 10.0 mm"):
+        prepare_deploy_solve_request(payload, tmp_path)
+
+
 def test_bvh_surface_distance_for_parallel_triangles() -> None:
     first = np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
     second = first + np.asarray([0, 0, 0.125])
@@ -185,3 +206,47 @@ def test_bvh_surface_distance_for_parallel_triangles() -> None:
 
     assert result.distance_m == pytest.approx(0.125)
     assert (result.face_a, result.face_b) == (0, 0)
+
+
+def test_bvh_emits_every_pair_at_inclusive_close_pair_threshold() -> None:
+    first = np.asarray(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [2, 0, 0], [3, 0, 0], [2, 1, 0]],
+        dtype=float,
+    )
+    triangles = np.asarray([[0, 1, 2], [3, 4, 5]], dtype=np.int64)
+    second = first + np.asarray([0, 0, CLOSE_PAIR_DISTANCE_M])
+
+    pairs = surface_face_pairs_within(first, triangles, second, triangles, CLOSE_PAIR_DISTANCE_M)
+
+    assert [(pair.face_a, pair.face_b) for pair in pairs] == [(0, 0), (1, 1)]
+    assert all(pair.distance_m == pytest.approx(CLOSE_PAIR_DISTANCE_M) for pair in pairs)
+
+
+def test_bvh_close_pair_threshold_excludes_faces_just_outside() -> None:
+    first = np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+    triangles = np.asarray([[0, 1, 2]], dtype=np.int64)
+    second = first + np.asarray([0, 0, CLOSE_PAIR_DISTANCE_M + 1e-5])
+
+    assert surface_face_pairs_within(first, triangles, second, triangles, CLOSE_PAIR_DISTANCE_M) == []
+
+
+def test_prepare_deploy_solve_request_emits_directed_close_face_pairs(tmp_path: Path) -> None:
+    payload = _payload()
+    # Package X bounds are +/- 0.6 m; these centers produce a 10 mm surface gap.
+    payload["sources"][0].update(
+        {"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
+    )
+    payload["sources"][1].update(
+        {"positionX": 1.21, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
+    )
+
+    _, request = prepare_deploy_solve_request(payload, tmp_path)
+
+    cabinet_pair = request["proximity"]["pairs"][0]
+    directed_pairs = request["proximity"]["close_face_pairs"]
+    assert cabinet_pair["close"] is True
+    assert cabinet_pair["near_face_pair_count"] > 1
+    assert len(directed_pairs) == 2 * cabinet_pair["near_face_pair_count"]
+    directed_set = {tuple(pair) for pair in directed_pairs}
+    assert all((trial, test, order) in directed_set for test, trial, order in directed_set)
+    assert {order for _, _, order in directed_set}.issubset({4, 6, 8})

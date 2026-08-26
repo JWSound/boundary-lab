@@ -33,7 +33,7 @@ npm start
 - Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
-- Keeps cabinet geometry above the ground plane, omits below-ground audience samples, and reserves 2 mm between cabinet surfaces.
+- Keeps cabinet geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between cabinet surfaces for stable close-pair quadrature.
 - Uses a triangle BVH to measure exact inter-cabinet surface spacing before a solve.
 - Saves the editable scene as a readable `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.

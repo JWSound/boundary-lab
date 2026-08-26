@@ -14,6 +14,8 @@ function assemble_regular_galerkin_operators_cuda_regular(
     singular_cache=nothing,
     cuda_singular_cache=nothing,
     cuda_image_singular_cache=nothing,
+    near_correction_cache=nothing,
+    cuda_near_correction_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA regular-pair assembly requested, but CUDA.functional() is false.")
@@ -208,6 +210,31 @@ function assemble_regular_galerkin_operators_cuda_regular(
         end
     end
 
+    near_pair_count = _cuda_timed_stage!(timing, "regular_operator_near_pair_corrections") do
+        if near_correction_cache === nothing || near_correction_cache.pair_count == 0
+            0
+        else
+            add_near_corrections_cuda_compact!(
+                (
+                    single_layer=single_layer,
+                    double_layer=double_layer,
+                    adjoint_double_layer=adjoint_double_layer,
+                    hypersingular=hypersingular,
+                    on_gpu=true,
+                ),
+                mesh,
+                p1_space,
+                dp0_space,
+                k,
+                rule,
+                near_correction_cache;
+                cuda_regular_cache=cache,
+                cuda_near_correction_cache=cuda_near_correction_cache,
+                timing=timing,
+            )
+        end
+    end
+
     _cuda_timed_stage!(timing, "regular_operator_symmetry_row_weights") do
         _apply_operator_p1_row_weights!(
             (
@@ -231,6 +258,8 @@ function assemble_regular_galerkin_operators_cuda_regular(
         singular_pairs=singular_pairs,
         skipped_pairs=skipped_pairs,
         image_singular_pairs=image_singular_pairs,
+        near_pair_count=near_pair_count,
+        near_pair_quadrature_order=near_correction_cache === nothing ? 0 : near_correction_cache.correction_order,
         on_gpu=true,
         regular_kernel_threads=kernel_threads,
         regular_kernel_blocks=kernel_blocks,

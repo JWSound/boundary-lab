@@ -114,8 +114,11 @@ export interface Level2SolveResult {
     node_count: number;
     face_count: number;
     singular_pair_count: number;
+    near_face_pair_count: number;
     quadrature_order: number;
     singular_order: number;
+    close_pair_quadrature_order: number;
+    close_pair_distance_m: number;
     isolated_trace_relative_difference: number;
     minimum_surface_distance_m: number | null;
     close_pair_count: number;
