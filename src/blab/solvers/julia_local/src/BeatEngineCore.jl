@@ -101,6 +101,7 @@ export BoundaryMesh,
     reflect_normal,
     reflect_point,
     reflect_vertices,
+    rigid_ground_transform,
     p1_symmetry_orbit_weights,
     snap_symmetry_planes,
     snap_symmetry_plane_vertices,
@@ -329,8 +330,18 @@ build_dp0_space(mesh::BoundaryMesh) = DP0Space(collect(eachindex(mesh.faces)), l
 
 function normalized_symmetry_mode(mode)
     mode_symbol = mode isa Symbol ? mode : Symbol(lowercase(strip(String(mode))))
-    mode_symbol in (:off, :x, :xy) || error("Unsupported symmetry mode: $(mode). Expected off, x, or xy.")
+    mode_symbol in (:off, :x, :xy, :ground) || error(
+        "Unsupported image mode: $(mode). Expected off, x, xy, or ground.",
+    )
     return mode_symbol
+end
+
+rigid_ground_transform() = SymmetryTransform(:rigid_ground, SVector{3,Int}(1, -1, 1), -1)
+
+function symmetry_active_axes(mode_symbol::Symbol)
+    mode_symbol == :x && return (1,)
+    mode_symbol == :xy && return (1, 2)
+    return ()
 end
 
 function symmetry_transforms(mode; include_identity::Bool=true)
@@ -343,6 +354,8 @@ function symmetry_transforms(mode; include_identity::Bool=true)
         push!(transforms, SymmetryTransform(:x, SVector{3,Int}(-1, 1, 1), -1))
         push!(transforms, SymmetryTransform(:y, SVector{3,Int}(1, -1, 1), -1))
         push!(transforms, SymmetryTransform(:xy, SVector{3,Int}(-1, -1, 1), 1))
+    elseif mode_symbol == :ground
+        push!(transforms, rigid_ground_transform())
     end
     return tuple(transforms...)
 end
@@ -392,7 +405,7 @@ function snap_symmetry_plane_vertices(
     tolerance::T=symmetry_plane_tolerance(vertices),
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     return [
         SVector{3,T}(ntuple(
             axis -> axis in active_axes && abs(vertex[axis]) <= tolerance ? zero(T) : vertex[axis],
@@ -418,7 +431,7 @@ function validate_symmetry_fundamental_domain!(
     tolerance::T=symmetry_plane_tolerance(mesh.vertices),
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     for axis in active_axes
         for (vertex_index, vertex) in enumerate(mesh.vertices)
             if vertex[axis] < -tolerance
@@ -440,7 +453,7 @@ function p1_symmetry_orbit_weights(
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     weights = ones(T, length(mesh.vertices))
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     for (vertex_index, vertex) in enumerate(mesh.vertices)
         weight = T(1)
         for axis in active_axes
@@ -1101,6 +1114,8 @@ function assemble_regular_galerkin_operators(
     device_image_singular_cache=nothing,
     near_correction_cache=nothing,
     device_near_correction_cache=nothing,
+    image_near_correction_cache=nothing,
+    device_image_near_correction_cache=nothing,
     rocm_assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
@@ -1119,6 +1134,7 @@ function assemble_regular_galerkin_operators(
             singular_cache=singular_cache,
             cpu_cache=cpu_cache,
             near_correction_cache=near_correction_cache,
+            image_near_correction_cache=image_near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1143,6 +1159,8 @@ function assemble_regular_galerkin_operators(
             cuda_image_singular_cache=device_image_singular_cache,
             near_correction_cache=near_correction_cache,
             cuda_near_correction_cache=device_near_correction_cache,
+            image_near_correction_cache=image_near_correction_cache,
+            cuda_image_near_correction_cache=device_image_near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end

@@ -21,6 +21,7 @@ SOURCE_SURFACE_PADDING_M = 0.01
 CLOSE_PAIR_DISTANCE_M = 0.05
 CLOSE_PAIR_QUADRATURE_ORDER = 8
 GROUND_TOLERANCE_M = 1e-6
+GROUND_IMAGE_SINGULAR_TOLERANCE_M = 1e-8
 
 
 @dataclass(frozen=True)
@@ -308,6 +309,43 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
                 pair["near_face_pair_count"] = 0
             proximity_pairs.append(pair)
 
+    # A rigid half-space Green's function adds a positive image of every
+    # cabinet boundary across the world Y=0 plane. Correct its near interactions
+    # with the same tiered quadrature used for adjacent real cabinets. Exact
+    # coincident/edge/vertex image pairs are omitted here because BEAT's image
+    # Duffy cache owns those singular interactions. Use conservative face-AABB
+    # distances for the correction tiers, matching the direct close-pair path;
+    # exact scalar triangle distances are too costly for interactive staging.
+    point_count_per_source = points.shape[0]
+    combined_points = np.concatenate(transformed_sources, axis=0)
+    combined_triangles = np.concatenate(
+        [triangles + source_index * point_count_per_source for source_index in range(len(sources))],
+        axis=0,
+    )
+    reflected_points = combined_points.copy()
+    reflected_points[:, 1] *= -1.0
+    ground_image_face_pairs: list[list[int]] = []
+    combined_faces = combined_points[combined_triangles]
+    reflected_faces = reflected_points[combined_triangles]
+    singular_tolerance_squared = GROUND_IMAGE_SINGULAR_TOLERANCE_M**2
+    for face_pair in surface_face_pairs_within(
+        combined_points,
+        combined_triangles,
+        reflected_points,
+        combined_triangles,
+        CLOSE_PAIR_DISTANCE_M,
+        exact=False,
+    ):
+        test_vertices = combined_faces[face_pair.face_a]
+        trial_vertices = reflected_faces[face_pair.face_b]
+        vertex_deltas = test_vertices[:, np.newaxis, :] - trial_vertices[np.newaxis, :, :]
+        if np.any(np.sum(vertex_deltas * vertex_deltas, axis=2) <= singular_tolerance_squared):
+            continue
+        correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
+            8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+        )
+        ground_image_face_pairs.append([face_pair.face_a, face_pair.face_b, correction_order])
+
     q_parts: list[np.ndarray] = []
     reference_parts: list[np.ndarray] = []
     for source in sources:
@@ -359,12 +397,21 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
         "singular_order": int(payload.get("singularOrder", 3)),
         "close_pair_quadrature_order": close_pair_quadrature_order,
+        "boundary": {
+            "ground_plane": {
+                "type": "rigid_half_space",
+                "axis": "y",
+                "offset_m": 0.0,
+                "reflection_coefficient": 1.0,
+            },
+        },
         "proximity": {
             "surface_padding_m": SOURCE_SURFACE_PADDING_M,
             "close_pair_distance_m": CLOSE_PAIR_DISTANCE_M,
             "minimum_surface_distance_m": minimum_surface_distance_m,
             "pairs": proximity_pairs,
             "close_face_pairs": close_face_pairs,
+            "ground_image_close_face_pairs": ground_image_face_pairs,
         },
         "provenance": {
             "package_path": str(package_path),
@@ -377,6 +424,7 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
             "node_count": int(points.shape[0] * len(sources)),
             "face_count": int(triangles.shape[0] * len(sources)),
             "excitation_index": 0,
+            "exterior_domain": "rigid_y0_half_space",
         },
     }
     request_path = work_path / "request.json"

@@ -279,6 +279,114 @@ end
     @test cached_operators.hypersingular ≈ operators.hypersingular
 end
 
+@testset "rigid y0 half-space Green function" begin
+    T = Float32
+    direct_vertices = [
+        SVector{3,T}(0, 0.2, 0),
+        SVector{3,T}(0.04, 0.2, 0),
+        SVector{3,T}(0, 0.2, 0.04),
+    ]
+    direct_mesh = BoundaryMesh(direct_vertices, [(1, 2, 3)], [1])
+    full_vertices = vcat(
+        direct_vertices,
+        [SVector{3,T}(point[1], -point[2], point[3]) for point in direct_vertices],
+    )
+    # Reverse the reflected triangle so its outward normal is the physical
+    # reflection of the direct triangle's normal.
+    full_mesh = BoundaryMesh(full_vertices, [(1, 2, 3), (4, 6, 5)], [1, 1])
+    direct_p1 = build_p1_space(direct_mesh)
+    direct_dp0 = build_dp0_space(direct_mesh)
+    full_p1 = build_p1_space(full_mesh)
+    full_dp0 = build_dp0_space(full_mesh)
+    rule = triangle_rule(T, 3)
+    k = T(2pi * 80.0 / 343.0)
+
+    direct_singular = build_singular_correction_cache(direct_mesh, 3)
+    full_singular = build_singular_correction_cache(full_mesh, 3)
+    half_space = assemble_regular_galerkin_operators(
+        direct_mesh, direct_p1, direct_dp0, k, rule;
+        backend=:cpu, skip_singular=false, singular_cache=direct_singular,
+        symmetry_mode=:ground,
+    )
+    full_space = assemble_regular_galerkin_operators(
+        full_mesh, full_p1, full_dp0, k, rule;
+        backend=:cpu, skip_singular=false, singular_cache=full_singular,
+    )
+
+    @test rigid_ground_transform().signs == SVector{3,Int}(1, -1, 1)
+    @test half_space.single_layer[:, 1] ≈
+        full_space.single_layer[1:3, 1] + full_space.single_layer[1:3, 2] rtol=T(2e-5)
+    @test half_space.adjoint_double_layer[:, 1] ≈
+        full_space.adjoint_double_layer[1:3, 1] + full_space.adjoint_double_layer[1:3, 2] rtol=T(2e-5) atol=T(2e-7)
+    @test half_space.double_layer ≈
+        full_space.double_layer[1:3, 1:3] + full_space.double_layer[1:3, 4:6] rtol=T(2e-5) atol=T(2e-7)
+    @test half_space.hypersingular ≈
+        full_space.hypersingular[1:3, 1:3] + full_space.hypersingular[1:3, 4:6] rtol=T(2e-5) atol=T(2e-5)
+
+    identity_off = assemble_l2_identity_matrix(direct_mesh, direct_p1, direct_dp0, rule, :p1, :p1)
+    identity_ground = assemble_l2_identity_matrix(
+        direct_mesh, direct_p1, direct_dp0, rule, :p1, :p1;
+        symmetry_mode=:ground,
+    )
+    @test identity_ground == identity_off
+
+    pressure = Complex{T}[1.0 + 0.2im, 0.7 - 0.1im, 1.2 + 0.05im]
+    neumann = Complex{T}[0.3 - 0.2im]
+    field_cache = build_field_evaluation_cache(direct_mesh, rule; symmetry_mode=:ground)
+    mirrored_field = evaluate_galerkin_field_cpu(
+        [SVector{3,T}(0.01, 0.6, 0.02), SVector{3,T}(0.01, -0.6, 0.02)],
+        direct_mesh,
+        pressure,
+        neumann,
+        k,
+        field_cache,
+    )
+    @test mirrored_field[1] ≈ mirrored_field[2] rtol=T(2e-6) atol=T(2e-7)
+
+    if cuda_available()
+        cuda_regular = build_cuda_regular_assembly_cache(direct_mesh, rule)
+        cuda_singular = BeatEngineCore.build_cuda_singular_correction_cache(
+            direct_singular,
+            direct_p1,
+            direct_dp0,
+        )
+        cuda_image_singular = build_cuda_image_singular_correction_cache(
+            direct_mesh,
+            direct_p1,
+            direct_dp0,
+            3,
+            eachindex(direct_mesh.faces),
+            :ground,
+        )
+        cuda_half_space = assemble_regular_galerkin_operators(
+            direct_mesh, direct_p1, direct_dp0, k, rule;
+            skip_singular=false,
+            device_cache=cuda_regular,
+            singular_cache=direct_singular,
+            device_singular_cache=cuda_singular,
+            device_image_singular_cache=cuda_image_singular,
+            symmetry_mode=:ground,
+        )
+        @test Array(cuda_half_space.single_layer) ≈ half_space.single_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_half_space.double_layer) ≈ half_space.double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_half_space.adjoint_double_layer) ≈ half_space.adjoint_double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_half_space.hypersingular) ≈ half_space.hypersingular rtol=T(5e-3) atol=T(5e-3)
+
+        cuda_field_cache = build_cuda_field_evaluation_cache(field_cache)
+        cuda_field = evaluate_galerkin_field_cuda(
+            [SVector{3,T}(0.01, 0.6, 0.02), SVector{3,T}(0.01, -0.6, 0.02)],
+            direct_mesh,
+            pressure,
+            neumann,
+            k,
+            cuda_field_cache,
+        )
+        @test cuda_field ≈ mirrored_field rtol=T(5e-4) atol=T(5e-6)
+        release_operator_storage!(cuda_half_space)
+        release_cuda_image_singular_correction_cache!(cuda_image_singular)
+    end
+end
+
 @testset "close-pair higher-order correction" begin
     T = Float32
     vertices = [
@@ -344,6 +452,15 @@ end
     )
     @test image_cache.pair_count == 1
     @test image_cache.trial_transform == ground_image
+    combined_image_corrected = assemble_regular_galerkin_operators(
+        mesh, p1, dp0, k, base_rule;
+        backend=:cpu, skip_singular=false, singular_cache=singular_cache,
+        near_correction_cache=near_cache,
+        image_near_correction_cache=image_cache,
+        symmetry_mode=:ground,
+    )
+    @test combined_image_corrected.near_pair_count == 3
+    @test all(isfinite, real.(combined_image_corrected.single_layer))
 
     image_mesh = BoundaryMesh(
         [
@@ -397,6 +514,31 @@ end
         @test Array(cuda_corrected.double_layer) ≈ corrected.double_layer rtol=T(5e-3) atol=T(5e-5)
         @test Array(cuda_corrected.adjoint_double_layer) ≈ corrected.adjoint_double_layer rtol=T(5e-3) atol=T(5e-5)
         @test Array(cuda_corrected.hypersingular) ≈ corrected.hypersingular rtol=T(5e-3) atol=T(5e-3)
+        cuda_image_near = build_cuda_near_correction_cache(image_cache, p1, dp0)
+        cuda_image_singular = build_cuda_image_singular_correction_cache(
+            mesh, p1, dp0, 2, eachindex(mesh.faces), :ground,
+        )
+        cuda_combined = assemble_regular_galerkin_operators(
+            mesh, p1, dp0, k, base_rule;
+            skip_singular=false,
+            device_cache=cuda_regular,
+            singular_cache=singular_cache,
+            device_singular_cache=cuda_singular,
+            device_image_singular_cache=cuda_image_singular,
+            near_correction_cache=near_cache,
+            device_near_correction_cache=cuda_near,
+            image_near_correction_cache=image_cache,
+            device_image_near_correction_cache=cuda_image_near,
+            symmetry_mode=:ground,
+        )
+        @test cuda_combined.near_pair_count == combined_image_corrected.near_pair_count
+        @test Array(cuda_combined.single_layer) ≈ combined_image_corrected.single_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_combined.double_layer) ≈ combined_image_corrected.double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_combined.adjoint_double_layer) ≈ combined_image_corrected.adjoint_double_layer rtol=T(5e-3) atol=T(5e-5)
+        @test Array(cuda_combined.hypersingular) ≈ combined_image_corrected.hypersingular rtol=T(5e-3) atol=T(5e-3)
+        release_operator_storage!(cuda_combined)
+        release_cuda_image_singular_correction_cache!(cuda_image_near)
+        release_cuda_image_singular_correction_cache!(cuda_image_singular)
         release_operator_storage!(cuda_corrected)
         release_cuda_image_singular_correction_cache!(cuda_near)
     end

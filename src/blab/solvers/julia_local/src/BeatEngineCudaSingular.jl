@@ -210,7 +210,7 @@ function image_singular_cache_arrays(
         end
     end
 
-    total_rule_points = sum(length(rule.weights) for rule in rules)
+    total_rule_points = sum((length(rule.weights) for rule in rules); init=0)
     rule_offsets = Vector{Int32}(undef, length(rules) + 1)
     rule_test_points = Matrix{T}(undef, total_rule_points, 2)
     rule_trial_points = Matrix{T}(undef, total_rule_points, 2)

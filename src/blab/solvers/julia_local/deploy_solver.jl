@@ -80,6 +80,20 @@ function solve_deploy_request_impl(request)
     density > 0 || error("Deploy density must be positive.")
     sound_speed > 0 || error("Deploy sound speed must be positive.")
     k = FloatType(2pi) * frequency / sound_speed
+    boundary = get_value(request, "boundary", Dict{String,Any}())
+    ground_plane = get_value(boundary, "ground_plane", Dict{String,Any}())
+    get_value(ground_plane, "type", "rigid_half_space") == "rigid_half_space" || error(
+        "Deploy Level 2 requires the global rigid half-space ground boundary.",
+    )
+    lowercase(String(get_value(ground_plane, "axis", "y"))) == "y" || error(
+        "Deploy rigid ground must use the world Y axis.",
+    )
+    Float64(get_value(ground_plane, "offset_m", 0.0)) == 0.0 || error(
+        "Deploy rigid ground must remain at Y=0.",
+    )
+    Float64(get_value(ground_plane, "reflection_coefficient", 1.0)) == 1.0 || error(
+        "Deploy rigid ground requires reflection coefficient +1.",
+    )
 
     emit_event("status"; message="Loading fixed-source speaker boundary")
     package_mesh = load_gmsh22_with_tags(
@@ -128,7 +142,19 @@ function solve_deploy_request_impl(request)
         close_face_pairs,
         close_pair_quadrature_order,
     )
-    cpu_field_cache = build_field_evaluation_cache(mesh, rule)
+    raw_ground_close_face_pairs = get_value(proximity, "ground_image_close_face_pairs", Any[])
+    ground_close_face_pairs = [
+        length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
+        (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
+        for pair in raw_ground_close_face_pairs
+    ]
+    ground_near_correction_cache = build_near_correction_cache(
+        mesh,
+        ground_close_face_pairs,
+        close_pair_quadrature_order;
+        trial_transform=rigid_ground_transform(),
+    )
+    cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=:ground)
 
     emit_event(
         "initialized";
@@ -142,7 +168,9 @@ function solve_deploy_request_impl(request)
 
     device_cache = nothing
     device_singular_cache = nothing
+    device_image_singular_cache = nothing
     device_near_correction_cache = nothing
+    device_ground_near_correction_cache = nothing
     cuda_identity_cache = nothing
     field_cache = cpu_field_cache
     operators = nothing
@@ -160,9 +188,24 @@ function solve_deploy_request_impl(request)
                 p1_space,
                 dp0_space,
             )
+            device_image_singular_cache = build_cuda_image_singular_correction_cache(
+                mesh,
+                p1_space,
+                dp0_space,
+                singular_order,
+                eachindex(mesh.faces),
+                :ground,
+            )
             if near_correction_cache.pair_count > 0
                 device_near_correction_cache = build_cuda_near_correction_cache(
                     near_correction_cache,
+                    p1_space,
+                    dp0_space,
+                )
+            end
+            if ground_near_correction_cache.pair_count > 0
+                device_ground_near_correction_cache = build_cuda_near_correction_cache(
+                    ground_near_correction_cache,
                     p1_space,
                     dp0_space,
                 )
@@ -177,7 +220,7 @@ function solve_deploy_request_impl(request)
             emit_event("status"; message="Preparing BEAT CPU geometry caches")
         end
 
-        emit_event("status"; message="Assembling Level 2 boundary operators")
+        emit_event("status"; message="Assembling Level 2 rigid half-space boundary operators")
         assembly_seconds = @elapsed begin
             operators = assemble_regular_galerkin_operators(
                 mesh,
@@ -193,9 +236,12 @@ function solve_deploy_request_impl(request)
                 accelerator_quadrature=beat_backend == :cuda,
                 singular_cache=singular_cache,
                 device_singular_cache=device_singular_cache,
+                device_image_singular_cache=device_image_singular_cache,
                 near_correction_cache=near_correction_cache,
                 device_near_correction_cache=device_near_correction_cache,
-                symmetry_mode=:off,
+                image_near_correction_cache=ground_near_correction_cache,
+                device_image_near_correction_cache=device_ground_near_correction_cache,
+                symmetry_mode=:ground,
             )
         end
 
@@ -250,6 +296,10 @@ function solve_deploy_request_impl(request)
                     "face_count" => length(mesh.faces),
                     "singular_pair_count" => singular_cache.pair_count,
                     "near_face_pair_count" => near_correction_cache.pair_count,
+                    "ground_image_near_face_pair_count" => ground_near_correction_cache.pair_count,
+                    "ground_image_singular_pair_count" => operators.image_singular_pairs,
+                    "exterior_domain" => "rigid_y0_half_space",
+                    "ground_reflection_coefficient" => 1.0f0,
                     "close_pair_quadrature_order" => close_pair_quadrature_order,
                     "close_pair_distance_m" => Float32(get_value(proximity, "close_pair_distance_m", 0.05)),
                     "quadrature_order" => quadrature_order,
@@ -264,8 +314,12 @@ function solve_deploy_request_impl(request)
     finally
         operators === nothing || release_operator_storage!(operators)
         cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
+        device_image_singular_cache === nothing ||
+            release_cuda_image_singular_correction_cache!(device_image_singular_cache)
         device_near_correction_cache === nothing ||
             release_cuda_image_singular_correction_cache!(device_near_correction_cache)
+        device_ground_near_correction_cache === nothing ||
+            release_cuda_image_singular_correction_cache!(device_ground_near_correction_cache)
     end
     emit_event("completed"; solved_count=1)
 end

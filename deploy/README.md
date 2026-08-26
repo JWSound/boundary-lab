@@ -30,7 +30,7 @@ npm start
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Reports average, peak, and P10-P90 coverage spread while the scene changes.
-- Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
+- Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve with an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
 - Keeps cabinet geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between cabinet surfaces for stable close-pair quadrature.
@@ -40,7 +40,7 @@ npm start
 
 Boundary fidelity is available in the desktop app for Level 2 packages loaded from disk. Coupled fidelity remains unavailable, and browser-only sessions retain the Level 1 preview.
 
-The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice is free-field, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
+The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice uses a globally reflective rigid ground plane, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
 
 ## Verification
 
@@ -55,4 +55,4 @@ npm run test:level2
 
 ## Next solver milestone
 
-Use the BVH candidates to apply selective close-pair correction quadrature, followed by a rigid half-space ground image.
+Reuse the rigid-ground and close-pair geometry caches across live solves, then route the future Level 3 condensed-interior exterior operator through the same half-space path.

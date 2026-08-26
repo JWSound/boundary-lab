@@ -85,7 +85,15 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert request["proximity"]["surface_padding_m"] == SOURCE_SURFACE_PADDING_M
     assert request["close_pair_quadrature_order"] == CLOSE_PAIR_QUADRATURE_ORDER
     assert request["proximity"]["close_face_pairs"] == []
+    assert request["proximity"]["ground_image_close_face_pairs"] == []
     assert request["proximity"]["minimum_surface_distance_m"] > 2.0
+    assert request["boundary"]["ground_plane"] == {
+        "type": "rigid_half_space",
+        "axis": "y",
+        "offset_m": 0.0,
+        "reflection_coefficient": 1.0,
+    }
+    assert request["provenance"]["exterior_domain"] == "rigid_y0_half_space"
 
     with zipfile.ZipFile(PACKAGE_PATH, "r") as archive:
         with np.load(io.BytesIO(archive.read("data/fixed-sources.npz")), allow_pickle=False) as fixed:
@@ -250,3 +258,18 @@ def test_prepare_deploy_solve_request_emits_directed_close_face_pairs(tmp_path: 
     directed_set = {tuple(pair) for pair in directed_pairs}
     assert all((trial, test, order) in directed_set for test, trial, order in directed_set)
     assert {order for _, _, order in directed_set}.issubset({4, 6, 8})
+
+
+def test_prepare_deploy_solve_request_emits_ground_image_close_pairs(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["sources"] = [payload["sources"][0]]
+    # The LOD package's local floor is -0.2695 m. A 0.2795 m center height
+    # creates a 10 mm ground clearance and a 20 mm boundary-to-image gap.
+    payload["sources"][0]["positionHeightM"] = 0.2795
+
+    _, request = prepare_deploy_solve_request(payload, tmp_path)
+
+    ground_pairs = request["proximity"]["ground_image_close_face_pairs"]
+    assert ground_pairs
+    assert {order for _, _, order in ground_pairs}.issubset({4, 6, 8})
+    assert 6 in {order for _, _, order in ground_pairs}

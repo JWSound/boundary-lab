@@ -680,6 +680,62 @@ function _beat_cpu_apply_operator_p1_row_weights!(operators, mesh::BoundaryMesh{
     return nothing
 end
 
+function _beat_cpu_apply_near_cache!(
+    operators,
+    mesh::BoundaryMesh{T},
+    elements,
+    indices,
+    color_groups,
+    threaded_enabled::Bool,
+    k::T,
+    regular_quadrature,
+    near_cache::NearCorrectionCache{T},
+) where {T<:AbstractFloat}
+    near_cache.pair_count == 0 && return 0
+    transform = near_cache.trial_transform
+    identity_transform = transform.signs == SVector{3,Int}(1, 1, 1)
+    trial_elements = identity_transform ? elements : _beat_cpu_reflect_element_data(elements, transform)
+    trial_regular_quadrature = identity_transform ? regular_quadrature :
+        _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform)
+    correction_quadratures = [
+        _beat_cpu_regular_quadrature_data(mesh, rule)
+        for rule in near_cache.correction_rules
+    ]
+    trial_correction_quadratures = identity_transform ? correction_quadratures : [
+        _beat_cpu_reflect_regular_quadrature_data(quadrature, transform)
+        for quadrature in correction_quadratures
+    ]
+
+    apply_test = function(test_index)
+        _beat_cpu_accumulate_near_delta_test!(
+            operators.single_layer,
+            operators.double_layer,
+            operators.adjoint_double_layer,
+            operators.hypersingular,
+            elements,
+            trial_elements,
+            near_cache.pairs_by_test[test_index],
+            k,
+            regular_quadrature,
+            trial_regular_quadrature,
+            correction_quadratures,
+            trial_correction_quadratures,
+        )
+    end
+    if threaded_enabled
+        for group in color_groups
+            Threads.@threads for group_index in eachindex(group)
+                apply_test(group[group_index])
+            end
+        end
+    else
+        for test_index in indices
+            apply_test(test_index)
+        end
+    end
+    return near_cache.pair_count
+end
+
 function assemble_regular_galerkin_operators_cpu(
     mesh::BoundaryMesh{T},
     p1_space::P1Space,
@@ -694,6 +750,7 @@ function assemble_regular_galerkin_operators_cpu(
     singular_cache=nothing,
     cpu_cache=nothing,
     near_correction_cache=nothing,
+    image_near_correction_cache=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
     symmetry_mode = normalized_symmetry_mode(symmetry_mode)
@@ -906,60 +963,27 @@ function assemble_regular_galerkin_operators_cpu(
     end
     timing !== nothing && (timing["image_singular_corrections_cpu_scatter"] = image_singular_elapsed)
 
-    near_pair_count = near_correction_cache === nothing ? 0 : near_correction_cache.pair_count
+    near_caches = filter(cache -> cache !== nothing, (near_correction_cache, image_near_correction_cache))
+    near_pair_count = sum(cache.pair_count for cache in near_caches; init=0)
     near_elapsed = @elapsed begin
-        if near_pair_count > 0
-            transform = near_correction_cache.trial_transform
-            identity_transform = transform.signs == SVector{3,Int}(1, 1, 1)
-            trial_elements = identity_transform ? elements : _beat_cpu_reflect_element_data(elements, transform)
-            trial_regular_quadrature = identity_transform ? regular_quadrature :
-                _beat_cpu_reflect_regular_quadrature_data(regular_quadrature, transform)
-            correction_quadratures = [
-                _beat_cpu_regular_quadrature_data(mesh, rule)
-                for rule in near_correction_cache.correction_rules
-            ]
-            trial_correction_quadratures = identity_transform ? correction_quadratures : [
-                _beat_cpu_reflect_regular_quadrature_data(quadrature, transform)
-                for quadrature in correction_quadratures
-            ]
-            if threaded_enabled
-                for group in color_groups
-                    Threads.@threads for group_index in eachindex(group)
-                        test_index = group[group_index]
-                        _beat_cpu_accumulate_near_delta_test!(
-                            single_layer,
-                            double_layer,
-                            adjoint_double_layer,
-                            hypersingular,
-                            elements,
-                            trial_elements,
-                            near_correction_cache.pairs_by_test[test_index],
-                            k,
-                            regular_quadrature,
-                            trial_regular_quadrature,
-                            correction_quadratures,
-                            trial_correction_quadratures,
-                        )
-                    end
-                end
-            else
-                for test_index in indices
-                    _beat_cpu_accumulate_near_delta_test!(
-                        single_layer,
-                        double_layer,
-                        adjoint_double_layer,
-                        hypersingular,
-                        elements,
-                        trial_elements,
-                        near_correction_cache.pairs_by_test[test_index],
-                        k,
-                        regular_quadrature,
-                        trial_regular_quadrature,
-                        correction_quadratures,
-                        trial_correction_quadratures,
-                    )
-                end
-            end
+        operators = (
+            single_layer=single_layer,
+            double_layer=double_layer,
+            adjoint_double_layer=adjoint_double_layer,
+            hypersingular=hypersingular,
+        )
+        for near_cache in near_caches
+            _beat_cpu_apply_near_cache!(
+                operators,
+                mesh,
+                elements,
+                indices,
+                color_groups,
+                threaded_enabled,
+                k,
+                regular_quadrature,
+                near_cache,
+            )
         end
     end
     timing !== nothing && (timing["near_pair_corrections_cpu_scatter"] = near_elapsed)
@@ -985,7 +1009,10 @@ function assemble_regular_galerkin_operators_cpu(
         skipped_pairs=skipped_pairs,
         image_singular_pairs=image_singular_pairs,
         near_pair_count=near_pair_count,
-        near_pair_quadrature_order=near_correction_cache === nothing ? 0 : near_correction_cache.correction_order,
+        near_pair_quadrature_order=maximum(
+            (cache.correction_order for cache in near_caches);
+            init=0,
+        ),
         cpu_color_count=length(color_groups),
         on_gpu=false,
         regular_kernel_mode=threaded_enabled ? "cpu_colored_threads" : "cpu_serial",
