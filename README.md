@@ -95,6 +95,14 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
+## Boundary Lab Deploy prototype
+
+The first TypeScript, Three.js, and Electron deployment prototype lives in
+[`deploy`](deploy/README.md). It starts with the S218BP subwoofer, opens
+`.blabsp` packages, and evaluates the Level 1 complex pattern field on an
+interactive audience plane. Exterior Boundary solving is the next prototype
+stage.
+
 Boundary Lab captures Ath blab-mode geometry and writes managed generated
 artifacts into:
 
