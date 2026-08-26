@@ -632,9 +632,15 @@ function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, dr
     return impedance
 end
 
+include(joinpath(@__DIR__, "deploy_solver.jl"))
+
 function solve_request(request)
     try
-        solve_request_impl(request)
+        if String(get_value(request, "schema", "")) == "boundary_lab_deploy_solve"
+            solve_deploy_request_impl(request)
+        else
+            solve_request_impl(request)
+        end
     finally
         cleanup_accelerators_after_solve!()
     end

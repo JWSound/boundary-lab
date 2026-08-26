@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { CircleDot, Grid3X3, Radio, Route, Speaker, Upload } from "lucide-react";
+import { CircleDot, Grid3X3, Radio, Speaker, Upload } from "lucide-react";
 import type { ChangeEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
@@ -39,7 +39,6 @@ export function SceneTree({ pkg }: { pkg: LoadedSpeakerPackage }) {
     <div className="scene-tree">
       <div className="tree-row selected"><Speaker size={15} /><span>{pkg.manifest.name}</span><em>SUB</em></div>
       <div className="tree-row"><Grid3X3 size={15} /><span>Audience plane</span></div>
-      <div className="tree-row"><Route size={15} /><span>Main DSP bus</span></div>
     </div>
   );
 }

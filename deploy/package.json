@@ -11,8 +11,9 @@
     "dev:desktop": "wait-on http://127.0.0.1:5173 && electron .",
     "build": "tsc -b && vite build",
     "start": "electron . --built",
-    "test:package": "node scripts/package-smoke.mjs ../examples/S218BP/S218BP.blabsp",
+    "test:package": "node scripts/package-smoke.mjs library/S218BP_LOD.blabsp",
     "test:desktop": "electron . --built --smoke-test",
+    "test:level2": "electron . --built --smoke-level2",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

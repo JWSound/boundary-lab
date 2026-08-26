@@ -99,9 +99,10 @@ blab gui
 
 The first TypeScript, Three.js, and Electron deployment prototype lives in
 [`deploy`](deploy/README.md). It starts with the S218BP subwoofer, opens
-`.blabsp` packages, and evaluates the Level 1 complex pattern field on an
-interactive audience plane. Exterior Boundary solving is the next prototype
-stage.
+`.blabsp` packages, evaluates the Level 1 complex pattern field on an
+interactive audience plane, and can run a single-frequency Level 2 fixed-source
+exterior solve through a persistent BEAT CUDA worker. New projects use the
+coarse `deploy/library/S218BP_LOD.blabsp` package.
 
 Boundary Lab captures Ath blab-mode geometry and writes managed generated
 artifacts into:

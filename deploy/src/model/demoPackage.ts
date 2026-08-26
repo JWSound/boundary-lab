@@ -60,6 +60,7 @@ export function createDemoPackage(): LoadedSpeakerPackage {
   return {
     id: "s218bp-fallback",
     fileName: "Bundled S218BP preview",
+    sourcePath: null,
     manifest: {
       schema: "boundary-lab-speaker-package",
       schema_version: 1,

@@ -1,22 +1,19 @@
 import {
-  Activity,
   ChevronRight,
   CircleHelp,
-  Gauge,
   Import,
-  Info,
   Menu,
   MousePointer2,
+  Pause,
   Play,
   Rotate3D,
   Save,
   Settings2,
   SlidersHorizontal,
   Speaker,
-  Sparkles,
   Waves,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneView } from "./components/SceneView";
 import {
   browserFileHandler,
@@ -32,9 +29,10 @@ import {
   buildSourceInstance,
   buildPatternLookup,
   computeFieldFrame,
+  fieldFrameFromSpl,
   nearestFrequencyIndex,
 } from "./model/field";
-import type { Fidelity, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "./model/types";
+import type { Fidelity, FieldFrame, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "./model/types";
 
 const defaultSource: SourceConfiguration = {
   positionX: 0,
@@ -63,10 +61,12 @@ function FidelitySwitcher({
   value,
   onChange,
   packageLevel,
+  boundaryAvailable,
 }: {
   value: Fidelity;
   onChange: (value: Fidelity) => void;
   packageLevel: number;
+  boundaryAvailable: boolean;
 }) {
   const levels: Array<{ id: Fidelity; label: string; level: number }> = [
     { id: "pattern", label: "Pattern", level: 1 },
@@ -77,52 +77,21 @@ function FidelitySwitcher({
     <div className="fidelity-switcher">
       {levels.map((item) => {
         const available = item.level <= packageLevel;
-        const interactive = item.id === "pattern";
+        const interactive = item.id === "pattern" || (item.id === "boundary" && available && boundaryAvailable);
         return (
           <button
             key={item.id}
             className={`${value === item.id ? "active" : ""} ${!interactive ? "engine-required" : ""}`}
             onClick={() => interactive && onChange(item.id)}
-            title={interactive ? "Live complex pattern field" : available ? "Boundary solve engine connection is the next prototype stage" : "Package does not contain this fidelity"}
+            title={interactive ? (item.id === "boundary" ? "Exterior BEM with fixed distributed sources" : "Live complex pattern field") : available ? "This fidelity is not connected yet" : "Package does not contain this fidelity"}
           >
             <span>{item.label}</span>
-            {!interactive && <small>{available ? "ENGINE" : "N/A"}</small>}
+            {item.id === "boundary" && interactive && <small>CUDA</small>}
+            {!interactive && item.id !== "pattern" && <small>{available ? "ENGINE" : "N/A"}</small>}
           </button>
         );
       })}
     </div>
-  );
-}
-
-function ResponseSparkline({ pkg, frequencyIndex }: { pkg: LoadedSpeakerPackage; frequencyIndex: number }) {
-  const points = useMemo(() => {
-    const directionCount = pkg.pressureShape[2];
-    const excitationCount = pkg.pressureShape[1];
-    const values = Array.from(pkg.frequenciesHz, (_, index) => {
-      let forwardIndex = 0;
-      let forward = -Infinity;
-      for (let direction = 0; direction < directionCount; direction += 1) {
-        const value = pkg.directionsPackage[direction * 3 + 1];
-        if (value > forward) { forward = value; forwardIndex = direction; }
-      }
-      const offset = (index * excitationCount) * directionCount + forwardIndex;
-      return 20 * Math.log10(Math.max(1e-12, Math.hypot(pkg.pressure.real[offset], pkg.pressure.imag[offset])) / 20e-6);
-    });
-    const minimum = Math.min(...values);
-    const maximum = Math.max(...values);
-    return values.map((value, index) => {
-      const x = (index / Math.max(1, values.length - 1)) * 480;
-      const y = 52 - ((value - minimum) / Math.max(1, maximum - minimum)) * 38;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-  }, [pkg]);
-  const selectedX = (frequencyIndex / Math.max(1, pkg.frequenciesHz.length - 1)) * 480;
-  return (
-    <svg className="response-sparkline" viewBox="0 0 480 60" preserveAspectRatio="none">
-      <path d="M0 52 H480" className="spark-grid" />
-      <polyline points={points} className="spark-line" />
-      <line x1={selectedX} x2={selectedX} y1="4" y2="56" className="spark-cursor" />
-    </svg>
   );
 }
 
@@ -135,7 +104,14 @@ export function App() {
   const [selectedInstance, setSelectedInstance] = useState<string | null>("subwoofer-1");
   const [error, setError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"library" | "scene">("library");
+  const [boundaryField, setBoundaryField] = useState<FieldFrame | null>(null);
+  const [boundarySolveKey, setBoundarySolveKey] = useState<string | null>(null);
+  const [solveRevision, setSolveRevision] = useState(0);
+  const [solveState, setSolveState] = useState<"idle" | "solving" | "complete" | "error">("idle");
+  const [solveMessage, setSolveMessage] = useState("Ready for a Level 2 solve");
+  const [liveSolveEnabled, setLiveSolveEnabled] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const solveGeneration = useRef(0);
 
   const sortedFrequencyIndices = useMemo(
     () => Array.from(pkg.frequenciesHz.keys()).sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]),
@@ -144,24 +120,46 @@ export function App() {
   const sortedPosition = Math.max(0, sortedFrequencyIndices.indexOf(frequencyIndex));
   const source = useMemo(() => buildSourceInstance(sourceConfig), [sourceConfig]);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
-  const field = useMemo(
+  const patternField = useMemo(
     () => computeFieldFrame(pkg, source, sourceConfig, observation, frequencyIndex, lookup),
     [pkg, source, sourceConfig, observation, frequencyIndex, lookup],
   );
+  const currentSolveKey = useMemo(() => JSON.stringify({
+    package: pkg.id,
+    frequency: pkg.frequenciesHz[frequencyIndex],
+    source: sourceConfig,
+    observation,
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfig, observation]);
+  const field = fidelity === "boundary" && boundaryField && boundarySolveKey === currentSolveKey
+    ? boundaryField
+    : patternField;
+  const boundaryCurrent = fidelity === "boundary" && boundaryField !== null && boundarySolveKey === currentSolveKey;
+  const boundaryAvailable = Boolean(window.boundaryLabDesktop && pkg.sourcePath && pkg.manifest.fidelity_level >= 2);
 
   const applyPackage = (next: LoadedSpeakerPackage) => {
+    solveGeneration.current += 1;
     setPackage(next);
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
     setFidelity("pattern");
+    setBoundaryField(null);
+    setBoundarySolveKey(null);
+    setSolveRevision(0);
+    setSolveState("idle");
+    setLiveSolveEnabled(false);
     setError(null);
   };
+
+  useEffect(() => window.boundaryLabDesktop?.onSolveStatus((status) => {
+    if (status.type === "status" && status.message) setSolveMessage(status.message);
+    if (status.type === "initialized") setSolveMessage("BEAT CUDA initialized");
+  }), []);
 
   useEffect(() => {
     let active = true;
     if (!window.boundaryLabDesktop) return () => { active = false; };
     void window.boundaryLabDesktop.loadBundledExample()
       .then((selection) => {
-        if (active && selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name));
+        if (active && selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
       })
       .catch((caught) => {
         if (active) setError(caught instanceof Error ? caught.message : String(caught));
@@ -173,7 +171,7 @@ export function App() {
     try {
       if (window.boundaryLabDesktop) {
         const selection = await window.boundaryLabDesktop.openSpeakerPackage();
-        if (selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name));
+        if (selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
       } else {
         fileInput.current?.click();
       }
@@ -198,7 +196,7 @@ export function App() {
       package: {
         id: pkg.id,
         name: pkg.manifest.name,
-        source_file: pkg.isDemo ? null : pkg.fileName,
+        source_file: pkg.sourcePath,
       },
       source: sourceConfig,
       observation_plane: observation,
@@ -216,6 +214,50 @@ export function App() {
     URL.revokeObjectURL(link.href);
   };
 
+  const solveLevel2 = useCallback(async () => {
+    if (!window.boundaryLabDesktop || !pkg.sourcePath) {
+      setError("Level 2 solving requires the desktop app and a package loaded from disk.");
+      return;
+    }
+    const generation = ++solveGeneration.current;
+    const requestedKey = currentSolveKey;
+    setSolveState("solving");
+    setSolveMessage("Starting BEAT CUDA worker");
+    setError(null);
+    try {
+      const result = await window.boundaryLabDesktop.solveLevel2({
+        packagePath: pkg.sourcePath,
+        frequencyHz: pkg.frequenciesHz[frequencyIndex],
+        backend: "cuda",
+        source: sourceConfig,
+        observation,
+      });
+      if (generation !== solveGeneration.current) return;
+      setBoundaryField(fieldFrameFromSpl(result.spl_db, result.columns, result.rows));
+      setBoundarySolveKey(requestedKey);
+      setSolveRevision((revision) => revision + 1);
+      setSolveState("complete");
+      setSolveMessage("Live Level 2 field current");
+    } catch (caught) {
+      if (generation !== solveGeneration.current) return;
+      setSolveState("error");
+      setLiveSolveEnabled(false);
+      setSolveMessage("Level 2 solve failed");
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [currentSolveKey, frequencyIndex, observation, pkg.frequenciesHz, pkg.sourcePath, sourceConfig]);
+
+  useEffect(() => {
+    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
+    if (solveState === "solving" || boundarySolveKey === currentSolveKey) return;
+    const timeout = window.setTimeout(() => void solveLevel2(), 300);
+    return () => window.clearTimeout(timeout);
+  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, solveLevel2, solveState]);
+
+  useEffect(() => {
+    if (fidelity !== "boundary") setLiveSolveEnabled(false);
+  }, [fidelity]);
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -224,11 +266,17 @@ export function App() {
           <div><strong>Boundary Lab</strong><span>DEPLOY</span></div>
         </div>
         <div className="project-breadcrumb"><span>Projects</span><ChevronRight size={13} /><strong>S218BP Subwoofer Study</strong><i>Edited</i></div>
-        <FidelitySwitcher value={fidelity} onChange={setFidelity} packageLevel={pkg.manifest.fidelity_level} />
+        <FidelitySwitcher value={fidelity} onChange={setFidelity} packageLevel={pkg.manifest.fidelity_level} boundaryAvailable={boundaryAvailable} />
         <div className="topbar-actions">
           <button className="icon-button" title="Save project" onClick={saveProject}><Save size={17} /></button>
           <button className="icon-button" title="Settings"><Settings2 size={17} /></button>
-          <button className="primary-button" disabled title="Boundary solve engine is not connected in this prototype"><Play size={14} fill="currentColor" /> Solve field</button>
+          <button
+            className={`primary-button ${liveSolveEnabled ? "live" : ""}`}
+            disabled={fidelity !== "boundary" || !boundaryAvailable}
+            title={fidelity === "boundary" ? (liveSolveEnabled ? "Pause automatic Level 2 solves" : "Start automatic Level 2 solves as the scene changes") : "Select Boundary fidelity to run Level 2"}
+            aria-pressed={liveSolveEnabled}
+            onClick={() => setLiveSolveEnabled((enabled) => !enabled)}
+          >{liveSolveEnabled ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />} {liveSolveEnabled ? "Pause solve" : "Solve field"}</button>
         </div>
       </header>
 
@@ -255,9 +303,6 @@ export function App() {
             </div>
           </>
         )}
-        <div className="left-footer">
-          <Info size={14} /><span>Free-field scene · {pkg.manifest.medium.sound_speed_m_per_s} m/s</span>
-        </div>
       </aside>
 
       <section className="viewport">
@@ -275,9 +320,12 @@ export function App() {
           <span />
           <button><Menu size={15} /></button>
         </div>
-        <div className="solve-status">
-          <span className="live-dot" />
-          <div><strong>Pattern preview</strong><small>Current · {formatFrequency(pkg.frequenciesHz[frequencyIndex])}</small></div>
+        <div className="solve-status" data-solve-revision={solveRevision}>
+          <span className={solveState === "solving" ? "live-dot solving" : "live-dot"} />
+          <div>
+            <strong>{fidelity === "boundary" ? (boundaryCurrent ? "Boundary solution" : "Boundary preview") : "Pattern preview"}</strong>
+            <small>{solveState === "solving" ? solveMessage : `${liveSolveEnabled ? "Live" : boundaryCurrent ? "BEAT CUDA" : "Current"} · ${formatFrequency(pkg.frequenciesHz[frequencyIndex])}`}</small>
+          </div>
           <em>{field.columns} × {field.rows}</em>
         </div>
         <div className="viewport-hint">Orbit: left drag · Pan: right drag · Zoom: wheel</div>
@@ -291,21 +339,12 @@ export function App() {
           <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
         </div>
         <SourceInspector config={sourceConfig} onChange={setSourceConfig} />
-        <div className="engine-callout">
-          <Sparkles size={15} />
-          <div><strong>Progressive physics</strong><span>A Boundary solve will refine this live pattern result when the exterior BEM engine is connected.</span></div>
-        </div>
       </aside>
 
       <section className="analysis-drawer">
-        <div className="analysis-heading">
-          <div><Activity size={15} /><strong>Coverage analysis</strong><span>Complex pressure · audience plane</span></div>
-          <button className="icon-button quiet"><Gauge size={15} /></button>
-        </div>
         <div className="analysis-body">
           <div className="frequency-control">
             <div className="frequency-label"><span>Frequency</span><strong>{formatFrequency(pkg.frequenciesHz[frequencyIndex])}</strong></div>
-            <ResponseSparkline pkg={pkg} frequencyIndex={frequencyIndex} />
             <input
               aria-label="Frequency"
               type="range"
@@ -321,10 +360,10 @@ export function App() {
             <div><span>Average</span><strong>{field.averageDb.toFixed(1)}<small> dB</small></strong></div>
             <div><span>Peak</span><strong>{field.maximumDb.toFixed(1)}<small> dB</small></strong></div>
             <div><span>P10–P90</span><strong>{field.spreadDb.toFixed(1)}<small> dB</small></strong></div>
-            <div><span>Sources</span><strong>1<small> live</small></strong></div>
+            <div><span>Sources</span><strong>1<small>{boundaryCurrent ? " BEM" : " live"}</small></strong></div>
           </div>
           <div className="legend-block">
-            <div className="legend-title"><span>SPL</span><small>relative 24 dB window</small></div>
+            <div className="legend-title"><span>SPL</span></div>
             <div className="color-legend" />
             <div><span>{(field.maximumDb - 24).toFixed(0)}</span><span>{field.maximumDb.toFixed(0)} dB</span></div>
           </div>
@@ -334,7 +373,7 @@ export function App() {
       {field.clippedNearFieldPoints > 0 && (
         <div className="near-field-warning"><CircleHelp size={15} /><span>Some plane samples are inside the package reference sphere; use Boundary fidelity for authoritative near-field results.</span></div>
       )}
-      {error && <div className="error-toast" onClick={() => setError(null)}><strong>Package could not be opened</strong><span>{error}</span></div>}
+      {error && <div className="error-toast" onClick={() => setError(null)}><strong>Boundary Lab Deploy</strong><span>{error}</span></div>}
       <input
         ref={fileInput}
         className="hidden-file-input"

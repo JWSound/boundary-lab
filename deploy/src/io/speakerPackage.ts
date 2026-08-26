@@ -64,7 +64,7 @@ function stableId(name: string, manifest: SpeakerPackageManifest): string {
   return `package-${(hash >>> 0).toString(16)}`;
 }
 
-export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string): LoadedSpeakerPackage {
+export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string, sourcePath: string | null = null): LoadedSpeakerPackage {
   const files = unzipSync(new Uint8Array(bytes));
   const manifestPayload = files["manifest.json"];
   if (!manifestPayload) throw new Error("Speaker package is missing manifest.json.");
@@ -93,6 +93,7 @@ export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string): Loaded
   return {
     id: stableId(fileName, manifest),
     fileName,
+    sourcePath,
     manifest,
     frequenciesHz: frequencies,
     directionsPackage: directions,

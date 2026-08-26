@@ -10,6 +10,39 @@ import type {
 
 const PRESSURE_REFERENCE_PA = 20e-6;
 
+export function fieldFrameFromSpl(
+  samples: ArrayLike<number>,
+  columns: number,
+  rows: number,
+): FieldFrame {
+  if (samples.length !== columns * rows) {
+    throw new Error("Level 2 field dimensions do not match the audience-plane samples.");
+  }
+  const values = Float32Array.from(samples);
+  const sorted = Array.from(values).sort((a, b) => a - b);
+  let sum = 0;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  for (const value of values) {
+    if (!Number.isFinite(value)) throw new Error("Level 2 field contains a non-finite SPL value.");
+    sum += value;
+    minimum = Math.min(minimum, value);
+    maximum = Math.max(maximum, value);
+  }
+  const percentile10 = sorted[Math.floor((sorted.length - 1) * 0.1)];
+  const percentile90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+  return {
+    splDb: values,
+    columns,
+    rows,
+    minimumDb: minimum,
+    maximumDb: maximum,
+    averageDb: sum / values.length,
+    spreadDb: percentile90 - percentile10,
+    clippedNearFieldPoints: 0,
+  };
+}
+
 export function buildSourceInstance(config: SourceConfiguration): SpeakerInstance {
   return {
     id: "subwoofer-1",

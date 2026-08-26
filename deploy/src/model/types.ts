@@ -34,6 +34,7 @@ export interface SpeakerPackageManifest {
 export interface LoadedSpeakerPackage {
   id: string;
   fileName: string;
+  sourcePath: string | null;
   manifest: SpeakerPackageManifest;
   frequenciesHz: Float64Array;
   directionsPackage: Float32Array;
@@ -88,4 +89,22 @@ export interface FieldFrame {
   averageDb: number;
   spreadDb: number;
   clippedNearFieldPoints: number;
+}
+
+export interface Level2SolveResult {
+  frequency_hz: number;
+  rows: number;
+  columns: number;
+  spl_db: number[];
+  field_pressure: { real: number[]; imag: number[] };
+  timings: { assembly_s: number; solve_s: number; field_s: number };
+  diagnostics: {
+    backend: string;
+    node_count: number;
+    face_count: number;
+    singular_pair_count: number;
+    quadrature_order: number;
+    singular_order: number;
+    isolated_trace_relative_error: number;
+  };
 }
