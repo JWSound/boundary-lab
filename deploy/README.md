@@ -24,11 +24,11 @@ npm start
 - Reads the package manifest, complex spherical pressure, frequency order, excitation shape, and exterior Gmsh surface.
 - Opens new desktop projects with two coarse `S218BP_LOD.blabsp` cabinets separated by a 2 m surface gap.
 - Provides source position, yaw, level, delay, and polarity controls without line-array layout concepts.
-- Displays eight bounding-box grab points on the selected cabinet for three-dimensional dragging and corner snapping, including vertical cabinet stacks.
+- Displays eight bounding-box grab points on the selected cabinet for ground-parallel dragging; snapping a handle to a cabinet corner at another height enables vertical stacks.
 - Provides a W-key XYZ translation gizmo and an E-key yaw gizmo with 5-degree snapping; hold Alt for free rotation.
 - Complex-sums Level 1 pattern pressure on an editable audience plane using Boundary Lab's `exp(-i omega t)` convention.
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
-- Treats the audience plane as a scene-list-selectable object with size, position, and inspector resolution controls up to 200 samples and aspect-ratio-aware rows and columns.
+- Treats the audience plane as a scene-list-selectable object with size, position, yaw, W/E transform gizmos, and inspector resolution controls up to 200 samples.
 - Reports average, peak, and P10-P90 coverage spread while the scene changes.
 - Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.

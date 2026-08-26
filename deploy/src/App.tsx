@@ -67,8 +67,10 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
 const defaultObservation: ObservationPlane = {
   widthM: 24,
   depthM: 24,
+  centerXM: 0,
   nearM: 1.5,
   heightM: 1.2,
+  yawDeg: 0,
   columns: 54,
   rows: 54,
 };
@@ -291,6 +293,10 @@ export function App() {
     } : source));
   };
 
+  const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "yawDeg">) => {
+    setObservation((current) => ({ ...current, ...pose, heightM: Math.max(0, pose.heightM) }));
+  };
+
   const selectSceneObject = (id: string | null) => {
     setSelectedInstance(id);
     if (!sourceConfigs.some((source) => source.id === id)) setTransformMode("select");
@@ -300,7 +306,8 @@ export function App() {
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAngleSnapDisabled(true);
       const target = event.target;
-      if ((target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) || !selectedSource) return;
+      const transformableSelected = Boolean(selectedSource) || selectedInstance === "audience-plane";
+      if ((target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) || !transformableSelected) return;
       if (event.key.toLowerCase() === "w") {
         event.preventDefault();
         setTransformMode("translate");
@@ -321,7 +328,7 @@ export function App() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", windowBlur);
     };
-  }, [selectedSource]);
+  }, [selectedInstance, selectedSource]);
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
@@ -397,6 +404,7 @@ export function App() {
           angleSnapDisabled={angleSnapDisabled}
           onSelectInstance={selectSceneObject}
           onTransformSource={updateSourcePose}
+          onTransformObservation={updateObservationPose}
         />
         <div className="viewport-toolbar">
           <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>

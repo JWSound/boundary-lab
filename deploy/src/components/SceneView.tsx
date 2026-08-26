@@ -12,6 +12,7 @@ import {
   MathUtils,
   Plane,
   Quaternion,
+  Ray,
   RGBAFormat,
   SRGBColorSpace,
   UnsignedByteType,
@@ -29,6 +30,8 @@ export interface SourcePoseUpdate {
   yawDeg: number;
 }
 
+export type ObservationPoseUpdate = Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "yawDeg">;
+
 interface SceneBounds {
   minimum: [number, number, number];
   maximum: [number, number, number];
@@ -45,6 +48,7 @@ interface SceneViewProps {
   angleSnapDisabled: boolean;
   onSelectInstance: (id: string | null) => void;
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
+  onTransformObservation: (pose: ObservationPoseUpdate) => void;
 }
 
 function packageSceneBounds(pkg: LoadedSpeakerPackage): SceneBounds {
@@ -117,11 +121,18 @@ function FieldPlane({
   observation,
   field,
   selected,
+  transformMode,
+  angleSnapDisabled,
+  onTransform,
 }: {
   observation: ObservationPlane;
   field: FieldFrame;
   selected: boolean;
+  transformMode: SceneTransformMode;
+  angleSnapDisabled: boolean;
+  onTransform: (pose: ObservationPoseUpdate) => void;
 }) {
+  const planeRef = useRef<Group>(null);
   const texture = useMemo(() => {
     const pixels = new Uint8Array(field.columns * field.rows * 4);
     const low = field.maximumDb - 24;
@@ -139,33 +150,64 @@ function FieldPlane({
     return result;
   }, [field]);
 
+  const applyGizmoTransform = () => {
+    const object = planeRef.current;
+    if (!object) return;
+    object.position.y = Math.max(0, object.position.y);
+    const rotation = new Euler().setFromQuaternion(object.quaternion, "YXZ");
+    onTransform({
+      centerXM: object.position.x,
+      nearM: object.position.z - observation.depthM / 2,
+      heightM: object.position.y,
+      yawDeg: normalizedYaw(MathUtils.radToDeg(rotation.y)),
+    });
+  };
+
   return (
-    <group>
-      <mesh
-        position={[0, observation.heightM, observation.nearM + observation.depthM / 2]}
-        // DataTexture row zero is the near edge of the computed field. A +90°
-        // rotation maps the plane's lower V edge toward the source (-scene Z).
-        rotation={[Math.PI / 2, 0, 0]}
-        raycast={() => undefined}
+    <>
+      <group
+        ref={planeRef}
+        position={[observation.centerXM, observation.heightM, observation.nearM + observation.depthM / 2]}
+        rotation={[0, MathUtils.degToRad(observation.yawDeg), 0]}
       >
-        <planeGeometry args={[observation.widthM, observation.depthM]} />
-        <meshBasicMaterial map={texture} transparent opacity={0.88} side={DoubleSide} toneMapped={false} />
-      </mesh>
-      <Grid
-        position={[0, observation.heightM + 0.008, observation.nearM + observation.depthM / 2]}
-        args={[observation.widthM, observation.depthM]}
-        cellSize={1}
-        cellThickness={0.35}
-        cellColor={selected ? "#dce9a7" : "#d9e0d0"}
-        sectionSize={5}
-        sectionThickness={0.8}
-        sectionColor={selected ? "#c6d68d" : "#f1f6ea"}
-        fadeDistance={40}
-        fadeStrength={1}
-        infiniteGrid={false}
-        raycast={() => undefined}
-      />
-    </group>
+        <mesh
+          // DataTexture row zero is the near edge of the computed field. A +90°
+          // rotation maps the plane's lower V edge toward the source (-scene Z).
+          rotation={[Math.PI / 2, 0, 0]}
+          raycast={() => undefined}
+        >
+          <planeGeometry args={[observation.widthM, observation.depthM]} />
+          <meshBasicMaterial map={texture} transparent opacity={0.88} side={DoubleSide} toneMapped={false} />
+        </mesh>
+        <Grid
+          position={[0, 0.008, 0]}
+          args={[observation.widthM, observation.depthM]}
+          cellSize={1}
+          cellThickness={0.35}
+          cellColor={selected ? "#dce9a7" : "#d9e0d0"}
+          sectionSize={5}
+          sectionThickness={0.8}
+          sectionColor={selected ? "#c6d68d" : "#f1f6ea"}
+          fadeDistance={40}
+          fadeStrength={1}
+          infiniteGrid={false}
+          raycast={() => undefined}
+        />
+      </group>
+      {selected && transformMode !== "select" && (
+        <TransformControls
+          object={planeRef as MutableRefObject<Group>}
+          mode={transformMode}
+          space="world"
+          size={0.82}
+          showX={transformMode === "translate"}
+          showY
+          showZ={transformMode === "translate"}
+          rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
+          onObjectChange={applyGizmoTransform}
+        />
+      )}
+    </>
   );
 }
 
@@ -190,7 +232,6 @@ function SpeakerGeometry({
 }) {
   const speakerRef = useRef<Group>(null);
   const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
-  const camera = useThree((state) => state.camera);
   const dragState = useRef<{
     pointerId: number;
     plane: Plane;
@@ -233,26 +274,32 @@ function SpeakerGeometry({
   const snapDraggedCorner = (
     rawPosition: [number, number, number],
     draggedCorner: [number, number, number],
+    pointerRay: Ray,
   ): [number, number, number] => {
     const movingCorner = cornerInWorld(draggedCorner, instance, rawPosition);
-    let bestDistance = 0.2;
+    let bestDistance = 0.18;
     let result = rawPosition;
     for (const other of allInstances) {
       if (other.id === instance.id) continue;
       for (const targetCorner of bounds.corners) {
         const target = cornerInWorld(targetCorner, other);
-        const distance = target.distanceTo(movingCorner);
+        const distance = Math.sqrt(pointerRay.distanceSqToPoint(target));
         if (distance >= bestDistance) continue;
+        const alignedPosition = new Vector3(
+          rawPosition[0] + target.x - movingCorner.x,
+          rawPosition[1] + target.y - movingCorner.y,
+          rawPosition[2] + target.z - movingCorner.z,
+        );
         const away = new Vector3(
-          rawPosition[0] - other.position[0],
-          rawPosition[1] - other.position[1],
-          rawPosition[2] - other.position[2],
+          alignedPosition.x - other.position[0],
+          alignedPosition.y - other.position[1],
+          alignedPosition.z - other.position[2],
         );
         if (away.lengthSq() > 1e-10) away.normalize().multiplyScalar(SOURCE_SURFACE_PADDING_M);
         result = [
-          rawPosition[0] + target.x - movingCorner.x + away.x,
-          rawPosition[1] + target.y - movingCorner.y + away.y,
-          rawPosition[2] + target.z - movingCorner.z + away.z,
+          alignedPosition.x + away.x,
+          alignedPosition.y + away.y,
+          alignedPosition.z + away.z,
         ];
         bestDistance = distance;
       }
@@ -265,7 +312,7 @@ function SpeakerGeometry({
     event.stopPropagation();
     onSelect();
     const handleWorld = cornerInWorld(corner, instance);
-    const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()), handleWorld);
+    const plane = new Plane(new Vector3(0, 1, 0), -handleWorld.y);
     const startPoint = event.ray.intersectPlane(plane, new Vector3());
     if (!startPoint) return;
     dragState.current = {
@@ -287,10 +334,10 @@ function SpeakerGeometry({
     if (!point) return;
     const rawPosition: [number, number, number] = [
       drag.startPosition[0] + point.x - drag.startPoint.x,
-      Math.max(SOURCE_SURFACE_PADDING_M - bounds.minimum[1], drag.startPosition[1] + point.y - drag.startPoint.y),
+      drag.startPosition[1],
       drag.startPosition[2] + point.z - drag.startPoint.z,
     ];
-    const snapped = snapDraggedCorner(rawPosition, drag.corner);
+    const snapped = snapDraggedCorner(rawPosition, drag.corner, event.ray);
     onTransform({
       positionX: snapped[0],
       positionHeightM: snapped[1],
@@ -421,6 +468,9 @@ function AcousticScene(props: SceneViewProps) {
         observation={props.observation}
         field={props.field}
         selected={props.selectedInstance === "audience-plane"}
+        transformMode={props.transformMode}
+        angleSnapDisabled={props.angleSnapDisabled}
+        onTransform={props.onTransformObservation}
       />
       <gridHelper args={[50, 50, "#303831", "#242a25"]} position={[0, 0, 12]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.012, 12]} receiveShadow>

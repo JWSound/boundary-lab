@@ -178,8 +178,10 @@ export function PlaneResolutionInspector({
     <>
       <SectionHeader icon={CircleDot} title="Placement" />
       <div className="inspector-section two-column-fields">
+        <NumberField label="X" value={value.centerXM} unit="m" step={0.1} onChange={(next) => set("centerXM", next)} />
         <NumberField label="Near" value={value.nearM} unit="m" step={0.1} onChange={(next) => set("nearM", next)} />
         <NumberField label="Height" value={value.heightM} unit="m" step={0.1} minimum={0} onChange={(next) => set("heightM", next)} />
+        <NumberField label="Yaw" value={value.yawDeg} unit="°" step={0.5} onChange={(next) => set("yawDeg", next)} />
       </div>
       <SectionHeader icon={Grid3X3} title="Size" />
       <div className="inspector-section two-column-fields">

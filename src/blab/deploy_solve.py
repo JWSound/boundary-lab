@@ -71,8 +71,10 @@ class DeploySourcePlacement:
 class DeployObservationPlane:
     width_m: float
     depth_m: float
+    center_x_m: float
     near_m: float
     height_m: float
+    yaw_deg: float
     columns: int
     rows: int
 
@@ -83,14 +85,23 @@ class DeployObservationPlane:
         value = cls(
             width_m=float(raw.get("widthM", 0.0)),
             depth_m=float(raw.get("depthM", 0.0)),
+            center_x_m=float(raw.get("centerXM", 0.0)),
             near_m=float(raw.get("nearM", 0.0)),
             height_m=float(raw.get("heightM", 0.0)),
+            yaw_deg=float(raw.get("yawDeg", 0.0)),
             columns=int(raw.get("columns", 0)),
             rows=int(raw.get("rows", 0)),
         )
         if not all(
             math.isfinite(item)
-            for item in (value.width_m, value.depth_m, value.near_m, value.height_m)
+            for item in (
+                value.width_m,
+                value.depth_m,
+                value.center_x_m,
+                value.near_m,
+                value.height_m,
+                value.yaw_deg,
+            )
         ):
             raise ValueError("Deploy observation plane values must be finite.")
         if value.width_m <= 0.0 or value.depth_m <= 0.0:
@@ -105,13 +116,19 @@ class DeployObservationPlane:
 
     def points(self) -> np.ndarray:
         x = np.linspace(-self.width_m / 2.0, self.width_m / 2.0, self.columns, dtype=np.float32)
-        z = np.linspace(self.near_m, self.near_m + self.depth_m, self.rows, dtype=np.float32)
-        xx, zz = np.meshgrid(x, z, indexing="xy")
+        z = np.linspace(-self.depth_m / 2.0, self.depth_m / 2.0, self.rows, dtype=np.float32)
+        local_x, local_z = np.meshgrid(x, z, indexing="xy")
+        yaw = math.radians(self.yaw_deg)
+        cosine = math.cos(yaw)
+        sine = math.sin(yaw)
+        center_z_m = self.near_m + self.depth_m / 2.0
+        world_x = self.center_x_m + cosine * local_x + sine * local_z
+        world_z = center_z_m - sine * local_x + cosine * local_z
         return np.column_stack(
             (
-                xx.reshape(-1),
-                np.full(xx.size, self.height_m, dtype=np.float32),
-                zz.reshape(-1),
+                world_x.reshape(-1),
+                np.full(world_x.size, self.height_m, dtype=np.float32),
+                world_z.reshape(-1),
             )
         ).astype(np.float32, copy=False)
 

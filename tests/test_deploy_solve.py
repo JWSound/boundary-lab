@@ -104,6 +104,17 @@ def test_prepare_deploy_solve_request_rejects_invalid_observation_shape(tmp_path
         prepare_deploy_solve_request(payload, tmp_path)
 
 
+def test_prepare_deploy_solve_request_transforms_observation_plane(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observation"].update({"centerXM": 3.0, "yawDeg": 90.0})
+
+    request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    assert request["observation_points_m"][0] == pytest.approx([-2.0, 1.2, 13.0])
+    assert request["observation_points_m"][-1] == pytest.approx([8.0, 1.2, 1.0])
+
+
 def test_prepare_deploy_solve_request_rejects_geometry_below_ground(tmp_path: Path) -> None:
     payload = _payload()
     payload["sources"][0]["positionHeightM"] = 0.1

@@ -178,28 +178,40 @@ function createWindow() {
       const planeResolutionInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
         document.querySelector('.tree-button[data-object-id="audience-plane"]')?.click();
         requestAnimationFrame(() => {
-          const input = document.querySelector('input[aria-label="Plane resolution"]');
-          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-          if (!input || !setter) return resolve({ available: false });
-          setter.call(input, '40');
-          input.dispatchEvent(new Event('input', { bubbles: true }));
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
           requestAnimationFrame(() => {
-            const result = {
-              available: true,
-              selectedObject: document.querySelector('.inspector-heading strong')?.textContent?.trim(),
-              planeProperties: {
-                near: document.querySelector('input[aria-label="Near"]')?.value,
-                height: document.querySelector('input[aria-label="Height"]')?.value,
-                width: document.querySelector('input[aria-label="Width"]')?.value,
-                depth: document.querySelector('input[aria-label="Depth"]')?.value
-              },
-              value: input.value,
-              maximum: input.max,
-              shape: document.querySelector('.plane-resolution-row output')?.textContent?.trim(),
-              fieldShape: document.querySelector('.solve-status em')?.textContent?.trim()
-            };
-            document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
-            requestAnimationFrame(() => resolve(result));
+            const planeTranslateMode = document.querySelector('.viewport')?.getAttribute('data-transform-mode');
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+            requestAnimationFrame(() => {
+              const planeRotateMode = document.querySelector('.viewport')?.getAttribute('data-transform-mode');
+              const input = document.querySelector('input[aria-label="Plane resolution"]');
+              const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+              if (!input || !setter) return resolve({ available: false });
+              setter.call(input, '40');
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              requestAnimationFrame(() => {
+                const result = {
+                  available: true,
+                  selectedObject: document.querySelector('.inspector-heading strong')?.textContent?.trim(),
+                  planeTranslateMode,
+                  planeRotateMode,
+                  planeProperties: {
+                    x: document.querySelector('input[aria-label="X"]')?.value,
+                    near: document.querySelector('input[aria-label="Near"]')?.value,
+                    height: document.querySelector('input[aria-label="Height"]')?.value,
+                    yaw: document.querySelector('input[aria-label="Yaw"]')?.value,
+                    width: document.querySelector('input[aria-label="Width"]')?.value,
+                    depth: document.querySelector('input[aria-label="Depth"]')?.value
+                  },
+                  value: input.value,
+                  maximum: input.max,
+                  shape: document.querySelector('.plane-resolution-row output')?.textContent?.trim(),
+                  fieldShape: document.querySelector('.solve-status em')?.textContent?.trim()
+                };
+                document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
+                requestAnimationFrame(() => resolve(result));
+              });
+            });
           });
         });
       })`);

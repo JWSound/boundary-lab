@@ -67,8 +67,10 @@ export interface SpeakerInstance {
 export interface ObservationPlane {
   widthM: number;
   depthM: number;
+  centerXM: number;
   nearM: number;
   heightM: number;
+  yawDeg: number;
   columns: number;
   rows: number;
 }

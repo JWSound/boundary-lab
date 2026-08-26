@@ -166,12 +166,18 @@ export function computeFieldFrame(
   let minimum = Infinity;
   let maximum = -Infinity;
   let clippedNearFieldPoints = 0;
+  const planeYaw = MathUtils.degToRad(observation.yawDeg);
+  const planeCosine = Math.cos(planeYaw);
+  const planeSine = Math.sin(planeYaw);
+  const planeCenterZ = observation.nearM + observation.depthM / 2;
 
   for (let row = 0; row < observation.rows; row += 1) {
-    const worldZ = observation.nearM + (row / Math.max(1, observation.rows - 1)) * observation.depthM;
+    const localZ = -observation.depthM / 2 + (row / Math.max(1, observation.rows - 1)) * observation.depthM;
     for (let column = 0; column < observation.columns; column += 1) {
-      const worldX = -observation.widthM / 2 + (column / Math.max(1, observation.columns - 1)) * observation.widthM;
+      const localX = -observation.widthM / 2 + (column / Math.max(1, observation.columns - 1)) * observation.widthM;
+      const worldX = observation.centerXM + planeCosine * localX + planeSine * localZ;
       const worldY = observation.heightM;
+      const worldZ = planeCenterZ - planeSine * localX + planeCosine * localZ;
       let totalReal = 0;
       let totalImag = 0;
       for (const sourceDatum of sourceData) {
