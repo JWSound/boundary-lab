@@ -131,7 +131,9 @@ export function SourceInspector({
         <NumberField label="X" value={config.positionX} unit="m" step={0.1} onChange={(value) => set("positionX", value)} />
         <NumberField label="Height" value={config.positionHeightM} unit="m" step={0.1} minimum={minimumHeightM} onChange={(value) => set("positionHeightM", value)} />
         <NumberField label="Depth" value={config.positionZ} unit="m" step={0.1} onChange={(value) => set("positionZ", value)} />
+        <NumberField label="Pitch" value={config.pitchDeg} unit="deg" step={0.5} onChange={(value) => set("pitchDeg", value)} />
         <NumberField label="Yaw" value={config.yawDeg} unit="°" step={0.5} onChange={(value) => set("yawDeg", value)} />
+        <NumberField label="Roll" value={config.rollDeg} unit="deg" step={0.5} onChange={(value) => set("rollDeg", value)} />
       </div>
       <SectionHeader icon={Radio} title="Drive" />
       <div className="inspector-section">
@@ -149,7 +151,7 @@ export function SourceInspector({
   );
 }
 
-function planeGridShape(widthM: number, depthM: number, majorSamples: number): [number, number] {
+export function planeGridShape(widthM: number, depthM: number, majorSamples: number): [number, number] {
   if (widthM >= depthM) {
     return [majorSamples, Math.max(2, Math.round(((majorSamples - 1) * depthM) / widthM) + 1)];
   }
@@ -164,11 +166,8 @@ export function PlaneResolutionInspector({
   onChange: (next: ObservationPlane) => void;
 }) {
   const resolution = Math.max(value.columns, value.rows);
-  const set = <K extends keyof ObservationPlane>(key: K, next: ObservationPlane[K]) => onChange({ ...value, [key]: next });
-  const setSize = (key: "widthM" | "depthM", next: number) => {
-    const sized = { ...value, [key]: Math.max(0.1, next) };
-    const [columns, rows] = planeGridShape(sized.widthM, sized.depthM, resolution);
-    onChange({ ...sized, columns, rows });
+  const set = <K extends keyof ObservationPlane>(key: K, next: ObservationPlane[K]) => {
+    onChange({ ...value, [key]: next });
   };
   const setResolution = (next: number) => {
     const [columns, rows] = planeGridShape(value.widthM, value.depthM, next);
@@ -180,13 +179,17 @@ export function PlaneResolutionInspector({
       <div className="inspector-section two-column-fields">
         <NumberField label="X" value={value.centerXM} unit="m" step={0.1} onChange={(next) => set("centerXM", next)} />
         <NumberField label="Near" value={value.nearM} unit="m" step={0.1} onChange={(next) => set("nearM", next)} />
-        <NumberField label="Height" value={value.heightM} unit="m" step={0.1} minimum={0} onChange={(next) => set("heightM", next)} />
+        <NumberField label="Height" value={value.heightM} unit="m" step={0.1} onChange={(next) => set("heightM", next)} />
+        <NumberField label="Pitch" value={value.pitchDeg} unit="deg" step={0.5} onChange={(next) => set("pitchDeg", next)} />
         <NumberField label="Yaw" value={value.yawDeg} unit="°" step={0.5} onChange={(next) => set("yawDeg", next)} />
+        <NumberField label="Roll" value={value.rollDeg} unit="deg" step={0.5} onChange={(next) => set("rollDeg", next)} />
       </div>
       <SectionHeader icon={Grid3X3} title="Size" />
-      <div className="inspector-section two-column-fields">
-        <NumberField label="Width" value={value.widthM} unit="m" step={0.5} minimum={0.1} onChange={(next) => setSize("widthM", next)} />
-        <NumberField label="Depth" value={value.depthM} unit="m" step={0.5} minimum={0.1} onChange={(next) => setSize("depthM", next)} />
+      <div className="inspector-section">
+        <div className="plane-size-readout">
+          <span>Length × width</span>
+          <output>{value.depthM.toFixed(2)} × {value.widthM.toFixed(2)} m</output>
+        </div>
       </div>
       <SectionHeader icon={Grid3X3} title="Sampling" />
       <div className="inspector-section">

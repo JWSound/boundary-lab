@@ -28,7 +28,9 @@ class DeploySourcePlacement:
     position_x_m: float
     position_height_m: float
     position_z_m: float
+    pitch_deg: float
     yaw_deg: float
+    roll_deg: float
     level_db: float
     delay_ms: float
     polarity: int
@@ -45,7 +47,9 @@ class DeploySourcePlacement:
             position_x_m=float(raw.get("positionX", 0.0)),
             position_height_m=float(raw.get("positionHeightM", 0.0)),
             position_z_m=float(raw.get("positionZ", 0.0)),
+            pitch_deg=float(raw.get("pitchDeg", 0.0)),
             yaw_deg=float(raw.get("yawDeg", 0.0)),
+            roll_deg=float(raw.get("rollDeg", 0.0)),
             level_db=float(raw.get("levelDb", 0.0)),
             delay_ms=float(raw.get("delayMs", 0.0)),
             polarity=polarity,
@@ -58,7 +62,9 @@ class DeploySourcePlacement:
                 values.position_x_m,
                 values.position_height_m,
                 values.position_z_m,
+                values.pitch_deg,
                 values.yaw_deg,
+                values.roll_deg,
                 values.level_db,
                 values.delay_ms,
             )
@@ -74,7 +80,9 @@ class DeployObservationPlane:
     center_x_m: float
     near_m: float
     height_m: float
+    pitch_deg: float
     yaw_deg: float
+    roll_deg: float
     columns: int
     rows: int
 
@@ -88,7 +96,9 @@ class DeployObservationPlane:
             center_x_m=float(raw.get("centerXM", 0.0)),
             near_m=float(raw.get("nearM", 0.0)),
             height_m=float(raw.get("heightM", 0.0)),
+            pitch_deg=float(raw.get("pitchDeg", 0.0)),
             yaw_deg=float(raw.get("yawDeg", 0.0)),
+            roll_deg=float(raw.get("rollDeg", 0.0)),
             columns=int(raw.get("columns", 0)),
             rows=int(raw.get("rows", 0)),
         )
@@ -100,7 +110,9 @@ class DeployObservationPlane:
                 value.center_x_m,
                 value.near_m,
                 value.height_m,
+                value.pitch_deg,
                 value.yaw_deg,
+                value.roll_deg,
             )
         ):
             raise ValueError("Deploy observation plane values must be finite.")
@@ -110,27 +122,37 @@ class DeployObservationPlane:
             raise ValueError("Deploy observation plane must contain at least two rows and columns.")
         if value.columns * value.rows > 250_000:
             raise ValueError("Deploy observation plane exceeds the 250,000 point limit.")
-        if value.height_m < 0.0:
-            raise ValueError("Deploy observation planes cannot be placed below the ground plane.")
         return value
 
-    def points(self) -> np.ndarray:
+    def points(self) -> tuple[np.ndarray, np.ndarray]:
         x = np.linspace(-self.width_m / 2.0, self.width_m / 2.0, self.columns, dtype=np.float32)
         z = np.linspace(-self.depth_m / 2.0, self.depth_m / 2.0, self.rows, dtype=np.float32)
         local_x, local_z = np.meshgrid(x, z, indexing="xy")
         yaw = math.radians(self.yaw_deg)
+        roll = math.radians(self.roll_deg)
+        roll_cosine = math.cos(roll)
+        roll_sine = math.sin(roll)
+        rolled_x = roll_cosine * local_x
+        rolled_y = roll_sine * local_x
+        pitch = math.radians(self.pitch_deg)
+        pitch_cosine = math.cos(pitch)
+        pitch_sine = math.sin(pitch)
         cosine = math.cos(yaw)
         sine = math.sin(yaw)
         center_z_m = self.near_m + self.depth_m / 2.0
-        world_x = self.center_x_m + cosine * local_x + sine * local_z
-        world_z = center_z_m - sine * local_x + cosine * local_z
-        return np.column_stack(
+        pitched_y = pitch_cosine * rolled_y - pitch_sine * local_z
+        pitched_z = pitch_sine * rolled_y + pitch_cosine * local_z
+        world_x = self.center_x_m + cosine * rolled_x + sine * pitched_z
+        world_z = center_z_m - sine * rolled_x + cosine * pitched_z
+        points = np.column_stack(
             (
                 world_x.reshape(-1),
-                np.full(world_x.size, self.height_m, dtype=np.float32),
+                self.height_m + pitched_y.reshape(-1),
                 world_z.reshape(-1),
             )
         ).astype(np.float32, copy=False)
+        sample_indices = np.flatnonzero(points[:, 1] >= -GROUND_TOLERANCE_M).astype(np.int64)
+        return points[sample_indices], sample_indices
 
 
 def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple[Path, dict[str, Any]]:
@@ -210,6 +232,8 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
             position_x_m=source.position_x_m,
             position_height_m=source.position_height_m,
             position_z_m=source.position_z_m,
+            pitch_deg=source.pitch_deg,
+            roll_deg=source.roll_deg,
             yaw_deg=source.yaw_deg,
         )
         for source in sources
@@ -266,7 +290,9 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
 
     staged_mesh = work_path / "exterior.msh"
     staged_mesh.write_bytes(geometry_bytes)
-    points_m = observation.points()
+    points_m, observation_sample_indices = observation.points()
+    if points_m.shape[0] == 0:
+        raise ValueError("Deploy observation plane has no sampling points on or above the ground plane.")
     medium = manifest.get("medium", {})
     request: dict[str, Any] = {
         "schema": DEPLOY_SOLVE_SCHEMA,
@@ -279,7 +305,9 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
             {
                 "id": source.id,
                 "position_m": [source.position_x_m, source.position_height_m, source.position_z_m],
+                "pitch_deg": source.pitch_deg,
                 "yaw_deg": source.yaw_deg,
+                "roll_deg": source.roll_deg,
             }
             for source in sources
         ],
@@ -293,6 +321,7 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         },
         "observation_points_m": points_m.tolist(),
         "observation_shape": [observation.rows, observation.columns],
+        "observation_sample_indices": observation_sample_indices.tolist(),
         "density_kg_per_m3": float(medium.get("density_kg_per_m3", 1.21)),
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),

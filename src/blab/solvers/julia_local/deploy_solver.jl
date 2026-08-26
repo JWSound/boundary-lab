@@ -1,11 +1,17 @@
 function deploy_source_transform(raw, ::Type{T}) where {T<:AbstractFloat}
     position = get_value(raw, "position_m", [0.0, 0.0, 0.0])
     length(position) == 3 || error("Deploy source position_m must contain three values.")
+    roll = T(pi) * T(get_value(raw, "roll_deg", 0.0)) / T(180.0)
+    pitch = T(pi) * T(get_value(raw, "pitch_deg", 0.0)) / T(180.0)
     yaw = T(pi) * T(get_value(raw, "yaw_deg", 0.0)) / T(180.0)
     return (
         position=SVector{3,T}(T(position[1]), T(position[2]), T(position[3])),
-        cosine=cos(yaw),
-        sine=sin(yaw),
+        roll_cosine=cos(roll),
+        roll_sine=sin(roll),
+        pitch_cosine=cos(pitch),
+        pitch_sine=sin(pitch),
+        yaw_cosine=cos(yaw),
+        yaw_sine=sin(yaw),
     )
 end
 
@@ -27,9 +33,13 @@ function transform_deploy_mesh(mesh::BoundaryMesh{T}, transform) where {T<:Abstr
         scene_x = package_point[1]
         scene_y = -package_point[3]
         scene_z = package_point[2]
-        rotated_x = transform.cosine * scene_x + transform.sine * scene_z
-        rotated_z = -transform.sine * scene_x + transform.cosine * scene_z
-        push!(vertices, SVector{3,T}(rotated_x, scene_y, rotated_z) + transform.position)
+        rolled_x = transform.roll_cosine * scene_x - transform.roll_sine * scene_y
+        rolled_y = transform.roll_sine * scene_x + transform.roll_cosine * scene_y
+        pitched_y = transform.pitch_cosine * rolled_y - transform.pitch_sine * scene_z
+        pitched_z = transform.pitch_sine * rolled_y + transform.pitch_cosine * scene_z
+        rotated_x = transform.yaw_cosine * rolled_x + transform.yaw_sine * pitched_z
+        rotated_z = -transform.yaw_sine * rolled_x + transform.yaw_cosine * pitched_z
+        push!(vertices, SVector{3,T}(rotated_x, pitched_y, rotated_z) + transform.position)
     end
     return BoundaryMesh(vertices, mesh.faces, mesh.physical_tags)
 end
@@ -91,9 +101,10 @@ function solve_deploy_request_impl(request)
     observation_points = deploy_observation_points(request, FloatType)
     observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
     length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
-    prod(observation_shape) == length(observation_points) || error(
-        "Deploy observation shape does not match the point count.",
-    )
+    observation_sample_indices = Int.(get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))))
+    length(observation_sample_indices) == length(observation_points) || error("Deploy observation sample indices do not match the point count.")
+    all(index -> 0 <= index < prod(observation_shape), observation_sample_indices) || error("Deploy observation sample index is outside the grid.")
+    length(unique(observation_sample_indices)) == length(observation_sample_indices) || error("Deploy observation sample indices must be unique.")
 
     p1_space = build_p1_space(mesh)
     dp0_space = build_dp0_space(mesh)
@@ -199,6 +210,7 @@ function solve_deploy_request_impl(request)
                 "rows" => observation_shape[1],
                 "columns" => observation_shape[2],
                 "spl_db" => spl_db,
+                "sample_indices" => observation_sample_indices,
                 "field_pressure" => Dict(
                     "real" => Float32.(real.(field_pressure)),
                     "imag" => Float32.(imag.(field_pressure)),

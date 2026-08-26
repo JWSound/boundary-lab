@@ -39,7 +39,9 @@ const sourceConfig = {
   positionX: 0,
   positionHeightM: 0.4,
   positionZ: 0,
+  pitchDeg: 0,
   yawDeg: 0,
+  rollDeg: 0,
   levelDb: -3,
   delayMs: 0,
   polarity: 1,
@@ -50,13 +52,23 @@ const field = computeFieldFrame(
   speaker,
   [source],
   [sourceConfig],
-  { widthM: 12, depthM: 12, nearM: 2, heightM: 1.2, columns: 24, rows: 20 },
+  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 24, rows: 20 },
   frequencyIndex,
   lookup,
 );
 assert.equal(field.splDb.length, 480);
 assert.ok(field.splDb.every(Number.isFinite));
 assert.ok(Number.isFinite(field.averageDb));
+const clippedField = computeFieldFrame(
+  speaker,
+  [source],
+  [sourceConfig],
+  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 0, pitchDeg: 30, yawDeg: 0, rollDeg: 0, columns: 12, rows: 12 },
+  frequencyIndex,
+  lookup,
+);
+const clippedValidCount = clippedField.validMask.reduce((sum, value) => sum + value, 0);
+assert.ok(clippedValidCount > 0 && clippedValidCount < clippedField.validMask.length);
 
 console.log(JSON.stringify({
   name: speaker.manifest.name,

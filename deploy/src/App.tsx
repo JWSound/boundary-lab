@@ -3,6 +3,7 @@ import {
   CircleHelp,
   Grid3X3,
   Import,
+  Maximize2,
   Menu,
   MousePointer2,
   Move3D,
@@ -16,10 +17,11 @@ import {
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneView, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
+import { SceneView, type ObservationResizeUpdate, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
 import {
   browserFileHandler,
   PackageCard,
+  planeGridShape,
   PlaneResolutionInspector,
   SceneTree,
   SectionHeader,
@@ -46,7 +48,9 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
       positionX: -centerSpacingM / 2,
       positionHeightM,
       positionZ: 0,
+      pitchDeg: 0,
       yawDeg: 0,
+      rollDeg: 0,
       levelDb: -3,
       delayMs: 0,
       polarity: 1,
@@ -56,7 +60,9 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
       positionX: centerSpacingM / 2,
       positionHeightM,
       positionZ: 0,
+      pitchDeg: 0,
       yawDeg: 0,
+      rollDeg: 0,
       levelDb: -3,
       delayMs: 0,
       polarity: 1,
@@ -70,7 +76,9 @@ const defaultObservation: ObservationPlane = {
   centerXM: 0,
   nearM: 1.5,
   heightM: 1.2,
+  pitchDeg: 0,
   yawDeg: 0,
+  rollDeg: 0,
   columns: 54,
   rows: 54,
 };
@@ -254,6 +262,14 @@ export function App() {
     setSolveState("solving");
     setSolveMessage("Starting BEAT CUDA worker");
     setError(null);
+    if (!patternField.validMask.some((value) => value !== 0)) {
+      setBoundaryField(patternField);
+      setBoundarySolveKey(requestedKey);
+      setSolveRevision((revision) => revision + 1);
+      setSolveState("complete");
+      setSolveMessage("No audience-plane samples above ground");
+      return;
+    }
     try {
       const result = await window.boundaryLabDesktop.solveLevel2({
         packagePath: pkg.sourcePath,
@@ -263,7 +279,7 @@ export function App() {
         observation,
       });
       if (generation !== solveGeneration.current) return;
-      setBoundaryField(fieldFrameFromSpl(result.spl_db, result.columns, result.rows));
+      setBoundaryField(fieldFrameFromSpl(result.spl_db, result.columns, result.rows, result.sample_indices));
       setBoundarySolveKey(requestedKey);
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
@@ -275,12 +291,12 @@ export function App() {
       setSolveMessage("Level 2 solve failed");
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [currentSolveKey, frequencyIndex, observation, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
+  }, [currentSolveKey, frequencyIndex, observation, patternField, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
 
   const updateSelectedSource = (next: SourceConfiguration) => {
     const grounded = {
       ...next,
-      positionHeightM: Math.max(sourceMinimumHeightM, next.positionHeightM),
+      positionHeightM: Math.max(minimumSourceHeightM(pkg, next.pitchDeg, next.rollDeg), next.positionHeightM),
     };
     setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
   };
@@ -289,12 +305,29 @@ export function App() {
     setSourceConfigs((current) => current.map((source) => source.id === id ? {
       ...source,
       ...pose,
-      positionHeightM: Math.max(sourceMinimumHeightM, pose.positionHeightM),
+      positionHeightM: Math.max(minimumSourceHeightM(pkg, pose.pitchDeg, pose.rollDeg), pose.positionHeightM),
     } : source));
   };
 
-  const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "yawDeg">) => {
-    setObservation((current) => ({ ...current, ...pose, heightM: Math.max(0, pose.heightM) }));
+  const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">) => {
+    setObservation((current) => ({ ...current, ...pose }));
+  };
+
+  const resizeObservation = (resize: ObservationResizeUpdate) => {
+    setObservation((current) => {
+      const resolution = Math.max(current.columns, current.rows);
+      const [columns, rows] = planeGridShape(resize.widthM, resize.depthM, resolution);
+      return {
+        ...current,
+        widthM: resize.widthM,
+        depthM: resize.depthM,
+        centerXM: resize.centerXM,
+        nearM: resize.centerZM - resize.depthM / 2,
+        heightM: resize.heightM,
+        columns,
+        rows,
+      };
+    });
   };
 
   const selectSceneObject = (id: string | null) => {
@@ -314,6 +347,9 @@ export function App() {
       } else if (event.key.toLowerCase() === "e") {
         event.preventDefault();
         setTransformMode("rotate");
+      } else if (event.key.toLowerCase() === "r" && selectedInstance === "audience-plane") {
+        event.preventDefault();
+        setTransformMode("scale");
       }
     };
     const keyUp = (event: KeyboardEvent) => {
@@ -392,7 +428,7 @@ export function App() {
         className="viewport"
         data-transform-mode={transformMode}
         data-angle-snap-disabled={angleSnapDisabled}
-        data-grab-point-count={selectedSource ? 8 : 0}
+        data-grab-point-count={selectedSource ? 8 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
       >
         <SceneView
           pkg={pkg}
@@ -405,11 +441,13 @@ export function App() {
           onSelectInstance={selectSceneObject}
           onTransformSource={updateSourcePose}
           onTransformObservation={updateObservationPose}
+          onResizeObservation={resizeObservation}
         />
         <div className="viewport-toolbar">
           <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
           <button className={transformMode === "translate" ? "active" : ""} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
           <button className={transformMode === "rotate" ? "active" : ""} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
+          <button className={transformMode === "scale" ? "active" : ""} disabled={selectedInstance !== "audience-plane"} title="Resize plane (R)" onClick={() => setTransformMode("scale")}><Maximize2 size={15} /></button>
           <span />
           <button><Menu size={15} /></button>
         </div>

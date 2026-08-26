@@ -72,7 +72,9 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert request["source_transforms"][0] == {
         "id": "subwoofer-1",
         "position_m": [1.25, 0.4, -0.5],
+        "pitch_deg": 0.0,
         "yaw_deg": 12.0,
+        "roll_deg": 0.0,
     }
     assert request["proximity"]["surface_padding_m"] == SOURCE_SURFACE_PADDING_M
     assert request["proximity"]["minimum_surface_distance_m"] > 2.0
@@ -115,6 +117,40 @@ def test_prepare_deploy_solve_request_transforms_observation_plane(tmp_path: Pat
     assert request["observation_points_m"][-1] == pytest.approx([8.0, 1.2, 1.0])
 
 
+def test_prepare_deploy_solve_request_pitches_observation_plane(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observation"].update({"heightM": 6.0, "pitchDeg": 90.0})
+
+    request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    assert request["observation_points_m"][0] == pytest.approx([-6.0, 11.0, 7.0])
+    assert request["observation_points_m"][-1] == pytest.approx([6.0, 1.0, 7.0])
+
+
+def test_prepare_deploy_solve_request_omits_points_below_ground(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observation"].update({"heightM": 0.0, "pitchDeg": 30.0})
+
+    request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    assert len(request["observation_points_m"]) < 35
+    assert len(request["observation_points_m"]) == len(request["observation_sample_indices"])
+    assert all(point[1] >= -1e-6 for point in request["observation_points_m"])
+
+
+def test_prepare_deploy_solve_request_rolls_observation_plane(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observation"].update({"heightM": 6.0, "rollDeg": 90.0})
+
+    request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    assert request["observation_points_m"][0] == pytest.approx([0.0, 0.0, 2.0], abs=1e-6)
+    assert request["observation_points_m"][-1] == pytest.approx([0.0, 12.0, 12.0], abs=1e-6)
+
+
 def test_prepare_deploy_solve_request_rejects_geometry_below_ground(tmp_path: Path) -> None:
     payload = _payload()
     payload["sources"][0]["positionHeightM"] = 0.1
@@ -123,11 +159,11 @@ def test_prepare_deploy_solve_request_rejects_geometry_below_ground(tmp_path: Pa
         prepare_deploy_solve_request(payload, tmp_path)
 
 
-def test_prepare_deploy_solve_request_rejects_plane_below_ground(tmp_path: Path) -> None:
+def test_prepare_deploy_solve_request_rejects_plane_with_no_above_ground_samples(tmp_path: Path) -> None:
     payload = _payload()
     payload["observation"]["heightM"] = -0.01
 
-    with pytest.raises(ValueError, match="planes cannot be placed below"):
+    with pytest.raises(ValueError, match="no sampling points on or above"):
         prepare_deploy_solve_request(payload, tmp_path)
 
 

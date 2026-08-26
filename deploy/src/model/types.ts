@@ -51,7 +51,9 @@ export interface SourceConfiguration {
   positionX: number;
   positionHeightM: number;
   positionZ: number;
+  pitchDeg: number;
   yawDeg: number;
+  rollDeg: number;
   levelDb: number;
   delayMs: number;
   polarity: 1 | -1;
@@ -62,6 +64,7 @@ export interface SpeakerInstance {
   position: [number, number, number];
   pitchDeg: number;
   yawDeg: number;
+  rollDeg: number;
 }
 
 export interface ObservationPlane {
@@ -70,7 +73,9 @@ export interface ObservationPlane {
   centerXM: number;
   nearM: number;
   heightM: number;
+  pitchDeg: number;
   yawDeg: number;
+  rollDeg: number;
   columns: number;
   rows: number;
 }
@@ -85,6 +90,7 @@ export interface PatternLookup {
 
 export interface FieldFrame {
   splDb: Float32Array;
+  validMask: Uint8Array;
   columns: number;
   rows: number;
   minimumDb: number;
@@ -99,6 +105,7 @@ export interface Level2SolveResult {
   rows: number;
   columns: number;
   spl_db: number[];
+  sample_indices: number[];
   field_pressure: { real: number[]; imag: number[] };
   timings: { assembly_s: number; solve_s: number; field_s: number };
   diagnostics: {

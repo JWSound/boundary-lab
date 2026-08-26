@@ -35,21 +35,33 @@ def transform_package_points(
     position_x_m: float,
     position_height_m: float,
     position_z_m: float,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
     yaw_deg: float,
 ) -> np.ndarray:
     """Apply the package-to-scene rotation, scene yaw, and translation."""
 
     points = np.asarray(points_m, dtype=np.float64)
     scene = np.column_stack((points[:, 0], -points[:, 2], points[:, 1]))
+    roll = np.deg2rad(float(roll_deg))
+    roll_cosine = np.cos(roll)
+    roll_sine = np.sin(roll)
+    rolled_x = roll_cosine * scene[:, 0] - roll_sine * scene[:, 1]
+    rolled_y = roll_sine * scene[:, 0] + roll_cosine * scene[:, 1]
+    pitch = np.deg2rad(float(pitch_deg))
+    pitch_cosine = np.cos(pitch)
+    pitch_sine = np.sin(pitch)
+    pitched_y = pitch_cosine * rolled_y - pitch_sine * scene[:, 2]
+    pitched_z = pitch_sine * rolled_y + pitch_cosine * scene[:, 2]
     yaw = np.deg2rad(float(yaw_deg))
     cosine = np.cos(yaw)
     sine = np.sin(yaw)
-    rotated_x = cosine * scene[:, 0] + sine * scene[:, 2]
-    rotated_z = -sine * scene[:, 0] + cosine * scene[:, 2]
+    rotated_x = cosine * rolled_x + sine * pitched_z
+    rotated_z = -sine * rolled_x + cosine * pitched_z
     return np.column_stack(
         (
             rotated_x + float(position_x_m),
-            scene[:, 1] + float(position_height_m),
+            pitched_y + float(position_height_m),
             rotated_z + float(position_z_m),
         )
     )

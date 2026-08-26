@@ -25,15 +25,15 @@ npm start
 - Opens new desktop projects with two coarse `S218BP_LOD.blabsp` cabinets separated by a 2 m surface gap.
 - Provides source position, yaw, level, delay, and polarity controls without line-array layout concepts.
 - Displays eight bounding-box grab points on the selected cabinet for ground-parallel dragging; snapping a handle to a cabinet corner at another height enables vertical stacks.
-- Provides a W-key XYZ translation gizmo and an E-key yaw gizmo with 5-degree snapping; hold Alt for free rotation.
+- Provides W-key XYZ translation and E-key pitch/yaw/roll rotation gizmos with 5-degree snapping; hold Alt for free rotation.
 - Complex-sums Level 1 pattern pressure on an editable audience plane using Boundary Lab's `exp(-i omega t)` convention.
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
-- Treats the audience plane as a scene-list-selectable object with size, position, yaw, W/E transform gizmos, and inspector resolution controls up to 200 samples.
+- Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Reports average, peak, and P10-P90 coverage spread while the scene changes.
 - Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
-- Keeps cabinet geometry and audience planes above the ground plane and reserves 2 mm between cabinet surfaces.
+- Keeps cabinet geometry above the ground plane, omits below-ground audience samples, and reserves 2 mm between cabinet surfaces.
 - Uses a triangle BVH to measure exact inter-cabinet surface spacing before a solve.
 - Saves the editable scene as a readable `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.

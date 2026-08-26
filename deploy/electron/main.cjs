@@ -184,6 +184,7 @@ function createWindow() {
             window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
             requestAnimationFrame(() => {
               const planeRotateMode = document.querySelector('.viewport')?.getAttribute('data-transform-mode');
+              window.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', bubbles: true }));
               const input = document.querySelector('input[aria-label="Plane resolution"]');
               const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
               if (!input || !setter) return resolve({ available: false });
@@ -195,13 +196,17 @@ function createWindow() {
                   selectedObject: document.querySelector('.inspector-heading strong')?.textContent?.trim(),
                   planeTranslateMode,
                   planeRotateMode,
+                  planeScaleMode: document.querySelector('.viewport')?.getAttribute('data-transform-mode'),
+                  planeScaleHandleCount: document.querySelector('.viewport')?.getAttribute('data-grab-point-count'),
                   planeProperties: {
                     x: document.querySelector('input[aria-label="X"]')?.value,
                     near: document.querySelector('input[aria-label="Near"]')?.value,
                     height: document.querySelector('input[aria-label="Height"]')?.value,
+                    pitch: document.querySelector('input[aria-label="Pitch"]')?.value,
                     yaw: document.querySelector('input[aria-label="Yaw"]')?.value,
-                    width: document.querySelector('input[aria-label="Width"]')?.value,
-                    depth: document.querySelector('input[aria-label="Depth"]')?.value
+                    roll: document.querySelector('input[aria-label="Roll"]')?.value,
+                    sizeReadout: document.querySelector('.plane-size-readout output')?.textContent?.trim(),
+                    editableSizeInputs: document.querySelectorAll('input[aria-label="Width"], input[aria-label="Depth"]').length
                   },
                   value: input.value,
                   maximum: input.max,

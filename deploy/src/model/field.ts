@@ -14,31 +14,46 @@ export function fieldFrameFromSpl(
   samples: ArrayLike<number>,
   columns: number,
   rows: number,
+  sampleIndices?: ArrayLike<number>,
 ): FieldFrame {
-  if (samples.length !== columns * rows) {
+  const pointCount = columns * rows;
+  const indices = sampleIndices ?? Array.from({ length: pointCount }, (_, index) => index);
+  if (samples.length !== indices.length) {
     throw new Error("Level 2 field dimensions do not match the audience-plane samples.");
   }
-  const values = Float32Array.from(samples);
-  const sorted = Array.from(values).sort((a, b) => a - b);
+  const values = new Float32Array(pointCount);
+  const validMask = new Uint8Array(pointCount);
+  const sorted: number[] = [];
   let sum = 0;
   let minimum = Infinity;
   let maximum = -Infinity;
-  for (const value of values) {
+  for (let sampleIndex = 0; sampleIndex < samples.length; sampleIndex += 1) {
+    const value = Number(samples[sampleIndex]);
+    const gridIndex = Number(indices[sampleIndex]);
     if (!Number.isFinite(value)) throw new Error("Level 2 field contains a non-finite SPL value.");
+    if (!Number.isInteger(gridIndex) || gridIndex < 0 || gridIndex >= pointCount || validMask[gridIndex]) {
+      throw new Error("Level 2 field contains an invalid audience-plane sample index.");
+    }
+    values[gridIndex] = value;
+    validMask[gridIndex] = 1;
+    sorted.push(value);
     sum += value;
     minimum = Math.min(minimum, value);
     maximum = Math.max(maximum, value);
   }
+  sorted.sort((a, b) => a - b);
+  if (sorted.length === 0) minimum = maximum = 0;
   const percentile10 = sorted[Math.floor((sorted.length - 1) * 0.1)];
   const percentile90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
   return {
     splDb: values,
+    validMask,
     columns,
     rows,
     minimumDb: minimum,
     maximumDb: maximum,
-    averageDb: sum / values.length,
-    spreadDb: percentile90 - percentile10,
+    averageDb: sorted.length ? sum / sorted.length : 0,
+    spreadDb: sorted.length ? percentile90 - percentile10 : 0,
     clippedNearFieldPoints: 0,
   };
 }
@@ -47,20 +62,42 @@ export function buildSourceInstance(config: SourceConfiguration): SpeakerInstanc
   return {
     id: config.id,
     position: [config.positionX, config.positionHeightM, config.positionZ],
-    pitchDeg: 0,
+    pitchDeg: config.pitchDeg,
     yawDeg: config.yawDeg,
+    rollDeg: config.rollDeg,
   };
 }
 
 export const SOURCE_SURFACE_PADDING_M = 0.002;
 
-export function minimumSourceHeightM(pkg: LoadedSpeakerPackage): number {
-  if (!pkg.mesh) return pkg.boundsM[2] / 2 + SOURCE_SURFACE_PADDING_M;
-  let maximumPackageZ = -Infinity;
-  for (let index = 2; index < pkg.mesh.positions.length; index += 3) {
-    maximumPackageZ = Math.max(maximumPackageZ, pkg.mesh.positions[index]);
+export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, rollDeg = 0): number {
+  const rotation = new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(pitchDeg),
+    0,
+    MathUtils.degToRad(rollDeg),
+    "YXZ",
+  ));
+  if (!pkg.mesh) {
+    let minimumY = Infinity;
+    for (const x of [-pkg.boundsM[0] / 2, pkg.boundsM[0] / 2]) {
+      for (const y of [-pkg.boundsM[2] / 2, pkg.boundsM[2] / 2]) {
+        for (const z of [-pkg.boundsM[1] / 2, pkg.boundsM[1] / 2]) {
+          minimumY = Math.min(minimumY, new Vector3(x, y, z).applyQuaternion(rotation).y);
+        }
+      }
+    }
+    return SOURCE_SURFACE_PADDING_M - minimumY;
   }
-  return Math.max(0, maximumPackageZ) + SOURCE_SURFACE_PADDING_M;
+  let minimumSceneY = Infinity;
+  for (let index = 0; index < pkg.mesh.positions.length; index += 3) {
+    const point = new Vector3(
+      pkg.mesh.positions[index],
+      -pkg.mesh.positions[index + 2],
+      pkg.mesh.positions[index + 1],
+    ).applyQuaternion(rotation);
+    minimumSceneY = Math.min(minimumSceneY, point.y);
+  }
+  return SOURCE_SURFACE_PADDING_M - minimumSceneY;
 }
 
 export function nearestFrequencyIndex(pkg: LoadedSpeakerPackage, targetHz: number): number {
@@ -156,28 +193,45 @@ export function computeFieldFrame(
       driveReal: level * Math.cos(drivePhase),
       driveImag: level * Math.sin(drivePhase),
       inverseRotation: new Quaternion()
-        .setFromEuler(new Euler(MathUtils.degToRad(source.pitchDeg), MathUtils.degToRad(source.yawDeg), 0, "YXZ"))
+        .setFromEuler(new Euler(
+          MathUtils.degToRad(source.pitchDeg),
+          MathUtils.degToRad(source.yawDeg),
+          MathUtils.degToRad(source.rollDeg),
+          "YXZ",
+        ))
         .invert(),
     };
   });
   const direction = new Vector3();
+  const planePoint = new Vector3();
+  const validMask = new Uint8Array(pointCount);
   const sorted: number[] = [];
   let sum = 0;
   let minimum = Infinity;
   let maximum = -Infinity;
   let clippedNearFieldPoints = 0;
-  const planeYaw = MathUtils.degToRad(observation.yawDeg);
-  const planeCosine = Math.cos(planeYaw);
-  const planeSine = Math.sin(planeYaw);
+  const planeRotation = new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(observation.pitchDeg),
+    MathUtils.degToRad(observation.yawDeg),
+    MathUtils.degToRad(observation.rollDeg),
+    "YXZ",
+  ));
   const planeCenterZ = observation.nearM + observation.depthM / 2;
 
   for (let row = 0; row < observation.rows; row += 1) {
     const localZ = -observation.depthM / 2 + (row / Math.max(1, observation.rows - 1)) * observation.depthM;
     for (let column = 0; column < observation.columns; column += 1) {
       const localX = -observation.widthM / 2 + (column / Math.max(1, observation.columns - 1)) * observation.widthM;
-      const worldX = observation.centerXM + planeCosine * localX + planeSine * localZ;
-      const worldY = observation.heightM;
-      const worldZ = planeCenterZ - planeSine * localX + planeCosine * localZ;
+      planePoint.set(localX, 0, localZ).applyQuaternion(planeRotation);
+      const worldX = observation.centerXM + planePoint.x;
+      const worldY = observation.heightM + planePoint.y;
+      const worldZ = planeCenterZ + planePoint.z;
+      const index = row * observation.columns + column;
+      if (worldY < 0) {
+        values[index] = 0;
+        continue;
+      }
+      validMask[index] = 1;
       let totalReal = 0;
       let totalImag = 0;
       for (const sourceDatum of sourceData) {
@@ -207,7 +261,6 @@ export function computeFieldFrame(
       }
       const magnitude = Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag));
       const spl = 20 * Math.log10(magnitude / PRESSURE_REFERENCE_PA);
-      const index = row * observation.columns + column;
       values[index] = spl;
       sum += spl;
       minimum = Math.min(minimum, spl);
@@ -216,16 +269,18 @@ export function computeFieldFrame(
     }
   }
   sorted.sort((a, b) => a - b);
+  if (sorted.length === 0) minimum = maximum = 0;
   const percentile10 = sorted[Math.floor((sorted.length - 1) * 0.1)];
   const percentile90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
   return {
     splDb: values,
+    validMask,
     columns: observation.columns,
     rows: observation.rows,
     minimumDb: minimum,
     maximumDb: maximum,
-    averageDb: sum / pointCount,
-    spreadDb: percentile90 - percentile10,
+    averageDb: sorted.length ? sum / sorted.length : 0,
+    spreadDb: sorted.length ? percentile90 - percentile10 : 0,
     clippedNearFieldPoints,
   };
 }

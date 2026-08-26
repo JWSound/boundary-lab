@@ -1,6 +1,6 @@
 import { Grid, Html, OrbitControls, TransformControls } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import { useMemo, useRef, type MutableRefObject } from "react";
+import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import {
   BufferAttribute,
   BufferGeometry,
@@ -21,16 +21,26 @@ import {
 import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstance } from "../model/types";
 import { SOURCE_SURFACE_PADDING_M } from "../model/field";
 
-export type SceneTransformMode = "select" | "translate" | "rotate";
+export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
 
 export interface SourcePoseUpdate {
   positionX: number;
   positionHeightM: number;
   positionZ: number;
+  pitchDeg: number;
   yawDeg: number;
+  rollDeg: number;
 }
 
-export type ObservationPoseUpdate = Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "yawDeg">;
+export type ObservationPoseUpdate = Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">;
+
+export interface ObservationResizeUpdate {
+  widthM: number;
+  depthM: number;
+  centerXM: number;
+  centerZM: number;
+  heightM: number;
+}
 
 interface SceneBounds {
   minimum: [number, number, number];
@@ -49,6 +59,7 @@ interface SceneViewProps {
   onSelectInstance: (id: string | null) => void;
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
+  onResizeObservation: (resize: ObservationResizeUpdate) => void;
 }
 
 function packageSceneBounds(pkg: LoadedSpeakerPackage): SceneBounds {
@@ -83,14 +94,13 @@ function cornerInWorld(
   instance: SpeakerInstance,
   position: [number, number, number] = instance.position,
 ): Vector3 {
-  const yaw = MathUtils.degToRad(instance.yawDeg);
-  const cosine = Math.cos(yaw);
-  const sine = Math.sin(yaw);
-  return new Vector3(
-    cosine * corner[0] + sine * corner[2] + position[0],
-    corner[1] + position[1],
-    -sine * corner[0] + cosine * corner[2] + position[2],
-  );
+  const rotation = new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(instance.pitchDeg),
+    MathUtils.degToRad(instance.yawDeg),
+    MathUtils.degToRad(instance.rollDeg),
+    "YXZ",
+  ));
+  return new Vector3(...corner).applyQuaternion(rotation).add(new Vector3(...position));
 }
 
 function normalizedYaw(yawDeg: number): number {
@@ -124,6 +134,7 @@ function FieldPlane({
   transformMode,
   angleSnapDisabled,
   onTransform,
+  onResize,
 }: {
   observation: ObservationPlane;
   field: FieldFrame;
@@ -131,8 +142,41 @@ function FieldPlane({
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
   onTransform: (pose: ObservationPoseUpdate) => void;
+  onResize: (resize: ObservationResizeUpdate) => void;
 }) {
   const planeRef = useRef<Group>(null);
+  const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
+  const resizeState = useRef<{
+    pointerId: number;
+    plane: Plane;
+    origin: Vector3;
+    quaternion: Quaternion;
+    inverseQuaternion: Quaternion;
+    oppositeLocal: Vector3;
+    signX: number;
+    signZ: number;
+  } | null>(null);
+
+  const cancelResize = () => {
+    resizeState.current = null;
+    orbitControls && (orbitControls.enabled = true);
+  };
+
+  useEffect(() => {
+    const finish = () => cancelResize();
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", finish);
+    };
+  }, [orbitControls]);
+
+  useEffect(() => {
+    if (transformMode !== "scale") cancelResize();
+  }, [transformMode]);
   const texture = useMemo(() => {
     const pixels = new Uint8Array(field.columns * field.rows * 4);
     const low = field.maximumDb - 24;
@@ -142,7 +186,7 @@ function FieldPlane({
       pixels[index * 4] = red;
       pixels[index * 4 + 1] = green;
       pixels[index * 4 + 2] = blue;
-      pixels[index * 4 + 3] = 222;
+      pixels[index * 4 + 3] = field.validMask[index] ? 222 : 0;
     }
     const result = new DataTexture(pixels, field.columns, field.rows, RGBAFormat, UnsignedByteType);
     result.needsUpdate = true;
@@ -153,22 +197,84 @@ function FieldPlane({
   const applyGizmoTransform = () => {
     const object = planeRef.current;
     if (!object) return;
-    object.position.y = Math.max(0, object.position.y);
     const rotation = new Euler().setFromQuaternion(object.quaternion, "YXZ");
+    const pitchDeg = normalizedYaw(MathUtils.radToDeg(rotation.x));
     onTransform({
       centerXM: object.position.x,
       nearM: object.position.z - observation.depthM / 2,
       heightM: object.position.y,
+      pitchDeg,
       yawDeg: normalizedYaw(MathUtils.radToDeg(rotation.y)),
+      rollDeg: normalizedYaw(MathUtils.radToDeg(rotation.z)),
     });
   };
+
+  const startResize = (event: ThreeEvent<PointerEvent>, signX: number, signZ: number) => {
+    if (event.nativeEvent.button !== 0 || !planeRef.current) return;
+    event.stopPropagation();
+    const normal = new Vector3(0, 1, 0).applyQuaternion(planeRef.current.quaternion);
+    const plane = new Plane().setFromNormalAndCoplanarPoint(normal, planeRef.current.position);
+    if (!event.ray.intersectPlane(plane, new Vector3())) return;
+    const quaternion = planeRef.current.quaternion.clone();
+    resizeState.current = {
+      pointerId: event.pointerId,
+      plane,
+      origin: planeRef.current.position.clone(),
+      quaternion,
+      inverseQuaternion: quaternion.clone().invert(),
+      oppositeLocal: new Vector3(-signX * observation.widthM / 2, 0, -signZ * observation.depthM / 2),
+      signX,
+      signZ,
+    };
+    orbitControls && (orbitControls.enabled = false);
+    (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
+  };
+
+  const moveResize = (event: ThreeEvent<PointerEvent>) => {
+    const resize = resizeState.current;
+    const object = planeRef.current;
+    if (!resize || !object || resize.pointerId !== event.pointerId) return;
+    if ((event.nativeEvent.buttons & 1) === 0) {
+      cancelResize();
+      return;
+    }
+    event.stopPropagation();
+    const point = event.ray.intersectPlane(resize.plane, new Vector3());
+    if (!point) return;
+    const local = point.sub(resize.origin).applyQuaternion(resize.inverseQuaternion);
+    const widthM = Math.max(0.1, resize.signX * (local.x - resize.oppositeLocal.x));
+    const depthM = Math.max(0.1, resize.signZ * (local.z - resize.oppositeLocal.z));
+    const draggedLocal = new Vector3(
+      resize.oppositeLocal.x + resize.signX * widthM,
+      0,
+      resize.oppositeLocal.z + resize.signZ * depthM,
+    );
+    const centerWorld = draggedLocal.add(resize.oppositeLocal).multiplyScalar(0.5)
+      .applyQuaternion(resize.quaternion)
+      .add(resize.origin);
+    onResize({ widthM, depthM, centerXM: centerWorld.x, centerZM: centerWorld.z, heightM: centerWorld.y });
+  };
+
+  const finishResize = (event: ThreeEvent<PointerEvent>) => {
+    if (!resizeState.current || resizeState.current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    cancelResize();
+    (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
+  };
+
+  const planeQuaternion = useMemo(() => new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(observation.pitchDeg),
+    MathUtils.degToRad(observation.yawDeg),
+    MathUtils.degToRad(observation.rollDeg),
+    "YXZ",
+  )), [observation.pitchDeg, observation.rollDeg, observation.yawDeg]);
 
   return (
     <>
       <group
         ref={planeRef}
         position={[observation.centerXM, observation.heightM, observation.nearM + observation.depthM / 2]}
-        rotation={[0, MathUtils.degToRad(observation.yawDeg), 0]}
+        quaternion={planeQuaternion}
       >
         <mesh
           // DataTexture row zero is the near edge of the computed field. A +90°
@@ -193,16 +299,35 @@ function FieldPlane({
           infiniteGrid={false}
           raycast={() => undefined}
         />
+        {selected && transformMode === "scale" && [
+          { signX: -1, signZ: -1 },
+          { signX: 1, signZ: -1 },
+          { signX: -1, signZ: 1 },
+          { signX: 1, signZ: 1 },
+        ].map(({ signX, signZ }, index) => (
+          <mesh
+            key={index}
+            position={[signX * observation.widthM / 2, 0.025, signZ * observation.depthM / 2]}
+            renderOrder={20}
+            onPointerDown={(event) => startResize(event, signX, signZ)}
+            onPointerMove={moveResize}
+            onPointerUp={finishResize}
+            onPointerCancel={finishResize}
+          >
+            <sphereGeometry args={[0.14, 14, 10]} />
+            <meshBasicMaterial color="#dce9a7" depthTest={false} toneMapped={false} />
+          </mesh>
+        ))}
       </group>
-      {selected && transformMode !== "select" && (
+      {selected && (transformMode === "translate" || transformMode === "rotate") && (
         <TransformControls
           object={planeRef as MutableRefObject<Group>}
           mode={transformMode}
           space="world"
           size={0.82}
-          showX={transformMode === "translate"}
+          showX
           showY
-          showZ={transformMode === "translate"}
+          showZ
           rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
           onObjectChange={applyGizmoTransform}
         />
@@ -255,9 +380,14 @@ function SpeakerGeometry({
   }, [pkg]);
   const quaternion = useMemo(
     () => new Quaternion().setFromEuler(
-      new Euler(MathUtils.degToRad(instance.pitchDeg), MathUtils.degToRad(instance.yawDeg), 0, "YXZ"),
+      new Euler(
+        MathUtils.degToRad(instance.pitchDeg),
+        MathUtils.degToRad(instance.yawDeg),
+        MathUtils.degToRad(instance.rollDeg),
+        "YXZ",
+      ),
     ),
-    [instance.pitchDeg, instance.yawDeg],
+    [instance.pitchDeg, instance.rollDeg, instance.yawDeg],
   );
   const bounds = useMemo(() => packageSceneBounds(pkg), [pkg]);
   const sceneBounds: [number, number, number] = [
@@ -342,7 +472,9 @@ function SpeakerGeometry({
       positionX: snapped[0],
       positionHeightM: snapped[1],
       positionZ: snapped[2],
+      pitchDeg: instance.pitchDeg,
       yawDeg: instance.yawDeg,
+      rollDeg: instance.rollDeg,
     });
   };
 
@@ -357,14 +489,19 @@ function SpeakerGeometry({
   const applyGizmoTransform = () => {
     const object = speakerRef.current;
     if (!object) return;
-    const minimumHeight = SOURCE_SURFACE_PADDING_M - bounds.minimum[1];
+    const minimumRotatedY = Math.min(...bounds.corners.map((corner) => (
+      new Vector3(...corner).applyQuaternion(object.quaternion).y
+    )));
+    const minimumHeight = SOURCE_SURFACE_PADDING_M - minimumRotatedY;
     object.position.y = Math.max(minimumHeight, object.position.y);
     const rotation = new Euler().setFromQuaternion(object.quaternion, "YXZ");
     onTransform({
       positionX: object.position.x,
       positionHeightM: object.position.y,
       positionZ: object.position.z,
+      pitchDeg: normalizedYaw(MathUtils.radToDeg(rotation.x)),
       yawDeg: normalizedYaw(MathUtils.radToDeg(rotation.y)),
+      rollDeg: normalizedYaw(MathUtils.radToDeg(rotation.z)),
     });
   };
 
@@ -418,15 +555,15 @@ function SpeakerGeometry({
           </Html>
         )}
       </group>
-      {selected && transformMode !== "select" && (
+      {selected && (transformMode === "translate" || transformMode === "rotate") && (
         <TransformControls
           object={speakerRef as MutableRefObject<Group>}
           mode={transformMode}
           space="world"
           size={0.82}
-          showX={transformMode === "translate"}
+          showX
           showY
-          showZ={transformMode === "translate"}
+          showZ
           rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
           onObjectChange={applyGizmoTransform}
         />
@@ -449,7 +586,7 @@ function AcousticScene(props: SceneViewProps) {
         shadow-mapSize={[1024, 1024]}
       />
       <directionalLight position={[9, 5, 10]} intensity={0.85} color="#acc7d2" />
-      <group onPointerMissed={() => props.onSelectInstance(null)}>
+      <group>
         {props.sources.map((source) => (
           <SpeakerGeometry
             key={source.id}
@@ -471,6 +608,7 @@ function AcousticScene(props: SceneViewProps) {
         transformMode={props.transformMode}
         angleSnapDisabled={props.angleSnapDisabled}
         onTransform={props.onTransformObservation}
+        onResize={props.onResizeObservation}
       />
       <gridHelper args={[50, 50, "#303831", "#242a25"]} position={[0, 0, 12]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.012, 12]} receiveShadow>
