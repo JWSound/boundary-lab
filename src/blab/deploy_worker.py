@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,19 @@ from blab.solvers.beat_engine_backend import (
 )
 
 
-def _emit(event_type: str, *, request_id: object | None = None, **values: Any) -> None:
+def _emit(event_type: str, *, request_id: object | None = None, **values: Any) -> dict[str, float | int]:
     payload = {"type": event_type, **values}
     if request_id is not None:
         payload["id"] = request_id
-    print(json.dumps(payload, separators=(",", ":")), flush=True)
+    encode_started = time.perf_counter()
+    encoded = json.dumps(payload, separators=(",", ":"))
+    encode_seconds = time.perf_counter() - encode_started
+    sys.stdout.write(encoded + "\n")
+    sys.stdout.flush()
+    return {
+        "json_encode_s": encode_seconds,
+        "stdout_bytes": len(encoded.encode("utf-8")),
+    }
 
 
 def _worker(backend: str) -> BeatEngineWorkerProcess:
@@ -39,7 +48,12 @@ def _worker(backend: str) -> BeatEngineWorkerProcess:
     )
 
 
-def _solve(request_id: object, payload: object, workers: dict[str, BeatEngineWorkerProcess]) -> None:
+def _solve(
+    request_id: object,
+    payload: object,
+    workers: dict[str, BeatEngineWorkerProcess],
+    input_transport: dict[str, float | int],
+) -> None:
     backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
     normalized = backend.strip().lower()
     worker = workers.get(normalized)
@@ -48,7 +62,11 @@ def _solve(request_id: object, payload: object, workers: dict[str, BeatEngineWor
         workers[normalized] = worker
 
     with tempfile.TemporaryDirectory(prefix="blab-deploy-") as temp_dir:
+        prepare_started = time.perf_counter()
         request_path, _request = prepare_deploy_solve_request(payload, temp_dir)
+        prepare_seconds = time.perf_counter() - prepare_started
+        request_bytes = request_path.stat().st_size
+        julia_started = time.perf_counter()
         events = worker.submit(
             Path(request_path),
             status_callback=lambda message: _emit("status", request_id=request_id, message=message),
@@ -61,7 +79,28 @@ def _solve(request_id: object, payload: object, workers: dict[str, BeatEngineWor
             elif event_type == "initialized":
                 _emit("initialized", request_id=request_id, metadata=event)
             elif event_type == "result":
-                _emit("result", request_id=request_id, result=event.get("result"))
+                result = event.get("result")
+                if not isinstance(result, dict):
+                    raise RuntimeError("BEAT Engine Deploy solve returned an invalid result payload.")
+                julia_transport = event.get("_transport", {})
+                result["pipeline"] = {
+                    "python_input_json_parse_s": float(input_transport.get("json_parse_s", 0.0)),
+                    "electron_python_stdin_bytes": int(input_transport.get("stdin_bytes", 0)),
+                    "python_prepare_s": prepare_seconds,
+                    "julia_request_json_bytes": request_bytes,
+                    "python_julia_result_wait_s": time.perf_counter() - julia_started,
+                    "julia_python_stdout_bytes": int(julia_transport.get("julia_stdout_bytes", 0)),
+                    "python_julia_json_parse_s": float(julia_transport.get("python_julia_json_parse_s", 0.0)),
+                }
+                result_emit = _emit("result", request_id=request_id, result=result)
+                _emit(
+                    "profile",
+                    request_id=request_id,
+                    metrics={
+                        "python_result_json_encode_s": result_emit["json_encode_s"],
+                        "python_electron_stdout_bytes": result_emit["stdout_bytes"],
+                    },
+                )
             elif event_type == "completed":
                 _emit("completed", request_id=request_id)
             elif event_type == "cancelled":
@@ -81,13 +120,18 @@ def main() -> int:
                     continue
                 request_id: object | None = None
                 try:
+                    parse_started = time.perf_counter()
                     message = json.loads(text)
+                    input_transport = {
+                        "json_parse_s": time.perf_counter() - parse_started,
+                        "stdin_bytes": len(text.encode("utf-8")),
+                    }
                     if not isinstance(message, dict):
                         raise ValueError("Deploy worker message must be an object.")
                     request_id = message.get("id")
                     if message.get("operation") != "solve":
                         raise ValueError("Unsupported Deploy worker operation.")
-                    _solve(request_id, message.get("payload"), workers)
+                    _solve(request_id, message.get("payload"), workers, input_transport)
                 except Exception as exc:
                     _emit("failed", request_id=request_id, error=str(exc))
         except KeyboardInterrupt:

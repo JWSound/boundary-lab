@@ -17,7 +17,7 @@ import {
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneView, type ObservationResizeUpdate, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
+import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
 import {
   browserFileHandler,
   PackageCard,
@@ -144,6 +144,24 @@ export function App() {
   const [angleSnapDisabled, setAngleSnapDisabled] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
+  const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
+
+  const recordFieldTexture = useCallback((texture: FieldTextureProfile) => {
+    const pending = pendingRenderProfile.current;
+    if (!pending) return;
+    window.boundaryLabDeployProfile = {
+      ...pending,
+      renderer: {
+        ...((pending.renderer as Record<string, unknown> | undefined) ?? {}),
+        heatmap_point_count: texture.pointCount,
+        heatmap_texture_bytes: texture.textureBytes,
+        heatmap_raster_s: texture.rasterMs / 1000,
+        heatmap_commit_to_frame_s: texture.commitToFrameMs / 1000,
+      },
+      texture_ready: true,
+    };
+    pendingRenderProfile.current = null;
+  }, []);
 
   const sortedFrequencyIndices = useMemo(
     () => Array.from(pkg.frequenciesHz.keys()).sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]),
@@ -271,6 +289,7 @@ export function App() {
       return;
     }
     try {
+      const rendererRequestStarted = performance.now();
       const result = await window.boundaryLabDesktop.solveLevel2({
         packagePath: pkg.sourcePath,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
@@ -279,7 +298,26 @@ export function App() {
         observation,
       });
       if (generation !== solveGeneration.current) return;
-      setBoundaryField(fieldFrameFromSpl(result.spl_db, result.columns, result.rows, result.sample_indices));
+      const rendererResultReceived = performance.now();
+      const fieldParseStarted = performance.now();
+      const nextField = fieldFrameFromSpl(result.spl_db, result.columns, result.rows, result.sample_indices);
+      const fieldParseSeconds = (performance.now() - fieldParseStarted) / 1000;
+      pendingRenderProfile.current = {
+        generation,
+        columns: result.columns,
+        rows: result.rows,
+        sample_count: result.spl_db.length,
+        julia: result.timings,
+        pipeline: result.pipeline ?? {},
+        renderer: {
+          ipc_roundtrip_s: (rendererResultReceived - rendererRequestStarted) / 1000,
+          field_frame_parse_s: fieldParseSeconds,
+          received_numeric_values:
+            result.spl_db.length + result.sample_indices.length +
+            result.field_pressure.real.length + result.field_pressure.imag.length,
+        },
+      };
+      setBoundaryField(nextField);
       setBoundarySolveKey(requestedKey);
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
@@ -442,6 +480,7 @@ export function App() {
           onTransformSource={updateSourcePose}
           onTransformObservation={updateObservationPose}
           onResizeObservation={resizeObservation}
+          onFieldTextureReady={recordFieldTexture}
         />
         <div className="viewport-toolbar">
           <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>

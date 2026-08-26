@@ -14,6 +14,7 @@
     "test:package": "node scripts/package-smoke.mjs library/S218BP_LOD.blabsp",
     "test:desktop": "electron . --built --smoke-test",
     "test:level2": "electron . --built --smoke-level2",
+    "benchmark:level2": "electron . --built --benchmark-level2",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

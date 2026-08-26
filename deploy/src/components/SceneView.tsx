@@ -60,6 +60,14 @@ interface SceneViewProps {
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
   onResizeObservation: (resize: ObservationResizeUpdate) => void;
+  onFieldTextureReady?: (profile: FieldTextureProfile) => void;
+}
+
+export interface FieldTextureProfile {
+  pointCount: number;
+  textureBytes: number;
+  rasterMs: number;
+  commitToFrameMs: number;
 }
 
 function packageSceneBounds(pkg: LoadedSpeakerPackage): SceneBounds {
@@ -135,6 +143,7 @@ function FieldPlane({
   angleSnapDisabled,
   onTransform,
   onResize,
+  onTextureReady,
 }: {
   observation: ObservationPlane;
   field: FieldFrame;
@@ -143,6 +152,7 @@ function FieldPlane({
   angleSnapDisabled: boolean;
   onTransform: (pose: ObservationPoseUpdate) => void;
   onResize: (resize: ObservationResizeUpdate) => void;
+  onTextureReady?: (profile: FieldTextureProfile) => void;
 }) {
   const planeRef = useRef<Group>(null);
   const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
@@ -156,6 +166,7 @@ function FieldPlane({
     signX: number;
     signZ: number;
   } | null>(null);
+  const textureProfile = useRef<Omit<FieldTextureProfile, "commitToFrameMs"> | null>(null);
 
   const cancelResize = () => {
     resizeState.current = null;
@@ -178,6 +189,7 @@ function FieldPlane({
     if (transformMode !== "scale") cancelResize();
   }, [transformMode]);
   const texture = useMemo(() => {
+    const rasterStarted = performance.now();
     const pixels = new Uint8Array(field.columns * field.rows * 4);
     const low = field.maximumDb - 24;
     const high = field.maximumDb;
@@ -191,8 +203,28 @@ function FieldPlane({
     const result = new DataTexture(pixels, field.columns, field.rows, RGBAFormat, UnsignedByteType);
     result.needsUpdate = true;
     result.colorSpace = SRGBColorSpace;
+    textureProfile.current = {
+      pointCount: field.columns * field.rows,
+      textureBytes: pixels.byteLength,
+      rasterMs: performance.now() - rasterStarted,
+    };
     return result;
   }, [field]);
+
+  useEffect(() => {
+    const profile = textureProfile.current;
+    const committedAt = performance.now();
+    const frame = requestAnimationFrame(() => {
+      if (profile) onTextureReady?.({
+        ...profile,
+        commitToFrameMs: performance.now() - committedAt,
+      });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      texture.dispose();
+    };
+  }, [onTextureReady, texture]);
 
   const applyGizmoTransform = () => {
     const object = planeRef.current;
@@ -609,6 +641,7 @@ function AcousticScene(props: SceneViewProps) {
         angleSnapDisabled={props.angleSnapDisabled}
         onTransform={props.onTransformObservation}
         onResize={props.onResizeObservation}
+        onTextureReady={props.onFieldTextureReady}
       />
       <gridHelper args={[50, 50, "#303831", "#242a25"]} position={[0, 0, 12]} />
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.012, 12]} receiveShadow>

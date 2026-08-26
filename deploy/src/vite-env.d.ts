@@ -22,6 +22,7 @@ interface DesktopSolveStatus {
 }
 
 interface Window {
+  boundaryLabDeployProfile?: Record<string, unknown>;
   boundaryLabDesktop?: {
     loadBundledExample: () => Promise<DesktopPackageSelection | null>;
     openSpeakerPackage: () => Promise<DesktopPackageSelection | null>;

@@ -2,6 +2,7 @@ const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
 const { readFile, writeFile } = require("node:fs/promises");
 const { join } = require("node:path");
+const { performance } = require("node:perf_hooks");
 
 const here = __dirname;
 const repositoryRoot = join(here, "../..");
@@ -50,8 +51,13 @@ class DeployWorkerClient {
       const line = this.stdoutBuffer.slice(0, newline).trim();
       this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
       if (line) {
+        const parseStarted = performance.now();
         try {
-          this.handleMessage(JSON.parse(line));
+          const message = JSON.parse(line);
+          this.handleMessage(message, {
+            jsonParseMs: performance.now() - parseStarted,
+            stdoutBytes: Buffer.byteLength(line, "utf8"),
+          });
         } catch (error) {
           console.error("Invalid Deploy solve worker response", error, line);
         }
@@ -60,7 +66,7 @@ class DeployWorkerClient {
     }
   }
 
-  handleMessage(message) {
+  handleMessage(message, transport = {}) {
     if (message.type === "ready") {
       this.resolveReady?.();
       this.resolveReady = null;
@@ -73,9 +79,24 @@ class DeployWorkerClient {
       if (!job.sender.isDestroyed()) job.sender.send("deploy:solve-status", message);
     } else if (message.type === "result") {
       job.result = message.result;
+      job.resultTransport = transport;
+    } else if (message.type === "profile") {
+      job.workerProfile = message.metrics;
     } else if (message.type === "completed") {
       this.pending.delete(message.id);
-      if (job.result) job.resolve(job.result);
+      if (job.result) {
+        job.result.pipeline = {
+          ...(job.result.pipeline || {}),
+          ...(job.workerProfile || {}),
+          electron_worker_ready_wait_s: job.workerReadyWaitMs / 1000,
+          electron_request_json_encode_s: job.requestJsonEncodeMs / 1000,
+          electron_python_stdin_bytes: job.requestBytes,
+          electron_worker_result_json_parse_s: (job.resultTransport?.jsonParseMs || 0) / 1000,
+          python_electron_stdout_bytes: job.resultTransport?.stdoutBytes || 0,
+          electron_worker_roundtrip_s: (performance.now() - job.startedAt) / 1000,
+        };
+        job.resolve(job.result);
+      }
       else job.reject(new Error("Level 2 solve completed without returning a field."));
     } else if (message.type === "cancelled") {
       this.pending.delete(message.id);
@@ -97,12 +118,28 @@ class DeployWorkerClient {
   }
 
   async solve(payload, sender) {
+    const invokedAt = performance.now();
     await this.ensureStarted();
+    const workerReadyWaitMs = performance.now() - invokedAt;
     if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
     const id = this.nextId++;
+    const encodeStarted = performance.now();
+    const request = `${JSON.stringify({ id, operation: "solve", payload })}\n`;
+    const requestJsonEncodeMs = performance.now() - encodeStarted;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, sender, result: null });
-      this.process.stdin.write(`${JSON.stringify({ id, operation: "solve", payload })}\n`);
+      this.pending.set(id, {
+        resolve,
+        reject,
+        sender,
+        result: null,
+        workerProfile: null,
+        resultTransport: null,
+        startedAt: invokedAt,
+        workerReadyWaitMs,
+        requestJsonEncodeMs,
+        requestBytes: Buffer.byteLength(request, "utf8"),
+      });
+      this.process.stdin.write(request);
     });
   }
 
@@ -116,14 +153,15 @@ const deployWorker = new DeployWorkerClient();
 
 function createWindow() {
   const level2Smoke = process.argv.includes("--smoke-level2");
-  const smokeTest = process.argv.includes("--smoke-test") || level2Smoke;
+  const benchmarkLevel2 = process.argv.includes("--benchmark-level2");
+  const smokeTest = process.argv.includes("--smoke-test") || level2Smoke || benchmarkLevel2;
   const window = new BrowserWindow({
     width: 1540,
     height: 960,
     minWidth: 1100,
     minHeight: 720,
     backgroundColor: "#101311",
-    show: !smokeTest,
+    show: !smokeTest || benchmarkLevel2,
     titleBarStyle: "hiddenInset",
     autoHideMenuBar: true,
     webPreferences: {
@@ -131,6 +169,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: !benchmarkLevel2,
     },
   });
 
@@ -153,6 +192,64 @@ function createWindow() {
         document.querySelectorAll('.fidelity-switcher button')[1]?.click();
         return new Promise((resolve) => setTimeout(resolve, 0));
       })()`);
+      if (benchmarkLevel2) {
+        const benchmark = await window.webContents.executeJavaScript(`(async () => {
+          const waitForProfile = (previousGeneration, actionStarted, label) => new Promise((resolve) => {
+            const deadline = performance.now() + 240000;
+            const check = () => {
+              const profile = window.boundaryLabDeployProfile;
+              const error = document.querySelector('.error-toast span')?.textContent || '';
+              if (profile?.texture_ready && Number(profile.generation || 0) > previousGeneration) {
+                resolve({ label, interaction_to_texture_s: (performance.now() - actionStarted) / 1000, profile });
+              } else if (error || performance.now() >= deadline) {
+                resolve({ label, error: error || 'benchmark timeout', profile: profile || null });
+              } else {
+                setTimeout(check, 25);
+              }
+            };
+            check();
+          });
+          const setNativeValue = (input, value) => {
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (!input || !setter) throw new Error('Benchmark control is unavailable.');
+            setter.call(input, String(value));
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+
+          window.boundaryLabDeployProfile = undefined;
+          const coldStarted = performance.now();
+          document.querySelector('.primary-button')?.click();
+          const cold = await waitForProfile(0, coldStarted, 'cold_54x54');
+          if (cold.error) return { cases: [cold] };
+
+          document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const sourceX = document.querySelector('.right-panel input[aria-label="X"]');
+          const warmStarted = performance.now();
+          setNativeValue(sourceX, Number(sourceX.value) + 0.1);
+          const warm = await waitForProfile(Number(cold.profile.generation), warmStarted, 'warm_move_54x54');
+          if (warm.error) return { cases: [cold, warm] };
+
+          document.querySelector('.tree-button[data-object-id="audience-plane"]')?.click();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const resolution = document.querySelector('input[aria-label="Plane resolution"]');
+          const highResolutionStarted = performance.now();
+          setNativeValue(resolution, 200);
+          const highResolution = await waitForProfile(
+            Number(warm.profile.generation),
+            highResolutionStarted,
+            'warm_plane_200x200'
+          );
+          return {
+            cases: [cold, warm, highResolution],
+            final_grid: document.querySelector('.plane-resolution-row output')?.textContent?.trim() || null,
+          };
+        })()`);
+        console.log(JSON.stringify({ benchmark: "deploy-level2-pipeline", ...benchmark, consoleErrors }));
+        app.quit();
+        return;
+      }
       const transformInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
         const viewport = document.querySelector('.viewport');
         window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
@@ -275,7 +372,7 @@ function createWindow() {
     setTimeout(() => {
       console.error("Deploy desktop smoke test timed out.");
       app.exit(1);
-    }, level2Smoke ? 130000 : 15000).unref();
+    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 15000).unref();
   }
 
   if (app.isPackaged || process.argv.includes("--built")) {

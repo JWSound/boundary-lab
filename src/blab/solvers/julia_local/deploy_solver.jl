@@ -67,6 +67,7 @@ function deploy_observation_points(request, ::Type{T}) where {T<:AbstractFloat}
 end
 
 function solve_deploy_request_impl(request)
+    request_started = time()
     schema_version = Int(get_value(request, "schema_version", 1))
     schema_version in (1, 2) || error("Unsupported Deploy solve schema_version $(schema_version).")
     beat_backend = beat_backend_from_request(request)
@@ -95,6 +96,7 @@ function solve_deploy_request_impl(request)
         "Deploy rigid ground requires reflection coefficient +1.",
     )
 
+    input_geometry_started = time()
     emit_event("status"; message="Loading fixed-source speaker boundary")
     package_mesh = load_gmsh22_with_tags(
         String(request["mesh_file"]),
@@ -119,7 +121,9 @@ function solve_deploy_request_impl(request)
     length(observation_sample_indices) == length(observation_points) || error("Deploy observation sample indices do not match the point count.")
     all(index -> 0 <= index < prod(observation_shape), observation_sample_indices) || error("Deploy observation sample index is outside the grid.")
     length(unique(observation_sample_indices)) == length(observation_sample_indices) || error("Deploy observation sample indices must be unique.")
+    input_geometry_seconds = time() - input_geometry_started
 
+    host_cache_started = time()
     p1_space = build_p1_space(mesh)
     dp0_space = build_dp0_space(mesh)
     quadrature_order = Int(get_value(request, "quadrature_order", 2))
@@ -155,6 +159,7 @@ function solve_deploy_request_impl(request)
         trial_transform=rigid_ground_transform(),
     )
     cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=:ground)
+    host_cache_seconds = time() - host_cache_started
 
     emit_event(
         "initialized";
@@ -177,47 +182,50 @@ function solve_deploy_request_impl(request)
     assembly_seconds = 0.0
     solve_seconds = 0.0
     field_seconds = 0.0
+    device_prepare_seconds = 0.0
     pressure = nothing
     field_pressure = nothing
     try
-        if beat_backend == :cuda
-            emit_event("status"; message="Preparing BEAT CUDA geometry caches")
-            device_cache = build_cuda_regular_assembly_cache(mesh, rule)
-            device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(
-                singular_cache,
-                p1_space,
-                dp0_space,
-            )
-            device_image_singular_cache = build_cuda_image_singular_correction_cache(
-                mesh,
-                p1_space,
-                dp0_space,
-                singular_order,
-                eachindex(mesh.faces),
-                :ground,
-            )
-            if near_correction_cache.pair_count > 0
-                device_near_correction_cache = build_cuda_near_correction_cache(
-                    near_correction_cache,
+        device_prepare_seconds = @elapsed begin
+            if beat_backend == :cuda
+                emit_event("status"; message="Preparing BEAT CUDA geometry caches")
+                device_cache = build_cuda_regular_assembly_cache(mesh, rule)
+                device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(
+                    singular_cache,
                     p1_space,
                     dp0_space,
                 )
-            end
-            if ground_near_correction_cache.pair_count > 0
-                device_ground_near_correction_cache = build_cuda_near_correction_cache(
-                    ground_near_correction_cache,
+                device_image_singular_cache = build_cuda_image_singular_correction_cache(
+                    mesh,
                     p1_space,
                     dp0_space,
+                    singular_order,
+                    eachindex(mesh.faces),
+                    :ground,
                 )
+                if near_correction_cache.pair_count > 0
+                    device_near_correction_cache = build_cuda_near_correction_cache(
+                        near_correction_cache,
+                        p1_space,
+                        dp0_space,
+                    )
+                end
+                if ground_near_correction_cache.pair_count > 0
+                    device_ground_near_correction_cache = build_cuda_near_correction_cache(
+                        ground_near_correction_cache,
+                        p1_space,
+                        dp0_space,
+                    )
+                end
+                cuda_identity_cache = build_cuda_burton_miller_identity_cache(
+                    identity_p1_p1,
+                    identity_p1_dp0,
+                    FloatType,
+                )
+                field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
+            else
+                emit_event("status"; message="Preparing BEAT CPU geometry caches")
             end
-            cuda_identity_cache = build_cuda_burton_miller_identity_cache(
-                identity_p1_p1,
-                identity_p1_dp0,
-                FloatType,
-            )
-            field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
-        else
-            emit_event("status"; message="Preparing BEAT CPU geometry caches")
         end
 
         emit_event("status"; message="Assembling Level 2 rigid half-space boundary operators")
@@ -266,15 +274,15 @@ function solve_deploy_request_impl(request)
                 beat_backend,
             )
         end
-        spl_db = pressure_to_spl(field_pressure, FloatType)
-        isolated_trace_relative_difference = Float32(
-            norm(pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
-        )
-        proximity_pairs = get_value(proximity, "pairs", Any[])
-        close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
-        emit_event(
-            "result";
-            result=Dict(
+        result = nothing
+        postprocess_seconds = @elapsed begin
+            spl_db = pressure_to_spl(field_pressure, FloatType)
+            isolated_trace_relative_difference = Float32(
+                norm(pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
+            )
+            proximity_pairs = get_value(proximity, "pairs", Any[])
+            close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
+            result = Dict(
                 "frequency_hz" => frequency,
                 "rows" => observation_shape[1],
                 "columns" => observation_shape[2],
@@ -309,8 +317,14 @@ function solve_deploy_request_impl(request)
                     "close_pair_count" => close_pair_count,
                     "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.01)),
                 ),
-            ),
-        )
+            )
+        end
+        result["timings"]["input_geometry_s"] = Float32(input_geometry_seconds)
+        result["timings"]["host_cache_s"] = Float32(host_cache_seconds)
+        result["timings"]["device_prepare_s"] = Float32(device_prepare_seconds)
+        result["timings"]["postprocess_s"] = Float32(postprocess_seconds)
+        result["timings"]["total_before_emit_s"] = Float32(time() - request_started)
+        emit_event("result"; result=result)
     finally
         operators === nothing || release_operator_storage!(operators)
         cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)

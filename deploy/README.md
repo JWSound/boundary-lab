@@ -53,6 +53,12 @@ npm run test:level2
 
 `test:package` loads the repository's S218BP LOD package, verifies its real exterior mesh and pattern arrays, and computes a finite observation-plane preview. `test:desktop` loads the production renderer in a hidden Electron window and checks that the application shell, WebGL canvas, package card, and analysis metrics are present without runtime console errors. `test:level2` is the slower NVIDIA/CUDA integration smoke test; it crosses the Electron IPC, Python preparation, persistent Julia worker, BEAT CUDA solve, and renderer result path, then moves the cabinet and verifies that live solving refreshes the result.
 
+For a timestamped cold/warm movement and 200 x 200 plane benchmark, run
+`npm run benchmark:level2`. The harness prints one JSON record containing
+Julia, Python, Electron IPC, field-frame parsing, and heatmap rasterization
+timings. A reference run and interpretation are recorded in
+[`benchmarks/level2-pipeline-2026-08-26.md`](benchmarks/level2-pipeline-2026-08-26.md).
+
 ## Next solver milestone
 
 Reuse the rigid-ground and close-pair geometry caches across live solves, then route the future Level 3 condensed-interior exterior operator through the same half-space path.
