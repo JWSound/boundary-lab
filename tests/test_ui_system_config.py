@@ -253,6 +253,8 @@ def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
     system = dialog.physical_system()
 
     assert len(system.regions) == 1
+    assert all(type(region.kind) is AcousticRegionKind for region in system.regions)
+    assert all(type(boundary.kind) is BoundaryKind for boundary in system.boundaries)
     assert len(system.regions[0].mesh_ids) == 2
     assert infer_physical_solve_kind(system) == PhysicalSolveKind.EXTERIOR_BEM
     PhysicalSystemCompiler().compile(system)
@@ -653,6 +655,7 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
     )
     updated = editor.component_draft()
 
+    assert type(updated.kind) is ComponentKind
     assert not hasattr(editor, "symmetry_combo")
     assert editor.symmetry_inference_label.text() == (
         "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system. "

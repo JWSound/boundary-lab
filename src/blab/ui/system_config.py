@@ -980,7 +980,7 @@ class _ComponentEditorDialog(QDialog):
         boundary_ids = self.selected_boundary_ids()
         if not boundary_ids:
             raise ValueError(f"Component '{name}' must select at least one moving boundary.")
-        kind = self.type_combo.currentData()
+        kind = ComponentKind(self.type_combo.currentData())
         if kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
             symmetry_inference = self._infer_component_symmetry()
             if symmetry_inference is None:
@@ -1900,7 +1900,7 @@ class SystemConfigDialog(QDialog):
                     name=group_name,
                     region_id=region_id,
                     group=PhysicalGroupRef(mesh_id=mesh_id, dimension=2, name=group_name),
-                    kind=combo.currentData(),
+                    kind=BoundaryKind(combo.currentData()),
                     parameters=(
                         dict(impedance_button.property("boundary_parameters") or {})
                         if isinstance(impedance_button, QPushButton)
@@ -2514,7 +2514,11 @@ class SystemConfigDialog(QDialog):
 
     def _region_kind(self, row: int) -> AcousticRegionKind:
         combo = self.regions_table.cellWidget(row, 1)
-        return combo.currentData() if isinstance(combo, QComboBox) else AcousticRegionKind.BOUNDED_AIR
+        return (
+            AcousticRegionKind(combo.currentData())
+            if isinstance(combo, QComboBox)
+            else AcousticRegionKind.BOUNDED_AIR
+        )
 
     def _region_drafts(self) -> tuple[dict, ...]:
         drafts = []

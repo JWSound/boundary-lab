@@ -263,6 +263,23 @@ def test_level_two_contains_progressive_pattern_and_fixed_source_data(tmp_path: 
     )
 
 
+def test_level_two_manifest_accepts_legacy_string_model_kinds(tmp_path: Path) -> None:
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    system = solved.compiled_system
+    legacy_regions = tuple(replace(region, kind=region.kind.value) for region in system.regions)
+    solved = replace(solved, compiled_system=replace(system, regions=legacy_regions))
+    output = tmp_path / "speaker.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(output, "Legacy string model", SpeakerPackageFidelity.FIXED_SOURCES),
+    )
+
+    manifest = validate_speaker_package(output)
+    assert manifest["physical_system"]["regions"][0]["kind"] == "unbounded_air"
+
+
 def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
     solved = _coupled_macro_solved_system()
     output = tmp_path / "speaker-coupled.blabsp"

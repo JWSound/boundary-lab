@@ -9,7 +9,7 @@ import os
 import tempfile
 import zipfile
 from dataclasses import dataclass, replace
-from enum import IntEnum
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable
 
@@ -619,8 +619,8 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             "input_ports": [
                 {
                     "id": port.id,
-                    "kind": port.kind.value,
-                    "unit": "V" if port.kind.value == "voltage" else "m/s",
+                    "kind": _enum_value(port.kind),
+                    "unit": "V" if _enum_value(port.kind) == "voltage" else "m/s",
                     "normalization": 1.0,
                 }
                 for port in (solved.compiled_system.excitation_ports if solved.compiled_system is not None else ())
@@ -798,12 +798,12 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
     return {
         "id": system.id,
         "name": system.name,
-        "meshes": [{"id": item.id, "name": item.name, "purpose": item.purpose.value} for item in system.meshes],
+        "meshes": [{"id": item.id, "name": item.name, "purpose": _enum_value(item.purpose)} for item in system.meshes],
         "regions": [
             {
                 "id": item.id,
                 "name": item.name,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "sound_speed_m_per_s": float(item.sound_speed_m_per_s),
                 "density_kg_per_m3": float(item.density_kg_per_m3),
             }
@@ -814,7 +814,7 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
                 "id": item.id,
                 "name": item.name,
                 "region_id": item.region_id,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "mesh_id": item.group.mesh_id,
                 "physical_tag": int(item.group.tag),
                 "physical_name": item.group.name,
@@ -836,7 +836,7 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
             {
                 "id": item.id,
                 "name": item.name,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "boundary_ids": list(item.boundary_ids),
                 "parameters": item.parameters,
             }
@@ -847,12 +847,18 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
                 "id": item.id,
                 "name": item.name,
                 "component_id": item.component_id,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
             }
             for item in system.excitation_ports
         ],
         "metadata": system.metadata,
     }
+
+
+def _enum_value(value: object) -> str:
+    """Return a portable enum value while tolerating legacy string-backed models."""
+
+    return str(value.value) if isinstance(value, Enum) else str(value)
 
 
 def _npz_bytes(**arrays: np.ndarray) -> bytes:
