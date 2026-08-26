@@ -1,9 +1,11 @@
 import {
   ChevronRight,
   CircleHelp,
+  Grid3X3,
   Import,
   Menu,
   MousePointer2,
+  Move3D,
   Pause,
   Play,
   Rotate3D,
@@ -14,11 +16,11 @@ import {
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneView } from "./components/SceneView";
+import { SceneView, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
 import {
   browserFileHandler,
-  ObservationInspector,
   PackageCard,
+  PlaneResolutionInspector,
   SceneTree,
   SectionHeader,
   SourceInspector,
@@ -68,7 +70,7 @@ const defaultObservation: ObservationPlane = {
   nearM: 1.5,
   heightM: 1.2,
   columns: 54,
-  rows: 46,
+  rows: 54,
 };
 
 function formatFrequency(value: number): string {
@@ -128,6 +130,8 @@ export function App() {
   const [solveState, setSolveState] = useState<"idle" | "solving" | "complete" | "error">("idle");
   const [solveMessage, setSolveMessage] = useState("Ready for a Level 2 solve");
   const [liveSolveEnabled, setLiveSolveEnabled] = useState(false);
+  const [transformMode, setTransformMode] = useState<SceneTransformMode>("select");
+  const [angleSnapDisabled, setAngleSnapDisabled] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
 
@@ -137,8 +141,8 @@ export function App() {
   );
   const sortedPosition = Math.max(0, sortedFrequencyIndices.indexOf(frequencyIndex));
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
-  const selectedSourceIndex = Math.max(0, sourceConfigs.findIndex((source) => source.id === selectedInstance));
-  const selectedSource = sourceConfigs[selectedSourceIndex];
+  const selectedSourceIndex = sourceConfigs.findIndex((source) => source.id === selectedInstance);
+  const selectedSource = selectedSourceIndex >= 0 ? sourceConfigs[selectedSourceIndex] : null;
   const sourceMinimumHeightM = minimumSourceHeightM(pkg);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
   const patternField = useMemo(
@@ -169,6 +173,7 @@ export function App() {
     setSolveRevision(0);
     setSolveState("idle");
     setLiveSolveEnabled(false);
+    setTransformMode("select");
     setError(null);
   };
 
@@ -278,6 +283,46 @@ export function App() {
     setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
   };
 
+  const updateSourcePose = (id: string, pose: SourcePoseUpdate) => {
+    setSourceConfigs((current) => current.map((source) => source.id === id ? {
+      ...source,
+      ...pose,
+      positionHeightM: Math.max(sourceMinimumHeightM, pose.positionHeightM),
+    } : source));
+  };
+
+  const selectSceneObject = (id: string | null) => {
+    setSelectedInstance(id);
+    if (!sourceConfigs.some((source) => source.id === id)) setTransformMode("select");
+  };
+
+  useEffect(() => {
+    const keyDown = (event: KeyboardEvent) => {
+      if (event.key === "Alt") setAngleSnapDisabled(true);
+      const target = event.target;
+      if ((target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) || !selectedSource) return;
+      if (event.key.toLowerCase() === "w") {
+        event.preventDefault();
+        setTransformMode("translate");
+      } else if (event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        setTransformMode("rotate");
+      }
+    };
+    const keyUp = (event: KeyboardEvent) => {
+      if (event.key === "Alt") setAngleSnapDisabled(false);
+    };
+    const windowBlur = () => setAngleSnapDisabled(false);
+    window.addEventListener("keydown", keyDown);
+    window.addEventListener("keyup", keyUp);
+    window.addEventListener("blur", windowBlur);
+    return () => {
+      window.removeEventListener("keydown", keyDown);
+      window.removeEventListener("keyup", keyUp);
+      window.removeEventListener("blur", windowBlur);
+    };
+  }, [selectedSource]);
+
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
     if (solveState === "solving" || boundarySolveKey === currentSolveKey) return;
@@ -321,12 +366,12 @@ export function App() {
             <SectionHeader icon={Import} title="Speaker package" action={<button className="text-button" onClick={openPackage}>Open</button>} />
             <div className="panel-content"><PackageCard pkg={pkg} onOpen={openPackage} /></div>
             <SectionHeader icon={Speaker} title="Scene objects" />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={setSelectedInstance} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={selectSceneObject} />
           </>
         ) : (
           <>
             <SectionHeader icon={Speaker} title="Scene hierarchy" />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={setSelectedInstance} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={selectSceneObject} />
             <div className="scene-summary">
               <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
@@ -336,18 +381,27 @@ export function App() {
         )}
       </aside>
 
-      <section className="viewport">
+      <section
+        className="viewport"
+        data-transform-mode={transformMode}
+        data-angle-snap-disabled={angleSnapDisabled}
+        data-grab-point-count={selectedSource ? 8 : 0}
+      >
         <SceneView
           pkg={pkg}
           sources={sources}
           observation={observation}
           field={field}
           selectedInstance={selectedInstance}
-          onSelectInstance={setSelectedInstance}
+          transformMode={transformMode}
+          angleSnapDisabled={angleSnapDisabled}
+          onSelectInstance={selectSceneObject}
+          onTransformSource={updateSourcePose}
         />
         <div className="viewport-toolbar">
-          <button className="active"><MousePointer2 size={15} /></button>
-          <button><Rotate3D size={15} /></button>
+          <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
+          <button className={transformMode === "translate" ? "active" : ""} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
+          <button className={transformMode === "rotate" ? "active" : ""} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
           <span />
           <button><Menu size={15} /></button>
         </div>
@@ -360,16 +414,28 @@ export function App() {
           <em>{field.columns} × {field.rows}</em>
         </div>
         <div className="viewport-hint">Orbit: left drag · Pan: right drag · Zoom: wheel</div>
-        <ObservationInspector value={observation} onChange={setObservation} />
       </section>
 
       <aside className="right-panel panel">
-        <div className="inspector-heading">
-          <div className="object-icon"><Speaker size={19} /></div>
-          <div><small>SELECTED OBJECT</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
-          <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
-        </div>
-        <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
+        {selectedInstance === "audience-plane" ? (
+          <>
+            <div className="inspector-heading">
+              <div className="object-icon"><Grid3X3 size={19} /></div>
+              <div><small>SELECTED OBJECT</small><strong>Audience plane</strong><span>Observation surface</span></div>
+              <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
+            </div>
+            <PlaneResolutionInspector value={observation} onChange={setObservation} />
+          </>
+        ) : selectedSource ? (
+          <>
+            <div className="inspector-heading">
+              <div className="object-icon"><Speaker size={19} /></div>
+              <div><small>SELECTED OBJECT</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
+              <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
+            </div>
+            <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
+          </>
+        ) : null}
       </aside>
 
       <section className="analysis-drawer">

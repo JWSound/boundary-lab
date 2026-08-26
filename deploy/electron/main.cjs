@@ -153,6 +153,56 @@ function createWindow() {
         document.querySelectorAll('.fidelity-switcher button')[1]?.click();
         return new Promise((resolve) => setTimeout(resolve, 0));
       })()`);
+      const transformInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+        const viewport = document.querySelector('.viewport');
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
+        requestAnimationFrame(() => {
+          const translateMode = viewport?.getAttribute('data-transform-mode');
+          window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+          requestAnimationFrame(() => {
+            const rotateMode = viewport?.getAttribute('data-transform-mode');
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Alt', altKey: true, bubbles: true }));
+            requestAnimationFrame(() => {
+              const altDisablesSnap = viewport?.getAttribute('data-angle-snap-disabled');
+              window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', bubbles: true }));
+              resolve({
+                translateMode,
+                rotateMode,
+                altDisablesSnap,
+                grabPointCount: viewport?.getAttribute('data-grab-point-count')
+              });
+            });
+          });
+        });
+      })`);
+      const planeResolutionInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+        document.querySelector('.tree-button[data-object-id="audience-plane"]')?.click();
+        requestAnimationFrame(() => {
+          const input = document.querySelector('input[aria-label="Plane resolution"]');
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (!input || !setter) return resolve({ available: false });
+          setter.call(input, '40');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          requestAnimationFrame(() => {
+            const result = {
+              available: true,
+              selectedObject: document.querySelector('.inspector-heading strong')?.textContent?.trim(),
+              planeProperties: {
+                near: document.querySelector('input[aria-label="Near"]')?.value,
+                height: document.querySelector('input[aria-label="Height"]')?.value,
+                width: document.querySelector('input[aria-label="Width"]')?.value,
+                depth: document.querySelector('input[aria-label="Depth"]')?.value
+              },
+              value: input.value,
+              maximum: input.max,
+              shape: document.querySelector('.plane-resolution-row output')?.textContent?.trim(),
+              fieldShape: document.querySelector('.solve-status em')?.textContent?.trim()
+            };
+            document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
+            requestAnimationFrame(() => resolve(result));
+          });
+        });
+      })`);
       let level2Move = null;
       if (level2Smoke) {
         level2Move = await window.webContents.executeJavaScript(`new Promise((resolve) => {
@@ -202,7 +252,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, transformInteraction, planeResolutionInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {

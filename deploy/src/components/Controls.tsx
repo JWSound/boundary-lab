@@ -50,11 +50,16 @@ export function SceneTree({
       {sources.map((source, index) => (
         <button
           key={source.id}
+          data-object-id={source.id}
           className={`tree-row tree-button ${selectedId === source.id ? "selected" : ""}`}
           onClick={() => onSelect(source.id)}
         ><Speaker size={15} /><span>{pkg.manifest.name} {index + 1}</span><em>SUB</em></button>
       ))}
-      <div className="tree-row"><Grid3X3 size={15} /><span>Audience plane</span></div>
+      <button
+        data-object-id="audience-plane"
+        className={`tree-row tree-button ${selectedId === "audience-plane" ? "selected" : ""}`}
+        onClick={() => onSelect("audience-plane")}
+      ><Grid3X3 size={15} /><span>Audience plane</span><em>PLANE</em></button>
     </div>
   );
 }
@@ -104,7 +109,7 @@ export function NumberField({
   return (
     <label className="control-row number-row">
       <span>{label}</span>
-      <div><input type="number" value={value} min={minimum} step={step} onChange={(event) => onChange(minimum === undefined ? Number(event.target.value) : Math.max(minimum, Number(event.target.value)))} /><em>{unit}</em></div>
+      <div><input aria-label={label} type="number" value={value} min={minimum} step={step} onChange={(event) => onChange(minimum === undefined ? Number(event.target.value) : Math.max(minimum, Number(event.target.value)))} /><em>{unit}</em></div>
     </label>
   );
 }
@@ -144,21 +149,60 @@ export function SourceInspector({
   );
 }
 
-export function ObservationInspector({
+function planeGridShape(widthM: number, depthM: number, majorSamples: number): [number, number] {
+  if (widthM >= depthM) {
+    return [majorSamples, Math.max(2, Math.round(((majorSamples - 1) * depthM) / widthM) + 1)];
+  }
+  return [Math.max(2, Math.round(((majorSamples - 1) * widthM) / depthM) + 1), majorSamples];
+}
+
+export function PlaneResolutionInspector({
   value,
   onChange,
 }: {
   value: ObservationPlane;
   onChange: (next: ObservationPlane) => void;
 }) {
+  const resolution = Math.max(value.columns, value.rows);
   const set = <K extends keyof ObservationPlane>(key: K, next: ObservationPlane[K]) => onChange({ ...value, [key]: next });
+  const setSize = (key: "widthM" | "depthM", next: number) => {
+    const sized = { ...value, [key]: Math.max(0.1, next) };
+    const [columns, rows] = planeGridShape(sized.widthM, sized.depthM, resolution);
+    onChange({ ...sized, columns, rows });
+  };
+  const setResolution = (next: number) => {
+    const [columns, rows] = planeGridShape(value.widthM, value.depthM, next);
+    onChange({ ...value, columns, rows });
+  };
   return (
-    <div className="observation-quickbar">
-      <span><Grid3X3 size={14} /> Audience plane</span>
-      <NumberField label="Width" value={value.widthM} unit="m" step={1} onChange={(next) => set("widthM", next)} />
-      <NumberField label="Depth" value={value.depthM} unit="m" step={1} onChange={(next) => set("depthM", next)} />
-      <NumberField label="Height" value={value.heightM} unit="m" step={0.1} minimum={0} onChange={(next) => set("heightM", next)} />
-    </div>
+    <>
+      <SectionHeader icon={CircleDot} title="Placement" />
+      <div className="inspector-section two-column-fields">
+        <NumberField label="Near" value={value.nearM} unit="m" step={0.1} onChange={(next) => set("nearM", next)} />
+        <NumberField label="Height" value={value.heightM} unit="m" step={0.1} minimum={0} onChange={(next) => set("heightM", next)} />
+      </div>
+      <SectionHeader icon={Grid3X3} title="Size" />
+      <div className="inspector-section two-column-fields">
+        <NumberField label="Width" value={value.widthM} unit="m" step={0.5} minimum={0.1} onChange={(next) => setSize("widthM", next)} />
+        <NumberField label="Depth" value={value.depthM} unit="m" step={0.5} minimum={0.1} onChange={(next) => setSize("depthM", next)} />
+      </div>
+      <SectionHeader icon={Grid3X3} title="Sampling" />
+      <div className="inspector-section">
+        <label className="control-row plane-resolution-row">
+          <span>Resolution</span>
+          <input
+            aria-label="Plane resolution"
+            type="range"
+            min={12}
+            max={200}
+            step={2}
+            value={resolution}
+            onChange={(event) => setResolution(Number(event.target.value))}
+          />
+          <output>{value.columns} × {value.rows}</output>
+        </label>
+      </div>
+    </>
   );
 }
 
