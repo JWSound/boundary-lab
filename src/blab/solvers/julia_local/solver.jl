@@ -636,8 +636,11 @@ include(joinpath(@__DIR__, "deploy_solver.jl"))
 
 function solve_request(request)
     try
-        if String(get_value(request, "schema", "")) == "boundary_lab_deploy_solve"
+        schema = String(get_value(request, "schema", ""))
+        if schema == "boundary_lab_deploy_solve"
             solve_deploy_request_impl(request)
+        elseif schema == "boundary_lab_deploy_field"
+            evaluate_deploy_field_request_impl(request)
         else
             solve_request_impl(request)
         end

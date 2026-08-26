@@ -6,7 +6,7 @@ import io
 import json
 import math
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
 DEPLOY_SOLVE_SCHEMA_VERSION = 2
+DEPLOY_FIELD_SCHEMA = "boundary_lab_deploy_field"
 SOURCE_SURFACE_PADDING_M = 0.01
 CLOSE_PAIR_DISTANCE_M = 0.05
 CLOSE_PAIR_QUADRATURE_ORDER = 8
@@ -157,7 +158,82 @@ class DeployObservationPlane:
         return points[sample_indices], sample_indices
 
 
-def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple[Path, dict[str, Any]]:
+@dataclass(frozen=True)
+class DeployPackageData:
+    path: Path
+    fingerprint: tuple[str, int, int]
+    manifest: dict[str, Any]
+    frequencies: np.ndarray
+    triangles: np.ndarray
+    points: np.ndarray
+    pressure: np.ndarray
+    normal: np.ndarray
+    geometry_bytes: bytes
+
+
+@dataclass
+class DeploySolveCache:
+    packages: dict[tuple[str, int, int], DeployPackageData] = field(default_factory=dict)
+    ground_image_pairs: dict[tuple[tuple[str, int, int], float, float, float], list[Any]] = field(
+        default_factory=dict
+    )
+
+    def load_package(self, package_path: Path) -> DeployPackageData:
+        stat = package_path.stat()
+        fingerprint = (str(package_path), int(stat.st_mtime_ns), int(stat.st_size))
+        cached = self.packages.get(fingerprint)
+        if cached is not None:
+            return cached
+        package = _load_deploy_package_data(package_path, fingerprint)
+        self.packages.clear()
+        self.packages[fingerprint] = package
+        self.ground_image_pairs.clear()
+        return package
+
+
+def _load_deploy_package_data(
+    package_path: Path,
+    fingerprint: tuple[str, int, int] | None = None,
+) -> DeployPackageData:
+    stat = package_path.stat()
+    package_fingerprint = fingerprint or (str(package_path), int(stat.st_mtime_ns), int(stat.st_size))
+    manifest = validate_speaker_package(package_path)
+    fixed_file = manifest.get("files", {}).get("fixed_sources", {})
+    fixed_path = str(fixed_file.get("path", ""))
+    geometry_path = str(fixed_file.get("geometry_mesh", ""))
+    if not fixed_path or not geometry_path:
+        raise ValueError("Speaker package does not declare fixed-source data and geometry.")
+    with zipfile.ZipFile(package_path, "r") as archive:
+        try:
+            fixed_bytes = archive.read(fixed_path)
+            geometry_bytes = archive.read(geometry_path)
+        except KeyError as exc:
+            raise ValueError(f"Speaker package is missing {exc.args[0]!r}.") from exc
+    with np.load(io.BytesIO(fixed_bytes), allow_pickle=False) as fixed:
+        triangles = np.asarray(fixed["triangles"], dtype=np.int64)
+        points = np.asarray(fixed["points_m"], dtype=np.float64)
+        pressure = np.asarray(fixed["pressure_pa"])
+        normal = np.asarray(fixed["normal_derivative_pa_per_m"])
+    frequencies = np.asarray(manifest.get("frequencies_hz", ()), dtype=np.float64)
+    return DeployPackageData(
+        package_path,
+        package_fingerprint,
+        manifest,
+        frequencies,
+        triangles,
+        points,
+        pressure,
+        normal,
+        geometry_bytes,
+    )
+
+
+def prepare_deploy_solve_request(
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
+) -> tuple[Path, dict[str, Any]]:
     """Validate a renderer request and stage fixed-source instances for BEAT."""
 
     if not isinstance(payload, dict):
@@ -166,14 +242,15 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     if package_path.suffix.lower() != ".blabsp" or not package_path.is_file():
         raise ValueError("Deploy Level 2 requires an existing .blabsp package path.")
 
-    manifest = validate_speaker_package(package_path)
+    package_data = cache.load_package(package_path) if cache is not None else _load_deploy_package_data(package_path)
+    manifest = package_data.manifest
     if int(manifest.get("fidelity_level", 0)) < 2:
         raise ValueError("Deploy Level 2 requires a package containing fixed distributed sources.")
 
     requested_frequency = float(payload.get("frequencyHz", 0.0))
     if not math.isfinite(requested_frequency) or requested_frequency <= 0.0:
         raise ValueError("Deploy solve frequency must be finite and positive.")
-    frequencies = np.asarray(manifest.get("frequencies_hz", ()), dtype=np.float64)
+    frequencies = package_data.frequencies
     if frequencies.size == 0:
         raise ValueError("Speaker package contains no frequencies.")
     frequency_index = int(np.argmin(np.abs(frequencies - requested_frequency)))
@@ -202,27 +279,23 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     if len(set(source_ids)) != len(source_ids):
         raise ValueError("Deploy source ids must be unique.")
     observation = DeployObservationPlane.from_payload(payload.get("observation"))
+    solution_key = str(payload.get("solutionKey", "")).strip() or json.dumps(
+        {
+            "package": str(package_path),
+            "frequency_hz": frequency_hz,
+            "sources": raw_sources,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     work_path = Path(work_dir)
     work_path.mkdir(parents=True, exist_ok=True)
 
-    fixed_file = manifest.get("files", {}).get("fixed_sources", {})
-    fixed_path = str(fixed_file.get("path", ""))
-    geometry_path = str(fixed_file.get("geometry_mesh", ""))
-    if not fixed_path or not geometry_path:
-        raise ValueError("Speaker package does not declare fixed-source data and geometry.")
-
-    with zipfile.ZipFile(package_path, "r") as archive:
-        try:
-            fixed_bytes = archive.read(fixed_path)
-            geometry_bytes = archive.read(geometry_path)
-        except KeyError as exc:
-            raise ValueError(f"Speaker package is missing {exc.args[0]!r}.") from exc
-
-    with np.load(io.BytesIO(fixed_bytes), allow_pickle=False) as fixed:
-        triangles = np.asarray(fixed["triangles"], dtype=np.int64)
-        points = np.asarray(fixed["points_m"], dtype=np.float64)
-        pressure = np.asarray(fixed["pressure_pa"])
-        normal = np.asarray(fixed["normal_derivative_pa_per_m"])
+    triangles = package_data.triangles
+    points = package_data.points
+    pressure = package_data.pressure
+    normal = package_data.normal
+    geometry_bytes = package_data.geometry_bytes
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("Fixed-source points must have shape (node, 3).")
     if triangles.ndim != 2 or triangles.shape[1] != 3:
@@ -316,35 +389,94 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
     # Duffy cache owns those singular interactions. Use conservative face-AABB
     # distances for the correction tiers, matching the direct close-pair path;
     # exact scalar triangle distances are too costly for interactive staging.
-    point_count_per_source = points.shape[0]
-    combined_points = np.concatenate(transformed_sources, axis=0)
-    combined_triangles = np.concatenate(
-        [triangles + source_index * point_count_per_source for source_index in range(len(sources))],
-        axis=0,
-    )
-    reflected_points = combined_points.copy()
-    reflected_points[:, 1] *= -1.0
     ground_image_face_pairs: list[list[int]] = []
-    combined_faces = combined_points[combined_triangles]
-    reflected_faces = reflected_points[combined_triangles]
     singular_tolerance_squared = GROUND_IMAGE_SINGULAR_TOLERANCE_M**2
-    for face_pair in surface_face_pairs_within(
-        combined_points,
-        combined_triangles,
-        reflected_points,
-        combined_triangles,
-        CLOSE_PAIR_DISTANCE_M,
-        exact=False,
-    ):
-        test_vertices = combined_faces[face_pair.face_a]
-        trial_vertices = reflected_faces[face_pair.face_b]
-        vertex_deltas = test_vertices[:, np.newaxis, :] - trial_vertices[np.newaxis, :, :]
-        if np.any(np.sum(vertex_deltas * vertex_deltas, axis=2) <= singular_tolerance_squared):
-            continue
-        correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
-            8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+    reflected_sources = []
+    for transformed in transformed_sources:
+        reflected = transformed.copy()
+        reflected[:, 1] *= -1.0
+        reflected_sources.append(reflected)
+
+    def non_singular_ground_pairs(test_points: np.ndarray, trial_points: np.ndarray) -> list[Any]:
+        test_faces = test_points[triangles]
+        trial_faces = trial_points[triangles]
+        filtered = []
+        for face_pair in surface_face_pairs_within(
+            test_points,
+            triangles,
+            trial_points,
+            triangles,
+            CLOSE_PAIR_DISTANCE_M,
+            exact=False,
+        ):
+            vertex_deltas = (
+                test_faces[face_pair.face_a, :, np.newaxis, :]
+                - trial_faces[face_pair.face_b, np.newaxis, :, :]
+            )
+            if np.any(np.sum(vertex_deltas * vertex_deltas, axis=2) <= singular_tolerance_squared):
+                continue
+            filtered.append(face_pair)
+        return filtered
+
+    ground_pair_cache = cache.ground_image_pairs if cache is not None else {}
+    ground_pair_sets: list[tuple[int, int, list[Any]]] = []
+    for source_index, source in enumerate(sources):
+        self_key = (
+            package_data.fingerprint,
+            source.position_height_m,
+            source.pitch_deg,
+            source.roll_deg,
         )
-        ground_image_face_pairs.append([face_pair.face_a, face_pair.face_b, correction_order])
+        self_pairs = ground_pair_cache.get(self_key)
+        if self_pairs is None:
+            canonical_points = transform_package_points(
+                points,
+                position_x_m=0.0,
+                position_height_m=source.position_height_m,
+                position_z_m=0.0,
+                pitch_deg=source.pitch_deg,
+                roll_deg=source.roll_deg,
+                yaw_deg=0.0,
+            )
+            canonical_reflected = canonical_points.copy()
+            canonical_reflected[:, 1] *= -1.0
+            self_pairs = non_singular_ground_pairs(canonical_points, canonical_reflected)
+            ground_pair_cache[self_key] = self_pairs
+        ground_pair_sets.append((source_index, source_index, self_pairs))
+
+    close_distance_squared = CLOSE_PAIR_DISTANCE_M**2
+    for test_index, test_points in enumerate(transformed_sources):
+        test_minimum = np.min(test_points, axis=0)
+        test_maximum = np.max(test_points, axis=0)
+        for trial_index, trial_points in enumerate(reflected_sources):
+            if test_index == trial_index:
+                continue
+            trial_minimum = np.min(trial_points, axis=0)
+            trial_maximum = np.max(trial_points, axis=0)
+            separation = np.maximum(
+                0.0,
+                np.maximum(test_minimum - trial_maximum, trial_minimum - test_maximum),
+            )
+            if float(np.dot(separation, separation)) > close_distance_squared:
+                continue
+            ground_pair_sets.append(
+                (test_index, trial_index, non_singular_ground_pairs(test_points, trial_points))
+            )
+
+    face_count_per_source = triangles.shape[0]
+    for test_source, trial_source, face_pairs in ground_pair_sets:
+        for face_pair in face_pairs:
+            correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
+                8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+            )
+            ground_image_face_pairs.append(
+                [
+                    test_source * face_count_per_source + face_pair.face_a,
+                    trial_source * face_count_per_source + face_pair.face_b,
+                    correction_order,
+                ]
+            )
+    ground_image_face_pairs.sort(key=lambda pair: (pair[0], pair[1]))
 
     q_parts: list[np.ndarray] = []
     reference_parts: list[np.ndarray] = []
@@ -368,6 +500,8 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         "schema": DEPLOY_SOLVE_SCHEMA,
         "schema_version": DEPLOY_SOLVE_SCHEMA_VERSION,
         "beat_engine_backend": str(payload.get("backend", "cuda")),
+        "solution_key": solution_key,
+        "include_complex_pressure": bool(payload.get("includeComplexPressure", False)),
         "frequency_hz": frequency_hz,
         "mesh_file": str(staged_mesh),
         "mesh_scale_factor": 1.0,
@@ -428,5 +562,34 @@ def prepare_deploy_solve_request(payload: object, work_dir: str | Path) -> tuple
         },
     }
     request_path = work_path / "request.json"
+    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    return request_path, request
+
+
+def prepare_deploy_field_request(payload: object, work_dir: str | Path) -> tuple[Path, dict[str, Any]]:
+    """Stage a plane-only request that reuses the worker's current boundary solution."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Deploy field request must be an object.")
+    solution_key = str(payload.get("solutionKey", "")).strip()
+    if not solution_key:
+        raise ValueError("Deploy field reuse requires a boundary solution key.")
+    observation = DeployObservationPlane.from_payload(payload.get("observation"))
+    points_m, observation_sample_indices = observation.points()
+    if points_m.shape[0] == 0:
+        raise ValueError("Deploy observation plane has no sampling points on or above the ground plane.")
+    request = {
+        "schema": DEPLOY_FIELD_SCHEMA,
+        "schema_version": 1,
+        "beat_engine_backend": str(payload.get("backend", "cuda")),
+        "solution_key": solution_key,
+        "observation_points_m": points_m.tolist(),
+        "observation_shape": [observation.rows, observation.columns],
+        "observation_sample_indices": observation_sample_indices.tolist(),
+        "include_complex_pressure": bool(payload.get("includeComplexPressure", False)),
+    }
+    work_path = Path(work_dir)
+    work_path.mkdir(parents=True, exist_ok=True)
+    request_path = work_path / "field-request.json"
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
     return request_path, request

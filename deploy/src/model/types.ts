@@ -106,7 +106,7 @@ export interface Level2SolveResult {
   columns: number;
   spl_db: number[];
   sample_indices: number[];
-  field_pressure: { real: number[]; imag: number[] };
+  field_pressure?: { real: number[]; imag: number[] };
   timings: { assembly_s: number; solve_s: number; field_s: number; [key: string]: number };
   pipeline?: Record<string, number>;
   diagnostics: {

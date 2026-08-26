@@ -44,6 +44,7 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    release_cuda_field_evaluation_cache!,
     build_cuda_image_singular_correction_cache,
     build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
@@ -1227,6 +1228,8 @@ end
 function evaluate_galerkin_field_cuda(args...; kwargs...)
     error("CUDA field evaluation requested, but CUDA.jl is not loaded.")
 end
+
+release_cuda_field_evaluation_cache!(cache) = nothing
 
 function build_rocm_regular_assembly_cache(args...; kwargs...)
     error("ROCm regular-pair assembly cache requested, but AMDGPU.jl is not loaded.")

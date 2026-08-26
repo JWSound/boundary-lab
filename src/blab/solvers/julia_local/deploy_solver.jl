@@ -1,3 +1,18 @@
+const DEPLOY_BOUNDARY_STATE = Ref{Any}(nothing)
+
+function release_deploy_boundary_state!()
+    state = DEPLOY_BOUNDARY_STATE[]
+    state === nothing && return nothing
+    if state.backend == :cuda
+        release_cuda_field_evaluation_cache!(state.field_cache)
+        cuda = BeatEngineCore.CUDA_MODULE
+        state.pressure isa cuda.CuArray && cuda.unsafe_free!(state.pressure)
+        state.q_neumann isa cuda.CuArray && cuda.unsafe_free!(state.q_neumann)
+    end
+    DEPLOY_BOUNDARY_STATE[] = nothing
+    return nothing
+end
+
 function deploy_source_transform(raw, ::Type{T}) where {T<:AbstractFloat}
     position = get_value(raw, "position_m", [0.0, 0.0, 0.0])
     length(position) == 3 || error("Deploy source position_m must contain three values.")
@@ -274,6 +289,20 @@ function solve_deploy_request_impl(request)
                 beat_backend,
             )
         end
+        solution_key = String(get_value(request, "solution_key", ""))
+        isempty(solution_key) && error("Deploy Level 2 solve requires a boundary solution key.")
+        cached_q_neumann = beat_backend == :cuda ? BeatEngineCore.CUDA_MODULE.CuArray(q_neumann) : copy(q_neumann)
+        release_deploy_boundary_state!()
+        DEPLOY_BOUNDARY_STATE[] = (
+            solution_key=solution_key,
+            backend=beat_backend,
+            frequency=frequency,
+            wavenumber=k,
+            mesh=mesh,
+            pressure=pressure,
+            q_neumann=cached_q_neumann,
+            field_cache=field_cache,
+        )
         result = nothing
         postprocess_seconds = @elapsed begin
             spl_db = pressure_to_spl(field_pressure, FloatType)
@@ -288,10 +317,6 @@ function solve_deploy_request_impl(request)
                 "columns" => observation_shape[2],
                 "spl_db" => spl_db,
                 "sample_indices" => observation_sample_indices,
-                "field_pressure" => Dict(
-                    "real" => Float32.(real.(field_pressure)),
-                    "imag" => Float32.(imag.(field_pressure)),
-                ),
                 "timings" => Dict(
                     "assembly_s" => Float32(assembly_seconds),
                     "solve_s" => Float32(solve_seconds),
@@ -316,8 +341,15 @@ function solve_deploy_request_impl(request)
                     "minimum_surface_distance_m" => get_value(proximity, "minimum_surface_distance_m", nothing),
                     "close_pair_count" => close_pair_count,
                     "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.01)),
+                    "field_only" => false,
                 ),
             )
+            if Bool(get_value(request, "include_complex_pressure", false))
+                result["field_pressure"] = Dict(
+                    "real" => Float32.(real.(field_pressure)),
+                    "imag" => Float32.(imag.(field_pressure)),
+                )
+            end
         end
         result["timings"]["input_geometry_s"] = Float32(input_geometry_seconds)
         result["timings"]["host_cache_s"] = Float32(host_cache_seconds)
@@ -335,5 +367,85 @@ function solve_deploy_request_impl(request)
         device_ground_near_correction_cache === nothing ||
             release_cuda_image_singular_correction_cache!(device_ground_near_correction_cache)
     end
+    emit_event("completed"; solved_count=1)
+end
+
+function evaluate_deploy_field_request_impl(request)
+    request_started = time()
+    state = DEPLOY_BOUNDARY_STATE[]
+    state === nothing && error("Deploy field reuse requested before a boundary solution is available.")
+    solution_key = String(get_value(request, "solution_key", ""))
+    solution_key == state.solution_key || error(
+        "Deploy field request does not match the cached boundary solution.",
+    )
+    beat_backend = beat_backend_from_request(request)
+    beat_backend == state.backend || error("Deploy field request backend does not match the cached solution.")
+    FloatType = Float32
+    observation_points = deploy_observation_points(request, FloatType)
+    observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
+    length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
+    observation_sample_indices = Int.(
+        get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))),
+    )
+    length(observation_sample_indices) == length(observation_points) || error(
+        "Deploy observation sample indices do not match the point count.",
+    )
+
+    emit_event(
+        "initialized";
+        backend=String(beat_backend),
+        frequency_hz=state.frequency,
+        node_count=length(state.mesh.vertices),
+        face_count=length(state.mesh.faces),
+        source_count=0,
+        observation_count=length(observation_points),
+        field_only=true,
+    )
+    emit_event("status"; message="Reusing boundary solution for audience plane")
+    field_pressure = nothing
+    field_seconds = @elapsed begin
+        field_pressure = field_for_points(
+            observation_points,
+            state.mesh,
+            state.pressure,
+            state.q_neumann,
+            state.wavenumber,
+            state.field_cache,
+            beat_backend,
+        )
+    end
+    spl_db = pressure_to_spl(field_pressure, FloatType)
+    result = Dict(
+        "frequency_hz" => state.frequency,
+        "rows" => observation_shape[1],
+        "columns" => observation_shape[2],
+        "spl_db" => spl_db,
+        "sample_indices" => observation_sample_indices,
+        "timings" => Dict(
+            "assembly_s" => 0.0f0,
+            "solve_s" => 0.0f0,
+            "field_s" => Float32(field_seconds),
+            "input_geometry_s" => 0.0f0,
+            "host_cache_s" => 0.0f0,
+            "device_prepare_s" => 0.0f0,
+            "postprocess_s" => 0.0f0,
+            "total_before_emit_s" => Float32(time() - request_started),
+        ),
+        "diagnostics" => Dict(
+            "backend" => String(beat_backend),
+            "source_count" => 0,
+            "node_count" => length(state.mesh.vertices),
+            "face_count" => length(state.mesh.faces),
+            "field_only" => true,
+            "exterior_domain" => "rigid_y0_half_space",
+        ),
+    )
+    if Bool(get_value(request, "include_complex_pressure", false))
+        result["field_pressure"] = Dict(
+            "real" => Float32.(real.(field_pressure)),
+            "imag" => Float32.(imag.(field_pressure)),
+        )
+    end
+    emit_event("result"; result=result)
     emit_event("completed"; solved_count=1)
 end

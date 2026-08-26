@@ -10,6 +10,38 @@ import type {
 
 const PRESSURE_REFERENCE_PA = 20e-6;
 
+function selectKth(values: Float32Array, target: number): number {
+  let left = 0;
+  let right = values.length - 1;
+  while (left < right) {
+    const pivot = values[(left + right) >> 1];
+    let lower = left;
+    let upper = right;
+    while (lower <= upper) {
+      while (values[lower] < pivot) lower += 1;
+      while (values[upper] > pivot) upper -= 1;
+      if (lower <= upper) {
+        const temporary = values[lower];
+        values[lower] = values[upper];
+        values[upper] = temporary;
+        lower += 1;
+        upper -= 1;
+      }
+    }
+    if (target <= upper) right = upper;
+    else if (target >= lower) left = lower;
+    else return values[target];
+  }
+  return values[target];
+}
+
+function percentileSpread(values: Float32Array): number {
+  if (values.length === 0) return 0;
+  const percentile10 = selectKth(values, Math.floor((values.length - 1) * 0.1));
+  const percentile90 = selectKth(values, Math.floor((values.length - 1) * 0.9));
+  return percentile90 - percentile10;
+}
+
 export function fieldFrameFromSpl(
   samples: ArrayLike<number>,
   columns: number,
@@ -23,7 +55,7 @@ export function fieldFrameFromSpl(
   }
   const values = new Float32Array(pointCount);
   const validMask = new Uint8Array(pointCount);
-  const sorted: number[] = [];
+  const validValues = new Float32Array(samples.length);
   let sum = 0;
   let minimum = Infinity;
   let maximum = -Infinity;
@@ -36,15 +68,12 @@ export function fieldFrameFromSpl(
     }
     values[gridIndex] = value;
     validMask[gridIndex] = 1;
-    sorted.push(value);
+    validValues[sampleIndex] = value;
     sum += value;
     minimum = Math.min(minimum, value);
     maximum = Math.max(maximum, value);
   }
-  sorted.sort((a, b) => a - b);
-  if (sorted.length === 0) minimum = maximum = 0;
-  const percentile10 = sorted[Math.floor((sorted.length - 1) * 0.1)];
-  const percentile90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+  if (validValues.length === 0) minimum = maximum = 0;
   return {
     splDb: values,
     validMask,
@@ -52,8 +81,8 @@ export function fieldFrameFromSpl(
     rows,
     minimumDb: minimum,
     maximumDb: maximum,
-    averageDb: sorted.length ? sum / sorted.length : 0,
-    spreadDb: sorted.length ? percentile90 - percentile10 : 0,
+    averageDb: validValues.length ? sum / validValues.length : 0,
+    spreadDb: percentileSpread(validValues),
     clippedNearFieldPoints: 0,
   };
 }
@@ -206,7 +235,8 @@ export function computeFieldFrame(
   const direction = new Vector3();
   const planePoint = new Vector3();
   const validMask = new Uint8Array(pointCount);
-  const sorted: number[] = [];
+  const validValues = new Float32Array(pointCount);
+  let validCount = 0;
   let sum = 0;
   let minimum = Infinity;
   let maximum = -Infinity;
@@ -266,13 +296,12 @@ export function computeFieldFrame(
       sum += spl;
       minimum = Math.min(minimum, spl);
       maximum = Math.max(maximum, spl);
-      sorted.push(spl);
+      validValues[validCount] = spl;
+      validCount += 1;
     }
   }
-  sorted.sort((a, b) => a - b);
-  if (sorted.length === 0) minimum = maximum = 0;
-  const percentile10 = sorted[Math.floor((sorted.length - 1) * 0.1)];
-  const percentile90 = sorted[Math.floor((sorted.length - 1) * 0.9)];
+  if (validCount === 0) minimum = maximum = 0;
+  const populatedValues = validCount === validValues.length ? validValues : validValues.slice(0, validCount);
   return {
     splDb: values,
     validMask,
@@ -280,8 +309,8 @@ export function computeFieldFrame(
     rows: observation.rows,
     minimumDb: minimum,
     maximumDb: maximum,
-    averageDb: sorted.length ? sum / sorted.length : 0,
-    spreadDb: sorted.length ? percentile90 - percentile10 : 0,
+    averageDb: validCount ? sum / validCount : 0,
+    spreadDb: percentileSpread(populatedValues),
     clippedNearFieldPoints,
   };
 }

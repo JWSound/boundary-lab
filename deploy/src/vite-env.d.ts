@@ -12,6 +12,9 @@ interface DesktopLevel2SolveRequest {
   backend: "cuda";
   sources: import("./model/types").SourceConfiguration[];
   observation: import("./model/types").ObservationPlane;
+  solutionKey?: string;
+  reuseBoundary?: boolean;
+  includeComplexPressure?: boolean;
 }
 
 interface DesktopSolveStatus {

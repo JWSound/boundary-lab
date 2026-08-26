@@ -49,6 +49,16 @@ function build_cuda_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::Triangle
     return build_cuda_field_evaluation_cache(build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode))
 end
 
+function release_cuda_field_evaluation_cache!(cache::CudaFieldEvaluationCache)
+    CUDA.unsafe_free!(cache.source_points)
+    CUDA.unsafe_free!(cache.source_normals)
+    CUDA.unsafe_free!(cache.source_weights)
+    CUDA.unsafe_free!(cache.source_faces)
+    CUDA.unsafe_free!(cache.source_elements)
+    CUDA.unsafe_free!(cache.basis_values)
+    return nothing
+end
+
 function _cuda_eval_point_arrays(eval_points, ::Type{T}) where {T}
     point_count = length(eval_points)
     points = Matrix{T}(undef, point_count, 3)

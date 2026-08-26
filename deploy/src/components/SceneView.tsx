@@ -115,24 +115,30 @@ function normalizedYaw(yawDeg: number): number {
   return ((yawDeg + 180) % 360 + 360) % 360 - 180;
 }
 
-function pressureColor(normalized: number): [number, number, number] {
-  const stops: Array<[number, string]> = [
-    [0, "#182a47"],
-    [0.2, "#205d77"],
-    [0.4, "#2b9b8f"],
-    [0.6, "#9ac548"],
-    [0.8, "#f2b53f"],
-    [1, "#ef5b3f"],
-  ];
+const PRESSURE_COLOR_STOPS: Array<[number, number, number, number]> = ([
+  [0, "#182a47"],
+  [0.2, "#205d77"],
+  [0.4, "#2b9b8f"],
+  [0.6, "#9ac548"],
+  [0.8, "#f2b53f"],
+  [1, "#ef5b3f"],
+] satisfies Array<[number, string]>).map(([position, value]) => {
+  const color = new Color(value);
+  return [position, color.r * 255, color.g * 255, color.b * 255] as [number, number, number, number];
+});
+
+function writePressureColor(normalized: number, pixels: Uint8Array, offset: number): void {
   const clamped = Math.max(0, Math.min(1, normalized));
-  const stopIndex = Math.min(stops.length - 2, Math.floor(clamped * (stops.length - 1)));
-  const left = stops[stopIndex];
-  const right = stops[stopIndex + 1];
+  const stopIndex = Math.min(
+    PRESSURE_COLOR_STOPS.length - 2,
+    Math.floor(clamped * (PRESSURE_COLOR_STOPS.length - 1)),
+  );
+  const left = PRESSURE_COLOR_STOPS[stopIndex];
+  const right = PRESSURE_COLOR_STOPS[stopIndex + 1];
   const local = (clamped - left[0]) / (right[0] - left[0]);
-  const a = new Color(left[1]);
-  const b = new Color(right[1]);
-  a.lerp(b, local);
-  return [Math.round(a.r * 255), Math.round(a.g * 255), Math.round(a.b * 255)];
+  pixels[offset] = Math.round(left[1] + (right[1] - left[1]) * local);
+  pixels[offset + 1] = Math.round(left[2] + (right[2] - left[2]) * local);
+  pixels[offset + 2] = Math.round(left[3] + (right[3] - left[3]) * local);
 }
 
 function FieldPlane({
@@ -193,12 +199,11 @@ function FieldPlane({
     const pixels = new Uint8Array(field.columns * field.rows * 4);
     const low = field.maximumDb - 24;
     const high = field.maximumDb;
+    const range = Math.max(1, high - low);
     for (let index = 0; index < field.splDb.length; index += 1) {
-      const [red, green, blue] = pressureColor((field.splDb[index] - low) / Math.max(1, high - low));
-      pixels[index * 4] = red;
-      pixels[index * 4 + 1] = green;
-      pixels[index * 4 + 2] = blue;
-      pixels[index * 4 + 3] = field.validMask[index] ? 222 : 0;
+      const offset = index * 4;
+      writePressureColor((field.splDb[index] - low) / range, pixels, offset);
+      pixels[offset + 3] = field.validMask[index] ? 222 : 0;
     }
     const result = new DataTexture(pixels, field.columns, field.rows, RGBAFormat, UnsignedByteType);
     result.needsUpdate = true;

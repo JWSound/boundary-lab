@@ -12,8 +12,11 @@ from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_wi
 from blab.deploy_solve import (
     CLOSE_PAIR_DISTANCE_M,
     CLOSE_PAIR_QUADRATURE_ORDER,
+    DEPLOY_FIELD_SCHEMA,
     DEPLOY_SOLVE_SCHEMA,
     SOURCE_SURFACE_PADDING_M,
+    DeploySolveCache,
+    prepare_deploy_field_request,
     prepare_deploy_solve_request,
 )
 
@@ -104,6 +107,40 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+
+
+def test_prepare_deploy_solve_request_reuses_package_and_ground_pair_cache(tmp_path: Path) -> None:
+    cache = DeploySolveCache()
+
+    _, first = prepare_deploy_solve_request(_payload(), tmp_path / "first", cache=cache)
+    package_data = next(iter(cache.packages.values()))
+    ground_pairs = dict(cache.ground_image_pairs)
+    _, second = prepare_deploy_solve_request(_payload(), tmp_path / "second", cache=cache)
+
+    assert next(iter(cache.packages.values())) is package_data
+    assert cache.ground_image_pairs.keys() == ground_pairs.keys()
+    assert all(cache.ground_image_pairs[key] is value for key, value in ground_pairs.items())
+    assert first["proximity"]["ground_image_close_face_pairs"] == second["proximity"][
+        "ground_image_close_face_pairs"
+    ]
+
+
+def test_prepare_deploy_field_request_contains_only_observation_data(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["solutionKey"] = "package-frequency-and-source-state"
+    payload["includeComplexPressure"] = False
+
+    request_path, request = prepare_deploy_field_request(payload, tmp_path)
+
+    assert json.loads(request_path.read_text(encoding="utf-8")) == request
+    assert request["schema"] == DEPLOY_FIELD_SCHEMA
+    assert request["solution_key"] == payload["solutionKey"]
+    assert len(request["observation_points_m"]) == 35
+    assert request["observation_shape"] == [5, 7]
+    assert request["include_complex_pressure"] is False
+    assert "mesh_file" not in request
+    assert "boundary_neumann" not in request
+    assert "proximity" not in request
 
 
 def test_prepare_deploy_solve_request_requires_exact_exported_frequency(tmp_path: Path) -> None:

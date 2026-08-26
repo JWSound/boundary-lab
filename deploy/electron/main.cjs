@@ -76,7 +76,7 @@ class DeployWorkerClient {
     const job = this.pending.get(message.id);
     if (!job) return;
     if (message.type === "status" || message.type === "initialized") {
-      if (!job.sender.isDestroyed()) job.sender.send("deploy:solve-status", message);
+      if (job.sender && !job.sender.isDestroyed()) job.sender.send("deploy:solve-status", message);
     } else if (message.type === "result") {
       job.result = message.result;
       job.resultTransport = transport;
@@ -84,6 +84,10 @@ class DeployWorkerClient {
       job.workerProfile = message.metrics;
     } else if (message.type === "completed") {
       this.pending.delete(message.id);
+      if (job.kind === "warmup") {
+        job.resolve();
+        return;
+      }
       if (job.result) {
         job.result.pipeline = {
           ...(job.result.pipeline || {}),
@@ -128,6 +132,7 @@ class DeployWorkerClient {
     const requestJsonEncodeMs = performance.now() - encodeStarted;
     return new Promise((resolve, reject) => {
       this.pending.set(id, {
+        kind: "solve",
         resolve,
         reject,
         sender,
@@ -138,6 +143,23 @@ class DeployWorkerClient {
         workerReadyWaitMs,
         requestJsonEncodeMs,
         requestBytes: Buffer.byteLength(request, "utf8"),
+      });
+      this.process.stdin.write(request);
+    });
+  }
+
+  async warmup() {
+    await this.ensureStarted();
+    if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
+    const id = this.nextId++;
+    const request = `${JSON.stringify({ id, operation: "warmup", backend: "cuda" })}\n`;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, {
+        kind: "warmup",
+        resolve,
+        reject,
+        sender: null,
+        result: null,
       });
       this.process.stdin.write(request);
     });
@@ -431,6 +453,7 @@ ipcMain.handle("deploy:solve-level2", async (event, payload) => deployWorker.sol
 
 app.whenReady().then(() => {
   createWindow();
+  void deployWorker.warmup().catch((error) => console.error("Deploy worker warmup failed", error));
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

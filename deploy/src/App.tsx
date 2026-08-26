@@ -136,6 +136,7 @@ export function App() {
   const [leftTab, setLeftTab] = useState<"library" | "scene">("library");
   const [boundaryField, setBoundaryField] = useState<FieldFrame | null>(null);
   const [boundarySolveKey, setBoundarySolveKey] = useState<string | null>(null);
+  const [boundaryGeometryKey, setBoundaryGeometryKey] = useState<string | null>(null);
   const [solveRevision, setSolveRevision] = useState(0);
   const [solveState, setSolveState] = useState<"idle" | "solving" | "complete" | "error">("idle");
   const [solveMessage, setSolveMessage] = useState("Ready for a Level 2 solve");
@@ -183,6 +184,11 @@ export function App() {
     sources: sourceConfigs,
     observation,
   }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observation]);
+  const currentGeometryKey = useMemo(() => JSON.stringify({
+    package: pkg.id,
+    frequency: pkg.frequenciesHz[frequencyIndex],
+    sources: sourceConfigs,
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs]);
   const field = fidelity === "boundary" && boundaryField && boundarySolveKey === currentSolveKey
     ? boundaryField
     : patternField;
@@ -198,6 +204,7 @@ export function App() {
     setFidelity("pattern");
     setBoundaryField(null);
     setBoundarySolveKey(null);
+    setBoundaryGeometryKey(null);
     setSolveRevision(0);
     setSolveState("idle");
     setLiveSolveEnabled(false);
@@ -277,6 +284,7 @@ export function App() {
     }
     const generation = ++solveGeneration.current;
     const requestedKey = currentSolveKey;
+    const requestedGeometryKey = currentGeometryKey;
     setSolveState("solving");
     setSolveMessage("Starting BEAT CUDA worker");
     setError(null);
@@ -290,13 +298,25 @@ export function App() {
     }
     try {
       const rendererRequestStarted = performance.now();
-      const result = await window.boundaryLabDesktop.solveLevel2({
+      const reuseBoundary = boundaryGeometryKey === requestedGeometryKey;
+      const request: DesktopLevel2SolveRequest = {
         packagePath: pkg.sourcePath,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
         sources: sourceConfigs,
         observation,
-      });
+        solutionKey: requestedGeometryKey,
+        reuseBoundary,
+        includeComplexPressure: false,
+      };
+      let result;
+      try {
+        result = await window.boundaryLabDesktop.solveLevel2(request);
+      } catch (reuseError) {
+        if (!reuseBoundary) throw reuseError;
+        setBoundaryGeometryKey(null);
+        result = await window.boundaryLabDesktop.solveLevel2({ ...request, reuseBoundary: false });
+      }
       if (generation !== solveGeneration.current) return;
       const rendererResultReceived = performance.now();
       const fieldParseStarted = performance.now();
@@ -314,11 +334,12 @@ export function App() {
           field_frame_parse_s: fieldParseSeconds,
           received_numeric_values:
             result.spl_db.length + result.sample_indices.length +
-            result.field_pressure.real.length + result.field_pressure.imag.length,
+            (result.field_pressure?.real.length ?? 0) + (result.field_pressure?.imag.length ?? 0),
         },
       };
       setBoundaryField(nextField);
       setBoundarySolveKey(requestedKey);
+      setBoundaryGeometryKey(requestedGeometryKey);
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
       setSolveMessage("Live Level 2 field current");
@@ -329,7 +350,7 @@ export function App() {
       setSolveMessage("Level 2 solve failed");
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [currentSolveKey, frequencyIndex, observation, patternField, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
+  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, observation, patternField, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
 
   const updateSelectedSource = (next: SourceConfiguration) => {
     const grounded = {

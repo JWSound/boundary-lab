@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from blab.deploy_solve import prepare_deploy_solve_request
+from blab.deploy_solve import DeploySolveCache, prepare_deploy_field_request, prepare_deploy_solve_request
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -53,6 +53,8 @@ def _solve(
     payload: object,
     workers: dict[str, BeatEngineWorkerProcess],
     input_transport: dict[str, float | int],
+    solve_cache: DeploySolveCache,
+    solution_keys: dict[str, str],
 ) -> None:
     backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
     normalized = backend.strip().lower()
@@ -63,14 +65,22 @@ def _solve(
 
     with tempfile.TemporaryDirectory(prefix="blab-deploy-") as temp_dir:
         prepare_started = time.perf_counter()
-        request_path, _request = prepare_deploy_solve_request(payload, temp_dir)
+        requested_solution_key = str(payload.get("solutionKey", "")) if isinstance(payload, dict) else ""
+        reuse_boundary = bool(payload.get("reuseBoundary", False)) if isinstance(payload, dict) else False
+        field_only = reuse_boundary and bool(requested_solution_key) and (
+            solution_keys.get(normalized) == requested_solution_key
+        )
+        if field_only:
+            request_path, _request = prepare_deploy_field_request(payload, temp_dir)
+        else:
+            request_path, _request = prepare_deploy_solve_request(payload, temp_dir, cache=solve_cache)
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
         julia_started = time.perf_counter()
         events = worker.submit(
             Path(request_path),
             status_callback=lambda message: _emit("status", request_id=request_id, message=message),
-            operation="solve",
+            operation="field" if field_only else "solve",
         )
         for event in events:
             event_type = str(event.get("type", ""))
@@ -91,7 +101,10 @@ def _solve(
                     "python_julia_result_wait_s": time.perf_counter() - julia_started,
                     "julia_python_stdout_bytes": int(julia_transport.get("julia_stdout_bytes", 0)),
                     "python_julia_json_parse_s": float(julia_transport.get("python_julia_json_parse_s", 0.0)),
+                    "field_only": int(field_only),
                 }
+                if not field_only:
+                    solution_keys[normalized] = str(_request.get("solution_key", requested_solution_key))
                 result_emit = _emit("result", request_id=request_id, result=result)
                 _emit(
                     "profile",
@@ -111,6 +124,8 @@ def _solve(
 
 def main() -> int:
     workers: dict[str, BeatEngineWorkerProcess] = {}
+    solve_cache = DeploySolveCache()
+    solution_keys: dict[str, str] = {}
     _emit("ready", protocol="boundary_lab_deploy_worker", pid=os.getpid())
     try:
         try:
@@ -129,9 +144,26 @@ def main() -> int:
                     if not isinstance(message, dict):
                         raise ValueError("Deploy worker message must be an object.")
                     request_id = message.get("id")
-                    if message.get("operation") != "solve":
+                    operation = message.get("operation")
+                    if operation == "warmup":
+                        backend = str(message.get("backend", "cuda")).strip().lower()
+                        worker = workers.get(backend)
+                        if worker is None:
+                            worker = _worker(backend)
+                            workers[backend] = worker
+                        worker.ensure_started()
+                        _emit("completed", request_id=request_id)
+                        continue
+                    if operation != "solve":
                         raise ValueError("Unsupported Deploy worker operation.")
-                    _solve(request_id, message.get("payload"), workers, input_transport)
+                    _solve(
+                        request_id,
+                        message.get("payload"),
+                        workers,
+                        input_transport,
+                        solve_cache,
+                        solution_keys,
+                    )
                 except Exception as exc:
                     _emit("failed", request_id=request_id, error=str(exc))
         except KeyboardInterrupt:
