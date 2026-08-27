@@ -24,6 +24,9 @@ const {
   heatmapColorBoundaries,
   heatmapLegendGradient,
   writeHeatmapColor,
+  createDeployProject,
+  parseDeployProject,
+  serializeDeployProject,
 } = await import(`${pathToFileURL(outputPath).href}?${Date.now()}`);
 const bytes = await readFile(packagePath);
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -89,6 +92,30 @@ writeHeatmapColor(65, 50, 145, fiveDbBoundaries, bandedPixels, 8);
 assert.deepEqual(Array.from(bandedPixels.slice(0, 3)), Array.from(bandedPixels.slice(4, 7)));
 assert.notDeepEqual(Array.from(bandedPixels.slice(4, 7)), Array.from(bandedPixels.slice(8, 11)));
 assert.match(heatmapLegendGradient(50, 145, 5), /5\.263%/);
+
+const projectText = serializeDeployProject(createDeployProject(
+  "Smoke Project",
+  speaker,
+  [sourceConfig],
+  { widthM: 12, depthM: 10, centerXM: 1, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 5, rollDeg: 0, columns: 24, rows: 20, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
+  speaker.frequenciesHz[frequencyIndex],
+  "boundary",
+));
+const parsedProject = parseDeployProject(projectText);
+assert.equal(parsedProject.name, "Smoke Project");
+assert.equal(parsedProject.sources[0].id, sourceConfig.id);
+assert.equal(parsedProject.observation_plane.columns, 24);
+assert.equal(parsedProject.requested_fidelity, "boundary");
+const unsupportedProject = JSON.parse(projectText);
+unsupportedProject.schema_version = 1;
+assert.throws(() => parseDeployProject(JSON.stringify(unsupportedProject)), /Unsupported.*version 1/);
+const incompleteProject = JSON.parse(projectText);
+delete incompleteProject.observation_plane.heatmapMinimumDb;
+assert.throws(() => parseDeployProject(JSON.stringify(incompleteProject)), /heatmapMinimumDb/);
+assert.throws(
+  () => parseDeployProject(JSON.stringify({ ...JSON.parse(projectText), sources: [sourceConfig, sourceConfig] })),
+  /unique id/,
+);
 
 console.log(JSON.stringify({
   name: speaker.manifest.name,

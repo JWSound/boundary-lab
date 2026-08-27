@@ -4,22 +4,25 @@ import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import {
   BufferAttribute,
   BufferGeometry,
+  ClampToEdgeWrapping,
   DataTexture,
   DoubleSide,
   Euler,
+  FloatType,
   Group,
+  NearestFilter,
   MathUtils,
   Plane,
   Quaternion,
   Ray,
-  RGBAFormat,
-  SRGBColorSpace,
+  RedFormat,
+  ShaderMaterial,
   UnsignedByteType,
+  Vector2,
   Vector3,
 } from "three";
 import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstance } from "../model/types";
 import { SOURCE_GROUND_CLEARANCE_M, SOURCE_SURFACE_PADDING_M } from "../model/field";
-import { heatmapColorBoundaries, writeHeatmapColor } from "../model/heatmap";
 
 export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
 
@@ -120,6 +123,109 @@ function finiteVector(vector: Vector3): boolean {
   return Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z);
 }
 
+const FIELD_PLANE_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const FIELD_PLANE_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D uSplMap;
+  uniform sampler2D uValidityMap;
+  uniform vec2 uTextureSize;
+  uniform float uMinimumDb;
+  uniform float uMaximumDb;
+  uniform float uBandingDb;
+  varying vec2 vUv;
+
+  float validityAt(vec2 uv) {
+    // The CPU mask stores 0 or 1 in an unsigned normalized texture.
+    return step(0.001, texture2D(uValidityMap, uv).r);
+  }
+
+  float nearestValidity(vec2 uv) {
+    vec2 nearestIndex = floor(uv * (uTextureSize - 1.0) + 0.5);
+    return validityAt((nearestIndex + 0.5) / uTextureSize);
+  }
+
+  float filteredSpl(vec2 uv) {
+    // Perform mask-aware bilinear interpolation. Invalid ground-clipped samples
+    // contribute no weight, preventing a dark fringe along the clipping edge.
+    // Grid samples include both physical plane edges, hence size - 1 here.
+    vec2 samplePosition = uv * (uTextureSize - 1.0);
+    vec2 base = floor(samplePosition);
+    vec2 fraction = fract(samplePosition);
+    vec2 maximumIndex = uTextureSize - 1.0;
+    vec2 uv00 = (clamp(base, vec2(0.0), maximumIndex) + 0.5) / uTextureSize;
+    vec2 uv10 = (clamp(base + vec2(1.0, 0.0), vec2(0.0), maximumIndex) + 0.5) / uTextureSize;
+    vec2 uv01 = (clamp(base + vec2(0.0, 1.0), vec2(0.0), maximumIndex) + 0.5) / uTextureSize;
+    vec2 uv11 = (clamp(base + vec2(1.0), vec2(0.0), maximumIndex) + 0.5) / uTextureSize;
+    vec4 weights = vec4(
+      (1.0 - fraction.x) * (1.0 - fraction.y),
+      fraction.x * (1.0 - fraction.y),
+      (1.0 - fraction.x) * fraction.y,
+      fraction.x * fraction.y
+    );
+    vec4 validity = vec4(
+      validityAt(uv00), validityAt(uv10), validityAt(uv01), validityAt(uv11)
+    );
+    vec4 validWeights = weights * validity;
+    float weightSum = dot(validWeights, vec4(1.0));
+    vec4 samples = vec4(
+      texture2D(uSplMap, uv00).r,
+      texture2D(uSplMap, uv10).r,
+      texture2D(uSplMap, uv01).r,
+      texture2D(uSplMap, uv11).r
+    );
+    return weightSum > 0.0001 ? dot(samples, validWeights) / weightSum : uMinimumDb;
+  }
+
+  float colorPosition(float valueDb) {
+    float rangeDb = max(0.0001, uMaximumDb - uMinimumDb);
+    if (uBandingDb < 0.5) return clamp((valueDb - uMinimumDb) / rangeDb, 0.0, 1.0);
+
+    float firstBoundary = ceil(uMinimumDb / uBandingDb) * uBandingDb;
+    if (firstBoundary <= uMinimumDb + 0.0001) firstBoundary += uBandingDb;
+    float internalBoundaryCount = max(0.0, ceil((uMaximumDb - firstBoundary) / uBandingDb));
+    float regionCount = internalBoundaryCount + 1.0;
+    if (regionCount < 1.5) return 0.5;
+    float region = valueDb < firstBoundary
+      ? 0.0
+      : floor((valueDb - firstBoundary) / uBandingDb) + 1.0;
+    return clamp(region / (regionCount - 1.0), 0.0, 1.0);
+  }
+
+  vec3 palette(float position) {
+    float scaled = clamp(position, 0.0, 1.0) * 9.0;
+    if (scaled < 1.0) return mix(vec3(0.0, 0.0, 0.5608), vec3(0.0, 0.0, 1.0), scaled);
+    if (scaled < 2.0) return mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 0.4353, 1.0), scaled - 1.0);
+    if (scaled < 3.0) return mix(vec3(0.0, 0.4353, 1.0), vec3(0.0, 0.8745, 1.0), scaled - 2.0);
+    if (scaled < 4.0) return mix(vec3(0.0, 0.8745, 1.0), vec3(0.3098, 1.0, 0.7490), scaled - 3.0);
+    if (scaled < 5.0) return mix(vec3(0.3098, 1.0, 0.7490), vec3(0.7490, 1.0, 0.3098), scaled - 4.0);
+    if (scaled < 6.0) return mix(vec3(0.7490, 1.0, 0.3098), vec3(1.0, 0.8745, 0.0), scaled - 5.0);
+    if (scaled < 7.0) return mix(vec3(1.0, 0.8745, 0.0), vec3(1.0, 0.4353, 0.0), scaled - 6.0);
+    if (scaled < 8.0) return mix(vec3(1.0, 0.4353, 0.0), vec3(1.0, 0.0, 0.0), scaled - 7.0);
+    return mix(vec3(1.0, 0.0, 0.0), vec3(0.5608, 0.0, 0.0), scaled - 8.0);
+  }
+
+  vec3 srgbToLinear(vec3 value) {
+    vec3 low = value / 12.92;
+    vec3 high = pow((value + 0.055) / 1.055, vec3(2.4));
+    return mix(low, high, step(vec3(0.04045), value));
+  }
+
+  void main() {
+    // Keep the clipping boundary discrete even though valid SPL values are smooth.
+    if (nearestValidity(vUv) < 0.5) discard;
+    vec3 color = srgbToLinear(palette(colorPosition(filteredSpl(vUv))));
+    gl_FragColor = vec4(color, 0.9412);
+    #include <colorspace_fragment>
+  }
+`;
+
 function FieldPlane({
   observation,
   field,
@@ -175,27 +281,47 @@ function FieldPlane({
   useEffect(() => {
     if (transformMode !== "scale") cancelResize();
   }, [transformMode]);
-  const texture = useMemo(() => {
+  const textures = useMemo(() => {
     const rasterStarted = performance.now();
-    const pixels = new Uint8Array(field.columns * field.rows * 4);
-    const low = observation.heatmapMinimumDb;
-    const high = observation.heatmapMaximumDb;
-    const boundaries = heatmapColorBoundaries(low, high, observation.heatmapBandingDb);
-    for (let index = 0; index < field.splDb.length; index += 1) {
-      const offset = index * 4;
-      writeHeatmapColor(field.splDb[index], low, high, boundaries, pixels, offset);
-      pixels[offset + 3] = field.validMask[index] ? 240 : 0;
-    }
-    const result = new DataTexture(pixels, field.columns, field.rows, RGBAFormat, UnsignedByteType);
-    result.needsUpdate = true;
-    result.colorSpace = SRGBColorSpace;
+    const spl = new DataTexture(field.splDb, field.columns, field.rows, RedFormat, FloatType);
+    spl.minFilter = NearestFilter;
+    spl.magFilter = NearestFilter;
+    spl.wrapS = ClampToEdgeWrapping;
+    spl.wrapT = ClampToEdgeWrapping;
+    spl.generateMipmaps = false;
+    spl.needsUpdate = true;
+    const validity = new DataTexture(field.validMask, field.columns, field.rows, RedFormat, UnsignedByteType);
+    validity.minFilter = NearestFilter;
+    validity.magFilter = NearestFilter;
+    validity.wrapS = ClampToEdgeWrapping;
+    validity.wrapT = ClampToEdgeWrapping;
+    validity.generateMipmaps = false;
+    validity.needsUpdate = true;
     textureProfile.current = {
       pointCount: field.columns * field.rows,
-      textureBytes: pixels.byteLength,
+      textureBytes: field.splDb.byteLength + field.validMask.byteLength,
       rasterMs: performance.now() - rasterStarted,
     };
-    return result;
-  }, [field, observation.heatmapBandingDb, observation.heatmapMaximumDb, observation.heatmapMinimumDb]);
+    return { spl, validity };
+  }, [field]);
+  const heatmapMaterial = useMemo(() => new ShaderMaterial({
+    uniforms: {
+      uSplMap: { value: textures.spl },
+      uValidityMap: { value: textures.validity },
+      uTextureSize: { value: new Vector2(field.columns, field.rows) },
+      uMinimumDb: { value: observation.heatmapMinimumDb },
+      uMaximumDb: { value: observation.heatmapMaximumDb },
+      uBandingDb: { value: observation.heatmapBandingDb },
+    },
+    vertexShader: FIELD_PLANE_VERTEX_SHADER,
+    fragmentShader: FIELD_PLANE_FRAGMENT_SHADER,
+    transparent: true,
+    side: DoubleSide,
+    toneMapped: false,
+  }), [field.columns, field.rows, textures]);
+  heatmapMaterial.uniforms.uMinimumDb.value = observation.heatmapMinimumDb;
+  heatmapMaterial.uniforms.uMaximumDb.value = observation.heatmapMaximumDb;
+  heatmapMaterial.uniforms.uBandingDb.value = observation.heatmapBandingDb;
 
   useEffect(() => {
     const profile = textureProfile.current;
@@ -208,9 +334,15 @@ function FieldPlane({
     });
     return () => {
       cancelAnimationFrame(frame);
-      texture.dispose();
     };
-  }, [onTextureReady, texture]);
+  }, [onTextureReady, textures]);
+
+  useEffect(() => () => {
+    textures.spl.dispose();
+    textures.validity.dispose();
+  }, [textures]);
+
+  useEffect(() => () => heatmapMaterial.dispose(), [heatmapMaterial]);
 
   const applyGizmoTransform = () => {
     const object = planeRef.current;
@@ -301,7 +433,7 @@ function FieldPlane({
           raycast={() => undefined}
         >
           <planeGeometry args={[observation.widthM, observation.depthM]} />
-          <meshBasicMaterial map={texture} transparent side={DoubleSide} toneMapped={false} />
+          <primitive object={heatmapMaterial} attach="material" />
         </mesh>
         <Grid
           position={[0, 0.008, 0]}
@@ -567,7 +699,7 @@ function SpeakerGeometry({
         {geometry ? (
           <mesh geometry={geometry} castShadow receiveShadow>
             <meshStandardMaterial
-              color={selected ? "#b8c986" : "#3a403b"}
+              color={selected ? "#d4d0c8" : "#667176"}
               roughness={0.72}
               metalness={0.08}
               emissive={selected ? "#2a3218" : "#000000"}
@@ -576,18 +708,18 @@ function SpeakerGeometry({
         ) : (
           <mesh position={boundsCenter} castShadow receiveShadow>
             <boxGeometry args={sceneBounds} />
-            <meshStandardMaterial color={selected ? "#b8c986" : "#3a403b"} roughness={0.72} />
+            <meshStandardMaterial color={selected ? "#d4d0c8" : "#667176"} roughness={0.72} />
           </mesh>
         )}
         {pkg.isDemo && (
           <>
             <mesh position={[0, 0.055, bounds.maximum[2] + 0.003]}>
               <circleGeometry args={[sceneBounds[0] * 0.27, 40]} />
-              <meshStandardMaterial color="#171b18" roughness={0.5} />
+              <meshStandardMaterial color="#1e2224" roughness={0.5} />
             </mesh>
             <mesh position={[0, -0.075, bounds.maximum[2] + 0.005]}>
               <circleGeometry args={[sceneBounds[0] * 0.12, 36]} />
-              <meshStandardMaterial color="#252b26" roughness={0.4} />
+              <meshStandardMaterial color="#3f484c" roughness={0.4} />
             </mesh>
           </>
         )}
@@ -632,8 +764,8 @@ function AcousticScene(props: SceneViewProps) {
   const selectedInstances = new Set(props.selectedInstances);
   return (
     <>
-      <color attach="background" args={["#171b18"]} />
-      <fog attach="fog" args={["#171b18", 70, 220]} />
+      <color attach="background" args={["#293134"]} />
+      <fog attach="fog" args={["#293134", 70, 220]} />
       <ambientLight intensity={0.65} />
       <directionalLight
         position={[-7, 12, -5]}

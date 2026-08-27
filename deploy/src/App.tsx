@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   CircleHelp,
+  FolderOpen,
   Grid3X3,
   Import,
   Maximize2,
@@ -30,6 +31,7 @@ import {
   SourceInspector,
 } from "./components/Controls";
 import { loadSpeakerPackage } from "./io/speakerPackage";
+import { createDeployProject, parseDeployProject, serializeDeployProject, type DeployProject } from "./io/deployProject";
 import { createDemoPackage } from "./model/demoPackage";
 import {
   buildSourceInstance,
@@ -164,7 +166,11 @@ export function App() {
   const [liveSolveEnabled, setLiveSolveEnabled] = useState(false);
   const [transformMode, setTransformMode] = useState<SceneTransformMode>("select");
   const [angleSnapDisabled, setAngleSnapDisabled] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
+  const [projectName, setProjectName] = useState("S218BP Subwoofer Study");
+  const [projectFileName, setProjectFileName] = useState("s218bp-subwoofer-study.blabdeploy.json");
+  const [savedProjectSnapshot, setSavedProjectSnapshot] = useState<string | null>(null);
+  const packageFileInput = useRef<HTMLInputElement>(null);
+  const projectFileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
   const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
   const sourceConfigsRef = useRef(sourceConfigs);
@@ -231,6 +237,15 @@ export function App() {
     : patternField;
   const boundaryCurrent = fidelity === "boundary" && boundaryField !== null && boundarySolveKey === currentSolveKey;
   const boundaryAvailable = Boolean(window.boundaryLabDesktop && pkg.sourcePath && pkg.manifest.fidelity_level >= 2);
+  const currentProjectContents = serializeDeployProject(createDeployProject(
+    projectName,
+    pkg,
+    sourceConfigs,
+    observation,
+    pkg.frequenciesHz[frequencyIndex],
+    fidelity,
+  ));
+  const projectEdited = savedProjectSnapshot === null || savedProjectSnapshot !== currentProjectContents;
 
   const applyPackage = (next: LoadedSpeakerPackage) => {
     solveGeneration.current += 1;
@@ -246,6 +261,56 @@ export function App() {
     setSolveState("idle");
     setLiveSolveEnabled(false);
     setTransformMode("select");
+    setProjectName(`${next.manifest.name} Subwoofer Study`);
+    setProjectFileName(`${next.manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "deploy"}-study.blabdeploy.json`);
+    setSavedProjectSnapshot(null);
+    setError(null);
+  };
+
+  const applyProject = (project: DeployProject, nextPackage: LoadedSpeakerPackage, fileName: string) => {
+    if (project.package.name !== nextPackage.manifest.name) {
+      throw new Error(`Project expects ${project.package.name}, but ${nextPackage.manifest.name} was loaded.`);
+    }
+    solveGeneration.current += 1;
+    const nextSources = project.sources.map((source) => ({
+      ...source,
+      positionHeightM: Math.max(
+        minimumSourceHeightM(nextPackage, source.pitchDeg, source.rollDeg),
+        source.positionHeightM,
+      ),
+    }));
+    const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
+    const nextFidelity: Fidelity = project.requested_fidelity === "boundary" &&
+      Boolean(window.boundaryLabDesktop && nextPackage.sourcePath && nextPackage.manifest.fidelity_level >= 2)
+      ? "boundary"
+      : "pattern";
+    const normalizedContents = serializeDeployProject(createDeployProject(
+      project.name,
+      nextPackage,
+      nextSources,
+      project.observation_plane,
+      nextPackage.frequenciesHz[nextFrequencyIndex],
+      nextFidelity,
+    ));
+    setPackage(nextPackage);
+    setSourceConfigs(nextSources);
+    sourceConfigsRef.current = nextSources;
+    setObservation(project.observation_plane);
+    observationRef.current = project.observation_plane;
+    setFrequencyIndex(nextFrequencyIndex);
+    setFidelity(nextFidelity);
+    setSelectedInstances([nextSources[0].id]);
+    setBoundaryField(null);
+    setBoundarySolveKey(null);
+    setBoundaryGeometryKey(null);
+    setSolveRevision(0);
+    setSolveState("idle");
+    setSolveMessage("Ready for a Level 2 solve");
+    setLiveSolveEnabled(false);
+    setTransformMode("select");
+    setProjectName(project.name);
+    setProjectFileName(fileName);
+    setSavedProjectSnapshot(normalizedContents);
     setError(null);
   };
 
@@ -273,7 +338,7 @@ export function App() {
         const selection = await window.boundaryLabDesktop.openSpeakerPackage();
         if (selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
       } else {
-        fileInput.current?.click();
+        packageFileInput.current?.click();
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -288,30 +353,59 @@ export function App() {
     }
   };
 
-  const saveProject = async () => {
-    const project = JSON.stringify({
-      schema: "boundary-lab-deploy-project",
-      schema_version: 2,
-      name: "S218BP Subwoofer Study",
-      package: {
-        id: pkg.id,
-        name: pkg.manifest.name,
-        source_file: pkg.sourcePath,
-      },
-      sources: sourceConfigs,
-      observation_plane: observation,
-      selected_frequency_hz: pkg.frequenciesHz[frequencyIndex],
-      requested_fidelity: fidelity,
-    }, null, 2) + "\n";
-    if (window.boundaryLabDesktop) {
-      await window.boundaryLabDesktop.saveProject(project, "s218bp-subwoofer-study.blabdeploy.json");
-      return;
+  const openProject = async () => {
+    try {
+      if (projectEdited && !window.confirm("Open another project and discard unsaved changes?")) return;
+      if (window.boundaryLabDesktop) {
+        const selection = await window.boundaryLabDesktop.openProject();
+        if (!selection) return;
+        const project = parseDeployProject(selection.contents);
+        if (!selection.package) throw new Error("The speaker package referenced by this project was not located.");
+        const nextPackage = loadSpeakerPackage(
+          selection.package.bytes,
+          selection.package.name,
+          selection.package.path,
+        );
+        applyProject(project, nextPackage, selection.name);
+      } else {
+        projectFileInput.current?.click();
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
     }
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(new Blob([project], { type: "application/json" }));
-    link.download = "s218bp-subwoofer-study.blabdeploy.json";
-    link.click();
-    URL.revokeObjectURL(link.href);
+  };
+
+  const loadBrowserProject = async (file: File) => {
+    try {
+      const project = parseDeployProject(await file.text());
+      const referencedName = project.package.source_file?.split(/[\\/]/).at(-1);
+      if (project.package.name !== pkg.manifest.name && referencedName !== pkg.fileName) {
+        throw new Error(`Open the ${project.package.name} speaker package before loading this project in a browser.`);
+      }
+      applyProject(project, pkg, file.name);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const saveProject = async () => {
+    try {
+      if (window.boundaryLabDesktop) {
+        const savedPath = await window.boundaryLabDesktop.saveProject(currentProjectContents, projectFileName);
+        if (!savedPath) return;
+        setProjectFileName(savedPath.split(/[\\/]/).at(-1) ?? projectFileName);
+        setSavedProjectSnapshot(currentProjectContents);
+        return;
+      }
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([currentProjectContents], { type: "application/json" }));
+      link.download = projectFileName;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      setSavedProjectSnapshot(currentProjectContents);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
   };
 
   const solveLevel2 = useCallback(async () => {
@@ -603,9 +697,10 @@ export function App() {
           <div className="brand-mark"><Waves size={20} /></div>
           <div><strong>Boundary Lab</strong><span>DEPLOY</span></div>
         </div>
-        <div className="project-breadcrumb"><span>Projects</span><ChevronRight size={13} /><strong>S218BP Subwoofer Study</strong><i>Edited</i></div>
+        <div className="project-breadcrumb"><span>Projects</span><ChevronRight size={13} /><strong>{projectName}</strong>{projectEdited && <i>Edited</i>}</div>
         <FidelitySwitcher value={fidelity} onChange={setFidelity} packageLevel={pkg.manifest.fidelity_level} boundaryAvailable={boundaryAvailable} />
         <div className="topbar-actions">
+          <button className="icon-button" title="Open project" aria-label="Open project" onClick={openProject}><FolderOpen size={17} /></button>
           <button className="icon-button" title="Save project" onClick={saveProject}><Save size={17} /></button>
           <button className="icon-button" title="Settings"><Settings2 size={17} /></button>
           <button
@@ -777,11 +872,18 @@ export function App() {
       )}
       {error && <div className="error-toast" onClick={() => setError(null)}><strong>Boundary Lab Deploy</strong><span>{error}</span></div>}
       <input
-        ref={fileInput}
+        ref={packageFileInput}
         className="hidden-file-input"
         type="file"
         accept=".blabsp"
         onChange={browserFileHandler(loadBrowserFile)}
+      />
+      <input
+        ref={projectFileInput}
+        className="hidden-file-input"
+        type="file"
+        accept=".blabdeploy.json,application/json"
+        onChange={browserFileHandler(loadBrowserProject)}
       />
     </main>
   );

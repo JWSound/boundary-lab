@@ -1,7 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("node:child_process");
-const { readFile, writeFile } = require("node:fs/promises");
-const { join } = require("node:path");
+const { readFile, unlink, writeFile } = require("node:fs/promises");
+const { basename, dirname, isAbsolute, join, resolve } = require("node:path");
 const { performance } = require("node:perf_hooks");
 
 const here = __dirname;
@@ -210,6 +210,55 @@ function createWindow() {
         };
         check();
       })`);
+      let openProjectInteraction = null;
+      if (!benchmarkLevel2 && !level2Smoke) {
+        const smokeProjectPath = join(app.getPath("temp"), `boundary-lab-deploy-${process.pid}.blabdeploy.json`);
+        const smokeProject = {
+          schema: "boundary-lab-deploy-project",
+          schema_version: 2,
+          name: "Loaded Project Smoke",
+          package: {
+            id: "smoke-package",
+            name: "S218BP",
+            source_file: join(here, "../library/S218BP_LOD.blabsp"),
+          },
+          sources: [
+            { id: "subwoofer-1", positionX: -2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
+            { id: "subwoofer-2", positionX: 2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
+          ],
+          observation_plane: { widthM: 18, depthM: 16, centerXM: 1, nearM: 2, heightM: 1.4, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 36, rows: 32, heatmapMinimumDb: 55, heatmapMaximumDb: 135, heatmapBandingDb: 5 },
+          selected_frequency_hz: 80,
+          requested_fidelity: "pattern",
+        };
+        await writeFile(smokeProjectPath, `${JSON.stringify(smokeProject, null, 2)}\n`, "utf8");
+        const showOpenDialog = dialog.showOpenDialog;
+        dialog.showOpenDialog = async (options) => options?.title === "Open Boundary Lab Deploy project"
+          ? { canceled: false, filePaths: [smokeProjectPath] }
+          : showOpenDialog.call(dialog, options);
+        try {
+          openProjectInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+            window.confirm = () => true;
+            document.querySelector('button[aria-label="Open project"]')?.click();
+            const deadline = Date.now() + 10000;
+            const check = () => {
+              const name = document.querySelector('.project-breadcrumb strong')?.textContent?.trim() || '';
+              const error = document.querySelector('.error-toast span')?.textContent || '';
+              if (name === 'Loaded Project Smoke' || error || Date.now() >= deadline) {
+                resolve({
+                  name,
+                  error: error || null,
+                  sourceCount: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length,
+                  edited: Boolean(document.querySelector('.project-breadcrumb i'))
+                });
+              } else setTimeout(check, 50);
+            };
+            check();
+          })`);
+        } finally {
+          dialog.showOpenDialog = showOpenDialog;
+          await unlink(smokeProjectPath).catch(() => {});
+        }
+      }
       await window.webContents.executeJavaScript(`(() => {
         document.querySelectorAll('.fidelity-switcher button')[1]?.click();
         return new Promise((resolve) => setTimeout(resolve, 0));
@@ -427,11 +476,12 @@ function createWindow() {
         activeFidelity: document.querySelector('.fidelity-switcher button.active span')?.textContent,
         solveButtonEnabled: !document.querySelector('.primary-button')?.disabled,
         solveButtonLabel: document.querySelector('.primary-button')?.textContent?.trim(),
+        openProjectAvailable: Boolean(document.querySelector('button[aria-label="Open project"]')),
         liveSolveEnabled: document.querySelector('.primary-button')?.getAttribute('aria-pressed'),
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
@@ -476,6 +526,65 @@ ipcMain.handle("deploy:open-speaker-package", async () => {
   });
   if (selection.canceled || selection.filePaths.length === 0) return null;
   return readPackageSelection(selection.filePaths[0]);
+});
+
+ipcMain.handle("deploy:open-project", async () => {
+  const selection = await dialog.showOpenDialog({
+    title: "Open Boundary Lab Deploy project",
+    filters: [
+      { name: "Boundary Lab Deploy projects", extensions: ["blabdeploy.json"] },
+      { name: "JSON files", extensions: ["json"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+    properties: ["openFile"],
+  });
+  if (selection.canceled || selection.filePaths.length === 0) return null;
+  const projectPath = selection.filePaths[0];
+  const contents = await readFile(projectPath, "utf8");
+  let project;
+  try {
+    project = JSON.parse(contents);
+  } catch {
+    return { name: basename(projectPath), path: projectPath, contents, package: null };
+  }
+
+  const sourceFile = typeof project?.package?.source_file === "string"
+    ? project.package.source_file
+    : null;
+  const candidates = sourceFile
+    ? [
+        isAbsolute(sourceFile) ? sourceFile : resolve(dirname(projectPath), sourceFile),
+        join(here, "../library", basename(sourceFile)),
+      ]
+    : [];
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      return {
+        name: basename(projectPath),
+        path: projectPath,
+        contents,
+        package: await readPackageSelection(candidate),
+      };
+    } catch {
+      // Try the next portable or bundled package location.
+    }
+  }
+
+  const packageSelection = await dialog.showOpenDialog({
+    title: sourceFile
+      ? `Locate ${basename(sourceFile)}`
+      : "Locate the project speaker package",
+    defaultPath: dirname(projectPath),
+    filters: [
+      { name: "Boundary Lab speaker packages", extensions: ["blabsp"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+    properties: ["openFile"],
+  });
+  const packageResult = packageSelection.canceled || packageSelection.filePaths.length === 0
+    ? null
+    : await readPackageSelection(packageSelection.filePaths[0]);
+  return { name: basename(projectPath), path: projectPath, contents, package: packageResult };
 });
 
 ipcMain.handle("deploy:save-project", async (_event, contents, suggestedName) => {
