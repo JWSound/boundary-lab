@@ -20,7 +20,7 @@ import {
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourcePoseUpdate } from "./components/SceneView";
+import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourceGroupPoseUpdate, type SourcePoseUpdate } from "./components/SceneView";
 import {
   browserFileHandler,
   PackageCard,
@@ -169,12 +169,14 @@ export function App() {
   const [projectName, setProjectName] = useState("S218BP Subwoofer Study");
   const [projectFileName, setProjectFileName] = useState("s218bp-subwoofer-study.blabdeploy.json");
   const [savedProjectSnapshot, setSavedProjectSnapshot] = useState<string | null>(null);
+  const [solveReleaseRevision, setSolveReleaseRevision] = useState(0);
   const packageFileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
   const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
   const sourceConfigsRef = useRef(sourceConfigs);
   const observationRef = useRef(observation);
+  const flushLiveSolveRef = useRef(false);
 
   useEffect(() => {
     sourceConfigsRef.current = sourceConfigs;
@@ -541,6 +543,33 @@ export function App() {
     }
   };
 
+  const updateSourceGroupPoses = (poses: SourceGroupPoseUpdate[]) => {
+    if (poses.length === 0) return;
+    const poseById = new Map(poses.map((pose) => [pose.id, pose]));
+    let groupLiftM = 0;
+    for (const pose of poses) {
+      groupLiftM = Math.max(
+        groupLiftM,
+        minimumSourceHeightM(pkg, pose.pitchDeg, pose.rollDeg) - pose.positionHeightM,
+      );
+    }
+    const nextSources = sourceConfigsRef.current.map((source) => {
+      const pose = poseById.get(source.id);
+      if (!pose) return source;
+      return {
+        ...source,
+        positionX: pose.positionX,
+        positionHeightM: pose.positionHeightM + groupLiftM,
+        positionZ: pose.positionZ,
+        pitchDeg: pose.pitchDeg,
+        yawDeg: pose.yawDeg,
+        rollDeg: pose.rollDeg,
+      };
+    });
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
+  };
+
   const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">) => {
     const currentObservation = observationRef.current;
     const currentSources = sourceConfigsRef.current;
@@ -680,11 +709,28 @@ export function App() {
   }, [canRemoveSelectedSources, removeSelectedSources, selectedInstance, selectedSource]);
 
   useEffect(() => {
-    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
-    if (solveState === "solving" || boundarySolveKey === currentSolveKey) return;
-    const timeout = window.setTimeout(() => void solveLevel2(), 300);
+    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) {
+      flushLiveSolveRef.current = false;
+      return;
+    }
+    if (boundarySolveKey === currentSolveKey) {
+      flushLiveSolveRef.current = false;
+      return;
+    }
+    if (solveState === "solving") return;
+    const delayMs = flushLiveSolveRef.current ? 0 : 300;
+    const timeout = window.setTimeout(() => {
+      flushLiveSolveRef.current = false;
+      void solveLevel2();
+    }, delayMs);
     return () => window.clearTimeout(timeout);
-  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, solveLevel2, solveState]);
+  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, solveLevel2, solveReleaseRevision, solveState]);
+
+  const flushLiveSolve = useCallback(() => {
+    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
+    flushLiveSolveRef.current = true;
+    setSolveReleaseRevision((revision) => revision + 1);
+  }, [boundaryAvailable, fidelity, liveSolveEnabled]);
 
   useEffect(() => {
     if (fidelity !== "boundary") setLiveSolveEnabled(false);
@@ -786,8 +832,10 @@ export function App() {
           angleSnapDisabled={angleSnapDisabled}
           onSelectInstance={selectSceneObject}
           onTransformSource={updateSourcePose}
+          onTransformSources={updateSourceGroupPoses}
           onTransformObservation={updateObservationPose}
           onResizeObservation={resizeObservation}
+          onManipulationEnd={flushLiveSolve}
           onFieldTextureReady={recordFieldTexture}
         />
         <div className="viewport-toolbar">

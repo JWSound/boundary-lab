@@ -35,6 +35,10 @@ export interface SourcePoseUpdate {
   rollDeg: number;
 }
 
+export interface SourceGroupPoseUpdate extends SourcePoseUpdate {
+  id: string;
+}
+
 export type ObservationPoseUpdate = Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">;
 
 export interface ObservationResizeUpdate {
@@ -62,8 +66,10 @@ interface SceneViewProps {
   angleSnapDisabled: boolean;
   onSelectInstance: (id: string | null, additive?: boolean) => void;
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
+  onTransformSources: (poses: SourceGroupPoseUpdate[]) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
   onResizeObservation: (resize: ObservationResizeUpdate) => void;
+  onManipulationEnd: () => void;
   onFieldTextureReady?: (profile: FieldTextureProfile) => void;
 }
 
@@ -235,6 +241,7 @@ function FieldPlane({
   angleSnapDisabled,
   onTransform,
   onResize,
+  onManipulationEnd,
   onTextureReady,
 }: {
   observation: ObservationPlane;
@@ -245,6 +252,7 @@ function FieldPlane({
   angleSnapDisabled: boolean;
   onTransform: (pose: ObservationPoseUpdate) => void;
   onResize: (resize: ObservationResizeUpdate) => void;
+  onManipulationEnd: () => void;
   onTextureReady?: (profile: FieldTextureProfile) => void;
 }) {
   const planeRef = useRef<Group>(null);
@@ -261,13 +269,15 @@ function FieldPlane({
   } | null>(null);
   const textureProfile = useRef<Omit<FieldTextureProfile, "commitToFrameMs"> | null>(null);
 
-  const cancelResize = () => {
+  const cancelResize = (flushSolve = false) => {
+    const wasResizing = resizeState.current !== null;
     resizeState.current = null;
     orbitControls && (orbitControls.enabled = true);
+    if (flushSolve && wasResizing) onManipulationEnd();
   };
 
   useEffect(() => {
-    const finish = () => cancelResize();
+    const finish = () => cancelResize(true);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
     window.addEventListener("blur", finish);
@@ -276,7 +286,7 @@ function FieldPlane({
       window.removeEventListener("pointercancel", finish);
       window.removeEventListener("blur", finish);
     };
-  }, [orbitControls]);
+  }, [onManipulationEnd, orbitControls]);
 
   useEffect(() => {
     if (transformMode !== "scale") cancelResize();
@@ -385,7 +395,7 @@ function FieldPlane({
     const object = planeRef.current;
     if (!resize || !object || resize.pointerId !== event.pointerId) return;
     if ((event.nativeEvent.buttons & 1) === 0) {
-      cancelResize();
+      cancelResize(true);
       return;
     }
     event.stopPropagation();
@@ -408,7 +418,7 @@ function FieldPlane({
   const finishResize = (event: ThreeEvent<PointerEvent>) => {
     if (!resizeState.current || resizeState.current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    cancelResize();
+    cancelResize(true);
     (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
   };
 
@@ -480,6 +490,7 @@ function FieldPlane({
           showZ
           rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
           onObjectChange={applyGizmoTransform}
+          onMouseUp={onManipulationEnd}
         />
       )}
     </>
@@ -492,22 +503,26 @@ function SpeakerGeometry({
   allInstances,
   selected,
   active,
+  individualControls,
   movingInstanceIds,
   transformMode,
   angleSnapDisabled,
   onSelect,
   onTransform,
+  onManipulationEnd,
 }: {
   pkg: LoadedSpeakerPackage;
   instance: SpeakerInstance;
   allInstances: SpeakerInstance[];
   selected: boolean;
   active: boolean;
+  individualControls: boolean;
   movingInstanceIds: readonly string[];
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
   onSelect: (additive: boolean) => void;
   onTransform: (pose: SourcePoseUpdate) => void;
+  onManipulationEnd: () => void;
 }) {
   const speakerRef = useRef<Group>(null);
   const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
@@ -519,13 +534,15 @@ function SpeakerGeometry({
     startPosition: [number, number, number];
     corner: [number, number, number];
   } | null>(null);
-  const cancelCornerDrag = () => {
+  const cancelCornerDrag = (flushSolve = false) => {
+    const wasDragging = dragState.current !== null;
     dragState.current = null;
     orbitControls && (orbitControls.enabled = true);
+    if (flushSolve && wasDragging) onManipulationEnd();
   };
 
   useEffect(() => {
-    const finish = () => cancelCornerDrag();
+    const finish = () => cancelCornerDrag(true);
     window.addEventListener("pointerup", finish);
     window.addEventListener("pointercancel", finish);
     window.addEventListener("blur", finish);
@@ -534,7 +551,7 @@ function SpeakerGeometry({
       window.removeEventListener("pointercancel", finish);
       window.removeEventListener("blur", finish);
     };
-  }, [orbitControls]);
+  }, [onManipulationEnd, orbitControls]);
   const geometry = useMemo(() => {
     if (!pkg.mesh) return null;
     const converted = new Float32Array(pkg.mesh.positions.length);
@@ -637,7 +654,7 @@ function SpeakerGeometry({
     const drag = dragState.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if ((event.nativeEvent.buttons & 1) === 0) {
-      cancelCornerDrag();
+      cancelCornerDrag(true);
       return;
     }
     event.stopPropagation();
@@ -662,7 +679,7 @@ function SpeakerGeometry({
   const finishCornerDrag = (event: ThreeEvent<PointerEvent>) => {
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    cancelCornerDrag();
+    cancelCornerDrag(true);
     (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
   };
 
@@ -723,7 +740,7 @@ function SpeakerGeometry({
             </mesh>
           </>
         )}
-        {active && bounds.corners.map((corner, index) => (
+        {active && individualControls && bounds.corners.map((corner, index) => (
           <mesh
             key={index}
             position={corner}
@@ -743,7 +760,7 @@ function SpeakerGeometry({
           </Html>
         )}
       </group>
-      {active && (transformMode === "translate" || transformMode === "rotate") && (
+      {active && individualControls && (transformMode === "translate" || transformMode === "rotate") && (
         <TransformControls
           object={speakerRef as MutableRefObject<Group>}
           mode={transformMode}
@@ -754,6 +771,263 @@ function SpeakerGeometry({
           showZ
           rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
           onObjectChange={applyGizmoTransform}
+          onMouseUp={onManipulationEnd}
+        />
+      )}
+    </>
+  );
+}
+
+function selectionWorldBounds(pkg: LoadedSpeakerPackage, instances: readonly SpeakerInstance[]): SceneBounds {
+  const cabinetBounds = packageSceneBounds(pkg);
+  const minimum: [number, number, number] = [Infinity, Infinity, Infinity];
+  const maximum: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const instance of instances) {
+    for (const corner of cabinetBounds.corners) {
+      const world = cornerInWorld(corner, instance);
+      minimum[0] = Math.min(minimum[0], world.x);
+      minimum[1] = Math.min(minimum[1], world.y);
+      minimum[2] = Math.min(minimum[2], world.z);
+      maximum[0] = Math.max(maximum[0], world.x);
+      maximum[1] = Math.max(maximum[1], world.y);
+      maximum[2] = Math.max(maximum[2], world.z);
+    }
+  }
+  const corners: Array<[number, number, number]> = [];
+  for (const x of [minimum[0], maximum[0]]) {
+    for (const y of [minimum[1], maximum[1]]) {
+      for (const z of [minimum[2], maximum[2]]) corners.push([x, y, z]);
+    }
+  }
+  return { minimum, maximum, corners };
+}
+
+function sourceGroupPose(instance: SpeakerInstance, position: Vector3, quaternion: Quaternion): SourceGroupPoseUpdate {
+  const rotation = new Euler().setFromQuaternion(quaternion, "YXZ");
+  return {
+    id: instance.id,
+    positionX: position.x,
+    positionHeightM: position.y,
+    positionZ: position.z,
+    pitchDeg: normalizedYaw(MathUtils.radToDeg(rotation.x)),
+    yawDeg: normalizedYaw(MathUtils.radToDeg(rotation.y)),
+    rollDeg: normalizedYaw(MathUtils.radToDeg(rotation.z)),
+  };
+}
+
+function SpeakerSelectionControls({
+  pkg,
+  instances,
+  allInstances,
+  transformMode,
+  angleSnapDisabled,
+  onTransform,
+  onManipulationEnd,
+}: {
+  pkg: LoadedSpeakerPackage;
+  instances: SpeakerInstance[];
+  allInstances: SpeakerInstance[];
+  transformMode: SceneTransformMode;
+  angleSnapDisabled: boolean;
+  onTransform: (poses: SourceGroupPoseUpdate[]) => void;
+  onManipulationEnd: () => void;
+}) {
+  const pivotRef = useRef<Group>(null);
+  const camera = useThree((state) => state.camera);
+  const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
+  const bounds = useMemo(() => selectionWorldBounds(pkg, instances), [instances, pkg]);
+  const center = useMemo(() => new Vector3(
+    (bounds.minimum[0] + bounds.maximum[0]) / 2,
+    (bounds.minimum[1] + bounds.maximum[1]) / 2,
+    (bounds.minimum[2] + bounds.maximum[2]) / 2,
+  ), [bounds]);
+  const cabinetBounds = useMemo(() => packageSceneBounds(pkg), [pkg]);
+  const dragState = useRef<{
+    pointerId: number;
+    plane: Plane;
+    startPoint: Vector3;
+    startCorner: Vector3;
+    startCenter: Vector3;
+    instances: SpeakerInstance[];
+  } | null>(null);
+  const gizmoState = useRef<{
+    pivot: Vector3;
+    instances: SpeakerInstance[];
+    mode: "translate" | "rotate";
+  } | null>(null);
+
+  useEffect(() => {
+    if (!gizmoState.current && pivotRef.current) {
+      pivotRef.current.position.copy(center);
+      pivotRef.current.quaternion.identity();
+    }
+  }, [center]);
+
+  const emitTranslation = (startInstances: SpeakerInstance[], delta: Vector3) => {
+    onTransform(startInstances.map((instance) => sourceGroupPose(
+      instance,
+      new Vector3(...instance.position).add(delta),
+      new Quaternion().setFromEuler(new Euler(
+        MathUtils.degToRad(instance.pitchDeg),
+        MathUtils.degToRad(instance.yawDeg),
+        MathUtils.degToRad(instance.rollDeg),
+        "YXZ",
+      )),
+    )));
+  };
+
+  const finishHandleDrag = (flushSolve = false) => {
+    const wasDragging = dragState.current !== null;
+    dragState.current = null;
+    orbitControls && (orbitControls.enabled = true);
+    if (flushSolve && wasDragging) onManipulationEnd();
+  };
+
+  useEffect(() => {
+    const finish = () => finishHandleDrag(true);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", finish);
+    };
+  }, [onManipulationEnd, orbitControls]);
+
+  const startHandleDrag = (event: ThreeEvent<PointerEvent>, corner: [number, number, number]) => {
+    if (event.nativeEvent.button !== 0) return;
+    event.stopPropagation();
+    const startCorner = new Vector3(...corner);
+    const plane = new Plane().setFromNormalAndCoplanarPoint(
+      camera.getWorldDirection(new Vector3()).normalize(),
+      startCorner,
+    );
+    const startPoint = event.ray.intersectPlane(plane, new Vector3());
+    if (!startPoint) return;
+    dragState.current = {
+      pointerId: event.pointerId,
+      plane,
+      startPoint,
+      startCorner,
+      startCenter: center.clone(),
+      instances: instances.map((instance) => ({ ...instance, position: [...instance.position] })),
+    };
+    orbitControls && (orbitControls.enabled = false);
+    (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
+  };
+
+  const moveHandleDrag = (event: ThreeEvent<PointerEvent>) => {
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if ((event.nativeEvent.buttons & 1) === 0) {
+      finishHandleDrag(true);
+      return;
+    }
+    event.stopPropagation();
+    const point = event.ray.intersectPlane(drag.plane, new Vector3());
+    if (!point || !finiteVector(point)) return;
+    const rawDelta = new Vector3(point.x - drag.startPoint.x, 0, point.z - drag.startPoint.z);
+    const snappedDelta = rawDelta.clone();
+    const movingCorner = drag.startCorner.clone().add(rawDelta);
+    let bestDistance = 0.18;
+    for (const other of allInstances) {
+      if (instances.some((instance) => instance.id === other.id)) continue;
+      for (const targetCorner of cabinetBounds.corners) {
+        const target = cornerInWorld(targetCorner, other);
+        const distance = Math.sqrt(event.ray.distanceSqToPoint(target));
+        if (distance >= bestDistance) continue;
+        const candidateDelta = rawDelta.clone().add(target.clone().sub(movingCorner));
+        const away = drag.startCenter.clone().add(candidateDelta).sub(new Vector3(...other.position));
+        if (away.lengthSq() > 1e-10) candidateDelta.add(away.normalize().multiplyScalar(SOURCE_SURFACE_PADDING_M));
+        snappedDelta.copy(candidateDelta);
+        bestDistance = distance;
+      }
+    }
+    emitTranslation(drag.instances, snappedDelta);
+  };
+
+  const finishHandlePointer = (event: ThreeEvent<PointerEvent>) => {
+    if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    finishHandleDrag(true);
+    (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
+  };
+
+  const startGizmo = () => {
+    if (!pivotRef.current || (transformMode !== "translate" && transformMode !== "rotate")) return;
+    gizmoState.current = {
+      pivot: pivotRef.current.position.clone(),
+      instances: instances.map((instance) => ({ ...instance, position: [...instance.position] })),
+      mode: transformMode,
+    };
+    pivotRef.current.quaternion.identity();
+  };
+
+  const applyGizmoTransform = () => {
+    const object = pivotRef.current;
+    const state = gizmoState.current;
+    if (!object || !state) return;
+    if (state.mode === "translate") {
+      emitTranslation(state.instances, object.position.clone().sub(state.pivot));
+      return;
+    }
+    const deltaRotation = object.quaternion.clone().normalize();
+    onTransform(state.instances.map((instance) => {
+      const startRotation = new Quaternion().setFromEuler(new Euler(
+        MathUtils.degToRad(instance.pitchDeg),
+        MathUtils.degToRad(instance.yawDeg),
+        MathUtils.degToRad(instance.rollDeg),
+        "YXZ",
+      ));
+      const position = new Vector3(...instance.position)
+        .sub(state.pivot)
+        .applyQuaternion(deltaRotation)
+        .add(state.pivot);
+      return sourceGroupPose(instance, position, deltaRotation.clone().multiply(startRotation));
+    }));
+  };
+
+  const finishGizmo = () => {
+    if (!gizmoState.current) return;
+    gizmoState.current = null;
+    if (pivotRef.current) {
+      pivotRef.current.position.copy(center);
+      pivotRef.current.quaternion.identity();
+    }
+    onManipulationEnd();
+  };
+
+  return (
+    <>
+      {bounds.corners.map((corner, index) => (
+        <mesh
+          key={index}
+          position={corner}
+          renderOrder={20}
+          onPointerDown={(event) => startHandleDrag(event, corner)}
+          onPointerMove={moveHandleDrag}
+          onPointerUp={finishHandlePointer}
+          onPointerCancel={finishHandlePointer}
+        >
+          <sphereGeometry args={[0.075, 14, 10]} />
+          <meshBasicMaterial color="#dce9a7" depthTest={false} toneMapped={false} />
+        </mesh>
+      ))}
+      <group ref={pivotRef} />
+      {(transformMode === "translate" || transformMode === "rotate") && (
+        <TransformControls
+          object={pivotRef as MutableRefObject<Group>}
+          mode={transformMode}
+          space="world"
+          size={0.92}
+          showX
+          showY
+          showZ
+          rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
+          onMouseDown={startGizmo}
+          onObjectChange={applyGizmoTransform}
+          onMouseUp={finishGizmo}
         />
       )}
     </>
@@ -762,6 +1036,8 @@ function SpeakerGeometry({
 
 function AcousticScene(props: SceneViewProps) {
   const selectedInstances = new Set(props.selectedInstances);
+  const selectedSources = props.sources.filter((source) => selectedInstances.has(source.id));
+  const groupedSelection = selectedSources.length > 1 && selectedSources.some((source) => source.id === props.activeInstance);
   return (
     <>
       <color attach="background" args={["#293134"]} />
@@ -784,14 +1060,27 @@ function AcousticScene(props: SceneViewProps) {
             allInstances={props.sources}
             selected={selectedInstances.has(source.id)}
             active={props.activeInstance === source.id}
+            individualControls={!groupedSelection}
             movingInstanceIds={props.selectedInstances}
             transformMode={props.transformMode}
             angleSnapDisabled={props.angleSnapDisabled}
             onSelect={(additive) => props.onSelectInstance(source.id, additive)}
             onTransform={(pose) => props.onTransformSource(source.id, pose)}
+            onManipulationEnd={props.onManipulationEnd}
           />
         ))}
       </group>
+      {groupedSelection && (
+        <SpeakerSelectionControls
+          pkg={props.pkg}
+          instances={selectedSources}
+          allInstances={props.sources}
+          transformMode={props.transformMode}
+          angleSnapDisabled={props.angleSnapDisabled}
+          onTransform={props.onTransformSources}
+          onManipulationEnd={props.onManipulationEnd}
+        />
+      )}
       <FieldPlane
         observation={props.observation}
         field={props.field}
@@ -801,6 +1090,7 @@ function AcousticScene(props: SceneViewProps) {
         angleSnapDisabled={props.angleSnapDisabled}
         onTransform={props.onTransformObservation}
         onResize={props.onResizeObservation}
+        onManipulationEnd={props.onManipulationEnd}
         onTextureReady={props.onFieldTextureReady}
       />
       <gridHelper args={[50, 50, "#303831", "#242a25"]} position={[0, 0, 12]} />
