@@ -40,6 +40,7 @@ import {
   nearestFrequencyIndex,
 } from "./model/field";
 import type { Fidelity, FieldFrame, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "./model/types";
+import { heatmapLegendGradient } from "./model/heatmap";
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   const centerSpacingM = pkg.boundsM[0] + 2;
@@ -83,7 +84,25 @@ const defaultObservation: ObservationPlane = {
   rollDeg: 0,
   columns: 54,
   rows: 54,
+  heatmapMinimumDb: 50,
+  heatmapMaximumDb: 145,
+  heatmapBandingDb: 0,
 };
+
+function observationAcousticState(value: ObservationPlane) {
+  return {
+    widthM: value.widthM,
+    depthM: value.depthM,
+    centerXM: value.centerXM,
+    nearM: value.nearM,
+    heightM: value.heightM,
+    pitchDeg: value.pitchDeg,
+    yawDeg: value.yawDeg,
+    rollDeg: value.rollDeg,
+    columns: value.columns,
+    rows: value.rows,
+  };
+}
 
 function formatFrequency(value: number): string {
   return value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)} kHz` : `${Math.round(value)} Hz`;
@@ -148,6 +167,16 @@ export function App() {
   const fileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
   const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
+  const sourceConfigsRef = useRef(sourceConfigs);
+  const observationRef = useRef(observation);
+
+  useEffect(() => {
+    sourceConfigsRef.current = sourceConfigs;
+  }, [sourceConfigs]);
+
+  useEffect(() => {
+    observationRef.current = observation;
+  }, [observation]);
 
   const recordFieldTexture = useCallback((texture: FieldTextureProfile) => {
     const pending = pendingRenderProfile.current;
@@ -181,16 +210,17 @@ export function App() {
   );
   const sourceMinimumHeightM = minimumSourceHeightM(pkg);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
+  const observationAcousticKey = JSON.stringify(observationAcousticState(observation));
   const patternField = useMemo(
     () => computeFieldFrame(pkg, sources, sourceConfigs, observation, frequencyIndex, lookup),
-    [pkg, sources, sourceConfigs, observation, frequencyIndex, lookup],
+    [pkg, sources, sourceConfigs, observationAcousticKey, frequencyIndex, lookup],
   );
   const currentSolveKey = useMemo(() => JSON.stringify({
     package: pkg.id,
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
-    observation,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observation]);
+    observation: observationAcousticKey,
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observationAcousticKey]);
   const currentGeometryKey = useMemo(() => JSON.stringify({
     package: pkg.id,
     frequency: pkg.frequenciesHz[frequencyIndex],
@@ -368,7 +398,8 @@ export function App() {
   };
 
   const updateSourcePose = (id: string, pose: SourcePoseUpdate) => {
-    const active = sourceConfigs.find((source) => source.id === id);
+    const currentSources = sourceConfigsRef.current;
+    const active = currentSources.find((source) => source.id === id);
     if (!active) return;
     const movingIds = selectedSourceIds.includes(id) ? new Set(selectedSourceIds) : new Set([id]);
     const positionDelta = {
@@ -377,7 +408,7 @@ export function App() {
       z: pose.positionZ - active.positionZ,
     };
     let minimumDeltaY = -Infinity;
-    for (const source of sourceConfigs) {
+    for (const source of currentSources) {
       if (!movingIds.has(source.id)) continue;
       const pitchDeg = source.id === id ? pose.pitchDeg : source.pitchDeg;
       const rollDeg = source.id === id ? pose.rollDeg : source.rollDeg;
@@ -387,7 +418,7 @@ export function App() {
       );
     }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
-    setSourceConfigs((current) => current.map((source) => {
+    const nextSources = currentSources.map((source) => {
       if (!movingIds.has(source.id)) return source;
       return {
         ...source,
@@ -400,25 +431,32 @@ export function App() {
         positionHeightM: source.positionHeightM + positionDelta.y,
         positionZ: source.positionZ + positionDelta.z,
       };
-    }));
+    });
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
     if (selectedInstances.includes("audience-plane")) {
-      setObservation((current) => ({
-        ...current,
-        centerXM: current.centerXM + positionDelta.x,
-        nearM: current.nearM + positionDelta.z,
-        heightM: current.heightM + positionDelta.y,
-      }));
+      const currentObservation = observationRef.current;
+      const nextObservation = {
+        ...currentObservation,
+        centerXM: currentObservation.centerXM + positionDelta.x,
+        nearM: currentObservation.nearM + positionDelta.z,
+        heightM: currentObservation.heightM + positionDelta.y,
+      };
+      observationRef.current = nextObservation;
+      setObservation(nextObservation);
     }
   };
 
   const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">) => {
+    const currentObservation = observationRef.current;
+    const currentSources = sourceConfigsRef.current;
     const positionDelta = {
-      x: pose.centerXM - observation.centerXM,
-      y: pose.heightM - observation.heightM,
-      z: pose.nearM - observation.nearM,
+      x: pose.centerXM - currentObservation.centerXM,
+      y: pose.heightM - currentObservation.heightM,
+      z: pose.nearM - currentObservation.nearM,
     };
     let minimumDeltaY = -Infinity;
-    for (const source of sourceConfigs) {
+    for (const source of currentSources) {
       if (!selectedSourceIds.includes(source.id)) continue;
       minimumDeltaY = Math.max(
         minimumDeltaY,
@@ -426,21 +464,25 @@ export function App() {
       );
     }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
-    setObservation((current) => ({
-      ...current,
+    const nextObservation = {
+      ...currentObservation,
       ...pose,
-      centerXM: current.centerXM + positionDelta.x,
-      nearM: current.nearM + positionDelta.z,
-      heightM: current.heightM + positionDelta.y,
-    }));
+      centerXM: currentObservation.centerXM + positionDelta.x,
+      nearM: currentObservation.nearM + positionDelta.z,
+      heightM: currentObservation.heightM + positionDelta.y,
+    };
+    observationRef.current = nextObservation;
+    setObservation(nextObservation);
     if (selectedSourceIds.length > 0) {
       const movingIds = new Set(selectedSourceIds);
-      setSourceConfigs((current) => current.map((source) => movingIds.has(source.id) ? {
+      const nextSources = currentSources.map((source) => movingIds.has(source.id) ? {
         ...source,
         positionX: source.positionX + positionDelta.x,
         positionHeightM: source.positionHeightM + positionDelta.y,
         positionZ: source.positionZ + positionDelta.z,
-      } : source));
+      } : source);
+      sourceConfigsRef.current = nextSources;
+      setSourceConfigs(nextSources);
     }
   };
 
@@ -717,8 +759,15 @@ export function App() {
           </div>
           <div className="legend-block">
             <div className="legend-title"><span>SPL</span></div>
-            <div className="color-legend" />
-            <div><span>{(field.maximumDb - 24).toFixed(0)}</span><span>{field.maximumDb.toFixed(0)} dB</span></div>
+            <div
+              className="color-legend"
+              style={{ background: heatmapLegendGradient(
+                observation.heatmapMinimumDb,
+                observation.heatmapMaximumDb,
+                observation.heatmapBandingDb,
+              ) }}
+            />
+            <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
           </div>
         </div>
       </section>

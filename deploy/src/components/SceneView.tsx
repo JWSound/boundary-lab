@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import {
   BufferAttribute,
   BufferGeometry,
-  Color,
   DataTexture,
   DoubleSide,
   Euler,
@@ -20,6 +19,7 @@ import {
 } from "three";
 import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstance } from "../model/types";
 import { SOURCE_GROUND_CLEARANCE_M, SOURCE_SURFACE_PADDING_M } from "../model/field";
+import { heatmapColorBoundaries, writeHeatmapColor } from "../model/heatmap";
 
 export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
 
@@ -116,30 +116,8 @@ function normalizedYaw(yawDeg: number): number {
   return ((yawDeg + 180) % 360 + 360) % 360 - 180;
 }
 
-const PRESSURE_COLOR_STOPS: Array<[number, number, number, number]> = ([
-  [0, "#182a47"],
-  [0.2, "#205d77"],
-  [0.4, "#2b9b8f"],
-  [0.6, "#9ac548"],
-  [0.8, "#f2b53f"],
-  [1, "#ef5b3f"],
-] satisfies Array<[number, string]>).map(([position, value]) => {
-  const color = new Color(value);
-  return [position, color.r * 255, color.g * 255, color.b * 255] as [number, number, number, number];
-});
-
-function writePressureColor(normalized: number, pixels: Uint8Array, offset: number): void {
-  const clamped = Math.max(0, Math.min(1, normalized));
-  const stopIndex = Math.min(
-    PRESSURE_COLOR_STOPS.length - 2,
-    Math.floor(clamped * (PRESSURE_COLOR_STOPS.length - 1)),
-  );
-  const left = PRESSURE_COLOR_STOPS[stopIndex];
-  const right = PRESSURE_COLOR_STOPS[stopIndex + 1];
-  const local = (clamped - left[0]) / (right[0] - left[0]);
-  pixels[offset] = Math.round(left[1] + (right[1] - left[1]) * local);
-  pixels[offset + 1] = Math.round(left[2] + (right[2] - left[2]) * local);
-  pixels[offset + 2] = Math.round(left[3] + (right[3] - left[3]) * local);
+function finiteVector(vector: Vector3): boolean {
+  return Number.isFinite(vector.x) && Number.isFinite(vector.y) && Number.isFinite(vector.z);
 }
 
 function FieldPlane({
@@ -200,13 +178,13 @@ function FieldPlane({
   const texture = useMemo(() => {
     const rasterStarted = performance.now();
     const pixels = new Uint8Array(field.columns * field.rows * 4);
-    const low = field.maximumDb - 24;
-    const high = field.maximumDb;
-    const range = Math.max(1, high - low);
+    const low = observation.heatmapMinimumDb;
+    const high = observation.heatmapMaximumDb;
+    const boundaries = heatmapColorBoundaries(low, high, observation.heatmapBandingDb);
     for (let index = 0; index < field.splDb.length; index += 1) {
       const offset = index * 4;
-      writePressureColor((field.splDb[index] - low) / range, pixels, offset);
-      pixels[offset + 3] = field.validMask[index] ? 222 : 0;
+      writeHeatmapColor(field.splDb[index], low, high, boundaries, pixels, offset);
+      pixels[offset + 3] = field.validMask[index] ? 240 : 0;
     }
     const result = new DataTexture(pixels, field.columns, field.rows, RGBAFormat, UnsignedByteType);
     result.needsUpdate = true;
@@ -217,7 +195,7 @@ function FieldPlane({
       rasterMs: performance.now() - rasterStarted,
     };
     return result;
-  }, [field]);
+  }, [field, observation.heatmapBandingDb, observation.heatmapMaximumDb, observation.heatmapMinimumDb]);
 
   useEffect(() => {
     const profile = textureProfile.current;
@@ -236,7 +214,7 @@ function FieldPlane({
 
   const applyGizmoTransform = () => {
     const object = planeRef.current;
-    if (!object) return;
+    if (!object || !finiteVector(object.position)) return;
     const rotation = new Euler().setFromQuaternion(object.quaternion, "YXZ");
     const pitchDeg = normalizedYaw(MathUtils.radToDeg(rotation.x));
     onTransform({
@@ -323,7 +301,7 @@ function FieldPlane({
           raycast={() => undefined}
         >
           <planeGeometry args={[observation.widthM, observation.depthM]} />
-          <meshBasicMaterial map={texture} transparent opacity={0.88} side={DoubleSide} toneMapped={false} />
+          <meshBasicMaterial map={texture} transparent side={DoubleSide} toneMapped={false} />
         </mesh>
         <Grid
           position={[0, 0.008, 0]}
@@ -401,6 +379,7 @@ function SpeakerGeometry({
 }) {
   const speakerRef = useRef<Group>(null);
   const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
+  const camera = useThree((state) => state.camera);
   const dragState = useRef<{
     pointerId: number;
     plane: Plane;
@@ -408,6 +387,22 @@ function SpeakerGeometry({
     startPosition: [number, number, number];
     corner: [number, number, number];
   } | null>(null);
+  const cancelCornerDrag = () => {
+    dragState.current = null;
+    orbitControls && (orbitControls.enabled = true);
+  };
+
+  useEffect(() => {
+    const finish = () => cancelCornerDrag();
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", finish);
+    };
+  }, [orbitControls]);
   const geometry = useMemo(() => {
     if (!pkg.mesh) return null;
     const converted = new Float32Array(pkg.mesh.positions.length);
@@ -486,7 +481,13 @@ function SpeakerGeometry({
     event.stopPropagation();
     if (!selected) onSelect(false);
     const handleWorld = cornerInWorld(corner, instance);
-    const plane = new Plane(new Vector3(0, 1, 0), -handleWorld.y);
+    // A horizontal drag plane becomes numerically unstable when viewed near
+    // edge-on. A view-facing plane keeps screen-space movement bounded; the
+    // resulting displacement is still constrained to scene X/Z below.
+    const plane = new Plane().setFromNormalAndCoplanarPoint(
+      camera.getWorldDirection(new Vector3()).normalize(),
+      handleWorld,
+    );
     const startPoint = event.ray.intersectPlane(plane, new Vector3());
     if (!startPoint) return;
     dragState.current = {
@@ -503,9 +504,13 @@ function SpeakerGeometry({
   const moveCornerDrag = (event: ThreeEvent<PointerEvent>) => {
     const drag = dragState.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    if ((event.nativeEvent.buttons & 1) === 0) {
+      cancelCornerDrag();
+      return;
+    }
     event.stopPropagation();
     const point = event.ray.intersectPlane(drag.plane, new Vector3());
-    if (!point) return;
+    if (!point || !finiteVector(point)) return;
     const rawPosition: [number, number, number] = [
       drag.startPosition[0] + point.x - drag.startPoint.x,
       drag.startPosition[1],
@@ -525,14 +530,13 @@ function SpeakerGeometry({
   const finishCornerDrag = (event: ThreeEvent<PointerEvent>) => {
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
     event.stopPropagation();
-    dragState.current = null;
-    orbitControls && (orbitControls.enabled = true);
+    cancelCornerDrag();
     (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
   };
 
   const applyGizmoTransform = () => {
     const object = speakerRef.current;
-    if (!object) return;
+    if (!object || !finiteVector(object.position)) return;
     const minimumRotatedY = Math.min(...bounds.corners.map((corner) => (
       new Vector3(...corner).applyQuaternion(object.quaternion).y
     )));
@@ -629,7 +633,7 @@ function AcousticScene(props: SceneViewProps) {
   return (
     <>
       <color attach="background" args={["#171b18"]} />
-      <fog attach="fog" args={["#171b18", 16, 48]} />
+      <fog attach="fog" args={["#171b18", 70, 220]} />
       <ambientLight intensity={0.65} />
       <directionalLight
         position={[-7, 12, -5]}
@@ -676,7 +680,7 @@ function AcousticScene(props: SceneViewProps) {
         makeDefault
         target={[0, 1.6, 7]}
         minDistance={3}
-        maxDistance={45}
+        maxDistance={120}
         maxPolarAngle={Math.PI / 2 - 0.02}
         enableDamping
         dampingFactor={0.08}
@@ -690,7 +694,7 @@ export function SceneView(props: SceneViewProps) {
     <Canvas
       shadows
       dpr={[1, 1.7]}
-      camera={{ position: [9.5, 7.5, 13.5], fov: 44, near: 0.05, far: 100 }}
+      camera={{ position: [9.5, 7.5, 13.5], fov: 44, near: 0.05, far: 300 }}
       gl={{ antialias: true, alpha: false }}
       onPointerMissed={() => props.onSelectInstance(null)}
     >

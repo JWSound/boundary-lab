@@ -78,6 +78,9 @@ export interface ObservationPlane {
   rollDeg: number;
   columns: number;
   rows: number;
+  heatmapMinimumDb: number;
+  heatmapMaximumDb: number;
+  heatmapBandingDb: number;
 }
 
 export interface PatternLookup {

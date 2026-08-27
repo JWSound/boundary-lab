@@ -21,6 +21,9 @@ const {
   buildPatternLookup,
   computeFieldFrame,
   nearestFrequencyIndex,
+  heatmapColorBoundaries,
+  heatmapLegendGradient,
+  writeHeatmapColor,
 } = await import(`${pathToFileURL(outputPath).href}?${Date.now()}`);
 const bytes = await readFile(packagePath);
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -52,7 +55,7 @@ const field = computeFieldFrame(
   speaker,
   [source],
   [sourceConfig],
-  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 24, rows: 20 },
+  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 24, rows: 20, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
   frequencyIndex,
   lookup,
 );
@@ -63,12 +66,29 @@ const clippedField = computeFieldFrame(
   speaker,
   [source],
   [sourceConfig],
-  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 0, pitchDeg: 30, yawDeg: 0, rollDeg: 0, columns: 12, rows: 12 },
+  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 0, pitchDeg: 30, yawDeg: 0, rollDeg: 0, columns: 12, rows: 12, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
   frequencyIndex,
   lookup,
 );
 const clippedValidCount = clippedField.validMask.reduce((sum, value) => sum + value, 0);
 assert.ok(clippedValidCount > 0 && clippedValidCount < clippedField.validMask.length);
+
+assert.deepEqual(heatmapColorBoundaries(50, 145, 0), []);
+const fiveDbBoundaries = heatmapColorBoundaries(50, 145, 5);
+assert.deepEqual(fiveDbBoundaries.slice(0, 3), [50, 55, 60]);
+assert.deepEqual(fiveDbBoundaries.slice(-2), [140, 145]);
+const continuousPixels = new Uint8Array(8);
+writeHeatmapColor(50, 50, 145, [], continuousPixels, 0);
+writeHeatmapColor(145, 50, 145, [], continuousPixels, 4);
+assert.deepEqual(Array.from(continuousPixels.slice(0, 3)), [0, 0, 143]);
+assert.deepEqual(Array.from(continuousPixels.slice(4, 7)), [143, 0, 0]);
+const bandedPixels = new Uint8Array(12);
+writeHeatmapColor(60, 50, 145, fiveDbBoundaries, bandedPixels, 0);
+writeHeatmapColor(64.9, 50, 145, fiveDbBoundaries, bandedPixels, 4);
+writeHeatmapColor(65, 50, 145, fiveDbBoundaries, bandedPixels, 8);
+assert.deepEqual(Array.from(bandedPixels.slice(0, 3)), Array.from(bandedPixels.slice(4, 7)));
+assert.notDeepEqual(Array.from(bandedPixels.slice(4, 7)), Array.from(bandedPixels.slice(8, 11)));
+assert.match(heatmapLegendGradient(50, 145, 5), /5\.263%/);
 
 console.log(JSON.stringify({
   name: speaker.manifest.name,

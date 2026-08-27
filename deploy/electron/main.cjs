@@ -334,6 +334,9 @@ function createWindow() {
                     pitch: document.querySelector('input[aria-label="Pitch"]')?.value,
                     yaw: document.querySelector('input[aria-label="Yaw"]')?.value,
                     roll: document.querySelector('input[aria-label="Roll"]')?.value,
+                    heatmapMinimumDb: document.querySelector('input[aria-label="Scale minimum"]')?.value,
+                    heatmapMaximumDb: document.querySelector('input[aria-label="Scale maximum"]')?.value,
+                    heatmapBandingDb: document.querySelector('input[aria-label="Banding"]')?.value,
                     sizeReadout: document.querySelector('.plane-size-readout output')?.textContent?.trim(),
                     editableSizeInputs: document.querySelectorAll('input[aria-label="Width"], input[aria-label="Depth"]').length
                   },

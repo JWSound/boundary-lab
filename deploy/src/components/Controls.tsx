@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { CircleDot, Grid3X3, Radio, Speaker, Upload } from "lucide-react";
+import { CircleDot, Grid3X3, Palette, Radio, Speaker, Upload } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
@@ -86,6 +86,7 @@ export function Slider({ label, value, minimum, maximum, step, unit = "", onChan
     <label className="control-row slider-row">
       <span>{label}</span>
       <input
+        aria-label={label}
         type="range"
         min={minimum}
         max={maximum}
@@ -104,6 +105,7 @@ export function NumberField({
   unit,
   step,
   minimum,
+  maximum,
   onChange,
 }: {
   label: string;
@@ -111,12 +113,14 @@ export function NumberField({
   unit: string;
   step: number;
   minimum?: number;
+  maximum?: number;
   onChange: (value: number) => void;
 }) {
+  const constrained = (next: number) => Math.min(maximum ?? Infinity, Math.max(minimum ?? -Infinity, next));
   return (
     <label className="control-row number-row">
       <span>{label}</span>
-      <div><input aria-label={label} type="number" value={value} min={minimum} step={step} onChange={(event) => onChange(minimum === undefined ? Number(event.target.value) : Math.max(minimum, Number(event.target.value)))} /><em>{unit}</em></div>
+      <div><input aria-label={label} type="number" value={value} min={minimum} max={maximum} step={step} onChange={(event) => onChange(constrained(Number(event.target.value)))} /><em>{unit}</em></div>
     </label>
   );
 }
@@ -213,6 +217,36 @@ export function PlaneResolutionInspector({
           />
           <output>{value.columns} × {value.rows}</output>
         </label>
+      </div>
+      <SectionHeader icon={Palette} title="Heatmap" />
+      <div className="inspector-section">
+        <div className="two-column-fields">
+          <NumberField
+            label="Scale minimum"
+            value={value.heatmapMinimumDb}
+            unit="dB"
+            step={1}
+            maximum={value.heatmapMaximumDb - 1}
+            onChange={(next) => set("heatmapMinimumDb", next)}
+          />
+          <NumberField
+            label="Scale maximum"
+            value={value.heatmapMaximumDb}
+            unit="dB"
+            step={1}
+            minimum={value.heatmapMinimumDb + 1}
+            onChange={(next) => set("heatmapMaximumDb", next)}
+          />
+        </div>
+        <Slider
+          label="Banding"
+          value={value.heatmapBandingDb}
+          minimum={0}
+          maximum={12}
+          step={1}
+          unit=" dB"
+          onChange={(next) => set("heatmapBandingDb", next)}
+        />
       </div>
     </>
   );

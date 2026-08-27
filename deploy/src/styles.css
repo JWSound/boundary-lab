@@ -245,7 +245,7 @@ button { color: inherit; }
 .legend-block { display: flex; flex-direction: column; justify-content: center; padding: 13px 16px; }
 .legend-title { display: flex; align-items: baseline; }
 .legend-title span { color: #c4cbc2; font-size: 9px; font-weight: 600; }
-.color-legend { height: 10px; margin: 13px 0 6px; border-radius: 3px; background: linear-gradient(90deg, #182a47, #205d77, #2b9b8f, #9ac548, #f2b53f, #ef5b3f); }
+.color-legend { height: 10px; margin: 13px 0 6px; border-radius: 3px; background: linear-gradient(90deg, #00008f, #0000ff, #006fff, #00dfff, #4fffbf, #bfff4f, #ffdf00, #ff6f00, #ff0000, #8f0000); }
 .legend-block > div:last-child { display: flex; justify-content: space-between; color: #6d766e; font: 500 7px/1 "Cascadia Mono", "Consolas", monospace; }
 
 .near-field-warning { position: fixed; left: 262px; bottom: 125px; z-index: 30; max-width: 420px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid #5e5133; border-radius: 6px; color: #d4b971; background: rgba(42,37,25,.94); font-size: 8px; }
