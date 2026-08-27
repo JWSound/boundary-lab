@@ -9,11 +9,13 @@ import {
   Move3D,
   Pause,
   Play,
+  Plus,
   Rotate3D,
   Save,
   Settings2,
   SlidersHorizontal,
   Speaker,
+  Trash2,
   Waves,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -131,7 +133,7 @@ export function App() {
   const [observation, setObservation] = useState(defaultObservation);
   const [frequencyIndex, setFrequencyIndex] = useState(() => nearestFrequencyIndex(pkg, 80));
   const [fidelity, setFidelity] = useState<Fidelity>("pattern");
-  const [selectedInstance, setSelectedInstance] = useState<string | null>("subwoofer-1");
+  const [selectedInstances, setSelectedInstances] = useState<string[]>(["subwoofer-1"]);
   const [error, setError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"library" | "scene">("library");
   const [boundaryField, setBoundaryField] = useState<FieldFrame | null>(null);
@@ -170,8 +172,13 @@ export function App() {
   );
   const sortedPosition = Math.max(0, sortedFrequencyIndices.indexOf(frequencyIndex));
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
+  const selectedInstance = selectedInstances.at(-1) ?? null;
   const selectedSourceIndex = sourceConfigs.findIndex((source) => source.id === selectedInstance);
   const selectedSource = selectedSourceIndex >= 0 ? sourceConfigs[selectedSourceIndex] : null;
+  const selectedSourceIds = useMemo(
+    () => selectedInstances.filter((id) => sourceConfigs.some((source) => source.id === id)),
+    [selectedInstances, sourceConfigs],
+  );
   const sourceMinimumHeightM = minimumSourceHeightM(pkg);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
   const patternField = useMemo(
@@ -199,7 +206,7 @@ export function App() {
     solveGeneration.current += 1;
     setPackage(next);
     setSourceConfigs(defaultSources(next));
-    setSelectedInstance("subwoofer-1");
+    setSelectedInstances(["subwoofer-1"]);
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
     setFidelity("pattern");
     setBoundaryField(null);
@@ -361,15 +368,80 @@ export function App() {
   };
 
   const updateSourcePose = (id: string, pose: SourcePoseUpdate) => {
-    setSourceConfigs((current) => current.map((source) => source.id === id ? {
-      ...source,
-      ...pose,
-      positionHeightM: Math.max(minimumSourceHeightM(pkg, pose.pitchDeg, pose.rollDeg), pose.positionHeightM),
-    } : source));
+    const active = sourceConfigs.find((source) => source.id === id);
+    if (!active) return;
+    const movingIds = selectedSourceIds.includes(id) ? new Set(selectedSourceIds) : new Set([id]);
+    const positionDelta = {
+      x: pose.positionX - active.positionX,
+      y: pose.positionHeightM - active.positionHeightM,
+      z: pose.positionZ - active.positionZ,
+    };
+    let minimumDeltaY = -Infinity;
+    for (const source of sourceConfigs) {
+      if (!movingIds.has(source.id)) continue;
+      const pitchDeg = source.id === id ? pose.pitchDeg : source.pitchDeg;
+      const rollDeg = source.id === id ? pose.rollDeg : source.rollDeg;
+      minimumDeltaY = Math.max(
+        minimumDeltaY,
+        minimumSourceHeightM(pkg, pitchDeg, rollDeg) - source.positionHeightM,
+      );
+    }
+    positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
+    setSourceConfigs((current) => current.map((source) => {
+      if (!movingIds.has(source.id)) return source;
+      return {
+        ...source,
+        ...(source.id === id ? {
+          pitchDeg: pose.pitchDeg,
+          yawDeg: pose.yawDeg,
+          rollDeg: pose.rollDeg,
+        } : {}),
+        positionX: source.positionX + positionDelta.x,
+        positionHeightM: source.positionHeightM + positionDelta.y,
+        positionZ: source.positionZ + positionDelta.z,
+      };
+    }));
+    if (selectedInstances.includes("audience-plane")) {
+      setObservation((current) => ({
+        ...current,
+        centerXM: current.centerXM + positionDelta.x,
+        nearM: current.nearM + positionDelta.z,
+        heightM: current.heightM + positionDelta.y,
+      }));
+    }
   };
 
   const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">) => {
-    setObservation((current) => ({ ...current, ...pose }));
+    const positionDelta = {
+      x: pose.centerXM - observation.centerXM,
+      y: pose.heightM - observation.heightM,
+      z: pose.nearM - observation.nearM,
+    };
+    let minimumDeltaY = -Infinity;
+    for (const source of sourceConfigs) {
+      if (!selectedSourceIds.includes(source.id)) continue;
+      minimumDeltaY = Math.max(
+        minimumDeltaY,
+        minimumSourceHeightM(pkg, source.pitchDeg, source.rollDeg) - source.positionHeightM,
+      );
+    }
+    positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
+    setObservation((current) => ({
+      ...current,
+      ...pose,
+      centerXM: current.centerXM + positionDelta.x,
+      nearM: current.nearM + positionDelta.z,
+      heightM: current.heightM + positionDelta.y,
+    }));
+    if (selectedSourceIds.length > 0) {
+      const movingIds = new Set(selectedSourceIds);
+      setSourceConfigs((current) => current.map((source) => movingIds.has(source.id) ? {
+        ...source,
+        positionX: source.positionX + positionDelta.x,
+        positionHeightM: source.positionHeightM + positionDelta.y,
+        positionZ: source.positionZ + positionDelta.z,
+      } : source));
+    }
   };
 
   const resizeObservation = (resize: ObservationResizeUpdate) => {
@@ -389,17 +461,63 @@ export function App() {
     });
   };
 
-  const selectSceneObject = (id: string | null) => {
-    setSelectedInstance(id);
-    if (!sourceConfigs.some((source) => source.id === id)) setTransformMode("select");
+  const selectSceneObject = (id: string | null, additive = false) => {
+    if (id === null) {
+      setSelectedInstances([]);
+      setTransformMode("select");
+      return;
+    }
+    setSelectedInstances((current) => {
+      if (!additive) return [id];
+      if (current.includes(id)) return current.filter((selectedId) => selectedId !== id);
+      return [...current, id];
+    });
+    if (!additive && !sourceConfigs.some((source) => source.id === id)) setTransformMode("select");
   };
+
+  const addSource = () => {
+    const existingIds = new Set(sourceConfigs.map((source) => source.id));
+    let suffix = sourceConfigs.length + 1;
+    while (existingIds.has(`subwoofer-${suffix}`)) suffix += 1;
+    const rightmostX = Math.max(...sourceConfigs.map((source) => source.positionX));
+    const next: SourceConfiguration = {
+      id: `subwoofer-${suffix}`,
+      positionX: rightmostX + pkg.boundsM[0] + 2,
+      positionHeightM: minimumSourceHeightM(pkg),
+      positionZ: 0,
+      pitchDeg: 0,
+      yawDeg: 0,
+      rollDeg: 0,
+      levelDb: -3,
+      delayMs: 0,
+      polarity: 1,
+    };
+    setSourceConfigs((current) => [...current, next]);
+    setSelectedInstances([next.id]);
+    setTransformMode("select");
+  };
+
+  const canRemoveSelectedSources = selectedSourceIds.length > 0 && selectedSourceIds.length < sourceConfigs.length;
+  const removeSelectedSources = useCallback(() => {
+    if (!canRemoveSelectedSources) return;
+    const removed = new Set(selectedSourceIds);
+    setSourceConfigs((current) => current.filter((source) => !removed.has(source.id)));
+    setSelectedInstances((current) => current.filter((id) => !removed.has(id)));
+    setTransformMode("select");
+  }, [canRemoveSelectedSources, selectedSourceIds]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAngleSnapDisabled(true);
       const target = event.target;
       const transformableSelected = Boolean(selectedSource) || selectedInstance === "audience-plane";
-      if ((target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) || !transformableSelected) return;
+      if (target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) return;
+      if ((event.key === "Delete" || event.key === "Backspace") && canRemoveSelectedSources) {
+        event.preventDefault();
+        removeSelectedSources();
+        return;
+      }
+      if (!transformableSelected) return;
       if (event.key.toLowerCase() === "w") {
         event.preventDefault();
         setTransformMode("translate");
@@ -423,7 +541,7 @@ export function App() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", windowBlur);
     };
-  }, [selectedInstance, selectedSource]);
+  }, [canRemoveSelectedSources, removeSelectedSources, selectedInstance, selectedSource]);
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
@@ -467,13 +585,43 @@ export function App() {
           <>
             <SectionHeader icon={Import} title="Speaker package" action={<button className="text-button" onClick={openPackage}>Open</button>} />
             <div className="panel-content"><PackageCard pkg={pkg} onOpen={openPackage} /></div>
-            <SectionHeader icon={Speaker} title="Scene objects" />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={selectSceneObject} />
+            <SectionHeader
+              icon={Speaker}
+              title="Scene objects"
+              action={(
+                <div className="section-actions">
+                  <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button
+                    className="section-action"
+                    title={canRemoveSelectedSources ? "Remove selected speaker objects (Delete)" : "Select one or more speakers, leaving at least one in the scene"}
+                    aria-label="Remove selected speakers"
+                    disabled={!canRemoveSelectedSources}
+                    onClick={removeSelectedSources}
+                  ><Trash2 size={13} /></button>
+                </div>
+              )}
+            />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
           </>
         ) : (
           <>
-            <SectionHeader icon={Speaker} title="Scene hierarchy" />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedId={selectedInstance} onSelect={selectSceneObject} />
+            <SectionHeader
+              icon={Speaker}
+              title="Scene hierarchy"
+              action={(
+                <div className="section-actions">
+                  <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button
+                    className="section-action"
+                    title={canRemoveSelectedSources ? "Remove selected speaker objects (Delete)" : "Select one or more speakers, leaving at least one in the scene"}
+                    aria-label="Remove selected speakers"
+                    disabled={!canRemoveSelectedSources}
+                    onClick={removeSelectedSources}
+                  ><Trash2 size={13} /></button>
+                </div>
+              )}
+            />
+            <SceneTree pkg={pkg} sources={sourceConfigs} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
             <div className="scene-summary">
               <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
@@ -487,6 +635,7 @@ export function App() {
         className="viewport"
         data-transform-mode={transformMode}
         data-angle-snap-disabled={angleSnapDisabled}
+        data-selected-object-count={selectedInstances.length}
         data-grab-point-count={selectedSource ? 8 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
       >
         <SceneView
@@ -494,7 +643,8 @@ export function App() {
           sources={sources}
           observation={observation}
           field={field}
-          selectedInstance={selectedInstance}
+          selectedInstances={selectedInstances}
+          activeInstance={selectedInstance}
           transformMode={transformMode}
           angleSnapDisabled={angleSnapDisabled}
           onSelectInstance={selectSceneObject}
@@ -505,8 +655,8 @@ export function App() {
         />
         <div className="viewport-toolbar">
           <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
-          <button className={transformMode === "translate" ? "active" : ""} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
-          <button className={transformMode === "rotate" ? "active" : ""} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
+          <button className={transformMode === "translate" ? "active" : ""} disabled={!selectedInstance} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
+          <button className={transformMode === "rotate" ? "active" : ""} disabled={!selectedInstance} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
           <button className={transformMode === "scale" ? "active" : ""} disabled={selectedInstance !== "audience-plane"} title="Resize plane (R)" onClick={() => setTransformMode("scale")}><Maximize2 size={15} /></button>
           <span />
           <button><Menu size={15} /></button>
@@ -519,7 +669,7 @@ export function App() {
           </div>
           <em>{field.columns} × {field.rows}</em>
         </div>
-        <div className="viewport-hint">Orbit: left drag · Pan: right drag · Zoom: wheel</div>
+        <div className="viewport-hint">Ctrl+click: multi-select · Orbit: left drag · Pan: right drag · Zoom: wheel</div>
       </section>
 
       <aside className="right-panel panel">
@@ -527,7 +677,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Grid3X3 size={19} /></div>
-              <div><small>SELECTED OBJECT</small><strong>Audience plane</strong><span>Observation surface</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>Audience plane</strong><span>Observation surface</span></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <PlaneResolutionInspector value={observation} onChange={setObservation} />
@@ -536,7 +686,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Speaker size={19} /></div>
-              <div><small>SELECTED OBJECT</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />

@@ -53,10 +53,11 @@ interface SceneViewProps {
   sources: SpeakerInstance[];
   observation: ObservationPlane;
   field: FieldFrame;
-  selectedInstance: string | null;
+  selectedInstances: readonly string[];
+  activeInstance: string | null;
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
-  onSelectInstance: (id: string | null) => void;
+  onSelectInstance: (id: string | null, additive?: boolean) => void;
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
   onResizeObservation: (resize: ObservationResizeUpdate) => void;
@@ -145,6 +146,7 @@ function FieldPlane({
   observation,
   field,
   selected,
+  active,
   transformMode,
   angleSnapDisabled,
   onTransform,
@@ -154,6 +156,7 @@ function FieldPlane({
   observation: ObservationPlane;
   field: FieldFrame;
   selected: boolean;
+  active: boolean;
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
   onTransform: (pose: ObservationPoseUpdate) => void;
@@ -336,7 +339,7 @@ function FieldPlane({
           infiniteGrid={false}
           raycast={() => undefined}
         />
-        {selected && transformMode === "scale" && [
+        {active && transformMode === "scale" && [
           { signX: -1, signZ: -1 },
           { signX: 1, signZ: -1 },
           { signX: -1, signZ: 1 },
@@ -356,7 +359,7 @@ function FieldPlane({
           </mesh>
         ))}
       </group>
-      {selected && (transformMode === "translate" || transformMode === "rotate") && (
+      {active && (transformMode === "translate" || transformMode === "rotate") && (
         <TransformControls
           object={planeRef as MutableRefObject<Group>}
           mode={transformMode}
@@ -378,6 +381,8 @@ function SpeakerGeometry({
   instance,
   allInstances,
   selected,
+  active,
+  movingInstanceIds,
   transformMode,
   angleSnapDisabled,
   onSelect,
@@ -387,9 +392,11 @@ function SpeakerGeometry({
   instance: SpeakerInstance;
   allInstances: SpeakerInstance[];
   selected: boolean;
+  active: boolean;
+  movingInstanceIds: readonly string[];
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
-  onSelect: () => void;
+  onSelect: (additive: boolean) => void;
   onTransform: (pose: SourcePoseUpdate) => void;
 }) {
   const speakerRef = useRef<Group>(null);
@@ -447,7 +454,7 @@ function SpeakerGeometry({
     let bestDistance = 0.18;
     let result = rawPosition;
     for (const other of allInstances) {
-      if (other.id === instance.id) continue;
+      if (movingInstanceIds.includes(other.id)) continue;
       for (const targetCorner of bounds.corners) {
         const target = cornerInWorld(targetCorner, other);
         const distance = Math.sqrt(pointerRay.distanceSqToPoint(target));
@@ -477,7 +484,7 @@ function SpeakerGeometry({
   const startCornerDrag = (event: ThreeEvent<PointerEvent>, corner: [number, number, number]) => {
     if (event.button !== 0) return;
     event.stopPropagation();
-    onSelect();
+    if (!selected) onSelect(false);
     const handleWorld = cornerInWorld(corner, instance);
     const plane = new Plane(new Vector3(0, 1, 0), -handleWorld.y);
     const startPoint = event.ray.intersectPlane(plane, new Vector3());
@@ -544,7 +551,15 @@ function SpeakerGeometry({
 
   return (
     <>
-      <group ref={speakerRef} position={instance.position} quaternion={quaternion} onClick={(event) => { event.stopPropagation(); onSelect(); }}>
+      <group
+        ref={speakerRef}
+        position={instance.position}
+        quaternion={quaternion}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(event.nativeEvent.ctrlKey || event.nativeEvent.metaKey);
+        }}
+      >
         {geometry ? (
           <mesh geometry={geometry} castShadow receiveShadow>
             <meshStandardMaterial
@@ -572,7 +587,7 @@ function SpeakerGeometry({
             </mesh>
           </>
         )}
-        {selected && bounds.corners.map((corner, index) => (
+        {active && bounds.corners.map((corner, index) => (
           <mesh
             key={index}
             position={corner}
@@ -586,13 +601,13 @@ function SpeakerGeometry({
             <meshBasicMaterial color="#dce9a7" depthTest={false} toneMapped={false} />
           </mesh>
         ))}
-        {selected && (
+        {active && (
           <Html position={[bounds.maximum[0] + 0.08, bounds.maximum[1], boundsCenter[2]]} center distanceFactor={10}>
             <div className="scene-label">{instance.id.toUpperCase()}</div>
           </Html>
         )}
       </group>
-      {selected && (transformMode === "translate" || transformMode === "rotate") && (
+      {active && (transformMode === "translate" || transformMode === "rotate") && (
         <TransformControls
           object={speakerRef as MutableRefObject<Group>}
           mode={transformMode}
@@ -610,6 +625,7 @@ function SpeakerGeometry({
 }
 
 function AcousticScene(props: SceneViewProps) {
+  const selectedInstances = new Set(props.selectedInstances);
   return (
     <>
       <color attach="background" args={["#171b18"]} />
@@ -630,10 +646,12 @@ function AcousticScene(props: SceneViewProps) {
             pkg={props.pkg}
             instance={source}
             allInstances={props.sources}
-            selected={props.selectedInstance === source.id}
+            selected={selectedInstances.has(source.id)}
+            active={props.activeInstance === source.id}
+            movingInstanceIds={props.selectedInstances}
             transformMode={props.transformMode}
             angleSnapDisabled={props.angleSnapDisabled}
-            onSelect={() => props.onSelectInstance(source.id)}
+            onSelect={(additive) => props.onSelectInstance(source.id, additive)}
             onTransform={(pose) => props.onTransformSource(source.id, pose)}
           />
         ))}
@@ -641,7 +659,8 @@ function AcousticScene(props: SceneViewProps) {
       <FieldPlane
         observation={props.observation}
         field={props.field}
-        selected={props.selectedInstance === "audience-plane"}
+        selected={selectedInstances.has("audience-plane")}
+        active={props.activeInstance === "audience-plane"}
         transformMode={props.transformMode}
         angleSnapDisabled={props.angleSnapDisabled}
         onTransform={props.onTransformObservation}
@@ -673,6 +692,7 @@ export function SceneView(props: SceneViewProps) {
       dpr={[1, 1.7]}
       camera={{ position: [9.5, 7.5, 13.5], fov: 44, near: 0.05, far: 100 }}
       gl={{ antialias: true, alpha: false }}
+      onPointerMissed={() => props.onSelectInstance(null)}
     >
       <AcousticScene {...props} />
     </Canvas>

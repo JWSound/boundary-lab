@@ -349,6 +349,36 @@ function createWindow() {
           });
         });
       })`);
+      const sceneObjectInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+        const first = document.querySelector('.tree-button[data-object-id="subwoofer-1"]');
+        const second = document.querySelector('.tree-button[data-object-id="subwoofer-2"]');
+        first?.click();
+        second?.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }));
+        requestAnimationFrame(() => {
+          const viewport = document.querySelector('.viewport');
+          const selectedBeforeAdd = Array.from(document.querySelectorAll('.tree-button[aria-selected="true"]'))
+            .map((row) => row.getAttribute('data-object-id'));
+          const selectedCountBeforeAdd = viewport?.getAttribute('data-selected-object-count');
+          const sourceCountBeforeAdd = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+          document.querySelector('button[aria-label="Add speaker"]')?.click();
+          requestAnimationFrame(() => {
+            const sourceCountAfterAdd = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+            const addedId = document.querySelector('.tree-button[aria-selected="true"]')?.getAttribute('data-object-id');
+            const remove = document.querySelector('button[aria-label="Remove selected speakers"]');
+            const removeEnabled = !remove?.disabled;
+            remove?.click();
+            requestAnimationFrame(() => resolve({
+              selectedBeforeAdd,
+              selectedCountBeforeAdd,
+              sourceCountBeforeAdd,
+              sourceCountAfterAdd,
+              addedId,
+              removeEnabled,
+              sourceCountAfterRemove: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length
+            }));
+          });
+        });
+      })`);
       let level2Move = null;
       if (level2Smoke) {
         level2Move = await window.webContents.executeJavaScript(`new Promise((resolve) => {
@@ -398,7 +428,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, transformInteraction, planeResolutionInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {

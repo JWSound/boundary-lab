@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { CircleDot, Grid3X3, Radio, Speaker, Upload } from "lucide-react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
   ObservationPlane,
@@ -37,28 +37,35 @@ export function PackageCard({ pkg, onOpen }: { pkg: LoadedSpeakerPackage; onOpen
 export function SceneTree({
   pkg,
   sources,
-  selectedId,
+  selectedIds,
+  activeId,
   onSelect,
 }: {
   pkg: LoadedSpeakerPackage;
   sources: SourceConfiguration[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  selectedIds: readonly string[];
+  activeId: string | null;
+  onSelect: (id: string, additive: boolean) => void;
 }) {
+  const select = (id: string, event: MouseEvent<HTMLButtonElement>) => {
+    onSelect(id, event.ctrlKey || event.metaKey);
+  };
   return (
     <div className="scene-tree">
       {sources.map((source, index) => (
         <button
           key={source.id}
           data-object-id={source.id}
-          className={`tree-row tree-button ${selectedId === source.id ? "selected" : ""}`}
-          onClick={() => onSelect(source.id)}
+          aria-selected={selectedIds.includes(source.id)}
+          className={`tree-row tree-button ${selectedIds.includes(source.id) ? "selected" : ""} ${activeId === source.id ? "active-selection" : ""}`}
+          onClick={(event) => select(source.id, event)}
         ><Speaker size={15} /><span>{pkg.manifest.name} {index + 1}</span><em>SUB</em></button>
       ))}
       <button
         data-object-id="audience-plane"
-        className={`tree-row tree-button ${selectedId === "audience-plane" ? "selected" : ""}`}
-        onClick={() => onSelect("audience-plane")}
+        aria-selected={selectedIds.includes("audience-plane")}
+        className={`tree-row tree-button ${selectedIds.includes("audience-plane") ? "selected" : ""} ${activeId === "audience-plane" ? "active-selection" : ""}`}
+        onClick={(event) => select("audience-plane", event)}
       ><Grid3X3 size={15} /><span>Audience plane</span><em>PLANE</em></button>
     </div>
   );
