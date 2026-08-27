@@ -536,6 +536,56 @@ end
         @test Array(cuda_combined.double_layer) ≈ combined_image_corrected.double_layer rtol=T(5e-3) atol=T(5e-5)
         @test Array(cuda_combined.adjoint_double_layer) ≈ combined_image_corrected.adjoint_double_layer rtol=T(5e-3) atol=T(5e-5)
         @test Array(cuda_combined.hypersingular) ≈ combined_image_corrected.hypersingular rtol=T(5e-3) atol=T(5e-3)
+
+        ground_identity_p1_p1 = assemble_l2_identity_matrix(
+            mesh, p1, dp0, base_rule, :p1, :p1; symmetry_mode=:ground,
+        )
+        ground_identity_p1_dp0 = assemble_l2_identity_matrix(
+            mesh, p1, dp0, base_rule, :p1, :dp0; symmetry_mode=:ground,
+        )
+        ground_identity_cache = build_cuda_burton_miller_identity_cache(
+            ground_identity_p1_p1, ground_identity_p1_dp0, T,
+        )
+        direct_q = Complex{T}[Complex{T}(0, 1), Complex{T}(0.25, -0.5)]
+        d_direct_q = CUDA_MODULE.CuArray(direct_q)
+        direct_coupling = Complex{T}(0, 1) / k
+        expected_direct_lhs = (
+            Complex{T}(0.5) .* ground_identity_cache.identity_p1_p1 .-
+            cuda_combined.double_layer .+
+            direct_coupling .* cuda_combined.hypersingular
+        )
+        expected_direct_rhs = (
+            -cuda_combined.single_layer .-
+            direct_coupling .* (
+                cuda_combined.adjoint_double_layer .+
+                Complex{T}(0.5) .* ground_identity_cache.identity_p1_dp0
+            )
+        ) * d_direct_q
+        corrected_direct_system = assemble_burton_miller_neumann_system_cuda(
+            mesh,
+            p1,
+            dp0,
+            d_direct_q,
+            k,
+            base_rule;
+            device_cache=cuda_regular,
+            singular_cache=singular_cache,
+            device_singular_cache=cuda_singular,
+            device_image_singular_cache=cuda_image_singular,
+            near_correction_cache=near_cache,
+            device_near_correction_cache=cuda_near,
+            image_near_correction_cache=image_cache,
+            device_image_near_correction_cache=cuda_image_near,
+            symmetry_mode=:ground,
+        )
+        @test corrected_direct_system.near_pair_count == combined_image_corrected.near_pair_count
+        @test Array(corrected_direct_system.matrix) ≈ Array(expected_direct_lhs) rtol=T(5e-3) atol=T(5e-4)
+        @test Array(corrected_direct_system.rhs) ≈ Array(expected_direct_rhs) rtol=T(5e-3) atol=T(5e-4)
+        release_burton_miller_system_cuda!(corrected_direct_system)
+        CUDA_MODULE.unsafe_free!(expected_direct_lhs)
+        CUDA_MODULE.unsafe_free!(expected_direct_rhs)
+        CUDA_MODULE.unsafe_free!(d_direct_q)
+        release_cuda_burton_miller_identity_cache!(ground_identity_cache)
         release_operator_storage!(cuda_combined)
         release_cuda_image_singular_correction_cache!(cuda_image_near)
         release_cuda_image_singular_correction_cache!(cuda_image_singular)
@@ -590,9 +640,33 @@ end
             -operators.single_layer .-
             coupling .* (operators.adjoint_double_layer .+ ComplexF32(0.5) .* identity_cache.identity_p1_dp0)
         ) * d_q_neumann
+        d_expected_lhs = (
+            ComplexF32(0.5) .* identity_cache.identity_p1_p1 .-
+            operators.double_layer .+
+            coupling .* operators.hypersingular
+        )
         d_matrix_free_rhs = BeatEngineCore._cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
+        direct_timing = Dict{String,Float64}()
+        direct_system = assemble_burton_miller_neumann_system_cuda(
+            mesh,
+            p1,
+            dp0,
+            d_q_neumann,
+            k,
+            rule;
+            device_cache=cuda_cache,
+            singular_cache=singular_cache,
+            device_singular_cache=cuda_singular_cache,
+            timing=direct_timing,
+        )
+        @test direct_system.assembly_mode == :direct_burton_miller
+        @test Array(direct_system.matrix) ≈ Array(d_expected_lhs) rtol=2f-5 atol=2f-6
+        @test Array(direct_system.rhs) ≈ Array(d_expected_rhs) rtol=2f-5 atol=2f-6
+        @test haskey(direct_timing, "direct_system_regular")
+        direct_pressure = solve_burton_miller_system_cuda!(direct_system)
         @test Array(d_matrix_free_rhs) ≈ Array(d_expected_rhs) rtol=2f-5
         CUDA_MODULE.unsafe_free!(d_q_neumann)
+        CUDA_MODULE.unsafe_free!(d_expected_lhs)
         CUDA_MODULE.unsafe_free!(d_expected_rhs)
         CUDA_MODULE.unsafe_free!(d_matrix_free_rhs)
 
@@ -600,6 +674,7 @@ end
         release_cuda_burton_miller_identity_cache!(identity_cache)
 
         @test length(pressure) == p1.global_dof_count
+        @test direct_pressure ≈ pressure rtol=2f-4 atol=2f-5
         @test all(isfinite, real.(pressure))
         @test all(isfinite, imag.(pressure))
 
@@ -652,6 +727,52 @@ end
         @test symmetry_operators.image_singular_pairs == image_cache.pair_count
         @test image_timing["image_singular_correction_cuda_cache_build"] == 0.0
         @test !BeatEngineCore._cuda_use_matrix_free_burton_miller_rhs(symmetry_operators)
+
+        symmetry_identity_p1_p1 = assemble_l2_identity_matrix(
+            symmetry_mesh, symmetry_p1, symmetry_dp0, rule, :p1, :p1; symmetry_mode=:xy,
+        )
+        symmetry_identity_p1_dp0 = assemble_l2_identity_matrix(
+            symmetry_mesh, symmetry_p1, symmetry_dp0, rule, :p1, :dp0; symmetry_mode=:xy,
+        )
+        symmetry_identity_cache = build_cuda_burton_miller_identity_cache(
+            symmetry_identity_p1_p1, symmetry_identity_p1_dp0, Float32,
+        )
+        symmetry_q = zeros(ComplexF32, symmetry_dp0.global_dof_count)
+        symmetry_q[1] = ComplexF32(0, 1)
+        d_symmetry_q = CUDA_MODULE.CuArray(symmetry_q)
+        symmetry_expected_lhs = (
+            ComplexF32(0.5) .* symmetry_identity_cache.identity_p1_p1 .-
+            symmetry_operators.double_layer .+
+            coupling .* symmetry_operators.hypersingular
+        )
+        symmetry_expected_rhs = (
+            -symmetry_operators.single_layer .-
+            coupling .* (
+                symmetry_operators.adjoint_double_layer .+
+                ComplexF32(0.5) .* symmetry_identity_cache.identity_p1_dp0
+            )
+        ) * d_symmetry_q
+        symmetry_direct_system = assemble_burton_miller_neumann_system_cuda(
+            symmetry_mesh,
+            symmetry_p1,
+            symmetry_dp0,
+            d_symmetry_q,
+            k,
+            rule;
+            device_cache=symmetry_cuda_cache,
+            singular_cache=symmetry_singular_cache,
+            device_singular_cache=symmetry_cuda_singular_cache,
+            device_image_singular_cache=image_cache,
+            symmetry_mode=:xy,
+        )
+        @test symmetry_direct_system.image_singular_pairs == image_cache.pair_count
+        @test Array(symmetry_direct_system.matrix) ≈ Array(symmetry_expected_lhs) rtol=5f-4 atol=5f-5
+        @test Array(symmetry_direct_system.rhs) ≈ Array(symmetry_expected_rhs) rtol=5f-4 atol=5f-5
+        release_burton_miller_system_cuda!(symmetry_direct_system)
+        CUDA_MODULE.unsafe_free!(symmetry_expected_lhs)
+        CUDA_MODULE.unsafe_free!(symmetry_expected_rhs)
+        CUDA_MODULE.unsafe_free!(d_symmetry_q)
+        release_cuda_burton_miller_identity_cache!(symmetry_identity_cache)
         release_operator_storage!(symmetry_operators)
         release_cuda_image_singular_correction_cache!(image_cache)
     end

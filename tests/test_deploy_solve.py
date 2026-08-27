@@ -67,6 +67,7 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert request_path.is_file()
     assert json.loads(request_path.read_text(encoding="utf-8"))["schema"] == DEPLOY_SOLVE_SCHEMA
     assert request["beat_engine_backend"] == "cuda"
+    assert request["burton_miller_assembly"] == "direct_system"
     assert request["provenance"]["package_name"] == "S218BP LOD"
     assert request["provenance"]["source_count"] == 2
     assert request["provenance"]["node_count"] == 2580
@@ -107,6 +108,15 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+
+
+def test_prepare_deploy_solve_request_can_select_operator_matrix_fallback(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["burtonMillerAssembly"] = "operator_matrices"
+
+    _, request = prepare_deploy_solve_request(payload, tmp_path)
+
+    assert request["burton_miller_assembly"] == "operator_matrices"
 
 
 def test_prepare_deploy_solve_request_reuses_package_and_ground_pair_cache(tmp_path: Path) -> None:

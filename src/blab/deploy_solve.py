@@ -511,10 +511,22 @@ def prepare_deploy_solve_request(
     if points_m.shape[0] == 0:
         raise ValueError("Deploy observation plane has no sampling points on or above the ground plane.")
     medium = manifest.get("medium", {})
+    backend = str(payload.get("backend", "cuda")).strip().lower()
+    burton_miller_assembly = str(
+        payload.get(
+            "burtonMillerAssembly",
+            "direct_system" if backend == "cuda" else "operator_matrices",
+        )
+    ).strip().lower()
+    if burton_miller_assembly not in {"direct_system", "operator_matrices"}:
+        raise ValueError(
+            "Deploy burtonMillerAssembly must be 'direct_system' or 'operator_matrices'."
+        )
     request: dict[str, Any] = {
         "schema": DEPLOY_SOLVE_SCHEMA,
         "schema_version": DEPLOY_SOLVE_SCHEMA_VERSION,
-        "beat_engine_backend": str(payload.get("backend", "cuda")),
+        "beat_engine_backend": backend,
+        "burton_miller_assembly": burton_miller_assembly,
         "solution_key": solution_key,
         "include_complex_pressure": bool(payload.get("includeComplexPressure", False)),
         "frequency_hz": frequency_hz,

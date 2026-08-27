@@ -135,3 +135,22 @@ The first interactive 200 x 200 edit improved by 25%, and the repeated edit by
 The result side is now the dominant transport cost because JSON still carries
 40,000 SPL values and 40,000 sample indices; binary SPL plus a compact validity
 mask is the next observation-specific transport opportunity.
+
+### Direct Burton-Miller system assembly
+
+Deploy CUDA Level 2 now assembles the final Burton-Miller matrix and fixed-trace
+right-hand side directly. It no longer retains separate dense S, D, D*, and H
+operators or dense identity matrices. The operator-matrix path remains
+selectable as a reference fallback.
+
+For the same two-cabinet 54 x 54 movement case, warm direct assembly measured
+0.080 s versus 0.163 s in the earlier operator-matrix run. The complete warm
+cabinet interaction measured 1.11-1.18 s, while the in-Julia boundary update
+measured 0.265 s. A 250 ms `nvidia-smi` sample during the cold run observed
+1,484 MiB total device use from a 919 MiB desktop idle baseline, or about
+565 MiB incremental. Compared with the earlier 1,768 MiB incremental
+operator-matrix measurement, this is an observed reduction of about 68%.
+
+These VRAM figures include the Electron renderer and CUDA allocator state and
+are sampled rather than allocator-instrumented peaks, so they should be treated
+as practical end-to-end measurements rather than exact matrix-allocation totals.

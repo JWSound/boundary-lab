@@ -53,6 +53,9 @@ export BoundaryMesh,
     build_cuda_image_singular_correction_cache,
     build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    assemble_burton_miller_neumann_system_cuda,
+    solve_burton_miller_system_cuda!,
+    release_burton_miller_system_cuda!,
     build_rocm_burton_miller_identity_cache,
     build_rocm_sparse_scatter_cache,
     build_cuda_sparse_scatter_cache,
@@ -1222,6 +1225,18 @@ end
 
 function build_cuda_burton_miller_identity_cache(args...; kwargs...)
     error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
+end
+
+function assemble_burton_miller_neumann_system_cuda(args...; kwargs...)
+    error("Direct Burton-Miller CUDA assembly requested, but CUDA.jl is not loaded.")
+end
+
+function solve_burton_miller_system_cuda!(args...; kwargs...)
+    error("Direct Burton-Miller CUDA solve requested, but CUDA.jl is not loaded.")
+end
+
+function release_burton_miller_system_cuda!(args...; kwargs...)
+    error("Direct Burton-Miller CUDA release requested, but CUDA.jl is not loaded.")
 end
 
 function build_cuda_sparse_scatter_cache(args...; kwargs...)

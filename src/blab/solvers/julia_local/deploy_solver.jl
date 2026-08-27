@@ -160,6 +160,12 @@ function solve_deploy_request_impl(request)
     schema_version in (1, 2) || error("Unsupported Deploy solve schema_version $(schema_version).")
     beat_backend = beat_backend_from_request(request)
     beat_backend in (:cuda, :cpu) || error("Deploy Level 2 currently supports BEAT CUDA or CPU.")
+    requested_assembly_mode = lowercase(String(get_value(request, "burton_miller_assembly", "direct_system")))
+    requested_assembly_mode in ("direct_system", "operator_matrices") || error(
+        "Deploy burton_miller_assembly must be 'direct_system' or 'operator_matrices'.",
+    )
+    direct_cuda_assembly = beat_backend == :cuda && requested_assembly_mode == "direct_system"
+    assembly_mode = direct_cuda_assembly ? "direct_system" : "operator_matrices"
 
     FloatType = Float32
     frequency = FloatType(request["frequency_hz"])
@@ -235,8 +241,10 @@ function solve_deploy_request_impl(request)
     close_pair_quadrature_order = Int(get_value(request, "close_pair_quadrature_order", 8))
     close_pair_quadrature_order >= 4 || error("Deploy close-pair quadrature order must be at least 4.")
     rule = triangle_rule(FloatType, quadrature_order)
-    identity_p1_p1 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
-    identity_p1_dp0 = assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
+    identity_p1_p1 = direct_cuda_assembly ? nothing :
+        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
+    identity_p1_dp0 = direct_cuda_assembly ? nothing :
+        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
     singular_cache = build_singular_correction_cache(mesh, singular_order)
     proximity = get_value(request, "proximity", Dict{String,Any}())
     raw_close_face_pairs = get_value(proximity, "close_face_pairs", Any[])
@@ -283,6 +291,9 @@ function solve_deploy_request_impl(request)
     cuda_identity_cache = nothing
     field_cache = cpu_field_cache
     operators = nothing
+    direct_system = nothing
+    direct_system_consumed = false
+    direct_assembly_timings = Dict{String,Float64}()
     assembly_seconds = 0.0
     solve_seconds = 0.0
     field_seconds = 0.0
@@ -324,46 +335,75 @@ function solve_deploy_request_impl(request)
                         dp0_space,
                     )
                 end
-                cuda_identity_cache = build_cuda_burton_miller_identity_cache(
-                    identity_p1_p1,
-                    identity_p1_dp0,
-                    FloatType,
-                )
+                cached_q_neumann = BeatEngineCore.CUDA_MODULE.CuArray(q_neumann)
+                if !direct_cuda_assembly
+                    cuda_identity_cache = build_cuda_burton_miller_identity_cache(
+                        identity_p1_p1,
+                        identity_p1_dp0,
+                        FloatType,
+                    )
+                end
                 field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
             else
                 emit_event("status"; message="Preparing BEAT CPU geometry caches")
             end
         end
 
-        emit_event("status"; message="Assembling Level 2 rigid half-space boundary operators")
+        assembly_message = direct_cuda_assembly ?
+            "Assembling Level 2 rigid half-space Burton-Miller system" :
+            "Assembling Level 2 rigid half-space boundary operators"
+        emit_event("status"; message=assembly_message)
         assembly_seconds = @elapsed begin
-            operators = assemble_regular_galerkin_operators(
-                mesh,
-                p1_space,
-                dp0_space,
-                k,
-                rule;
-                skip_singular=false,
-                singular_order=singular_order,
-                backend=beat_backend,
-                device_cache=device_cache,
-                return_device=beat_backend == :cuda,
-                accelerator_quadrature=beat_backend == :cuda,
-                singular_cache=singular_cache,
-                device_singular_cache=device_singular_cache,
-                device_image_singular_cache=device_image_singular_cache,
-                near_correction_cache=near_correction_cache,
-                device_near_correction_cache=device_near_correction_cache,
-                image_near_correction_cache=ground_near_correction_cache,
-                device_image_near_correction_cache=device_ground_near_correction_cache,
-                symmetry_mode=:ground,
-            )
+            if direct_cuda_assembly
+                direct_system = assemble_burton_miller_neumann_system_cuda(
+                    mesh,
+                    p1_space,
+                    dp0_space,
+                    cached_q_neumann,
+                    k,
+                    rule;
+                    device_cache=device_cache,
+                    singular_cache=singular_cache,
+                    device_singular_cache=device_singular_cache,
+                    device_image_singular_cache=device_image_singular_cache,
+                    near_correction_cache=near_correction_cache,
+                    device_near_correction_cache=device_near_correction_cache,
+                    image_near_correction_cache=ground_near_correction_cache,
+                    device_image_near_correction_cache=device_ground_near_correction_cache,
+                    symmetry_mode=:ground,
+                    timing=direct_assembly_timings,
+                )
+            else
+                operators = assemble_regular_galerkin_operators(
+                    mesh,
+                    p1_space,
+                    dp0_space,
+                    k,
+                    rule;
+                    skip_singular=false,
+                    singular_order=singular_order,
+                    backend=beat_backend,
+                    device_cache=device_cache,
+                    return_device=beat_backend == :cuda,
+                    accelerator_quadrature=beat_backend == :cuda,
+                    singular_cache=singular_cache,
+                    device_singular_cache=device_singular_cache,
+                    device_image_singular_cache=device_image_singular_cache,
+                    near_correction_cache=near_correction_cache,
+                    device_near_correction_cache=device_near_correction_cache,
+                    image_near_correction_cache=ground_near_correction_cache,
+                    device_image_near_correction_cache=device_ground_near_correction_cache,
+                    symmetry_mode=:ground,
+                )
+            end
         end
 
         emit_event("status"; message="Solving fixed-Neumann exterior system")
         solve_seconds = @elapsed begin
-            pressure = if beat_backend == :cuda
-                cached_q_neumann = BeatEngineCore.CUDA_MODULE.CuArray(q_neumann)
+            pressure = if direct_cuda_assembly
+                direct_system_consumed = true
+                solve_burton_miller_system_cuda!(direct_system; return_gpu=true)
+            elseif beat_backend == :cuda
                 solve_burton_miller_neumann(
                     operators,
                     cuda_identity_cache,
@@ -439,6 +479,7 @@ function solve_deploy_request_impl(request)
             )
             proximity_pairs = get_value(proximity, "pairs", Any[])
             close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
+            assembly_diagnostics = direct_cuda_assembly ? direct_system : operators
             result = Dict(
                 "frequency_hz" => frequency,
                 "rows" => observation_shape[1],
@@ -455,10 +496,11 @@ function solve_deploy_request_impl(request)
                     "source_count" => length(source_meshes),
                     "node_count" => length(mesh.vertices),
                     "face_count" => length(mesh.faces),
+                    "burton_miller_assembly" => assembly_mode,
                     "singular_pair_count" => singular_cache.pair_count,
                     "near_face_pair_count" => near_correction_cache.pair_count,
                     "ground_image_near_face_pair_count" => ground_near_correction_cache.pair_count,
-                    "ground_image_singular_pair_count" => operators.image_singular_pairs,
+                    "ground_image_singular_pair_count" => assembly_diagnostics.image_singular_pairs,
                     "exterior_domain" => "rigid_y0_half_space",
                     "ground_reflection_coefficient" => 1.0f0,
                     "close_pair_quadrature_order" => close_pair_quadrature_order,
@@ -485,10 +527,15 @@ function solve_deploy_request_impl(request)
         result["timings"]["device_prepare_s"] = Float32(device_prepare_seconds)
         result["timings"]["postprocess_s"] = Float32(postprocess_seconds)
         result["timings"]["total_before_emit_s"] = Float32(time() - request_started)
+        for (name, seconds) in direct_assembly_timings
+            result["timings"][name] = Float32(seconds)
+        end
         emit_event("result"; result=result)
     finally
         cuda_observation === nothing || release_cuda_observation_points!(cuda_observation)
         operators === nothing || release_operator_storage!(operators)
+        (direct_system === nothing || direct_system_consumed) ||
+            release_burton_miller_system_cuda!(direct_system)
         cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
         device_image_singular_cache === nothing ||
             release_cuda_image_singular_correction_cache!(device_image_singular_cache)
