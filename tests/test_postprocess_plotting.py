@@ -130,6 +130,75 @@ def test_prepare_visualization_data_can_skip_normalization_and_auto_span() -> No
     assert np.allclose(dataset["horizontal_spl_norm_db"], horizontal)
 
 
+def test_prepare_visualization_data_expands_fixed_span_when_everything_would_clip() -> None:
+    freqs = np.array([200.0, 1000.0], dtype=np.float32)
+    angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
+    horizontal = np.array([[21.2, 28.4, 22.5], [24.0, 30.1, 25.0]], dtype=np.float32)
+    vertical = horizontal - 2.0
+
+    dataset = prepare_visualization_data_from_arrays(
+        freq_hz=freqs,
+        polar_angle_deg=angles,
+        horizontal_spl_norm_db=horizontal,
+        vertical_spl_norm_db=vertical,
+        impedance_freq_hz=freqs,
+        impedance_radiator_names=np.array(["throat"]),
+        impedance_real=np.ones((1, 2), dtype=np.float32),
+        impedance_imag=np.zeros((1, 2), dtype=np.float32),
+        cfg=PrepConfig(
+            angle_samples=None,
+            freq_samples=None,
+            octave_smoothing=None,
+            normalize_polar=False,
+            auto_db_span=False,
+            min_db=-30.0,
+            max_db=0.0,
+        ),
+    )
+
+    assert dataset["clip_min_db"] == 19.0
+    assert dataset["clip_max_db"] == 31.0
+    assert np.nanmin(dataset["horizontal_isobar_db"]) < np.nanmax(dataset["horizontal_isobar_db"])
+
+
+def test_prepare_visualization_data_expands_narrow_fixed_span_for_visible_isobar() -> None:
+    freqs = np.array([500.0, 1000.0, 2000.0], dtype=np.float32)
+    angles = np.array([-90.0, -45.0, 0.0, 45.0, 90.0], dtype=np.float32)
+    horizontal = np.array(
+        [
+            [-1.4, -0.7, 0.2, -0.6, -1.2],
+            [-2.2, -1.0, 0.4, -0.8, -1.8],
+            [-2.8, -1.4, 0.1, -1.1, -2.3],
+        ],
+        dtype=np.float32,
+    )
+    vertical = horizontal - 0.4
+
+    dataset = prepare_visualization_data_from_arrays(
+        freq_hz=freqs,
+        polar_angle_deg=angles,
+        horizontal_spl_norm_db=horizontal,
+        vertical_spl_norm_db=vertical,
+        impedance_freq_hz=freqs,
+        impedance_radiator_names=np.array(["throat"]),
+        impedance_real=np.ones((1, 3), dtype=np.float32),
+        impedance_imag=np.zeros((1, 3), dtype=np.float32),
+        cfg=PrepConfig(
+            angle_samples=None,
+            freq_samples=None,
+            octave_smoothing=None,
+            normalize_polar=False,
+            auto_db_span=False,
+            min_db=-30.0,
+            max_db=0.0,
+        ),
+    )
+
+    assert dataset["clip_min_db"] == -5.0
+    assert dataset["clip_max_db"] == 1.0
+    assert np.nanmin(dataset["horizontal_isobar_db"]) < np.nanmax(dataset["horizontal_isobar_db"])
+
+
 def test_prepare_visualization_data_preserves_raw_spl_for_on_axis_response() -> None:
     freqs = np.array([200.0, 1000.0], dtype=np.float32)
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)

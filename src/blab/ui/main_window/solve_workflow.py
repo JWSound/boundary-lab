@@ -16,6 +16,8 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.ath_config import native_check_open_edges_for_ath_config
+from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text
 from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
@@ -32,6 +34,7 @@ from blab.solve_results import (
     legacy_result_domains,
     legacy_result_to_system_result,
 )
+from blab.solvers.registry import backend_provenance
 from blab.speaker_package import (
     SpeakerPackageConfig,
     export_speaker_package,
@@ -151,6 +154,20 @@ class SolveWorkflowController(QObject):
             symmetry=self._project().symmetry,
         )
 
+    def _native_check_open_edges(self) -> bool:
+        """Keep strict Metal validation except for generated bare/open horns."""
+        project = self._project()
+        if project.symmetry == "off":
+            return True
+        generated_ath_documents = (
+            document
+            for document in project.generator_documents
+            if document.provider_id == ATH_PROVIDER_ID and document.mesh_enabled and document.artifact is not None
+        )
+        return all(
+            native_check_open_edges_for_ath_config(ath_source_text(document)) for document in generated_ath_documents
+        )
+
     @Slot()
     def start_solve(self) -> None:
         if self._geometry_controller.active or self._solve_controller.active:
@@ -200,6 +217,8 @@ class SolveWorkflowController(QObject):
         except SymmetryValidationError as exc:
             self._view.warn("Symmetry validation failed", str(exc))
             return
+
+        prepared_simulation.config.native_check_open_edges = self._native_check_open_edges()
 
         self._begin_run("Initializing Solver...")
         self._solve_controller.start(
@@ -317,6 +336,8 @@ class SolveWorkflowController(QObject):
             self._view.show_stitch_or_generic_error("Exterior system preparation failed", exc)
             return
 
+        prepared_simulation.config.native_check_open_edges = self._native_check_open_edges()
+
         self._begin_run("Initializing exterior solver...")
         self._solve_controller.start(
             self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
@@ -363,7 +384,10 @@ class SolveWorkflowController(QObject):
             provenance=SolveProvenance(
                 backend_id=prepared.backend_id,
                 solve_kind=prepared.solve_kind.value,
-                solver_options=dict(prepared.request.solver_options),
+                solver_options={
+                    **prepared.request.solver_options,
+                    **backend_provenance(prepared.backend_id),
+                },
             ),
             domains=prepared.result_domains,
             compiled_system=prepared.request.compiled_system,

@@ -718,6 +718,8 @@ class MeshConfigDialog(QDialog):
         scale_spin.setDecimals(6)
         scale_spin.setSingleStep(0.001)
         scale_spin.setValue(float(mesh.scale_factor))
+        if mesh.locked:
+            scale_spin.setEnabled(False)
         self.table.setCellWidget(row, 3, scale_spin)
         self.scale_widgets.append(scale_spin)
 

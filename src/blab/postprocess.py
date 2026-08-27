@@ -19,6 +19,8 @@ from scipy.interpolate import RegularGridInterpolator
 
 from blab.defaults import FORMATTED_OUTPUT_NPZ, SOLVER_OUTPUT_NPZ
 
+MIN_USEFUL_DB_SPAN = 6.0
+
 
 @dataclass
 class PrepConfig:
@@ -276,13 +278,16 @@ def prepare_visualization_data_from_arrays(
     horizontal = _fractional_octave_smooth(horizontal, freq_hz, cfg.octave_smoothing)
     vertical = _fractional_octave_smooth(vertical, freq_hz, cfg.octave_smoothing)
     clip_min_db, clip_max_db = _resolve_db_span(horizontal, vertical, cfg)
-    horizontal = np.clip(horizontal, clip_min_db, clip_max_db)
-    vertical = np.clip(vertical, clip_min_db, clip_max_db)
+    polar_clip_min_db, polar_clip_max_db = _resolve_polar_db_span(horizontal, vertical, cfg)
+    horizontal_clipped = np.clip(horizontal, polar_clip_min_db, polar_clip_max_db)
+    vertical_clipped = np.clip(vertical, polar_clip_min_db, polar_clip_max_db)
+    horizontal_isobar = np.clip(horizontal, clip_min_db, clip_max_db)
+    vertical_isobar = np.clip(vertical, clip_min_db, clip_max_db)
 
     isobar_angles, isobar_freqs, horizontal_interp = _interpolate_isobar_heatmap(
         base_angles_deg,
         freq_hz,
-        horizontal,
+        horizontal_isobar,
         cfg.angle_samples,
         cfg.freq_samples,
         clip_min_db,
@@ -290,7 +295,7 @@ def prepare_visualization_data_from_arrays(
     _, _, vertical_interp = _interpolate_isobar_heatmap(
         base_angles_deg,
         freq_hz,
-        vertical,
+        vertical_isobar,
         cfg.angle_samples,
         cfg.freq_samples,
         clip_min_db,
@@ -306,8 +311,8 @@ def prepare_visualization_data_from_arrays(
         "polar_angle_deg": base_angles_deg,
         "horizontal_spl_db": raw_horizontal.astype(np.float32, copy=False),
         "vertical_spl_db": raw_vertical.astype(np.float32, copy=False),
-        "horizontal_spl_norm_db": horizontal.T.astype(np.float32, copy=False),
-        "vertical_spl_norm_db": vertical.T.astype(np.float32, copy=False),
+        "horizontal_spl_norm_db": horizontal_clipped.T.astype(np.float32, copy=False),
+        "vertical_spl_norm_db": vertical_clipped.T.astype(np.float32, copy=False),
         "isobar_angle_deg": isobar_angles.astype(np.float32, copy=False),
         "isobar_freq_hz": isobar_freqs.astype(np.float32, copy=False),
         "horizontal_isobar_db": horizontal_interp,
@@ -327,18 +332,67 @@ def prepare_visualization_data_from_arrays(
 
 
 def _resolve_db_span(horizontal: np.ndarray, vertical: np.ndarray, cfg: PrepConfig) -> tuple[float, float]:
+    combined = np.concatenate([horizontal.ravel(), vertical.ravel()])
+    finite = combined[np.isfinite(combined)]
+
     if not cfg.auto_db_span:
+        min_db = float(cfg.min_db)
+        max_db = float(cfg.max_db)
+        if max_db <= min_db:
+            max_db = min_db + 1.0
+        if finite.size == 0:
+            return min_db, max_db
+
+        finite_min = float(np.min(finite))
+        finite_max = float(np.max(finite))
+        if finite_max < min_db or finite_min > max_db:
+            return _auto_db_span_from_finite(finite, min_db, max_db)
+        clipped_min = max(finite_min, min_db)
+        clipped_max = min(finite_max, max_db)
+        if clipped_max > clipped_min and clipped_max - clipped_min < MIN_USEFUL_DB_SPAN:
+            return _auto_db_span_from_finite(finite, min_db, max_db)
+        return min_db, max_db
+
+    if finite.size == 0:
         return float(cfg.min_db), float(cfg.max_db)
+
+    return _auto_db_span_from_finite(finite, float(cfg.min_db), float(cfg.max_db))
+
+
+def _resolve_polar_db_span(horizontal: np.ndarray, vertical: np.ndarray, cfg: PrepConfig) -> tuple[float, float]:
+    if cfg.auto_db_span:
+        return _resolve_db_span(horizontal, vertical, cfg)
+
+    min_db = float(cfg.min_db)
+    max_db = float(cfg.max_db)
+    if max_db <= min_db:
+        max_db = min_db + 1.0
 
     combined = np.concatenate([horizontal.ravel(), vertical.ravel()])
     finite = combined[np.isfinite(combined)]
     if finite.size == 0:
-        return float(cfg.min_db), float(cfg.max_db)
+        return min_db, max_db
 
+    finite_min = float(np.min(finite))
+    finite_max = float(np.max(finite))
+    if finite_max < min_db or finite_min > max_db:
+        return _auto_db_span_from_finite(finite, min_db, max_db)
+    return min_db, max_db
+
+
+def _auto_db_span_from_finite(
+    finite: np.ndarray, fallback_min_db: float, fallback_max_db: float
+) -> tuple[float, float]:
     min_db = float(np.floor(np.min(finite)))
     max_db = float(np.ceil(np.max(finite)))
     if np.isclose(min_db, max_db):
         max_db = min_db + 1.0
+    if max_db <= min_db:
+        return fallback_min_db, fallback_max_db if fallback_max_db > fallback_min_db else fallback_min_db + 1.0
+    if max_db - min_db < MIN_USEFUL_DB_SPAN:
+        if float(np.max(finite)) <= fallback_max_db <= max_db + MIN_USEFUL_DB_SPAN:
+            max_db = fallback_max_db
+        min_db = max_db - MIN_USEFUL_DB_SPAN
     return min_db, max_db
 
 

@@ -8,8 +8,11 @@ describes the behaviour that must survive.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from blab.generators.base import GeneratedGeometryReference  # noqa: E402
 from blab.ui.application_state import OperationPhase, SolveCompletion  # noqa: E402
 from blab.ui.main_window.solve_session import SolveSession  # noqa: E402
 from blab.ui.main_window.solve_workflow import SolveWorkflowController  # noqa: E402
@@ -132,6 +135,33 @@ def controller(qapp):
     built.view, built.plots, built.inputs = view, plots, inputs
     built.session, built.geometry, built.solve = session, geometry, solve
     return built
+
+
+def _project_with_generated_horn(config_text: str, symmetry: str):
+    project = new_project_document(config_text)
+    project.symmetry = symmetry
+    project.generator_documents = (
+        replace(
+            project.generator_documents[0],
+            artifact=GeneratedGeometryReference(output_dir="run", mesh_path="horn.msh"),
+        ),
+    )
+    return project
+
+
+@pytest.mark.parametrize(
+    ("config_text", "symmetry", "expected"),
+    (
+        ("Mesh.Mode = bare\n", "xy", False),
+        ("Mesh.Mode = bare\n", "off", True),
+        ("ABEC.SimType = 2\n", "xy", True),
+    ),
+)
+def test_generated_bare_horns_relax_the_native_open_edge_check(config_text, symmetry, expected) -> None:
+    project = _project_with_generated_horn(config_text, symmetry)
+    workflow = type("Workflow", (), {"_project": lambda _self: project})()
+
+    assert SolveWorkflowController._native_check_open_edges(workflow) is expected
 
 
 def test_the_controller_needs_no_main_window(controller) -> None:
