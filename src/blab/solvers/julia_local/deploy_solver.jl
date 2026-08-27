@@ -4,6 +4,7 @@ function release_deploy_boundary_state!()
     state = DEPLOY_BOUNDARY_STATE[]
     state === nothing && return nothing
     if state.backend == :cuda
+        release_cuda_weighted_field_sources!(state.weighted_sources)
         release_cuda_field_evaluation_cache!(state.field_cache)
         cuda = BeatEngineCore.CUDA_MODULE
         state.pressure isa cuda.CuArray && cuda.unsafe_free!(state.pressure)
@@ -81,6 +82,78 @@ function deploy_observation_points(request, ::Type{T}) where {T<:AbstractFloat}
     return points
 end
 
+function deploy_cuda_observation_plane(request, ::Type{T}) where {T<:AbstractFloat}
+    raw = get_value(request, "observation_plane", nothing)
+    raw isa AbstractDict || error("CUDA Deploy field request requires an observation_plane object.")
+    width = T(get_value(raw, "width_m", 0.0))
+    depth = T(get_value(raw, "depth_m", 0.0))
+    center_x = T(get_value(raw, "center_x_m", 0.0))
+    near = T(get_value(raw, "near_m", 0.0))
+    height = T(get_value(raw, "height_m", 0.0))
+    pitch = T(pi) * T(get_value(raw, "pitch_deg", 0.0)) / T(180)
+    yaw = T(pi) * T(get_value(raw, "yaw_deg", 0.0)) / T(180)
+    roll = T(pi) * T(get_value(raw, "roll_deg", 0.0)) / T(180)
+    columns = Int(get_value(raw, "columns", 0))
+    rows = Int(get_value(raw, "rows", 0))
+    ground_tolerance = T(get_value(raw, "ground_tolerance_m", 1e-6))
+    width > 0 && depth > 0 || error("CUDA observation plane dimensions must be positive.")
+    columns >= 2 && rows >= 2 || error("CUDA observation plane requires at least two rows and columns.")
+    all(isfinite, (width, depth, center_x, near, height, pitch, yaw, roll, ground_tolerance)) || error(
+        "CUDA observation plane values must be finite.",
+    )
+    roll_cosine = cos(roll)
+    roll_sine = sin(roll)
+    pitch_cosine = cos(pitch)
+    pitch_sine = sin(pitch)
+    yaw_cosine = cos(yaw)
+    yaw_sine = sin(yaw)
+    sample_indices = Int[]
+    sizehint!(sample_indices, columns * rows)
+    for row in 0:(rows - 1), column in 0:(columns - 1)
+        local_x = -width / T(2) + width * T(column) / T(columns - 1)
+        local_z = -depth / T(2) + depth * T(row) / T(rows - 1)
+        rolled_y = roll_sine * local_x
+        world_y = height + pitch_cosine * rolled_y - pitch_sine * local_z
+        world_y >= -ground_tolerance && push!(sample_indices, row * columns + column)
+    end
+    isempty(sample_indices) && error("Deploy observation plane has no sampling points on or above the ground plane.")
+    return (
+        width=width,
+        depth=depth,
+        center_x=center_x,
+        center_z=near + depth / T(2),
+        height=height,
+        roll_cosine=roll_cosine,
+        roll_sine=roll_sine,
+        pitch_cosine=pitch_cosine,
+        pitch_sine=pitch_sine,
+        yaw_cosine=yaw_cosine,
+        yaw_sine=yaw_sine,
+        columns=columns,
+        rows=rows,
+        sample_indices=sample_indices,
+    )
+end
+
+function build_deploy_cuda_observation_points(plane)
+    return build_cuda_observation_points(
+        plane.sample_indices,
+        plane.width,
+        plane.depth,
+        plane.center_x,
+        plane.center_z,
+        plane.height,
+        plane.roll_cosine,
+        plane.roll_sine,
+        plane.pitch_cosine,
+        plane.pitch_sine,
+        plane.yaw_cosine,
+        plane.yaw_sine,
+        plane.columns,
+        plane.rows,
+    )
+end
+
 function solve_deploy_request_impl(request)
     request_started = time()
     schema_version = Int(get_value(request, "schema_version", 1))
@@ -111,6 +184,7 @@ function solve_deploy_request_impl(request)
         "Deploy rigid ground requires reflection coefficient +1.",
     )
 
+    cuda_observation = nothing
     input_geometry_started = time()
     emit_event("status"; message="Loading fixed-source speaker boundary")
     package_mesh = load_gmsh22_with_tags(
@@ -129,11 +203,26 @@ function solve_deploy_request_impl(request)
     length(reference_pressure) == length(mesh.vertices) || error(
         "Deploy reference pressure contains $(length(reference_pressure)) nodes, but the mesh contains $(length(mesh.vertices)).",
     )
-    observation_points = deploy_observation_points(request, FloatType)
-    observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
-    length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
-    observation_sample_indices = Int.(get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))))
-    length(observation_sample_indices) == length(observation_points) || error("Deploy observation sample indices do not match the point count.")
+    observation_points = nothing
+    observation_shape = Int[]
+    observation_sample_indices = Int[]
+    if beat_backend == :cuda && get_value(request, "observation_plane", nothing) !== nothing
+        plane = deploy_cuda_observation_plane(request, FloatType)
+        observation_shape = [plane.rows, plane.columns]
+        observation_sample_indices = plane.sample_indices
+        cuda_observation = build_deploy_cuda_observation_points(plane)
+        observation_points = cuda_observation
+    else
+        observation_points = deploy_observation_points(request, FloatType)
+        observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
+        length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
+        observation_sample_indices = Int.(
+            get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))),
+        )
+        length(observation_sample_indices) == length(observation_points) || error(
+            "Deploy observation sample indices do not match the point count.",
+        )
+    end
     all(index -> 0 <= index < prod(observation_shape), observation_sample_indices) || error("Deploy observation sample index is outside the grid.")
     length(unique(observation_sample_indices)) == length(observation_sample_indices) || error("Deploy observation sample indices must be unique.")
     input_geometry_seconds = time() - input_geometry_started
@@ -183,7 +272,7 @@ function solve_deploy_request_impl(request)
         node_count=length(mesh.vertices),
         face_count=length(mesh.faces),
         source_count=length(source_meshes),
-        observation_count=length(observation_points),
+        observation_count=length(observation_sample_indices),
     )
 
     device_cache = nothing
@@ -200,6 +289,9 @@ function solve_deploy_request_impl(request)
     device_prepare_seconds = 0.0
     pressure = nothing
     field_pressure = nothing
+    spl_db = nothing
+    cached_q_neumann = nothing
+    weighted_sources = nothing
     try
         device_prepare_seconds = @elapsed begin
             if beat_backend == :cuda
@@ -271,27 +363,62 @@ function solve_deploy_request_impl(request)
         emit_event("status"; message="Solving fixed-Neumann exterior system")
         solve_seconds = @elapsed begin
             pressure = if beat_backend == :cuda
-                solve_burton_miller_neumann(operators, cuda_identity_cache, q_neumann, k)
+                cached_q_neumann = BeatEngineCore.CUDA_MODULE.CuArray(q_neumann)
+                solve_burton_miller_neumann(
+                    operators,
+                    cuda_identity_cache,
+                    cached_q_neumann,
+                    k;
+                    return_gpu=true,
+                )
             else
+                cached_q_neumann = copy(q_neumann)
                 solve_burton_miller_neumann(operators, identity_p1_p1, identity_p1_dp0, q_neumann, k)
             end
         end
 
         emit_event("status"; message="Evaluating audience plane")
+        include_complex_pressure = Bool(get_value(request, "include_complex_pressure", false))
         field_seconds = @elapsed begin
-            field_pressure = field_for_points(
-                observation_points,
-                mesh,
-                pressure,
-                q_neumann,
-                k,
-                field_cache,
-                beat_backend,
-            )
+            if beat_backend == :cuda
+                weighted_sources = build_cuda_weighted_field_sources(field_cache, pressure, cached_q_neumann)
+                if include_complex_pressure
+                    field_pressure = evaluate_galerkin_field_cuda(
+                        observation_points,
+                        mesh,
+                        pressure,
+                        cached_q_neumann,
+                        k,
+                        field_cache;
+                        weighted_sources=weighted_sources,
+                    )
+                    spl_db = pressure_to_spl(field_pressure, FloatType)
+                else
+                    spl_db = evaluate_galerkin_spl_cuda(
+                        observation_points,
+                        mesh,
+                        pressure,
+                        cached_q_neumann,
+                        k,
+                        field_cache;
+                        weighted_sources=weighted_sources,
+                    )
+                end
+            else
+                field_pressure = field_for_points(
+                    observation_points,
+                    mesh,
+                    pressure,
+                    cached_q_neumann,
+                    k,
+                    field_cache,
+                    beat_backend,
+                )
+                spl_db = pressure_to_spl(field_pressure, FloatType)
+            end
         end
         solution_key = String(get_value(request, "solution_key", ""))
         isempty(solution_key) && error("Deploy Level 2 solve requires a boundary solution key.")
-        cached_q_neumann = beat_backend == :cuda ? BeatEngineCore.CUDA_MODULE.CuArray(q_neumann) : copy(q_neumann)
         release_deploy_boundary_state!()
         DEPLOY_BOUNDARY_STATE[] = (
             solution_key=solution_key,
@@ -302,12 +429,13 @@ function solve_deploy_request_impl(request)
             pressure=pressure,
             q_neumann=cached_q_neumann,
             field_cache=field_cache,
+            weighted_sources=weighted_sources,
         )
         result = nothing
         postprocess_seconds = @elapsed begin
-            spl_db = pressure_to_spl(field_pressure, FloatType)
+            diagnostic_pressure = beat_backend == :cuda ? Complex{FloatType}.(Array(pressure)) : pressure
             isolated_trace_relative_difference = Float32(
-                norm(pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
+                norm(diagnostic_pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
             )
             proximity_pairs = get_value(proximity, "pairs", Any[])
             close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
@@ -342,9 +470,10 @@ function solve_deploy_request_impl(request)
                     "close_pair_count" => close_pair_count,
                     "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.01)),
                     "field_only" => false,
+                    "gpu_resident_field" => beat_backend == :cuda,
                 ),
             )
-            if Bool(get_value(request, "include_complex_pressure", false))
+            if include_complex_pressure
                 result["field_pressure"] = Dict(
                     "real" => Float32.(real.(field_pressure)),
                     "imag" => Float32.(imag.(field_pressure)),
@@ -358,6 +487,7 @@ function solve_deploy_request_impl(request)
         result["timings"]["total_before_emit_s"] = Float32(time() - request_started)
         emit_event("result"; result=result)
     finally
+        cuda_observation === nothing || release_cuda_observation_points!(cuda_observation)
         operators === nothing || release_operator_storage!(operators)
         cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
         device_image_singular_cache === nothing ||
@@ -381,15 +511,33 @@ function evaluate_deploy_field_request_impl(request)
     beat_backend = beat_backend_from_request(request)
     beat_backend == state.backend || error("Deploy field request backend does not match the cached solution.")
     FloatType = Float32
-    observation_points = deploy_observation_points(request, FloatType)
-    observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
-    length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
-    observation_sample_indices = Int.(
-        get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))),
-    )
-    length(observation_sample_indices) == length(observation_points) || error(
-        "Deploy observation sample indices do not match the point count.",
-    )
+    cuda_observation = nothing
+    observation_prepare_seconds = 0.0
+    observation_points = nothing
+    observation_shape = Int[]
+    observation_sample_indices = Int[]
+    if beat_backend == :cuda && get_value(request, "observation_plane", nothing) !== nothing
+        observation_prepare_seconds = @elapsed begin
+            plane = deploy_cuda_observation_plane(request, FloatType)
+            observation_shape = [plane.rows, plane.columns]
+            observation_sample_indices = plane.sample_indices
+            cuda_observation = build_deploy_cuda_observation_points(plane)
+            observation_points = cuda_observation
+        end
+    else
+        observation_prepare_seconds = @elapsed begin
+            observation_points = deploy_observation_points(request, FloatType)
+            observation_shape = Int.(get_value(request, "observation_shape", [1, length(observation_points)]))
+            length(observation_shape) == 2 || error("Deploy observation_shape must contain rows and columns.")
+            observation_sample_indices = Int.(
+                get_value(request, "observation_sample_indices", collect(0:(length(observation_points) - 1))),
+            )
+            length(observation_sample_indices) == length(observation_points) || error(
+                "Deploy observation sample indices do not match the point count.",
+            )
+        end
+    end
+    observation_count = length(observation_sample_indices)
 
     emit_event(
         "initialized";
@@ -398,23 +546,54 @@ function evaluate_deploy_field_request_impl(request)
         node_count=length(state.mesh.vertices),
         face_count=length(state.mesh.faces),
         source_count=0,
-        observation_count=length(observation_points),
+        observation_count=observation_count,
         field_only=true,
     )
     emit_event("status"; message="Reusing boundary solution for audience plane")
     field_pressure = nothing
-    field_seconds = @elapsed begin
-        field_pressure = field_for_points(
-            observation_points,
-            state.mesh,
-            state.pressure,
-            state.q_neumann,
-            state.wavenumber,
-            state.field_cache,
-            beat_backend,
-        )
+    spl_db = nothing
+    include_complex_pressure = Bool(get_value(request, "include_complex_pressure", false))
+    field_seconds = try
+        @elapsed begin
+            if beat_backend == :cuda
+                if include_complex_pressure
+                    field_pressure = evaluate_galerkin_field_cuda(
+                        observation_points,
+                        state.mesh,
+                        state.pressure,
+                        state.q_neumann,
+                        state.wavenumber,
+                        state.field_cache;
+                        weighted_sources=state.weighted_sources,
+                    )
+                    spl_db = pressure_to_spl(field_pressure, FloatType)
+                else
+                    spl_db = evaluate_galerkin_spl_cuda(
+                        observation_points,
+                        state.mesh,
+                        state.pressure,
+                        state.q_neumann,
+                        state.wavenumber,
+                        state.field_cache;
+                        weighted_sources=state.weighted_sources,
+                    )
+                end
+            else
+                field_pressure = field_for_points(
+                    observation_points,
+                    state.mesh,
+                    state.pressure,
+                    state.q_neumann,
+                    state.wavenumber,
+                    state.field_cache,
+                    beat_backend,
+                )
+                spl_db = pressure_to_spl(field_pressure, FloatType)
+            end
+        end
+    finally
+        cuda_observation === nothing || release_cuda_observation_points!(cuda_observation)
     end
-    spl_db = pressure_to_spl(field_pressure, FloatType)
     result = Dict(
         "frequency_hz" => state.frequency,
         "rows" => observation_shape[1],
@@ -428,6 +607,7 @@ function evaluate_deploy_field_request_impl(request)
             "input_geometry_s" => 0.0f0,
             "host_cache_s" => 0.0f0,
             "device_prepare_s" => 0.0f0,
+            "observation_prepare_s" => Float32(observation_prepare_seconds),
             "postprocess_s" => 0.0f0,
             "total_before_emit_s" => Float32(time() - request_started),
         ),
@@ -437,10 +617,12 @@ function evaluate_deploy_field_request_impl(request)
             "node_count" => length(state.mesh.vertices),
             "face_count" => length(state.mesh.faces),
             "field_only" => true,
+            "gpu_resident_field" => beat_backend == :cuda,
+            "gpu_generated_observation" => cuda_observation !== nothing,
             "exterior_domain" => "rigid_y0_half_space",
         ),
     )
-    if Bool(get_value(request, "include_complex_pressure", false))
+    if include_complex_pressure
         result["field_pressure"] = Dict(
             "real" => Float32.(real.(field_pressure)),
             "imag" => Float32.(imag.(field_pressure)),

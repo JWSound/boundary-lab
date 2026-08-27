@@ -16,8 +16,9 @@ npm run benchmark:level2
 ```
 
 The Electron benchmark performs a cold 54 x 54 solve, moves one cabinet by
-0.1 m for a warm 54 x 54 solve, then changes the audience plane to 200 x 200.
-Each case reports interaction-to-texture latency and timestamps the
+0.1 m for a warm 54 x 54 solve, changes the audience plane to 200 x 200, then
+moves that plane by 0.1 m for a repeated 200 x 200 evaluation. Each case
+reports interaction-to-texture latency and timestamps the
 Julia/Python/Electron/renderer boundaries.
 
 ## Results
@@ -109,3 +110,28 @@ The next useful performance tier is Julia topology/device-cache reuse across
 cabinet movements, followed by binary observation/result buffers. A sysimage or
 representative background JIT warmup remains the appropriate fix for cold-solve
 latency; it does not affect the now-subsecond plane interaction path.
+
+### GPU-resident observation evaluator
+
+The next pass retained boundary pressure, Neumann data, and weighted field
+sources on CUDA; generated compact plane coordinates on CUDA; and converted
+complex pressure to SPL before copying results to the host. The grid kernel is
+warmed during the initial solve so the first interactive plane edit does not
+pay its compilation cost.
+
+| Stage | Previous 200 x 200 | GPU first edit | GPU repeated edit |
+| --- | ---: | ---: | ---: |
+| Interaction to texture | 0.792 s | 0.592 s | 0.513 s |
+| Renderer IPC round trip | 0.457 s | 0.204 s | 0.133 s |
+| Python request preparation | 61.8 ms | 2.3 ms | 2.4 ms |
+| Julia request JSON size | 2.56 MB | 808 bytes | 808 bytes |
+| Julia measured total | 0.223 s | 0.090 s | 0.068 s |
+| CUDA observation preparation | included in field | 33.3 ms | 38.8 ms |
+| CUDA field/SPL evaluation | 143.2 ms | 28.2 ms | 28.4 ms |
+| Result JSON size | 596 KB | 596 KB | 596 KB |
+
+The first interactive 200 x 200 edit improved by 25%, and the repeated edit by
+35%. The 300 ms live-solve debounce is included in those interaction totals.
+The result side is now the dominant transport cost because JSON still carries
+40,000 SPL values and 40,000 sample indices; binary SPL plus a compact validity
+mask is the next observation-specific transport opportunity.

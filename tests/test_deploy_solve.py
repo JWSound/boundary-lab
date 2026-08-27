@@ -135,12 +135,37 @@ def test_prepare_deploy_field_request_contains_only_observation_data(tmp_path: P
     assert json.loads(request_path.read_text(encoding="utf-8")) == request
     assert request["schema"] == DEPLOY_FIELD_SCHEMA
     assert request["solution_key"] == payload["solutionKey"]
-    assert len(request["observation_points_m"]) == 35
-    assert request["observation_shape"] == [5, 7]
+    assert request["observation_plane"] == {
+        "width_m": 12.0,
+        "depth_m": 10.0,
+        "center_x_m": 0.0,
+        "near_m": 2.0,
+        "height_m": 1.2,
+        "pitch_deg": 0.0,
+        "yaw_deg": 0.0,
+        "roll_deg": 0.0,
+        "columns": 7,
+        "rows": 5,
+        "ground_tolerance_m": 1e-6,
+    }
     assert request["include_complex_pressure"] is False
+    assert "observation_points_m" not in request
+    assert "observation_sample_indices" not in request
     assert "mesh_file" not in request
     assert "boundary_neumann" not in request
     assert "proximity" not in request
+
+
+def test_prepare_deploy_cpu_field_request_keeps_explicit_points(tmp_path: Path) -> None:
+    payload = _payload()
+    payload.update({"solutionKey": "cpu-boundary", "backend": "cpu"})
+
+    _, request = prepare_deploy_field_request(payload, tmp_path)
+
+    assert len(request["observation_points_m"]) == 35
+    assert request["observation_shape"] == [5, 7]
+    assert request["observation_sample_indices"] == list(range(35))
+    assert "observation_plane" not in request
 
 
 def test_prepare_deploy_solve_request_requires_exact_exported_frequency(tmp_path: Path) -> None:

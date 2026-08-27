@@ -157,6 +157,21 @@ class DeployObservationPlane:
         sample_indices = np.flatnonzero(points[:, 1] >= -GROUND_TOLERANCE_M).astype(np.int64)
         return points[sample_indices], sample_indices
 
+    def wire(self) -> dict[str, float | int]:
+        return {
+            "width_m": self.width_m,
+            "depth_m": self.depth_m,
+            "center_x_m": self.center_x_m,
+            "near_m": self.near_m,
+            "height_m": self.height_m,
+            "pitch_deg": self.pitch_deg,
+            "yaw_deg": self.yaw_deg,
+            "roll_deg": self.roll_deg,
+            "columns": self.columns,
+            "rows": self.rows,
+            "ground_tolerance_m": GROUND_TOLERANCE_M,
+        }
+
 
 @dataclass(frozen=True)
 class DeployPackageData:
@@ -526,6 +541,7 @@ def prepare_deploy_solve_request(
         "observation_points_m": points_m.tolist(),
         "observation_shape": [observation.rows, observation.columns],
         "observation_sample_indices": observation_sample_indices.tolist(),
+        "observation_plane": observation.wire(),
         "density_kg_per_m3": float(medium.get("density_kg_per_m3", 1.21)),
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
@@ -578,16 +594,20 @@ def prepare_deploy_field_request(payload: object, work_dir: str | Path) -> tuple
     points_m, observation_sample_indices = observation.points()
     if points_m.shape[0] == 0:
         raise ValueError("Deploy observation plane has no sampling points on or above the ground plane.")
-    request = {
+    backend = str(payload.get("backend", "cuda")).strip().lower()
+    request: dict[str, Any] = {
         "schema": DEPLOY_FIELD_SCHEMA,
         "schema_version": 1,
-        "beat_engine_backend": str(payload.get("backend", "cuda")),
+        "beat_engine_backend": backend,
         "solution_key": solution_key,
-        "observation_points_m": points_m.tolist(),
-        "observation_shape": [observation.rows, observation.columns],
-        "observation_sample_indices": observation_sample_indices.tolist(),
         "include_complex_pressure": bool(payload.get("includeComplexPressure", False)),
     }
+    if backend == "cuda":
+        request["observation_plane"] = observation.wire()
+    else:
+        request["observation_points_m"] = points_m.tolist()
+        request["observation_shape"] = [observation.rows, observation.columns]
+        request["observation_sample_indices"] = observation_sample_indices.tolist()
     work_path = Path(work_dir)
     work_path.mkdir(parents=True, exist_ok=True)
     request_path = work_path / "field-request.json"

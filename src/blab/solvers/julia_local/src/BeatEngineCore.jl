@@ -45,6 +45,11 @@ export BoundaryMesh,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
     release_cuda_field_evaluation_cache!,
+    build_cuda_observation_points,
+    release_cuda_observation_points!,
+    build_cuda_weighted_field_sources,
+    release_cuda_weighted_field_sources!,
+    evaluate_galerkin_spl_cuda,
     build_cuda_image_singular_correction_cache,
     build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
@@ -1203,6 +1208,18 @@ function build_cuda_field_evaluation_cache(args...; kwargs...)
     error("CUDA field-evaluation cache requested, but CUDA.jl is not loaded.")
 end
 
+function build_cuda_observation_points(args...; kwargs...)
+    error("CUDA observation-point generation requested, but CUDA.jl is not loaded.")
+end
+
+function build_cuda_weighted_field_sources(args...; kwargs...)
+    error("CUDA weighted field sources requested, but CUDA.jl is not loaded.")
+end
+
+function evaluate_galerkin_spl_cuda(args...; kwargs...)
+    error("CUDA SPL field evaluation requested, but CUDA.jl is not loaded.")
+end
+
 function build_cuda_burton_miller_identity_cache(args...; kwargs...)
     error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
 end
@@ -1230,6 +1247,8 @@ function evaluate_galerkin_field_cuda(args...; kwargs...)
 end
 
 release_cuda_field_evaluation_cache!(cache) = nothing
+release_cuda_observation_points!(cache) = nothing
+release_cuda_weighted_field_sources!(cache) = nothing
 
 function build_rocm_regular_assembly_cache(args...; kwargs...)
     error("ROCm regular-pair assembly cache requested, but AMDGPU.jl is not loaded.")
@@ -1313,15 +1332,22 @@ end
 
 _cuda_use_matrix_free_burton_miller_rhs(operators) = size(operators.single_layer, 1) > 768
 
-function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMillerIdentityCache, q_neumann, k::T) where {T<:AbstractFloat}
+function solve_burton_miller_neumann(
+    operators,
+    identity_cache::CudaBurtonMillerIdentityCache,
+    q_neumann,
+    k::T;
+    return_gpu::Bool=false,
+) where {T<:AbstractFloat}
     get(operators, :on_gpu, false) || error("Cached CUDA solve requires GPU-resident operators.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     coupling = Complex{T}(0, 1) / k
     d_q_neumann = d_lhs = d_rhs_operator = d_rhs = d_pressure = nothing
     pressure = nothing
+    neumann_on_gpu = q_neumann isa cuda.CuArray
     try
-        d_q_neumann = cuda.CuArray(q_neumann)
+        d_q_neumann = neumann_on_gpu ? q_neumann : cuda.CuArray(q_neumann)
         d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
         if _cuda_use_matrix_free_burton_miller_rhs(operators)
             d_rhs = _cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
@@ -1332,9 +1358,15 @@ function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMiller
             d_rhs = d_rhs_operator * d_q_neumann
         end
         d_pressure = d_lhs \ d_rhs
-        pressure = Complex{T}.(Array(d_pressure))
+        pressure = return_gpu ? d_pressure : Complex{T}.(Array(d_pressure))
     finally
-        for item in (d_q_neumann, d_lhs, d_rhs_operator, d_rhs, d_pressure)
+        for item in (
+            neumann_on_gpu ? nothing : d_q_neumann,
+            d_lhs,
+            d_rhs_operator,
+            d_rhs,
+            return_gpu ? nothing : d_pressure,
+        )
             item === nothing && continue
             cuda.unsafe_free!(item)
         end

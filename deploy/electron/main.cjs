@@ -263,8 +263,18 @@ function createWindow() {
             highResolutionStarted,
             'warm_plane_200x200'
           );
+          if (highResolution.error) return { cases: [cold, warm, highResolution] };
+
+          const planeX = document.querySelector('.right-panel input[aria-label="X"]');
+          const repeatedPlaneStarted = performance.now();
+          setNativeValue(planeX, Number(planeX.value) + 0.1);
+          const repeatedPlane = await waitForProfile(
+            Number(highResolution.profile.generation),
+            repeatedPlaneStarted,
+            'warm_plane_repeat_200x200'
+          );
           return {
-            cases: [cold, warm, highResolution],
+            cases: [cold, warm, highResolution, repeatedPlane],
             final_grid: document.querySelector('.plane-resolution-row output')?.textContent?.trim() || null,
           };
         })()`);
