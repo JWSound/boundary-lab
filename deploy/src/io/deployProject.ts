@@ -1,7 +1,7 @@
-import type { Fidelity, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "../model/types";
+import type { Fidelity, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "../model/types";
 
 export const DEPLOY_PROJECT_SCHEMA = "boundary-lab-deploy-project";
-export const DEPLOY_PROJECT_SCHEMA_VERSION = 2;
+export const DEPLOY_PROJECT_SCHEMA_VERSION = 3;
 
 export interface DeployProject {
   schema: typeof DEPLOY_PROJECT_SCHEMA;
@@ -13,9 +13,29 @@ export interface DeployProject {
     source_file: string | null;
   };
   sources: SourceConfiguration[];
+  microphones: MicrophoneConfiguration[];
   observation_plane: ObservationPlane;
   selected_frequency_hz: number;
   requested_fidelity: Fidelity;
+}
+
+function microphoneConfiguration(value: unknown, index: number): MicrophoneConfiguration {
+  const microphone = record(value, `microphones[${index}]`);
+  if (typeof microphone.id !== "string" || microphone.id.trim().length === 0) {
+    throw new Error(`microphones[${index}].id must be a non-empty string.`);
+  }
+  if (typeof microphone.name !== "string" || microphone.name.trim().length === 0) {
+    throw new Error(`microphones[${index}].name must be a non-empty string.`);
+  }
+  const positionHeightM = finite(microphone.positionHeightM, `microphones[${index}].positionHeightM`);
+  if (positionHeightM < 0) throw new Error(`microphones[${index}].positionHeightM cannot be below ground.`);
+  return {
+    id: microphone.id,
+    name: microphone.name.trim(),
+    positionX: finite(microphone.positionX, `microphones[${index}].positionX`),
+    positionHeightM,
+    positionZ: finite(microphone.positionZ, `microphones[${index}].positionZ`),
+  };
 }
 
 function record(value: unknown, label: string): Record<string, unknown> {
@@ -121,6 +141,16 @@ export function parseDeployProject(contents: string): DeployProject {
   if (new Set(sources.map((source) => source.id)).size !== sources.length) {
     throw new Error("Every project source must have a unique id.");
   }
+  const microphonesValue = project.microphones;
+  if (!Array.isArray(microphonesValue)) throw new Error("microphones must be an array.");
+  const microphones = microphonesValue.map(microphoneConfiguration);
+  if (new Set(microphones.map((microphone) => microphone.id)).size !== microphones.length) {
+    throw new Error("Every project microphone must have a unique id.");
+  }
+  const objectIds = new Set(sources.map((source) => source.id));
+  if (microphones.some((microphone) => objectIds.has(microphone.id) || microphone.id === "audience-plane")) {
+    throw new Error("Project scene-object ids must be unique.");
+  }
   const frequencyHz = positive(project.selected_frequency_hz, "selected_frequency_hz");
   const requestedFidelity = project.requested_fidelity;
   if (requestedFidelity !== "pattern" && requestedFidelity !== "boundary" && requestedFidelity !== "coupled") {
@@ -136,6 +166,7 @@ export function parseDeployProject(contents: string): DeployProject {
       source_file: packageReference.source_file,
     },
     sources,
+    microphones,
     observation_plane: observationPlane(project.observation_plane),
     selected_frequency_hz: frequencyHz,
     requested_fidelity: requestedFidelity,
@@ -146,6 +177,7 @@ export function createDeployProject(
   name: string,
   pkg: LoadedSpeakerPackage,
   sources: SourceConfiguration[],
+  microphones: MicrophoneConfiguration[],
   observation: ObservationPlane,
   selectedFrequencyHz: number,
   requestedFidelity: Fidelity,
@@ -156,6 +188,7 @@ export function createDeployProject(
     name,
     package: { id: pkg.id, name: pkg.manifest.name, source_file: pkg.sourcePath },
     sources,
+    microphones,
     observation_plane: observation,
     selected_frequency_hz: selectedFrequencyHz,
     requested_fidelity: requestedFidelity,

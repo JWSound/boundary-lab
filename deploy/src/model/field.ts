@@ -2,6 +2,8 @@ import { Euler, MathUtils, Quaternion, Vector3 } from "three";
 import type {
   FieldFrame,
   LoadedSpeakerPackage,
+  MicrophoneConfiguration,
+  MicrophoneResponseSet,
   ObservationPlane,
   PatternLookup,
   SourceConfiguration,
@@ -33,6 +35,84 @@ function selectKth(values: Float32Array, target: number): number {
     else return values[target];
   }
   return values[target];
+}
+
+export function computeMicrophonePatternResponses(
+  pkg: LoadedSpeakerPackage,
+  sources: SpeakerInstance[],
+  configs: SourceConfiguration[],
+  microphones: MicrophoneConfiguration[],
+): MicrophoneResponseSet {
+  const frequencyIndices = Array.from(pkg.frequenciesHz.keys()).sort(
+    (left, right) => pkg.frequenciesHz[left] - pkg.frequenciesHz[right],
+  );
+  const frequenciesHz = Float64Array.from(frequencyIndices, (index) => pkg.frequenciesHz[index]);
+  if (sources.length !== configs.length) throw new Error("Microphone responses require matching source instances and configurations.");
+  const sourceDirectionData = microphones.map((microphone) => sources.map((source) => {
+    const direction = new Vector3(
+      microphone.positionX - source.position[0],
+      microphone.positionHeightM - source.position[1],
+      microphone.positionZ - source.position[2],
+    );
+    const distance = Math.max(0.02, direction.length());
+    direction.multiplyScalar(1 / distance).applyQuaternion(new Quaternion().setFromEuler(new Euler(
+      MathUtils.degToRad(source.pitchDeg),
+      MathUtils.degToRad(source.yawDeg),
+      MathUtils.degToRad(source.rollDeg),
+      "YXZ",
+    )).invert());
+    const packageDirection = new Vector3(direction.x, direction.z, -direction.y);
+    let directionIndex = 0;
+    let bestDot = -Infinity;
+    for (let index = 0; index < pkg.pressureShape[2]; index += 1) {
+      const offset = index * 3;
+      const dot = packageDirection.x * pkg.directionsPackage[offset]
+        + packageDirection.y * pkg.directionsPackage[offset + 1]
+        + packageDirection.z * pkg.directionsPackage[offset + 2];
+      if (dot > bestDot) {
+        bestDot = dot;
+        directionIndex = index;
+      }
+    }
+    return { distance, directionIndex, referenceRadius: pkg.radiiM[directionIndex] };
+  }));
+  const excitationCount = pkg.pressureShape[1];
+  const directionCount = pkg.pressureShape[2];
+  return {
+    frequenciesHz,
+    traces: microphones.map((microphone, microphoneIndex) => {
+      const splDb = new Float32Array(frequencyIndices.length);
+      let clippedNearFieldSamples = 0;
+      frequencyIndices.forEach((frequencyIndex, sortedIndex) => {
+        const frequency = pkg.frequenciesHz[frequencyIndex];
+        const wavenumber = (2 * Math.PI * frequency) / pkg.manifest.medium.sound_speed_m_per_s;
+        let totalReal = 0;
+        let totalImag = 0;
+        sources.forEach((_source, sourceIndex) => {
+          const sample = sourceDirectionData[microphoneIndex][sourceIndex];
+          const config = configs[sourceIndex];
+          const pressureIndex = (frequencyIndex * excitationCount) * directionCount + sample.directionIndex;
+          const sampleReal = pkg.pressure.real[pressureIndex];
+          const sampleImag = pkg.pressure.imag[pressureIndex];
+          const scale = sample.referenceRadius / sample.distance;
+          const propagationPhase = wavenumber * (sample.distance - sample.referenceRadius);
+          const propagationReal = Math.cos(propagationPhase) * scale;
+          const propagationImag = Math.sin(propagationPhase) * scale;
+          const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
+          const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
+          const driveMagnitude = Math.pow(10, config.levelDb / 20) * config.polarity;
+          const drivePhase = 2 * Math.PI * frequency * config.delayMs / 1000;
+          const driveReal = driveMagnitude * Math.cos(drivePhase);
+          const driveImag = driveMagnitude * Math.sin(drivePhase);
+          totalReal += fieldReal * driveReal - fieldImag * driveImag;
+          totalImag += fieldReal * driveImag + fieldImag * driveReal;
+          if (sample.distance < sample.referenceRadius) clippedNearFieldSamples += 1;
+        });
+        splDb[sortedIndex] = 20 * Math.log10(Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag)) / PRESSURE_REFERENCE_PA);
+      });
+      return { microphoneId: microphone.id, microphoneName: microphone.name, splDb, clippedNearFieldSamples };
+    }),
+  };
 }
 
 function percentileSpread(values: Float32Array): number {

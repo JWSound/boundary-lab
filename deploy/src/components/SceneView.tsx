@@ -21,7 +21,7 @@ import {
   Vector2,
   Vector3,
 } from "three";
-import type { FieldFrame, LoadedSpeakerPackage, ObservationPlane, SpeakerInstance } from "../model/types";
+import type { FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SpeakerInstance } from "../model/types";
 import { SOURCE_GROUND_CLEARANCE_M, SOURCE_SURFACE_PADDING_M } from "../model/field";
 
 export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
@@ -38,6 +38,8 @@ export interface SourcePoseUpdate {
 export interface SourceGroupPoseUpdate extends SourcePoseUpdate {
   id: string;
 }
+
+export type MicrophonePoseUpdate = Pick<MicrophoneConfiguration, "positionX" | "positionHeightM" | "positionZ">;
 
 export type ObservationPoseUpdate = Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">;
 
@@ -58,6 +60,7 @@ interface SceneBounds {
 interface SceneViewProps {
   pkg: LoadedSpeakerPackage;
   sources: SpeakerInstance[];
+  microphones: MicrophoneConfiguration[];
   observation: ObservationPlane;
   field: FieldFrame;
   selectedInstances: readonly string[];
@@ -67,11 +70,14 @@ interface SceneViewProps {
   onSelectInstance: (id: string | null, additive?: boolean) => void;
   onTransformSource: (id: string, pose: SourcePoseUpdate) => void;
   onTransformSources: (poses: SourceGroupPoseUpdate[]) => void;
+  onTransformMicrophone: (id: string, pose: MicrophonePoseUpdate) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
   onResizeObservation: (resize: ObservationResizeUpdate) => void;
   onManipulationEnd: () => void;
   onFieldTextureReady?: (profile: FieldTextureProfile) => void;
 }
+
+const MICROPHONE_COLORS = ["#ffdf00", "#00dfff", "#ff6f00", "#7fe35b", "#e08cff", "#ff748c"];
 
 export interface FieldTextureProfile {
   pointCount: number;
@@ -778,6 +784,134 @@ function SpeakerGeometry({
   );
 }
 
+function MicrophoneGeometry({
+  microphone,
+  color,
+  selected,
+  active,
+  transformMode,
+  onSelect,
+  onTransform,
+  onManipulationEnd,
+}: {
+  microphone: MicrophoneConfiguration;
+  color: string;
+  selected: boolean;
+  active: boolean;
+  transformMode: SceneTransformMode;
+  onSelect: (additive: boolean) => void;
+  onTransform: (pose: MicrophonePoseUpdate) => void;
+  onManipulationEnd: () => void;
+}) {
+  const microphoneRef = useRef<Group>(null);
+  const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
+  const camera = useThree((state) => state.camera);
+  const dragState = useRef<{ pointerId: number; plane: Plane; startPoint: Vector3; startPosition: Vector3 } | null>(null);
+  const finishDrag = (flush = false) => {
+    const wasDragging = dragState.current !== null;
+    dragState.current = null;
+    orbitControls && (orbitControls.enabled = true);
+    if (flush && wasDragging) onManipulationEnd();
+  };
+  useEffect(() => {
+    const finish = () => finishDrag(true);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    window.addEventListener("blur", finish);
+    return () => {
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      window.removeEventListener("blur", finish);
+    };
+  }, [onManipulationEnd, orbitControls]);
+  const startDrag = (event: ThreeEvent<PointerEvent>) => {
+    if (event.button !== 0) return;
+    event.stopPropagation();
+    if (!selected) onSelect(false);
+    const origin = new Vector3(microphone.positionX, microphone.positionHeightM, microphone.positionZ);
+    const plane = new Plane().setFromNormalAndCoplanarPoint(camera.getWorldDirection(new Vector3()).normalize(), origin);
+    const startPoint = event.ray.intersectPlane(plane, new Vector3());
+    if (!startPoint) return;
+    dragState.current = { pointerId: event.pointerId, plane, startPoint, startPosition: origin };
+    orbitControls && (orbitControls.enabled = false);
+    (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
+  };
+  const moveDrag = (event: ThreeEvent<PointerEvent>) => {
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if ((event.nativeEvent.buttons & 1) === 0) return finishDrag(true);
+    event.stopPropagation();
+    const point = event.ray.intersectPlane(drag.plane, new Vector3());
+    if (!point || !finiteVector(point)) return;
+    onTransform({
+      positionX: drag.startPosition.x + point.x - drag.startPoint.x,
+      positionHeightM: drag.startPosition.y,
+      positionZ: drag.startPosition.z + point.z - drag.startPoint.z,
+    });
+  };
+  const endDrag = (event: ThreeEvent<PointerEvent>) => {
+    if (!dragState.current || dragState.current.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    finishDrag(true);
+    (event.target as unknown as { releasePointerCapture?: (pointerId: number) => void }).releasePointerCapture?.(event.pointerId);
+  };
+  const applyGizmo = () => {
+    const object = microphoneRef.current;
+    if (!object || !finiteVector(object.position)) return;
+    object.position.y = Math.max(0, object.position.y);
+    onTransform({ positionX: object.position.x, positionHeightM: object.position.y, positionZ: object.position.z });
+  };
+  return (
+    <>
+      <group
+        ref={microphoneRef}
+        position={[microphone.positionX, microphone.positionHeightM, microphone.positionZ]}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(event.nativeEvent.ctrlKey || event.nativeEvent.metaKey);
+        }}
+      >
+        <mesh
+          renderOrder={22}
+          onPointerDown={startDrag}
+          onPointerMove={moveDrag}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        >
+          <sphereGeometry args={[active ? 0.105 : 0.08, 18, 12]} />
+          <meshBasicMaterial color={color} depthTest={false} toneMapped={false} />
+        </mesh>
+        <mesh rotation={[0, 0, Math.PI / 2]} renderOrder={21}>
+          <cylinderGeometry args={[0.008, 0.008, 0.42, 8]} />
+          <meshBasicMaterial color={selected ? "#ffffff" : color} depthTest={false} toneMapped={false} />
+        </mesh>
+        <mesh rotation={[Math.PI / 2, 0, 0]} renderOrder={21}>
+          <cylinderGeometry args={[0.008, 0.008, 0.42, 8]} />
+          <meshBasicMaterial color={selected ? "#ffffff" : color} depthTest={false} toneMapped={false} />
+        </mesh>
+        {active && (
+          <Html position={[0.18, 0.18, 0]} center distanceFactor={10}>
+            <div className="scene-label">{microphone.name.toUpperCase()}</div>
+          </Html>
+        )}
+      </group>
+      {active && transformMode === "translate" && (
+        <TransformControls
+          object={microphoneRef as MutableRefObject<Group>}
+          mode="translate"
+          space="world"
+          size={0.82}
+          showX
+          showY
+          showZ
+          onObjectChange={applyGizmo}
+          onMouseUp={onManipulationEnd}
+        />
+      )}
+    </>
+  );
+}
+
 function selectionWorldBounds(pkg: LoadedSpeakerPackage, instances: readonly SpeakerInstance[]): SceneBounds {
   const cabinetBounds = packageSceneBounds(pkg);
   const minimum: [number, number, number] = [Infinity, Infinity, Infinity];
@@ -1081,6 +1215,19 @@ function AcousticScene(props: SceneViewProps) {
           onManipulationEnd={props.onManipulationEnd}
         />
       )}
+      {props.microphones.map((microphone, index) => (
+        <MicrophoneGeometry
+          key={microphone.id}
+          microphone={microphone}
+          color={MICROPHONE_COLORS[index % MICROPHONE_COLORS.length]}
+          selected={selectedInstances.has(microphone.id)}
+          active={props.activeInstance === microphone.id}
+          transformMode={props.transformMode}
+          onSelect={(additive) => props.onSelectInstance(microphone.id, additive)}
+          onTransform={(pose) => props.onTransformMicrophone(microphone.id, pose)}
+          onManipulationEnd={props.onManipulationEnd}
+        />
+      ))}
       <FieldPlane
         observation={props.observation}
         field={props.field}

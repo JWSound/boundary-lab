@@ -29,13 +29,15 @@ npm start
 - Complex-sums Level 1 pattern pressure on an editable audience plane using Boundary Lab's `exp(-i omega t)` convention.
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
-- Reports average, peak, and P10-P90 coverage spread while the scene changes.
+- Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
+- Plots every microphone's package-derived SPL response across the exact exported frequency grid.
+- Calculates explicit Level 2 complex microphone pressure across the full package grid, streams progress, and turns the Calculate button into a Stop control while the sweep is active.
 - Runs an explicit single-frequency, multi-cabinet Level 2 fixed-Neumann exterior solve with an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
 - Keeps cabinet geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between cabinet surfaces for stable close-pair quadrature.
 - Uses a triangle BVH to measure exact inter-cabinet surface spacing before a solve.
-- Saves the editable scene as a readable `.blabdeploy.json` project.
+- Saves the editable scene, including microphones, as a strict schema-v3 `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
 Boundary fidelity is available in the desktop app for Level 2 packages loaded from disk. Coupled fidelity remains unavailable, and browser-only sessions retain the Level 1 preview.
@@ -51,7 +53,7 @@ npm run test:desktop
 npm run test:level2
 ```
 
-`test:package` loads the repository's S218BP LOD package, verifies its real exterior mesh and pattern arrays, and computes a finite observation-plane preview. `test:desktop` loads the production renderer in a hidden Electron window and checks that the application shell, WebGL canvas, package card, and analysis metrics are present without runtime console errors. `test:level2` is the slower NVIDIA/CUDA integration smoke test; it crosses the Electron IPC, Python preparation, persistent Julia worker, BEAT CUDA solve, and renderer result path, then moves the cabinet and verifies that live solving refreshes the result.
+`test:package` loads the repository's S218BP LOD package, verifies its real exterior mesh and pattern arrays, and computes a finite observation-plane preview. `test:desktop` loads the production renderer in a hidden Electron window and checks the application shell, WebGL canvas, microphone creation and manipulation, response trace, and project loading without runtime console errors. `test:level2` is the slower NVIDIA/CUDA integration smoke test; it crosses the Electron IPC, Python preparation, persistent Julia worker, BEAT CUDA solve, and renderer result path, then moves the cabinet and verifies that live solving refreshes the result.
 
 For a timestamped cold/warm movement and 200 x 200 plane benchmark, run
 `npm run benchmark:level2`. The harness prints one JSON record containing

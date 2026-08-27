@@ -77,6 +77,8 @@ class DeployWorkerClient {
     if (!job) return;
     if (message.type === "status" || message.type === "initialized") {
       if (job.sender && !job.sender.isDestroyed()) job.sender.send("deploy:solve-status", message);
+    } else if (message.type === "microphone-progress") {
+      if (job.sender && !job.sender.isDestroyed()) job.sender.send("deploy:microphone-sweep-progress", message);
     } else if (message.type === "result") {
       job.result = message.result;
       job.resultTransport = transport;
@@ -84,8 +86,8 @@ class DeployWorkerClient {
       job.workerProfile = message.metrics;
     } else if (message.type === "completed") {
       this.pending.delete(message.id);
-      if (job.kind === "warmup") {
-        job.resolve();
+      if (job.kind === "warmup" || job.kind === "cancel") {
+        job.resolve(job.kind === "cancel" ? Boolean(message.cancelled) : undefined);
         return;
       }
       if (job.result) {
@@ -101,10 +103,22 @@ class DeployWorkerClient {
         };
         job.resolve(job.result);
       }
-      else job.reject(new Error("Level 2 solve completed without returning a field."));
+      else job.reject(new Error(`${job.kind === "microphone-sweep" ? "Microphone sweep" : "Level 2 solve"} completed without returning a field.`));
     } else if (message.type === "cancelled") {
       this.pending.delete(message.id);
-      job.reject(new Error("Level 2 solve was cancelled."));
+      if (job.kind === "microphone-sweep") {
+        job.resolve({
+          cancelled: true,
+          frequencies_hz: [],
+          microphone_ids: [],
+          spl_db: [],
+          pressure: { real: [], imag: [] },
+          completed_count: Number(message.completed_count || 0),
+          total_count: 0,
+        });
+      } else {
+        job.reject(new Error("Level 2 solve was cancelled."));
+      }
     } else if (message.type === "failed") {
       this.pending.delete(message.id);
       job.reject(new Error(message.error || "Level 2 solve failed."));
@@ -121,18 +135,18 @@ class DeployWorkerClient {
     this.rejectReady = null;
   }
 
-  async solve(payload, sender) {
+  async solve(payload, sender, kind = "solve", operation = "solve") {
     const invokedAt = performance.now();
     await this.ensureStarted();
     const workerReadyWaitMs = performance.now() - invokedAt;
     if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
     const id = this.nextId++;
     const encodeStarted = performance.now();
-    const request = `${JSON.stringify({ id, operation: "solve", payload })}\n`;
+    const request = `${JSON.stringify({ id, operation, payload })}\n`;
     const requestJsonEncodeMs = performance.now() - encodeStarted;
     return new Promise((resolve, reject) => {
       this.pending.set(id, {
-        kind: "solve",
+        kind,
         resolve,
         reject,
         sender,
@@ -144,6 +158,24 @@ class DeployWorkerClient {
         requestJsonEncodeMs,
         requestBytes: Buffer.byteLength(request, "utf8"),
       });
+      this.process.stdin.write(request);
+    });
+  }
+
+  async microphoneSweep(payload, sender) {
+    return this.solve(payload, sender, "microphone-sweep", "microphone_sweep");
+  }
+
+  async cancelMicrophoneSweep() {
+    await this.ensureStarted();
+    if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
+    const active = [...this.pending.entries()].find(([, job]) => job.kind === "microphone-sweep");
+    if (!active) return false;
+    const [targetId] = active;
+    const id = this.nextId++;
+    const request = `${JSON.stringify({ id, operation: "cancel", target_id: targetId })}\n`;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { kind: "cancel", resolve, reject, sender: null, result: null });
       this.process.stdin.write(request);
     });
   }
@@ -215,7 +247,7 @@ function createWindow() {
         const smokeProjectPath = join(app.getPath("temp"), `boundary-lab-deploy-${process.pid}.blabdeploy.json`);
         const smokeProject = {
           schema: "boundary-lab-deploy-project",
-          schema_version: 2,
+          schema_version: 3,
           name: "Loaded Project Smoke",
           package: {
             id: "smoke-package",
@@ -226,6 +258,7 @@ function createWindow() {
             { id: "subwoofer-1", positionX: -2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
             { id: "subwoofer-2", positionX: 2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
           ],
+          microphones: [],
           observation_plane: { widthM: 18, depthM: 16, centerXM: 1, nearM: 2, heightM: 1.4, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 36, rows: 32, heatmapMinimumDb: 55, heatmapMaximumDb: 135, heatmapBandingDb: 5 },
           selected_frequency_hz: 80,
           requested_fidelity: "pattern",
@@ -416,18 +449,55 @@ function createWindow() {
           requestAnimationFrame(() => {
             const sourceCountAfterAdd = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
             const addedId = document.querySelector('.tree-button[aria-selected="true"]')?.getAttribute('data-object-id');
-            const remove = document.querySelector('button[aria-label="Remove selected speakers"]');
+            const remove = document.querySelector('button[aria-label="Remove selected objects"]');
             const removeEnabled = !remove?.disabled;
             remove?.click();
-            requestAnimationFrame(() => resolve({
-              selectedBeforeAdd,
-              selectedCountBeforeAdd,
-              sourceCountBeforeAdd,
-              sourceCountAfterAdd,
-              addedId,
-              removeEnabled,
-              sourceCountAfterRemove: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length
-            }));
+            requestAnimationFrame(() => {
+              const sourceCountAfterRemove = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+              document.querySelector('button[aria-label="Add microphone"]')?.click();
+              requestAnimationFrame(() => {
+                const microphone = document.querySelector('.tree-button[data-object-id^="microphone-"]');
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
+                requestAnimationFrame(() => {
+                  const microphoneTranslateMode = viewport?.getAttribute('data-transform-mode');
+                  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+                  requestAnimationFrame(() => {
+                    const microphoneRejectsRotation = viewport?.getAttribute('data-transform-mode') === 'translate';
+                    const bemButton = document.querySelector('.bem-pressure-button');
+                    const bemButtonLabel = bemButton?.textContent?.trim();
+                    bemButton?.click();
+                    requestAnimationFrame(() => {
+                      const bemStopLabel = bemButton?.textContent?.trim();
+                      bemButton?.click();
+                      const deadline = Date.now() + 7000;
+                      const finish = () => {
+                        const resetLabel = bemButton?.textContent?.trim() || '';
+                        if (resetLabel.includes('Calculate BEM Pressure') || Date.now() >= deadline) {
+                          resolve({
+                            selectedBeforeAdd,
+                            selectedCountBeforeAdd,
+                            sourceCountBeforeAdd,
+                            sourceCountAfterAdd,
+                            addedId,
+                            removeEnabled,
+                            sourceCountAfterRemove,
+                            microphoneId: microphone?.getAttribute('data-object-id'),
+                            microphoneGrabPointCount: viewport?.getAttribute('data-grab-point-count'),
+                            microphoneTranslateMode,
+                            microphoneRejectsRotation,
+                            responseTraceCount: document.querySelectorAll('.pattern-trace').length,
+                            bemButtonLabel,
+                            bemStopLabel,
+                            bemResetLabel: resetLabel
+                          });
+                        } else setTimeout(finish, 50);
+                      };
+                      finish();
+                    });
+                  });
+                });
+              });
+            });
           });
         });
       })`);
@@ -445,24 +515,27 @@ function createWindow() {
           check();
         })`);
         level2Move = await window.webContents.executeJavaScript(`new Promise((resolve) => {
-          const statusPanel = document.querySelector('.solve-status');
-          const initialRevision = Number(statusPanel?.getAttribute('data-solve-revision') || 0);
-          const input = document.querySelector('.right-panel .number-row input');
-          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-          if (!input || !setter) return resolve({ initialRevision, moved: false });
-          setter.call(input, '-1');
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          const deadline = Date.now() + 30000;
-          const check = () => {
-            const status = document.querySelector('.solve-status strong')?.textContent || '';
-            const revision = Number(statusPanel?.getAttribute('data-solve-revision') || 0);
-            const error = document.querySelector('.error-toast span')?.textContent || '';
-            if ((status.includes('Boundary solution') && revision > initialRevision) || error || Date.now() >= deadline) {
-              resolve({ initialRevision, revision, moved: input.value === '-1' && revision > initialRevision, status, error });
-            } else setTimeout(check, 50);
-          };
-          check();
+          document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
+          requestAnimationFrame(() => {
+            const statusPanel = document.querySelector('.solve-status');
+            const initialRevision = Number(statusPanel?.getAttribute('data-solve-revision') || 0);
+            const input = document.querySelector('.right-panel .number-row input');
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            if (!input || !setter) return resolve({ initialRevision, moved: false });
+            setter.call(input, '-1');
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            const deadline = Date.now() + 30000;
+            const check = () => {
+              const status = document.querySelector('.solve-status strong')?.textContent || '';
+              const revision = Number(statusPanel?.getAttribute('data-solve-revision') || 0);
+              const error = document.querySelector('.error-toast span')?.textContent || '';
+              if ((status.includes('Boundary solution') && revision > initialRevision) || error || Date.now() >= deadline) {
+                resolve({ initialRevision, revision, moved: input.value === '-1' && revision > initialRevision, status, error });
+              } else setTimeout(check, 50);
+            };
+            check();
+          });
         })`);
       }
       const snapshot = await window.webContents.executeJavaScript(`({
@@ -487,7 +560,7 @@ function createWindow() {
     setTimeout(() => {
       console.error("Deploy desktop smoke test timed out.");
       app.exit(1);
-    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 15000).unref();
+    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 30000).unref();
   }
 
   if (app.isPackaged || process.argv.includes("--built")) {
@@ -602,6 +675,8 @@ ipcMain.handle("deploy:save-project", async (_event, contents, suggestedName) =>
 });
 
 ipcMain.handle("deploy:solve-level2", async (event, payload) => deployWorker.solve(payload, event.sender));
+ipcMain.handle("deploy:microphone-sweep", async (event, payload) => deployWorker.microphoneSweep(payload, event.sender));
+ipcMain.handle("deploy:cancel-microphone-sweep", async () => deployWorker.cancelMicrophoneSweep());
 
 app.whenReady().then(() => {
   createWindow();

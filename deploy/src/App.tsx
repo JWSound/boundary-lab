@@ -6,6 +6,7 @@ import {
   Import,
   Maximize2,
   Menu,
+  Mic2,
   MousePointer2,
   Move3D,
   Pause,
@@ -21,8 +22,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourceGroupPoseUpdate, type SourcePoseUpdate } from "./components/SceneView";
+import { type BemResponseData, MicrophoneResponsePlot } from "./components/MicrophoneResponsePlot";
 import {
   browserFileHandler,
+  MicrophoneInspector,
   PackageCard,
   planeGridShape,
   PlaneResolutionInspector,
@@ -37,11 +40,12 @@ import {
   buildSourceInstance,
   buildPatternLookup,
   computeFieldFrame,
+  computeMicrophonePatternResponses,
   fieldFrameFromSpl,
   minimumSourceHeightM,
   nearestFrequencyIndex,
 } from "./model/field";
-import type { Fidelity, FieldFrame, LoadedSpeakerPackage, ObservationPlane, SourceConfiguration } from "./model/types";
+import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "./model/types";
 import { heatmapLegendGradient } from "./model/heatmap";
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
@@ -151,6 +155,7 @@ function FidelitySwitcher({
 export function App() {
   const [pkg, setPackage] = useState<LoadedSpeakerPackage>(() => createDemoPackage());
   const [sourceConfigs, setSourceConfigs] = useState<SourceConfiguration[]>(() => defaultSources(pkg));
+  const [microphones, setMicrophones] = useState<MicrophoneConfiguration[]>([]);
   const [observation, setObservation] = useState(defaultObservation);
   const [frequencyIndex, setFrequencyIndex] = useState(() => nearestFrequencyIndex(pkg, 80));
   const [fidelity, setFidelity] = useState<Fidelity>("pattern");
@@ -170,12 +175,18 @@ export function App() {
   const [projectFileName, setProjectFileName] = useState("s218bp-subwoofer-study.blabdeploy.json");
   const [savedProjectSnapshot, setSavedProjectSnapshot] = useState<string | null>(null);
   const [solveReleaseRevision, setSolveReleaseRevision] = useState(0);
+  const [microphoneSweepState, setMicrophoneSweepState] = useState<"idle" | "solving" | "complete" | "error">("idle");
+  const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
+  const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
   const packageFileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
   const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
   const sourceConfigsRef = useRef(sourceConfigs);
   const observationRef = useRef(observation);
+  const microphonesRef = useRef(microphones);
+  const microphoneSweepKeyRef = useRef<string | null>(null);
+  const stoppingMicrophoneSweep = useRef(false);
   const flushLiveSolveRef = useRef(false);
 
   useEffect(() => {
@@ -185,6 +196,10 @@ export function App() {
   useEffect(() => {
     observationRef.current = observation;
   }, [observation]);
+
+  useEffect(() => {
+    microphonesRef.current = microphones;
+  }, [microphones]);
 
   const recordFieldTexture = useCallback((texture: FieldTextureProfile) => {
     const pending = pendingRenderProfile.current;
@@ -212,9 +227,15 @@ export function App() {
   const selectedInstance = selectedInstances.at(-1) ?? null;
   const selectedSourceIndex = sourceConfigs.findIndex((source) => source.id === selectedInstance);
   const selectedSource = selectedSourceIndex >= 0 ? sourceConfigs[selectedSourceIndex] : null;
+  const selectedMicrophoneIndex = microphones.findIndex((microphone) => microphone.id === selectedInstance);
+  const selectedMicrophone = selectedMicrophoneIndex >= 0 ? microphones[selectedMicrophoneIndex] : null;
   const selectedSourceIds = useMemo(
     () => selectedInstances.filter((id) => sourceConfigs.some((source) => source.id === id)),
     [selectedInstances, sourceConfigs],
+  );
+  const selectedMicrophoneIds = useMemo(
+    () => selectedInstances.filter((id) => microphones.some((microphone) => microphone.id === id)),
+    [microphones, selectedInstances],
   );
   const sourceMinimumHeightM = minimumSourceHeightM(pkg);
   const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
@@ -223,6 +244,17 @@ export function App() {
     () => computeFieldFrame(pkg, sources, sourceConfigs, observation, frequencyIndex, lookup),
     [pkg, sources, sourceConfigs, observationAcousticKey, frequencyIndex, lookup],
   );
+  const microphonePatternResponses = useMemo(
+    () => computeMicrophonePatternResponses(pkg, sources, sourceConfigs, microphones),
+    [pkg, sources, sourceConfigs, microphones],
+  );
+  const microphoneSweepKey = useMemo(() => JSON.stringify({
+    package: pkg.id,
+    sourcePath: pkg.sourcePath,
+    sources: sourceConfigs,
+    microphones,
+    frequencies: Array.from(microphonePatternResponses.frequenciesHz),
+  }), [microphonePatternResponses.frequenciesHz, microphones, pkg.id, pkg.sourcePath, sourceConfigs]);
   const currentSolveKey = useMemo(() => JSON.stringify({
     package: pkg.id,
     frequency: pkg.frequenciesHz[frequencyIndex],
@@ -239,10 +271,12 @@ export function App() {
     : patternField;
   const boundaryCurrent = fidelity === "boundary" && boundaryField !== null && boundarySolveKey === currentSolveKey;
   const boundaryAvailable = Boolean(window.boundaryLabDesktop && pkg.sourcePath && pkg.manifest.fidelity_level >= 2);
+  const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     pkg,
     sourceConfigs,
+    microphones,
     observation,
     pkg.frequenciesHz[frequencyIndex],
     fidelity,
@@ -253,6 +287,7 @@ export function App() {
     solveGeneration.current += 1;
     setPackage(next);
     setSourceConfigs(defaultSources(next));
+    setMicrophones([]);
     setSelectedInstances(["subwoofer-1"]);
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
     setFidelity("pattern");
@@ -262,6 +297,8 @@ export function App() {
     setSolveRevision(0);
     setSolveState("idle");
     setLiveSolveEnabled(false);
+    setMicrophoneSweepState("idle");
+    setBemMicrophoneResponses(null);
     setTransformMode("select");
     setProjectName(`${next.manifest.name} Subwoofer Study`);
     setProjectFileName(`${next.manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "deploy"}-study.blabdeploy.json`);
@@ -290,6 +327,7 @@ export function App() {
       project.name,
       nextPackage,
       nextSources,
+      project.microphones,
       project.observation_plane,
       nextPackage.frequenciesHz[nextFrequencyIndex],
       nextFidelity,
@@ -297,6 +335,8 @@ export function App() {
     setPackage(nextPackage);
     setSourceConfigs(nextSources);
     sourceConfigsRef.current = nextSources;
+    setMicrophones(project.microphones);
+    microphonesRef.current = project.microphones;
     setObservation(project.observation_plane);
     observationRef.current = project.observation_plane;
     setFrequencyIndex(nextFrequencyIndex);
@@ -309,6 +349,8 @@ export function App() {
     setSolveState("idle");
     setSolveMessage("Ready for a Level 2 solve");
     setLiveSolveEnabled(false);
+    setMicrophoneSweepState("idle");
+    setBemMicrophoneResponses(null);
     setTransformMode("select");
     setProjectName(project.name);
     setProjectFileName(fileName);
@@ -319,6 +361,26 @@ export function App() {
   useEffect(() => window.boundaryLabDesktop?.onSolveStatus((status) => {
     if (status.type === "status" && status.message) setSolveMessage(status.message);
     if (status.type === "initialized") setSolveMessage("BEAT CUDA initialized");
+  }), []);
+
+  useEffect(() => window.boundaryLabDesktop?.onMicrophoneSweepProgress((progress) => {
+    setMicrophoneSweepProgress({ completed: progress.completed_count, total: progress.total_count });
+    setBemMicrophoneResponses((current) => {
+      if (!current || current.key !== microphoneSweepKeyRef.current) return current;
+      const frequencyIndex = Array.from(current.frequenciesHz).findIndex(
+        (frequency) => Math.abs(frequency - progress.frequency_hz) <= Math.max(1e-4, frequency * 1e-6),
+      );
+      if (frequencyIndex < 0) return current;
+      const traces = new Map(current.traces);
+      progress.microphone_ids.forEach((id, index) => {
+        const values = traces.get(id);
+        if (!values) return;
+        const next = values.slice();
+        next[frequencyIndex] = progress.spl_db[index];
+        traces.set(id, next);
+      });
+      return { ...current, traces };
+    });
   }), []);
 
   useEffect(() => {
@@ -485,12 +547,137 @@ export function App() {
     }
   }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, observation, patternField, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
 
+  const stopMicrophoneSweep = useCallback(async () => {
+    if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
+    stoppingMicrophoneSweep.current = true;
+    try {
+      await window.boundaryLabDesktop.cancelMicrophoneSweep();
+    } catch (caught) {
+      stoppingMicrophoneSweep.current = false;
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [microphoneSweepState]);
+
+  const calculateMicrophoneSweep = useCallback(async () => {
+    if (!window.boundaryLabDesktop || !pkg.sourcePath || microphones.length === 0) return;
+    const requestedKey = microphoneSweepKey;
+    microphoneSweepKeyRef.current = requestedKey;
+    stoppingMicrophoneSweep.current = false;
+    setLiveSolveEnabled(false);
+    setMicrophoneSweepState("solving");
+    setMicrophoneSweepProgress({ completed: 0, total: microphonePatternResponses.frequenciesHz.length });
+    setBemMicrophoneResponses({
+      key: requestedKey,
+      frequenciesHz: microphonePatternResponses.frequenciesHz.slice(),
+      traces: new Map(microphones.map((microphone) => [
+        microphone.id,
+        new Float32Array(microphonePatternResponses.frequenciesHz.length).fill(Number.NaN),
+      ])),
+    });
+    setError(null);
+    try {
+      const result = await window.boundaryLabDesktop.calculateMicrophoneSweep({
+        packagePath: pkg.sourcePath,
+        backend: "cuda",
+        sources: sourceConfigs,
+        microphones,
+      });
+      if (result.cancelled) {
+        setMicrophoneSweepState("idle");
+        return;
+      }
+      if (microphoneSweepKeyRef.current !== requestedKey) return;
+      const traces = new Map<string, Float32Array>();
+      result.microphone_ids.forEach((id, index) => traces.set(id, Float32Array.from(result.spl_db[index])));
+      setBemMicrophoneResponses({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces });
+      setMicrophoneSweepProgress({ completed: result.completed_count, total: result.total_count });
+      setMicrophoneSweepState("complete");
+    } catch (caught) {
+      if (stoppingMicrophoneSweep.current) {
+        setMicrophoneSweepState("idle");
+      } else {
+        setMicrophoneSweepState("error");
+        setError(caught instanceof Error ? caught.message : String(caught));
+      }
+    } finally {
+      stoppingMicrophoneSweep.current = false;
+    }
+  }, [microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, pkg.sourcePath, sourceConfigs]);
+
+  const calculateOrStopMicrophoneSweep = () => {
+    if (microphoneSweepState === "solving") void stopMicrophoneSweep();
+    else void calculateMicrophoneSweep();
+  };
+
+  useEffect(() => {
+    if (microphoneSweepState !== "solving" || microphoneSweepKeyRef.current === microphoneSweepKey) return;
+    void stopMicrophoneSweep();
+  }, [microphoneSweepKey, microphoneSweepState, stopMicrophoneSweep]);
+
   const updateSelectedSource = (next: SourceConfiguration) => {
     const grounded = {
       ...next,
       positionHeightM: Math.max(minimumSourceHeightM(pkg, next.pitchDeg, next.rollDeg), next.positionHeightM),
     };
     setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
+  };
+
+  const updateSelectedMicrophone = (next: MicrophoneConfiguration) => {
+    const grounded = { ...next, positionHeightM: Math.max(0, next.positionHeightM) };
+    setMicrophones((current) => current.map((microphone) => microphone.id === grounded.id ? grounded : microphone));
+  };
+
+  const updateMicrophonePose = (id: string, pose: Pick<MicrophoneConfiguration, "positionX" | "positionHeightM" | "positionZ">) => {
+    const current = microphonesRef.current;
+    const active = current.find((microphone) => microphone.id === id);
+    if (!active) return;
+    const movingIds = selectedMicrophoneIds.includes(id) ? new Set(selectedMicrophoneIds) : new Set([id]);
+    const delta = {
+      x: pose.positionX - active.positionX,
+      y: pose.positionHeightM - active.positionHeightM,
+      z: pose.positionZ - active.positionZ,
+    };
+    let minimumDeltaY = -Infinity;
+    for (const microphone of current) if (movingIds.has(microphone.id)) {
+      minimumDeltaY = Math.max(minimumDeltaY, -microphone.positionHeightM);
+    }
+    for (const source of sourceConfigsRef.current) if (selectedSourceIds.includes(source.id)) {
+      minimumDeltaY = Math.max(
+        minimumDeltaY,
+        minimumSourceHeightM(pkg, source.pitchDeg, source.rollDeg) - source.positionHeightM,
+      );
+    }
+    delta.y = Math.max(delta.y, minimumDeltaY);
+    const next = current.map((microphone) => movingIds.has(microphone.id) ? {
+      ...microphone,
+      positionX: microphone.positionX + delta.x,
+      positionHeightM: microphone.positionHeightM + delta.y,
+      positionZ: microphone.positionZ + delta.z,
+    } : microphone);
+    microphonesRef.current = next;
+    setMicrophones(next);
+    if (selectedSourceIds.length > 0) {
+      const movingSources = new Set(selectedSourceIds);
+      const nextSources = sourceConfigsRef.current.map((source) => movingSources.has(source.id) ? {
+        ...source,
+        positionX: source.positionX + delta.x,
+        positionHeightM: source.positionHeightM + delta.y,
+        positionZ: source.positionZ + delta.z,
+      } : source);
+      sourceConfigsRef.current = nextSources;
+      setSourceConfigs(nextSources);
+    }
+    if (selectedInstances.includes("audience-plane")) {
+      const currentObservation = observationRef.current;
+      const nextObservation = {
+        ...currentObservation,
+        centerXM: currentObservation.centerXM + delta.x,
+        heightM: currentObservation.heightM + delta.y,
+        nearM: currentObservation.nearM + delta.z,
+      };
+      observationRef.current = nextObservation;
+      setObservation(nextObservation);
+    }
   };
 
   const updateSourcePose = (id: string, pose: SourcePoseUpdate) => {
@@ -513,6 +700,9 @@ export function App() {
         minimumSourceHeightM(pkg, pitchDeg, rollDeg) - source.positionHeightM,
       );
     }
+    for (const microphone of microphonesRef.current) if (selectedMicrophoneIds.includes(microphone.id)) {
+      minimumDeltaY = Math.max(minimumDeltaY, -microphone.positionHeightM);
+    }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
     const nextSources = currentSources.map((source) => {
       if (!movingIds.has(source.id)) return source;
@@ -530,6 +720,17 @@ export function App() {
     });
     sourceConfigsRef.current = nextSources;
     setSourceConfigs(nextSources);
+    if (selectedMicrophoneIds.length > 0) {
+      const movingMicrophones = new Set(selectedMicrophoneIds);
+      const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
+        ...microphone,
+        positionX: microphone.positionX + positionDelta.x,
+        positionHeightM: microphone.positionHeightM + positionDelta.y,
+        positionZ: microphone.positionZ + positionDelta.z,
+      } : microphone);
+      microphonesRef.current = nextMicrophones;
+      setMicrophones(nextMicrophones);
+    }
     if (selectedInstances.includes("audience-plane")) {
       const currentObservation = observationRef.current;
       const nextObservation = {
@@ -546,12 +747,23 @@ export function App() {
   const updateSourceGroupPoses = (poses: SourceGroupPoseUpdate[]) => {
     if (poses.length === 0) return;
     const poseById = new Map(poses.map((pose) => [pose.id, pose]));
+    const anchorSource = sourceConfigsRef.current.find((source) => source.id === poses[0].id);
+    const translationOnly = poses.every((pose) => {
+      const source = sourceConfigsRef.current.find((candidate) => candidate.id === pose.id);
+      return source && source.pitchDeg === pose.pitchDeg && source.yawDeg === pose.yawDeg && source.rollDeg === pose.rollDeg;
+    });
     let groupLiftM = 0;
     for (const pose of poses) {
       groupLiftM = Math.max(
         groupLiftM,
         minimumSourceHeightM(pkg, pose.pitchDeg, pose.rollDeg) - pose.positionHeightM,
       );
+    }
+    if (translationOnly && anchorSource) {
+      const requestedDeltaY = poses[0].positionHeightM - anchorSource.positionHeightM;
+      for (const microphone of microphonesRef.current) if (selectedMicrophoneIds.includes(microphone.id)) {
+        groupLiftM = Math.max(groupLiftM, -microphone.positionHeightM - requestedDeltaY);
+      }
     }
     const nextSources = sourceConfigsRef.current.map((source) => {
       const pose = poseById.get(source.id);
@@ -568,6 +780,36 @@ export function App() {
     });
     sourceConfigsRef.current = nextSources;
     setSourceConfigs(nextSources);
+    if (translationOnly && anchorSource) {
+      const anchorPose = poses[0];
+      const delta = {
+        x: anchorPose.positionX - anchorSource.positionX,
+        y: anchorPose.positionHeightM + groupLiftM - anchorSource.positionHeightM,
+        z: anchorPose.positionZ - anchorSource.positionZ,
+      };
+      if (selectedMicrophoneIds.length > 0) {
+        const movingMicrophones = new Set(selectedMicrophoneIds);
+        const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
+          ...microphone,
+          positionX: microphone.positionX + delta.x,
+          positionHeightM: microphone.positionHeightM + delta.y,
+          positionZ: microphone.positionZ + delta.z,
+        } : microphone);
+        microphonesRef.current = nextMicrophones;
+        setMicrophones(nextMicrophones);
+      }
+      if (selectedInstances.includes("audience-plane")) {
+        const currentObservation = observationRef.current;
+        const nextObservation = {
+          ...currentObservation,
+          centerXM: currentObservation.centerXM + delta.x,
+          heightM: currentObservation.heightM + delta.y,
+          nearM: currentObservation.nearM + delta.z,
+        };
+        observationRef.current = nextObservation;
+        setObservation(nextObservation);
+      }
+    }
   };
 
   const updateObservationPose = (pose: Pick<ObservationPlane, "centerXM" | "nearM" | "heightM" | "pitchDeg" | "yawDeg" | "rollDeg">) => {
@@ -585,6 +827,9 @@ export function App() {
         minimumDeltaY,
         minimumSourceHeightM(pkg, source.pitchDeg, source.rollDeg) - source.positionHeightM,
       );
+    }
+    for (const microphone of microphonesRef.current) if (selectedMicrophoneIds.includes(microphone.id)) {
+      minimumDeltaY = Math.max(minimumDeltaY, -microphone.positionHeightM);
     }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
     const nextObservation = {
@@ -606,6 +851,17 @@ export function App() {
       } : source);
       sourceConfigsRef.current = nextSources;
       setSourceConfigs(nextSources);
+    }
+    if (selectedMicrophoneIds.length > 0) {
+      const movingMicrophones = new Set(selectedMicrophoneIds);
+      const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
+        ...microphone,
+        positionX: microphone.positionX + positionDelta.x,
+        positionHeightM: microphone.positionHeightM + positionDelta.y,
+        positionZ: microphone.positionZ + positionDelta.z,
+      } : microphone);
+      microphonesRef.current = nextMicrophones;
+      setMicrophones(nextMicrophones);
     }
   };
 
@@ -662,31 +918,51 @@ export function App() {
     setTransformMode("select");
   };
 
+  const addMicrophone = () => {
+    const existingIds = new Set([...sourceConfigs.map((source) => source.id), ...microphones.map((microphone) => microphone.id)]);
+    let suffix = microphones.length + 1;
+    while (existingIds.has(`microphone-${suffix}`)) suffix += 1;
+    const next: MicrophoneConfiguration = {
+      id: `microphone-${suffix}`,
+      name: `Microphone ${suffix}`,
+      positionX: 0,
+      positionHeightM: 1.2,
+      positionZ: 6 + microphones.length * 0.75,
+    };
+    setMicrophones((current) => [...current, next]);
+    setSelectedInstances([next.id]);
+    setTransformMode("select");
+  };
+
   const canRemoveSelectedSources = selectedSourceIds.length > 0 && selectedSourceIds.length < sourceConfigs.length;
-  const removeSelectedSources = useCallback(() => {
-    if (!canRemoveSelectedSources) return;
-    const removed = new Set(selectedSourceIds);
-    setSourceConfigs((current) => current.filter((source) => !removed.has(source.id)));
+  const canRemoveSelectedObjects = canRemoveSelectedSources || selectedMicrophoneIds.length > 0;
+  const removeSelectedObjects = useCallback(() => {
+    if (!canRemoveSelectedObjects) return;
+    const removedSources = canRemoveSelectedSources ? new Set(selectedSourceIds) : new Set<string>();
+    const removedMicrophones = new Set(selectedMicrophoneIds);
+    const removed = new Set([...removedSources, ...removedMicrophones]);
+    setSourceConfigs((current) => current.filter((source) => !removedSources.has(source.id)));
+    setMicrophones((current) => current.filter((microphone) => !removedMicrophones.has(microphone.id)));
     setSelectedInstances((current) => current.filter((id) => !removed.has(id)));
     setTransformMode("select");
-  }, [canRemoveSelectedSources, selectedSourceIds]);
+  }, [canRemoveSelectedObjects, canRemoveSelectedSources, selectedMicrophoneIds, selectedSourceIds]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAngleSnapDisabled(true);
       const target = event.target;
-      const transformableSelected = Boolean(selectedSource) || selectedInstance === "audience-plane";
+      const transformableSelected = Boolean(selectedSource) || Boolean(selectedMicrophone) || selectedInstance === "audience-plane";
       if (target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) return;
-      if ((event.key === "Delete" || event.key === "Backspace") && canRemoveSelectedSources) {
+      if ((event.key === "Delete" || event.key === "Backspace") && canRemoveSelectedObjects) {
         event.preventDefault();
-        removeSelectedSources();
+        removeSelectedObjects();
         return;
       }
       if (!transformableSelected) return;
       if (event.key.toLowerCase() === "w") {
         event.preventDefault();
         setTransformMode("translate");
-      } else if (event.key.toLowerCase() === "e") {
+      } else if (event.key.toLowerCase() === "e" && !selectedMicrophone) {
         event.preventDefault();
         setTransformMode("rotate");
       } else if (event.key.toLowerCase() === "r" && selectedInstance === "audience-plane") {
@@ -706,7 +982,7 @@ export function App() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", windowBlur);
     };
-  }, [canRemoveSelectedSources, removeSelectedSources, selectedInstance, selectedSource]);
+  }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedSource]);
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) {
@@ -717,14 +993,14 @@ export function App() {
       flushLiveSolveRef.current = false;
       return;
     }
-    if (solveState === "solving") return;
+    if (solveState === "solving" || microphoneSweepState === "solving") return;
     const delayMs = flushLiveSolveRef.current ? 0 : 300;
     const timeout = window.setTimeout(() => {
       flushLiveSolveRef.current = false;
       void solveLevel2();
     }, delayMs);
     return () => window.clearTimeout(timeout);
-  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, solveLevel2, solveReleaseRevision, solveState]);
+  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, solveLevel2, solveReleaseRevision, solveState]);
 
   const flushLiveSolve = useCallback(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
@@ -774,17 +1050,18 @@ export function App() {
               action={(
                 <div className="section-actions">
                   <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
-                    title={canRemoveSelectedSources ? "Remove selected speaker objects (Delete)" : "Select one or more speakers, leaving at least one in the scene"}
-                    aria-label="Remove selected speakers"
-                    disabled={!canRemoveSelectedSources}
-                    onClick={removeSelectedSources}
+                    title={canRemoveSelectedObjects ? "Remove selected objects (Delete)" : "Select a removable scene object"}
+                    aria-label="Remove selected objects"
+                    disabled={!canRemoveSelectedObjects}
+                    onClick={removeSelectedObjects}
                   ><Trash2 size={13} /></button>
                 </div>
               )}
             />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
           </>
         ) : (
           <>
@@ -794,20 +1071,22 @@ export function App() {
               action={(
                 <div className="section-actions">
                   <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
-                    title={canRemoveSelectedSources ? "Remove selected speaker objects (Delete)" : "Select one or more speakers, leaving at least one in the scene"}
-                    aria-label="Remove selected speakers"
-                    disabled={!canRemoveSelectedSources}
-                    onClick={removeSelectedSources}
+                    title={canRemoveSelectedObjects ? "Remove selected objects (Delete)" : "Select a removable scene object"}
+                    aria-label="Remove selected objects"
+                    disabled={!canRemoveSelectedObjects}
+                    onClick={removeSelectedObjects}
                   ><Trash2 size={13} /></button>
                 </div>
               )}
             />
-            <SceneTree pkg={pkg} sources={sourceConfigs} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree pkg={pkg} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
             <div className="scene-summary">
               <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
+              <span>Microphones</span><strong>{microphones.length}</strong>
               <span>Excitation ports</span><strong>{pkg.manifest.excitation_port_ids.length}</strong>
             </div>
           </>
@@ -819,11 +1098,12 @@ export function App() {
         data-transform-mode={transformMode}
         data-angle-snap-disabled={angleSnapDisabled}
         data-selected-object-count={selectedInstances.length}
-        data-grab-point-count={selectedSource ? 8 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
+        data-grab-point-count={selectedSource ? 8 : selectedMicrophone ? 1 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
       >
         <SceneView
           pkg={pkg}
           sources={sources}
+          microphones={microphones}
           observation={observation}
           field={field}
           selectedInstances={selectedInstances}
@@ -833,6 +1113,7 @@ export function App() {
           onSelectInstance={selectSceneObject}
           onTransformSource={updateSourcePose}
           onTransformSources={updateSourceGroupPoses}
+          onTransformMicrophone={updateMicrophonePose}
           onTransformObservation={updateObservationPose}
           onResizeObservation={resizeObservation}
           onManipulationEnd={flushLiveSolve}
@@ -841,7 +1122,7 @@ export function App() {
         <div className="viewport-toolbar">
           <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
           <button className={transformMode === "translate" ? "active" : ""} disabled={!selectedInstance} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
-          <button className={transformMode === "rotate" ? "active" : ""} disabled={!selectedInstance} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
+          <button className={transformMode === "rotate" ? "active" : ""} disabled={!selectedInstance || Boolean(selectedMicrophone)} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
           <button className={transformMode === "scale" ? "active" : ""} disabled={selectedInstance !== "audience-plane"} title="Resize plane (R)" onClick={() => setTransformMode("scale")}><Maximize2 size={15} /></button>
           <span />
           <button><Menu size={15} /></button>
@@ -876,30 +1157,33 @@ export function App() {
             </div>
             <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
           </>
+        ) : selectedMicrophone ? (
+          <>
+            <div className="inspector-heading">
+              <div className="object-icon"><Mic2 size={19} /></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedMicrophone.name}</strong><span>Point pressure probe</span></div>
+              <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
+            </div>
+            <MicrophoneInspector config={selectedMicrophone} onChange={updateSelectedMicrophone} />
+          </>
         ) : null}
       </aside>
 
       <section className="analysis-drawer">
         <div className="analysis-body">
-          <div className="frequency-control">
-            <div className="frequency-label"><span>Frequency</span><strong>{formatFrequency(pkg.frequenciesHz[frequencyIndex])}</strong></div>
-            <input
-              aria-label="Frequency"
-              type="range"
-              min={0}
-              max={Math.max(0, sortedFrequencyIndices.length - 1)}
-              step={1}
-              value={sortedPosition}
-              onChange={(event) => setFrequencyIndex(sortedFrequencyIndices[Number(event.target.value)])}
-            />
-            <div className="frequency-extents"><span>{formatFrequency(pkg.frequenciesHz[sortedFrequencyIndices[0]])}</span><span>{formatFrequency(pkg.frequenciesHz[sortedFrequencyIndices.at(-1)!])}</span></div>
-          </div>
-          <div className="metrics-grid">
-            <div><span>Average</span><strong>{field.averageDb.toFixed(1)}<small> dB</small></strong></div>
-            <div><span>Peak</span><strong>{field.maximumDb.toFixed(1)}<small> dB</small></strong></div>
-            <div><span>P10–P90</span><strong>{field.spreadDb.toFixed(1)}<small> dB</small></strong></div>
-            <div><span>Sources</span><strong>{sourceConfigs.length}<small>{boundaryCurrent ? " BEM" : " live"}</small></strong></div>
-          </div>
+          <MicrophoneResponsePlot
+            pattern={microphonePatternResponses}
+            bem={currentBemMicrophoneResponses}
+            currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
+            frequencyPosition={sortedPosition}
+            frequencyCount={sortedFrequencyIndices.length}
+            onFrequencyPositionChange={(position) => setFrequencyIndex(sortedFrequencyIndices[position])}
+            canCalculateBem={fidelity === "boundary" && boundaryAvailable && microphones.length > 0 && solveState !== "solving"}
+            calculating={microphoneSweepState === "solving"}
+            completedCount={microphoneSweepProgress.completed}
+            totalCount={microphoneSweepProgress.total}
+            onCalculateOrStop={calculateOrStopMicrophoneSweep}
+          />
           <div className="legend-block">
             <div className="legend-title"><span>SPL</span></div>
             <div

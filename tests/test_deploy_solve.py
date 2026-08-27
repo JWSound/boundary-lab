@@ -26,7 +26,7 @@ PACKAGE_PATH = Path(__file__).parents[1] / "deploy" / "library" / "S218BP_LOD.bl
 def _payload() -> dict:
     return {
         "packagePath": str(PACKAGE_PATH),
-        "frequencyHz": 80.9498519897461,
+        "frequencyHz": 80.43587493896484,
         "backend": "cuda",
         "sources": [
             {
@@ -68,7 +68,7 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert json.loads(request_path.read_text(encoding="utf-8"))["schema"] == DEPLOY_SOLVE_SCHEMA
     assert request["beat_engine_backend"] == "cuda"
     assert request["burton_miller_assembly"] == "direct_system"
-    assert request["provenance"]["package_name"] == "S218BP LOD"
+    assert request["provenance"]["package_name"] == "S218BP"
     assert request["provenance"]["source_count"] == 2
     assert request["provenance"]["node_count"] == 2580
     assert request["provenance"]["face_count"] == 5152
@@ -101,13 +101,36 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
 
     with zipfile.ZipFile(PACKAGE_PATH, "r") as archive:
         with np.load(io.BytesIO(archive.read("data/fixed-sources.npz")), allow_pickle=False) as fixed:
-            source_q = np.asarray(fixed["normal_derivative_pa_per_m"])[84, 0]
+            source_q = np.asarray(fixed["normal_derivative_pa_per_m"])[43, 0]
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
     expected = np.asarray(source_q * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(1j * phase), dtype=np.complex64)
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+
+
+def test_prepare_deploy_solve_request_accepts_microphone_observation_points(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observationPointsM"] = [[1.0, 1.2, 4.0], [-2.0, 0.0, 8.0]]
+    payload["includeComplexPressure"] = True
+
+    request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+
+    np.testing.assert_allclose(request["observation_points_m"], payload["observationPointsM"])
+    assert request["observation_shape"] == [1, 2]
+    assert request["observation_sample_indices"] == [0, 1]
+    assert request["include_complex_pressure"] is True
+    assert "observation_plane" not in request
+
+
+def test_prepare_deploy_solve_request_rejects_microphone_below_ground(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observationPointsM"] = [[0.0, -0.01, 4.0]]
+
+    with pytest.raises(ValueError, match="below the ground"):
+        prepare_deploy_solve_request(payload, tmp_path)
 
 
 def test_prepare_deploy_solve_request_can_select_operator_matrix_fallback(tmp_path: Path) -> None:

@@ -97,6 +97,7 @@ const projectText = serializeDeployProject(createDeployProject(
   "Smoke Project",
   speaker,
   [sourceConfig],
+  [{ id: "microphone-1", name: "Microphone 1", positionX: 0, positionHeightM: 1.2, positionZ: 6 }],
   { widthM: 12, depthM: 10, centerXM: 1, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 5, rollDeg: 0, columns: 24, rows: 20, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
   speaker.frequenciesHz[frequencyIndex],
   "boundary",
@@ -104,6 +105,7 @@ const projectText = serializeDeployProject(createDeployProject(
 const parsedProject = parseDeployProject(projectText);
 assert.equal(parsedProject.name, "Smoke Project");
 assert.equal(parsedProject.sources[0].id, sourceConfig.id);
+assert.equal(parsedProject.microphones[0].name, "Microphone 1");
 assert.equal(parsedProject.observation_plane.columns, 24);
 assert.equal(parsedProject.requested_fidelity, "boundary");
 const unsupportedProject = JSON.parse(projectText);

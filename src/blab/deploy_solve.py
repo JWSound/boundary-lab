@@ -293,7 +293,24 @@ def prepare_deploy_solve_request(
     source_ids = [source.id for source in sources]
     if len(set(source_ids)) != len(source_ids):
         raise ValueError("Deploy source ids must be unique.")
-    observation = DeployObservationPlane.from_payload(payload.get("observation"))
+    raw_observation_points = payload.get("observationPointsM")
+    observation = None
+    if raw_observation_points is None:
+        observation = DeployObservationPlane.from_payload(payload.get("observation"))
+        points_m, observation_sample_indices = observation.points()
+        observation_shape = [observation.rows, observation.columns]
+    else:
+        points_m = np.asarray(raw_observation_points, dtype=np.float32)
+        if points_m.ndim != 2 or points_m.shape[1] != 3 or points_m.shape[0] == 0:
+            raise ValueError("Deploy observationPointsM must contain one or more XYZ points.")
+        if points_m.shape[0] > 1024:
+            raise ValueError("Deploy observationPointsM supports at most 1,024 points.")
+        if not np.all(np.isfinite(points_m)):
+            raise ValueError("Deploy observationPointsM values must be finite.")
+        if np.any(points_m[:, 1] < -GROUND_TOLERANCE_M):
+            raise ValueError("Deploy observation points cannot be below the ground plane.")
+        observation_sample_indices = np.arange(points_m.shape[0], dtype=np.int64)
+        observation_shape = [1, int(points_m.shape[0])]
     solution_key = str(payload.get("solutionKey", "")).strip() or json.dumps(
         {
             "package": str(package_path),
@@ -507,9 +524,8 @@ def prepare_deploy_solve_request(
 
     staged_mesh = work_path / "exterior.msh"
     staged_mesh.write_bytes(geometry_bytes)
-    points_m, observation_sample_indices = observation.points()
     if points_m.shape[0] == 0:
-        raise ValueError("Deploy observation plane has no sampling points on or above the ground plane.")
+        raise ValueError("Deploy solve has no sampling points on or above the ground plane.")
     medium = manifest.get("medium", {})
     backend = str(payload.get("backend", "cuda")).strip().lower()
     burton_miller_assembly = str(
@@ -551,9 +567,8 @@ def prepare_deploy_solve_request(
             "imag": reference_pressure.imag.tolist(),
         },
         "observation_points_m": points_m.tolist(),
-        "observation_shape": [observation.rows, observation.columns],
+        "observation_shape": observation_shape,
         "observation_sample_indices": observation_sample_indices.tolist(),
-        "observation_plane": observation.wire(),
         "density_kg_per_m3": float(medium.get("density_kg_per_m3", 1.21)),
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
@@ -589,6 +604,8 @@ def prepare_deploy_solve_request(
             "exterior_domain": "rigid_y0_half_space",
         },
     }
+    if observation is not None:
+        request["observation_plane"] = observation.wire()
     request_path = work_path / "request.json"
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
     return request_path, request

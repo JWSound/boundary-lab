@@ -6,9 +6,16 @@ contextBridge.exposeInMainWorld("boundaryLabDesktop", {
   openSpeakerPackage: () => ipcRenderer.invoke("deploy:open-speaker-package"),
   saveProject: (contents, suggestedName) => ipcRenderer.invoke("deploy:save-project", contents, suggestedName),
   solveLevel2: (payload) => ipcRenderer.invoke("deploy:solve-level2", payload),
+  calculateMicrophoneSweep: (payload) => ipcRenderer.invoke("deploy:microphone-sweep", payload),
+  cancelMicrophoneSweep: () => ipcRenderer.invoke("deploy:cancel-microphone-sweep"),
   onSolveStatus: (listener) => {
     const handler = (_event, payload) => listener(payload);
     ipcRenderer.on("deploy:solve-status", handler);
     return () => ipcRenderer.removeListener("deploy:solve-status", handler);
+  },
+  onMicrophoneSweepProgress: (listener) => {
+    const handler = (_event, progress) => listener(progress);
+    ipcRenderer.on("deploy:microphone-sweep-progress", handler);
+    return () => ipcRenderer.removeListener("deploy:microphone-sweep-progress", handler);
   },
 });

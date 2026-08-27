@@ -1,8 +1,9 @@
 import type { LucideIcon } from "lucide-react";
-import { CircleDot, Grid3X3, Palette, Radio, Speaker, Upload } from "lucide-react";
+import { CircleDot, Grid3X3, Mic2, Palette, Radio, Speaker, Upload } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
+  MicrophoneConfiguration,
   ObservationPlane,
   SourceConfiguration,
 } from "../model/types";
@@ -37,12 +38,14 @@ export function PackageCard({ pkg, onOpen }: { pkg: LoadedSpeakerPackage; onOpen
 export function SceneTree({
   pkg,
   sources,
+  microphones,
   selectedIds,
   activeId,
   onSelect,
 }: {
   pkg: LoadedSpeakerPackage;
   sources: SourceConfiguration[];
+  microphones: MicrophoneConfiguration[];
   selectedIds: readonly string[];
   activeId: string | null;
   onSelect: (id: string, additive: boolean) => void;
@@ -61,6 +64,15 @@ export function SceneTree({
           onClick={(event) => select(source.id, event)}
         ><Speaker size={15} /><span>{pkg.manifest.name} {index + 1}</span><em>SUB</em></button>
       ))}
+      {microphones.map((microphone) => (
+        <button
+          key={microphone.id}
+          data-object-id={microphone.id}
+          aria-selected={selectedIds.includes(microphone.id)}
+          className={`tree-row tree-button ${selectedIds.includes(microphone.id) ? "selected" : ""} ${activeId === microphone.id ? "active-selection" : ""}`}
+          onClick={(event) => select(microphone.id, event)}
+        ><Mic2 size={15} /><span>{microphone.name}</span><em>MIC</em></button>
+      ))}
       <button
         data-object-id="audience-plane"
         aria-selected={selectedIds.includes("audience-plane")}
@@ -68,6 +80,28 @@ export function SceneTree({
         onClick={(event) => select("audience-plane", event)}
       ><Grid3X3 size={15} /><span>Audience plane</span><em>PLANE</em></button>
     </div>
+  );
+}
+
+export function MicrophoneInspector({
+  config,
+  onChange,
+}: {
+  config: MicrophoneConfiguration;
+  onChange: (next: MicrophoneConfiguration) => void;
+}) {
+  const set = <K extends keyof MicrophoneConfiguration>(key: K, value: MicrophoneConfiguration[K]) => (
+    onChange({ ...config, [key]: value })
+  );
+  return (
+    <>
+      <SectionHeader icon={CircleDot} title="Placement" />
+      <div className="inspector-section two-column-fields">
+        <NumberField label="X" value={config.positionX} unit="m" step={0.1} onChange={(value) => set("positionX", value)} />
+        <NumberField label="Height" value={config.positionHeightM} unit="m" step={0.1} minimum={0} onChange={(value) => set("positionHeightM", value)} />
+        <NumberField label="Depth" value={config.positionZ} unit="m" step={0.1} onChange={(value) => set("positionZ", value)} />
+      </div>
+    </>
   );
 }
 

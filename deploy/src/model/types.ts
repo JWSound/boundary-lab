@@ -67,6 +67,26 @@ export interface SpeakerInstance {
   rollDeg: number;
 }
 
+export interface MicrophoneConfiguration {
+  id: string;
+  name: string;
+  positionX: number;
+  positionHeightM: number;
+  positionZ: number;
+}
+
+export interface MicrophoneResponseTrace {
+  microphoneId: string;
+  microphoneName: string;
+  splDb: Float32Array;
+  clippedNearFieldSamples: number;
+}
+
+export interface MicrophoneResponseSet {
+  frequenciesHz: Float64Array;
+  traces: MicrophoneResponseTrace[];
+}
+
 export interface ObservationPlane {
   widthM: number;
   depthM: number;
@@ -128,4 +148,14 @@ export interface Level2SolveResult {
     close_pair_count: number;
     surface_padding_m: number;
   };
+}
+
+export interface MicrophoneSweepResult {
+  cancelled?: boolean;
+  frequencies_hz: number[];
+  microphone_ids: string[];
+  spl_db: number[][];
+  pressure: { real: number[][]; imag: number[][] };
+  completed_count: number;
+  total_count: number;
 }
