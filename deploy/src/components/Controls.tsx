@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { CircleDot, Grid3X3, Mic2, Palette, Radio, Speaker, Upload } from "lucide-react";
+import { CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
@@ -17,10 +17,20 @@ export function SectionHeader({ icon: Icon, title, action }: { icon: LucideIcon;
   );
 }
 
-export function PackageCard({ pkg, onOpen }: { pkg: LoadedSpeakerPackage; onOpen: () => void }) {
+export function PackageCard({
+  pkg,
+  active,
+  onSelect,
+  onAdd,
+}: {
+  pkg: LoadedSpeakerPackage;
+  active: boolean;
+  onSelect: () => void;
+  onAdd: () => void;
+}) {
   const level = pkg.manifest.fidelity_level;
   return (
-    <div className="package-card">
+    <div className={`package-card ${active ? "active" : ""}`} data-package-id={pkg.id} onClick={onSelect} role="button" tabIndex={0}>
       <div className="package-visual"><Speaker size={30} strokeWidth={1.2} /></div>
       <div className="package-details">
         <div className="package-name">{pkg.manifest.name}</div>
@@ -30,39 +40,45 @@ export function PackageCard({ pkg, onOpen }: { pkg: LoadedSpeakerPackage; onOpen
           <small>L{level}</small>
         </div>
       </div>
-      <button className="icon-button quiet" title="Replace package" onClick={onOpen}><Upload size={15} /></button>
+      <button
+        className="icon-button quiet"
+        title={`Add ${pkg.manifest.name} to scene`}
+        aria-label={`Add ${pkg.manifest.name} to scene`}
+        onClick={(event) => { event.stopPropagation(); onAdd(); }}
+      ><Plus size={15} /></button>
     </div>
   );
 }
 
 export function SceneTree({
-  pkg,
+  packages,
   sources,
   microphones,
   selectedIds,
   activeId,
   onSelect,
 }: {
-  pkg: LoadedSpeakerPackage;
+  packages: LoadedSpeakerPackage[];
   sources: SourceConfiguration[];
   microphones: MicrophoneConfiguration[];
   selectedIds: readonly string[];
   activeId: string | null;
   onSelect: (id: string, additive: boolean) => void;
 }) {
+  const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
   const select = (id: string, event: MouseEvent<HTMLButtonElement>) => {
     onSelect(id, event.ctrlKey || event.metaKey);
   };
   return (
     <div className="scene-tree">
-      {sources.map((source, index) => (
+      {sources.map((source) => (
         <button
           key={source.id}
           data-object-id={source.id}
           aria-selected={selectedIds.includes(source.id)}
           className={`tree-row tree-button ${selectedIds.includes(source.id) ? "selected" : ""} ${activeId === source.id ? "active-selection" : ""}`}
           onClick={(event) => select(source.id, event)}
-        ><Speaker size={15} /><span>{pkg.manifest.name} {index + 1}</span><em>SUB</em></button>
+        ><Speaker size={15} /><span>{source.name}</span><em>{packageById.get(source.packageId)?.manifest.name ?? "SUB"}</em></button>
       ))}
       {microphones.map((microphone) => (
         <button

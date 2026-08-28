@@ -115,6 +115,89 @@ export function computeMicrophonePatternResponses(
   };
 }
 
+export function computeMixedMicrophonePatternResponses(
+  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  sources: SpeakerInstance[],
+  configs: SourceConfiguration[],
+  microphones: MicrophoneConfiguration[],
+): MicrophoneResponseSet {
+  if (sources.length !== configs.length) throw new Error("Microphone responses require matching source instances and configurations.");
+  const sourcePackages = configs.map((config) => packages.get(config.packageId)).filter(Boolean) as LoadedSpeakerPackage[];
+  const commonMinimum = Math.max(...sourcePackages.map((pkg) => Math.min(...pkg.frequenciesHz)));
+  const commonMaximum = Math.min(...sourcePackages.map((pkg) => Math.max(...pkg.frequenciesHz)));
+  const commonFrequencies = [...new Set(
+    sourcePackages.flatMap((pkg) => Array.from(pkg.frequenciesHz)),
+  )].filter((frequency) => frequency >= commonMinimum && frequency <= commonMaximum).sort((left, right) => left - right);
+  if (commonFrequencies.length === 0) throw new Error("Active speaker packages do not share an overlapping frequency range.");
+  const frequenciesHz = Float64Array.from(commonFrequencies);
+  const sourceData = microphones.map((microphone) => sources.map((source, sourceIndex) => {
+    const config = configs[sourceIndex];
+    const pkg = packages.get(config.packageId);
+    if (!pkg) throw new Error(`Source ${config.name} references a package that is not loaded.`);
+    const direction = new Vector3(
+      microphone.positionX - source.position[0],
+      microphone.positionHeightM - source.position[1],
+      microphone.positionZ - source.position[2],
+    );
+    const distance = Math.max(0.02, direction.length());
+    direction.multiplyScalar(1 / distance).applyQuaternion(new Quaternion().setFromEuler(new Euler(
+      MathUtils.degToRad(source.pitchDeg),
+      MathUtils.degToRad(source.yawDeg),
+      MathUtils.degToRad(source.rollDeg),
+      "YXZ",
+    )).invert());
+    const packageDirection = new Vector3(direction.x, direction.z, -direction.y);
+    let directionIndex = 0;
+    let bestDot = -Infinity;
+    for (let index = 0; index < pkg.pressureShape[2]; index += 1) {
+      const offset = index * 3;
+      const dot = packageDirection.x * pkg.directionsPackage[offset]
+        + packageDirection.y * pkg.directionsPackage[offset + 1]
+        + packageDirection.z * pkg.directionsPackage[offset + 2];
+      if (dot > bestDot) { bestDot = dot; directionIndex = index; }
+    }
+    return { pkg, config, distance, directionIndex, referenceRadius: pkg.radiiM[directionIndex] };
+  }));
+  return {
+    frequenciesHz,
+    traces: microphones.map((microphone, microphoneIndex) => {
+      const splDb = new Float32Array(frequenciesHz.length);
+      let clippedNearFieldSamples = 0;
+      frequenciesHz.forEach((frequency, frequencyOutputIndex) => {
+        let totalReal = 0;
+        let totalImag = 0;
+        sourceData[microphoneIndex].forEach((sample) => {
+          const [lower, upper, mix] = frequencyBracket(sample.pkg, frequency);
+          const excitationCount = sample.pkg.pressureShape[1];
+          const directionCount = sample.pkg.pressureShape[2];
+          const lowerOffset = (lower * excitationCount) * directionCount + sample.directionIndex;
+          const upperOffset = (upper * excitationCount) * directionCount + sample.directionIndex;
+          const sampleReal = sample.pkg.pressure.real[lowerOffset]
+            + (sample.pkg.pressure.real[upperOffset] - sample.pkg.pressure.real[lowerOffset]) * mix;
+          const sampleImag = sample.pkg.pressure.imag[lowerOffset]
+            + (sample.pkg.pressure.imag[upperOffset] - sample.pkg.pressure.imag[lowerOffset]) * mix;
+          const scale = sample.referenceRadius / sample.distance;
+          const wavenumber = (2 * Math.PI * frequency) / sample.pkg.manifest.medium.sound_speed_m_per_s;
+          const propagationPhase = wavenumber * (sample.distance - sample.referenceRadius);
+          const propagationReal = Math.cos(propagationPhase) * scale;
+          const propagationImag = Math.sin(propagationPhase) * scale;
+          const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
+          const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
+          const driveMagnitude = Math.pow(10, sample.config.levelDb / 20) * sample.config.polarity;
+          const drivePhase = 2 * Math.PI * frequency * sample.config.delayMs / 1000;
+          const driveReal = driveMagnitude * Math.cos(drivePhase);
+          const driveImag = driveMagnitude * Math.sin(drivePhase);
+          totalReal += fieldReal * driveReal - fieldImag * driveImag;
+          totalImag += fieldReal * driveImag + fieldImag * driveReal;
+          if (sample.distance < sample.referenceRadius) clippedNearFieldSamples += 1;
+        });
+        splDb[frequencyOutputIndex] = 20 * Math.log10(Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag)) / PRESSURE_REFERENCE_PA);
+      });
+      return { microphoneId: microphone.id, microphoneName: microphone.name, splDb, clippedNearFieldSamples };
+    }),
+  };
+}
+
 function percentileSpread(values: Float32Array): number {
   if (values.length === 0) return 0;
   const percentile10 = selectKth(values, Math.floor((values.length - 1) * 0.1));
@@ -170,6 +253,7 @@ export function fieldFrameFromSpl(
 export function buildSourceInstance(config: SourceConfiguration): SpeakerInstance {
   return {
     id: config.id,
+    packageId: config.packageId,
     position: [config.positionX, config.positionHeightM, config.positionZ],
     pitchDeg: config.pitchDeg,
     yawDeg: config.yawDeg,
@@ -265,6 +349,45 @@ export function buildPatternLookup(
     }
   }
   return { azimuthBins, elevationBins, real, imag, radius };
+}
+
+function frequencyBracket(pkg: LoadedSpeakerPackage, frequencyHz: number): [number, number, number] {
+  const ordered = Array.from(pkg.frequenciesHz.keys()).sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]);
+  if (frequencyHz <= pkg.frequenciesHz[ordered[0]]) return [ordered[0], ordered[0], 0];
+  const last = ordered.at(-1)!;
+  if (frequencyHz >= pkg.frequenciesHz[last]) return [last, last, 0];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const upper = ordered[index];
+    if (pkg.frequenciesHz[upper] < frequencyHz) continue;
+    const lower = ordered[index - 1];
+    const span = pkg.frequenciesHz[upper] - pkg.frequenciesHz[lower];
+    return [lower, upper, span > 0 ? (frequencyHz - pkg.frequenciesHz[lower]) / span : 0];
+  }
+  return [last, last, 0];
+}
+
+export function buildInterpolatedPatternLookup(pkg: LoadedSpeakerPackage, frequencyHz: number): PatternLookup {
+  const [lowerIndex, upperIndex, mix] = frequencyBracket(pkg, frequencyHz);
+  const lower = buildPatternLookup(pkg, lowerIndex);
+  if (lowerIndex === upperIndex) return lower;
+  const upper = buildPatternLookup(pkg, upperIndex);
+  for (let index = 0; index < lower.real.length; index += 1) {
+    lower.real[index] += (upper.real[index] - lower.real[index]) * mix;
+    lower.imag[index] += (upper.imag[index] - lower.imag[index]) * mix;
+    lower.radius[index] += (upper.radius[index] - lower.radius[index]) * mix;
+  }
+  return lower;
+}
+
+export function buildPackagePatternLookups(
+  packages: Iterable<LoadedSpeakerPackage>,
+  frequencyHz: number,
+): ReadonlyMap<string, PatternLookup> {
+  const lookups = new Map<string, PatternLookup>();
+  for (const pkg of packages) {
+    if (!lookups.has(pkg.id)) lookups.set(pkg.id, buildInterpolatedPatternLookup(pkg, frequencyHz));
+  }
+  return lookups;
 }
 
 function lookupPattern(lookup: PatternLookup, x: number, y: number, z: number): [number, number, number] {
@@ -378,6 +501,108 @@ export function computeFieldFrame(
       maximum = Math.max(maximum, spl);
       validValues[validCount] = spl;
       validCount += 1;
+    }
+  }
+  if (validCount === 0) minimum = maximum = 0;
+  const populatedValues = validCount === validValues.length ? validValues : validValues.slice(0, validCount);
+  return {
+    splDb: values,
+    validMask,
+    columns: observation.columns,
+    rows: observation.rows,
+    minimumDb: minimum,
+    maximumDb: maximum,
+    averageDb: validCount ? sum / validCount : 0,
+    spreadDb: percentileSpread(populatedValues),
+    clippedNearFieldPoints,
+  };
+}
+
+export function computeMixedFieldFrame(
+  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  lookups: ReadonlyMap<string, PatternLookup>,
+  sources: SpeakerInstance[],
+  configs: SourceConfiguration[],
+  observation: ObservationPlane,
+  frequencyHz: number,
+): FieldFrame {
+  if (sources.length !== configs.length || sources.length === 0) {
+    throw new Error("Pattern field requires matching non-empty source instances and configurations.");
+  }
+  const pointCount = observation.columns * observation.rows;
+  const values = new Float32Array(pointCount);
+  const validMask = new Uint8Array(pointCount);
+  const validValues = new Float32Array(pointCount);
+  const sourceData = sources.map((source, index) => {
+    const config = configs[index];
+    const pkg = packages.get(config.packageId);
+    if (!pkg) throw new Error(`Source ${config.name} references a package that is not loaded.`);
+    const lookup = lookups.get(config.packageId);
+    if (!lookup) throw new Error(`Source ${config.name} has no pattern lookup for its package.`);
+    const level = Math.pow(10, config.levelDb / 20) * config.polarity;
+    const drivePhase = 2 * Math.PI * frequencyHz * config.delayMs / 1000;
+    return {
+      source,
+      lookup,
+      wavenumber: (2 * Math.PI * frequencyHz) / pkg.manifest.medium.sound_speed_m_per_s,
+      driveReal: level * Math.cos(drivePhase),
+      driveImag: level * Math.sin(drivePhase),
+      inverseRotation: new Quaternion().setFromEuler(new Euler(
+        MathUtils.degToRad(source.pitchDeg),
+        MathUtils.degToRad(source.yawDeg),
+        MathUtils.degToRad(source.rollDeg),
+        "YXZ",
+      )).invert(),
+    };
+  });
+  const direction = new Vector3();
+  const planePoint = new Vector3();
+  const planeRotation = new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(observation.pitchDeg),
+    MathUtils.degToRad(observation.yawDeg),
+    MathUtils.degToRad(observation.rollDeg),
+    "YXZ",
+  ));
+  const planeCenterZ = observation.nearM + observation.depthM / 2;
+  let validCount = 0;
+  let sum = 0;
+  let minimum = Infinity;
+  let maximum = -Infinity;
+  let clippedNearFieldPoints = 0;
+  for (let row = 0; row < observation.rows; row += 1) {
+    const localZ = -observation.depthM / 2 + (row / Math.max(1, observation.rows - 1)) * observation.depthM;
+    for (let column = 0; column < observation.columns; column += 1) {
+      const localX = -observation.widthM / 2 + (column / Math.max(1, observation.columns - 1)) * observation.widthM;
+      planePoint.set(localX, 0, localZ).applyQuaternion(planeRotation);
+      const worldX = observation.centerXM + planePoint.x;
+      const worldY = observation.heightM + planePoint.y;
+      const worldZ = planeCenterZ + planePoint.z;
+      const index = row * observation.columns + column;
+      if (worldY < 0) continue;
+      validMask[index] = 1;
+      let totalReal = 0;
+      let totalImag = 0;
+      for (const datum of sourceData) {
+        direction.set(worldX - datum.source.position[0], worldY - datum.source.position[1], worldZ - datum.source.position[2]);
+        const distance = Math.max(0.02, direction.length());
+        direction.multiplyScalar(1 / distance).applyQuaternion(datum.inverseRotation);
+        const [sampleReal, sampleImag, referenceRadius] = lookupPattern(datum.lookup, direction.x, direction.z, -direction.y);
+        if (distance < referenceRadius) clippedNearFieldPoints += 1;
+        const scale = referenceRadius / distance;
+        const propagationPhase = datum.wavenumber * (distance - referenceRadius);
+        const propagationReal = Math.cos(propagationPhase) * scale;
+        const propagationImag = Math.sin(propagationPhase) * scale;
+        const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
+        const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
+        totalReal += fieldReal * datum.driveReal - fieldImag * datum.driveImag;
+        totalImag += fieldReal * datum.driveImag + fieldImag * datum.driveReal;
+      }
+      const spl = 20 * Math.log10(Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag)) / PRESSURE_REFERENCE_PA);
+      values[index] = spl;
+      validValues[validCount++] = spl;
+      sum += spl;
+      minimum = Math.min(minimum, spl);
+      maximum = Math.max(maximum, spl);
     }
   }
   if (validCount === 0) minimum = maximum = 0;

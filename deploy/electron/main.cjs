@@ -243,20 +243,22 @@ function createWindow() {
         check();
       })`);
       let openProjectInteraction = null;
+      let packageImportInteraction = null;
       if (!benchmarkLevel2 && !level2Smoke) {
+        const bundledPackageId = await window.webContents.executeJavaScript("document.querySelector('.package-card')?.dataset.packageId || ''");
         const smokeProjectPath = join(app.getPath("temp"), `boundary-lab-deploy-${process.pid}.blabdeploy.json`);
         const smokeProject = {
           schema: "boundary-lab-deploy-project",
-          schema_version: 3,
+          schema_version: 4,
           name: "Loaded Project Smoke",
-          package: {
-            id: "smoke-package",
+          packages: [{
+            id: bundledPackageId,
             name: "S218BP",
             source_file: join(here, "../library/S218BP_LOD.blabsp"),
-          },
+          }],
           sources: [
-            { id: "subwoofer-1", positionX: -2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
-            { id: "subwoofer-2", positionX: 2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
+            { id: "subwoofer-1", name: "S218BP 1", packageId: bundledPackageId, positionX: -2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
+            { id: "subwoofer-2", name: "S218BP 2", packageId: bundledPackageId, positionX: 2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
           ],
           microphones: [],
           observation_plane: { widthM: 18, depthM: 16, centerXM: 1, nearM: 2, heightM: 1.4, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 36, rows: 32, heatmapMinimumDb: 55, heatmapMaximumDb: 135, heatmapBandingDb: 5 },
@@ -291,6 +293,57 @@ function createWindow() {
           dialog.showOpenDialog = showOpenDialog;
           await unlink(smokeProjectPath).catch(() => {});
         }
+      }
+      if (!benchmarkLevel2 && !level2Smoke) {
+        const alternatePackagePath = join(app.getPath("temp"), `S218BP_ALT_${process.pid}.blabsp`);
+        await writeFile(alternatePackagePath, await readFile(join(here, "../library/S218BP_LOD.blabsp")));
+        const showOpenDialog = dialog.showOpenDialog;
+        dialog.showOpenDialog = async (options) => options?.title === "Open Boundary Lab speaker package"
+          ? { canceled: false, filePaths: [alternatePackagePath] }
+          : showOpenDialog.call(dialog, options);
+        try {
+          packageImportInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+            const sourcesBefore = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+            document.querySelector('.text-button')?.click();
+            const deadline = Date.now() + 10000;
+            const checkImported = () => {
+              const cards = document.querySelectorAll('.package-card');
+              if (cards.length < 2 && Date.now() < deadline) return setTimeout(checkImported, 50);
+              const sourcesAfterImport = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+              cards[cards.length - 1]?.querySelector('button')?.click();
+              requestAnimationFrame(() => {
+                const sourcesAfterAdd = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+                document.querySelector('button[aria-label="Duplicate selected speakers"]')?.click();
+                requestAnimationFrame(() => {
+                  const sourcesAfterDuplicate = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+                  document.querySelector('button[aria-label="Remove selected objects"]')?.click();
+                  requestAnimationFrame(() => {
+                    document.querySelector('.tree-button[data-object-id="subwoofer-3"]')?.click();
+                    requestAnimationFrame(() => {
+                      document.querySelector('button[aria-label="Remove selected objects"]')?.click();
+                      requestAnimationFrame(() => resolve({
+                        packageCount: cards.length,
+                        sourcesBefore,
+                        sourcesAfterImport,
+                        sourcesAfterAdd,
+                        sourcesAfterDuplicate,
+                        sourcesAfterCleanup: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length
+                      }));
+                    });
+                  });
+                });
+              });
+            };
+            checkImported();
+          })`);
+        } finally {
+          dialog.showOpenDialog = showOpenDialog;
+          await unlink(alternatePackagePath).catch(() => {});
+        }
+        await window.webContents.executeJavaScript(`new Promise((resolve) => {
+          document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        })`);
       }
       await window.webContents.executeJavaScript(`(() => {
         document.querySelectorAll('.fidelity-switcher button')[1]?.click();
@@ -454,8 +507,10 @@ function createWindow() {
             remove?.click();
             requestAnimationFrame(() => {
               const sourceCountAfterRemove = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
-              document.querySelector('button[aria-label="Add microphone"]')?.click();
+              document.querySelectorAll('.fidelity-switcher button')[1]?.click();
               requestAnimationFrame(() => {
+                document.querySelector('button[aria-label="Add microphone"]')?.click();
+                requestAnimationFrame(() => {
                 const microphone = document.querySelector('.tree-button[data-object-id^="microphone-"]');
                 window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
                 requestAnimationFrame(() => {
@@ -495,6 +550,7 @@ function createWindow() {
                       finish();
                     });
                   });
+                });
                 });
               });
             });
@@ -547,6 +603,7 @@ function createWindow() {
         metricCount: document.querySelectorAll('.metrics-grid > div').length,
         sourceCount: document.querySelectorAll('.scene-tree .tree-button').length,
         activeFidelity: document.querySelector('.fidelity-switcher button.active span')?.textContent,
+        boundaryButtonTitle: document.querySelectorAll('.fidelity-switcher button')[1]?.title,
         solveButtonEnabled: !document.querySelector('.primary-button')?.disabled,
         solveButtonLabel: document.querySelector('.primary-button')?.textContent?.trim(),
         openProjectAvailable: Boolean(document.querySelector('button[aria-label="Open project"]')),
@@ -554,7 +611,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
@@ -618,46 +675,41 @@ ipcMain.handle("deploy:open-project", async () => {
   try {
     project = JSON.parse(contents);
   } catch {
-    return { name: basename(projectPath), path: projectPath, contents, package: null };
+    return { name: basename(projectPath), path: projectPath, contents, packages: [] };
   }
-
-  const sourceFile = typeof project?.package?.source_file === "string"
-    ? project.package.source_file
-    : null;
-  const candidates = sourceFile
-    ? [
-        isAbsolute(sourceFile) ? sourceFile : resolve(dirname(projectPath), sourceFile),
-        join(here, "../library", basename(sourceFile)),
-      ]
-    : [];
-  for (const candidate of [...new Set(candidates)]) {
-    try {
-      return {
-        name: basename(projectPath),
-        path: projectPath,
-        contents,
-        package: await readPackageSelection(candidate),
-      };
-    } catch {
-      // Try the next portable or bundled package location.
+  const packageReferences = Array.isArray(project?.packages) ? project.packages : [];
+  const packages = [];
+  for (const reference of packageReferences) {
+    const sourceFile = typeof reference?.source_file === "string" ? reference.source_file : null;
+    const candidates = sourceFile ? [
+      isAbsolute(sourceFile) ? sourceFile : resolve(dirname(projectPath), sourceFile),
+      join(here, "../library", basename(sourceFile)),
+    ] : [];
+    let packageResult = null;
+    for (const candidate of [...new Set(candidates)]) {
+      try {
+        packageResult = await readPackageSelection(candidate);
+        break;
+      } catch {
+        // Try the next portable or bundled package location.
+      }
     }
+    if (!packageResult) {
+      const packageSelection = await dialog.showOpenDialog({
+        title: sourceFile ? `Locate ${basename(sourceFile)}` : `Locate ${reference?.name ?? "speaker package"}`,
+        defaultPath: dirname(projectPath),
+        filters: [
+          { name: "Boundary Lab speaker packages", extensions: ["blabsp"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+        properties: ["openFile"],
+      });
+      if (packageSelection.canceled || packageSelection.filePaths.length === 0) break;
+      packageResult = await readPackageSelection(packageSelection.filePaths[0]);
+    }
+    packages.push(packageResult);
   }
-
-  const packageSelection = await dialog.showOpenDialog({
-    title: sourceFile
-      ? `Locate ${basename(sourceFile)}`
-      : "Locate the project speaker package",
-    defaultPath: dirname(projectPath),
-    filters: [
-      { name: "Boundary Lab speaker packages", extensions: ["blabsp"] },
-      { name: "All files", extensions: ["*"] },
-    ],
-    properties: ["openFile"],
-  });
-  const packageResult = packageSelection.canceled || packageSelection.filePaths.length === 0
-    ? null
-    : await readPackageSelection(packageSelection.filePaths[0]);
-  return { name: basename(projectPath), path: projectPath, contents, package: packageResult };
+  return { name: basename(projectPath), path: projectPath, contents, packages };
 });
 
 ipcMain.handle("deploy:save-project", async (_event, contents, suggestedName) => {

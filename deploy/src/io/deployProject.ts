@@ -1,17 +1,19 @@
 import type { Fidelity, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "../model/types";
 
 export const DEPLOY_PROJECT_SCHEMA = "boundary-lab-deploy-project";
-export const DEPLOY_PROJECT_SCHEMA_VERSION = 3;
+export const DEPLOY_PROJECT_SCHEMA_VERSION = 4;
+
+export interface DeployPackageReference {
+  id: string;
+  name: string;
+  source_file: string | null;
+}
 
 export interface DeployProject {
   schema: typeof DEPLOY_PROJECT_SCHEMA;
   schema_version: typeof DEPLOY_PROJECT_SCHEMA_VERSION;
   name: string;
-  package: {
-    id: string;
-    name: string;
-    source_file: string | null;
-  };
+  packages: DeployPackageReference[];
   sources: SourceConfiguration[];
   microphones: MicrophoneConfiguration[];
   observation_plane: ObservationPlane;
@@ -69,10 +71,18 @@ function sourceConfiguration(value: unknown, index: number): SourceConfiguration
   if (typeof source.id !== "string" || source.id.trim().length === 0) {
     throw new Error(`sources[${index}].id must be a non-empty string.`);
   }
+  if (typeof source.name !== "string" || source.name.trim().length === 0) {
+    throw new Error(`sources[${index}].name must be a non-empty string.`);
+  }
+  if (typeof source.packageId !== "string" || source.packageId.trim().length === 0) {
+    throw new Error(`sources[${index}].packageId must be a non-empty string.`);
+  }
   const polarity = finite(source.polarity, `sources[${index}].polarity`);
   if (polarity !== 1 && polarity !== -1) throw new Error(`sources[${index}].polarity must be 1 or -1.`);
   return {
     id: source.id,
+    name: source.name.trim(),
+    packageId: source.packageId,
     positionX: finite(source.positionX, `sources[${index}].positionX`),
     positionHeightM: finite(source.positionHeightM, `sources[${index}].positionHeightM`),
     positionZ: finite(source.positionZ, `sources[${index}].positionZ`),
@@ -125,21 +135,38 @@ export function parseDeployProject(contents: string): DeployProject {
   if (typeof project.name !== "string" || project.name.trim().length === 0) {
     throw new Error("name must be a non-empty string.");
   }
-  const packageReference = record(project.package, "package");
-  if (typeof packageReference.id !== "string" || packageReference.id.trim().length === 0) {
-    throw new Error("package.id must be a non-empty string.");
+  if (!Array.isArray(project.packages) || project.packages.length === 0) {
+    throw new Error("A project must contain at least one speaker package.");
   }
-  if (typeof packageReference.name !== "string" || packageReference.name.trim().length === 0) {
-    throw new Error("package.name must be a non-empty string.");
-  }
-  if (packageReference.source_file !== null && typeof packageReference.source_file !== "string") {
-    throw new Error("package.source_file must be a string or null.");
+  const packages = project.packages.map((value, index): DeployPackageReference => {
+    const packageReference = record(value, `packages[${index}]`);
+    if (typeof packageReference.id !== "string" || packageReference.id.trim().length === 0) {
+      throw new Error(`packages[${index}].id must be a non-empty string.`);
+    }
+    if (typeof packageReference.name !== "string" || packageReference.name.trim().length === 0) {
+      throw new Error(`packages[${index}].name must be a non-empty string.`);
+    }
+    if (packageReference.source_file !== null && typeof packageReference.source_file !== "string") {
+      throw new Error(`packages[${index}].source_file must be a string or null.`);
+    }
+    return {
+      id: packageReference.id,
+      name: packageReference.name.trim(),
+      source_file: packageReference.source_file,
+    };
+  });
+  if (new Set(packages.map((item) => item.id)).size !== packages.length) {
+    throw new Error("Every project package must have a unique id.");
   }
   const sourcesValue = project.sources;
   if (!Array.isArray(sourcesValue) || sourcesValue.length === 0) throw new Error("A project must contain at least one source.");
   const sources = sourcesValue.map(sourceConfiguration);
   if (new Set(sources.map((source) => source.id)).size !== sources.length) {
     throw new Error("Every project source must have a unique id.");
+  }
+  const packageIds = new Set(packages.map((item) => item.id));
+  if (sources.some((source) => !packageIds.has(source.packageId))) {
+    throw new Error("Every project source must reference an imported package.");
   }
   const microphonesValue = project.microphones;
   if (!Array.isArray(microphonesValue)) throw new Error("microphones must be an array.");
@@ -160,11 +187,7 @@ export function parseDeployProject(contents: string): DeployProject {
     schema: DEPLOY_PROJECT_SCHEMA,
     schema_version: DEPLOY_PROJECT_SCHEMA_VERSION,
     name: project.name.trim(),
-    package: {
-      id: packageReference.id,
-      name: packageReference.name,
-      source_file: packageReference.source_file,
-    },
+    packages,
     sources,
     microphones,
     observation_plane: observationPlane(project.observation_plane),
@@ -175,7 +198,7 @@ export function parseDeployProject(contents: string): DeployProject {
 
 export function createDeployProject(
   name: string,
-  pkg: LoadedSpeakerPackage,
+  packages: LoadedSpeakerPackage[],
   sources: SourceConfiguration[],
   microphones: MicrophoneConfiguration[],
   observation: ObservationPlane,
@@ -186,7 +209,7 @@ export function createDeployProject(
     schema: DEPLOY_PROJECT_SCHEMA,
     schema_version: DEPLOY_PROJECT_SCHEMA_VERSION,
     name,
-    package: { id: pkg.id, name: pkg.manifest.name, source_file: pkg.sourcePath },
+    packages: packages.map((pkg) => ({ id: pkg.id, name: pkg.manifest.name, source_file: pkg.sourcePath })),
     sources,
     microphones,
     observation_plane: observation,

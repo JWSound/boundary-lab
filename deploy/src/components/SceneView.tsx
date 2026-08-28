@@ -58,7 +58,7 @@ interface SceneBounds {
 }
 
 interface SceneViewProps {
-  pkg: LoadedSpeakerPackage;
+  packages: LoadedSpeakerPackage[];
   sources: SpeakerInstance[];
   microphones: MicrophoneConfiguration[];
   observation: ObservationPlane;
@@ -505,6 +505,7 @@ function FieldPlane({
 
 function SpeakerGeometry({
   pkg,
+  packages,
   instance,
   allInstances,
   selected,
@@ -518,6 +519,7 @@ function SpeakerGeometry({
   onManipulationEnd,
 }: {
   pkg: LoadedSpeakerPackage;
+  packages: LoadedSpeakerPackage[];
   instance: SpeakerInstance;
   allInstances: SpeakerInstance[];
   selected: boolean;
@@ -605,7 +607,8 @@ function SpeakerGeometry({
     let result = rawPosition;
     for (const other of allInstances) {
       if (movingInstanceIds.includes(other.id)) continue;
-      for (const targetCorner of bounds.corners) {
+      const targetPackage = packages.find((candidate) => candidate.id === other.packageId) ?? pkg;
+      for (const targetCorner of packageSceneBounds(targetPackage).corners) {
         const target = cornerInWorld(targetCorner, other);
         const distance = Math.sqrt(pointerRay.distanceSqToPoint(target));
         if (distance >= bestDistance) continue;
@@ -912,11 +915,11 @@ function MicrophoneGeometry({
   );
 }
 
-function selectionWorldBounds(pkg: LoadedSpeakerPackage, instances: readonly SpeakerInstance[]): SceneBounds {
-  const cabinetBounds = packageSceneBounds(pkg);
+function selectionWorldBounds(packages: LoadedSpeakerPackage[], instances: readonly SpeakerInstance[]): SceneBounds {
   const minimum: [number, number, number] = [Infinity, Infinity, Infinity];
   const maximum: [number, number, number] = [-Infinity, -Infinity, -Infinity];
   for (const instance of instances) {
+    const cabinetBounds = packageSceneBounds(packages.find((pkg) => pkg.id === instance.packageId) ?? packages[0]);
     for (const corner of cabinetBounds.corners) {
       const world = cornerInWorld(corner, instance);
       minimum[0] = Math.min(minimum[0], world.x);
@@ -950,7 +953,7 @@ function sourceGroupPose(instance: SpeakerInstance, position: Vector3, quaternio
 }
 
 function SpeakerSelectionControls({
-  pkg,
+  packages,
   instances,
   allInstances,
   transformMode,
@@ -958,7 +961,7 @@ function SpeakerSelectionControls({
   onTransform,
   onManipulationEnd,
 }: {
-  pkg: LoadedSpeakerPackage;
+  packages: LoadedSpeakerPackage[];
   instances: SpeakerInstance[];
   allInstances: SpeakerInstance[];
   transformMode: SceneTransformMode;
@@ -969,13 +972,12 @@ function SpeakerSelectionControls({
   const pivotRef = useRef<Group>(null);
   const camera = useThree((state) => state.camera);
   const orbitControls = useThree((state) => state.controls) as { enabled: boolean } | null;
-  const bounds = useMemo(() => selectionWorldBounds(pkg, instances), [instances, pkg]);
+  const bounds = useMemo(() => selectionWorldBounds(packages, instances), [instances, packages]);
   const center = useMemo(() => new Vector3(
     (bounds.minimum[0] + bounds.maximum[0]) / 2,
     (bounds.minimum[1] + bounds.maximum[1]) / 2,
     (bounds.minimum[2] + bounds.maximum[2]) / 2,
   ), [bounds]);
-  const cabinetBounds = useMemo(() => packageSceneBounds(pkg), [pkg]);
   const dragState = useRef<{
     pointerId: number;
     plane: Plane;
@@ -1067,7 +1069,8 @@ function SpeakerSelectionControls({
     let bestDistance = 0.18;
     for (const other of allInstances) {
       if (instances.some((instance) => instance.id === other.id)) continue;
-      for (const targetCorner of cabinetBounds.corners) {
+      const targetPackage = packages.find((pkg) => pkg.id === other.packageId) ?? packages[0];
+      for (const targetCorner of packageSceneBounds(targetPackage).corners) {
         const target = cornerInWorld(targetCorner, other);
         const distance = Math.sqrt(event.ray.distanceSqToPoint(target));
         if (distance >= bestDistance) continue;
@@ -1189,7 +1192,8 @@ function AcousticScene(props: SceneViewProps) {
         {props.sources.map((source) => (
           <SpeakerGeometry
             key={source.id}
-            pkg={props.pkg}
+            pkg={props.packages.find((pkg) => pkg.id === source.packageId) ?? props.packages[0]}
+            packages={props.packages}
             instance={source}
             allInstances={props.sources}
             selected={selectedInstances.has(source.id)}
@@ -1206,7 +1210,7 @@ function AcousticScene(props: SceneViewProps) {
       </group>
       {groupedSelection && (
         <SpeakerSelectionControls
-          pkg={props.pkg}
+          packages={props.packages}
           instances={selectedSources}
           allInstances={props.sources}
           transformMode={props.transformMode}

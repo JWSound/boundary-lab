@@ -19,7 +19,10 @@ const {
   loadSpeakerPackage,
   buildSourceInstance,
   buildPatternLookup,
+  buildPackagePatternLookups,
   computeFieldFrame,
+  computeMixedFieldFrame,
+  computeMixedMicrophonePatternResponses,
   nearestFrequencyIndex,
   heatmapColorBoundaries,
   heatmapLegendGradient,
@@ -42,6 +45,8 @@ assert.ok(speaker.mesh?.indices.length > 0);
 const frequencyIndex = nearestFrequencyIndex(speaker, 80);
 const sourceConfig = {
   id: "subwoofer-1",
+  name: "S218BP 1",
+  packageId: speaker.id,
   positionX: 0,
   positionHeightM: 0.4,
   positionZ: 0,
@@ -76,6 +81,35 @@ const clippedField = computeFieldFrame(
 const clippedValidCount = clippedField.validMask.reduce((sum, value) => sum + value, 0);
 assert.ok(clippedValidCount > 0 && clippedValidCount < clippedField.validMask.length);
 
+const secondSpeaker = loadSpeakerPackage(buffer, `alternate-${packagePath.split(/[\\/]/).at(-1)}`);
+const secondSourceConfig = {
+  ...sourceConfig,
+  id: "subwoofer-2",
+  name: "Alternate S218BP 1",
+  packageId: secondSpeaker.id,
+  positionX: 3,
+};
+const packageRegistry = new Map([[speaker.id, speaker], [secondSpeaker.id, secondSpeaker]]);
+const packageLookups = buildPackagePatternLookups(packageRegistry.values(), speaker.frequenciesHz[frequencyIndex]);
+const mixedField = computeMixedFieldFrame(
+  packageRegistry,
+  packageLookups,
+  [source, buildSourceInstance(secondSourceConfig)],
+  [sourceConfig, secondSourceConfig],
+  { widthM: 12, depthM: 12, centerXM: 0, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 18, rows: 16, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
+  speaker.frequenciesHz[frequencyIndex],
+);
+assert.equal(mixedField.splDb.length, 288);
+assert.ok(mixedField.splDb.every(Number.isFinite));
+const mixedMicrophones = computeMixedMicrophonePatternResponses(
+  packageRegistry,
+  [source, buildSourceInstance(secondSourceConfig)],
+  [sourceConfig, secondSourceConfig],
+  [{ id: "microphone-1", name: "Microphone 1", positionX: 0, positionHeightM: 1.2, positionZ: 6 }],
+);
+assert.equal(mixedMicrophones.traces.length, 1);
+assert.ok(mixedMicrophones.traces[0].splDb.every(Number.isFinite));
+
 assert.deepEqual(heatmapColorBoundaries(50, 145, 0), []);
 const fiveDbBoundaries = heatmapColorBoundaries(50, 145, 5);
 assert.deepEqual(fiveDbBoundaries.slice(0, 3), [50, 55, 60]);
@@ -95,7 +129,7 @@ assert.match(heatmapLegendGradient(50, 145, 5), /5\.263%/);
 
 const projectText = serializeDeployProject(createDeployProject(
   "Smoke Project",
-  speaker,
+  [speaker],
   [sourceConfig],
   [{ id: "microphone-1", name: "Microphone 1", positionX: 0, positionHeightM: 1.2, positionZ: 6 }],
   { widthM: 12, depthM: 10, centerXM: 1, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 5, rollDeg: 0, columns: 24, rows: 20, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
@@ -105,6 +139,8 @@ const projectText = serializeDeployProject(createDeployProject(
 const parsedProject = parseDeployProject(projectText);
 assert.equal(parsedProject.name, "Smoke Project");
 assert.equal(parsedProject.sources[0].id, sourceConfig.id);
+assert.equal(parsedProject.sources[0].packageId, speaker.id);
+assert.equal(parsedProject.packages[0].id, speaker.id);
 assert.equal(parsedProject.microphones[0].name, "Microphone 1");
 assert.equal(parsedProject.observation_plane.columns, 24);
 assert.equal(parsedProject.requested_fidelity, "boundary");

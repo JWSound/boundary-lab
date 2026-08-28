@@ -10,7 +10,7 @@ interface DesktopProjectSelection {
   name: string;
   path: string;
   contents: string;
-  package: DesktopPackageSelection | null;
+  packages: DesktopPackageSelection[];
 }
 
 interface DesktopLevel2SolveRequest {

@@ -161,6 +161,7 @@ button { color: inherit; }
 .section-action:hover { border-color: #343b35; color: #eef2ea; background: #202520; }
 .section-action:disabled { opacity: .3; cursor: not-allowed; }
 .panel-content { padding: 11px; }
+.package-library { display: grid; gap: 6px; max-height: 255px; overflow-y: auto; }
 
 .package-card {
   min-height: 78px;
@@ -172,7 +173,9 @@ button { color: inherit; }
   border: 1px solid #323933;
   border-radius: 8px;
   background: #1b201c;
+  cursor: pointer;
 }
+.package-card.active { outline: 2px solid var(--accent); outline-offset: -2px; }
 .package-visual { width: 45px; height: 54px; display: grid; place-items: center; border: 1px solid #373f38; border-radius: 5px; color: #6d796e; background: #121613; }
 .package-details { min-width: 0; }
 .package-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e3e8e0; font-size: 11px; font-weight: 600; }
@@ -441,6 +444,7 @@ button { color: inherit; }
   background: var(--classic-window);
   box-shadow: inset 1px 1px var(--classic-shadow);
 }
+.package-card.active { outline-color: #9eb9ef; }
 .package-visual {
   border: 1px solid;
   border-color: var(--classic-shadow) var(--classic-highlight) var(--classic-highlight) var(--classic-shadow);

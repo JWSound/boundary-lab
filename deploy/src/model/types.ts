@@ -48,6 +48,8 @@ export interface LoadedSpeakerPackage {
 
 export interface SourceConfiguration {
   id: string;
+  name: string;
+  packageId: string;
   positionX: number;
   positionHeightM: number;
   positionZ: number;
@@ -61,6 +63,7 @@ export interface SourceConfiguration {
 
 export interface SpeakerInstance {
   id: string;
+  packageId: string;
   position: [number, number, number];
   pitchDeg: number;
   yawDeg: number;

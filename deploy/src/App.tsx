@@ -14,6 +14,7 @@ import {
   Plus,
   Rotate3D,
   Save,
+  Copy,
   Settings2,
   SlidersHorizontal,
   Speaker,
@@ -37,10 +38,10 @@ import { loadSpeakerPackage } from "./io/speakerPackage";
 import { createDeployProject, parseDeployProject, serializeDeployProject, type DeployProject } from "./io/deployProject";
 import { createDemoPackage } from "./model/demoPackage";
 import {
+  buildPackagePatternLookups,
   buildSourceInstance,
-  buildPatternLookup,
-  computeFieldFrame,
-  computeMicrophonePatternResponses,
+  computeMixedFieldFrame,
+  computeMixedMicrophonePatternResponses,
   fieldFrameFromSpl,
   minimumSourceHeightM,
   nearestFrequencyIndex,
@@ -54,6 +55,8 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   return [
     {
       id: "subwoofer-1",
+      name: `${pkg.manifest.name} 1`,
+      packageId: pkg.id,
       positionX: -centerSpacingM / 2,
       positionHeightM,
       positionZ: 0,
@@ -66,6 +69,8 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
     },
     {
       id: "subwoofer-2",
+      name: `${pkg.manifest.name} 2`,
+      packageId: pkg.id,
       positionX: centerSpacingM / 2,
       positionHeightM,
       positionZ: 0,
@@ -119,11 +124,13 @@ function FidelitySwitcher({
   onChange,
   packageLevel,
   boundaryAvailable,
+  boundaryUnavailableReason,
 }: {
   value: Fidelity;
   onChange: (value: Fidelity) => void;
   packageLevel: number;
   boundaryAvailable: boolean;
+  boundaryUnavailableReason?: string;
 }) {
   const levels: Array<{ id: Fidelity; label: string; level: number }> = [
     { id: "pattern", label: "Pattern", level: 1 },
@@ -140,7 +147,11 @@ function FidelitySwitcher({
             key={item.id}
             className={`${value === item.id ? "active" : ""} ${!interactive ? "engine-required" : ""}`}
             onClick={() => interactive && onChange(item.id)}
-            title={interactive ? (item.id === "boundary" ? "Exterior BEM with fixed distributed sources" : "Live complex pattern field") : available ? "This fidelity is not connected yet" : "Package does not contain this fidelity"}
+            title={interactive
+              ? (item.id === "boundary" ? "Exterior BEM with fixed distributed sources" : "Live complex pattern field")
+              : item.id === "boundary" && boundaryUnavailableReason
+                ? boundaryUnavailableReason
+                : available ? "This fidelity is not connected yet" : "Package does not contain this fidelity"}
           >
             <span>{item.label}</span>
             {item.id === "boundary" && interactive && <small>CUDA</small>}
@@ -153,7 +164,9 @@ function FidelitySwitcher({
 }
 
 export function App() {
-  const [pkg, setPackage] = useState<LoadedSpeakerPackage>(() => createDemoPackage());
+  const [packages, setPackages] = useState<LoadedSpeakerPackage[]>(() => [createDemoPackage()]);
+  const [activePackageId, setActivePackageId] = useState(() => packages[0].id);
+  const pkg = packages.find((candidate) => candidate.id === activePackageId) ?? packages[0];
   const [sourceConfigs, setSourceConfigs] = useState<SourceConfiguration[]>(() => defaultSources(pkg));
   const [microphones, setMicrophones] = useState<MicrophoneConfiguration[]>([]);
   const [observation, setObservation] = useState(defaultObservation);
@@ -218,12 +231,38 @@ export function App() {
     pendingRenderProfile.current = null;
   }, []);
 
-  const sortedFrequencyIndices = useMemo(
-    () => Array.from(pkg.frequenciesHz.keys()).sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]),
-    [pkg],
+  const packageById = useMemo(() => new Map(packages.map((item) => [item.id, item])), [packages]);
+  const activeSourcePackageIds = [...new Set(sourceConfigs.map((source) => source.packageId))];
+  const activeSourcePackageIdsKey = JSON.stringify(activeSourcePackageIds.slice().sort());
+  const acousticPackages = useMemo(
+    () => (JSON.parse(activeSourcePackageIdsKey) as string[]).map((id) => packageById.get(id)).filter(Boolean) as LoadedSpeakerPackage[],
+    [activeSourcePackageIdsKey, packageById],
   );
-  const sortedPosition = Math.max(0, sortedFrequencyIndices.indexOf(frequencyIndex));
+  const commonMinimumFrequencyHz = Math.max(...acousticPackages.map((item) => Math.min(...item.frequenciesHz)));
+  const commonMaximumFrequencyHz = Math.min(...acousticPackages.map((item) => Math.max(...item.frequenciesHz)));
+  const sortedFrequencyIndices = useMemo(
+    () => Array.from(pkg.frequenciesHz.keys())
+      .filter((index) => pkg.frequenciesHz[index] >= commonMinimumFrequencyHz && pkg.frequenciesHz[index] <= commonMaximumFrequencyHz)
+      .sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]),
+    [commonMaximumFrequencyHz, commonMinimumFrequencyHz, pkg],
+  );
+  const usableFrequencyIndices = sortedFrequencyIndices.length > 0
+    ? sortedFrequencyIndices
+    : Array.from(pkg.frequenciesHz.keys()).sort((a, b) => pkg.frequenciesHz[a] - pkg.frequenciesHz[b]);
+  const sortedPosition = Math.max(0, usableFrequencyIndices.indexOf(frequencyIndex));
+  useEffect(() => {
+    if (!usableFrequencyIndices.includes(frequencyIndex)) setFrequencyIndex(usableFrequencyIndices[0]);
+  }, [frequencyIndex, usableFrequencyIndices]);
+  const packageForSource = useCallback(
+    (source: SourceConfiguration) => packageById.get(source.packageId) ?? pkg,
+    [packageById, pkg],
+  );
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
+  const selectedFrequencyHz = pkg.frequenciesHz[frequencyIndex];
+  const patternLookups = useMemo(
+    () => buildPackagePatternLookups(acousticPackages, selectedFrequencyHz),
+    [acousticPackages, selectedFrequencyHz],
+  );
   const selectedInstance = selectedInstances.at(-1) ?? null;
   const selectedSourceIndex = sourceConfigs.findIndex((source) => source.id === selectedInstance);
   const selectedSource = selectedSourceIndex >= 0 ? sourceConfigs[selectedSourceIndex] : null;
@@ -237,32 +276,31 @@ export function App() {
     () => selectedInstances.filter((id) => microphones.some((microphone) => microphone.id === id)),
     [microphones, selectedInstances],
   );
-  const sourceMinimumHeightM = minimumSourceHeightM(pkg);
-  const lookup = useMemo(() => buildPatternLookup(pkg, frequencyIndex), [pkg, frequencyIndex]);
+  const selectedSourcePackage = selectedSource ? packageById.get(selectedSource.packageId) ?? pkg : pkg;
+  const sourceMinimumHeightM = minimumSourceHeightM(selectedSourcePackage);
   const observationAcousticKey = JSON.stringify(observationAcousticState(observation));
   const patternField = useMemo(
-    () => computeFieldFrame(pkg, sources, sourceConfigs, observation, frequencyIndex, lookup),
-    [pkg, sources, sourceConfigs, observationAcousticKey, frequencyIndex, lookup],
+    () => computeMixedFieldFrame(packageById, patternLookups, sources, sourceConfigs, observation, selectedFrequencyHz),
+    [packageById, patternLookups, sources, sourceConfigs, observationAcousticKey, selectedFrequencyHz],
   );
   const microphonePatternResponses = useMemo(
-    () => computeMicrophonePatternResponses(pkg, sources, sourceConfigs, microphones),
-    [pkg, sources, sourceConfigs, microphones],
+    () => computeMixedMicrophonePatternResponses(packageById, sources, sourceConfigs, microphones),
+    [packageById, sources, sourceConfigs, microphones],
   );
   const microphoneSweepKey = useMemo(() => JSON.stringify({
-    package: pkg.id,
-    sourcePath: pkg.sourcePath,
+    packages: packages.map((item) => ({ id: item.id, sourcePath: item.sourcePath })),
     sources: sourceConfigs,
     microphones,
     frequencies: Array.from(microphonePatternResponses.frequenciesHz),
-  }), [microphonePatternResponses.frequenciesHz, microphones, pkg.id, pkg.sourcePath, sourceConfigs]);
+  }), [microphonePatternResponses.frequenciesHz, microphones, packages, sourceConfigs]);
   const currentSolveKey = useMemo(() => JSON.stringify({
-    package: pkg.id,
+    packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
     observation: observationAcousticKey,
   }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observationAcousticKey]);
   const currentGeometryKey = useMemo(() => JSON.stringify({
-    package: pkg.id,
+    packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
   }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs]);
@@ -270,11 +308,27 @@ export function App() {
     ? boundaryField
     : patternField;
   const boundaryCurrent = fidelity === "boundary" && boundaryField !== null && boundarySolveKey === currentSolveKey;
-  const boundaryAvailable = Boolean(window.boundaryLabDesktop && pkg.sourcePath && pkg.manifest.fidelity_level >= 2);
+  const level2Package = activeSourcePackageIds.length === 1 ? packageById.get(activeSourcePackageIds[0]) ?? null : null;
+  const level2FrequencyAvailable = Boolean(level2Package && Array.from(level2Package.frequenciesHz).some(
+    (frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6),
+  ));
+  const boundaryAvailable = Boolean(
+    window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable,
+  );
+  const scenePackageLevel = Math.min(...sourceConfigs.map(
+    (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
+  ));
+  const boundaryUnavailableReason = activeSourcePackageIds.length > 1
+    ? "Level 2 currently requires all speakers to use the same package; mixed-package Level 1 remains available."
+    : !level2Package?.sourcePath
+      ? "Level 2 requires a disk-backed speaker package in the desktop app."
+      : !level2FrequencyAvailable
+        ? "The selected frequency was not exported by the active Level 2 package."
+        : undefined;
   const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
-    pkg,
+    packages,
     sourceConfigs,
     microphones,
     observation,
@@ -283,9 +337,10 @@ export function App() {
   ));
   const projectEdited = savedProjectSnapshot === null || savedProjectSnapshot !== currentProjectContents;
 
-  const applyPackage = (next: LoadedSpeakerPackage) => {
+  const initializePackage = (next: LoadedSpeakerPackage) => {
     solveGeneration.current += 1;
-    setPackage(next);
+    setPackages([next]);
+    setActivePackageId(next.id);
     setSourceConfigs(defaultSources(next));
     setMicrophones([]);
     setSelectedInstances(["subwoofer-1"]);
@@ -306,33 +361,55 @@ export function App() {
     setError(null);
   };
 
-  const applyProject = (project: DeployProject, nextPackage: LoadedSpeakerPackage, fileName: string) => {
-    if (project.package.name !== nextPackage.manifest.name) {
-      throw new Error(`Project expects ${project.package.name}, but ${nextPackage.manifest.name} was loaded.`);
+  const importPackage = (next: LoadedSpeakerPackage) => {
+    setPackages((current) => {
+      const existingIndex = current.findIndex((candidate) => candidate.id === next.id);
+      if (existingIndex < 0) return [...current, next];
+      const updated = current.slice();
+      updated[existingIndex] = next;
+      return updated;
+    });
+    setActivePackageId(next.id);
+    setFrequencyIndex(nearestFrequencyIndex(next, pkg.frequenciesHz[frequencyIndex]));
+    setSavedProjectSnapshot(null);
+    setError(null);
+  };
+
+  const applyProject = (project: DeployProject, nextPackages: LoadedSpeakerPackage[], fileName: string) => {
+    const nextPackageById = new Map(nextPackages.map((item) => [item.id, item]));
+    for (const reference of project.packages) {
+      const loaded = nextPackageById.get(reference.id);
+      if (!loaded || loaded.manifest.name !== reference.name) {
+        throw new Error(`Project package ${reference.name} was not loaded correctly.`);
+      }
     }
     solveGeneration.current += 1;
     const nextSources = project.sources.map((source) => ({
       ...source,
       positionHeightM: Math.max(
-        minimumSourceHeightM(nextPackage, source.pitchDeg, source.rollDeg),
+        minimumSourceHeightM(nextPackageById.get(source.packageId)!, source.pitchDeg, source.rollDeg),
         source.positionHeightM,
       ),
     }));
+    const nextPackage = nextPackageById.get(nextSources[0].packageId) ?? nextPackages[0];
     const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
+    const homogeneousProject = new Set(nextSources.map((source) => source.packageId)).size === 1;
     const nextFidelity: Fidelity = project.requested_fidelity === "boundary" &&
+      homogeneousProject &&
       Boolean(window.boundaryLabDesktop && nextPackage.sourcePath && nextPackage.manifest.fidelity_level >= 2)
       ? "boundary"
       : "pattern";
     const normalizedContents = serializeDeployProject(createDeployProject(
       project.name,
-      nextPackage,
+      nextPackages,
       nextSources,
       project.microphones,
       project.observation_plane,
       nextPackage.frequenciesHz[nextFrequencyIndex],
       nextFidelity,
     ));
-    setPackage(nextPackage);
+    setPackages(nextPackages);
+    setActivePackageId(nextPackage.id);
     setSourceConfigs(nextSources);
     sourceConfigsRef.current = nextSources;
     setMicrophones(project.microphones);
@@ -388,7 +465,7 @@ export function App() {
     if (!window.boundaryLabDesktop) return () => { active = false; };
     void window.boundaryLabDesktop.loadBundledExample()
       .then((selection) => {
-        if (active && selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
+        if (active && selection) initializePackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
       })
       .catch((caught) => {
         if (active) setError(caught instanceof Error ? caught.message : String(caught));
@@ -400,7 +477,7 @@ export function App() {
     try {
       if (window.boundaryLabDesktop) {
         const selection = await window.boundaryLabDesktop.openSpeakerPackage();
-        if (selection) applyPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
+        if (selection) importPackage(loadSpeakerPackage(selection.bytes, selection.name, selection.path));
       } else {
         packageFileInput.current?.click();
       }
@@ -411,7 +488,7 @@ export function App() {
 
   const loadBrowserFile = async (file: File) => {
     try {
-      applyPackage(loadSpeakerPackage(await file.arrayBuffer(), file.name));
+      importPackage(loadSpeakerPackage(await file.arrayBuffer(), file.name));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -424,13 +501,14 @@ export function App() {
         const selection = await window.boundaryLabDesktop.openProject();
         if (!selection) return;
         const project = parseDeployProject(selection.contents);
-        if (!selection.package) throw new Error("The speaker package referenced by this project was not located.");
-        const nextPackage = loadSpeakerPackage(
-          selection.package.bytes,
-          selection.package.name,
-          selection.package.path,
-        );
-        applyProject(project, nextPackage, selection.name);
+        if (selection.packages.length !== project.packages.length) {
+          throw new Error("One or more speaker packages referenced by this project were not located.");
+        }
+        const nextPackages = selection.packages.map((item, index) => ({
+          ...loadSpeakerPackage(item.bytes, item.name, item.path),
+          id: project.packages[index].id,
+        }));
+        applyProject(project, nextPackages, selection.name);
       } else {
         projectFileInput.current?.click();
       }
@@ -442,11 +520,12 @@ export function App() {
   const loadBrowserProject = async (file: File) => {
     try {
       const project = parseDeployProject(await file.text());
-      const referencedName = project.package.source_file?.split(/[\\/]/).at(-1);
-      if (project.package.name !== pkg.manifest.name && referencedName !== pkg.fileName) {
-        throw new Error(`Open the ${project.package.name} speaker package before loading this project in a browser.`);
+      const loadedById = new Map(packages.map((item) => [item.id, item]));
+      const missing = project.packages.filter((reference) => !loadedById.has(reference.id));
+      if (missing.length > 0) {
+        throw new Error(`Import ${missing.map((item) => item.name).join(", ")} before loading this project in a browser.`);
       }
-      applyProject(project, pkg, file.name);
+      applyProject(project, project.packages.map((reference) => loadedById.get(reference.id)!), file.name);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -473,8 +552,8 @@ export function App() {
   };
 
   const solveLevel2 = useCallback(async () => {
-    if (!window.boundaryLabDesktop || !pkg.sourcePath) {
-      setError("Level 2 solving requires the desktop app and a package loaded from disk.");
+    if (!window.boundaryLabDesktop || !level2Package?.sourcePath) {
+      setError("Level 2 solving currently requires every speaker to use the same disk-backed package.");
       return;
     }
     const generation = ++solveGeneration.current;
@@ -495,7 +574,7 @@ export function App() {
       const rendererRequestStarted = performance.now();
       const reuseBoundary = boundaryGeometryKey === requestedGeometryKey;
       const request: DesktopLevel2SolveRequest = {
-        packagePath: pkg.sourcePath,
+        packagePath: level2Package.sourcePath,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
         sources: sourceConfigs,
@@ -545,7 +624,7 @@ export function App() {
       setSolveMessage("Level 2 solve failed");
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, observation, patternField, pkg.frequenciesHz, pkg.sourcePath, sourceConfigs]);
+  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, sourceConfigs]);
 
   const stopMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
@@ -559,7 +638,7 @@ export function App() {
   }, [microphoneSweepState]);
 
   const calculateMicrophoneSweep = useCallback(async () => {
-    if (!window.boundaryLabDesktop || !pkg.sourcePath || microphones.length === 0) return;
+    if (!window.boundaryLabDesktop || !level2Package?.sourcePath || microphones.length === 0) return;
     const requestedKey = microphoneSweepKey;
     microphoneSweepKeyRef.current = requestedKey;
     stoppingMicrophoneSweep.current = false;
@@ -577,7 +656,7 @@ export function App() {
     setError(null);
     try {
       const result = await window.boundaryLabDesktop.calculateMicrophoneSweep({
-        packagePath: pkg.sourcePath,
+        packagePath: level2Package.sourcePath,
         backend: "cuda",
         sources: sourceConfigs,
         microphones,
@@ -602,7 +681,7 @@ export function App() {
     } finally {
       stoppingMicrophoneSweep.current = false;
     }
-  }, [microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, pkg.sourcePath, sourceConfigs]);
+  }, [level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, sourceConfigs]);
 
   const calculateOrStopMicrophoneSweep = () => {
     if (microphoneSweepState === "solving") void stopMicrophoneSweep();
@@ -615,9 +694,10 @@ export function App() {
   }, [microphoneSweepKey, microphoneSweepState, stopMicrophoneSweep]);
 
   const updateSelectedSource = (next: SourceConfiguration) => {
+    const sourcePackage = packageForSource(next);
     const grounded = {
       ...next,
-      positionHeightM: Math.max(minimumSourceHeightM(pkg, next.pitchDeg, next.rollDeg), next.positionHeightM),
+      positionHeightM: Math.max(minimumSourceHeightM(sourcePackage, next.pitchDeg, next.rollDeg), next.positionHeightM),
     };
     setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
   };
@@ -644,7 +724,7 @@ export function App() {
     for (const source of sourceConfigsRef.current) if (selectedSourceIds.includes(source.id)) {
       minimumDeltaY = Math.max(
         minimumDeltaY,
-        minimumSourceHeightM(pkg, source.pitchDeg, source.rollDeg) - source.positionHeightM,
+        minimumSourceHeightM(packageForSource(source), source.pitchDeg, source.rollDeg) - source.positionHeightM,
       );
     }
     delta.y = Math.max(delta.y, minimumDeltaY);
@@ -697,7 +777,7 @@ export function App() {
       const rollDeg = source.id === id ? pose.rollDeg : source.rollDeg;
       minimumDeltaY = Math.max(
         minimumDeltaY,
-        minimumSourceHeightM(pkg, pitchDeg, rollDeg) - source.positionHeightM,
+        minimumSourceHeightM(packageForSource(source), pitchDeg, rollDeg) - source.positionHeightM,
       );
     }
     for (const microphone of microphonesRef.current) if (selectedMicrophoneIds.includes(microphone.id)) {
@@ -754,9 +834,11 @@ export function App() {
     });
     let groupLiftM = 0;
     for (const pose of poses) {
+      const source = sourceConfigsRef.current.find((candidate) => candidate.id === pose.id);
+      if (!source) continue;
       groupLiftM = Math.max(
         groupLiftM,
-        minimumSourceHeightM(pkg, pose.pitchDeg, pose.rollDeg) - pose.positionHeightM,
+        minimumSourceHeightM(packageForSource(source), pose.pitchDeg, pose.rollDeg) - pose.positionHeightM,
       );
     }
     if (translationOnly && anchorSource) {
@@ -825,7 +907,7 @@ export function App() {
       if (!selectedSourceIds.includes(source.id)) continue;
       minimumDeltaY = Math.max(
         minimumDeltaY,
-        minimumSourceHeightM(pkg, source.pitchDeg, source.rollDeg) - source.positionHeightM,
+        minimumSourceHeightM(packageForSource(source), source.pitchDeg, source.rollDeg) - source.positionHeightM,
       );
     }
     for (const microphone of microphonesRef.current) if (selectedMicrophoneIds.includes(microphone.id)) {
@@ -896,15 +978,19 @@ export function App() {
     if (!additive && !sourceConfigs.some((source) => source.id === id)) setTransformMode("select");
   };
 
-  const addSource = () => {
+  const addSource = (packageId = activePackageId) => {
+    const sourcePackage = packageById.get(packageId) ?? pkg;
     const existingIds = new Set(sourceConfigs.map((source) => source.id));
     let suffix = sourceConfigs.length + 1;
     while (existingIds.has(`subwoofer-${suffix}`)) suffix += 1;
-    const rightmostX = Math.max(...sourceConfigs.map((source) => source.positionX));
+    const rightmostX = sourceConfigs.length > 0 ? Math.max(...sourceConfigs.map((source) => source.positionX)) : 0;
+    const packageInstanceCount = sourceConfigs.filter((source) => source.packageId === sourcePackage.id).length;
     const next: SourceConfiguration = {
       id: `subwoofer-${suffix}`,
-      positionX: rightmostX + pkg.boundsM[0] + 2,
-      positionHeightM: minimumSourceHeightM(pkg),
+      name: `${sourcePackage.manifest.name} ${packageInstanceCount + 1}`,
+      packageId: sourcePackage.id,
+      positionX: rightmostX + sourcePackage.boundsM[0] + 2,
+      positionHeightM: minimumSourceHeightM(sourcePackage),
       positionZ: 0,
       pitchDeg: 0,
       yawDeg: 0,
@@ -915,6 +1001,28 @@ export function App() {
     };
     setSourceConfigs((current) => [...current, next]);
     setSelectedInstances([next.id]);
+    setTransformMode("select");
+  };
+
+  const duplicateSelectedSources = () => {
+    if (selectedSourceIds.length === 0) return;
+    const existingIds = new Set(sourceConfigs.map((source) => source.id));
+    const copies: SourceConfiguration[] = [];
+    for (const source of sourceConfigs.filter((candidate) => selectedSourceIds.includes(candidate.id))) {
+      let suffix = sourceConfigs.length + copies.length + 1;
+      while (existingIds.has(`subwoofer-${suffix}`)) suffix += 1;
+      const id = `subwoofer-${suffix}`;
+      existingIds.add(id);
+      copies.push({
+        ...source,
+        id,
+        name: `${source.name} copy`,
+        positionX: source.positionX + 0.5,
+        positionZ: source.positionZ + 0.5,
+      });
+    }
+    setSourceConfigs((current) => [...current, ...copies]);
+    setSelectedInstances(copies.map((source) => source.id));
     setTransformMode("select");
   };
 
@@ -958,6 +1066,11 @@ export function App() {
         removeSelectedObjects();
         return;
       }
+      if (event.ctrlKey && event.key.toLowerCase() === "d" && selectedSourceIds.length > 0) {
+        event.preventDefault();
+        duplicateSelectedSources();
+        return;
+      }
       if (!transformableSelected) return;
       if (event.key.toLowerCase() === "w") {
         event.preventDefault();
@@ -982,7 +1095,7 @@ export function App() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", windowBlur);
     };
-  }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedSource]);
+  }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedSource, selectedSourceIds]);
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) {
@@ -1009,8 +1122,9 @@ export function App() {
   }, [boundaryAvailable, fidelity, liveSolveEnabled]);
 
   useEffect(() => {
-    if (fidelity !== "boundary") setLiveSolveEnabled(false);
-  }, [fidelity]);
+    if (fidelity !== "boundary" || !boundaryAvailable) setLiveSolveEnabled(false);
+    if (fidelity === "boundary" && !boundaryAvailable) setFidelity("pattern");
+  }, [boundaryAvailable, fidelity]);
 
   return (
     <main className="app-shell">
@@ -1020,7 +1134,13 @@ export function App() {
           <div><strong>Boundary Lab</strong><span>DEPLOY</span></div>
         </div>
         <div className="project-breadcrumb"><span>Projects</span><ChevronRight size={13} /><strong>{projectName}</strong>{projectEdited && <i>Edited</i>}</div>
-        <FidelitySwitcher value={fidelity} onChange={setFidelity} packageLevel={pkg.manifest.fidelity_level} boundaryAvailable={boundaryAvailable} />
+        <FidelitySwitcher
+          value={fidelity}
+          onChange={setFidelity}
+          packageLevel={scenePackageLevel}
+          boundaryAvailable={boundaryAvailable}
+          boundaryUnavailableReason={boundaryUnavailableReason}
+        />
         <div className="topbar-actions">
           <button className="icon-button" title="Open project" aria-label="Open project" onClick={openProject}><FolderOpen size={17} /></button>
           <button className="icon-button" title="Save project" onClick={saveProject}><Save size={17} /></button>
@@ -1042,14 +1162,28 @@ export function App() {
         </div>
         {leftTab === "library" ? (
           <>
-            <SectionHeader icon={Import} title="Speaker package" action={<button className="text-button" onClick={openPackage}>Open</button>} />
-            <div className="panel-content"><PackageCard pkg={pkg} onOpen={openPackage} /></div>
+            <SectionHeader icon={Import} title="Speaker library" action={<button className="text-button" onClick={openPackage}>Import</button>} />
+            <div className="panel-content package-library">
+              {packages.map((item) => (
+                <PackageCard
+                  key={item.id}
+                  pkg={item}
+                  active={item.id === activePackageId}
+                  onSelect={() => {
+                    setActivePackageId(item.id);
+                    setFrequencyIndex(nearestFrequencyIndex(item, pkg.frequenciesHz[frequencyIndex]));
+                  }}
+                  onAdd={() => addSource(item.id)}
+                />
+              ))}
+            </div>
             <SectionHeader
               icon={Speaker}
               title="Scene objects"
               action={(
                 <div className="section-actions">
-                  <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button className="section-action" title="Add active speaker" aria-label="Add speaker" onClick={() => addSource()}><Plus size={14} /></button>
+                  <button className="section-action" title="Duplicate selected speakers (Ctrl+D)" aria-label="Duplicate selected speakers" disabled={selectedSourceIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
                   <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
@@ -1061,7 +1195,7 @@ export function App() {
                 </div>
               )}
             />
-            <SceneTree pkg={pkg} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree packages={packages} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
           </>
         ) : (
           <>
@@ -1070,7 +1204,8 @@ export function App() {
               title="Scene hierarchy"
               action={(
                 <div className="section-actions">
-                  <button className="section-action" title="Add speaker" aria-label="Add speaker" onClick={addSource}><Plus size={14} /></button>
+                  <button className="section-action" title="Add active speaker" aria-label="Add speaker" onClick={() => addSource()}><Plus size={14} /></button>
+                  <button className="section-action" title="Duplicate selected speakers (Ctrl+D)" aria-label="Duplicate selected speakers" disabled={selectedSourceIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
                   <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
@@ -1082,7 +1217,7 @@ export function App() {
                 </div>
               )}
             />
-            <SceneTree pkg={pkg} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree packages={packages} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
             <div className="scene-summary">
               <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
@@ -1101,7 +1236,7 @@ export function App() {
         data-grab-point-count={selectedSource ? 8 : selectedMicrophone ? 1 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
       >
         <SceneView
-          pkg={pkg}
+          packages={packages}
           sources={sources}
           microphones={microphones}
           observation={observation}
@@ -1152,7 +1287,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Speaker size={19} /></div>
-              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{pkg.manifest.name} {selectedSourceIndex + 1}</strong><span>Subwoofer source</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedSource.name}</strong><span>{selectedSourcePackage.manifest.name} source</span></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
@@ -1176,8 +1311,8 @@ export function App() {
             bem={currentBemMicrophoneResponses}
             currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
             frequencyPosition={sortedPosition}
-            frequencyCount={sortedFrequencyIndices.length}
-            onFrequencyPositionChange={(position) => setFrequencyIndex(sortedFrequencyIndices[position])}
+            frequencyCount={usableFrequencyIndices.length}
+            onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
             canCalculateBem={fidelity === "boundary" && boundaryAvailable && microphones.length > 0 && solveState !== "solving"}
             calculating={microphoneSweepState === "solving"}
             completedCount={microphoneSweepProgress.completed}
