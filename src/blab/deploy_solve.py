@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import io
 import json
 import math
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import meshio
 import numpy as np
 
-from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_within, transform_package_points
+from blab.deploy_geometry import (
+    first_surface_pair_within,
+    surface_face_pairs_within,
+    transform_package_points,
+)
 from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
 DEPLOY_SOLVE_SCHEMA_VERSION = 2
 DEPLOY_FIELD_SCHEMA = "boundary_lab_deploy_field"
+DEPLOY_MICROPHONE_SWEEP_SCHEMA = "boundary_lab_deploy_microphone_sweep"
 SOURCE_SURFACE_PADDING_M = 0.01
 CLOSE_PAIR_DISTANCE_M = 0.05
 CLOSE_PAIR_QUADRATURE_ORDER = 8
@@ -263,6 +270,7 @@ class DeploySolveCache:
     ground_image_pairs: dict[tuple[Any, ...], list[Any]] = field(
         default_factory=dict
     )
+    sweep_geometries: dict[str, tuple[dict[str, Any], str]] = field(default_factory=dict)
 
     def load_package(self, package_path: Path) -> DeployPackageData:
         stat = package_path.stat()
@@ -274,6 +282,7 @@ class DeploySolveCache:
         self.packages.clear()
         self.packages[fingerprint] = package
         self.ground_image_pairs.clear()
+        self.sweep_geometries.clear()
         return package
 
     def load_rigid_mesh(self, mesh_path: Path) -> DeployRigidMeshData:
@@ -433,11 +442,14 @@ def prepare_deploy_solve_request(
     work_dir: str | Path,
     *,
     cache: DeploySolveCache | None = None,
+    status_callback: Callable[[str], None] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Validate a renderer request and stage fixed-source instances for BEAT."""
 
     if not isinstance(payload, dict):
         raise ValueError("Deploy solve request must be an object.")
+    if status_callback is not None:
+        status_callback("Preparing scene geometry")
     package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
     if package_path.suffix.lower() != ".blabsp" or not package_path.is_file():
         raise ValueError("Deploy Level 2 requires an existing .blabsp package path.")
@@ -487,6 +499,7 @@ def prepare_deploy_solve_request(
     rigid_ids = [item.id for item in rigid_objects]
     if len(set(rigid_ids)) != len(rigid_ids) or set(rigid_ids).intersection(source_ids):
         raise ValueError("Deploy boundary object ids must be unique.")
+    backend = str(payload.get("backend", "cuda")).strip().lower()
     raw_observation_points = payload.get("observationPointsM")
     observation = None
     if raw_observation_points is None:
@@ -604,39 +617,57 @@ def prepare_deploy_solve_request(
     proximity_pairs: list[dict[str, Any]] = []
     close_face_pairs: list[list[int]] = []
     minimum_surface_distance_m: float | None = None
+    if status_callback is not None:
+        status_callback("Validating boundary spacing")
     for first_index in range(len(components)):
         for second_index in range(first_index + 1, len(components)):
             first = components[first_index]
             second = components[second_index]
-            distance = minimum_surface_distance(first.points, first.triangles, second.points, second.triangles)
-            minimum_surface_distance_m = distance.distance_m if minimum_surface_distance_m is None else min(
-                minimum_surface_distance_m, distance.distance_m
+            first_minimum = np.min(first.points, axis=0)
+            first_maximum = np.max(first.points, axis=0)
+            second_minimum = np.min(second.points, axis=0)
+            second_maximum = np.max(second.points, axis=0)
+            object_separation = np.maximum(
+                0.0,
+                np.maximum(first_minimum - second_maximum, second_minimum - first_maximum),
             )
-            if distance.distance_m + GROUND_TOLERANCE_M < SOURCE_SURFACE_PADDING_M:
+            object_distance_m = float(np.linalg.norm(object_separation))
+            violation = first_surface_pair_within(
+                first.points,
+                first.triangles,
+                second.points,
+                second.triangles,
+                max(0.0, SOURCE_SURFACE_PADDING_M - GROUND_TOLERANCE_M),
+            ) if object_distance_m < SOURCE_SURFACE_PADDING_M else None
+            if violation is not None:
                 raise ValueError(
                     f"Deploy boundary objects {first.id!r} and {second.id!r} have "
-                    f"{distance.distance_m * 1000.0:.3f} mm surface spacing; at least "
+                    f"{violation.distance_m * 1000.0:.3f} mm surface spacing; at least "
                     f"{SOURCE_SURFACE_PADDING_M * 1000.0:.1f} mm is required."
                 )
+            face_pairs = surface_face_pairs_within(
+                first.points,
+                first.triangles,
+                second.points,
+                second.triangles,
+                CLOSE_PAIR_DISTANCE_M,
+                exact=False,
+            ) if object_distance_m <= CLOSE_PAIR_DISTANCE_M else []
+            distance_m = min((item.distance_m for item in face_pairs), default=object_distance_m)
+            minimum_surface_distance_m = distance_m if minimum_surface_distance_m is None else min(
+                minimum_surface_distance_m, distance_m
+            )
             pair = {
                 "source_a": first.id,
                 "source_b": second.id,
                 "kind_a": first.kind,
                 "kind_b": second.kind,
-                "distance_m": distance.distance_m,
-                "face_a": distance.face_a,
-                "face_b": distance.face_b,
-                "close": distance.distance_m <= CLOSE_PAIR_DISTANCE_M,
+                "distance_m": distance_m,
+                "face_a": face_pairs[0].face_a if face_pairs else -1,
+                "face_b": face_pairs[0].face_b if face_pairs else -1,
+                "close": bool(face_pairs),
             }
             if pair["close"]:
-                face_pairs = surface_face_pairs_within(
-                    first.points,
-                    first.triangles,
-                    second.points,
-                    second.triangles,
-                    CLOSE_PAIR_DISTANCE_M,
-                    exact=False,
-                )
                 for face_pair in face_pairs:
                     first_face = first.face_offset + face_pair.face_a
                     second_face = second.face_offset + face_pair.face_b
@@ -657,6 +688,8 @@ def prepare_deploy_solve_request(
     # Duffy cache owns those singular interactions. Use conservative face-AABB
     # distances for the correction tiers, matching the direct close-pair path;
     # exact scalar triangle distances are too costly for interactive staging.
+    if status_callback is not None:
+        status_callback("Building close-pair correction map")
     ground_image_face_pairs: list[list[int]] = []
     singular_tolerance_squared = GROUND_IMAGE_SINGULAR_TOLERANCE_M**2
     reflected_components = []
@@ -759,7 +792,6 @@ def prepare_deploy_solve_request(
     if points_m.shape[0] == 0:
         raise ValueError("Deploy solve has no sampling points on or above the ground plane.")
     medium = manifest.get("medium", {})
-    backend = str(payload.get("backend", "cuda")).strip().lower()
     burton_miller_assembly = str(
         payload.get(
             "burtonMillerAssembly",
@@ -810,9 +842,6 @@ def prepare_deploy_solve_request(
             "imag": reference_pressure.imag.tolist(),
         },
         "reference_boundary_pressure_mask": reference_pressure_mask.tolist(),
-        "observation_points_m": points_m.tolist(),
-        "observation_shape": observation_shape,
-        "observation_sample_indices": observation_sample_indices.tolist(),
         "density_kg_per_m3": float(medium.get("density_kg_per_m3", 1.21)),
         "sound_speed_m_per_s": float(medium.get("sound_speed_m_per_s", 343.0)),
         "quadrature_order": int(payload.get("quadratureOrder", 2)),
@@ -851,9 +880,171 @@ def prepare_deploy_solve_request(
             "exterior_domain": "rigid_y0_half_space",
         },
     }
+    if observation is None or backend != "cuda":
+        request["observation_points_m"] = points_m.tolist()
+        request["observation_shape"] = observation_shape
+        request["observation_sample_indices"] = observation_sample_indices.tolist()
     if observation is not None:
         request["observation_plane"] = observation.wire()
+    if status_callback is not None:
+        status_callback("Serializing BEAT request")
     request_path = work_path / "request.json"
+    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    return request_path, request
+
+
+def prepare_deploy_microphone_sweep_request(
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Stage one geometry request containing every exported microphone frequency."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Deploy microphone sweep request must be an object.")
+    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
+    package_data = cache.load_package(package_path) if cache is not None else _load_deploy_package_data(package_path)
+    frequencies = sorted({float(value) for value in package_data.frequencies})
+    if not frequencies:
+        raise ValueError("Speaker package contains no frequencies for the microphone sweep.")
+    raw_points = payload.get("observationPointsM")
+    if not isinstance(raw_points, list) or not raw_points:
+        raise ValueError("Deploy microphone sweep requires observationPointsM.")
+    points_m = np.asarray(raw_points, dtype=np.float32)
+    if points_m.ndim != 2 or points_m.shape[1] != 3 or not np.all(np.isfinite(points_m)):
+        raise ValueError("Deploy microphone sweep observationPointsM must contain finite XYZ points.")
+    if np.any(points_m[:, 1] < -GROUND_TOLERANCE_M):
+        raise ValueError("Deploy microphone sweep observation points cannot be below the ground plane.")
+    sources = [DeploySourcePlacement.from_payload(raw) for raw in payload.get("sources", [])]
+    rigid_objects = [DeployRigidPlacement.from_payload(raw) for raw in payload.get("rigidObjects", [])]
+    close_pair_override = payload.get("closePairQuadratureOrder")
+    geometry_identity = {
+        "package": package_data.fingerprint,
+        "sources": [
+            {
+                "id": source.id,
+                "position": [source.position_x_m, source.position_height_m, source.position_z_m],
+                "rotation": [source.pitch_deg, source.yaw_deg, source.roll_deg],
+            }
+            for source in sources
+        ],
+        "rigid_objects": [
+            {
+                "id": rigid.id,
+                "mesh": (
+                    str(rigid.mesh_path),
+                    int(rigid.mesh_path.stat().st_mtime_ns),
+                    int(rigid.mesh_path.stat().st_size),
+                ),
+                "scale": rigid.scale_to_meters,
+                "position": [rigid.position_x_m, rigid.position_height_m, rigid.position_z_m],
+                "rotation": [rigid.pitch_deg, rigid.yaw_deg, rigid.roll_deg],
+            }
+            for rigid in rigid_objects
+        ],
+        "backend": str(payload.get("backend", "cuda")).strip().lower(),
+        "burton_miller_assembly": payload.get("burtonMillerAssembly"),
+        "quadrature_order": int(payload.get("quadratureOrder", 2)),
+        "singular_order": int(payload.get("singularOrder", 3)),
+        "close_pair_quadrature_order": int(
+            CLOSE_PAIR_QUADRATURE_ORDER if close_pair_override is None else close_pair_override
+        ),
+    }
+    geometry_key = hashlib.sha256(
+        json.dumps(geometry_identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    work_path = Path(work_dir)
+    work_path.mkdir(parents=True, exist_ok=True)
+    request_path = work_path / "request.json"
+    cached_geometry = cache.sweep_geometries.get(geometry_key) if cache is not None else None
+    if cached_geometry is None:
+        first_payload = {
+            **payload,
+            "frequencyHz": frequencies[0],
+            "includeComplexPressure": True,
+            "solutionKey": "microphone-sweep-template",
+        }
+        request_path, request = prepare_deploy_solve_request(
+            first_payload,
+            work_dir,
+            cache=cache,
+            status_callback=status_callback,
+        )
+        if cache is not None:
+            template = copy.deepcopy(request)
+            for key in (
+                "boundary_neumann",
+                "reference_boundary_pressure",
+                "observation_points_m",
+                "observation_shape",
+                "observation_sample_indices",
+            ):
+                template.pop(key, None)
+            mesh_text = Path(str(request["mesh_file"])).read_text(encoding="utf-8")
+            cache.sweep_geometries.clear()
+            cache.sweep_geometries[geometry_key] = (template, mesh_text)
+    else:
+        if status_callback is not None:
+            status_callback("Reusing prepared scene geometry")
+        template, mesh_text = cached_geometry
+        request = copy.deepcopy(template)
+        staged_mesh = work_path / "exterior.msh"
+        staged_mesh.write_text(mesh_text, encoding="utf-8")
+        request["mesh_file"] = str(staged_mesh)
+    request["observation_points_m"] = points_m.tolist()
+    request["observation_shape"] = [1, int(points_m.shape[0])]
+    request["observation_sample_indices"] = list(range(int(points_m.shape[0])))
+    source_face_count = int(package_data.triangles.shape[0])
+    source_vertex_count = int(package_data.points.shape[0])
+    rigid_components = request["boundary_components"][len(sources):]
+    rigid_face_count = sum(int(component["face_count"]) for component in rigid_components)
+    rigid_vertex_count = sum(int(component["vertex_count"]) for component in rigid_components)
+    q_real_rows: list[list[float]] = []
+    q_imag_rows: list[list[float]] = []
+    pressure_real_rows: list[list[float]] = []
+    pressure_imag_rows: list[list[float]] = []
+    if status_callback is not None:
+        status_callback(f"Encoding {len(frequencies)} frequency traces")
+    for frequency_hz in frequencies:
+        frequency_index = int(np.argmin(np.abs(package_data.frequencies - frequency_hz)))
+        q_parts: list[np.ndarray] = []
+        pressure_parts: list[np.ndarray] = []
+        for source in sources:
+            phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
+            gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+            q_parts.append(np.asarray(package_data.normal[frequency_index, 0] * gain, dtype=np.complex64))
+            pressure_parts.append(np.asarray(package_data.pressure[frequency_index, 0] * gain, dtype=np.complex64))
+        if rigid_face_count:
+            q_parts.append(np.zeros(rigid_face_count, dtype=np.complex64))
+        if rigid_vertex_count:
+            pressure_parts.append(np.zeros(rigid_vertex_count, dtype=np.complex64))
+        q = np.concatenate(q_parts) if q_parts else np.empty(0, dtype=np.complex64)
+        reference = np.concatenate(pressure_parts) if pressure_parts else np.empty(0, dtype=np.complex64)
+        if q.size != source_face_count * len(sources) + rigid_face_count:
+            raise ValueError("Microphone sweep Neumann traces do not match the staged mesh.")
+        if reference.size != source_vertex_count * len(sources) + rigid_vertex_count:
+            raise ValueError("Microphone sweep reference traces do not match the staged mesh.")
+        q_real_rows.append(q.real.tolist())
+        q_imag_rows.append(q.imag.tolist())
+        pressure_real_rows.append(reference.real.tolist())
+        pressure_imag_rows.append(reference.imag.tolist())
+
+    request["schema"] = DEPLOY_MICROPHONE_SWEEP_SCHEMA
+    request["schema_version"] = 1
+    request["geometry_key"] = geometry_key
+    request["frequencies_hz"] = frequencies
+    request["boundary_neumann_sweep"] = {"real": q_real_rows, "imag": q_imag_rows}
+    request["reference_boundary_pressure_sweep"] = {
+        "real": pressure_real_rows,
+        "imag": pressure_imag_rows,
+    }
+    request.pop("boundary_neumann", None)
+    request.pop("reference_boundary_pressure", None)
+    request["provenance"]["frequency_count"] = len(frequencies)
+    if status_callback is not None:
+        status_callback("Serializing multi-frequency BEAT request")
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
     return request_path, request
 

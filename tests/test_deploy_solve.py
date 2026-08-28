@@ -13,10 +13,12 @@ from blab.deploy_solve import (
     CLOSE_PAIR_DISTANCE_M,
     CLOSE_PAIR_QUADRATURE_ORDER,
     DEPLOY_FIELD_SCHEMA,
+    DEPLOY_MICROPHONE_SWEEP_SCHEMA,
     DEPLOY_SOLVE_SCHEMA,
     SOURCE_SURFACE_PADDING_M,
     DeploySolveCache,
     prepare_deploy_field_request,
+    prepare_deploy_microphone_sweep_request,
     prepare_deploy_solve_request,
 )
 
@@ -76,10 +78,10 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert Path(request["mesh_file"]).is_file()
     assert len(request["boundary_neumann"]["real"]) == 5152
     assert len(request["reference_boundary_pressure"]["real"]) == 2580
-    assert len(request["observation_points_m"]) == 35
-    assert request["observation_shape"] == [5, 7]
-    assert request["observation_points_m"][0] == pytest.approx([-6.0, 1.2, 2.0])
-    assert request["observation_points_m"][-1] == pytest.approx([6.0, 1.2, 12.0])
+    assert "observation_points_m" not in request
+    assert "observation_shape" not in request
+    assert request["observation_plane"]["columns"] == 7
+    assert request["observation_plane"]["rows"] == 5
     assert request["mesh_is_world_space"] is True
     assert request["source_transforms"][0] == {
         "id": "combined-boundary",
@@ -205,6 +207,47 @@ def test_prepare_deploy_solve_request_rejects_microphone_below_ground(tmp_path: 
         prepare_deploy_solve_request(payload, tmp_path)
 
 
+def test_prepare_microphone_sweep_stages_geometry_and_all_frequencies_once(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["observationPointsM"] = [[1.0, 1.2, 4.0], [-2.0, 0.0, 8.0]]
+    statuses: list[str] = []
+    cache = DeploySolveCache()
+
+    request_path, request = prepare_deploy_microphone_sweep_request(
+        payload,
+        tmp_path,
+        cache=cache,
+        status_callback=statuses.append,
+    )
+
+    assert json.loads(request_path.read_text(encoding="utf-8"))["schema"] == DEPLOY_MICROPHONE_SWEEP_SCHEMA
+    assert len(request["frequencies_hz"]) == 50
+    assert len(request["boundary_neumann_sweep"]["real"]) == 50
+    assert len(request["boundary_neumann_sweep"]["real"][0]) == 5152
+    assert len(request["reference_boundary_pressure_sweep"]["real"][0]) == 2580
+    assert "boundary_neumann" not in request
+    assert "reference_boundary_pressure" not in request
+    np.testing.assert_allclose(request["observation_points_m"], payload["observationPointsM"])
+    assert statuses[:3] == [
+        "Preparing scene geometry",
+        "Validating boundary spacing",
+        "Building close-pair correction map",
+    ]
+    assert statuses[-1] == "Serializing multi-frequency BEAT request"
+
+    repeated_statuses: list[str] = []
+    repeated_payload = {**payload, "observationPointsM": [[3.0, 1.0, 5.0]]}
+    _, repeated = prepare_deploy_microphone_sweep_request(
+        repeated_payload,
+        tmp_path / "repeated",
+        cache=cache,
+        status_callback=repeated_statuses.append,
+    )
+    assert repeated_statuses[0] == "Reusing prepared scene geometry"
+    np.testing.assert_allclose(repeated["observation_points_m"], [[3.0, 1.0, 5.0]])
+    assert Path(repeated["mesh_file"]).is_file()
+
+
 def test_prepare_deploy_solve_request_can_select_operator_matrix_fallback(tmp_path: Path) -> None:
     payload = _payload()
     payload["burtonMillerAssembly"] = "operator_matrices"
@@ -291,6 +334,7 @@ def test_prepare_deploy_solve_request_rejects_invalid_observation_shape(tmp_path
 
 def test_prepare_deploy_solve_request_transforms_observation_plane(tmp_path: Path) -> None:
     payload = _payload()
+    payload["backend"] = "cpu"
     payload["observation"].update({"centerXM": 3.0, "yawDeg": 90.0})
 
     request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
@@ -302,6 +346,7 @@ def test_prepare_deploy_solve_request_transforms_observation_plane(tmp_path: Pat
 
 def test_prepare_deploy_solve_request_pitches_observation_plane(tmp_path: Path) -> None:
     payload = _payload()
+    payload["backend"] = "cpu"
     payload["observation"].update({"heightM": 6.0, "pitchDeg": 90.0})
 
     request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
@@ -313,6 +358,7 @@ def test_prepare_deploy_solve_request_pitches_observation_plane(tmp_path: Path) 
 
 def test_prepare_deploy_solve_request_omits_points_below_ground(tmp_path: Path) -> None:
     payload = _payload()
+    payload["backend"] = "cpu"
     payload["observation"].update({"heightM": 0.0, "pitchDeg": 30.0})
 
     request_path, _ = prepare_deploy_solve_request(payload, tmp_path)
@@ -325,6 +371,7 @@ def test_prepare_deploy_solve_request_omits_points_below_ground(tmp_path: Path) 
 
 def test_prepare_deploy_solve_request_rolls_observation_plane(tmp_path: Path) -> None:
     payload = _payload()
+    payload["backend"] = "cpu"
     payload["observation"].update({"heightM": 6.0, "rollDeg": 90.0})
 
     request_path, _ = prepare_deploy_solve_request(payload, tmp_path)

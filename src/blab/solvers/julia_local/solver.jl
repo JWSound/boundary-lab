@@ -639,6 +639,8 @@ function solve_request(request)
         schema = String(get_value(request, "schema", ""))
         if schema == "boundary_lab_deploy_solve"
             solve_deploy_request_impl(request)
+        elseif schema == "boundary_lab_deploy_microphone_sweep"
+            solve_deploy_microphone_sweep_request_impl(request)
         elseif schema == "boundary_lab_deploy_field"
             evaluate_deploy_field_request_impl(request)
         else

@@ -154,3 +154,34 @@ operator-matrix measurement, this is an observed reduction of about 68%.
 These VRAM figures include the Electron renderer and CUDA allocator state and
 are sampled rather than allocator-instrumented peaks, so they should be treated
 as practical end-to-end measurements rather than exact matrix-allocation totals.
+
+### Batched microphone frequency sweep
+
+The microphone path now stages geometry and all frequency-dependent boundary
+traces once, submits one Julia request, and retains mesh spaces, quadrature,
+singular/near corrections, CUDA regular-assembly geometry, identity data, and
+field-evaluation caches between frequencies. Dense Burton-Miller assembly and
+factorization still run independently at every frequency.
+
+The real-world `2x12CRAM-study` case contains six CRAM cabinets, one rigid
+object, 6,020 faces / 3,024 nodes, 83,212 real-boundary near corrections,
+14,218 ground-image near corrections, one microphone, and 100 frequencies from
+20 to 250 Hz.
+
+| Stage | Previous measured/projection | Batched sweep |
+| --- | ---: | ---: |
+| Python preparation | ~12.2 s per frequency | 7.86 s once |
+| Julia request traffic | ~1.5 MB per frequency | 20.62 MB once |
+| Complete warm 100-frequency sweep | ~45-55 min projected | 35.93 s measured |
+| Julia/CUDA portion | ~18.8 s per first-style solve | 27.99 s for all 100 |
+| Second-frequency host cache | 1.35 s rebuild | 0 s |
+| Second-frequency device preparation | 0.88 s rebuild | 0.00009 s |
+| Second-frequency assembly | 8.68 s including first compilation | 0.089 s warmed |
+| Second-frequency solve | 2.00 s including first compilation | 0.026 s warmed |
+
+Python also caches the geometry-only staged template by package fingerprint,
+object poses, rigid-mesh fingerprints, and quadrature settings. Repeating a
+sweep after moving only microphones reuses the mesh and proximity preparation.
+The single-frequency CUDA plane request now sends only compact plane parameters;
+explicit observation coordinates remain limited to CPU and microphone-point
+requests.

@@ -257,6 +257,57 @@ def minimum_surface_distance(
     return SurfaceDistanceResult(float(np.sqrt(best_squared)), best_faces[0], best_faces[1])
 
 
+def first_surface_pair_within(
+    points_a: np.ndarray,
+    triangles_a: np.ndarray,
+    points_b: np.ndarray,
+    triangles_b: np.ndarray,
+    max_distance_m: float,
+    *,
+    leaf_size: int = 8,
+) -> SurfaceDistanceResult | None:
+    """Return the first exact face pair below a threshold, without finding a global minimum.
+
+    Clearance validation only needs a yes/no answer. Stopping on the first
+    violating pair avoids the expensive all-pairs branch-and-bound search used
+    for diagnostic minimum-distance measurements.
+    """
+
+    maximum = float(max_distance_m)
+    if not np.isfinite(maximum) or maximum < 0.0:
+        raise ValueError("Surface-pair distance limit must be finite and non-negative.")
+    faces_a = np.asarray(points_a, dtype=np.float64)[np.asarray(triangles_a, dtype=np.int64)]
+    faces_b = np.asarray(points_b, dtype=np.float64)[np.asarray(triangles_b, dtype=np.int64)]
+    if faces_a.size == 0 or faces_b.size == 0:
+        raise ValueError("Surface-distance checks require non-empty triangle meshes.")
+    root_a = _build_bvh(faces_a, np.arange(faces_a.shape[0], dtype=np.int64), leaf_size)
+    root_b = _build_bvh(faces_b, np.arange(faces_b.shape[0], dtype=np.int64), leaf_size)
+    maximum_squared = maximum * maximum
+    stack: list[tuple[_BvhNode, _BvhNode]] = [(root_a, root_b)]
+    while stack:
+        node_a, node_b = stack.pop()
+        if _aabb_distance_squared(node_a, node_b) > maximum_squared:
+            continue
+        if node_a.leaf and node_b.leaf:
+            for face_a in node_a.face_indices:
+                for face_b in node_b.face_indices:
+                    distance_squared = _triangle_distance_squared(faces_a[face_a], faces_b[face_b])
+                    if distance_squared <= maximum_squared:
+                        return SurfaceDistanceResult(
+                            float(np.sqrt(distance_squared)),
+                            int(face_a),
+                            int(face_b),
+                        )
+            continue
+        children_a = (node_a,) if node_a.leaf else (node_a.left, node_a.right)
+        children_b = (node_b,) if node_b.leaf else (node_b.left, node_b.right)
+        for child_a in children_a:
+            for child_b in children_b:
+                if child_a is not None and child_b is not None:
+                    stack.append((child_a, child_b))
+    return None
+
+
 def surface_face_pairs_within(
     points_a: np.ndarray,
     triangles_a: np.ndarray,

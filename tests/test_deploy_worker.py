@@ -18,18 +18,19 @@ class _PackageCache:
 class _SweepWorker:
     def submit(self, request_path: Path, **_kwargs):
         request = json.loads(request_path.read_text(encoding="utf-8"))
-        frequency = float(request["frequency_hz"])
         microphone_count = len(request["observation_points_m"])
-        yield {
-            "type": "result",
-            "result": {
-                "spl_db": [frequency + index for index in range(microphone_count)],
-                "field_pressure": {
-                    "real": [frequency / 100.0 for _ in range(microphone_count)],
-                    "imag": [0.0 for _ in range(microphone_count)],
+        for frequency in request["frequencies_hz"]:
+            yield {
+                "type": "result",
+                "result": {
+                    "frequency_hz": frequency,
+                    "spl_db": [frequency + index for index in range(microphone_count)],
+                    "field_pressure": {
+                        "real": [frequency / 100.0 for _ in range(microphone_count)],
+                        "imag": [0.0 for _ in range(microphone_count)],
+                    },
                 },
-            },
-        }
+            }
         yield {"type": "completed"}
 
 
@@ -53,7 +54,7 @@ def test_microphone_sweep_uses_sorted_unique_package_frequencies(monkeypatch) ->
         path.write_text(
             json.dumps(
                 {
-                    "frequency_hz": payload["frequencyHz"],
+                    "frequencies_hz": [20.0, 40.0],
                     "observation_points_m": payload["observationPointsM"],
                 }
             ),
@@ -61,7 +62,7 @@ def test_microphone_sweep_uses_sorted_unique_package_frequencies(monkeypatch) ->
         )
         return path, {}
 
-    monkeypatch.setattr(deploy_worker, "prepare_deploy_solve_request", prepare)
+    monkeypatch.setattr(deploy_worker, "prepare_deploy_microphone_sweep_request", prepare)
     monkeypatch.setattr(
         deploy_worker,
         "_emit",

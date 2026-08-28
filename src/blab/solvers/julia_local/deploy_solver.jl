@@ -1,16 +1,43 @@
 const DEPLOY_BOUNDARY_STATE = Ref{Any}(nothing)
+const DEPLOY_GEOMETRY_STATE = Ref{Any}(nothing)
 
 function release_deploy_boundary_state!()
     state = DEPLOY_BOUNDARY_STATE[]
     state === nothing && return nothing
     if state.backend == :cuda
         release_cuda_weighted_field_sources!(state.weighted_sources)
-        release_cuda_field_evaluation_cache!(state.field_cache)
+        Bool(get(state, :shared_geometry, false)) || release_cuda_field_evaluation_cache!(state.field_cache)
         cuda = BeatEngineCore.CUDA_MODULE
         state.pressure isa cuda.CuArray && cuda.unsafe_free!(state.pressure)
         state.q_neumann isa cuda.CuArray && cuda.unsafe_free!(state.q_neumann)
     end
     DEPLOY_BOUNDARY_STATE[] = nothing
+    return nothing
+end
+
+function release_deploy_geometry_state!()
+    state = DEPLOY_GEOMETRY_STATE[]
+    state === nothing && return nothing
+    release_deploy_boundary_state!()
+    if state.backend == :cuda
+        cuda = BeatEngineCore.CUDA_MODULE
+        release_cuda_field_evaluation_cache!(state.field_cache)
+        state.cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(state.cuda_identity_cache)
+        for cache in (
+            state.device_cache,
+            state.device_singular_cache,
+            state.device_image_singular_cache,
+            state.device_near_correction_cache,
+            state.device_ground_near_correction_cache,
+        )
+            cache === nothing && continue
+            for name in fieldnames(typeof(cache))
+                value = getfield(cache, name)
+                value isa cuda.CuArray && cuda.unsafe_free!(value)
+            end
+        end
+    end
+    DEPLOY_GEOMETRY_STATE[] = nothing
     return nothing
 end
 
@@ -154,7 +181,7 @@ function build_deploy_cuda_observation_points(plane)
     )
 end
 
-function solve_deploy_request_impl(request)
+function solve_deploy_request_impl(request; emit_completed::Bool=true)
     request_started = time()
     schema_version = Int(get_value(request, "schema_version", 1))
     schema_version in (1, 2) || error("Unsupported Deploy solve schema_version $(schema_version).")
@@ -166,6 +193,17 @@ function solve_deploy_request_impl(request)
     )
     direct_cuda_assembly = beat_backend == :cuda && requested_assembly_mode == "direct_system"
     assembly_mode = direct_cuda_assembly ? "direct_system" : "operator_matrices"
+    retain_geometry_cache = Bool(get_value(request, "retain_geometry_cache", false))
+    geometry_key = String(get_value(request, "geometry_key", ""))
+    cached_geometry = retain_geometry_cache ? DEPLOY_GEOMETRY_STATE[] : nothing
+    if cached_geometry !== nothing && (
+        cached_geometry.key != geometry_key ||
+        cached_geometry.backend != beat_backend ||
+        cached_geometry.assembly_mode != assembly_mode
+    )
+        release_deploy_geometry_state!()
+        cached_geometry = nothing
+    end
 
     FloatType = Float32
     frequency = FloatType(request["frequency_hz"])
@@ -192,16 +230,24 @@ function solve_deploy_request_impl(request)
 
     cuda_observation = nothing
     input_geometry_started = time()
-    emit_event("status"; message="Loading fixed-source speaker boundary")
-    package_mesh = load_gmsh22_with_tags(
-        String(request["mesh_file"]),
-        FloatType(get_value(request, "mesh_scale_factor", 1.0)),
-    )
-    mesh_is_world_space = Bool(get_value(request, "mesh_is_world_space", false))
-    source_transforms = deploy_source_transforms(request, FloatType)
-    source_meshes = mesh_is_world_space ? [package_mesh] :
-        [transform_deploy_mesh(package_mesh, transform) for transform in source_transforms]
-    mesh = mesh_is_world_space ? package_mesh : combine_boundary_meshes(source_meshes).mesh
+    mesh = nothing
+    source_meshes = nothing
+    if cached_geometry === nothing
+        emit_event("status"; message="Loading fixed-source speaker boundary")
+        package_mesh = load_gmsh22_with_tags(
+            String(request["mesh_file"]),
+            FloatType(get_value(request, "mesh_scale_factor", 1.0)),
+        )
+        mesh_is_world_space = Bool(get_value(request, "mesh_is_world_space", false))
+        source_transforms = deploy_source_transforms(request, FloatType)
+        source_meshes = mesh_is_world_space ? [package_mesh] :
+            [transform_deploy_mesh(package_mesh, transform) for transform in source_transforms]
+        mesh = mesh_is_world_space ? package_mesh : combine_boundary_meshes(source_meshes).mesh
+    else
+        mesh = cached_geometry.mesh
+        source_meshes = [mesh]
+        emit_event("status"; message="Reusing BEAT geometry caches")
+    end
     q_neumann = deploy_complex_vector(request["boundary_neumann"], FloatType)
     length(q_neumann) == length(mesh.faces) || error(
         "Deploy boundary trace contains $(length(q_neumann)) faces, but the mesh contains $(length(mesh.faces)).",
@@ -243,44 +289,61 @@ function solve_deploy_request_impl(request)
     length(unique(observation_sample_indices)) == length(observation_sample_indices) || error("Deploy observation sample indices must be unique.")
     input_geometry_seconds = time() - input_geometry_started
 
-    host_cache_started = time()
-    p1_space = build_p1_space(mesh)
-    dp0_space = build_dp0_space(mesh)
     quadrature_order = Int(get_value(request, "quadrature_order", 2))
     singular_order = Int(get_value(request, "singular_order", 3))
     close_pair_quadrature_order = Int(get_value(request, "close_pair_quadrature_order", 8))
     close_pair_quadrature_order >= 4 || error("Deploy close-pair quadrature order must be at least 4.")
-    rule = triangle_rule(FloatType, quadrature_order)
-    identity_p1_p1 = direct_cuda_assembly ? nothing :
-        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
-    identity_p1_dp0 = direct_cuda_assembly ? nothing :
-        assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
-    singular_cache = build_singular_correction_cache(mesh, singular_order)
     proximity = get_value(request, "proximity", Dict{String,Any}())
-    raw_close_face_pairs = get_value(proximity, "close_face_pairs", Any[])
-    close_face_pairs = [
-        length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
-        (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
-        for pair in raw_close_face_pairs
-    ]
-    near_correction_cache = build_near_correction_cache(
-        mesh,
-        close_face_pairs,
-        close_pair_quadrature_order,
-    )
-    raw_ground_close_face_pairs = get_value(proximity, "ground_image_close_face_pairs", Any[])
-    ground_close_face_pairs = [
-        length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
-        (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
-        for pair in raw_ground_close_face_pairs
-    ]
-    ground_near_correction_cache = build_near_correction_cache(
-        mesh,
-        ground_close_face_pairs,
-        close_pair_quadrature_order;
-        trial_transform=rigid_ground_transform(),
-    )
-    cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=:ground)
+    host_cache_started = time()
+    p1_space = nothing
+    dp0_space = nothing
+    rule = nothing
+    identity_p1_p1 = nothing
+    identity_p1_dp0 = nothing
+    singular_cache = nothing
+    near_correction_cache = nothing
+    ground_near_correction_cache = nothing
+    cpu_field_cache = nothing
+    if cached_geometry === nothing
+        p1_space = build_p1_space(mesh)
+        dp0_space = build_dp0_space(mesh)
+        rule = triangle_rule(FloatType, quadrature_order)
+        identity_p1_p1 = direct_cuda_assembly ? nothing :
+            assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :p1)
+        identity_p1_dp0 = direct_cuda_assembly ? nothing :
+            assemble_l2_identity_matrix(mesh, p1_space, dp0_space, rule, :p1, :dp0)
+        singular_cache = build_singular_correction_cache(mesh, singular_order)
+        raw_close_face_pairs = get_value(proximity, "close_face_pairs", Any[])
+        close_face_pairs = [
+            length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
+            (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
+            for pair in raw_close_face_pairs
+        ]
+        near_correction_cache = build_near_correction_cache(mesh, close_face_pairs, close_pair_quadrature_order)
+        raw_ground_close_face_pairs = get_value(proximity, "ground_image_close_face_pairs", Any[])
+        ground_close_face_pairs = [
+            length(pair) >= 3 ? (Int(pair[1]) + 1, Int(pair[2]) + 1, Int(pair[3])) :
+            (Int(pair[1]) + 1, Int(pair[2]) + 1, close_pair_quadrature_order)
+            for pair in raw_ground_close_face_pairs
+        ]
+        ground_near_correction_cache = build_near_correction_cache(
+            mesh,
+            ground_close_face_pairs,
+            close_pair_quadrature_order;
+            trial_transform=rigid_ground_transform(),
+        )
+        cpu_field_cache = build_field_evaluation_cache(mesh, rule; symmetry_mode=:ground)
+    else
+        p1_space = cached_geometry.p1_space
+        dp0_space = cached_geometry.dp0_space
+        rule = cached_geometry.rule
+        identity_p1_p1 = cached_geometry.identity_p1_p1
+        identity_p1_dp0 = cached_geometry.identity_p1_dp0
+        singular_cache = cached_geometry.singular_cache
+        near_correction_cache = cached_geometry.near_correction_cache
+        ground_near_correction_cache = cached_geometry.ground_near_correction_cache
+        cpu_field_cache = cached_geometry.cpu_field_cache
+    end
     host_cache_seconds = time() - host_cache_started
 
     emit_event(
@@ -293,13 +356,13 @@ function solve_deploy_request_impl(request)
         observation_count=length(observation_sample_indices),
     )
 
-    device_cache = nothing
-    device_singular_cache = nothing
-    device_image_singular_cache = nothing
-    device_near_correction_cache = nothing
-    device_ground_near_correction_cache = nothing
-    cuda_identity_cache = nothing
-    field_cache = cpu_field_cache
+    device_cache = cached_geometry === nothing ? nothing : cached_geometry.device_cache
+    device_singular_cache = cached_geometry === nothing ? nothing : cached_geometry.device_singular_cache
+    device_image_singular_cache = cached_geometry === nothing ? nothing : cached_geometry.device_image_singular_cache
+    device_near_correction_cache = cached_geometry === nothing ? nothing : cached_geometry.device_near_correction_cache
+    device_ground_near_correction_cache = cached_geometry === nothing ? nothing : cached_geometry.device_ground_near_correction_cache
+    cuda_identity_cache = cached_geometry === nothing ? nothing : cached_geometry.cuda_identity_cache
+    field_cache = cached_geometry === nothing ? cpu_field_cache : cached_geometry.field_cache
     operators = nothing
     direct_system = nothing
     direct_system_consumed = false
@@ -316,47 +379,74 @@ function solve_deploy_request_impl(request)
     try
         device_prepare_seconds = @elapsed begin
             if beat_backend == :cuda
-                emit_event("status"; message="Preparing BEAT CUDA geometry caches")
-                device_cache = build_cuda_regular_assembly_cache(mesh, rule)
-                device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(
-                    singular_cache,
-                    p1_space,
-                    dp0_space,
-                )
-                device_image_singular_cache = build_cuda_image_singular_correction_cache(
-                    mesh,
-                    p1_space,
-                    dp0_space,
-                    singular_order,
-                    eachindex(mesh.faces),
-                    :ground,
-                )
-                if near_correction_cache.pair_count > 0
-                    device_near_correction_cache = build_cuda_near_correction_cache(
-                        near_correction_cache,
+                if cached_geometry === nothing
+                    emit_event("status"; message="Preparing BEAT CUDA geometry caches")
+                    device_cache = build_cuda_regular_assembly_cache(mesh, rule)
+                    device_singular_cache = BeatEngineCore.build_cuda_singular_correction_cache(
+                        singular_cache,
                         p1_space,
                         dp0_space,
                     )
-                end
-                if ground_near_correction_cache.pair_count > 0
-                    device_ground_near_correction_cache = build_cuda_near_correction_cache(
-                        ground_near_correction_cache,
+                    device_image_singular_cache = build_cuda_image_singular_correction_cache(
+                        mesh,
                         p1_space,
                         dp0_space,
+                        singular_order,
+                        eachindex(mesh.faces),
+                        :ground,
                     )
+                    if near_correction_cache.pair_count > 0
+                        device_near_correction_cache = build_cuda_near_correction_cache(
+                            near_correction_cache,
+                            p1_space,
+                            dp0_space,
+                        )
+                    end
+                    if ground_near_correction_cache.pair_count > 0
+                        device_ground_near_correction_cache = build_cuda_near_correction_cache(
+                            ground_near_correction_cache,
+                            p1_space,
+                            dp0_space,
+                        )
+                    end
+                    if !direct_cuda_assembly
+                        cuda_identity_cache = build_cuda_burton_miller_identity_cache(
+                            identity_p1_p1,
+                            identity_p1_dp0,
+                            FloatType,
+                        )
+                    end
+                    field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
                 end
                 cached_q_neumann = BeatEngineCore.CUDA_MODULE.CuArray(q_neumann)
-                if !direct_cuda_assembly
-                    cuda_identity_cache = build_cuda_burton_miller_identity_cache(
-                        identity_p1_p1,
-                        identity_p1_dp0,
-                        FloatType,
-                    )
-                end
-                field_cache = build_cuda_field_evaluation_cache(cpu_field_cache)
             else
-                emit_event("status"; message="Preparing BEAT CPU geometry caches")
+                cached_geometry === nothing && emit_event("status"; message="Preparing BEAT CPU geometry caches")
             end
+        end
+
+        if retain_geometry_cache && cached_geometry === nothing
+            DEPLOY_GEOMETRY_STATE[] = (
+                key=geometry_key,
+                backend=beat_backend,
+                assembly_mode=assembly_mode,
+                mesh=mesh,
+                p1_space=p1_space,
+                dp0_space=dp0_space,
+                rule=rule,
+                identity_p1_p1=identity_p1_p1,
+                identity_p1_dp0=identity_p1_dp0,
+                singular_cache=singular_cache,
+                near_correction_cache=near_correction_cache,
+                ground_near_correction_cache=ground_near_correction_cache,
+                cpu_field_cache=cpu_field_cache,
+                device_cache=device_cache,
+                device_singular_cache=device_singular_cache,
+                device_image_singular_cache=device_image_singular_cache,
+                device_near_correction_cache=device_near_correction_cache,
+                device_ground_near_correction_cache=device_ground_near_correction_cache,
+                cuda_identity_cache=cuda_identity_cache,
+                field_cache=field_cache,
+            )
         end
 
         assembly_message = direct_cuda_assembly ?
@@ -480,6 +570,7 @@ function solve_deploy_request_impl(request)
             q_neumann=cached_q_neumann,
             field_cache=field_cache,
             weighted_sources=weighted_sources,
+            shared_geometry=retain_geometry_cache,
         )
         result = nothing
         postprocess_seconds = @elapsed begin
@@ -561,15 +652,64 @@ function solve_deploy_request_impl(request)
         operators === nothing || release_operator_storage!(operators)
         (direct_system === nothing || direct_system_consumed) ||
             release_burton_miller_system_cuda!(direct_system)
-        cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
-        device_image_singular_cache === nothing ||
-            release_cuda_image_singular_correction_cache!(device_image_singular_cache)
-        device_near_correction_cache === nothing ||
-            release_cuda_image_singular_correction_cache!(device_near_correction_cache)
-        device_ground_near_correction_cache === nothing ||
-            release_cuda_image_singular_correction_cache!(device_ground_near_correction_cache)
+        retained_state = DEPLOY_GEOMETRY_STATE[]
+        geometry_resources_retained = retain_geometry_cache && retained_state !== nothing &&
+            retained_state.field_cache === field_cache
+        if !geometry_resources_retained
+            cuda_identity_cache === nothing || release_cuda_burton_miller_identity_cache!(cuda_identity_cache)
+            device_image_singular_cache === nothing ||
+                release_cuda_image_singular_correction_cache!(device_image_singular_cache)
+            device_near_correction_cache === nothing ||
+                release_cuda_image_singular_correction_cache!(device_near_correction_cache)
+            device_ground_near_correction_cache === nothing ||
+                release_cuda_image_singular_correction_cache!(device_ground_near_correction_cache)
+        end
     end
-    emit_event("completed"; solved_count=1)
+    emit_completed && emit_event("completed"; solved_count=1)
+end
+
+function solve_deploy_microphone_sweep_request_impl(request)
+    frequencies = Float64.(get_value(request, "frequencies_hz", Any[]))
+    isempty(frequencies) && error("Deploy microphone sweep requires at least one frequency.")
+    neumann_sweep = get_value(request, "boundary_neumann_sweep", nothing)
+    pressure_sweep = get_value(request, "reference_boundary_pressure_sweep", nothing)
+    neumann_sweep isa AbstractDict || error("Deploy microphone sweep requires boundary_neumann_sweep.")
+    pressure_sweep isa AbstractDict || error("Deploy microphone sweep requires reference_boundary_pressure_sweep.")
+    neumann_real = get_value(neumann_sweep, "real", Any[])
+    neumann_imag = get_value(neumann_sweep, "imag", Any[])
+    pressure_real = get_value(pressure_sweep, "real", Any[])
+    pressure_imag = get_value(pressure_sweep, "imag", Any[])
+    all(length(rows) == length(frequencies) for rows in (neumann_real, neumann_imag, pressure_real, pressure_imag)) ||
+        error("Deploy microphone sweep traces do not match the frequency count.")
+    geometry_key = String(get_value(request, "geometry_key", ""))
+    isempty(geometry_key) && error("Deploy microphone sweep requires a geometry_key.")
+    release_deploy_geometry_state!()
+    try
+        for index in eachindex(frequencies)
+            emit_event(
+                "status";
+                message="Solving microphone frequency $(index)/$(length(frequencies)) ($(round(frequencies[index]; digits=2)) Hz)",
+            )
+            frequency_request = copy(request)
+            frequency_request["schema"] = "boundary_lab_deploy_solve"
+            frequency_request["schema_version"] = 2
+            frequency_request["frequency_hz"] = frequencies[index]
+            frequency_request["boundary_neumann"] = Dict(
+                "real" => neumann_real[index],
+                "imag" => neumann_imag[index],
+            )
+            frequency_request["reference_boundary_pressure"] = Dict(
+                "real" => pressure_real[index],
+                "imag" => pressure_imag[index],
+            )
+            frequency_request["solution_key"] = "$(geometry_key):$(frequencies[index])"
+            frequency_request["retain_geometry_cache"] = true
+            solve_deploy_request_impl(frequency_request; emit_completed=false)
+        end
+    finally
+        release_deploy_geometry_state!()
+    end
+    emit_event("completed"; solved_count=length(frequencies))
 end
 
 function evaluate_deploy_field_request_impl(request)

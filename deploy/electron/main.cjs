@@ -16,6 +16,7 @@ class DeployWorkerClient {
     this.readyPromise = null;
     this.resolveReady = null;
     this.rejectReady = null;
+    this.warming = false;
   }
 
   ensureStarted() {
@@ -137,6 +138,9 @@ class DeployWorkerClient {
 
   async solve(payload, sender, kind = "solve", operation = "solve") {
     const invokedAt = performance.now();
+    if (this.warming && sender && !sender.isDestroyed()) {
+      sender.send("deploy:solve-status", { type: "status", message: "Waiting for BEAT CUDA warmup" });
+    }
     await this.ensureStarted();
     const workerReadyWaitMs = performance.now() - invokedAt;
     if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
@@ -181,20 +185,25 @@ class DeployWorkerClient {
   }
 
   async warmup() {
-    await this.ensureStarted();
-    if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
-    const id = this.nextId++;
-    const request = `${JSON.stringify({ id, operation: "warmup", backend: "cuda" })}\n`;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, {
-        kind: "warmup",
-        resolve,
-        reject,
-        sender: null,
-        result: null,
+    this.warming = true;
+    try {
+      await this.ensureStarted();
+      if (!this.process?.stdin.writable) throw new Error("Deploy solve worker is unavailable.");
+      const id = this.nextId++;
+      const request = `${JSON.stringify({ id, operation: "warmup", backend: "cuda" })}\n`;
+      return await new Promise((resolve, reject) => {
+        this.pending.set(id, {
+          kind: "warmup",
+          resolve,
+          reject,
+          sender: null,
+          result: null,
+        });
+        this.process.stdin.write(request);
       });
-      this.process.stdin.write(request);
-    });
+    } finally {
+      this.warming = false;
+    }
   }
 
   close() {

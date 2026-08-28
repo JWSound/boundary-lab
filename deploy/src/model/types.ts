@@ -185,4 +185,5 @@ export interface MicrophoneSweepResult {
   pressure: { real: number[][]; imag: number[][] };
   completed_count: number;
   total_count: number;
+  pipeline?: Record<string, number>;
 }

@@ -33,12 +33,12 @@ npm start
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
 - Plots every microphone's package-derived SPL response across the exact exported frequency grid.
-- Calculates explicit Level 2 complex microphone pressure across the full package grid, streams progress, and turns the Calculate button into a Stop control while the sweep is active.
+- Calculates explicit Level 2 complex microphone pressure across the full package grid in one BEAT request, retaining host/CUDA geometry and correction caches between frequencies, streaming progress, and turning the Calculate button into a Stop control while the sweep is active.
 - Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
-- Uses a triangle BVH to measure exact inter-object surface spacing before a solve and emits higher-order corrections for close speaker/rigid face pairs and their ground images.
+- Uses threshold-oriented triangle-BVH clearance validation with early exit and emits conservative higher-order corrections for close speaker/rigid face pairs and their ground images.
 - Saves speaker packages, rigid-mesh assets and instances, and microphones as a strict schema-v5 `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
@@ -65,4 +65,4 @@ timings. A reference run and interpretation are recorded in
 
 ## Next solver milestone
 
-Reuse the rigid-ground and close-pair geometry caches across live solves, then route the future Level 3 condensed-interior exterior operator through the same half-space path.
+Reuse the rigid-ground and close-pair geometry caches across geometry-identical live solves, then route the future Level 3 condensed-interior exterior operator through the same half-space path.

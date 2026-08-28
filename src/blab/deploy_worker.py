@@ -12,7 +12,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from blab.deploy_solve import DeploySolveCache, prepare_deploy_field_request, prepare_deploy_solve_request
+from blab.deploy_solve import (
+    DeploySolveCache,
+    prepare_deploy_field_request,
+    prepare_deploy_microphone_sweep_request,
+    prepare_deploy_solve_request,
+)
 from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
@@ -78,7 +83,12 @@ def _solve(
         if field_only:
             request_path, _request = prepare_deploy_field_request(payload, temp_dir)
         else:
-            request_path, _request = prepare_deploy_solve_request(payload, temp_dir, cache=solve_cache)
+            request_path, _request = prepare_deploy_solve_request(
+                payload,
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
         julia_started = time.perf_counter()
@@ -173,79 +183,91 @@ def _microphone_sweep(
     if worker is None:
         worker = _worker(backend)
         workers[backend] = worker
-    spl_rows: list[list[float]] = [[] for _ in microphone_ids]
-    pressure_real_rows: list[list[float]] = [[] for _ in microphone_ids]
-    pressure_imag_rows: list[list[float]] = [[] for _ in microphone_ids]
+    spl_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+    pressure_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+    pressure_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+    frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
+    julia_timing_totals: dict[str, float] = {}
     completed_count = 0
     with tempfile.TemporaryDirectory(prefix="blab-deploy-microphones-") as temp_dir:
-        for frequency_hz in frequencies:
-            if cancel_event.is_set():
+        if cancel_event.is_set():
+            _emit("cancelled", request_id=request_id, completed_count=completed_count)
+            return
+        sweep_payload = {
+            **payload,
+            "observationPointsM": observation_points,
+            "includeComplexPressure": True,
+            "reuseBoundary": False,
+        }
+        prepare_started = time.perf_counter()
+        request_path, _request = prepare_deploy_microphone_sweep_request(
+            sweep_payload,
+            temp_dir,
+            cache=solve_cache,
+            status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+        )
+        prepare_seconds = time.perf_counter() - prepare_started
+        request_bytes = request_path.stat().st_size
+        julia_started = time.perf_counter()
+        for event in worker.submit(
+            request_path,
+            status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+        ):
+            event_type = str(event.get("type", ""))
+            if event_type == "status":
+                _emit("status", request_id=request_id, message=str(event.get("message", "")))
+            elif event_type == "initialized":
+                _emit("initialized", request_id=request_id, metadata=event)
+            elif event_type == "result":
+                frequency_result = event.get("result")
+                if not isinstance(frequency_result, dict):
+                    raise RuntimeError("BEAT Engine microphone sweep returned an invalid result.")
+                frequency_hz = float(frequency_result.get("frequency_hz", math.nan))
+                timings = frequency_result.get("timings")
+                if isinstance(timings, dict):
+                    for name, value in timings.items():
+                        if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                            julia_timing_totals[name] = julia_timing_totals.get(name, 0.0) + float(value)
+                frequency_index = frequency_indices.get(frequency_hz)
+                if frequency_index is None:
+                    frequency_index = min(
+                        range(len(frequencies)),
+                        key=lambda index: abs(frequencies[index] - frequency_hz),
+                    )
+                spl = frequency_result.get("spl_db")
+                pressure = frequency_result.get("field_pressure")
+                if not isinstance(spl, list) or len(spl) != len(microphone_ids):
+                    raise RuntimeError("BEAT Engine microphone SPL result does not match the microphone count.")
+                if not isinstance(pressure, dict):
+                    raise RuntimeError("BEAT Engine microphone sweep did not return complex pressure.")
+                pressure_real = pressure.get("real")
+                pressure_imag = pressure.get("imag")
+                if not isinstance(pressure_real, list) or not isinstance(pressure_imag, list):
+                    raise RuntimeError("BEAT Engine microphone pressure result is invalid.")
+                if len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids):
+                    raise RuntimeError("BEAT Engine microphone pressure result does not match the microphone count.")
+                for microphone_index in range(len(microphone_ids)):
+                    spl_rows[microphone_index][frequency_index] = float(spl[microphone_index])
+                    pressure_real_rows[microphone_index][frequency_index] = float(pressure_real[microphone_index])
+                    pressure_imag_rows[microphone_index][frequency_index] = float(pressure_imag[microphone_index])
+                completed_count += 1
+                _emit(
+                    "microphone-progress",
+                    request_id=request_id,
+                    frequency_hz=frequency_hz,
+                    completed_count=completed_count,
+                    total_count=len(frequencies),
+                    microphone_ids=microphone_ids,
+                    spl_db=spl,
+                )
+            elif event_type == "cancelled":
                 _emit("cancelled", request_id=request_id, completed_count=completed_count)
                 return
-            frequency_payload = {
-                **payload,
-                "frequencyHz": frequency_hz,
-                "observationPointsM": observation_points,
-                "includeComplexPressure": True,
-                "solutionKey": f"microphone-sweep:{request_id}:{frequency_hz:.9g}",
-                "reuseBoundary": False,
-            }
-            request_path, _request = prepare_deploy_solve_request(
-                frequency_payload,
-                temp_dir,
-                cache=solve_cache,
-            )
-            frequency_result: dict[str, Any] | None = None
-            for event in worker.submit(
-                request_path,
-                status_callback=lambda message: _emit(
-                    "status",
-                    request_id=request_id,
-                    message=message,
-                ),
-            ):
-                event_type = str(event.get("type", ""))
-                if event_type == "status":
-                    _emit("status", request_id=request_id, message=str(event.get("message", "")))
-                elif event_type == "initialized":
-                    _emit("initialized", request_id=request_id, metadata=event)
-                elif event_type == "result":
-                    result = event.get("result")
-                    if not isinstance(result, dict):
-                        raise RuntimeError("BEAT Engine microphone sweep returned an invalid result.")
-                    frequency_result = result
-                elif event_type == "cancelled":
-                    _emit("cancelled", request_id=request_id, completed_count=completed_count)
-                    return
-                elif event_type == "failed":
-                    raise RuntimeError(str(event.get("error", "BEAT Engine microphone sweep failed.")))
-            if frequency_result is None:
-                raise RuntimeError("BEAT Engine microphone sweep completed a frequency without pressure values.")
-            spl = frequency_result.get("spl_db")
-            pressure = frequency_result.get("field_pressure")
-            if not isinstance(spl, list) or len(spl) != len(microphone_ids):
-                raise RuntimeError("BEAT Engine microphone SPL result does not match the microphone count.")
-            if not isinstance(pressure, dict):
-                raise RuntimeError("BEAT Engine microphone sweep did not return complex pressure.")
-            pressure_real = pressure.get("real")
-            pressure_imag = pressure.get("imag")
-            if not isinstance(pressure_real, list) or not isinstance(pressure_imag, list):
-                raise RuntimeError("BEAT Engine microphone pressure result is invalid.")
-            if len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids):
-                raise RuntimeError("BEAT Engine microphone pressure result does not match the microphone count.")
-            for microphone_index in range(len(microphone_ids)):
-                spl_rows[microphone_index].append(float(spl[microphone_index]))
-                pressure_real_rows[microphone_index].append(float(pressure_real[microphone_index]))
-                pressure_imag_rows[microphone_index].append(float(pressure_imag[microphone_index]))
-            completed_count += 1
-            _emit(
-                "microphone-progress",
-                request_id=request_id,
-                frequency_hz=frequency_hz,
-                completed_count=completed_count,
-                total_count=len(frequencies),
-                microphone_ids=microphone_ids,
-                spl_db=spl,
+            elif event_type == "failed":
+                raise RuntimeError(str(event.get("error", "BEAT Engine microphone sweep failed.")))
+        if completed_count != len(frequencies):
+            raise RuntimeError(
+                f"BEAT Engine microphone sweep returned {completed_count} of {len(frequencies)} frequencies."
             )
     _emit(
         "result",
@@ -257,6 +279,13 @@ def _microphone_sweep(
             "pressure": {"real": pressure_real_rows, "imag": pressure_imag_rows},
             "completed_count": completed_count,
             "total_count": len(frequencies),
+            "pipeline": {
+                "python_prepare_s": prepare_seconds,
+                "julia_request_json_bytes": request_bytes,
+                "python_julia_result_wait_s": time.perf_counter() - julia_started,
+                "batched_frequency_sweep": 1,
+                **{f"julia_{name}_total_s": seconds for name, seconds in julia_timing_totals.items()},
+            },
         },
     )
     _emit("completed", request_id=request_id)

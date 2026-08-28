@@ -835,6 +835,13 @@ export function App() {
         return;
       }
       if (microphoneSweepKeyRef.current !== requestedKey) return;
+      if (result.pipeline) {
+        window.boundaryLabDeployProfile = {
+          kind: "microphone-sweep",
+          frequency_count: result.completed_count,
+          pipeline: result.pipeline,
+        };
+      }
       const traces = new Map<string, Float32Array>();
       result.microphone_ids.forEach((id, index) => traces.set(id, Float32Array.from(result.spl_db[index])));
       setBemMicrophoneResponses({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces });
