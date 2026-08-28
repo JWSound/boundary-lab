@@ -261,7 +261,6 @@ export function buildSourceInstance(config: SourceConfiguration): SpeakerInstanc
   };
 }
 
-export const SOURCE_SURFACE_PADDING_M = 0.01;
 export const SOURCE_GROUND_CLEARANCE_M = 0;
 
 export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, rollDeg = 0): number {

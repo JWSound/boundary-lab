@@ -30,6 +30,11 @@ const {
   createDeployProject,
   parseDeployProject,
   serializeDeployProject,
+  SOURCE_SURFACE_PADDING_M,
+  cabinetClearanceViolations,
+  cabinetLocalBounds,
+  constrainCabinetPoses,
+  findClearSourcePlacement,
 } = await import(`${pathToFileURL(outputPath).href}?${Date.now()}`);
 const bytes = await readFile(packagePath);
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -109,6 +114,72 @@ const mixedMicrophones = computeMixedMicrophonePatternResponses(
 );
 assert.equal(mixedMicrophones.traces.length, 1);
 assert.ok(mixedMicrophones.traces[0].splDb.every(Number.isFinite));
+
+const cabinetBounds = cabinetLocalBounds(speaker);
+const cabinetWidth = cabinetBounds.maximum[0] - cabinetBounds.minimum[0];
+const clearanceSource = { ...source, id: "clearance-source", position: [0, 1, 0] };
+const clearanceObstacle = { ...source, id: "clearance-obstacle", position: [3, 1, 0] };
+const clearanceRegistry = new Map([[speaker.id, speaker]]);
+const sweptPose = constrainCabinetPoses(
+  clearanceRegistry,
+  [clearanceSource, clearanceObstacle],
+  [{ ...clearanceSource, position: [6, 1, 0] }],
+);
+assert.ok(sweptPose[0].position[0] < clearanceObstacle.position[0]);
+assert.deepEqual(cabinetClearanceViolations(clearanceRegistry, [sweptPose[0], clearanceObstacle]), []);
+const slidingPose = constrainCabinetPoses(
+  clearanceRegistry,
+  [clearanceSource, { ...clearanceObstacle, position: [2, 1, 0] }],
+  [{ ...clearanceSource, position: [4, 1, 1.5] }],
+);
+assert.ok(slidingPose[0].position[2] > 1);
+assert.deepEqual(cabinetClearanceViolations(
+  clearanceRegistry,
+  [slidingPose[0], { ...clearanceObstacle, position: [2, 1, 0] }],
+), []);
+
+const touchingObstacle = {
+  ...clearanceObstacle,
+  position: [cabinetWidth + SOURCE_SURFACE_PADDING_M, 1, 0],
+};
+const rotatedPose = constrainCabinetPoses(
+  clearanceRegistry,
+  [clearanceSource, touchingObstacle],
+  [{ ...clearanceSource, yawDeg: 45 }],
+);
+assert.ok(Math.abs(rotatedPose[0].yawDeg) < 45);
+assert.deepEqual(cabinetClearanceViolations(clearanceRegistry, [rotatedPose[0], touchingObstacle]), []);
+const groupSpacing = cabinetWidth + SOURCE_SURFACE_PADDING_M;
+const groupLeft = { ...clearanceSource, id: "group-left", position: [-groupSpacing / 2, 1, 0] };
+const groupRight = { ...clearanceSource, id: "group-right", position: [groupSpacing / 2, 1, 0] };
+const rotatedGroup = constrainCabinetPoses(
+  clearanceRegistry,
+  [groupLeft, groupRight],
+  [
+    { ...groupLeft, position: [0, 1, groupSpacing / 2], yawDeg: 90 },
+    { ...groupRight, position: [0, 1, -groupSpacing / 2], yawDeg: 90 },
+  ],
+);
+assert.ok(rotatedGroup.every((instance) => Math.abs(instance.yawDeg - 90) < 1e-6));
+assert.deepEqual(cabinetClearanceViolations(clearanceRegistry, rotatedGroup), []);
+assert.equal(cabinetClearanceViolations(
+  clearanceRegistry,
+  [clearanceSource, { ...clearanceObstacle, position: [cabinetWidth, 1, 0] }],
+).length, 1);
+const overlappingObstacle = { ...clearanceObstacle, position: [cabinetWidth * 0.5, 1, 0] };
+const recoveringPose = constrainCabinetPoses(
+  clearanceRegistry,
+  [clearanceSource, overlappingObstacle],
+  [{ ...clearanceSource, position: [-cabinetWidth, 1, 0] }],
+);
+assert.ok(recoveringPose[0].position[0] < clearanceSource.position[0]);
+
+const placedSource = findClearSourcePlacement(
+  clearanceRegistry,
+  [clearanceSource],
+  { ...clearanceObstacle, position: [...clearanceSource.position] },
+);
+assert.deepEqual(cabinetClearanceViolations(clearanceRegistry, [clearanceSource, placedSource]), []);
 
 assert.deepEqual(heatmapColorBoundaries(50, 145, 0), []);
 const fiveDbBoundaries = heatmapColorBoundaries(50, 145, 5);

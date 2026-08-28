@@ -48,6 +48,7 @@ import {
 } from "./model/field";
 import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "./model/types";
 import { heatmapLegendGradient } from "./model/heatmap";
+import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement } from "./model/cabinetPlacement";
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   const centerSpacingM = pkg.boundsM[0] + 2;
@@ -188,6 +189,7 @@ export function App() {
   const [projectFileName, setProjectFileName] = useState("s218bp-subwoofer-study.blabdeploy.json");
   const [savedProjectSnapshot, setSavedProjectSnapshot] = useState<string | null>(null);
   const [solveReleaseRevision, setSolveReleaseRevision] = useState(0);
+  const [speakerManipulationActive, setSpeakerManipulationActive] = useState(false);
   const [microphoneSweepState, setMicrophoneSweepState] = useState<"idle" | "solving" | "complete" | "error">("idle");
   const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
@@ -201,6 +203,7 @@ export function App() {
   const microphoneSweepKeyRef = useRef<string | null>(null);
   const stoppingMicrophoneSweep = useRef(false);
   const flushLiveSolveRef = useRef(false);
+  const sourceManipulationRef = useRef<{ start: SourceConfiguration[]; ids: Set<string> } | null>(null);
 
   useEffect(() => {
     sourceConfigsRef.current = sourceConfigs;
@@ -232,6 +235,30 @@ export function App() {
   }, []);
 
   const packageById = useMemo(() => new Map(packages.map((item) => [item.id, item])), [packages]);
+  const constrainSourceConfigs = useCallback((
+    current: SourceConfiguration[],
+    proposed: SourceConfiguration[],
+    movingIds: ReadonlySet<string>,
+  ): SourceConfiguration[] => {
+    const resolved = constrainCabinetPoses(
+      packageById,
+      current.map(buildSourceInstance),
+      proposed.filter((source) => movingIds.has(source.id)).map(buildSourceInstance),
+    );
+    const poseById = new Map(resolved.map((source) => [source.id, source]));
+    return proposed.map((source) => {
+      const pose = poseById.get(source.id);
+      return pose ? {
+        ...source,
+        positionX: pose.position[0],
+        positionHeightM: pose.position[1],
+        positionZ: pose.position[2],
+        pitchDeg: pose.pitchDeg,
+        yawDeg: pose.yawDeg,
+        rollDeg: pose.rollDeg,
+      } : source;
+    });
+  }, [packageById]);
   const activeSourcePackageIds = [...new Set(sourceConfigs.map((source) => source.packageId))];
   const activeSourcePackageIdsKey = JSON.stringify(activeSourcePackageIds.slice().sort());
   const acousticPackages = useMemo(
@@ -258,6 +285,10 @@ export function App() {
     [packageById, pkg],
   );
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
+  const sceneClearanceValid = useMemo(
+    () => cabinetClearanceViolations(packageById, sources).length === 0,
+    [packageById, sources],
+  );
   const selectedFrequencyHz = pkg.frequenciesHz[frequencyIndex];
   const patternLookups = useMemo(
     () => buildPackagePatternLookups(acousticPackages, selectedFrequencyHz),
@@ -392,6 +423,7 @@ export function App() {
       ),
     }));
     const nextPackage = nextPackageById.get(nextSources[0].packageId) ?? nextPackages[0];
+    const clearanceViolations = cabinetClearanceViolations(nextPackageById, nextSources.map(buildSourceInstance));
     const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
     const homogeneousProject = new Set(nextSources.map((source) => source.packageId)).size === 1;
     const nextFidelity: Fidelity = project.requested_fidelity === "boundary" &&
@@ -432,7 +464,9 @@ export function App() {
     setProjectName(project.name);
     setProjectFileName(fileName);
     setSavedProjectSnapshot(normalizedContents);
-    setError(null);
+    setError(clearanceViolations.length > 0
+      ? `Loaded project contains ${clearanceViolations.length} speaker clearance violation${clearanceViolations.length === 1 ? "" : "s"}. Move the affected cabinets apart before placing them closer together.`
+      : null);
   };
 
   useEffect(() => window.boundaryLabDesktop?.onSolveStatus((status) => {
@@ -699,8 +733,22 @@ export function App() {
       ...next,
       positionHeightM: Math.max(minimumSourceHeightM(sourcePackage, next.pitchDeg, next.rollDeg), next.positionHeightM),
     };
-    setSourceConfigs((current) => current.map((source) => source.id === grounded.id ? grounded : source));
+    const current = sourceConfigsRef.current;
+    const proposed = current.map((source) => source.id === grounded.id ? grounded : source);
+    const resolved = constrainSourceConfigs(current, proposed, new Set([grounded.id]));
+    sourceConfigsRef.current = resolved;
+    setSourceConfigs(resolved);
   };
+
+  const beginSourceManipulation = useCallback((ids: readonly string[]) => {
+    if (!sourceManipulationRef.current) {
+      sourceManipulationRef.current = {
+        start: sourceConfigsRef.current.map((source) => ({ ...source })),
+        ids: new Set(ids),
+      };
+    }
+    setSpeakerManipulationActive(true);
+  }, []);
 
   const updateSelectedMicrophone = (next: MicrophoneConfiguration) => {
     const grounded = { ...next, positionHeightM: Math.max(0, next.positionHeightM) };
@@ -728,6 +776,24 @@ export function App() {
       );
     }
     delta.y = Math.max(delta.y, minimumDeltaY);
+    if (selectedSourceIds.length > 0) {
+      const currentSources = sourceConfigsRef.current;
+      const movingSources = new Set(selectedSourceIds);
+      const anchorSource = currentSources.find((source) => movingSources.has(source.id))!;
+      const proposedSources = currentSources.map((source) => movingSources.has(source.id) ? {
+        ...source,
+        positionX: source.positionX + delta.x,
+        positionHeightM: source.positionHeightM + delta.y,
+        positionZ: source.positionZ + delta.z,
+      } : source);
+      const nextSources = constrainSourceConfigs(currentSources, proposedSources, movingSources);
+      const resolvedAnchor = nextSources.find((source) => source.id === anchorSource.id)!;
+      delta.x = resolvedAnchor.positionX - anchorSource.positionX;
+      delta.y = resolvedAnchor.positionHeightM - anchorSource.positionHeightM;
+      delta.z = resolvedAnchor.positionZ - anchorSource.positionZ;
+      sourceConfigsRef.current = nextSources;
+      setSourceConfigs(nextSources);
+    }
     const next = current.map((microphone) => movingIds.has(microphone.id) ? {
       ...microphone,
       positionX: microphone.positionX + delta.x,
@@ -736,17 +802,6 @@ export function App() {
     } : microphone);
     microphonesRef.current = next;
     setMicrophones(next);
-    if (selectedSourceIds.length > 0) {
-      const movingSources = new Set(selectedSourceIds);
-      const nextSources = sourceConfigsRef.current.map((source) => movingSources.has(source.id) ? {
-        ...source,
-        positionX: source.positionX + delta.x,
-        positionHeightM: source.positionHeightM + delta.y,
-        positionZ: source.positionZ + delta.z,
-      } : source);
-      sourceConfigsRef.current = nextSources;
-      setSourceConfigs(nextSources);
-    }
     if (selectedInstances.includes("audience-plane")) {
       const currentObservation = observationRef.current;
       const nextObservation = {
@@ -784,7 +839,7 @@ export function App() {
       minimumDeltaY = Math.max(minimumDeltaY, -microphone.positionHeightM);
     }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
-    const nextSources = currentSources.map((source) => {
+    const proposedSources = currentSources.map((source) => {
       if (!movingIds.has(source.id)) return source;
       return {
         ...source,
@@ -798,15 +853,24 @@ export function App() {
         positionZ: source.positionZ + positionDelta.z,
       };
     });
+    const nextSources = sourceManipulationRef.current
+      ? proposedSources
+      : constrainSourceConfigs(currentSources, proposedSources, movingIds);
+    const resolvedActive = nextSources.find((source) => source.id === id)!;
+    const appliedDelta = {
+      x: resolvedActive.positionX - active.positionX,
+      y: resolvedActive.positionHeightM - active.positionHeightM,
+      z: resolvedActive.positionZ - active.positionZ,
+    };
     sourceConfigsRef.current = nextSources;
     setSourceConfigs(nextSources);
     if (selectedMicrophoneIds.length > 0) {
       const movingMicrophones = new Set(selectedMicrophoneIds);
       const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
         ...microphone,
-        positionX: microphone.positionX + positionDelta.x,
-        positionHeightM: microphone.positionHeightM + positionDelta.y,
-        positionZ: microphone.positionZ + positionDelta.z,
+        positionX: microphone.positionX + appliedDelta.x,
+        positionHeightM: microphone.positionHeightM + appliedDelta.y,
+        positionZ: microphone.positionZ + appliedDelta.z,
       } : microphone);
       microphonesRef.current = nextMicrophones;
       setMicrophones(nextMicrophones);
@@ -815,9 +879,9 @@ export function App() {
       const currentObservation = observationRef.current;
       const nextObservation = {
         ...currentObservation,
-        centerXM: currentObservation.centerXM + positionDelta.x,
-        nearM: currentObservation.nearM + positionDelta.z,
-        heightM: currentObservation.heightM + positionDelta.y,
+        centerXM: currentObservation.centerXM + appliedDelta.x,
+        nearM: currentObservation.nearM + appliedDelta.z,
+        heightM: currentObservation.heightM + appliedDelta.y,
       };
       observationRef.current = nextObservation;
       setObservation(nextObservation);
@@ -847,7 +911,9 @@ export function App() {
         groupLiftM = Math.max(groupLiftM, -microphone.positionHeightM - requestedDeltaY);
       }
     }
-    const nextSources = sourceConfigsRef.current.map((source) => {
+    const currentSources = sourceConfigsRef.current;
+    const movingIds = new Set(poses.map((pose) => pose.id));
+    const proposedSources = currentSources.map((source) => {
       const pose = poseById.get(source.id);
       if (!pose) return source;
       return {
@@ -860,13 +926,16 @@ export function App() {
         rollDeg: pose.rollDeg,
       };
     });
+    const nextSources = sourceManipulationRef.current
+      ? proposedSources
+      : constrainSourceConfigs(currentSources, proposedSources, movingIds);
     sourceConfigsRef.current = nextSources;
     setSourceConfigs(nextSources);
     if (translationOnly && anchorSource) {
-      const anchorPose = poses[0];
+      const anchorPose = nextSources.find((source) => source.id === anchorSource.id)!;
       const delta = {
         x: anchorPose.positionX - anchorSource.positionX,
-        y: anchorPose.positionHeightM + groupLiftM - anchorSource.positionHeightM,
+        y: anchorPose.positionHeightM - anchorSource.positionHeightM,
         z: anchorPose.positionZ - anchorSource.positionZ,
       };
       if (selectedMicrophoneIds.length > 0) {
@@ -914,6 +983,23 @@ export function App() {
       minimumDeltaY = Math.max(minimumDeltaY, -microphone.positionHeightM);
     }
     positionDelta.y = Math.max(positionDelta.y, minimumDeltaY);
+    if (selectedSourceIds.length > 0) {
+      const movingIds = new Set(selectedSourceIds);
+      const anchorSource = currentSources.find((source) => movingIds.has(source.id))!;
+      const proposedSources = currentSources.map((source) => movingIds.has(source.id) ? {
+        ...source,
+        positionX: source.positionX + positionDelta.x,
+        positionHeightM: source.positionHeightM + positionDelta.y,
+        positionZ: source.positionZ + positionDelta.z,
+      } : source);
+      const nextSources = constrainSourceConfigs(currentSources, proposedSources, movingIds);
+      const resolvedAnchor = nextSources.find((source) => source.id === anchorSource.id)!;
+      positionDelta.x = resolvedAnchor.positionX - anchorSource.positionX;
+      positionDelta.y = resolvedAnchor.positionHeightM - anchorSource.positionHeightM;
+      positionDelta.z = resolvedAnchor.positionZ - anchorSource.positionZ;
+      sourceConfigsRef.current = nextSources;
+      setSourceConfigs(nextSources);
+    }
     const nextObservation = {
       ...currentObservation,
       ...pose,
@@ -923,17 +1009,6 @@ export function App() {
     };
     observationRef.current = nextObservation;
     setObservation(nextObservation);
-    if (selectedSourceIds.length > 0) {
-      const movingIds = new Set(selectedSourceIds);
-      const nextSources = currentSources.map((source) => movingIds.has(source.id) ? {
-        ...source,
-        positionX: source.positionX + positionDelta.x,
-        positionHeightM: source.positionHeightM + positionDelta.y,
-        positionZ: source.positionZ + positionDelta.z,
-      } : source);
-      sourceConfigsRef.current = nextSources;
-      setSourceConfigs(nextSources);
-    }
     if (selectedMicrophoneIds.length > 0) {
       const movingMicrophones = new Set(selectedMicrophoneIds);
       const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
@@ -985,7 +1060,7 @@ export function App() {
     while (existingIds.has(`subwoofer-${suffix}`)) suffix += 1;
     const rightmostX = sourceConfigs.length > 0 ? Math.max(...sourceConfigs.map((source) => source.positionX)) : 0;
     const packageInstanceCount = sourceConfigs.filter((source) => source.packageId === sourcePackage.id).length;
-    const next: SourceConfiguration = {
+    const requested: SourceConfiguration = {
       id: `subwoofer-${suffix}`,
       name: `${sourcePackage.manifest.name} ${packageInstanceCount + 1}`,
       packageId: sourcePackage.id,
@@ -999,7 +1074,16 @@ export function App() {
       delayMs: 0,
       polarity: 1,
     };
-    setSourceConfigs((current) => [...current, next]);
+    const placed = findClearSourcePlacement(packageById, sourceConfigs.map(buildSourceInstance), buildSourceInstance(requested));
+    const next = {
+      ...requested,
+      positionX: placed.position[0],
+      positionHeightM: placed.position[1],
+      positionZ: placed.position[2],
+    };
+    const nextSources = [...sourceConfigs, next];
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
     setSelectedInstances([next.id]);
     setTransformMode("select");
   };
@@ -1021,8 +1105,21 @@ export function App() {
         positionZ: source.positionZ + 0.5,
       });
     }
-    setSourceConfigs((current) => [...current, ...copies]);
-    setSelectedInstances(copies.map((source) => source.id));
+    const occupied = sourceConfigs.map(buildSourceInstance);
+    const placedCopies = copies.map((copy) => {
+      const placed = findClearSourcePlacement(packageById, occupied, buildSourceInstance(copy));
+      occupied.push(placed);
+      return {
+        ...copy,
+        positionX: placed.position[0],
+        positionHeightM: placed.position[1],
+        positionZ: placed.position[2],
+      };
+    });
+    const nextSources = [...sourceConfigs, ...placedCopies];
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
+    setSelectedInstances(placedCopies.map((source) => source.id));
     setTransformMode("select");
   };
 
@@ -1102,6 +1199,10 @@ export function App() {
       flushLiveSolveRef.current = false;
       return;
     }
+    if (speakerManipulationActive && !sceneClearanceValid) {
+      flushLiveSolveRef.current = false;
+      return;
+    }
     if (boundarySolveKey === currentSolveKey) {
       flushLiveSolveRef.current = false;
       return;
@@ -1113,13 +1214,61 @@ export function App() {
       void solveLevel2();
     }, delayMs);
     return () => window.clearTimeout(timeout);
-  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, solveLevel2, solveReleaseRevision, solveState]);
+  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, sceneClearanceValid, solveLevel2, solveReleaseRevision, solveState, speakerManipulationActive]);
 
   const flushLiveSolve = useCallback(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
     flushLiveSolveRef.current = true;
     setSolveReleaseRevision((revision) => revision + 1);
   }, [boundaryAvailable, fidelity, liveSolveEnabled]);
+
+  const endSourceManipulation = useCallback(() => {
+    const manipulation = sourceManipulationRef.current;
+    if (!manipulation) return;
+    const current = sourceConfigsRef.current;
+    let resolved = current;
+    if (cabinetClearanceViolations(packageById, current.map(buildSourceInstance)).length > 0) {
+      resolved = constrainSourceConfigs(manipulation.start, current, manipulation.ids);
+      sourceConfigsRef.current = resolved;
+      setSourceConfigs(resolved);
+
+      const anchorId = manipulation.ids.values().next().value as string | undefined;
+      const before = current.find((source) => source.id === anchorId);
+      const after = resolved.find((source) => source.id === anchorId);
+      if (before && after) {
+        const correction = {
+          x: after.positionX - before.positionX,
+          y: after.positionHeightM - before.positionHeightM,
+          z: after.positionZ - before.positionZ,
+        };
+        if (selectedMicrophoneIds.length > 0) {
+          const movingMicrophones = new Set(selectedMicrophoneIds);
+          const nextMicrophones = microphonesRef.current.map((microphone) => movingMicrophones.has(microphone.id) ? {
+            ...microphone,
+            positionX: microphone.positionX + correction.x,
+            positionHeightM: microphone.positionHeightM + correction.y,
+            positionZ: microphone.positionZ + correction.z,
+          } : microphone);
+          microphonesRef.current = nextMicrophones;
+          setMicrophones(nextMicrophones);
+        }
+        if (selectedInstances.includes("audience-plane")) {
+          const currentObservation = observationRef.current;
+          const nextObservation = {
+            ...currentObservation,
+            centerXM: currentObservation.centerXM + correction.x,
+            heightM: currentObservation.heightM + correction.y,
+            nearM: currentObservation.nearM + correction.z,
+          };
+          observationRef.current = nextObservation;
+          setObservation(nextObservation);
+        }
+      }
+    }
+    sourceManipulationRef.current = null;
+    setSpeakerManipulationActive(false);
+    flushLiveSolve();
+  }, [constrainSourceConfigs, flushLiveSolve, packageById, selectedInstances, selectedMicrophoneIds]);
 
   useEffect(() => {
     if (fidelity !== "boundary" || !boundaryAvailable) setLiveSolveEnabled(false);
@@ -1251,6 +1400,8 @@ export function App() {
           onTransformMicrophone={updateMicrophonePose}
           onTransformObservation={updateObservationPose}
           onResizeObservation={resizeObservation}
+          onSourceManipulationStart={beginSourceManipulation}
+          onSourceManipulationEnd={endSourceManipulation}
           onManipulationEnd={flushLiveSolve}
           onFieldTextureReady={recordFieldTexture}
         />

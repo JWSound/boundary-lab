@@ -14,7 +14,6 @@ import {
   MathUtils,
   Plane,
   Quaternion,
-  Ray,
   RedFormat,
   ShaderMaterial,
   UnsignedByteType,
@@ -22,7 +21,8 @@ import {
   Vector3,
 } from "three";
 import type { FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SpeakerInstance } from "../model/types";
-import { SOURCE_GROUND_CLEARANCE_M, SOURCE_SURFACE_PADDING_M } from "../model/field";
+import { SOURCE_GROUND_CLEARANCE_M } from "../model/field";
+import { cabinetLocalBounds } from "../model/cabinetPlacement";
 
 export type SceneTransformMode = "select" | "translate" | "rotate" | "scale";
 
@@ -73,6 +73,8 @@ interface SceneViewProps {
   onTransformMicrophone: (id: string, pose: MicrophonePoseUpdate) => void;
   onTransformObservation: (pose: ObservationPoseUpdate) => void;
   onResizeObservation: (resize: ObservationResizeUpdate) => void;
+  onSourceManipulationStart: (ids: readonly string[]) => void;
+  onSourceManipulationEnd: () => void;
   onManipulationEnd: () => void;
   onFieldTextureReady?: (profile: FieldTextureProfile) => void;
 }
@@ -86,32 +88,7 @@ export interface FieldTextureProfile {
   commitToFrameMs: number;
 }
 
-function packageSceneBounds(pkg: LoadedSpeakerPackage): SceneBounds {
-  let minimum: [number, number, number] = [-pkg.boundsM[0] / 2, -pkg.boundsM[2] / 2, -pkg.boundsM[1] / 2];
-  let maximum: [number, number, number] = [pkg.boundsM[0] / 2, pkg.boundsM[2] / 2, pkg.boundsM[1] / 2];
-  if (pkg.mesh) {
-    minimum = [Infinity, Infinity, Infinity];
-    maximum = [-Infinity, -Infinity, -Infinity];
-    for (let index = 0; index < pkg.mesh.positions.length; index += 3) {
-      const point: [number, number, number] = [
-        pkg.mesh.positions[index],
-        -pkg.mesh.positions[index + 2],
-        pkg.mesh.positions[index + 1],
-      ];
-      for (let axis = 0; axis < 3; axis += 1) {
-        minimum[axis] = Math.min(minimum[axis], point[axis]);
-        maximum[axis] = Math.max(maximum[axis], point[axis]);
-      }
-    }
-  }
-  const corners: Array<[number, number, number]> = [];
-  for (const x of [minimum[0], maximum[0]]) {
-    for (const y of [minimum[1], maximum[1]]) {
-      for (const z of [minimum[2], maximum[2]]) corners.push([x, y, z]);
-    }
-  }
-  return { minimum, maximum, corners };
-}
+const packageSceneBounds = cabinetLocalBounds;
 
 function cornerInWorld(
   corner: [number, number, number],
@@ -516,6 +493,7 @@ function SpeakerGeometry({
   angleSnapDisabled,
   onSelect,
   onTransform,
+  onManipulationStart,
   onManipulationEnd,
 }: {
   pkg: LoadedSpeakerPackage;
@@ -530,6 +508,7 @@ function SpeakerGeometry({
   angleSnapDisabled: boolean;
   onSelect: (additive: boolean) => void;
   onTransform: (pose: SourcePoseUpdate) => void;
+  onManipulationStart: () => void;
   onManipulationEnd: () => void;
 }) {
   const speakerRef = useRef<Group>(null);
@@ -600,7 +579,6 @@ function SpeakerGeometry({
   const snapDraggedCorner = (
     rawPosition: [number, number, number],
     draggedCorner: [number, number, number],
-    pointerRay: Ray,
   ): [number, number, number] => {
     const movingCorner = cornerInWorld(draggedCorner, instance, rawPosition);
     let bestDistance = 0.18;
@@ -610,23 +588,17 @@ function SpeakerGeometry({
       const targetPackage = packages.find((candidate) => candidate.id === other.packageId) ?? pkg;
       for (const targetCorner of packageSceneBounds(targetPackage).corners) {
         const target = cornerInWorld(targetCorner, other);
-        const distance = Math.sqrt(pointerRay.distanceSqToPoint(target));
+        const distance = movingCorner.distanceTo(target);
         if (distance >= bestDistance) continue;
         const alignedPosition = new Vector3(
           rawPosition[0] + target.x - movingCorner.x,
           rawPosition[1] + target.y - movingCorner.y,
           rawPosition[2] + target.z - movingCorner.z,
         );
-        const away = new Vector3(
-          alignedPosition.x - other.position[0],
-          alignedPosition.y - other.position[1],
-          alignedPosition.z - other.position[2],
-        );
-        if (away.lengthSq() > 1e-10) away.normalize().multiplyScalar(SOURCE_SURFACE_PADDING_M);
         result = [
-          alignedPosition.x + away.x,
-          alignedPosition.y + away.y,
-          alignedPosition.z + away.z,
+          alignedPosition.x,
+          alignedPosition.y,
+          alignedPosition.z,
         ];
         bestDistance = distance;
       }
@@ -655,6 +627,7 @@ function SpeakerGeometry({
       startPosition: [...instance.position],
       corner,
     };
+    onManipulationStart();
     orbitControls && (orbitControls.enabled = false);
     (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
   };
@@ -671,10 +644,10 @@ function SpeakerGeometry({
     if (!point || !finiteVector(point)) return;
     const rawPosition: [number, number, number] = [
       drag.startPosition[0] + point.x - drag.startPoint.x,
-      drag.startPosition[1],
+      drag.startPosition[1] + point.y - drag.startPoint.y,
       drag.startPosition[2] + point.z - drag.startPoint.z,
     ];
-    const snapped = snapDraggedCorner(rawPosition, drag.corner, event.ray);
+    const snapped = snapDraggedCorner(rawPosition, drag.corner);
     onTransform({
       positionX: snapped[0],
       positionHeightM: snapped[1],
@@ -779,6 +752,7 @@ function SpeakerGeometry({
           showY
           showZ
           rotationSnap={transformMode === "rotate" && !angleSnapDisabled ? MathUtils.degToRad(5) : null}
+          onMouseDown={onManipulationStart}
           onObjectChange={applyGizmoTransform}
           onMouseUp={onManipulationEnd}
         />
@@ -959,6 +933,7 @@ function SpeakerSelectionControls({
   transformMode,
   angleSnapDisabled,
   onTransform,
+  onManipulationStart,
   onManipulationEnd,
 }: {
   packages: LoadedSpeakerPackage[];
@@ -967,6 +942,7 @@ function SpeakerSelectionControls({
   transformMode: SceneTransformMode;
   angleSnapDisabled: boolean;
   onTransform: (poses: SourceGroupPoseUpdate[]) => void;
+  onManipulationStart: () => void;
   onManipulationEnd: () => void;
 }) {
   const pivotRef = useRef<Group>(null);
@@ -983,7 +959,6 @@ function SpeakerSelectionControls({
     plane: Plane;
     startPoint: Vector3;
     startCorner: Vector3;
-    startCenter: Vector3;
     instances: SpeakerInstance[];
   } | null>(null);
   const gizmoState = useRef<{
@@ -1046,9 +1021,9 @@ function SpeakerSelectionControls({
       plane,
       startPoint,
       startCorner,
-      startCenter: center.clone(),
       instances: instances.map((instance) => ({ ...instance, position: [...instance.position] })),
     };
+    onManipulationStart();
     orbitControls && (orbitControls.enabled = false);
     (event.target as unknown as { setPointerCapture?: (pointerId: number) => void }).setPointerCapture?.(event.pointerId);
   };
@@ -1063,7 +1038,11 @@ function SpeakerSelectionControls({
     event.stopPropagation();
     const point = event.ray.intersectPlane(drag.plane, new Vector3());
     if (!point || !finiteVector(point)) return;
-    const rawDelta = new Vector3(point.x - drag.startPoint.x, 0, point.z - drag.startPoint.z);
+    const rawDelta = new Vector3(
+      point.x - drag.startPoint.x,
+      point.y - drag.startPoint.y,
+      point.z - drag.startPoint.z,
+    );
     const snappedDelta = rawDelta.clone();
     const movingCorner = drag.startCorner.clone().add(rawDelta);
     let bestDistance = 0.18;
@@ -1072,11 +1051,9 @@ function SpeakerSelectionControls({
       const targetPackage = packages.find((pkg) => pkg.id === other.packageId) ?? packages[0];
       for (const targetCorner of packageSceneBounds(targetPackage).corners) {
         const target = cornerInWorld(targetCorner, other);
-        const distance = Math.sqrt(event.ray.distanceSqToPoint(target));
+        const distance = movingCorner.distanceTo(target);
         if (distance >= bestDistance) continue;
         const candidateDelta = rawDelta.clone().add(target.clone().sub(movingCorner));
-        const away = drag.startCenter.clone().add(candidateDelta).sub(new Vector3(...other.position));
-        if (away.lengthSq() > 1e-10) candidateDelta.add(away.normalize().multiplyScalar(SOURCE_SURFACE_PADDING_M));
         snappedDelta.copy(candidateDelta);
         bestDistance = distance;
       }
@@ -1098,6 +1075,7 @@ function SpeakerSelectionControls({
       instances: instances.map((instance) => ({ ...instance, position: [...instance.position] })),
       mode: transformMode,
     };
+    onManipulationStart();
     pivotRef.current.quaternion.identity();
   };
 
@@ -1204,7 +1182,12 @@ function AcousticScene(props: SceneViewProps) {
             angleSnapDisabled={props.angleSnapDisabled}
             onSelect={(additive) => props.onSelectInstance(source.id, additive)}
             onTransform={(pose) => props.onTransformSource(source.id, pose)}
-            onManipulationEnd={props.onManipulationEnd}
+            onManipulationStart={() => props.onSourceManipulationStart(
+              selectedSources.some((selected) => selected.id === source.id)
+                ? selectedSources.map((selected) => selected.id)
+                : [source.id],
+            )}
+            onManipulationEnd={props.onSourceManipulationEnd}
           />
         ))}
       </group>
@@ -1216,7 +1199,8 @@ function AcousticScene(props: SceneViewProps) {
           transformMode={props.transformMode}
           angleSnapDisabled={props.angleSnapDisabled}
           onTransform={props.onTransformSources}
-          onManipulationEnd={props.onManipulationEnd}
+          onManipulationStart={() => props.onSourceManipulationStart(selectedSources.map((source) => source.id))}
+          onManipulationEnd={props.onSourceManipulationEnd}
         />
       )}
       {props.microphones.map((microphone, index) => (
