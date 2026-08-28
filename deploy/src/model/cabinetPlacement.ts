@@ -1,5 +1,7 @@
 import { Euler, MathUtils, Quaternion, Vector3 } from "three";
-import type { LoadedSpeakerPackage, SpeakerInstance } from "./types";
+import type { LoadedSpeakerPackage, RigidMeshAsset, SpeakerInstance } from "./types";
+
+export type BoundaryMeshAsset = LoadedSpeakerPackage | RigidMeshAsset;
 
 export const SOURCE_SURFACE_PADDING_M = 0.01;
 
@@ -15,11 +17,11 @@ interface CabinetObb {
   halfSize: [number, number, number];
 }
 
-const localBoundsCache = new WeakMap<LoadedSpeakerPackage, CabinetLocalBounds>();
+const localBoundsCache = new WeakMap<BoundaryMeshAsset, CabinetLocalBounds>();
 const AXIS_EPSILON = 1e-10;
 const POSE_EPSILON = 1e-8;
 
-export function cabinetLocalBounds(pkg: LoadedSpeakerPackage): CabinetLocalBounds {
+export function cabinetLocalBounds(pkg: BoundaryMeshAsset): CabinetLocalBounds {
   const cached = localBoundsCache.get(pkg);
   if (cached) return cached;
   let minimum: [number, number, number] = [-pkg.boundsM[0] / 2, -pkg.boundsM[2] / 2, -pkg.boundsM[1] / 2];
@@ -55,7 +57,7 @@ function poseQuaternion(instance: SpeakerInstance): Quaternion {
   ));
 }
 
-function cabinetObb(pkg: LoadedSpeakerPackage, instance: SpeakerInstance): CabinetObb {
+function cabinetObb(pkg: BoundaryMeshAsset, instance: SpeakerInstance): CabinetObb {
   const bounds = cabinetLocalBounds(pkg);
   const localCenter = new Vector3(
     (bounds.minimum[0] + bounds.maximum[0]) / 2,
@@ -120,14 +122,14 @@ function obbSeparation(left: CabinetObb, right: CabinetObb): { margin: number; n
   return { margin, normal };
 }
 
-function packageFor(instance: SpeakerInstance, packages: ReadonlyMap<string, LoadedSpeakerPackage>): LoadedSpeakerPackage {
+function packageFor(instance: SpeakerInstance, packages: ReadonlyMap<string, BoundaryMeshAsset>): BoundaryMeshAsset {
   const pkg = packages.get(instance.packageId);
   if (!pkg) throw new Error(`Speaker ${instance.id} references a package that is not loaded.`);
   return pkg;
 }
 
 export function cabinetClearanceViolations(
-  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  packages: ReadonlyMap<string, BoundaryMeshAsset>,
   instances: readonly SpeakerInstance[],
   clearanceM = SOURCE_SURFACE_PADDING_M,
 ): Array<[string, string]> {
@@ -220,7 +222,7 @@ function interpolatePose(current: SpeakerInstance, proposed: SpeakerInstance, fr
 }
 
 function movingPosesViolate(
-  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  packages: ReadonlyMap<string, BoundaryMeshAsset>,
   moving: readonly SpeakerInstance[],
   stationary: readonly SpeakerInstance[],
   clearanceM: number,
@@ -234,7 +236,7 @@ function movingPosesViolate(
 }
 
 export function constrainCabinetPoses(
-  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  packages: ReadonlyMap<string, BoundaryMeshAsset>,
   current: readonly SpeakerInstance[],
   proposedMoving: readonly SpeakerInstance[],
   clearanceM = SOURCE_SURFACE_PADDING_M,
@@ -327,7 +329,7 @@ export function constrainCabinetPoses(
 }
 
 export function findClearSourcePlacement(
-  packages: ReadonlyMap<string, LoadedSpeakerPackage>,
+  packages: ReadonlyMap<string, BoundaryMeshAsset>,
   existing: readonly SpeakerInstance[],
   proposed: SpeakerInstance,
   clearanceM = SOURCE_SURFACE_PADDING_M,

@@ -21,6 +21,7 @@ from blab.deploy_solve import (
 )
 
 PACKAGE_PATH = Path(__file__).parents[1] / "deploy" / "library" / "S218BP_LOD.blabsp"
+RIGID_MESH_PATH = Path(__file__).parents[1] / "deploy" / "library" / "RigidStage_LOD.msh"
 
 
 def _payload() -> dict:
@@ -79,13 +80,19 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert request["observation_shape"] == [5, 7]
     assert request["observation_points_m"][0] == pytest.approx([-6.0, 1.2, 2.0])
     assert request["observation_points_m"][-1] == pytest.approx([6.0, 1.2, 12.0])
+    assert request["mesh_is_world_space"] is True
     assert request["source_transforms"][0] == {
-        "id": "subwoofer-1",
-        "position_m": [1.25, 0.4, -0.5],
+        "id": "combined-boundary",
+        "position_m": [0.0, 0.0, 0.0],
         "pitch_deg": 0.0,
-        "yaw_deg": 12.0,
+        "yaw_deg": 0.0,
         "roll_deg": 0.0,
     }
+    assert [component["id"] for component in request["boundary_components"]] == [
+        "subwoofer-1",
+        "subwoofer-2",
+    ]
+    assert set(request["reference_boundary_pressure_mask"]) == {1}
     assert request["proximity"]["surface_padding_m"] == SOURCE_SURFACE_PADDING_M
     assert request["close_pair_quadrature_order"] == CLOSE_PAIR_QUADRATURE_ORDER
     assert request["proximity"]["close_face_pairs"] == []
@@ -108,6 +115,71 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+
+
+def test_prepare_deploy_solve_request_adds_rigid_zero_neumann_boundary(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["rigidObjects"] = [
+        {
+            "id": "stage-1",
+            "meshPath": str(RIGID_MESH_PATH),
+            "positionX": 8.0,
+            "positionHeightM": 0.01,
+            "positionZ": 0.0,
+            "pitchDeg": 0.0,
+            "yawDeg": 0.0,
+            "rollDeg": 0.0,
+        }
+    ]
+
+    _, request = prepare_deploy_solve_request(payload, tmp_path)
+
+    assert request["provenance"]["rigid_object_count"] == 1
+    assert request["provenance"]["boundary_component_count"] == 3
+    assert request["provenance"]["node_count"] == 2588
+    assert request["provenance"]["face_count"] == 5164
+    assert request["boundary_components"][-1]["id"] == "stage-1"
+    assert request["boundary_components"][-1]["kind"] == "rigid"
+    assert request["boundary_components"][-1]["vertex_count"] == 8
+    assert request["boundary_components"][-1]["face_count"] == 12
+    assert request["boundary_neumann"]["real"][-12:] == [0.0] * 12
+    assert request["boundary_neumann"]["imag"][-12:] == [0.0] * 12
+    assert request["reference_boundary_pressure_mask"][-8:] == [0] * 8
+    assert any(pair["kind_b"] == "rigid" for pair in request["proximity"]["pairs"])
+
+
+def test_prepare_deploy_solve_request_enforces_speaker_rigid_padding(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["sources"] = [payload["sources"][1]]
+    payload["rigidObjects"] = [
+        {
+            "id": "stage-1",
+            "meshPath": str(RIGID_MESH_PATH),
+            "scaleToMeters": 0.001,
+            # The speaker's right side is x=5.6 m and the stage's left side is
+            # x=5.609 m, leaving only 9 mm between overlapping side surfaces.
+            "positionX": 7.609,
+            "positionHeightM": 0.01,
+            "positionZ": -0.5,
+        }
+    ]
+
+    with pytest.raises(ValueError, match=r"stage-1.*9\.000 mm surface spacing"):
+        prepare_deploy_solve_request(payload, tmp_path)
+
+
+def test_prepare_deploy_solve_request_rejects_open_rigid_mesh(tmp_path: Path) -> None:
+    lines = RIGID_MESH_PATH.read_text(encoding="utf-8").splitlines()
+    element_header = lines.index("$Elements")
+    lines[element_header + 1] = "11"
+    lines.pop(lines.index("12 2 2 1 1 4 5 8"))
+    mesh_path = tmp_path / "open-stage.msh"
+    mesh_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    payload = _payload()
+    payload["rigidObjects"] = [{"id": "stage-1", "meshPath": str(mesh_path)}]
+
+    with pytest.raises(ValueError, match="closed two-manifold"):
+        prepare_deploy_solve_request(payload, tmp_path)
 
 
 def test_prepare_deploy_solve_request_accepts_microphone_observation_points(tmp_path: Path) -> None:

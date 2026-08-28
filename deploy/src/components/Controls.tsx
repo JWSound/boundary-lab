@@ -1,10 +1,12 @@
 import type { LucideIcon } from "lucide-react";
-import { CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker } from "lucide-react";
+import { Box, CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
   MicrophoneConfiguration,
   ObservationPlane,
+  RigidMeshAsset,
+  RigidMeshConfiguration,
   SourceConfiguration,
 } from "../model/types";
 
@@ -13,6 +15,35 @@ export function SectionHeader({ icon: Icon, title, action }: { icon: LucideIcon;
     <div className="section-header">
       <div className="section-title"><Icon size={15} strokeWidth={1.8} /><span>{title}</span></div>
       {action}
+    </div>
+  );
+}
+
+export function RigidMeshCard({
+  asset,
+  active,
+  onSelect,
+  onAdd,
+}: {
+  asset: RigidMeshAsset;
+  active: boolean;
+  onSelect: () => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className={`package-card ${active ? "active" : ""}`} data-rigid-mesh-id={asset.id} onClick={onSelect} role="button" tabIndex={0}>
+      <div className="package-visual"><Box size={29} strokeWidth={1.2} /></div>
+      <div className="package-details">
+        <div className="package-name">{asset.name}</div>
+        <div className="package-subtitle">{asset.fileName}</div>
+        <div className="mesh-metrics">{asset.vertexCount.toLocaleString()} vertices / {asset.triangleCount.toLocaleString()} faces</div>
+      </div>
+      <button
+        className="icon-button quiet"
+        title={`Add ${asset.name} to scene`}
+        aria-label={`Add ${asset.name} to scene`}
+        onClick={(event) => { event.stopPropagation(); onAdd(); }}
+      ><Plus size={15} /></button>
     </div>
   );
 }
@@ -52,20 +83,25 @@ export function PackageCard({
 
 export function SceneTree({
   packages,
+  rigidMeshes,
   sources,
+  rigidObjects,
   microphones,
   selectedIds,
   activeId,
   onSelect,
 }: {
   packages: LoadedSpeakerPackage[];
+  rigidMeshes: RigidMeshAsset[];
   sources: SourceConfiguration[];
+  rigidObjects: RigidMeshConfiguration[];
   microphones: MicrophoneConfiguration[];
   selectedIds: readonly string[];
   activeId: string | null;
   onSelect: (id: string, additive: boolean) => void;
 }) {
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
+  const rigidMeshById = new Map(rigidMeshes.map((asset) => [asset.id, asset]));
   const select = (id: string, event: MouseEvent<HTMLButtonElement>) => {
     onSelect(id, event.ctrlKey || event.metaKey);
   };
@@ -79,6 +115,15 @@ export function SceneTree({
           className={`tree-row tree-button ${selectedIds.includes(source.id) ? "selected" : ""} ${activeId === source.id ? "active-selection" : ""}`}
           onClick={(event) => select(source.id, event)}
         ><Speaker size={15} /><span>{source.name}</span><em>{packageById.get(source.packageId)?.manifest.name ?? "SUB"}</em></button>
+      ))}
+      {rigidObjects.map((object) => (
+        <button
+          key={object.id}
+          data-object-id={object.id}
+          aria-selected={selectedIds.includes(object.id)}
+          className={`tree-row tree-button ${selectedIds.includes(object.id) ? "selected" : ""} ${activeId === object.id ? "active-selection" : ""}`}
+          onClick={(event) => select(object.id, event)}
+        ><Box size={15} /><span>{object.name}</span><em>{rigidMeshById.get(object.assetId)?.name ?? "RIGID"}</em></button>
       ))}
       {microphones.map((microphone) => (
         <button
@@ -96,6 +141,29 @@ export function SceneTree({
         onClick={(event) => select("audience-plane", event)}
       ><Grid3X3 size={15} /><span>Audience plane</span><em>PLANE</em></button>
     </div>
+  );
+}
+
+export function RigidMeshInspector({
+  config,
+  onChange,
+}: {
+  config: RigidMeshConfiguration;
+  onChange: (next: RigidMeshConfiguration) => void;
+}) {
+  const set = <K extends keyof RigidMeshConfiguration>(key: K, value: RigidMeshConfiguration[K]) => onChange({ ...config, [key]: value });
+  return (
+    <>
+      <SectionHeader icon={Box} title="Placement" />
+      <div className="inspector-section two-column-fields">
+        <NumberField label="X" value={config.positionX} unit="m" step={0.1} onChange={(value) => set("positionX", value)} />
+        <NumberField label="Height" value={config.positionHeightM} unit="m" step={0.1} minimum={0} onChange={(value) => set("positionHeightM", value)} />
+        <NumberField label="Depth" value={config.positionZ} unit="m" step={0.1} onChange={(value) => set("positionZ", value)} />
+        <NumberField label="Pitch" value={config.pitchDeg} unit="deg" step={0.5} onChange={(value) => set("pitchDeg", value)} />
+        <NumberField label="Yaw" value={config.yawDeg} unit="deg" step={0.5} onChange={(value) => set("yawDeg", value)} />
+        <NumberField label="Roll" value={config.rollDeg} unit="deg" step={0.5} onChange={(value) => set("rollDeg", value)} />
+      </div>
+    </>
   );
 }
 

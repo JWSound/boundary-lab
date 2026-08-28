@@ -11,13 +11,20 @@ interface DesktopProjectSelection {
   path: string;
   contents: string;
   packages: DesktopPackageSelection[];
+  rigidMeshes: DesktopPackageSelection[];
 }
+
+type DesktopRigidObject = import("./model/types").RigidMeshConfiguration & {
+  meshPath: string;
+  scaleToMeters: number;
+};
 
 interface DesktopLevel2SolveRequest {
   packagePath: string;
   frequencyHz: number;
   backend: "cuda";
   sources: import("./model/types").SourceConfiguration[];
+  rigidObjects: DesktopRigidObject[];
   observation: import("./model/types").ObservationPlane;
   solutionKey?: string;
   reuseBoundary?: boolean;
@@ -35,6 +42,7 @@ interface DesktopMicrophoneSweepRequest {
   packagePath: string;
   backend: "cuda";
   sources: import("./model/types").SourceConfiguration[];
+  rigidObjects: DesktopRigidObject[];
   microphones: import("./model/types").MicrophoneConfiguration[];
 }
 
@@ -53,6 +61,7 @@ interface Window {
     loadBundledExample: () => Promise<DesktopPackageSelection | null>;
     openProject: () => Promise<DesktopProjectSelection | null>;
     openSpeakerPackage: () => Promise<DesktopPackageSelection | null>;
+    openRigidMesh: () => Promise<DesktopPackageSelection | null>;
     saveProject: (contents: string, suggestedName: string) => Promise<string | null>;
     solveLevel2: (request: DesktopLevel2SolveRequest) => Promise<import("./model/types").Level2SolveResult>;
     calculateMicrophoneSweep: (request: DesktopMicrophoneSweepRequest) => Promise<import("./model/types").MicrophoneSweepResult>;

@@ -8,6 +8,7 @@ import type {
   PatternLookup,
   SourceConfiguration,
   SpeakerInstance,
+  RigidMeshAsset,
 } from "./types";
 
 const PRESSURE_REFERENCE_PA = 20e-6;
@@ -263,7 +264,7 @@ export function buildSourceInstance(config: SourceConfiguration): SpeakerInstanc
 
 export const SOURCE_GROUND_CLEARANCE_M = 0;
 
-export function minimumSourceHeightM(pkg: LoadedSpeakerPackage, pitchDeg = 0, rollDeg = 0): number {
+export function minimumSourceHeightM(pkg: LoadedSpeakerPackage | RigidMeshAsset, pitchDeg = 0, rollDeg = 0): number {
   const rotation = new Quaternion().setFromEuler(new Euler(
     MathUtils.degToRad(pitchDeg),
     0,

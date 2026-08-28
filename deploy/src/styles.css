@@ -180,6 +180,9 @@ button { color: inherit; }
 .package-details { min-width: 0; }
 .package-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e3e8e0; font-size: 11px; font-weight: 600; }
 .package-subtitle { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted-2); font-size: 9px; }
+.mesh-metrics { margin-top: 8px; color: var(--muted-2); font-size: 8px; }
+.library-empty { padding: 9px; border: 1px dashed var(--line); color: var(--muted-2); font-size: 9px; text-align: center; }
+.rigid-mesh-library { max-height: 180px; }
 .fidelity-ticks { display: flex; align-items: center; gap: 3px; margin-top: 9px; }
 .fidelity-ticks span { width: 17px; height: 3px; border-radius: 2px; background: #303631; }
 .fidelity-ticks span.active { background: var(--accent); }
@@ -213,6 +216,7 @@ button { color: inherit; }
 .solve-status em { margin-left: auto; color: #6c766d; font: 500 8px/1 "Cascadia Mono", "Consolas", monospace; font-style: normal; }
 .viewport-hint { position: absolute; left: 50%; bottom: 11px; transform: translateX(-50%); padding: 5px 9px; border-radius: 10px; color: #788179; background: rgba(16,19,17,.7); font-size: 8px; pointer-events: none; }
 .scene-label { padding: 4px 7px; border: 1px solid #788458; border-radius: 4px; color: #e8efcf; background: rgba(25,30,23,.9); font: 600 8px/1 "Cascadia Mono", "Consolas", monospace; white-space: nowrap; pointer-events: none; }
+.transform-readout { min-width: 66px; padding: 5px 7px; border: 1px solid #9ca883; color: #fff; background: rgba(22, 25, 23, .94); box-shadow: 1px 1px 3px rgba(0, 0, 0, .65); font: 700 10px/1 Arial, sans-serif; text-align: center; white-space: nowrap; pointer-events: none; }
 
 .inspector-heading { min-height: 76px; display: grid; grid-template-columns: 38px minmax(0, 1fr) 28px; align-items: center; gap: 9px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
 .object-icon { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #3c443c; border-radius: 7px; color: var(--accent); background: #20261f; }
@@ -478,7 +482,8 @@ button { color: inherit; }
 .viewport-toolbar span { background: var(--classic-dark-shadow); box-shadow: 1px 0 var(--classic-highlight); }
 .live-dot { border-radius: 0; background: #8fb36b; box-shadow: none; }
 .viewport-hint,
-.scene-label {
+.scene-label,
+.transform-readout {
   border: 1px solid var(--classic-dark-shadow);
   border-radius: 0;
   color: #fff;

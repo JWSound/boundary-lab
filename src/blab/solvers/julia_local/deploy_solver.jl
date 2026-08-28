@@ -197,9 +197,11 @@ function solve_deploy_request_impl(request)
         String(request["mesh_file"]),
         FloatType(get_value(request, "mesh_scale_factor", 1.0)),
     )
+    mesh_is_world_space = Bool(get_value(request, "mesh_is_world_space", false))
     source_transforms = deploy_source_transforms(request, FloatType)
-    source_meshes = [transform_deploy_mesh(package_mesh, transform) for transform in source_transforms]
-    mesh = combine_boundary_meshes(source_meshes).mesh
+    source_meshes = mesh_is_world_space ? [package_mesh] :
+        [transform_deploy_mesh(package_mesh, transform) for transform in source_transforms]
+    mesh = mesh_is_world_space ? package_mesh : combine_boundary_meshes(source_meshes).mesh
     q_neumann = deploy_complex_vector(request["boundary_neumann"], FloatType)
     length(q_neumann) == length(mesh.faces) || error(
         "Deploy boundary trace contains $(length(q_neumann)) faces, but the mesh contains $(length(mesh.faces)).",
@@ -208,6 +210,14 @@ function solve_deploy_request_impl(request)
     reference_pressure = deploy_complex_vector(request["reference_boundary_pressure"], FloatType)
     length(reference_pressure) == length(mesh.vertices) || error(
         "Deploy reference pressure contains $(length(reference_pressure)) nodes, but the mesh contains $(length(mesh.vertices)).",
+    )
+    reference_pressure_mask = Bool.(get_value(
+        request,
+        "reference_boundary_pressure_mask",
+        ones(Int, length(reference_pressure)),
+    ))
+    length(reference_pressure_mask) == length(reference_pressure) || error(
+        "Deploy reference-pressure mask does not match the boundary vertex count.",
     )
     observation_points = nothing
     observation_shape = Int[]
@@ -279,7 +289,7 @@ function solve_deploy_request_impl(request)
         frequency_hz=frequency,
         node_count=length(mesh.vertices),
         face_count=length(mesh.faces),
-        source_count=length(source_meshes),
+        source_count=Int(get_value(get_value(request, "provenance", Dict{String,Any}()), "source_count", length(source_meshes))),
         observation_count=length(observation_sample_indices),
     )
 
@@ -474,9 +484,15 @@ function solve_deploy_request_impl(request)
         result = nothing
         postprocess_seconds = @elapsed begin
             diagnostic_pressure = beat_backend == :cuda ? Complex{FloatType}.(Array(pressure)) : pressure
-            isolated_trace_relative_difference = Float32(
-                norm(diagnostic_pressure - reference_pressure) / max(norm(reference_pressure), eps(FloatType)),
-            )
+            isolated_trace_relative_difference = if any(reference_pressure_mask)
+                diagnostic_reference = reference_pressure[reference_pressure_mask]
+                Float32(
+                    norm(diagnostic_pressure[reference_pressure_mask] - diagnostic_reference) /
+                    max(norm(diagnostic_reference), eps(FloatType)),
+                )
+            else
+                Float32(NaN)
+            end
             proximity_pairs = get_value(proximity, "pairs", Any[])
             close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
             assembly_diagnostics = direct_cuda_assembly ? direct_system : operators
@@ -493,7 +509,16 @@ function solve_deploy_request_impl(request)
                 ),
                 "diagnostics" => Dict(
                     "backend" => String(beat_backend),
-                    "source_count" => length(source_meshes),
+                    "source_count" => Int(get_value(
+                        get_value(request, "provenance", Dict{String,Any}()),
+                        "source_count",
+                        length(source_meshes),
+                    )),
+                    "rigid_object_count" => Int(get_value(
+                        get_value(request, "provenance", Dict{String,Any}()),
+                        "rigid_object_count",
+                        0,
+                    )),
                     "node_count" => length(mesh.vertices),
                     "face_count" => length(mesh.faces),
                     "burton_miller_assembly" => assembly_mode,

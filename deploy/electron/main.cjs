@@ -244,22 +244,30 @@ function createWindow() {
       })`);
       let openProjectInteraction = null;
       let packageImportInteraction = null;
+      let rigidMeshInteraction = null;
       if (!benchmarkLevel2 && !level2Smoke) {
         const bundledPackageId = await window.webContents.executeJavaScript("document.querySelector('.package-card')?.dataset.packageId || ''");
         const smokeProjectPath = join(app.getPath("temp"), `boundary-lab-deploy-${process.pid}.blabdeploy.json`);
         const smokeProject = {
           schema: "boundary-lab-deploy-project",
-          schema_version: 4,
+          schema_version: 5,
           name: "Loaded Project Smoke",
           packages: [{
             id: bundledPackageId,
             name: "S218BP",
             source_file: join(here, "../library/S218BP_LOD.blabsp"),
           }],
+          rigid_meshes: [{
+            id: "rigid-mesh-13445fd0",
+            name: "RigidStage_LOD",
+            source_file: join(here, "../library/RigidStage_LOD.msh"),
+            scale_to_meters: 0.001,
+          }],
           sources: [
             { id: "subwoofer-1", name: "S218BP 1", packageId: bundledPackageId, positionX: -2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
             { id: "subwoofer-2", name: "S218BP 2", packageId: bundledPackageId, positionX: 2, positionHeightM: 0.4, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0, levelDb: -3, delayMs: 0, polarity: 1 },
           ],
+          rigid_objects: [{ id: "rigid-1", name: "Stage 1", assetId: "rigid-mesh-13445fd0", positionX: 8, positionHeightM: 0.01, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0 }],
           microphones: [],
           observation_plane: { widthM: 18, depthM: 16, centerXM: 1, nearM: 2, heightM: 1.4, pitchDeg: 0, yawDeg: 0, rollDeg: 0, columns: 36, rows: 32, heatmapMinimumDb: 55, heatmapMaximumDb: 135, heatmapBandingDb: 5 },
           selected_frequency_hz: 80,
@@ -283,6 +291,7 @@ function createWindow() {
                   name,
                   error: error || null,
                   sourceCount: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length,
+                  rigidCount: document.querySelectorAll('.tree-button[data-object-id^="rigid-"]').length,
                   edited: Boolean(document.querySelector('.project-breadcrumb i'))
                 });
               } else setTimeout(check, 50);
@@ -307,13 +316,13 @@ function createWindow() {
             document.querySelector('.text-button')?.click();
             const deadline = Date.now() + 10000;
             const checkImported = () => {
-              const cards = document.querySelectorAll('.package-card');
+              const cards = document.querySelectorAll('.package-card[data-package-id]');
               if (cards.length < 2 && Date.now() < deadline) return setTimeout(checkImported, 50);
               const sourcesAfterImport = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
               cards[cards.length - 1]?.querySelector('button')?.click();
               requestAnimationFrame(() => {
                 const sourcesAfterAdd = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
-                document.querySelector('button[aria-label="Duplicate selected speakers"]')?.click();
+                document.querySelector('button[aria-label="Duplicate selected boundary objects"]')?.click();
                 requestAnimationFrame(() => {
                   const sourcesAfterDuplicate = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
                   document.querySelector('button[aria-label="Remove selected objects"]')?.click();
@@ -344,6 +353,62 @@ function createWindow() {
           document.querySelector('.tree-button[data-object-id="subwoofer-1"]')?.click();
           requestAnimationFrame(() => requestAnimationFrame(resolve));
         })`);
+      }
+      if (!benchmarkLevel2) {
+        const rigidMeshPath = join(here, "../library/RigidStage_LOD.msh");
+        const showOpenDialog = dialog.showOpenDialog;
+        dialog.showOpenDialog = async (options) => options?.title === "Import rigid boundary mesh"
+          ? { canceled: false, filePaths: [rigidMeshPath] }
+          : showOpenDialog.call(dialog, options);
+        try {
+          rigidMeshInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+            const header = Array.from(document.querySelectorAll('.section-header'))
+              .find((candidate) => candidate.textContent?.includes('Rigid mesh library'));
+            header?.querySelector('button')?.click();
+            const deadline = Date.now() + 10000;
+            const checkImported = () => {
+              const card = document.querySelector('.package-card[data-rigid-mesh-id]');
+              const error = document.querySelector('.error-toast span')?.textContent || '';
+              if (!card && !error && Date.now() < deadline) return setTimeout(checkImported, 50);
+              card?.querySelector('button')?.click();
+              requestAnimationFrame(() => {
+                const first = document.querySelector('.tree-button[data-object-id^="rigid-"]');
+                first?.click();
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', bubbles: true }));
+                requestAnimationFrame(() => {
+                  const viewport = document.querySelector('.viewport');
+                  const translateMode = viewport?.getAttribute('data-transform-mode');
+                  const grabPointCount = viewport?.getAttribute('data-grab-point-count');
+                  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+                  requestAnimationFrame(() => {
+                    const rotateMode = viewport?.getAttribute('data-transform-mode');
+                    document.querySelector('button[aria-label="Duplicate selected boundary objects"]')?.click();
+                    requestAnimationFrame(() => {
+                      const countAfterDuplicate = document.querySelectorAll('.tree-button[data-object-id^="rigid-"]').length;
+                      document.querySelector('button[aria-label="Remove selected objects"]')?.click();
+                      requestAnimationFrame(() => {
+                        const remaining = document.querySelector('.tree-button[data-object-id^="rigid-"]');
+                        remaining?.click();
+                        resolve({
+                          error: error || null,
+                          meshName: card?.querySelector('.package-name')?.textContent?.trim() || null,
+                          countAfterDuplicate,
+                          countAfterCleanup: document.querySelectorAll('.tree-button[data-object-id^="rigid-"]').length,
+                          translateMode,
+                          rotateMode,
+                          grabPointCount
+                        });
+                      });
+                    });
+                  });
+                });
+              });
+            };
+            checkImported();
+          })`);
+        } finally {
+          dialog.showOpenDialog = showOpenDialog;
+        }
       }
       await window.webContents.executeJavaScript(`(() => {
         document.querySelectorAll('.fidelity-switcher button')[1]?.click();
@@ -611,7 +676,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
@@ -658,6 +723,19 @@ ipcMain.handle("deploy:open-speaker-package", async () => {
   return readPackageSelection(selection.filePaths[0]);
 });
 
+ipcMain.handle("deploy:open-rigid-mesh", async () => {
+  const selection = await dialog.showOpenDialog({
+    title: "Import rigid boundary mesh",
+    filters: [
+      { name: "Gmsh meshes", extensions: ["msh"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+    properties: ["openFile"],
+  });
+  if (selection.canceled || selection.filePaths.length === 0) return null;
+  return readPackageSelection(selection.filePaths[0]);
+});
+
 ipcMain.handle("deploy:open-project", async () => {
   const selection = await dialog.showOpenDialog({
     title: "Open Boundary Lab Deploy project",
@@ -675,7 +753,7 @@ ipcMain.handle("deploy:open-project", async () => {
   try {
     project = JSON.parse(contents);
   } catch {
-    return { name: basename(projectPath), path: projectPath, contents, packages: [] };
+    return { name: basename(projectPath), path: projectPath, contents, packages: [], rigidMeshes: [] };
   }
   const packageReferences = Array.isArray(project?.packages) ? project.packages : [];
   const packages = [];
@@ -709,7 +787,39 @@ ipcMain.handle("deploy:open-project", async () => {
     }
     packages.push(packageResult);
   }
-  return { name: basename(projectPath), path: projectPath, contents, packages };
+  const rigidReferences = Array.isArray(project?.rigid_meshes) ? project.rigid_meshes : [];
+  const rigidMeshes = [];
+  for (const reference of rigidReferences) {
+    const sourceFile = typeof reference?.source_file === "string" ? reference.source_file : null;
+    const candidates = sourceFile ? [
+      isAbsolute(sourceFile) ? sourceFile : resolve(dirname(projectPath), sourceFile),
+      join(here, "../library", basename(sourceFile)),
+    ] : [];
+    let meshResult = null;
+    for (const candidate of [...new Set(candidates)]) {
+      try {
+        meshResult = await readPackageSelection(candidate);
+        break;
+      } catch {
+        // Try the next portable or bundled mesh location.
+      }
+    }
+    if (!meshResult) {
+      const meshSelection = await dialog.showOpenDialog({
+        title: sourceFile ? `Locate ${basename(sourceFile)}` : `Locate ${reference?.name ?? "rigid mesh"}`,
+        defaultPath: dirname(projectPath),
+        filters: [
+          { name: "Gmsh meshes", extensions: ["msh"] },
+          { name: "All files", extensions: ["*"] },
+        ],
+        properties: ["openFile"],
+      });
+      if (meshSelection.canceled || meshSelection.filePaths.length === 0) break;
+      meshResult = await readPackageSelection(meshSelection.filePaths[0]);
+    }
+    rigidMeshes.push(meshResult);
+  }
+  return { name: basename(projectPath), path: projectPath, contents, packages, rigidMeshes };
 });
 
 ipcMain.handle("deploy:save-project", async (_event, contents, suggestedName) => {

@@ -1,7 +1,7 @@
-import type { Fidelity, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "../model/types";
+import type { Fidelity, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, RigidMeshConfiguration, SourceConfiguration } from "../model/types";
 
 export const DEPLOY_PROJECT_SCHEMA = "boundary-lab-deploy-project";
-export const DEPLOY_PROJECT_SCHEMA_VERSION = 4;
+export const DEPLOY_PROJECT_SCHEMA_VERSION = 5;
 
 export interface DeployPackageReference {
   id: string;
@@ -9,12 +9,21 @@ export interface DeployPackageReference {
   source_file: string | null;
 }
 
+export interface DeployRigidMeshReference {
+  id: string;
+  name: string;
+  source_file: string | null;
+  scale_to_meters: number;
+}
+
 export interface DeployProject {
   schema: typeof DEPLOY_PROJECT_SCHEMA;
   schema_version: typeof DEPLOY_PROJECT_SCHEMA_VERSION;
   name: string;
   packages: DeployPackageReference[];
+  rigid_meshes: DeployRigidMeshReference[];
   sources: SourceConfiguration[];
+  rigid_objects: RigidMeshConfiguration[];
   microphones: MicrophoneConfiguration[];
   observation_plane: ObservationPlane;
   selected_frequency_hz: number;
@@ -95,6 +104,26 @@ function sourceConfiguration(value: unknown, index: number): SourceConfiguration
   };
 }
 
+function rigidConfiguration(value: unknown, index: number): RigidMeshConfiguration {
+  const object = record(value, `rigid_objects[${index}]`);
+  for (const field of ["id", "name", "assetId"] as const) {
+    if (typeof object[field] !== "string" || object[field].trim().length === 0) {
+      throw new Error(`rigid_objects[${index}].${field} must be a non-empty string.`);
+    }
+  }
+  return {
+    id: String(object.id),
+    name: String(object.name).trim(),
+    assetId: String(object.assetId),
+    positionX: finite(object.positionX, `rigid_objects[${index}].positionX`),
+    positionHeightM: finite(object.positionHeightM, `rigid_objects[${index}].positionHeightM`),
+    positionZ: finite(object.positionZ, `rigid_objects[${index}].positionZ`),
+    pitchDeg: finite(object.pitchDeg, `rigid_objects[${index}].pitchDeg`),
+    yawDeg: finite(object.yawDeg, `rigid_objects[${index}].yawDeg`),
+    rollDeg: finite(object.rollDeg, `rigid_objects[${index}].rollDeg`),
+  };
+}
+
 function observationPlane(value: unknown): ObservationPlane {
   const plane = record(value, "observation_plane");
   const minimumDb = finite(plane.heatmapMinimumDb, "observation_plane.heatmapMinimumDb");
@@ -158,6 +187,20 @@ export function parseDeployProject(contents: string): DeployProject {
   if (new Set(packages.map((item) => item.id)).size !== packages.length) {
     throw new Error("Every project package must have a unique id.");
   }
+  if (!Array.isArray(project.rigid_meshes)) throw new Error("rigid_meshes must be an array.");
+  const rigidMeshes = project.rigid_meshes.map((value, index): DeployRigidMeshReference => {
+    const reference = record(value, `rigid_meshes[${index}]`);
+    if (typeof reference.id !== "string" || reference.id.trim().length === 0) throw new Error(`rigid_meshes[${index}].id must be a non-empty string.`);
+    if (typeof reference.name !== "string" || reference.name.trim().length === 0) throw new Error(`rigid_meshes[${index}].name must be a non-empty string.`);
+    if (reference.source_file !== null && typeof reference.source_file !== "string") throw new Error(`rigid_meshes[${index}].source_file must be a string or null.`);
+    return {
+      id: reference.id,
+      name: reference.name.trim(),
+      source_file: reference.source_file,
+      scale_to_meters: positive(reference.scale_to_meters, `rigid_meshes[${index}].scale_to_meters`),
+    };
+  });
+  if (new Set(rigidMeshes.map((item) => item.id)).size !== rigidMeshes.length) throw new Error("Every rigid mesh asset must have a unique id.");
   const sourcesValue = project.sources;
   if (!Array.isArray(sourcesValue) || sourcesValue.length === 0) throw new Error("A project must contain at least one source.");
   const sources = sourcesValue.map(sourceConfiguration);
@@ -168,6 +211,11 @@ export function parseDeployProject(contents: string): DeployProject {
   if (sources.some((source) => !packageIds.has(source.packageId))) {
     throw new Error("Every project source must reference an imported package.");
   }
+  if (!Array.isArray(project.rigid_objects)) throw new Error("rigid_objects must be an array.");
+  const rigidObjects = project.rigid_objects.map(rigidConfiguration);
+  const rigidAssetIds = new Set(rigidMeshes.map((item) => item.id));
+  if (rigidObjects.some((object) => !rigidAssetIds.has(object.assetId))) throw new Error("Every rigid object must reference an imported rigid mesh.");
+  if (new Set(rigidObjects.map((object) => object.id)).size !== rigidObjects.length) throw new Error("Every rigid object must have a unique id.");
   const microphonesValue = project.microphones;
   if (!Array.isArray(microphonesValue)) throw new Error("microphones must be an array.");
   const microphones = microphonesValue.map(microphoneConfiguration);
@@ -175,6 +223,10 @@ export function parseDeployProject(contents: string): DeployProject {
     throw new Error("Every project microphone must have a unique id.");
   }
   const objectIds = new Set(sources.map((source) => source.id));
+  for (const object of rigidObjects) {
+    if (objectIds.has(object.id) || object.id === "audience-plane") throw new Error("Project scene-object ids must be unique.");
+    objectIds.add(object.id);
+  }
   if (microphones.some((microphone) => objectIds.has(microphone.id) || microphone.id === "audience-plane")) {
     throw new Error("Project scene-object ids must be unique.");
   }
@@ -188,7 +240,9 @@ export function parseDeployProject(contents: string): DeployProject {
     schema_version: DEPLOY_PROJECT_SCHEMA_VERSION,
     name: project.name.trim(),
     packages,
+    rigid_meshes: rigidMeshes,
     sources,
+    rigid_objects: rigidObjects,
     microphones,
     observation_plane: observationPlane(project.observation_plane),
     selected_frequency_hz: frequencyHz,
@@ -199,7 +253,9 @@ export function parseDeployProject(contents: string): DeployProject {
 export function createDeployProject(
   name: string,
   packages: LoadedSpeakerPackage[],
+  rigidMeshes: RigidMeshAsset[],
   sources: SourceConfiguration[],
+  rigidObjects: RigidMeshConfiguration[],
   microphones: MicrophoneConfiguration[],
   observation: ObservationPlane,
   selectedFrequencyHz: number,
@@ -210,7 +266,14 @@ export function createDeployProject(
     schema_version: DEPLOY_PROJECT_SCHEMA_VERSION,
     name,
     packages: packages.map((pkg) => ({ id: pkg.id, name: pkg.manifest.name, source_file: pkg.sourcePath })),
+    rigid_meshes: rigidMeshes.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      source_file: asset.sourcePath,
+      scale_to_meters: asset.scaleToMeters,
+    })),
     sources,
+    rigid_objects: rigidObjects,
     microphones,
     observation_plane: observation,
     selected_frequency_hz: selectedFrequencyHz,

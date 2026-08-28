@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   CircleHelp,
+  Box,
   FolderOpen,
   Grid3X3,
   Import,
@@ -33,8 +34,11 @@ import {
   SceneTree,
   SectionHeader,
   SourceInspector,
+  RigidMeshCard,
+  RigidMeshInspector,
 } from "./components/Controls";
 import { loadSpeakerPackage } from "./io/speakerPackage";
+import { loadRigidMesh } from "./io/rigidMesh";
 import { createDeployProject, parseDeployProject, serializeDeployProject, type DeployProject } from "./io/deployProject";
 import { createDemoPackage } from "./model/demoPackage";
 import {
@@ -46,9 +50,9 @@ import {
   minimumSourceHeightM,
   nearestFrequencyIndex,
 } from "./model/field";
-import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, SourceConfiguration } from "./model/types";
+import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, RigidMeshConfiguration, SourceConfiguration } from "./model/types";
 import { heatmapLegendGradient } from "./model/heatmap";
-import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement } from "./model/cabinetPlacement";
+import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement, type BoundaryMeshAsset } from "./model/cabinetPlacement";
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   const centerSpacingM = pkg.boundsM[0] + 2;
@@ -83,6 +87,17 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
       polarity: 1,
     },
   ];
+}
+
+function buildRigidInstance(config: RigidMeshConfiguration) {
+  return {
+    id: config.id,
+    packageId: config.assetId,
+    position: [config.positionX, config.positionHeightM, config.positionZ] as [number, number, number],
+    pitchDeg: config.pitchDeg,
+    yawDeg: config.yawDeg,
+    rollDeg: config.rollDeg,
+  };
 }
 
 const defaultObservation: ObservationPlane = {
@@ -169,6 +184,9 @@ export function App() {
   const [activePackageId, setActivePackageId] = useState(() => packages[0].id);
   const pkg = packages.find((candidate) => candidate.id === activePackageId) ?? packages[0];
   const [sourceConfigs, setSourceConfigs] = useState<SourceConfiguration[]>(() => defaultSources(pkg));
+  const [rigidMeshes, setRigidMeshes] = useState<RigidMeshAsset[]>([]);
+  const [activeRigidMeshId, setActiveRigidMeshId] = useState<string | null>(null);
+  const [rigidObjects, setRigidObjects] = useState<RigidMeshConfiguration[]>([]);
   const [microphones, setMicrophones] = useState<MicrophoneConfiguration[]>([]);
   const [observation, setObservation] = useState(defaultObservation);
   const [frequencyIndex, setFrequencyIndex] = useState(() => nearestFrequencyIndex(pkg, 80));
@@ -194,10 +212,12 @@ export function App() {
   const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
   const packageFileInput = useRef<HTMLInputElement>(null);
+  const rigidMeshFileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
   const solveGeneration = useRef(0);
   const pendingRenderProfile = useRef<Record<string, unknown> | null>(null);
   const sourceConfigsRef = useRef(sourceConfigs);
+  const rigidObjectsRef = useRef(rigidObjects);
   const observationRef = useRef(observation);
   const microphonesRef = useRef(microphones);
   const microphoneSweepKeyRef = useRef<string | null>(null);
@@ -208,6 +228,10 @@ export function App() {
   useEffect(() => {
     sourceConfigsRef.current = sourceConfigs;
   }, [sourceConfigs]);
+
+  useEffect(() => {
+    rigidObjectsRef.current = rigidObjects;
+  }, [rigidObjects]);
 
   useEffect(() => {
     observationRef.current = observation;
@@ -235,14 +259,20 @@ export function App() {
   }, []);
 
   const packageById = useMemo(() => new Map(packages.map((item) => [item.id, item])), [packages]);
+  const rigidMeshById = useMemo(() => new Map(rigidMeshes.map((item) => [item.id, item])), [rigidMeshes]);
+  const boundaryAssetById = useMemo(() => new Map<string, BoundaryMeshAsset>([
+    ...packages.map((item) => [item.id, item] as const),
+    ...rigidMeshes.map((item) => [item.id, item] as const),
+  ]), [packages, rigidMeshes]);
+  const rigidInstances = useMemo(() => rigidObjects.map(buildRigidInstance), [rigidObjects]);
   const constrainSourceConfigs = useCallback((
     current: SourceConfiguration[],
     proposed: SourceConfiguration[],
     movingIds: ReadonlySet<string>,
   ): SourceConfiguration[] => {
     const resolved = constrainCabinetPoses(
-      packageById,
-      current.map(buildSourceInstance),
+      boundaryAssetById,
+      [...current.map(buildSourceInstance), ...rigidObjectsRef.current.map(buildRigidInstance)],
       proposed.filter((source) => movingIds.has(source.id)).map(buildSourceInstance),
     );
     const poseById = new Map(resolved.map((source) => [source.id, source]));
@@ -258,7 +288,7 @@ export function App() {
         rollDeg: pose.rollDeg,
       } : source;
     });
-  }, [packageById]);
+  }, [boundaryAssetById]);
   const activeSourcePackageIds = [...new Set(sourceConfigs.map((source) => source.packageId))];
   const activeSourcePackageIdsKey = JSON.stringify(activeSourcePackageIds.slice().sort());
   const acousticPackages = useMemo(
@@ -286,8 +316,8 @@ export function App() {
   );
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
   const sceneClearanceValid = useMemo(
-    () => cabinetClearanceViolations(packageById, sources).length === 0,
-    [packageById, sources],
+    () => cabinetClearanceViolations(boundaryAssetById, [...sources, ...rigidInstances]).length === 0,
+    [boundaryAssetById, rigidInstances, sources],
   );
   const selectedFrequencyHz = pkg.frequenciesHz[frequencyIndex];
   const patternLookups = useMemo(
@@ -297,11 +327,17 @@ export function App() {
   const selectedInstance = selectedInstances.at(-1) ?? null;
   const selectedSourceIndex = sourceConfigs.findIndex((source) => source.id === selectedInstance);
   const selectedSource = selectedSourceIndex >= 0 ? sourceConfigs[selectedSourceIndex] : null;
+  const selectedRigidIndex = rigidObjects.findIndex((object) => object.id === selectedInstance);
+  const selectedRigid = selectedRigidIndex >= 0 ? rigidObjects[selectedRigidIndex] : null;
   const selectedMicrophoneIndex = microphones.findIndex((microphone) => microphone.id === selectedInstance);
   const selectedMicrophone = selectedMicrophoneIndex >= 0 ? microphones[selectedMicrophoneIndex] : null;
   const selectedSourceIds = useMemo(
     () => selectedInstances.filter((id) => sourceConfigs.some((source) => source.id === id)),
     [selectedInstances, sourceConfigs],
+  );
+  const selectedRigidIds = useMemo(
+    () => selectedInstances.filter((id) => rigidObjects.some((object) => object.id === id)),
+    [rigidObjects, selectedInstances],
   );
   const selectedMicrophoneIds = useMemo(
     () => selectedInstances.filter((id) => microphones.some((microphone) => microphone.id === id)),
@@ -321,20 +357,23 @@ export function App() {
   const microphoneSweepKey = useMemo(() => JSON.stringify({
     packages: packages.map((item) => ({ id: item.id, sourcePath: item.sourcePath })),
     sources: sourceConfigs,
+    rigidObjects,
     microphones,
     frequencies: Array.from(microphonePatternResponses.frequenciesHz),
-  }), [microphonePatternResponses.frequenciesHz, microphones, packages, sourceConfigs]);
+  }), [microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects, sourceConfigs]);
   const currentSolveKey = useMemo(() => JSON.stringify({
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
+    rigidObjects,
     observation: observationAcousticKey,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs, observationAcousticKey]);
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs, observationAcousticKey]);
   const currentGeometryKey = useMemo(() => JSON.stringify({
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, sourceConfigs]);
+    rigidObjects,
+  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs]);
   const field = fidelity === "boundary" && boundaryField && boundarySolveKey === currentSolveKey
     ? boundaryField
     : patternField;
@@ -343,8 +382,9 @@ export function App() {
   const level2FrequencyAvailable = Boolean(level2Package && Array.from(level2Package.frequenciesHz).some(
     (frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6),
   ));
+  const rigidMeshesAvailable = rigidObjects.every((object) => Boolean(rigidMeshById.get(object.assetId)?.sourcePath));
   const boundaryAvailable = Boolean(
-    window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable,
+    window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable && rigidMeshesAvailable,
   );
   const scenePackageLevel = Math.min(...sourceConfigs.map(
     (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
@@ -353,6 +393,8 @@ export function App() {
     ? "Level 2 currently requires all speakers to use the same package; mixed-package Level 1 remains available."
     : !level2Package?.sourcePath
       ? "Level 2 requires a disk-backed speaker package in the desktop app."
+      : !rigidMeshesAvailable
+        ? "Level 2 requires every rigid mesh to be loaded from disk in the desktop app."
       : !level2FrequencyAvailable
         ? "The selected frequency was not exported by the active Level 2 package."
         : undefined;
@@ -360,7 +402,9 @@ export function App() {
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     packages,
+    rigidMeshes,
     sourceConfigs,
+    rigidObjects,
     microphones,
     observation,
     pkg.frequenciesHz[frequencyIndex],
@@ -373,6 +417,10 @@ export function App() {
     setPackages([next]);
     setActivePackageId(next.id);
     setSourceConfigs(defaultSources(next));
+    setRigidMeshes([]);
+    setActiveRigidMeshId(null);
+    setRigidObjects([]);
+    rigidObjectsRef.current = [];
     setMicrophones([]);
     setSelectedInstances(["subwoofer-1"]);
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
@@ -406,13 +454,22 @@ export function App() {
     setError(null);
   };
 
-  const applyProject = (project: DeployProject, nextPackages: LoadedSpeakerPackage[], fileName: string) => {
+  const applyProject = (
+    project: DeployProject,
+    nextPackages: LoadedSpeakerPackage[],
+    nextRigidMeshes: RigidMeshAsset[],
+    fileName: string,
+  ) => {
     const nextPackageById = new Map(nextPackages.map((item) => [item.id, item]));
     for (const reference of project.packages) {
       const loaded = nextPackageById.get(reference.id);
       if (!loaded || loaded.manifest.name !== reference.name) {
         throw new Error(`Project package ${reference.name} was not loaded correctly.`);
       }
+    }
+    const nextRigidMeshById = new Map(nextRigidMeshes.map((item) => [item.id, item]));
+    for (const reference of project.rigid_meshes) {
+      if (!nextRigidMeshById.has(reference.id)) throw new Error(`Project rigid mesh ${reference.name} was not loaded correctly.`);
     }
     solveGeneration.current += 1;
     const nextSources = project.sources.map((source) => ({
@@ -422,8 +479,19 @@ export function App() {
         source.positionHeightM,
       ),
     }));
+    const nextRigidObjects = project.rigid_objects.map((object) => ({
+      ...object,
+      positionHeightM: Math.max(
+        minimumSourceHeightM(nextRigidMeshById.get(object.assetId)!, object.pitchDeg, object.rollDeg),
+        object.positionHeightM,
+      ),
+    }));
     const nextPackage = nextPackageById.get(nextSources[0].packageId) ?? nextPackages[0];
-    const clearanceViolations = cabinetClearanceViolations(nextPackageById, nextSources.map(buildSourceInstance));
+    const nextBoundaryAssets = new Map<string, BoundaryMeshAsset>([...nextPackageById, ...nextRigidMeshById]);
+    const clearanceViolations = cabinetClearanceViolations(
+      nextBoundaryAssets,
+      [...nextSources.map(buildSourceInstance), ...nextRigidObjects.map(buildRigidInstance)],
+    );
     const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
     const homogeneousProject = new Set(nextSources.map((source) => source.packageId)).size === 1;
     const nextFidelity: Fidelity = project.requested_fidelity === "boundary" &&
@@ -434,13 +502,19 @@ export function App() {
     const normalizedContents = serializeDeployProject(createDeployProject(
       project.name,
       nextPackages,
+      nextRigidMeshes,
       nextSources,
+      nextRigidObjects,
       project.microphones,
       project.observation_plane,
       nextPackage.frequenciesHz[nextFrequencyIndex],
       nextFidelity,
     ));
     setPackages(nextPackages);
+    setRigidMeshes(nextRigidMeshes);
+    setActiveRigidMeshId(nextRigidMeshes[0]?.id ?? null);
+    setRigidObjects(nextRigidObjects);
+    rigidObjectsRef.current = nextRigidObjects;
     setActivePackageId(nextPackage.id);
     setSourceConfigs(nextSources);
     sourceConfigsRef.current = nextSources;
@@ -528,6 +602,40 @@ export function App() {
     }
   };
 
+  const importRigidAsset = (asset: RigidMeshAsset) => {
+    setRigidMeshes((current) => {
+      const existing = current.findIndex((item) => item.id === asset.id);
+      if (existing < 0) return [...current, asset];
+      const next = current.slice();
+      next[existing] = asset;
+      return next;
+    });
+    setActiveRigidMeshId(asset.id);
+    setSavedProjectSnapshot(null);
+    setError(null);
+  };
+
+  const openRigidMesh = async () => {
+    try {
+      if (window.boundaryLabDesktop) {
+        const selection = await window.boundaryLabDesktop.openRigidMesh();
+        if (selection) importRigidAsset(loadRigidMesh(selection.bytes, selection.name, selection.path));
+      } else {
+        rigidMeshFileInput.current?.click();
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
+  const loadBrowserRigidMesh = async (file: File) => {
+    try {
+      importRigidAsset(loadRigidMesh(await file.arrayBuffer(), file.name));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
+
   const openProject = async () => {
     try {
       if (projectEdited && !window.confirm("Open another project and discard unsaved changes?")) return;
@@ -538,11 +646,20 @@ export function App() {
         if (selection.packages.length !== project.packages.length) {
           throw new Error("One or more speaker packages referenced by this project were not located.");
         }
+        if (selection.rigidMeshes.length !== project.rigid_meshes.length) {
+          throw new Error("One or more rigid meshes referenced by this project were not located.");
+        }
         const nextPackages = selection.packages.map((item, index) => ({
           ...loadSpeakerPackage(item.bytes, item.name, item.path),
           id: project.packages[index].id,
         }));
-        applyProject(project, nextPackages, selection.name);
+        const nextRigidMeshes = selection.rigidMeshes.map((item, index) => {
+          const reference = project.rigid_meshes[index];
+          const loaded = loadRigidMesh(item.bytes, item.name, item.path, reference.scale_to_meters);
+          if (loaded.id !== reference.id) throw new Error(`Located mesh does not match ${reference.name}.`);
+          return { ...loaded, name: reference.name };
+        });
+        applyProject(project, nextPackages, nextRigidMeshes, selection.name);
       } else {
         projectFileInput.current?.click();
       }
@@ -559,7 +676,15 @@ export function App() {
       if (missing.length > 0) {
         throw new Error(`Import ${missing.map((item) => item.name).join(", ")} before loading this project in a browser.`);
       }
-      applyProject(project, project.packages.map((reference) => loadedById.get(reference.id)!), file.name);
+      const loadedRigidById = new Map(rigidMeshes.map((item) => [item.id, item]));
+      const missingRigid = project.rigid_meshes.filter((reference) => !loadedRigidById.has(reference.id));
+      if (missingRigid.length > 0) throw new Error(`Import ${missingRigid.map((item) => item.name).join(", ")} before loading this project.`);
+      applyProject(
+        project,
+        project.packages.map((reference) => loadedById.get(reference.id)!),
+        project.rigid_meshes.map((reference) => loadedRigidById.get(reference.id)!),
+        file.name,
+      );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -612,6 +737,11 @@ export function App() {
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
         sources: sourceConfigs,
+        rigidObjects: rigidObjects.map((object) => ({
+          ...object,
+          meshPath: rigidMeshById.get(object.assetId)?.sourcePath ?? "",
+          scaleToMeters: rigidMeshById.get(object.assetId)?.scaleToMeters ?? 0.001,
+        })),
         observation,
         solutionKey: requestedGeometryKey,
         reuseBoundary,
@@ -658,7 +788,7 @@ export function App() {
       setSolveMessage("Level 2 solve failed");
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, sourceConfigs]);
+  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects, sourceConfigs]);
 
   const stopMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
@@ -693,6 +823,11 @@ export function App() {
         packagePath: level2Package.sourcePath,
         backend: "cuda",
         sources: sourceConfigs,
+        rigidObjects: rigidObjects.map((object) => ({
+          ...object,
+          meshPath: rigidMeshById.get(object.assetId)?.sourcePath ?? "",
+          scaleToMeters: rigidMeshById.get(object.assetId)?.scaleToMeters ?? 0.001,
+        })),
         microphones,
       });
       if (result.cancelled) {
@@ -715,7 +850,7 @@ export function App() {
     } finally {
       stoppingMicrophoneSweep.current = false;
     }
-  }, [level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, sourceConfigs]);
+  }, [level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects, sourceConfigs]);
 
   const calculateOrStopMicrophoneSweep = () => {
     if (microphoneSweepState === "solving") void stopMicrophoneSweep();
@@ -738,6 +873,17 @@ export function App() {
     const resolved = constrainSourceConfigs(current, proposed, new Set([grounded.id]));
     sourceConfigsRef.current = resolved;
     setSourceConfigs(resolved);
+  };
+
+  const updateSelectedRigid = (next: RigidMeshConfiguration) => {
+    updateRigidPose(next.id, {
+      positionX: next.positionX,
+      positionHeightM: next.positionHeightM,
+      positionZ: next.positionZ,
+      pitchDeg: next.pitchDeg,
+      yawDeg: next.yawDeg,
+      rollDeg: next.rollDeg,
+    });
   };
 
   const beginSourceManipulation = useCallback((ids: readonly string[]) => {
@@ -888,8 +1034,90 @@ export function App() {
     }
   };
 
+  const updateRigidPose = (id: string, pose: SourcePoseUpdate) => {
+    const currentRigid = rigidObjectsRef.current;
+    const active = currentRigid.find((object) => object.id === id);
+    if (!active) return;
+    const asset = rigidMeshById.get(active.assetId);
+    if (!asset) return;
+    const groundedPose = {
+      ...pose,
+      positionHeightM: Math.max(minimumSourceHeightM(asset, pose.pitchDeg, pose.rollDeg), pose.positionHeightM),
+    };
+    const proposed = currentRigid.map((object) => object.id === id ? {
+      ...object,
+      positionX: groundedPose.positionX,
+      positionHeightM: groundedPose.positionHeightM,
+      positionZ: groundedPose.positionZ,
+      pitchDeg: groundedPose.pitchDeg,
+      yawDeg: groundedPose.yawDeg,
+      rollDeg: groundedPose.rollDeg,
+    } : object);
+    const resolved = constrainCabinetPoses(
+      boundaryAssetById,
+      [...sourceConfigsRef.current.map(buildSourceInstance), ...currentRigid.map(buildRigidInstance)],
+      proposed.filter((object) => object.id === id).map(buildRigidInstance),
+    )[0];
+    const next = proposed.map((object) => object.id === id ? {
+      ...object,
+      positionX: resolved.position[0],
+      positionHeightM: resolved.position[1],
+      positionZ: resolved.position[2],
+      pitchDeg: resolved.pitchDeg,
+      yawDeg: resolved.yawDeg,
+      rollDeg: resolved.rollDeg,
+    } : object);
+    rigidObjectsRef.current = next;
+    setRigidObjects(next);
+  };
+
   const updateSourceGroupPoses = (poses: SourceGroupPoseUpdate[]) => {
     if (poses.length === 0) return;
+    const includesRigid = poses.some((pose) => rigidObjectsRef.current.some((object) => object.id === pose.id));
+    if (includesRigid) {
+      const currentInstances = [
+        ...sourceConfigsRef.current.map(buildSourceInstance),
+        ...rigidObjectsRef.current.map(buildRigidInstance),
+      ];
+      const proposedInstances = poses.map((pose) => {
+        const current = currentInstances.find((instance) => instance.id === pose.id)!;
+        const asset = boundaryAssetById.get(current.packageId)!;
+        return {
+          ...current,
+          position: [
+            pose.positionX,
+            Math.max(minimumSourceHeightM(asset, pose.pitchDeg, pose.rollDeg), pose.positionHeightM),
+            pose.positionZ,
+          ] as [number, number, number],
+          pitchDeg: pose.pitchDeg,
+          yawDeg: pose.yawDeg,
+          rollDeg: pose.rollDeg,
+        };
+      });
+      const resolved = constrainCabinetPoses(boundaryAssetById, currentInstances, proposedInstances);
+      const poseById = new Map(resolved.map((pose) => [pose.id, pose]));
+      const nextSources = sourceConfigsRef.current.map((source) => {
+        const pose = poseById.get(source.id);
+        return pose ? {
+          ...source,
+          positionX: pose.position[0], positionHeightM: pose.position[1], positionZ: pose.position[2],
+          pitchDeg: pose.pitchDeg, yawDeg: pose.yawDeg, rollDeg: pose.rollDeg,
+        } : source;
+      });
+      const nextRigid = rigidObjectsRef.current.map((object) => {
+        const pose = poseById.get(object.id);
+        return pose ? {
+          ...object,
+          positionX: pose.position[0], positionHeightM: pose.position[1], positionZ: pose.position[2],
+          pitchDeg: pose.pitchDeg, yawDeg: pose.yawDeg, rollDeg: pose.rollDeg,
+        } : object;
+      });
+      sourceConfigsRef.current = nextSources;
+      rigidObjectsRef.current = nextRigid;
+      setSourceConfigs(nextSources);
+      setRigidObjects(nextRigid);
+      return;
+    }
     const poseById = new Map(poses.map((pose) => [pose.id, pose]));
     const anchorSource = sourceConfigsRef.current.find((source) => source.id === poses[0].id);
     const translationOnly = poses.every((pose) => {
@@ -1055,7 +1283,7 @@ export function App() {
 
   const addSource = (packageId = activePackageId) => {
     const sourcePackage = packageById.get(packageId) ?? pkg;
-    const existingIds = new Set(sourceConfigs.map((source) => source.id));
+    const existingIds = new Set([...sourceConfigs.map((source) => source.id), ...rigidObjects.map((object) => object.id)]);
     let suffix = sourceConfigs.length + 1;
     while (existingIds.has(`subwoofer-${suffix}`)) suffix += 1;
     const rightmostX = sourceConfigs.length > 0 ? Math.max(...sourceConfigs.map((source) => source.positionX)) : 0;
@@ -1074,7 +1302,7 @@ export function App() {
       delayMs: 0,
       polarity: 1,
     };
-    const placed = findClearSourcePlacement(packageById, sourceConfigs.map(buildSourceInstance), buildSourceInstance(requested));
+    const placed = findClearSourcePlacement(boundaryAssetById, [...sources, ...rigidInstances], buildSourceInstance(requested));
     const next = {
       ...requested,
       positionX: placed.position[0],
@@ -1088,9 +1316,47 @@ export function App() {
     setTransformMode("select");
   };
 
+  const addRigidObject = (assetId = activeRigidMeshId) => {
+    if (!assetId) return;
+    const asset = rigidMeshById.get(assetId);
+    if (!asset) return;
+    const existingIds = new Set([
+      ...sourceConfigs.map((source) => source.id),
+      ...rigidObjects.map((object) => object.id),
+      ...microphones.map((microphone) => microphone.id),
+    ]);
+    let suffix = rigidObjects.length + 1;
+    while (existingIds.has(`rigid-${suffix}`)) suffix += 1;
+    const proposed: RigidMeshConfiguration = {
+      id: `rigid-${suffix}`,
+      name: `${asset.name} ${rigidObjects.filter((object) => object.assetId === assetId).length + 1}`,
+      assetId,
+      positionX: 0,
+      positionHeightM: minimumSourceHeightM(asset),
+      positionZ: 0,
+      pitchDeg: 0,
+      yawDeg: 0,
+      rollDeg: 0,
+    };
+    const placed = findClearSourcePlacement(
+      boundaryAssetById,
+      [...sources, ...rigidInstances],
+      buildRigidInstance(proposed),
+    );
+    const next = {
+      ...proposed,
+      positionX: placed.position[0],
+      positionHeightM: placed.position[1],
+      positionZ: placed.position[2],
+    };
+    setRigidObjects((current) => [...current, next]);
+    setSelectedInstances([next.id]);
+    setTransformMode("select");
+  };
+
   const duplicateSelectedSources = () => {
-    if (selectedSourceIds.length === 0) return;
-    const existingIds = new Set(sourceConfigs.map((source) => source.id));
+    if (selectedSourceIds.length === 0 && selectedRigidIds.length === 0) return;
+    const existingIds = new Set([...sourceConfigs.map((source) => source.id), ...rigidObjects.map((object) => object.id)]);
     const copies: SourceConfiguration[] = [];
     for (const source of sourceConfigs.filter((candidate) => selectedSourceIds.includes(candidate.id))) {
       let suffix = sourceConfigs.length + copies.length + 1;
@@ -1105,9 +1371,9 @@ export function App() {
         positionZ: source.positionZ + 0.5,
       });
     }
-    const occupied = sourceConfigs.map(buildSourceInstance);
+    const occupied = [...sourceConfigs.map(buildSourceInstance), ...rigidObjects.map(buildRigidInstance)];
     const placedCopies = copies.map((copy) => {
-      const placed = findClearSourcePlacement(packageById, occupied, buildSourceInstance(copy));
+      const placed = findClearSourcePlacement(boundaryAssetById, occupied, buildSourceInstance(copy));
       occupied.push(placed);
       return {
         ...copy,
@@ -1119,7 +1385,31 @@ export function App() {
     const nextSources = [...sourceConfigs, ...placedCopies];
     sourceConfigsRef.current = nextSources;
     setSourceConfigs(nextSources);
-    setSelectedInstances(placedCopies.map((source) => source.id));
+    const rigidCopies: RigidMeshConfiguration[] = [];
+    for (const object of rigidObjects.filter((candidate) => selectedRigidIds.includes(candidate.id))) {
+      let suffix = rigidObjects.length + rigidCopies.length + 1;
+      while (existingIds.has(`rigid-${suffix}`)) suffix += 1;
+      const requested = {
+        ...object,
+        id: `rigid-${suffix}`,
+        name: `${object.name} copy`,
+        positionX: object.positionX + 0.5,
+        positionZ: object.positionZ + 0.5,
+      };
+      existingIds.add(requested.id);
+      const placed = findClearSourcePlacement(boundaryAssetById, occupied, buildRigidInstance(requested));
+      occupied.push(placed);
+      rigidCopies.push({
+        ...requested,
+        positionX: placed.position[0],
+        positionHeightM: placed.position[1],
+        positionZ: placed.position[2],
+      });
+    }
+    const nextRigidObjects = [...rigidObjects, ...rigidCopies];
+    rigidObjectsRef.current = nextRigidObjects;
+    setRigidObjects(nextRigidObjects);
+    setSelectedInstances([...placedCopies.map((source) => source.id), ...rigidCopies.map((object) => object.id)]);
     setTransformMode("select");
   };
 
@@ -1140,30 +1430,32 @@ export function App() {
   };
 
   const canRemoveSelectedSources = selectedSourceIds.length > 0 && selectedSourceIds.length < sourceConfigs.length;
-  const canRemoveSelectedObjects = canRemoveSelectedSources || selectedMicrophoneIds.length > 0;
+  const canRemoveSelectedObjects = canRemoveSelectedSources || selectedRigidIds.length > 0 || selectedMicrophoneIds.length > 0;
   const removeSelectedObjects = useCallback(() => {
     if (!canRemoveSelectedObjects) return;
     const removedSources = canRemoveSelectedSources ? new Set(selectedSourceIds) : new Set<string>();
     const removedMicrophones = new Set(selectedMicrophoneIds);
-    const removed = new Set([...removedSources, ...removedMicrophones]);
+    const removedRigid = new Set(selectedRigidIds);
+    const removed = new Set([...removedSources, ...removedRigid, ...removedMicrophones]);
     setSourceConfigs((current) => current.filter((source) => !removedSources.has(source.id)));
     setMicrophones((current) => current.filter((microphone) => !removedMicrophones.has(microphone.id)));
+    setRigidObjects((current) => current.filter((object) => !removedRigid.has(object.id)));
     setSelectedInstances((current) => current.filter((id) => !removed.has(id)));
     setTransformMode("select");
-  }, [canRemoveSelectedObjects, canRemoveSelectedSources, selectedMicrophoneIds, selectedSourceIds]);
+  }, [canRemoveSelectedObjects, canRemoveSelectedSources, selectedMicrophoneIds, selectedRigidIds, selectedSourceIds]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAngleSnapDisabled(true);
       const target = event.target;
-      const transformableSelected = Boolean(selectedSource) || Boolean(selectedMicrophone) || selectedInstance === "audience-plane";
+      const transformableSelected = Boolean(selectedSource) || Boolean(selectedRigid) || Boolean(selectedMicrophone) || selectedInstance === "audience-plane";
       if (target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) return;
       if ((event.key === "Delete" || event.key === "Backspace") && canRemoveSelectedObjects) {
         event.preventDefault();
         removeSelectedObjects();
         return;
       }
-      if (event.ctrlKey && event.key.toLowerCase() === "d" && selectedSourceIds.length > 0) {
+      if (event.ctrlKey && event.key.toLowerCase() === "d" && (selectedSourceIds.length > 0 || selectedRigidIds.length > 0)) {
         event.preventDefault();
         duplicateSelectedSources();
         return;
@@ -1192,7 +1484,7 @@ export function App() {
       window.removeEventListener("keyup", keyUp);
       window.removeEventListener("blur", windowBlur);
     };
-  }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedSource, selectedSourceIds]);
+  }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedRigid, selectedRigidIds, selectedSource, selectedSourceIds]);
 
   useEffect(() => {
     if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) {
@@ -1227,7 +1519,10 @@ export function App() {
     if (!manipulation) return;
     const current = sourceConfigsRef.current;
     let resolved = current;
-    if (cabinetClearanceViolations(packageById, current.map(buildSourceInstance)).length > 0) {
+    if (cabinetClearanceViolations(
+      boundaryAssetById,
+      [...current.map(buildSourceInstance), ...rigidObjectsRef.current.map(buildRigidInstance)],
+    ).length > 0) {
       resolved = constrainSourceConfigs(manipulation.start, current, manipulation.ids);
       sourceConfigsRef.current = resolved;
       setSourceConfigs(resolved);
@@ -1268,7 +1563,7 @@ export function App() {
     sourceManipulationRef.current = null;
     setSpeakerManipulationActive(false);
     flushLiveSolve();
-  }, [constrainSourceConfigs, flushLiveSolve, packageById, selectedInstances, selectedMicrophoneIds]);
+  }, [boundaryAssetById, constrainSourceConfigs, flushLiveSolve, selectedInstances, selectedMicrophoneIds]);
 
   useEffect(() => {
     if (fidelity !== "boundary" || !boundaryAvailable) setLiveSolveEnabled(false);
@@ -1326,13 +1621,26 @@ export function App() {
                 />
               ))}
             </div>
+            <SectionHeader icon={Box} title="Rigid mesh library" action={<button className="text-button" onClick={openRigidMesh}>Import mesh</button>} />
+            <div className="panel-content package-library rigid-mesh-library">
+              {rigidMeshes.length === 0 ? <div className="library-empty">No rigid meshes imported</div> : rigidMeshes.map((asset) => (
+                <RigidMeshCard
+                  key={asset.id}
+                  asset={asset}
+                  active={asset.id === activeRigidMeshId}
+                  onSelect={() => setActiveRigidMeshId(asset.id)}
+                  onAdd={() => addRigidObject(asset.id)}
+                />
+              ))}
+            </div>
             <SectionHeader
               icon={Speaker}
               title="Scene objects"
               action={(
                 <div className="section-actions">
                   <button className="section-action" title="Add active speaker" aria-label="Add speaker" onClick={() => addSource()}><Plus size={14} /></button>
-                  <button className="section-action" title="Duplicate selected speakers (Ctrl+D)" aria-label="Duplicate selected speakers" disabled={selectedSourceIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
+                  <button className="section-action" title="Add active rigid mesh" aria-label="Add rigid object" disabled={!activeRigidMeshId} onClick={() => addRigidObject()}><Box size={13} /></button>
+                  <button className="section-action" title="Duplicate selected boundary objects (Ctrl+D)" aria-label="Duplicate selected boundary objects" disabled={selectedSourceIds.length === 0 && selectedRigidIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
                   <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
@@ -1344,7 +1652,7 @@ export function App() {
                 </div>
               )}
             />
-            <SceneTree packages={packages} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree packages={packages} rigidMeshes={rigidMeshes} sources={sourceConfigs} rigidObjects={rigidObjects} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
           </>
         ) : (
           <>
@@ -1354,7 +1662,8 @@ export function App() {
               action={(
                 <div className="section-actions">
                   <button className="section-action" title="Add active speaker" aria-label="Add speaker" onClick={() => addSource()}><Plus size={14} /></button>
-                  <button className="section-action" title="Duplicate selected speakers (Ctrl+D)" aria-label="Duplicate selected speakers" disabled={selectedSourceIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
+                  <button className="section-action" title="Add active rigid mesh" aria-label="Add rigid object" disabled={!activeRigidMeshId} onClick={() => addRigidObject()}><Box size={13} /></button>
+                  <button className="section-action" title="Duplicate selected boundary objects (Ctrl+D)" aria-label="Duplicate selected boundary objects" disabled={selectedSourceIds.length === 0 && selectedRigidIds.length === 0} onClick={duplicateSelectedSources}><Copy size={13} /></button>
                   <button className="section-action" title="Add microphone" aria-label="Add microphone" onClick={addMicrophone}><Mic2 size={14} /></button>
                   <button
                     className="section-action"
@@ -1366,9 +1675,10 @@ export function App() {
                 </div>
               )}
             />
-            <SceneTree packages={packages} sources={sourceConfigs} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
+            <SceneTree packages={packages} rigidMeshes={rigidMeshes} sources={sourceConfigs} rigidObjects={rigidObjects} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
             <div className="scene-summary">
               <span>Subwoofer sources</span><strong>{sourceConfigs.length}</strong>
+              <span>Rigid objects</span><strong>{rigidObjects.length}</strong>
               <span>Observation points</span><strong>{observation.columns * observation.rows}</strong>
               <span>Microphones</span><strong>{microphones.length}</strong>
               <span>Excitation ports</span><strong>{pkg.manifest.excitation_port_ids.length}</strong>
@@ -1382,11 +1692,13 @@ export function App() {
         data-transform-mode={transformMode}
         data-angle-snap-disabled={angleSnapDisabled}
         data-selected-object-count={selectedInstances.length}
-        data-grab-point-count={selectedSource ? 8 : selectedMicrophone ? 1 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
+        data-grab-point-count={selectedSource || selectedRigid ? 8 : selectedMicrophone ? 1 : selectedInstance === "audience-plane" && transformMode === "scale" ? 4 : 0}
       >
         <SceneView
           packages={packages}
+          rigidMeshes={rigidMeshes}
           sources={sources}
+          rigidObjects={rigidInstances}
           microphones={microphones}
           observation={observation}
           field={field}
@@ -1396,6 +1708,7 @@ export function App() {
           angleSnapDisabled={angleSnapDisabled}
           onSelectInstance={selectSceneObject}
           onTransformSource={updateSourcePose}
+          onTransformRigid={updateRigidPose}
           onTransformSources={updateSourceGroupPoses}
           onTransformMicrophone={updateMicrophonePose}
           onTransformObservation={updateObservationPose}
@@ -1442,6 +1755,15 @@ export function App() {
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
+          </>
+        ) : selectedRigid ? (
+          <>
+            <div className="inspector-heading">
+              <div className="object-icon"><Box size={19} /></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedRigid.name}</strong><span>Rigid Neumann boundary</span></div>
+              <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
+            </div>
+            <RigidMeshInspector config={selectedRigid} onChange={updateSelectedRigid} />
           </>
         ) : selectedMicrophone ? (
           <>
@@ -1502,6 +1824,13 @@ export function App() {
         type="file"
         accept=".blabdeploy.json,application/json"
         onChange={browserFileHandler(loadBrowserProject)}
+      />
+      <input
+        ref={rigidMeshFileInput}
+        className="hidden-file-input"
+        type="file"
+        accept=".msh"
+        onChange={browserFileHandler(loadBrowserRigidMesh)}
       />
     </main>
   );

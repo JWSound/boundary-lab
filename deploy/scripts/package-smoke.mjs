@@ -3,6 +3,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { Euler, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, SphereGeometry, Vector3 } from "three";
 
 const packagePath = resolve(process.argv[2]);
 const outputPath = resolve(".tmp/package-reader.mjs");
@@ -30,6 +31,15 @@ const {
   createDeployProject,
   parseDeployProject,
   serializeDeployProject,
+  loadRigidMesh,
+  configureAxisOnlyRotation,
+  groundParallelDelta,
+  groundParallelPosition,
+  paddedCornerSnapDelta,
+  snapGroundParallelDelta,
+  stickyCornerSnapTarget,
+  rotationReadout,
+  translationReadout,
   SOURCE_SURFACE_PADDING_M,
   cabinetClearanceViolations,
   cabinetLocalBounds,
@@ -38,6 +48,61 @@ const {
 } = await import(`${pathToFileURL(outputPath).href}?${Date.now()}`);
 const bytes = await readFile(packagePath);
 const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+const rigidBytes = await readFile(resolve("library/RigidStage_LOD.msh"));
+const rigidBuffer = rigidBytes.buffer.slice(rigidBytes.byteOffset, rigidBytes.byteOffset + rigidBytes.byteLength);
+const rigidMesh = loadRigidMesh(rigidBuffer, "RigidStage_LOD.msh", resolve("library/RigidStage_LOD.msh"));
+assert.deepEqual(rigidMesh.boundsM, [4, 2, 0.5]);
+assert.equal(rigidMesh.vertexCount, 8);
+assert.equal(rigidMesh.triangleCount, 12);
+assert.deepEqual(groundParallelPosition([1, 2, 3], new Vector3(4, 50, 6)), [5, 2, 9]);
+assert.deepEqual(groundParallelDelta(new Vector3(4, 50, 6)).toArray(), [4, 0, 6]);
+assert.deepEqual(
+  snapGroundParallelDelta(new Vector3(4, 50, 6), new Vector3(), []).toArray(),
+  [4, 0, 6],
+);
+assert.deepEqual(
+  snapGroundParallelDelta(new Vector3(4, 0.5, 6), new Vector3(), [new Vector3(4, 0.5, 6)]).toArray(),
+  [4, 0.5, 6],
+);
+const snapCamera = new PerspectiveCamera(60, 1, 0.1, 100);
+snapCamera.position.set(0, 0, 10);
+snapCamera.lookAt(0, 0, 0);
+snapCamera.updateMatrixWorld();
+const screenSnapTarget = { key: "cabinet:0", position: new Vector3(), objectCenter: new Vector3() };
+const snapViewport = { left: 0, top: 0, width: 100, height: 100 };
+assert.equal(stickyCornerSnapTarget(62, 50, [screenSnapTarget], snapCamera, snapViewport, null)?.key, "cabinet:0");
+assert.equal(stickyCornerSnapTarget(75, 50, [screenSnapTarget], snapCamera, snapViewport, "cabinet:0")?.key, "cabinet:0");
+assert.equal(stickyCornerSnapTarget(90, 50, [screenSnapTarget], snapCamera, snapViewport, "cabinet:0"), null);
+assert.deepEqual(
+  paddedCornerSnapDelta(
+    new Vector3(),
+    new Vector3(2, 0, 0),
+    new Vector3(0.8, 4, 0.8),
+    new Vector3(0.8, 0, 0.8),
+    { key: "cabinet:1", position: new Vector3(1, 1, 1), objectCenter: new Vector3() },
+  ).toArray(),
+  [1.01, 1, 1],
+);
+assert.equal(translationReadout(new Vector3(), new Vector3(0.1234, 0, 0), "X"), "X +0.123 m");
+assert.equal(
+  rotationReadout(new Quaternion().setFromEuler(new Euler(0, Math.PI / 4, 0, "YXZ")), "Y"),
+  "Y 45°",
+);
+const visibleRotation = new Group();
+const freeRotationHandle = new Mesh(new SphereGeometry(1), new MeshBasicMaterial());
+freeRotationHandle.name = "E";
+visibleRotation.add(freeRotationHandle);
+const rotationPicker = new Group();
+const freeRotationPicker = new Mesh(new SphereGeometry(1), new MeshBasicMaterial());
+freeRotationPicker.name = "XYZE";
+rotationPicker.add(freeRotationPicker);
+configureAxisOnlyRotation({
+  axis: null,
+  gizmo: { gizmo: { rotate: visibleRotation }, picker: { rotate: rotationPicker } },
+});
+assert.equal(freeRotationHandle.material.visible, false);
+assert.equal(freeRotationPicker.material.visible, false);
+assert.equal(freeRotationPicker.raycast(), undefined);
 const speaker = loadSpeakerPackage(buffer, packagePath.split(/[\\/]/).at(-1));
 
 assert.equal(speaker.manifest.schema, "boundary-lab-speaker-package");
@@ -201,7 +266,9 @@ assert.match(heatmapLegendGradient(50, 145, 5), /5\.263%/);
 const projectText = serializeDeployProject(createDeployProject(
   "Smoke Project",
   [speaker],
+  [rigidMesh],
   [sourceConfig],
+  [{ id: "rigid-1", name: "Stage 1", assetId: rigidMesh.id, positionX: 5, positionHeightM: 0.25, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0 }],
   [{ id: "microphone-1", name: "Microphone 1", positionX: 0, positionHeightM: 1.2, positionZ: 6 }],
   { widthM: 12, depthM: 10, centerXM: 1, nearM: 2, heightM: 1.2, pitchDeg: 0, yawDeg: 5, rollDeg: 0, columns: 24, rows: 20, heatmapMinimumDb: 50, heatmapMaximumDb: 145, heatmapBandingDb: 0 },
   speaker.frequenciesHz[frequencyIndex],
@@ -212,6 +279,8 @@ assert.equal(parsedProject.name, "Smoke Project");
 assert.equal(parsedProject.sources[0].id, sourceConfig.id);
 assert.equal(parsedProject.sources[0].packageId, speaker.id);
 assert.equal(parsedProject.packages[0].id, speaker.id);
+assert.equal(parsedProject.rigid_meshes[0].id, rigidMesh.id);
+assert.equal(parsedProject.rigid_objects[0].assetId, rigidMesh.id);
 assert.equal(parsedProject.microphones[0].name, "Microphone 1");
 assert.equal(parsedProject.observation_plane.columns, 24);
 assert.equal(parsedProject.requested_fidelity, "boundary");

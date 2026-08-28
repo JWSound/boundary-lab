@@ -46,6 +46,30 @@ export interface LoadedSpeakerPackage {
   isDemo: boolean;
 }
 
+export interface RigidMeshAsset {
+  id: string;
+  name: string;
+  fileName: string;
+  sourcePath: string | null;
+  scaleToMeters: number;
+  mesh: SpeakerMesh;
+  boundsM: [number, number, number];
+  vertexCount: number;
+  triangleCount: number;
+}
+
+export interface RigidMeshConfiguration {
+  id: string;
+  name: string;
+  assetId: string;
+  positionX: number;
+  positionHeightM: number;
+  positionZ: number;
+  pitchDeg: number;
+  yawDeg: number;
+  rollDeg: number;
+}
+
 export interface SourceConfiguration {
   id: string;
   name: string;
