@@ -15,11 +15,17 @@ import pytest
 
 import blab.ui.main_window.solve_workflow as solve_workflow_module  # noqa: E402
 from blab.config import MeshConfig  # noqa: E402
-from blab.physical_model import ComponentKind, ExcitationPortKind, PhysicalSolveKind  # noqa: E402
+from blab.physical_model import (  # noqa: E402
+    AcousticRegionKind,
+    ComponentKind,
+    ExcitationPortKind,
+    PhysicalSolveKind,
+)
 from blab.ui.application_state import OperationPhase, SolveCompletion  # noqa: E402
 from blab.ui.main_window.solve_session import SolveSession  # noqa: E402
 from blab.ui.main_window.solve_workflow import SolveWorkflowController  # noqa: E402
 from blab.ui.main_window.workflow_view import FrequencyRange  # noqa: E402
+from blab.ui.physical_system_migration import PhysicalSystemMigrationError  # noqa: E402
 from blab.ui.project_state import new_project_document  # noqa: E402
 from blab.ui.settings import GuiPreferences  # noqa: E402
 
@@ -94,12 +100,16 @@ class FakeInputs:
         self._has_meshes = has_meshes
         self._radiators = radiators
         self.seeded = 0
+        self.migration_error: PhysicalSystemMigrationError | None = None
 
     def has_solver_meshes(self):
         return self._has_meshes
 
-    def ensure_seeded_exterior_system(self):
+    def ensure_seeded_exterior_system(self, *, required=False):
         self.seeded += 1
+        if required and self.migration_error is not None:
+            raise self.migration_error
+        return False
 
     def all_radiators(self):
         return self._radiators
@@ -131,13 +141,14 @@ def controller(qapp):
     view, plots, inputs = FakeView(), FakePlots(), FakeInputs()
     session = SolveSession()
     geometry, solve = FakeOperation(), FakeOperation()
+    project = new_project_document()
     built = SolveWorkflowController(
         None,
         view=view,
         plots=plots,
         inputs=inputs,
         session=session,
-        project=lambda: new_project_document(),
+        project=lambda: project,
         preferences=lambda: GuiPreferences(),
         assembler=None,
         geometry_controller=geometry,
@@ -145,6 +156,7 @@ def controller(qapp):
     )
     built.view, built.plots, built.inputs = view, plots, inputs
     built.session, built.geometry, built.solve = session, geometry, solve
+    built.project = project
     return built
 
 
@@ -329,16 +341,54 @@ def test_a_busy_geometry_run_blocks_a_second_start(controller) -> None:
     assert controller.view.warnings == [], "a busy run is not a user error"
 
 
-def test_solving_with_no_driven_surfaces_explains_what_to_add(controller) -> None:
+def test_solving_stops_when_legacy_project_migration_produces_no_system(controller) -> None:
     controller.start_solve()
 
     assert controller.view.warnings == [
         (
-            "No driven surfaces",
-            "Open System and add a prescribed-velocity component to a moving boundary.",
+            "Physical system migration",
+            "This project has no physical system and could not be migrated automatically.",
         )
     ]
-    assert controller.inputs.seeded == 1, "seeding is attempted before the radiator check"
+    assert controller.inputs.seeded == 1
+    assert controller.solve.started == []
+
+
+def test_solving_reports_required_physical_system_migration_failure(controller) -> None:
+    controller.inputs.migration_error = PhysicalSystemMigrationError("mesh groups are ambiguous")
+
+    controller.start_solve()
+
+    assert controller.view.warnings == [("Physical system migration", "mesh groups are ambiguous")]
+    assert controller.solve.started == []
+
+
+def test_physical_system_with_no_excitation_explains_what_to_add(controller) -> None:
+    controller.project.physical_system = SimpleNamespace(excitation_ports=())
+
+    controller.start_solve()
+
+    assert controller.view.warnings == [
+        (
+            "No excitation ports",
+            "Open System and add an excitation port to a physical component.",
+        )
+    ]
+
+
+def test_exterior_solve_dispatch_requires_a_physical_system(controller, monkeypatch) -> None:
+    controller.project.physical_system = SimpleNamespace(
+        regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR),),
+        interfaces=(),
+        excitation_ports=(SimpleNamespace(id="excitation:source"),),
+    )
+    dispatched = []
+    monkeypatch.setattr(controller, "_start_exterior_system_solve", lambda: dispatched.append("exterior"))
+
+    controller.start_solve()
+
+    assert dispatched == ["exterior"]
+    assert controller.inputs.seeded == 1
 
 
 @pytest.mark.parametrize(("confirmed", "expected"), [(False, False), (True, True)])

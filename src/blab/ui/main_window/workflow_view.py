@@ -130,14 +130,8 @@ class SolveInputs(Protocol):
     def mesh_service(self):
         """The geometry preparation service."""
 
-    def prepare_mesh_assembly(self, *args, **kwargs):
-        """Build the solver mesh set, stitching if configured."""
-
-    def all_radiators(self) -> tuple:
-        """Every radiator across generated and imported geometry."""
-
-    def ensure_seeded_exterior_system(self) -> None:
-        """Create a default exterior physical system if none is configured."""
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
+        """Represent legacy exterior sources as a physical system."""
 
     def channel_configs(self) -> tuple:
         """The configured channels."""
@@ -166,7 +160,7 @@ class GeometryInputs(Protocol):
     def record_generated_geometry(self, document_id: str, result) -> None:
         """Store generated geometry against its design and update the document."""
 
-    def ensure_seeded_exterior_system(self) -> None:
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
         """Create a default exterior physical system if none is configured."""
 
 
@@ -207,7 +201,7 @@ class ProjectInputs(Protocol):
     def reconcile_symmetry_with_backend(self) -> bool:
         """Downgrade project symmetry if the backend cannot honour it."""
 
-    def ensure_seeded_exterior_system(self) -> None:
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
         """Create a default exterior physical system if none is configured."""
 
     def active_generator_document(self):

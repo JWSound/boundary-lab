@@ -66,6 +66,7 @@ from blab.ui.operation_controllers import (
     SolveController,
     SolveRequest,
 )
+from blab.ui.physical_system_migration import PhysicalSystemMigrationError
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
@@ -174,59 +175,34 @@ class SolveWorkflowController(QObject):
         if not self._inputs.has_solver_meshes():
             self._view.warn("No mesh", "Enable at least one generated or imported mesh before solving.")
             return
-        self._inputs.ensure_seeded_exterior_system()
+        try:
+            self._inputs.ensure_seeded_exterior_system(required=True)
+        except PhysicalSystemMigrationError as exc:
+            self._view.warn("Physical system migration", str(exc))
+            return
         project = self._project()
-        if project.physical_system is not None:
-            try:
-                solve_kind = infer_physical_solve_kind(project.physical_system)
-            except ValueError as exc:
-                self._view.warn("System solve", str(exc))
-                return
-            if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
-                self._start_exterior_system_solve()
-            else:
-                self._start_coupled_system_solve()
-            return
-        radiators = self._inputs.all_radiators()
-        if not radiators:
+        system = project.physical_system
+        if system is None:
             self._view.warn(
-                "No driven surfaces",
-                "Open System and add a prescribed-velocity component to a moving boundary.",
+                "Physical system migration",
+                "This project has no physical system and could not be migrated automatically.",
             )
             return
-        if self._inputs.reconcile_symmetry_with_backend():
-            self.mesh_state_changed.emit("symmetry_disabled_for_backend")
-
-        try:
-            assembly = self._inputs.prepare_mesh_assembly(radiators)
-            mesh_configs = assembly.mesh_configs
-            radiators = assembly.radiators
-        except Exception as exc:
-            self._view.show_stitch_or_generic_error("Imported mesh preparation failed", exc)
-            return
-        frequencies = self._view.frequency_range().normalized()
-        channels = self._inputs.solver_channel_configs(radiators)
-        try:
-            prepared_simulation = self._assembler.prepare(
-                mesh_configs=mesh_configs,
-                radiators=radiators,
-                channels=channels,
-                parameters=self._simulation_parameters(frequencies, self._read_preferences()),
+        if not system.excitation_ports:
+            self._view.warn(
+                "No excitation ports",
+                "Open System and add an excitation port to a physical component.",
             )
-        except SymmetryValidationError as exc:
-            self._view.warn("Symmetry validation failed", str(exc))
             return
-
-        if not self._confirm_exterior_mesh_topology(
-            prepared_simulation.config.meshes,
-            symmetry=prepared_simulation.config.symmetry,
-        ):
+        try:
+            solve_kind = infer_physical_solve_kind(system)
+        except ValueError as exc:
+            self._view.warn("System solve", str(exc))
             return
-
-        self._begin_run("Initializing Solver...")
-        self._solve_controller.start(
-            self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
-        )
+        if solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+            self._start_exterior_system_solve()
+        else:
+            self._start_coupled_system_solve()
 
     def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
         """Prepare the requested package outputs, run once, then export on completion."""

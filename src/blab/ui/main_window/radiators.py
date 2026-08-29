@@ -13,7 +13,11 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.ui.mesh_assembly import (
     STITCHED_MESH_NAME,
 )
-from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY, seed_exterior_system
+from blab.ui.physical_system_migration import (
+    AUTO_SEEDED_EXTERIOR_KEY,
+    PhysicalSystemMigrationError,
+    seed_exterior_system,
+)
 from blab.ui.system_config import (
     inspect_system_meshes,
 )
@@ -31,20 +35,32 @@ class RadiatorsMixin:
     def all_radiators(self) -> tuple[RadiatorConfig, ...]:
         return self._geometry_store().all_radiators(self.generator_documents)
 
-    def ensure_seeded_exterior_system(self) -> None:
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
+        """Ensure legacy source assignments have a physical-system representation.
+
+        Best-effort callers use the default while geometry is still being
+        materialized. Solve preparation uses ``required=True`` so migration
+        failures are explicit and cannot fall through to the legacy project
+        model.
+        """
+
         current = self.project.physical_system
         if current is not None and not bool(current.metadata.get(AUTO_SEEDED_EXTERIOR_KEY, False)):
-            return
+            return True
         try:
             meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
             if not any(not mesh.has_tetrahedra for mesh in meshes):
-                return
+                raise ValueError("No exterior surface mesh is available.")
             system, component_channels = seed_exterior_system(
                 meshes,
                 self._source_radiators_for_system_seed(),
             )
-        except (OSError, ValueError):
-            return
+        except (OSError, ValueError) as exc:
+            if required:
+                raise PhysicalSystemMigrationError(
+                    "This project could not be migrated to the physical-system model: " + str(exc)
+                ) from exc
+            return False
         self.project.physical_system = system
         self.project.component_channel_by_id = component_channels
         if all(
@@ -52,6 +68,7 @@ class RadiatorsMixin:
             for document in self.generator_documents
         ):
             self.project.source_config_by_name = {}
+        return True
 
     def _source_radiators_for_system_seed(self) -> tuple[RadiatorConfig, ...]:
         radiators = self.all_radiators()

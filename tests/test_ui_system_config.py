@@ -41,9 +41,10 @@ from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.exterior_system import exterior_bem_inputs
+from blab.ui.main_window.radiators import RadiatorsMixin
 from blab.ui.mesh_assembly import MeshAssemblyService
-from blab.ui.physical_system_migration import seed_exterior_system
-from blab.ui.project_state import ImportedMeshState
+from blab.ui.physical_system_migration import PhysicalSystemMigrationError, seed_exterior_system
+from blab.ui.project_state import ImportedMeshState, new_project_document
 from blab.ui.system_config import (
     SystemConfigDialog,
     _ComponentDraft,
@@ -260,6 +261,21 @@ def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
     PhysicalSystemCompiler().compile(system)
     restored = SystemConfigDialog((bem, second), system, ("main",))
     assert len(restored.physical_system().regions[0].mesh_ids) == 2
+
+
+def test_required_exterior_migration_reports_why_it_cannot_build_a_system() -> None:
+    class MigrationHost(RadiatorsMixin):
+        project = new_project_document()
+
+        @staticmethod
+        def _mesh_config_dialog_entries():
+            return ()
+
+    host = MigrationHost()
+
+    assert host.ensure_seeded_exterior_system() is False
+    with pytest.raises(PhysicalSystemMigrationError, match="No exterior surface mesh is available"):
+        host.ensure_seeded_exterior_system(required=True)
 
 
 def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:

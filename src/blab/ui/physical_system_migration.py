@@ -29,6 +29,10 @@ from blab.ui.system_config import AvailableSystemMesh
 AUTO_SEEDED_EXTERIOR_KEY = "auto_seeded_exterior"
 
 
+class PhysicalSystemMigrationError(ValueError):
+    """A legacy exterior project could not be represented as a physical system."""
+
+
 @dataclass
 class _DriveGroup:
     mesh_name: str
@@ -192,4 +196,4 @@ def _unique_id(base: str, used: set[str]) -> str:
     return candidate
 
 
-__all__ = ["AUTO_SEEDED_EXTERIOR_KEY", "seed_exterior_system"]
+__all__ = ["AUTO_SEEDED_EXTERIOR_KEY", "PhysicalSystemMigrationError", "seed_exterior_system"]
