@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from blab.acoustic_impedance import normalization_records
-from blab.config import normalize_symmetry
+from blab.config import SimulationConfig, normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.observation_planes import ObservationPlane, ObservationPlaneType
 from blab.physical_compiler import PhysicalSystemCompiler
@@ -40,6 +40,7 @@ from blab.solve_results import (
     fem_volume_result_domain,
 )
 from blab.solvers.coupled_backend import validate_solve_plan
+from blab.solvers.exterior_compatibility import ExteriorCompatibilityOptions
 from blab.solvers.registry import (
     backend_condenses_fem_interior,
     normalize_backend_id,
@@ -62,6 +63,7 @@ class SystemUiSolveRequest:
     vertical_count: int
     sphere_metadata: dict[str, np.ndarray] | None = None
     result_domains: tuple[ResultDomain, ...] = ()
+    compatibility: ExteriorCompatibilityOptions | None = None
 
 
 def prepare_system_ui_solve(
@@ -78,6 +80,7 @@ def prepare_system_ui_solve(
     backend_id: str = "beat_cpu",
     symmetry_mode: str = "off",
     observation_planes: tuple[ObservationPlane, ...] = (),
+    allow_exterior_compatibility: bool = False,
 ) -> SystemUiSolveRequest:
     """Compile an editable physical system and request the fields used by the UI."""
 
@@ -189,7 +192,9 @@ def prepare_system_ui_solve(
         component_names.append(component.name)
 
     normalized_backend_id = normalize_backend_id(backend_id)
-    if not supports_physical_system_solves(normalized_backend_id):
+    if not supports_physical_system_solves(normalized_backend_id) and not (
+        allow_exterior_compatibility and solve_kind == PhysicalSolveKind.EXTERIOR_BEM
+    ):
         raise ValueError("Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.")
     outputs = []
     if has_exterior:
@@ -307,6 +312,76 @@ def prepare_system_ui_solve(
         vertical_count=len(vertical),
         sphere_metadata=sphere_metadata,
         result_domains=tuple(result_domains),
+    )
+
+
+def with_exterior_compatibility(
+    prepared: SystemUiSolveRequest,
+    *,
+    config: SimulationConfig,
+    server_url: str,
+    server_access_token: str = "",
+) -> SystemUiSolveRequest:
+    """Attach a legacy exterior backend without exposing its request to the UI."""
+
+    if prepared.solve_kind != PhysicalSolveKind.EXTERIOR_BEM:
+        raise ValueError("Legacy compatibility is available for exterior-only physical systems.")
+    if supports_physical_system_solves(prepared.backend_id):
+        raise ValueError("BEAT physical-system backends do not require the exterior compatibility adapter.")
+
+    channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
+    active_channels = sorted({radiator.channel for radiator in config.radiators})
+    selected_indices = []
+    excitation_port_id_by_channel = []
+    for channel_name in active_channels:
+        try:
+            index = channel_names.index(channel_name)
+        except ValueError as exc:
+            raise ValueError(
+                f"Legacy exterior channel {channel_name!r} has no physical-system excitation port."
+            ) from exc
+        selected_indices.append(index)
+        excitation_port_id_by_channel.append(
+            (channel_name, prepared.request.excitation_port_ids[index])
+        )
+    if not selected_indices:
+        raise ValueError("Legacy exterior compatibility requires at least one active channel.")
+
+    selected_port_ids = tuple(port_id for _channel, port_id in excitation_port_id_by_channel)
+    request = replace(
+        prepared.request,
+        excitation_port_ids=selected_port_ids,
+        solver_options={
+            **prepared.request.solver_options,
+            "compatibility_adapter": "legacy_exterior_v1",
+            "compatibility_excitation_basis": "channel_group",
+        },
+    )
+    validate_solve_plan(request)
+    radiator_domain = ResultDomain(
+        id=RADIATOR_DOMAIN_ID,
+        kind="component_collection",
+        dimensions=("radiator",),
+        coordinates={"name": np.asarray([radiator.name for radiator in config.radiators])},
+        metadata={"compatibility_adapter": "legacy_exterior_v1"},
+    )
+    result_domains = tuple(
+        radiator_domain if domain.id == RADIATOR_DOMAIN_ID else domain
+        for domain in prepared.result_domains
+    )
+    return replace(
+        prepared,
+        request=request,
+        excitation_channel_names=prepared.excitation_channel_names[selected_indices],
+        excitation_component_names=prepared.excitation_component_names[selected_indices],
+        result_domains=result_domains,
+        compatibility=ExteriorCompatibilityOptions(
+            config=config,
+            backend_id=prepared.backend_id,
+            excitation_port_id_by_channel=tuple(excitation_port_id_by_channel),
+            server_url=server_url,
+            server_access_token=server_access_token,
+        ),
     )
 
 
@@ -440,4 +515,5 @@ __all__ = [
     "prepare_coupled_ui_solve",
     "prepare_system_ui_solve",
     "supports_exterior_system_protocol",
+    "with_exterior_compatibility",
 ]

@@ -45,6 +45,7 @@ from blab.solve_results import (
     legacy_result_domains,
     legacy_result_to_system_result,
 )
+from blab.solvers.registry import supports_physical_system_solves
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
@@ -64,9 +65,11 @@ from blab.ui.main_window_widgets import (
 from blab.ui.operation_controllers import (
     GeometryController,
     SolveController,
-    SolveRequest,
 )
-from blab.ui.physical_system_migration import PhysicalSystemMigrationError
+from blab.ui.physical_system_migration import (
+    PhysicalSystemMigrationError,
+    seed_exterior_system_from_solver_inputs,
+)
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
@@ -84,7 +87,7 @@ from blab.ui.system_config import (
 )
 from blab.ui.system_solve import (
     prepare_system_ui_solve,
-    supports_exterior_system_protocol,
+    with_exterior_compatibility,
 )
 
 
@@ -140,17 +143,6 @@ class SolveWorkflowController(QObject):
         self._view.set_max_spl_export_available(False)
         self._plots.refresh_contour_controls()
         self._view.show_status(status)
-
-    def _solve_request(self, config, ordered_frequencies) -> SolveRequest:
-        preferences = self._read_preferences()
-        return SolveRequest(
-            config=config,
-            ordered_frequencies=ordered_frequencies,
-            worker_count=1,
-            backend_id=preferences.solve_backend,
-            server_url=preferences.solve_server_url,
-            server_access_token=load_server_access_token(preferences.solve_server_url),
-        )
 
     def _simulation_parameters(self, frequencies, preferences: GuiPreferences) -> SimulationParameters:
         return SimulationParameters(
@@ -301,60 +293,63 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
-            if supports_exterior_system_protocol(
-                system,
-                backend_id=preferences.solve_backend,
-                stitch_exterior_meshes=project.stitch_imported_meshes,
-            ):
-                frequencies = self._view.frequency_range()
-                prepared = prepare_system_ui_solve(
+            compatibility_required = not supports_physical_system_solves(preferences.solve_backend)
+            solver_system = system
+            component_channels = project.component_channel_by_id
+            prepared_simulation = None
+            if compatibility_required or project.stitch_imported_meshes:
+                inputs = exterior_bem_inputs(
                     system,
-                    freq_min_hz=float(frequencies.min_hz),
-                    freq_max_hz=float(frequencies.max_hz),
-                    freq_count=frequencies.count,
-                    observation_distance_m=preferences.polar_observation_distance_m,
-                    polar_angle_step_deg=preferences.polar_angle_step_deg,
-                    spherical_sampling_enabled=preferences.spherical_sampling_enabled,
-                    spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                     component_channel_by_id=project.component_channel_by_id,
-                    backend_id=preferences.solve_backend,
                     symmetry_mode=symmetry,
-                    observation_planes=project.observation_planes,
                 )
-                self._start_prepared_system_solve(prepared, "Initializing exterior solver...")
-                return
-            inputs = exterior_bem_inputs(
-                system,
-                component_channel_by_id=project.component_channel_by_id,
+                mesh_configs, radiators = self._inputs.mesh_service().prepare_mesh_configs(
+                    inputs.mesh_configs,
+                    inputs.radiators,
+                    stitch_meshes_enabled=project.stitch_imported_meshes,
+                    stitch_tolerance_mm=preferences.stitch_tolerance_mm,
+                    symmetry=symmetry,
+                )
+                prepared_simulation = self._assembler.prepare(
+                    mesh_configs=mesh_configs,
+                    radiators=radiators,
+                    channels=self._inputs.solver_channel_configs(radiators),
+                    parameters=self._simulation_parameters(self._view.frequency_range(), preferences),
+                )
+                if project.stitch_imported_meshes:
+                    solver_system, component_channels = seed_exterior_system_from_solver_inputs(
+                        mesh_configs,
+                        radiators,
+                    )
+
+            frequencies = self._view.frequency_range()
+            prepared = prepare_system_ui_solve(
+                solver_system,
+                freq_min_hz=float(frequencies.min_hz),
+                freq_max_hz=float(frequencies.max_hz),
+                freq_count=frequencies.count,
+                observation_distance_m=preferences.polar_observation_distance_m,
+                polar_angle_step_deg=preferences.polar_angle_step_deg,
+                spherical_sampling_enabled=preferences.spherical_sampling_enabled,
+                spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
+                component_channel_by_id=component_channels,
+                backend_id=preferences.solve_backend,
                 symmetry_mode=symmetry,
+                observation_planes=() if compatibility_required else project.observation_planes,
+                allow_exterior_compatibility=compatibility_required,
             )
-            mesh_configs, radiators = self._inputs.mesh_service().prepare_mesh_configs(
-                inputs.mesh_configs,
-                inputs.radiators,
-                stitch_meshes_enabled=project.stitch_imported_meshes,
-                stitch_tolerance_mm=preferences.stitch_tolerance_mm,
-                symmetry=symmetry,
-            )
-            prepared_simulation = self._assembler.prepare(
-                mesh_configs=mesh_configs,
-                radiators=radiators,
-                channels=self._inputs.solver_channel_configs(radiators),
-                parameters=self._simulation_parameters(self._view.frequency_range(), preferences),
-            )
+            if compatibility_required:
+                assert prepared_simulation is not None
+                prepared = with_exterior_compatibility(
+                    prepared,
+                    config=prepared_simulation.config,
+                    server_url=preferences.solve_server_url,
+                    server_access_token=load_server_access_token(preferences.solve_server_url),
+                )
         except (ValueError, OSError, SymmetryValidationError) as exc:
             self._view.show_stitch_or_generic_error("Exterior system preparation failed", exc)
             return
-
-        if not self._confirm_exterior_mesh_topology(
-            prepared_simulation.config.meshes,
-            symmetry=prepared_simulation.config.symmetry,
-        ):
-            return
-
-        self._begin_run("Initializing exterior solver...")
-        self._solve_controller.start(
-            self._solve_request(prepared_simulation.config, prepared_simulation.ordered_frequencies)
-        )
+        self._start_prepared_system_solve(prepared, "Initializing exterior solver...")
 
     def _start_coupled_system_solve(self) -> None:
         project = self._project()
