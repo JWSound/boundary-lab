@@ -11,6 +11,10 @@ from pathlib import Path
 import meshio
 import numpy as np
 
+from blab.acoustic_impedance import (
+    ACOUSTIC_IMPEDANCE_NORMALIZATION_METADATA_KEY,
+    AcousticImpedanceNormalization,
+)
 from blab.acoustic_materials import (
     REGION_BULK_LOSS_FACTOR_KEY,
     WALL_IMPEDANCE_KEY,
@@ -21,6 +25,8 @@ from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInferenceError,
     infer_component_symmetry,
+    infer_projected_diaphragm_area,
+    infer_weighted_surface_area,
 )
 from blab.config import normalize_symmetry
 from blab.fem_topology import selected_volume_surface_tags
@@ -80,7 +86,7 @@ class PhysicalSystemCompiler:
         compiled_regions = tuple(self._compile_region(region, meshes_by_id) for region in system.regions)
         compiled_boundaries = tuple(self._compile_boundary(boundary, meshes_by_id) for boundary in system.boundaries)
         compiled_boundaries_by_id = {boundary.id: boundary for boundary in compiled_boundaries}
-        compiled_components = self._compile_components(system, symmetry)
+        compiled_components, impedance_normalization = self._compile_components(system, symmetry)
 
         self._validate_boundary_coverage(compiled_regions, compiled_boundaries, meshes_by_id)
         compiled_interfaces = tuple(
@@ -93,6 +99,11 @@ class PhysicalSystemCompiler:
             for interface in system.interfaces
         )
 
+        metadata = dict(system.metadata)
+        metadata[ACOUSTIC_IMPEDANCE_NORMALIZATION_METADATA_KEY] = {
+            component_id: record.as_metadata()
+            for component_id, record in impedance_normalization.items()
+        }
         return CompiledPhysicalSystem(
             id=system.id,
             name=system.name,
@@ -104,19 +115,54 @@ class PhysicalSystemCompiler:
             excitation_ports=system.excitation_ports,
             assumptions=self._assumptions(system),
             source_model_version=system.model_version,
-            metadata=dict(system.metadata),
+            metadata=metadata,
         )
 
     def _compile_components(
         self,
         system: PhysicalSystem,
         symmetry_mode: str,
-    ) -> tuple[PhysicalComponent, ...]:
+    ) -> tuple[tuple[PhysicalComponent, ...], dict[str, AcousticImpedanceNormalization]]:
         boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
         resources_by_id = {resource.id: resource for resource in system.meshes}
         mesh_cache: dict[str, meshio.Mesh] = {}
         compiled = []
+        normalization: dict[str, AcousticImpedanceNormalization] = {}
+        unbounded_region_ids = {
+            region.id for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR
+        }
+        symmetry_factor = 2 ** len({"off": (), "x": ("x",), "xy": ("x", "y")}[symmetry_mode])
         for component in system.components:
+            if component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE:
+                exterior_boundaries = tuple(
+                    boundaries_by_id[boundary_id]
+                    for boundary_id in component.boundary_ids
+                    if boundary_id in boundaries_by_id
+                    and boundaries_by_id[boundary_id].region_id in unbounded_region_ids
+                )
+                if exterior_boundaries:
+                    try:
+                        area_m2 = infer_weighted_surface_area(
+                            exterior_boundaries,
+                            resources_by_id,
+                            symmetry_factor,
+                            boundary_motion_weights=dict(
+                                component.parameters.get("boundary_motion_weights", {})
+                            ),
+                            mesh_cache=mesh_cache,
+                        )
+                    except (ComponentSymmetryInferenceError, TypeError, ValueError) as exc:
+                        raise PhysicalModelCompileError(
+                            f"Could not infer driven area for component '{component.name}': {exc}"
+                        ) from exc
+                    normalization[component.id] = AcousticImpedanceNormalization(
+                        component_id=component.id,
+                        component_name=component.name,
+                        effective_area_m2=area_m2,
+                        area_kind="weighted_physical_surface",
+                    )
+                compiled.append(component)
+                continue
             if component.kind != ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
                 compiled.append(component)
                 continue
@@ -140,8 +186,31 @@ class PhysicalSystemCompiler:
                 key: value for key, value in component.parameters.items() if key not in SYMMETRY_PARAMETER_KEYS
             }
             parameters.update(inference.parameters())
+            try:
+                area = infer_projected_diaphragm_area(
+                    boundaries,
+                    resources_by_id,
+                    parameters["motion_axis"],
+                    inference.surface_completion_factor,
+                    boundary_motion_weights=dict(parameters.get("boundary_motion_weights", {})),
+                    boundary_side_keys={boundary.id: boundary.region_id for boundary in boundaries},
+                    mesh_cache=mesh_cache,
+                )
+            except (ComponentSymmetryInferenceError, TypeError, ValueError) as exc:
+                raise PhysicalModelCompileError(
+                    f"Could not infer projected diaphragm area for component '{component.name}': {exc}"
+                ) from exc
+            normalization[component.id] = AcousticImpedanceNormalization(
+                component_id=component.id,
+                component_name=component.name,
+                effective_area_m2=area.projected_area_m2,
+                area_kind="projected_rigid_translation",
+                positive_side_area_m2=area.positive_side_area_m2,
+                negative_side_area_m2=area.negative_side_area_m2,
+                relative_side_mismatch=area.relative_side_mismatch,
+            )
             compiled.append(replace(component, parameters=parameters))
-        return tuple(compiled)
+        return tuple(compiled), normalization
 
     def _validate_authoring_model(self, system: PhysicalSystem) -> None:
         issues: list[str] = []

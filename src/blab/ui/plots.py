@@ -1369,7 +1369,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
     def _configure_axes(self) -> None:
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Acoustic Load Impedance (N*s/m)")
+        self.axes.set_ylabel("Normalized Acoustic Impedance (Z / ρcSd)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)

@@ -197,12 +197,12 @@ class ExportsMixin:
             return [
                 export_frequency_trace_table(
                     target,
-                    title="Acoustic Impedance",
+                    title="Normalized Acoustic Impedance (Z / rho*c*Sd)",
                     frequency_hz=data.freq_hz,
                     trace_names=data.radiator_names,
                     quantities=(
-                        TraceQuantity("Real", "N*s/m", data.real),
-                        TraceQuantity("Imaginary", "N*s/m", data.imaginary),
+                        TraceQuantity("Real", "1", data.real),
+                        TraceQuantity("Imaginary", "1", data.imaginary),
                     ),
                 )
             ]

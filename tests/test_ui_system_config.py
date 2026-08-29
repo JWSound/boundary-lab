@@ -422,6 +422,10 @@ def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
     assert outputs[RADIATION_IMPEDANCE_ID].quantity == "radiation_impedance"
     assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID} <= outputs.keys()
     assert {RADIATOR_DOMAIN_ID, BEM_BOUNDARY_DOMAIN_ID} <= domains.keys()
+    radiator_domain = domains[RADIATOR_DOMAIN_ID]
+    assert radiator_domain.coordinates["effective_area_m2"].shape == (1,)
+    assert radiator_domain.coordinates["effective_area_m2"][0] > 0.0
+    assert np.isnan(radiator_domain.coordinates["relative_side_mismatch"][0])
     assert system_solve_module.supports_exterior_system_protocol(
         system,
         backend_id="beat_cpu",

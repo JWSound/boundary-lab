@@ -8,6 +8,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from blab.acoustic_impedance import normalize_generalized_impedance
 from blab.channel_synthesis import (
     channel_drive,
     channel_voltage_gain,
@@ -38,6 +39,8 @@ class LiveSolveDataset:
     flat_target_reference_angle_deg: float = 0.0
     polar_observation_distance_m: float = 0.0
     exterior_sound_speed_m_per_s: float = 343.0
+    acoustic_impedance_effective_area_m2: np.ndarray | None = None
+    acoustic_impedance_density_kg_per_m3: float = 1.21
     sphere_r_distance_m: np.ndarray | None = None
     sphere_theta_polar_rad: np.ndarray | None = None
     sphere_phi_azimuth_rad: np.ndarray | None = None
@@ -252,6 +255,13 @@ class LiveSolveDataset:
         freqs, angles, horizontal, vertical, raw_horizontal, raw_vertical = self._polar_export_arrays()
         ordered = self.ordered_results()
         impedance = np.stack([item.impedance for item in ordered], axis=1)
+        if self.acoustic_impedance_effective_area_m2 is not None:
+            impedance = normalize_generalized_impedance(
+                impedance,
+                self.acoustic_impedance_effective_area_m2,
+                self.acoustic_impedance_density_kg_per_m3,
+                self.exterior_sound_speed_m_per_s,
+            )
 
         return prepare_visualization_data_from_arrays(
             freq_hz=freqs,
@@ -767,6 +777,9 @@ class AcousticLoadImpedanceDataset:
     mmd_kg: np.ndarray
     cms_m_per_n: np.ndarray
     rms_n_s_per_m: np.ndarray
+    effective_area_m2: np.ndarray | None = None
+    density_kg_per_m3: float = 1.21
+    sound_speed_m_per_s: float = 343.0
     results: dict[float, np.ndarray] = field(default_factory=dict)
     velocity_condition_numbers: dict[float, float] = field(default_factory=dict)
 
@@ -910,6 +923,13 @@ class AcousticLoadImpedanceDataset:
         frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
         native_impedance = np.vstack([values for _frequency, values in ordered]).T
         display_impedance = solver_to_standard_phasor(native_impedance)
+        if self.effective_area_m2 is not None:
+            display_impedance = normalize_generalized_impedance(
+                display_impedance,
+                self.effective_area_m2,
+                self.density_kg_per_m3,
+                self.sound_speed_m_per_s,
+            )
         return (
             frequencies,
             np.asarray(self.transducer_names).copy(),

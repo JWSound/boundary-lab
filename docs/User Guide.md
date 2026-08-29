@@ -125,15 +125,19 @@ is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
 amplifier voltage/current limits, or excursion-dependent motor parameters.
 
-The **Acoustic Impedance** dock reports generalized acoustic load impedance in
-N·s/m. Exterior-only prescribed-velocity solves integrate the pressure load on
-each component. Coupled FEM-BEM solves report each electrodynamic transducer's
+The **Acoustic Impedance** dock reports dimensionless normalized acoustic load
+impedance, `Z / (rho*c*Sd)`. For exterior-only prescribed-velocity sources,
+`Sd` is the symmetry-completed physical surface area weighted by each boundary's
+motion coefficient. For electrodynamic transducers, it is the average projected
+area of the two diaphragm sides; Boundary Lab warns before solving if those
+areas differ by more than 10%. Coupled FEM-BEM solves report each transducer's
 net acoustic self load, including its interior and exterior loading; the other
 transducer velocities are mathematically held at zero when each self trace is
 recovered. Real and imaginary traces can be hidden together per component with
 the **Traces** menu. Frequencies at which the coupled velocity basis is too
 small or ill-conditioned are left as gaps. Interior-FEM-only solves do not
-currently populate this plot.
+currently populate this plot. Saved canonical solve quantities retain the raw
+generalized impedance in N*s/m for reproducibility.
 
 The **Electrical Impedance** dock reports the driving-point load of each
 voltage-driven channel in ohms. Electrodynamic transducers assigned to the same

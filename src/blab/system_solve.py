@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from blab.acoustic_impedance import normalization_records
 from blab.config import normalize_symmetry
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.observation_planes import ObservationPlane, ObservationPlaneType
@@ -83,6 +84,7 @@ def prepare_system_ui_solve(
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
+    impedance_normalization = normalization_records(compiled.metadata)
     solve_kind = infer_physical_solve_kind(system)
     has_exterior = solve_kind != PhysicalSolveKind.INTERIOR_FEM
     frequencies = build_log_frequencies(
@@ -143,7 +145,8 @@ def prepare_system_ui_solve(
                 coordinates={
                     "component_id": np.asarray([component.id for component in compiled.components]),
                     "name": np.asarray([component.name for component in compiled.components]),
-                },
+                }
+                | _impedance_area_coordinates(compiled.components, impedance_normalization),
             )
         )
     sphere_metadata = None
@@ -256,7 +259,8 @@ def prepare_system_ui_solve(
                 coordinates={
                     "component_id": np.asarray([component.id for component in transducers]),
                     "name": np.asarray([component.name for component in transducers]),
-                },
+                }
+                | _impedance_area_coordinates(transducers, impedance_normalization),
             )
         )
         outputs.extend(
@@ -302,6 +306,25 @@ def prepare_system_ui_solve(
         sphere_metadata=sphere_metadata,
         result_domains=tuple(result_domains),
     )
+
+
+def _impedance_area_coordinates(components, records) -> dict[str, np.ndarray]:
+    if not components or any(component.id not in records for component in components):
+        return {}
+    selected = [records[component.id] for component in components]
+    return {
+        "effective_area_m2": np.asarray([record.effective_area_m2 for record in selected], dtype=np.float64),
+        "positive_side_area_m2": np.asarray(
+            [record.positive_side_area_m2 for record in selected], dtype=np.float64
+        ),
+        "negative_side_area_m2": np.asarray(
+            [record.negative_side_area_m2 for record in selected], dtype=np.float64
+        ),
+        "relative_side_mismatch": np.asarray(
+            [np.nan if record.relative_side_mismatch is None else record.relative_side_mismatch for record in selected],
+            dtype=np.float64,
+        ),
+    }
 
 
 def prepare_coupled_ui_solve(*args, **kwargs) -> SystemUiSolveRequest:

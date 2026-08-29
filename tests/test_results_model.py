@@ -534,6 +534,31 @@ def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
     assert dataset.velocity_condition_numbers[frequency_hz] < 10.0
 
 
+def test_coupled_acoustic_load_projection_normalizes_by_effective_area() -> None:
+    dataset = AcousticLoadImpedanceDataset(
+        excitation_port_ids=("port:a",),
+        excitation_port_kinds=np.asarray(["voltage"]),
+        excitation_component_ids=np.asarray(["component:a"]),
+        transducer_component_ids=np.asarray(["component:a"]),
+        transducer_names=np.asarray(["Woofer"]),
+        bl_n_per_a=np.asarray([7.0]),
+        mmd_kg=np.asarray([0.015]),
+        cms_m_per_n=np.asarray([5.0e-4]),
+        rms_n_s_per_m=np.asarray([1.0]),
+        effective_area_m2=np.asarray([0.2]),
+        density_kg_per_m3=2.0,
+        sound_speed_m_per_s=5.0,
+        results={100.0: np.asarray([3.0 - 4.0j])},
+    )
+
+    frequencies, names, real, imaginary = dataset.as_impedance_arrays()
+
+    assert frequencies.tolist() == [100.0]
+    assert names.tolist() == ["Woofer"]
+    np.testing.assert_allclose(real[:, 0], [1.5])
+    np.testing.assert_allclose(imaginary[:, 0], [2.0])
+
+
 def test_coupled_acoustic_load_masks_ill_conditioned_velocity_basis() -> None:
     dataset = AcousticLoadImpedanceDataset(
         excitation_port_ids=("port:a", "port:b"),

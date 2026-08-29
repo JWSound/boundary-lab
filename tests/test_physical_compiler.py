@@ -8,6 +8,7 @@ import meshio
 import numpy as np
 import pytest
 
+from blab.acoustic_impedance import normalization_records
 from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.interface_conform import conform_bem_interface_to_fem
@@ -92,6 +93,17 @@ def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
         AssumptionStatus.EXCLUDED,
         "Region-specific acoustic material loss models",
     ) in assumptions
+
+
+def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> None:
+    compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
+
+    record = normalization_records(compiled.metadata)["component:exterior-radiator"]
+
+    assert record.component_name == "Exterior radiator"
+    assert record.area_kind == "weighted_physical_surface"
+    assert record.effective_area_m2 > 0.0
+    assert record.relative_side_mismatch is None
 
 
 def test_compiler_rejects_unassigned_physical_surface_group() -> None:
@@ -826,6 +838,12 @@ def test_simple_sealed_model_compiles_without_an_acoustic_interface() -> None:
         "boundary:simple-sealed-rear-diaphragm",
         "boundary:simple-sealed-front-diaphragm",
     )
+    area = normalization_records(compiled.metadata)["component:simple-sealed-driver"]
+    assert area.area_kind == "projected_rigid_translation"
+    assert area.effective_area_m2 > 0.0
+    assert area.positive_side_area_m2 > 0.0
+    assert area.negative_side_area_m2 > 0.0
+    assert area.relative_side_mismatch is not None
     assert session.request.solver_options["static_condensation"] is True
 
 

@@ -282,7 +282,7 @@ def test_acoustic_impedance_trace_filter_hides_real_and_imaginary_pair() -> None
         np.asarray([[0.0, 6.0, -2.0], [0.5, 1.0, -0.5]], dtype=np.float32),
     )
 
-    assert canvas.axes.get_ylabel() == "Acoustic Load Impedance (N*s/m)"
+    assert canvas.axes.get_ylabel() == "Normalized Acoustic Impedance (Z / ρcSd)"
     assert set(canvas._series_actions) == {"Woofer", "Tweeter"}
     canvas._series_actions["Woofer"].setChecked(False)
     assert not canvas._lines[0].get_visible()

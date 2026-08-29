@@ -221,6 +221,96 @@ def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
         assert controller.session.acoustic_load_impedance.bl_n_per_a.tolist() == [7.0]
 
 
+def test_solve_warns_when_opposing_diaphragm_areas_differ_by_more_than_ten_percent(
+    controller,
+) -> None:
+    component = SimpleNamespace(
+        id="component:woofer",
+        name="Woofer",
+        kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+        parameters={
+            "re_ohm": 6.0,
+            "physical_driver_orbit_count": 1,
+            "bl_n_per_a": 7.0,
+            "mmd_kg": 0.015,
+            "cms_m_per_n": 5.0e-4,
+            "rms_n_s_per_m": 1.0,
+        },
+    )
+    port = SimpleNamespace(
+        id="port:woofer",
+        component_id=component.id,
+        kind=ExcitationPortKind.VOLTAGE,
+    )
+    prepared = SimpleNamespace(
+        excitation_channel_names=np.asarray(["main"]),
+        request=SimpleNamespace(
+            compiled_system=SimpleNamespace(
+                excitation_ports=(port,),
+                components=(component,),
+                regions=(SimpleNamespace(density_kg_per_m3=1.2, sound_speed_m_per_s=340.0),),
+                metadata={
+                    "acoustic_impedance_normalization": {
+                        component.id: {
+                            "component_name": component.name,
+                            "effective_area_m2": 0.009,
+                            "area_kind": "projected_rigid_translation",
+                            "positive_side_area_m2": 0.010,
+                            "negative_side_area_m2": 0.008,
+                            "relative_side_mismatch": 0.2,
+                        },
+                        "component:exact-threshold": {
+                            "component_name": "At threshold",
+                            "effective_area_m2": 0.0095,
+                            "area_kind": "projected_rigid_translation",
+                            "positive_side_area_m2": 0.010,
+                            "negative_side_area_m2": 0.009,
+                            "relative_side_mismatch": 0.1,
+                        },
+                    }
+                },
+            ),
+            excitation_port_ids=(port.id,),
+            frequencies_hz=(100.0,),
+            solver_options={},
+        ),
+        backend_id="beat_cpu",
+        solve_kind=PhysicalSolveKind.INTERIOR_FEM,
+        result_domains=(),
+    )
+
+    controller._start_prepared_system_solve(prepared, "Starting")
+
+    assert controller.view.warnings == [
+        (
+            "Diaphragm area mismatch",
+            "Front and rear driven areas differ by more than 10%. "
+            "Normalized acoustic impedance will use their average:\n\n"
+            "• Woofer: 100.00 cm² versus 80.00 cm² (20.0%)",
+        )
+    ]
+    assert controller.session.acoustic_impedance_effective_areas_m2 is None
+    assert controller.solve.started == [prepared]
+
+
+def test_live_impedance_areas_follow_solver_radiator_order_even_with_duplicate_names(
+    controller,
+) -> None:
+    controller.session.acoustic_impedance_effective_areas_m2 = (0.01, 0.02)
+    controller.session.acoustic_impedance_density_kg_per_m3 = 1.2
+
+    controller._on_solver_initialized(
+        np.asarray((-90.0, 0.0, 90.0)),
+        np.asarray(("Radiator", "Radiator")),
+        None,
+    )
+
+    dataset = controller.session.live_dataset
+    assert dataset is not None
+    np.testing.assert_allclose(dataset.acoustic_impedance_effective_area_m2, [0.01, 0.02])
+    assert dataset.acoustic_impedance_density_kg_per_m3 == pytest.approx(1.2)
+
+
 def test_solving_without_a_mesh_warns_instead_of_starting(controller) -> None:
     controller.inputs._has_meshes = False
 

@@ -539,6 +539,32 @@ def test_live_dataset_builds_visualization_dataset_from_results() -> None:
     assert prepared["impedance_real"].tolist() == [[0.5, 1.0]]
 
 
+def test_live_dataset_normalizes_generalized_impedance_by_each_effective_area() -> None:
+    dataset = LiveSolveDataset(
+        np.asarray([-90.0, 0.0, 90.0], dtype=np.float32),
+        radiator_names=np.asarray(["small", "large"]),
+        acoustic_impedance_effective_area_m2=np.asarray([0.1, 0.2]),
+        acoustic_impedance_density_kg_per_m3=2.0,
+        exterior_sound_speed_m_per_s=5.0,
+    )
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(3, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(3, dtype=np.float32),
+            impedance=np.asarray(((2.0, 4.0), (2.0, 4.0)), dtype=np.float32),
+        )
+    )
+
+    prepared = dataset.as_visualization_dataset(
+        PrepConfig(angle_samples=None, freq_samples=None, octave_smoothing=None)
+    )
+
+    assert prepared is not None
+    np.testing.assert_allclose(prepared["impedance_real"][:, 0], [2.0, 1.0])
+    np.testing.assert_allclose(prepared["impedance_imag"][:, 0], [4.0, 2.0])
+
+
 def test_live_dataset_resynthesizes_channel_basis_after_gain_change() -> None:
     angles = np.array([-90.0, 0.0, 90.0], dtype=np.float32)
     dataset = LiveSolveDataset(

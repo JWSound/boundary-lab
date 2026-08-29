@@ -207,6 +207,7 @@ def infer_projected_diaphragm_area(
     surface_completion_factor: int,
     *,
     boundary_motion_weights: dict[str, float] | None = None,
+    boundary_side_keys: dict[str, str] | None = None,
     mesh_cache: dict[str, meshio.Mesh] | None = None,
 ) -> ProjectedDiaphragmAreaInference:
     """Integrate the solver's projected rigid-translation area by acoustic side."""
@@ -227,6 +228,7 @@ def infer_projected_diaphragm_area(
     cache = {} if mesh_cache is None else mesh_cache
     positive_area = 0.0
     negative_area = 0.0
+    area_by_side: dict[str, float] = {}
     for boundary in boundaries:
         resource = resources_by_id.get(boundary.group.mesh_id)
         if resource is None:
@@ -266,6 +268,22 @@ def infer_projected_diaphragm_area(
         positive_area += float(np.sum(projected[projected > 0.0]))
         negative_area += float(np.sum(-projected[projected < 0.0]))
 
+        if boundary_side_keys is not None:
+            side_key = boundary_side_keys.get(boundary.id)
+            if side_key is None:
+                raise ComponentSymmetryInferenceError(
+                    f"Moving boundary '{boundary.name}' has no acoustic-side assignment."
+                )
+            area_by_side[side_key] = area_by_side.get(side_key, 0.0) + float(np.sum(np.abs(projected)))
+
+    region_side_areas = [area for area in area_by_side.values() if area > np.finfo(float).eps]
+    if len(region_side_areas) > 2:
+        raise ComponentSymmetryInferenceError(
+            "An electrodynamic transducer may drive surfaces in no more than two acoustic regions."
+        )
+    if len(region_side_areas) == 2:
+        positive_area, negative_area = region_side_areas
+
     scale = max(positive_area, negative_area)
     tolerance = max(np.finfo(float).eps, scale * 1.0e-9)
     positive_area = positive_area if positive_area > tolerance else 0.0
@@ -280,6 +298,59 @@ def infer_projected_diaphragm_area(
         positive_side_area_m2=positive_area,
         negative_side_area_m2=negative_area,
     )
+
+
+def infer_weighted_surface_area(
+    boundaries: tuple[Boundary, ...],
+    resources_by_id: dict[str, MeshResource],
+    surface_completion_factor: int,
+    *,
+    boundary_motion_weights: dict[str, float] | None = None,
+    mesh_cache: dict[str, meshio.Mesh] | None = None,
+) -> float:
+    """Integrate symmetry-completed physical area for normal-velocity sources."""
+
+    if not boundaries:
+        raise ComponentSymmetryInferenceError(
+            "Select at least one moving boundary before calculating driven surface area."
+        )
+    completion = int(surface_completion_factor)
+    if completion not in {1, 2, 4}:
+        raise ComponentSymmetryInferenceError("Surface completion factor must be 1, 2, or 4.")
+    weights = {} if boundary_motion_weights is None else boundary_motion_weights
+    cache = {} if mesh_cache is None else mesh_cache
+    total_area = 0.0
+    for boundary in boundaries:
+        resource = resources_by_id.get(boundary.group.mesh_id)
+        if resource is None:
+            raise ComponentSymmetryInferenceError(
+                f"Moving surface references unavailable mesh '{boundary.group.mesh_id}'."
+            )
+        mesh = cache.get(resource.id)
+        if mesh is None:
+            mesh = _transformed_mesh(resource)
+            cache[resource.id] = mesh
+        tag = _boundary_surface_tag(mesh, boundary)
+        triangles = _triangles_for_tags(mesh, {tag}, resource.name)
+        vertices = np.asarray(mesh.points, dtype=float)[triangles]
+        double_area = np.linalg.norm(
+            np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]),
+            axis=1,
+        )
+        try:
+            coefficient = float(weights.get(boundary.id, 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ComponentSymmetryInferenceError(
+                f"Moving boundary '{boundary.name}' has an invalid motion coefficient."
+            ) from exc
+        if not np.isfinite(coefficient) or coefficient <= 0.0:
+            raise ComponentSymmetryInferenceError(
+                f"Moving boundary '{boundary.name}' has a non-finite or non-positive motion weight."
+            )
+        total_area += completion * coefficient * float(np.sum(0.5 * double_area))
+    if not np.isfinite(total_area) or total_area <= np.finfo(float).eps:
+        raise ComponentSymmetryInferenceError("Selected moving surfaces have zero physical area.")
+    return total_area
 
 
 def _orient_surface_normals_outward(

@@ -9,6 +9,7 @@ from blab.component_symmetry import (
     ComponentSymmetryInferenceError,
     infer_component_symmetry,
     infer_projected_diaphragm_area,
+    infer_weighted_surface_area,
 )
 from blab.physical_model import (
     Boundary,
@@ -195,6 +196,37 @@ def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
     assert inferred.projected_area_m2 == pytest.approx(0.01)
     assert not inferred.has_opposing_sides
     assert inferred.relative_side_mismatch is None
+
+
+def test_weighted_surface_area_applies_motion_weights_and_symmetry_completion() -> None:
+    resource = MeshResource("mesh", "Mesh", "unused.msh", MeshPurpose.BEM_SURFACE)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (3.0, 0.0, 0.0),
+                (2.0, 2.0, 0.0),
+            )
+        ),
+        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5)), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1, 2), dtype=np.int32)]},
+        field_data={"First": np.asarray((1, 2)), "Second": np.asarray((2, 2))},
+    )
+    first = _boundary(resource, "First", "boundary:first")
+    second = _boundary(resource, "Second", "boundary:second")
+
+    area = infer_weighted_surface_area(
+        (first, second),
+        {resource.id: resource},
+        2,
+        boundary_motion_weights={first.id: 0.5, second.id: 0.25},
+        mesh_cache={resource.id: mesh},
+    )
+
+    assert area == pytest.approx(1.0)
 
 
 def test_adjacent_surface_groups_are_unioned_before_perimeter_classification() -> None:

@@ -17,6 +17,10 @@ from collections.abc import Callable
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.acoustic_impedance import (
+    ACOUSTIC_AREA_MISMATCH_WARNING_THRESHOLD,
+    normalization_records,
+)
 from blab.config import MeshConfig
 from blab.live import (
     AcousticLoadImpedanceDataset,
@@ -416,10 +420,46 @@ class SolveWorkflowController(QObject):
                 symmetry=str(prepared.request.solver_options.get("symmetry", "off")),
             ):
                 return False
+        compiled_system = prepared.request.compiled_system
+        impedance_normalization = normalization_records(getattr(compiled_system, "metadata", {}))
+        mismatched = [
+            record
+            for record in impedance_normalization.values()
+            if record.relative_side_mismatch is not None
+            and record.relative_side_mismatch > ACOUSTIC_AREA_MISMATCH_WARNING_THRESHOLD
+        ]
+        if mismatched:
+            details = "\n".join(
+                f"• {record.component_name}: {record.positive_side_area_m2 * 10_000.0:.2f} cm² versus "
+                f"{record.negative_side_area_m2 * 10_000.0:.2f} cm² "
+                f"({record.relative_side_mismatch:.1%})"
+                for record in mismatched
+            )
+            self._view.warn(
+                "Diaphragm area mismatch",
+                "Front and rear driven areas differ by more than 10%. "
+                "Normalized acoustic impedance will use their average:\n\n" + details,
+            )
         self._begin_run(status)
+        regions = tuple(getattr(compiled_system, "regions", ()))
+        reference_region = regions[0] if regions else None
+        self._session.acoustic_impedance_density_kg_per_m3 = float(
+            getattr(reference_region, "density_kg_per_m3", 1.21)
+        )
+        self._session.acoustic_impedance_sound_speed_m_per_s = float(
+            getattr(reference_region, "sound_speed_m_per_s", 343.0)
+        )
         channel_names = [str(value) for value in prepared.excitation_channel_names.tolist()]
         ports_by_id = {port.id: port for port in prepared.request.compiled_system.excitation_ports}
         excitation_ports = [ports_by_id[port_id] for port_id in prepared.request.excitation_port_ids]
+        excitation_component_ids = [port.component_id for port in excitation_ports]
+        if prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM and all(
+            component_id in impedance_normalization for component_id in excitation_component_ids
+        ):
+            self._session.acoustic_impedance_effective_areas_m2 = tuple(
+                impedance_normalization[component_id].effective_area_m2
+                for component_id in excitation_component_ids
+            )
         voltage_channels = {
             channel_name
             for channel_name, port in zip(
@@ -477,6 +517,11 @@ class SolveWorkflowController(QObject):
                     channel_names=voltage_channel_names,
                 )
                 if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM:
+                    effective_areas = [
+                        impedance_normalization[component.id].effective_area_m2
+                        for component in transducers
+                        if component.id in impedance_normalization
+                    ]
                     self._session.acoustic_load_impedance = AcousticLoadImpedanceDataset(
                         excitation_port_ids=tuple(prepared.request.excitation_port_ids),
                         excitation_port_kinds=np.asarray([port.kind.value for port in excitation_ports]),
@@ -499,6 +544,13 @@ class SolveWorkflowController(QObject):
                             [component.parameters["rms_n_s_per_m"] for component in transducers],
                             dtype=np.float64,
                         ),
+                        effective_area_m2=(
+                            np.asarray(effective_areas, dtype=np.float64)
+                            if len(effective_areas) == len(transducers)
+                            else None
+                        ),
+                        density_kg_per_m3=self._session.acoustic_impedance_density_kg_per_m3,
+                        sound_speed_m_per_s=self._session.acoustic_impedance_sound_speed_m_per_s,
                     )
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
@@ -595,6 +647,13 @@ class SolveWorkflowController(QObject):
             flat_target_reference_angle_deg=preferences.horizontal_normalization_angle,
             polar_observation_distance_m=preferences.polar_observation_distance_m,
             exterior_sound_speed_m_per_s=exterior_sound_speed,
+            acoustic_impedance_effective_area_m2=(
+                np.asarray(self._session.acoustic_impedance_effective_areas_m2, dtype=np.float64)
+                if self._session.acoustic_impedance_effective_areas_m2 is not None
+                and len(self._session.acoustic_impedance_effective_areas_m2) == len(radiator_names)
+                else None
+            ),
+            acoustic_impedance_density_kg_per_m3=self._session.acoustic_impedance_density_kg_per_m3,
             sphere_r_distance_m=sphere_metadata.get("r_distance_m"),
             sphere_theta_polar_rad=sphere_metadata.get("theta_polar_rad"),
             sphere_phi_azimuth_rad=sphere_metadata.get("phi_azimuth_rad"),
