@@ -22,7 +22,7 @@ import {
   Trash2,
   Waves,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourceGroupPoseUpdate, type SourcePoseUpdate } from "./components/SceneView";
 import { type BemResponseData, MicrophoneResponsePlot } from "./components/MicrophoneResponsePlot";
 import {
@@ -211,6 +211,8 @@ export function App() {
   const [microphoneSweepState, setMicrophoneSweepState] = useState<"idle" | "solving" | "complete" | "error">("idle");
   const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
+  const [analysisDrawerHeight, setAnalysisDrawerHeight] = useState(220);
+  const [analysisDrawerResizing, setAnalysisDrawerResizing] = useState(false);
   const packageFileInput = useRef<HTMLInputElement>(null);
   const rigidMeshFileInput = useRef<HTMLInputElement>(null);
   const projectFileInput = useRef<HTMLInputElement>(null);
@@ -224,6 +226,38 @@ export function App() {
   const stoppingMicrophoneSweep = useRef(false);
   const flushLiveSolveRef = useRef(false);
   const sourceManipulationRef = useRef<{ start: SourceConfiguration[]; ids: Set<string> } | null>(null);
+  const analysisResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const clampAnalysisDrawerHeight = useCallback((height: number) => {
+    const maximum = Math.max(150, window.innerHeight - 58 - 180);
+    return Math.round(Math.max(150, Math.min(maximum, height)));
+  }, []);
+
+  const beginAnalysisResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    analysisResizeRef.current = { startY: event.clientY, startHeight: analysisDrawerHeight };
+    setAnalysisDrawerResizing(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, [analysisDrawerHeight]);
+
+  const moveAnalysisResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = analysisResizeRef.current;
+    if (!resize) return;
+    setAnalysisDrawerHeight(clampAnalysisDrawerHeight(resize.startHeight + resize.startY - event.clientY));
+  }, [clampAnalysisDrawerHeight]);
+
+  const finishAnalysisResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    analysisResizeRef.current = null;
+    setAnalysisDrawerResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+
+  useEffect(() => {
+    const clampOnResize = () => setAnalysisDrawerHeight((height) => clampAnalysisDrawerHeight(height));
+    window.addEventListener("resize", clampOnResize);
+    return () => window.removeEventListener("resize", clampOnResize);
+  }, [clampAnalysisDrawerHeight]);
 
   useEffect(() => {
     sourceConfigsRef.current = sourceConfigs;
@@ -1578,7 +1612,10 @@ export function App() {
   }, [boundaryAvailable, fidelity]);
 
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${analysisDrawerResizing ? "resizing-analysis" : ""}`}
+      style={{ "--analysis-drawer-height": `${analysisDrawerHeight}px` } as CSSProperties}
+    >
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><Waves size={20} /></div>
@@ -1785,6 +1822,25 @@ export function App() {
       </aside>
 
       <section className="analysis-drawer">
+        <div
+          className="analysis-resize-handle"
+          role="separator"
+          aria-label="Resize frequency response pane"
+          aria-orientation="horizontal"
+          aria-valuemin={150}
+          aria-valuemax={Math.max(150, window.innerHeight - 58 - 180)}
+          aria-valuenow={analysisDrawerHeight}
+          tabIndex={0}
+          onPointerDown={beginAnalysisResize}
+          onPointerMove={moveAnalysisResize}
+          onPointerUp={finishAnalysisResize}
+          onPointerCancel={finishAnalysisResize}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            event.preventDefault();
+            setAnalysisDrawerHeight((height) => clampAnalysisDrawerHeight(height + (event.key === "ArrowUp" ? 16 : -16)));
+          }}
+        />
         <div className="analysis-body">
           <MicrophoneResponsePlot
             pattern={microphonePatternResponses}

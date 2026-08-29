@@ -40,7 +40,7 @@ button { color: inherit; }
   height: 100%;
   display: grid;
   grid-template-columns: 248px minmax(540px, 1fr) 318px;
-  grid-template-rows: 58px minmax(0, 1fr) 220px;
+  grid-template-rows: 58px minmax(0, 1fr) var(--analysis-drawer-height, 220px);
   background: var(--bg);
 }
 
@@ -242,7 +242,11 @@ button { color: inherit; }
 .toggle-row { grid-template-columns: 1fr auto; }
 .toggle { min-width: 72px; height: 25px; border: 1px solid #343b35; border-radius: 5px; color: #8c958d; background: #121613; font-size: 8px; cursor: pointer; }
 .toggle.active { border-color: #8c7441; color: #efd28f; background: #2e281c; }
-.analysis-drawer { grid-column: 2 / 4; grid-row: 3; min-width: 0; border-top: 1px solid var(--line); background: #141815; }
+.analysis-drawer { grid-column: 2 / 4; grid-row: 3; position: relative; min-width: 0; min-height: 0; border-top: 1px solid var(--line); background: #141815; }
+.analysis-resize-handle { position: absolute; left: 0; right: 0; top: -5px; z-index: 12; height: 10px; cursor: row-resize; touch-action: none; outline: none; }
+.analysis-resize-handle::after { content: ""; position: absolute; left: 50%; top: 3px; width: 54px; height: 3px; transform: translateX(-50%); border: 1px solid #171917; background: #697069; opacity: 0; transition: opacity .12s; }
+.analysis-resize-handle:hover::after, .analysis-resize-handle:focus-visible::after, .resizing-analysis .analysis-resize-handle::after { opacity: 1; }
+.resizing-analysis, .resizing-analysis * { cursor: row-resize !important; user-select: none !important; }
 .analysis-body { height: 100%; display: grid; grid-template-columns: minmax(520px, 1fr) 190px; align-items: stretch; }
 .microphone-response { min-width: 0; display: grid; grid-template-rows: 39px minmax(0, 1fr); border-right: 1px solid var(--line-soft); }
 .response-toolbar { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 0 10px; border-bottom: 1px solid var(--line-soft); color: #727b73; font-size: 9px; }
@@ -257,11 +261,16 @@ button { color: inherit; }
 .bem-pressure-button.stop { color: #fff; border-color: #c98a80; background: #7b3027; }
 .response-content { position: relative; min-height: 0; overflow: hidden; }
 .response-empty { height: 100%; display: grid; place-items: center; color: #717971; font-size: 10px; }
-.response-chart { width: 100%; height: 100%; display: block; }
+.response-chart { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; user-select: none; }
 .response-chart text { fill: #777f78; font: 8px Arial, sans-serif; }
 .plot-well { fill: #101411; stroke: #4a504b; vector-effect: non-scaling-stroke; }
-.plot-grid { stroke: #2b312c; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.plot-grid { vector-effect: non-scaling-stroke; }
+.plot-grid.major { stroke: #505751; stroke-width: .8; opacity: .72; }
+.plot-grid.minor { stroke: #343a35; stroke-width: .5; opacity: .62; }
 .frequency-cursor { stroke: #d4d0c8; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.plot-crosshair { stroke: #f1efe8; stroke-width: .9; opacity: .92; vector-effect: non-scaling-stroke; }
+.crosshair-labels rect { fill: #101411; stroke: #d5d2ca; stroke-width: .8; vector-effect: non-scaling-stroke; }
+.crosshair-labels text { fill: #f1efe8; font-weight: 700; }
 .pattern-trace, .bem-trace { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .pattern-trace { stroke-dasharray: 5 4; opacity: .72; }
 .bem-trace { stroke-width: 2.2; }
@@ -272,6 +281,8 @@ button { color: inherit; }
 .response-legend em:first-of-type { margin-left: auto; }
 .line-sample { width: 16px; height: 0; border-top: 2px solid #c8cec7; }
 .line-sample.pattern { border-top-style: dashed; opacity: .7; }
+.response-range-toggle { position: absolute; right: 8px; bottom: 5px; z-index: 4; height: 20px; padding: 0 7px; border: 2px outset var(--classic-highlight); color: #e2e2e2; background: var(--classic-face); font: 700 8px/1 Arial, sans-serif; cursor: pointer; }
+.response-range-toggle:active { border-style: inset; }
 .frequency-control { position: relative; padding: 11px 15px 8px; border-right: 1px solid var(--line-soft); }
 .frequency-label { display: flex; align-items: baseline; justify-content: space-between; }
 .frequency-label span { color: #7c857d; font-size: 8px; text-transform: uppercase; letter-spacing: .08em; }
