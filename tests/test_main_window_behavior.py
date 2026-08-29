@@ -274,6 +274,34 @@ def test_dock_state_round_trips_through_workspace(main_window) -> None:
     assert main_window.workspace.restoreState(state)
 
 
+def test_first_run_shows_preview_and_hides_all_plot_docks(main_window) -> None:
+    main_window.settings.remove("window/dock_state")
+    main_window.preview_dock.hide()
+    for dock in main_window.plot_docks.values():
+        dock.show()
+
+    main_window._restore_window_state()
+
+    assert not main_window.preview_dock.isHidden()
+    assert main_window.panel_view_actions["preview"].isChecked()
+    for plot_id, dock in main_window.plot_docks.items():
+        assert dock.isHidden(), plot_id
+        assert not main_window.plot_view_actions[plot_id].isChecked(), plot_id
+
+
+def test_saved_layout_can_restore_a_visible_plot_dock(main_window) -> None:
+    plot_id = "on_axis_frequency_response"
+    dock = main_window.plot_docks[plot_id]
+    dock.show()
+    main_window.settings.setValue("window/dock_state", main_window.workspace.saveState())
+    dock.hide()
+
+    main_window._restore_window_state()
+
+    assert not dock.isHidden()
+    assert main_window.plot_view_actions[plot_id].isChecked()
+
+
 def test_panel_visibility_actions_drive_their_docks(main_window) -> None:
     for dock_id, action in main_window.panel_view_actions.items():
         assert action.isCheckable(), dock_id
@@ -301,11 +329,15 @@ def test_plot_export_is_offered_per_dock_and_not_in_the_file_menu(main_window) -
 
     assert set(main_window.export_plot_actions) == PLOT_IDS
     assert set(main_window.export_plot_data_actions) == PLOT_IDS
+    assert set(main_window.plot_limit_actions) == PLOT_IDS
     for entry in main_window.plot_entries:
+        limits_action = main_window.plot_limit_actions[entry.plot_id]
         snapshot_action = main_window.export_plot_actions[entry.plot_id]
         data_action = main_window.export_plot_data_actions[entry.plot_id]
+        assert limits_action.toolTip() == f"Set axis limits for {entry.title}"
         assert snapshot_action.toolTip() == f"Save {entry.title} image"
         assert data_action.toolTip() == f"Export {entry.title} data"
+        assert not limits_action.icon().isNull(), entry.plot_id
         assert not snapshot_action.icon().isNull(), entry.plot_id
         assert not data_action.icon().isNull(), entry.plot_id
         title_bar = main_window.plot_docks[entry.plot_id].titleBarWidget()
@@ -314,7 +346,7 @@ def test_plot_export_is_offered_per_dock_and_not_in_the_file_menu(main_window) -
             for button in title_bar.findChildren(QToolButton)
             if button.defaultAction() is not None
         }
-        assert {snapshot_action, data_action} <= dock_actions
+        assert {limits_action, snapshot_action, data_action} <= dock_actions
 
 
 def test_plot_data_exports_are_removed_from_the_file_menu(main_window) -> None:
@@ -333,6 +365,8 @@ def test_export_and_contour_icons_survive_a_palette_refresh(main_window) -> None
     for action in main_window.export_plot_actions.values():
         assert not action.icon().isNull()
     for action in main_window.export_plot_data_actions.values():
+        assert not action.icon().isNull()
+    for action in main_window.plot_limit_actions.values():
         assert not action.icon().isNull()
     for plot_id in ISOBAR_IDS:
         assert not main_window.capture_contour_actions[plot_id].icon().isNull()

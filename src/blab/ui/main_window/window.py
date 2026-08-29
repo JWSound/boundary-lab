@@ -508,6 +508,7 @@ class MainWindow(
         self.plot_view_actions: dict[str, QAction] = {}
         self.export_plot_actions: dict[str, QAction] = {}
         self.export_plot_data_actions: dict[str, QAction] = {}
+        self.plot_limit_actions: dict[str, QAction] = {}
         self.panel_view_actions: dict[str, QAction] = {}
         self.plot_docks: dict[str, QDockWidget] = {}
         self.capture_contour_actions: dict[str, QAction] = {}

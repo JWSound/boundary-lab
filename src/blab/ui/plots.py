@@ -64,6 +64,28 @@ class PlotLayoutProfile:
     min_axes_height_pt: float = 72.0
 
 
+@dataclass(frozen=True)
+class PlotAxisLimits:
+    """User-domain limits for a plot's primary x and y axes."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    def validated(self) -> PlotAxisLimits:
+        values = np.asarray((self.x_min, self.x_max, self.y_min, self.y_max), dtype=float)
+        if not np.isfinite(values).all():
+            raise ValueError("Plot limits must be finite numbers.")
+        if self.x_min <= 0.0:
+            raise ValueError("The lower X limit must be greater than zero for frequency plots.")
+        if self.x_min >= self.x_max:
+            raise ValueError("The lower X limit must be less than the upper X limit.")
+        if self.y_min >= self.y_max:
+            raise ValueError("The lower Y limit must be less than the upper Y limit.")
+        return self
+
+
 SINGLE_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=14.0)
 DUAL_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=52.0)
 ISOBAR_LAYOUT = PlotLayoutProfile(left_pt=50.0, right_pt=58.0)
@@ -191,6 +213,8 @@ class InteractivePlotCanvas(FigureCanvas):
 
     def __init__(self, figure: Figure, title: str) -> None:
         self.title = title
+        self._manual_axis_limits: PlotAxisLimits | None = None
+        self._automatic_axis_limits_snapshot: PlotAxisLimits | None = None
         self._layout_profile: PlotLayoutProfile | None = None
         self._comparison_plot: Any | None = None
         self._comparison_restore_plot: Any | None = None
@@ -200,6 +224,53 @@ class InteractivePlotCanvas(FigureCanvas):
         self._crosshair_background = None
         super().__init__(figure)
         self._connect_interaction_events()
+
+    @property
+    def automatic_axis_limits(self) -> bool:
+        return self._manual_axis_limits is None
+
+    def displayed_axis_limits(self) -> PlotAxisLimits:
+        x_min, x_max = self._x_limits_to_user_domain(self.axes.get_xlim())
+        y_min, y_max = self.axes.get_ylim()
+        return PlotAxisLimits(float(x_min), float(x_max), float(y_min), float(y_max))
+
+    def set_axis_limits(self, limits: PlotAxisLimits | None) -> None:
+        if limits is None:
+            automatic_limits = self._automatic_axis_limits_snapshot
+            self._manual_axis_limits = None
+            self._automatic_axis_limits_snapshot = None
+            if automatic_limits is not None:
+                self._apply_axis_limits(automatic_limits)
+            state = self._current_plot_state()
+            if state is None:
+                self._draw_empty()
+            else:
+                self._apply_plot_state(state)
+            return
+        if self._manual_axis_limits is None:
+            self._automatic_axis_limits_snapshot = self.displayed_axis_limits()
+        self._manual_axis_limits = limits.validated()
+        self._apply_manual_axis_limits()
+        self._invalidate_crosshair_background()
+        if self._crosshair_visible:
+            self._redraw_crosshair()
+        self.draw_idle()
+
+    def _x_limits_to_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        return float(limits[0]), float(limits[1])
+
+    def _x_limits_from_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        return float(limits[0]), float(limits[1])
+
+    def _apply_manual_axis_limits(self) -> None:
+        limits = self._manual_axis_limits
+        if limits is None:
+            return
+        self._apply_axis_limits(limits)
+
+    def _apply_axis_limits(self, limits: PlotAxisLimits) -> None:
+        self.axes.set_xlim(*self._x_limits_from_user_domain((limits.x_min, limits.x_max)))
+        self.axes.set_ylim(limits.y_min, limits.y_max)
 
     def set_layout_profile(self, profile: PlotLayoutProfile) -> None:
         self._layout_profile = profile
@@ -442,6 +513,16 @@ class IsobarCanvas(InteractivePlotCanvas):
         apply_compact_plot_text(self.axes)
         self._axis_configuration_mode = self._x_axis_mode
 
+    def _x_limits_to_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        if self._x_axis_mode == "log_image":
+            return float(10.0 ** limits[0]), float(10.0 ** limits[1])
+        return super()._x_limits_to_user_domain(limits)
+
+    def _x_limits_from_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        if self._x_axis_mode == "log_image":
+            return float(np.log10(limits[0])), float(np.log10(limits[1]))
+        return super()._x_limits_from_user_domain(limits)
+
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
         self._mesh_artist = None
@@ -464,6 +545,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._mesh_render_mode = None
         self._x_axis_mode = "frequency"
         self._configure_axes()
+        self._apply_manual_axis_limits()
         self._redraw_captured_contours()
         self._redraw_crosshair()
         self.draw_idle()
@@ -1077,6 +1159,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         if self._axis_configuration_mode != self._x_axis_mode:
             self._configure_axes()
             self._redraw_captured_contours()
+        self._apply_manual_axis_limits()
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
@@ -1300,6 +1383,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._reset_comparison_interaction()
         self._configure_axes()
         self._sync_trace_filter_actions(())
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1377,6 +1461,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
             self._lines[index * 2 + 1].set_data(freqs_hz, impedance_imag[index])
         self._apply_series_visibility()
         self._update_y_limits()
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
@@ -1401,6 +1486,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._series_visibility[label] = bool(visible)
         self._apply_series_visibility()
         self._update_y_limits()
+        self._apply_manual_axis_limits()
         self._invalidate_crosshair_background()
         self.draw_idle()
 
@@ -1511,6 +1597,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._configure_axes()
         self._sync_trace_filter_actions(())
         self.show_phase_action.setEnabled(False)
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1707,6 +1794,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             self._apply_series_visibility()
             self._update_magnitude_limits()
 
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.phase_axes)
         if self._crosshair_visible:
@@ -1738,6 +1826,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._series_visibility[label] = bool(visible)
         self._apply_series_visibility()
         self._update_magnitude_limits()
+        self._apply_manual_axis_limits()
         self._invalidate_crosshair_background()
         self.draw_idle()
 
@@ -1859,6 +1948,7 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1980,6 +2070,7 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
 
         self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
         self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
+        self._apply_manual_axis_limits()
 
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)

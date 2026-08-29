@@ -46,6 +46,10 @@ PHASE_DARK_ICON = APP_ROOT / "assets" / "phasephi_dark.ico"
 
 PHASE_LIGHT_ICON = APP_ROOT / "assets" / "phasephi_light.ico"
 
+PLOT_LIMITS_DARK_ICON = APP_ROOT / "assets" / "plotlimits_dark.ico"
+
+PLOT_LIMITS_LIGHT_ICON = APP_ROOT / "assets" / "plotlimits_light.ico"
+
 ADD_DESIGN_TAB_LABEL = "+"
 
 DEFAULT_DOCK_STATE_B64 = (

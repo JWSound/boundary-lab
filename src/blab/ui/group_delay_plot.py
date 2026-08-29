@@ -71,6 +71,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
         self._reset_comparison_interaction()
         self._configure_axes()
         self._sync_trace_filter_actions(())
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -140,6 +141,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
             self._lines[label].set_data(freqs_hz, group_delay_ms[index])
         self._apply_series_visibility()
         self._update_y_limits()
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
@@ -172,6 +174,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
         self._series_visibility[label] = bool(visible)
         self._apply_series_visibility()
         self._update_y_limits()
+        self._apply_manual_axis_limits()
         self._invalidate_crosshair_background()
         self.draw_idle()
 

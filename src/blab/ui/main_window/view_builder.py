@@ -88,6 +88,12 @@ class ViewBuilderMixin:
         file_menu.addAction(export_cfg_action)
 
         for entry in self.plot_entries:
+            limits_action = QAction("Plot Limits", self)
+            limits_action.setToolTip(f"Set axis limits for {entry.title}")
+            limits_action.triggered.connect(
+                lambda _checked=False, plot_id=entry.plot_id: self.open_plot_limits(plot_id)
+            )
+            self.plot_limit_actions[entry.plot_id] = limits_action
             action = QAction("Save Plot Image", self)
             action.setToolTip(f"Save {entry.title} image")
             action.setEnabled(False)
@@ -217,16 +223,19 @@ class ViewBuilderMixin:
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
         previous_plot_dock = None
         for entry in self.plot_entries:
-            tool_actions = [
-                action
-                for action in (
-                    self.export_plot_actions.get(entry.plot_id),
-                    self.export_plot_data_actions.get(entry.plot_id),
-                    self.capture_contour_actions.get(entry.plot_id),
-                    self.clear_contour_actions.get(entry.plot_id),
-                )
-                if action is not None
-            ]
+            tool_actions = [self.plot_limit_actions[entry.plot_id]]
+            tool_actions.extend(
+                [
+                    action
+                    for action in (
+                        self.export_plot_actions.get(entry.plot_id),
+                        self.export_plot_data_actions.get(entry.plot_id),
+                        self.capture_contour_actions.get(entry.plot_id),
+                        self.clear_contour_actions.get(entry.plot_id),
+                    )
+                    if action is not None
+                ]
+            )
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
             elif entry.plot_id in {"acoustic_impedance", "group_delay", "transducer_excursion"}:

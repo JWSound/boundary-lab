@@ -92,6 +92,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._configure_axes()
         self._sync_trace_filter_actions(())
         self.show_phase_action.setEnabled(False)
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -184,6 +185,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self.show_phase_action.setEnabled(self._phase_available)
         self._apply_series_visibility()
         self._update_magnitude_limits()
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.phase_axes)
         if self._crosshair_visible:
@@ -209,6 +211,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._series_visibility[label] = bool(visible)
         self._apply_series_visibility()
         self._update_magnitude_limits()
+        self._apply_manual_axis_limits()
         self._invalidate_crosshair_background()
         self.draw_idle()
 

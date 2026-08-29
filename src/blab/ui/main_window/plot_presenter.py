@@ -10,6 +10,7 @@ from blab.ui.main_window_widgets import (
     PlotEntry,
 )
 from blab.ui.max_spl_dialog import MaxSplLimitsDialog
+from blab.ui.plot_limits_dialog import PlotLimitsDialog
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
@@ -122,6 +123,22 @@ class PlotPresenterMixin:
         self.set_balloon_plot_available(False)
         self.set_max_spl_available(False)
         self.refresh_contour_controls()
+
+    @Slot(str)
+    def open_plot_limits(self, plot_id: str) -> None:
+        entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
+        if entry is None:
+            return
+        canvas = entry.widget
+        dialog = PlotLimitsDialog(
+            entry.title,
+            canvas.displayed_axis_limits(),
+            automatic=canvas.automatic_axis_limits,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+        canvas.set_axis_limits(dialog.limits())
 
     def apply_last_completed_comparison(self) -> None:
         dataset = self._last_completed_visualization_dataset

@@ -21,6 +21,8 @@ from blab.ui.main_window.constants import (
     EXPORT_LIGHT_ICON,
     PHASE_DARK_ICON,
     PHASE_LIGHT_ICON,
+    PLOT_LIMITS_DARK_ICON,
+    PLOT_LIMITS_LIGHT_ICON,
     SNAPSHOT_DARK_ICON,
     SNAPSHOT_LIGHT_ICON,
     SYNTAX_HIGHLIGHT_DARK_ICON,
@@ -79,6 +81,7 @@ class PreferencesMixin:
         clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
         phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
+        plot_limits_icon = QIcon(str(PLOT_LIMITS_LIGHT_ICON if light_theme else PLOT_LIMITS_DARK_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
             action.setIcon(snapshot_icon)
         for action in getattr(self, "export_plot_data_actions", {}).values():
@@ -87,6 +90,8 @@ class PreferencesMixin:
             action.setIcon(capture_icon)
         for action in getattr(self, "clear_contour_actions", {}).values():
             action.setIcon(clear_icon)
+        for action in getattr(self, "plot_limit_actions", {}).values():
+            action.setIcon(plot_limits_icon)
         if hasattr(self, "syntax_highlighting_action"):
             self.syntax_highlighting_action.setIcon(syntax_icon)
         on_axis_plot = getattr(self, "on_axis_plot", None)
@@ -111,10 +116,15 @@ class PreferencesMixin:
             self.restoreGeometry(geometry)
 
         dock_state = self.settings.value("window/dock_state")
-        if dock_state is None:
+        first_run = dock_state is None
+        if first_run:
             dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
+        if first_run:
+            self.preview_dock.show()
+            for dock in self.plot_docks.values():
+                dock.hide()
         for dock_id in ("editor", "preview"):
             self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:
