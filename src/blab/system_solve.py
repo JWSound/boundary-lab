@@ -39,6 +39,7 @@ from blab.solve_results import (
     bem_boundary_result_domain,
     fem_volume_result_domain,
 )
+from blab.solvers.coupled_backend import validate_solve_plan
 from blab.solvers.registry import (
     backend_condenses_fem_interior,
     normalize_backend_id,
@@ -294,6 +295,7 @@ def prepare_system_ui_solve(
             "symmetry": symmetry,
         },
     )
+    validate_solve_plan(request)
     return SystemUiSolveRequest(
         request=request,
         backend_id=normalized_backend_id,

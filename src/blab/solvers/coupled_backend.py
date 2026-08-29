@@ -37,6 +37,7 @@ from blab.system_contract import (
     SystemSolveRequest,
     system_frequency_result_from_dict,
     system_solve_request_to_dict,
+    validate_system_solve_request,
 )
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
@@ -307,7 +308,7 @@ class _CoupledBackend:
         solver_options["bem_backend"] = "cpu" if is_interior else self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         typed_request = replace(request, solver_options=solver_options)
-        validate_system_capabilities(typed_request)
+        validate_solve_plan(typed_request)
         return CoupledSession(
             typed_request,
             julia_executable=self.julia_executable,
@@ -465,6 +466,13 @@ def validate_system_capabilities(request: SystemSolveRequest) -> None:
         validate_interior_capabilities(request)
         return
     validate_exterior_capabilities(request)
+
+
+def validate_solve_plan(request: SystemSolveRequest) -> None:
+    """Validate both the protocol contract and supported solver capabilities."""
+
+    validate_system_solve_request(request)
+    validate_system_capabilities(request)
 
 
 def validate_interior_capabilities(request: SystemSolveRequest) -> None:

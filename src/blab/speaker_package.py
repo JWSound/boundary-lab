@@ -29,9 +29,9 @@ from blab.solve_results import (
     SolveProvenance,
     bem_boundary_result_domain,
 )
-from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.symmetry import snap_points_to_symmetry_planes
-from blab.system_contract import OutputRequest, validate_system_solve_request
+from blab.system_contract import OutputRequest
 from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
@@ -246,8 +246,7 @@ def prepare_speaker_package_solve(
             }
         )
     updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
-    validate_system_solve_request(updated_request)
-    validate_system_capabilities(updated_request)
+    validate_solve_plan(updated_request)
     return replace(
         prepared,
         request=updated_request,

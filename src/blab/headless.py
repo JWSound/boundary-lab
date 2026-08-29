@@ -32,13 +32,12 @@ from blab.solve_results import (
     fem_volume_result_domain,
 )
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import (
     OutputRequest,
     SystemFrequencyResult,
     compiled_system_to_dict,
-    validate_system_solve_request,
 )
 from blab.system_solve import (
     SystemUiSolveRequest,
@@ -278,8 +277,7 @@ def prepare_headless_solve(
         outputs=tuple(outputs),
         solver_options=options,
     )
-    validate_system_solve_request(request)
-    validate_system_capabilities(request)
+    validate_solve_plan(request)
     return replace(prepared, request=request, result_domains=tuple(domains))
 
 

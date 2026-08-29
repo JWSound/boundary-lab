@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from blab.physical_model import (
 )
 from blab.project_cli import _build_arg_parser
 from blab.solve_results import ResultDomain
+from blab.solvers.coupled_backend import validate_solve_plan
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
 from blab.ui.project_state import ProjectPreferencesState
@@ -215,6 +217,13 @@ def test_explicit_backend_does_not_probe_cuda(monkeypatch) -> None:
     assert resolve_headless_backend("beat_cpu_condensed") == "beat_cpu"
 
 
+def test_solve_plan_validation_checks_protocol_before_backend_capabilities() -> None:
+    request = replace(_prepared_request().request, frequencies_hz=())
+
+    with pytest.raises(ValueError, match="at least one frequency"):
+        validate_solve_plan(request)
+
+
 def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypatch, tmp_path: Path) -> None:
     prepared = _prepared_request()
     request = SystemSolveRequest(
@@ -236,8 +245,8 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         result_domains=prepared.result_domains,
     )
     monkeypatch.setattr(headless_module, "prepare_system_ui_solve", lambda *_args, **_kwargs: prepared)
-    monkeypatch.setattr(headless_module, "validate_system_solve_request", lambda _request: None)
-    monkeypatch.setattr(headless_module, "validate_system_capabilities", lambda _request: None)
+    validated = []
+    monkeypatch.setattr(headless_module, "validate_solve_plan", validated.append)
     project_path = tmp_path / "project.blab.json"
     project_path.write_text("{}", encoding="utf-8")
     project = HeadlessProject(
@@ -254,6 +263,8 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         HeadlessSolveSpec(solver_options={"validation_diagnostics": True}),
         backend_id="beat_cpu",
     )
+
+    assert validated == [result.request]
 
     assert result.request.solver_options["validation_diagnostics"] is True
     assert result.request.solver_options["static_condensation"] is False

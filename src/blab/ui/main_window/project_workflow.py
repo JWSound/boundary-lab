@@ -171,8 +171,7 @@ class ProjectWorkflowController(QObject):
 
     def project_payload(self) -> dict:
         project = self._project
-        project_preferences = self.current_project_preferences()
-        project.project_preferences = project_preferences
+        project_preferences = project.project_preferences or self.current_project_preferences()
         return build_project_payload(
             generator_documents=[
                 generator_document_to_payload(document, absolute_paths=True) for document in project.generator_documents
@@ -296,7 +295,7 @@ class ProjectWorkflowController(QObject):
             project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
             if self._confirm_apply_project_preferences(project_preferences):
                 self._apply_project_preferences(project_preferences)
-            self._apply_project_payload(payload)
+            self._apply_project_payload(payload, project_preferences=project_preferences)
             self._session.path = path
             self._remember_recent(path)
             self.mark_project_clean()
@@ -325,11 +324,15 @@ class ProjectWorkflowController(QObject):
         )
         self._save_preferences()
         self._save_frequency_settings()
-        self._project.project_preferences = self.current_project_preferences()
 
     # -- applying a loaded payload -----------------------------------------
 
-    def _apply_project_payload(self, payload: dict) -> None:
+    def _apply_project_payload(
+        self,
+        payload: dict,
+        *,
+        project_preferences: ProjectPreferencesState | None = None,
+    ) -> None:
         self._inputs.discard_channel_config_dialog()
         source_config = payload.get("source_config_by_name", {})
         if not isinstance(source_config, dict):
@@ -382,7 +385,7 @@ class ProjectWorkflowController(QObject):
             source_config_by_name=source_config,
             channel_config_by_name=channel_config,
             max_spl_limits_by_channel=max_spl_limits,
-            project_preferences=self.current_project_preferences(),
+            project_preferences=project_preferences or self.current_project_preferences(),
             physical_system=physical_system,
             component_channel_by_id={
                 str(component_id): str(channel_name) for component_id, channel_name in component_channels.items()
