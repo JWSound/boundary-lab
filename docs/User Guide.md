@@ -212,9 +212,11 @@ guide.
   spinorama on-axis and listening-window curves without changing the early
   reflections or sound-power data.
 - The globe button in the **Spinorama** dock enables full-sphere Sound Power,
-  PIR, and Spherical DI calculations. It is available only when **Balloon
-  Sampling** data exists for the solve. When disabled, the plot retains its
-  CEA-2034-style 10-degree horizontal/vertical calculation.
+  PIR, and Spherical DI calculations. Listening Window, Early Reflections, and
+  ERDI then use every native horizontal/vertical sample inside their standard
+  angular sectors. The button is available only when **Balloon Sampling** data
+  exists for the solve. When disabled, the plot retains its CEA-2034-style
+  10-degree horizontal/vertical calculation.
 - **Polar Smoothing** applies fractional-octave smoothing to directivity,
   spinorama, and balloon presentation data.
 - **SPL Min/Max** set the displayed and exported directivity clipping range.

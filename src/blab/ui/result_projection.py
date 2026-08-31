@@ -282,6 +282,7 @@ class ResultProjectionService:
                     arrays["horizontal_spl_db"],
                     arrays["vertical_spl_db"],
                     spherical_spl_relative_db=sphere_spl,
+                    use_native_plane_resolution=True,
                     **spinorama_options,
                 )
         return VisualizationProjection(

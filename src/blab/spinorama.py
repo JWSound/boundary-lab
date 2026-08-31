@@ -61,14 +61,16 @@ def compute_spinorama_from_planes(
     horizontal_reference_angle_deg: float = 0.0,
     vertical_reference_angle_deg: float = 0.0,
     spherical_spl_relative_db: np.ndarray | None = None,
+    use_native_plane_resolution: bool = False,
 ) -> SpinoramaCurves:
     """Compute CEA-2034 style curves from H/V polar SPL matrices.
 
     By default, Sound Power is the existing CEA-style H/V estimate using
     10-degree samples and approximate spherical-band weights. When normalized
-    equal-area spherical samples are supplied, they replace only Sound Power
-    and its derived PIR/DI calculations; the standard H/V listening and early
-    reflection sectors remain unchanged.
+    equal-area spherical samples are supplied, they replace Sound Power and
+    its derived PIR/DI calculations. ``use_native_plane_resolution`` retains
+    the standard H/V listening and early-reflection sectors but averages every
+    solved polar sample inside them instead of resampling at 10 degrees.
     """
     freqs = np.asarray(freq_hz, dtype=np.float32)
     angles = np.asarray(polar_angle_deg, dtype=float)
@@ -81,62 +83,85 @@ def compute_spinorama_from_planes(
     v_ref = float(vertical_reference_angle_deg)
 
     on_axis = _energy_average_db(np.column_stack((h.at(h_ref), v.at(v_ref))), axis=1)
-    listening = _energy_average_db(
-        np.column_stack(
-            (
-                h.at(h_ref - 30),
-                h.at(h_ref - 20),
-                h.at(h_ref - 10),
-                h.at(h_ref + 10),
-                h.at(h_ref + 20),
-                h.at(h_ref + 30),
-                v.at(v_ref - 10),
-                v.at(v_ref),
-                v.at(v_ref + 10),
-            )
-        ),
-        axis=1,
-    )
-
-    floor = _energy_average_db(np.column_stack((v.at(-40), v.at(-30), v.at(-20))), axis=1)
-    ceiling = _energy_average_db(np.column_stack((v.at(40), v.at(50), v.at(60))), axis=1)
-    front = _energy_average_db(
-        np.column_stack((h.at(-30), h.at(-20), h.at(-10), h.at(0), h.at(10), h.at(20), h.at(30))),
-        axis=1,
-    )
-    side = _energy_average_db(
-        np.column_stack(tuple(h.at(angle) for angle in (-80, -70, -60, -50, -40, 40, 50, 60, 70, 80))),
-        axis=1,
-    )
-    rear = _energy_average_db(
-        np.column_stack(
-            tuple(
-                h.at(angle)
-                for angle in (
-                    -170,
-                    -160,
-                    -150,
-                    -140,
-                    -130,
-                    -120,
-                    -110,
-                    -100,
-                    -90,
-                    90,
-                    100,
-                    110,
-                    120,
-                    130,
-                    140,
-                    150,
-                    160,
-                    170,
-                    180,
+    if use_native_plane_resolution:
+        listening = _energy_average_db(
+            np.concatenate(
+                (
+                    h.samples_in_sectors(((-30.0, 30.0),), center_deg=h_ref, exclude_offsets_deg=(0.0,)),
+                    v.samples_in_sectors(((-10.0, 10.0),), center_deg=v_ref),
+                ),
+                axis=1,
+            ),
+            axis=1,
+        )
+        floor = _energy_average_db(v.samples_in_sectors(((-40.0, -20.0),)), axis=1)
+        ceiling = _energy_average_db(v.samples_in_sectors(((40.0, 60.0),)), axis=1)
+        front = _energy_average_db(h.samples_in_sectors(((-30.0, 30.0),)), axis=1)
+        side = _energy_average_db(
+            h.samples_in_sectors(((-80.0, -40.0), (40.0, 80.0))),
+            axis=1,
+        )
+        rear = _energy_average_db(
+            h.samples_in_sectors(((-180.0, -90.0), (90.0, 180.0))),
+            axis=1,
+        )
+    else:
+        listening = _energy_average_db(
+            np.column_stack(
+                (
+                    h.at(h_ref - 30),
+                    h.at(h_ref - 20),
+                    h.at(h_ref - 10),
+                    h.at(h_ref + 10),
+                    h.at(h_ref + 20),
+                    h.at(h_ref + 30),
+                    v.at(v_ref - 10),
+                    v.at(v_ref),
+                    v.at(v_ref + 10),
                 )
-            )
-        ),
-        axis=1,
-    )
+            ),
+            axis=1,
+        )
+
+        floor = _energy_average_db(np.column_stack((v.at(-40), v.at(-30), v.at(-20))), axis=1)
+        ceiling = _energy_average_db(np.column_stack((v.at(40), v.at(50), v.at(60))), axis=1)
+        front = _energy_average_db(
+            np.column_stack((h.at(-30), h.at(-20), h.at(-10), h.at(0), h.at(10), h.at(20), h.at(30))),
+            axis=1,
+        )
+        side = _energy_average_db(
+            np.column_stack(tuple(h.at(angle) for angle in (-80, -70, -60, -50, -40, 40, 50, 60, 70, 80))),
+            axis=1,
+        )
+        rear = _energy_average_db(
+            np.column_stack(
+                tuple(
+                    h.at(angle)
+                    for angle in (
+                        -170,
+                        -160,
+                        -150,
+                        -140,
+                        -130,
+                        -120,
+                        -110,
+                        -100,
+                        -90,
+                        90,
+                        100,
+                        110,
+                        120,
+                        130,
+                        140,
+                        150,
+                        160,
+                        170,
+                        180,
+                    )
+                )
+            ),
+            axis=1,
+        )
     early = _energy_average_db(np.column_stack((floor, ceiling, front, side, rear)), axis=1)
 
     spherical_sound_power_relative = None
@@ -204,6 +229,27 @@ class _PlaneSampler:
             [np.interp(angle, angles, row) for row in values],
             dtype=float,
         )
+
+    def samples_in_sectors(
+        self,
+        sectors_deg: tuple[tuple[float, float], ...],
+        *,
+        center_deg: float = 0.0,
+        exclude_offsets_deg: tuple[float, ...] = (),
+    ) -> np.ndarray:
+        """Return native samples whose wrapped offsets fall within angular sectors."""
+
+        offsets = ((self.angles_deg - float(center_deg) + 180.0) % 360.0) - 180.0
+        mask = np.zeros(offsets.shape, dtype=bool)
+        for lower, upper in sectors_deg:
+            mask |= (offsets >= float(lower) - 1.0e-7) & (offsets <= float(upper) + 1.0e-7)
+        for excluded in exclude_offsets_deg:
+            mask &= ~np.isclose(offsets, float(excluded), atol=1.0e-7)
+        if not np.any(mask):
+            return np.column_stack(
+                tuple(self.at(float(center_deg) + 0.5 * (lower + upper)) for lower, upper in sectors_deg)
+            )
+        return self.spl_db[:, mask]
 
 
 def _validate_spl_matrix(
