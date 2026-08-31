@@ -34,6 +34,7 @@ class SpinoramaCurves:
     estimated_in_room_db: np.ndarray
     early_reflections_di_db: np.ndarray
     sound_power_di_db: np.ndarray
+    sound_power_di_label: str = "SPDI"
 
     def spl_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
         return (
@@ -47,7 +48,7 @@ class SpinoramaCurves:
     def di_curves(self) -> tuple[tuple[str, np.ndarray], ...]:
         return (
             ("ERDI", self.early_reflections_di_db),
-            ("SPDI", self.sound_power_di_db),
+            (self.sound_power_di_label, self.sound_power_di_db),
         )
 
 
@@ -59,12 +60,15 @@ def compute_spinorama_from_planes(
     *,
     horizontal_reference_angle_deg: float = 0.0,
     vertical_reference_angle_deg: float = 0.0,
+    spherical_spl_relative_db: np.ndarray | None = None,
 ) -> SpinoramaCurves:
     """Compute CEA-2034 style curves from H/V polar SPL matrices.
 
-    The solver supplies two orthogonal slices rather than a full spherical
-    balloon. Sound power is therefore an H/V estimate: all 10-degree H/V
-    samples are energy-averaged with approximate spherical band weights.
+    By default, Sound Power is the existing CEA-style H/V estimate using
+    10-degree samples and approximate spherical-band weights. When normalized
+    equal-area spherical samples are supplied, they replace only Sound Power
+    and its derived PIR/DI calculations; the standard H/V listening and early
+    reflection sectors remain unchanged.
     """
     freqs = np.asarray(freq_hz, dtype=np.float32)
     angles = np.asarray(polar_angle_deg, dtype=float)
@@ -135,8 +139,20 @@ def compute_spinorama_from_planes(
     )
     early = _energy_average_db(np.column_stack((floor, ceiling, front, side, rear)), axis=1)
 
-    power_values, power_weights = _sound_power_samples(h, v)
-    sound_power = _energy_average_db(power_values, weights=power_weights, axis=1)
+    spherical_sound_power_relative = None
+    if spherical_spl_relative_db is None:
+        power_values, power_weights = _sound_power_samples(h, v)
+        sound_power = _energy_average_db(power_values, weights=power_weights, axis=1)
+    else:
+        spherical = np.asarray(spherical_spl_relative_db, dtype=float)
+        if spherical.ndim != 2 or spherical.shape[0] != freqs.size or spherical.shape[1] == 0:
+            raise ValueError(
+                "spherical_spl_relative_db must have shape (n_freq, n_directions) with at least one direction."
+            )
+        if not np.all(np.isfinite(spherical)):
+            raise ValueError("spherical_spl_relative_db must contain only finite values.")
+        spherical_sound_power_relative = _energy_average_db(spherical, axis=1)
+        sound_power = spherical_sound_power_relative + h.at(0)
 
     estimated_in_room = _weighted_energy_sum_db(
         (listening, early, sound_power),
@@ -152,7 +168,12 @@ def compute_spinorama_from_planes(
         sound_power_db=(sound_power - spl_reference).astype(np.float32, copy=False),
         estimated_in_room_db=(estimated_in_room - spl_reference).astype(np.float32, copy=False),
         early_reflections_di_db=(listening - early).astype(np.float32, copy=False),
-        sound_power_di_db=(listening - sound_power).astype(np.float32, copy=False),
+        sound_power_di_db=(
+            (listening - sound_power)
+            if spherical_sound_power_relative is None
+            else -spherical_sound_power_relative
+        ).astype(np.float32, copy=False),
+        sound_power_di_label="SPDI" if spherical_sound_power_relative is None else "Spherical DI",
     )
 
 

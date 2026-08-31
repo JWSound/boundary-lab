@@ -145,3 +145,49 @@ def test_result_projection_returns_typed_plot_models() -> None:
     assert snapshot.isobar.horizontal_db[0, 0] != 99.0
     assert snapshot.impedance.real[0, 0] != 99.0
     assert snapshot.response.horizontal_spl_db[0, 0] != 99.0
+
+
+def test_result_projection_prepares_full_sphere_spinorama_when_available() -> None:
+    angles = np.arange(-180.0, 181.0, 10.0, dtype=np.float32)
+    point_count = 4
+    dataset = LiveSolveDataset(
+        angles,
+        radiator_names=np.asarray(["driver"]),
+        sphere_r_distance_m=np.ones(point_count, dtype=np.float32),
+        sphere_theta_polar_rad=np.linspace(0.2, 2.9, point_count, dtype=np.float32),
+        sphere_phi_azimuth_rad=np.linspace(-2.0, 2.0, point_count, dtype=np.float32),
+    )
+    sphere = np.asarray([0.0, -10.0, -10.0, -10.0], dtype=np.float32)
+    dataset.add(
+        FrequencyResult(
+            freq_hz=1000.0,
+            horizontal_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            vertical_spl_norm_db=np.zeros(angles.size, dtype=np.float32),
+            impedance=np.asarray([[1.0, 0.0]], dtype=np.float32),
+            sphere_spl_norm_db=sphere,
+        )
+    )
+
+    projection = ResultProjectionService().prepare(
+        dataset,
+        (ChannelConfig(name="main"),),
+        ProjectionOptions(
+            angle_samples=angles.size,
+            freq_samples=1,
+            octave_smoothing=None,
+            horizontal_reference_angle_deg=0.0,
+            vertical_reference_angle_deg=0.0,
+            spin_horizontal_reference_angle_deg=0.0,
+            spin_vertical_reference_angle_deg=0.0,
+            min_db=-30.0,
+            max_db=0.0,
+        ),
+    )
+
+    assert projection is not None
+    assert projection.spinorama_planes is not None
+    assert projection.spinorama_planes.sound_power_di_label == "SPDI"
+    assert projection.spinorama_spherical is not None
+    assert projection.spinorama_spherical.sound_power_di_label == "Spherical DI"
+    expected_power = 10.0 * np.log10(np.mean(10.0 ** (sphere / 10.0)))
+    assert np.isclose(projection.spinorama_spherical.sound_power_db[0], expected_power)

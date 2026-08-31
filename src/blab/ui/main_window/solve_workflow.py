@@ -638,6 +638,7 @@ class SolveWorkflowController(QObject):
         if live_dataset is None:
             return
         live_dataset.add(result)
+        self._plots.set_spherical_spin_available(live_dataset.has_balloon_data)
         if self._session.result_builder is None:
             canonical = legacy_result_to_system_result(result)
             frequencies = self._view.frequency_range().normalized()

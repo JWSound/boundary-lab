@@ -15,6 +15,7 @@ from blab.live import (
 )
 from blab.max_spl import MaxSplLimit
 from blab.postprocess import PrepConfig
+from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,8 @@ class VisualizationProjection:
     electrical_impedance: ElectricalImpedanceProjection | None = None
     group_delay: GroupDelayProjection | None = None
     max_spl: MaxSplProjection | None = None
+    spinorama_planes: SpinoramaCurves | None = None
+    spinorama_spherical: SpinoramaCurves | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
@@ -181,6 +184,8 @@ class VisualizationProjection:
             ),
             group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
             max_spl=None if self.max_spl is None else self.max_spl.snapshot(),
+            spinorama_planes=_snapshot_spinorama_curves(self.spinorama_planes),
+            spinorama_spherical=_snapshot_spinorama_curves(self.spinorama_spherical),
         )
 
 
@@ -252,6 +257,33 @@ class ResultProjectionService:
             acoustic_load_arrays = acoustic_load_impedance.as_impedance_arrays()
             if acoustic_load_arrays is not None:
                 impedance_projection = ImpedanceProjection(*acoustic_load_arrays)
+        spinorama_options = {
+            "horizontal_reference_angle_deg": options.spin_horizontal_reference_angle_deg,
+            "vertical_reference_angle_deg": options.spin_vertical_reference_angle_deg,
+        }
+        spinorama_planes = compute_spinorama_from_planes(
+            arrays["freq_hz"],
+            arrays["polar_angle_deg"],
+            arrays["horizontal_spl_db"],
+            arrays["vertical_spl_db"],
+            **spinorama_options,
+        )
+        spinorama_spherical = None
+        sphere = dataset.as_balloon_raw_bundle()
+        if sphere is not None:
+            sphere_freqs = np.asarray(sphere.get("freq_hz"), dtype=np.float32)
+            sphere_spl = np.asarray(sphere.get("spl_norm"), dtype=np.float32)
+            if sphere_freqs.shape == arrays["freq_hz"].shape and np.allclose(
+                sphere_freqs, arrays["freq_hz"]
+            ):
+                spinorama_spherical = compute_spinorama_from_planes(
+                    arrays["freq_hz"],
+                    arrays["polar_angle_deg"],
+                    arrays["horizontal_spl_db"],
+                    arrays["vertical_spl_db"],
+                    spherical_spl_relative_db=sphere_spl,
+                    **spinorama_options,
+                )
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -278,4 +310,22 @@ class ResultProjectionService:
             electrical_impedance=electrical_projection,
             group_delay=group_delay_projection,
             max_spl=max_spl_projection,
+            spinorama_planes=spinorama_planes,
+            spinorama_spherical=spinorama_spherical,
         )
+
+
+def _snapshot_spinorama_curves(curves: SpinoramaCurves | None) -> SpinoramaCurves | None:
+    if curves is None:
+        return None
+    return SpinoramaCurves(
+        freq_hz=np.asarray(curves.freq_hz).copy(),
+        on_axis_db=np.asarray(curves.on_axis_db).copy(),
+        listening_window_db=np.asarray(curves.listening_window_db).copy(),
+        early_reflections_db=np.asarray(curves.early_reflections_db).copy(),
+        sound_power_db=np.asarray(curves.sound_power_db).copy(),
+        estimated_in_room_db=np.asarray(curves.estimated_in_room_db).copy(),
+        early_reflections_di_db=np.asarray(curves.early_reflections_di_db).copy(),
+        sound_power_di_db=np.asarray(curves.sound_power_di_db).copy(),
+        sound_power_di_label=curves.sound_power_di_label,
+    )

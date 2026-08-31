@@ -70,6 +70,22 @@ def test_every_bundled_resource_path_actually_exists() -> None:
     assert missing == [], f"declared resource paths that do not exist: {missing}"
 
 
+def test_spherical_spin_toolbar_action_requires_spherical_data(main_window) -> None:
+    action = main_window.spherical_spin_action
+
+    assert action.isCheckable()
+    assert not action.isChecked()
+    assert not action.isEnabled()
+    assert not action.icon().isNull()
+    title_bar = main_window.plot_docks["spinorama"].titleBarWidget()
+    assert isinstance(title_bar, DockTitleBar)
+    assert any(button.defaultAction() is action for button in title_bar.tool_buttons)
+
+    main_window.set_spherical_spin_available(True)
+
+    assert action.isEnabled()
+
+
 PLOT_IDS = {
     "horizontal_isobar",
     "vertical_isobar",

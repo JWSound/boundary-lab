@@ -20,7 +20,6 @@ from blab.exporting import (
 )
 from blab.max_spl import max_spl_limits_from_payload
 from blab.plotting import VisualizerConfig
-from blab.spinorama import compute_spinorama_from_planes
 from blab.ui.plots import FINAL_ISOBAR_ANGLE_SAMPLES, FINAL_ISOBAR_FREQ_SAMPLES
 from blab.ui.speaker_package_dialog import SpeakerPackageDialog
 
@@ -254,15 +253,7 @@ class ExportsMixin:
                 )
             ]
         if plot_id == "spinorama":
-            response = projection.response
-            curves = compute_spinorama_from_planes(
-                response.freq_hz,
-                response.angle_deg,
-                response.horizontal_spl_db,
-                response.vertical_spl_db,
-                horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
-                vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
-            )
+            curves = self._spinorama_curves_for_projection(projection)
             named_curves = (*curves.spl_curves(), *curves.di_curves())
             return [
                 export_frequency_trace_table(

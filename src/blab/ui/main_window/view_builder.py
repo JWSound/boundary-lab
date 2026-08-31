@@ -121,6 +121,15 @@ class ViewBuilderMixin:
                     lambda _checked=False, plot_id=entry.plot_id: self.clear_isobar_contours(plot_id)
                 )
                 self.clear_contour_actions[entry.plot_id] = clear_action
+            elif entry.plot_id == "spinorama":
+                self.spherical_spin_action = QAction("Spherical Spin", self)
+                self.spherical_spin_action.setToolTip(
+                    "Use full-sphere samples for Sound Power and Spherical DI"
+                )
+                self.spherical_spin_action.setCheckable(True)
+                self.spherical_spin_action.setChecked(False)
+                self.spherical_spin_action.setEnabled(False)
+                self.spherical_spin_action.toggled.connect(self.set_spherical_spin_enabled)
 
         self.export_speaker_package_action = QAction("Export Speaker Package...", self)
         self.export_speaker_package_action.setToolTip("Configure, solve, and export a .blabsp speaker package")
@@ -242,6 +251,8 @@ class ViewBuilderMixin:
                 tool_actions.append(entry.widget.trace_filter_action)
             elif entry.plot_id == "max_spl":
                 tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))
+            elif entry.plot_id == "spinorama":
+                tool_actions.append(self.spherical_spin_action)
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,

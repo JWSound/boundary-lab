@@ -50,6 +50,10 @@ PLOT_LIMITS_DARK_ICON = APP_ROOT / "assets" / "plotlimits_dark.ico"
 
 PLOT_LIMITS_LIGHT_ICON = APP_ROOT / "assets" / "plotlimits_light.ico"
 
+SPHERICAL_SPIN_DARK_ICON = APP_ROOT / "assets" / "spherical_spin_dark.ico"
+
+SPHERICAL_SPIN_LIGHT_ICON = APP_ROOT / "assets" / "spherical_spin_light.ico"
+
 ADD_DESIGN_TAB_LABEL = "+"
 
 DEFAULT_DOCK_STATE_B64 = (

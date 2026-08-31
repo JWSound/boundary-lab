@@ -25,6 +25,8 @@ from blab.ui.main_window.constants import (
     PLOT_LIMITS_LIGHT_ICON,
     SNAPSHOT_DARK_ICON,
     SNAPSHOT_LIGHT_ICON,
+    SPHERICAL_SPIN_DARK_ICON,
+    SPHERICAL_SPIN_LIGHT_ICON,
     SYNTAX_HIGHLIGHT_DARK_ICON,
     SYNTAX_HIGHLIGHT_LIGHT_ICON,
 )
@@ -82,6 +84,9 @@ class PreferencesMixin:
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
         phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
         plot_limits_icon = QIcon(str(PLOT_LIMITS_LIGHT_ICON if light_theme else PLOT_LIMITS_DARK_ICON))
+        spherical_spin_icon = QIcon(
+            str(SPHERICAL_SPIN_LIGHT_ICON if light_theme else SPHERICAL_SPIN_DARK_ICON)
+        )
         for action in getattr(self, "export_plot_actions", {}).values():
             action.setIcon(snapshot_icon)
         for action in getattr(self, "export_plot_data_actions", {}).values():
@@ -94,6 +99,8 @@ class PreferencesMixin:
             action.setIcon(plot_limits_icon)
         if hasattr(self, "syntax_highlighting_action"):
             self.syntax_highlighting_action.setIcon(syntax_icon)
+        if hasattr(self, "spherical_spin_action"):
+            self.spherical_spin_action.setIcon(spherical_spin_icon)
         on_axis_plot = getattr(self, "on_axis_plot", None)
         if on_axis_plot is not None:
             on_axis_plot.show_phase_action.setIcon(phase_icon)

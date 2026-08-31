@@ -242,6 +242,9 @@ class PlotPresenter(Protocol):
     def clear_comparison_history(self) -> None:
         """Forget the stored previous solve."""
 
+    def set_spherical_spin_available(self, available: bool) -> None:
+        """Enable spherical spin calculations when a solve contains sphere samples."""
+
     def refresh_contour_controls(self) -> None:
         """Re-evaluate whether contour capture/clear are currently offered."""
 

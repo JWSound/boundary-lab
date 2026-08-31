@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QTimer, Slot
 
 from blab.max_spl import max_spl_limits_from_payload, max_spl_limits_payload
+from blab.spinorama import compute_spinorama_from_planes
 from blab.ui.main_window.plot_controls import contour_controls
 from blab.ui.main_window_widgets import (
     PlotEntry,
@@ -114,6 +115,7 @@ class PlotPresenterMixin:
     def clear_plots(self) -> None:
         self.cancel_live_refresh()
         self._solve_session().begin()
+        self.set_spherical_spin_available(False)
         observation_planes = getattr(self, "observation_plane_controller", None)
         if observation_planes is not None:
             observation_planes.sync_view()
@@ -219,14 +221,19 @@ class PlotPresenterMixin:
                 dataset.max_spl.channel_names,
                 dataset.max_spl.spl_db,
             )
-        self.spinorama_plot.set_comparison_plot(
-            response.freq_hz,
-            response.angle_deg,
-            response.horizontal_spl_db,
-            response.vertical_spl_db,
-            horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
-            vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
-        )
+        if dataset.spinorama_planes is None:
+            self.spinorama_plot.set_comparison_plot(
+                response.freq_hz,
+                response.angle_deg,
+                response.horizontal_spl_db,
+                response.vertical_spl_db,
+                horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
+                vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
+            )
+        else:
+            self.spinorama_plot.set_comparison_curves(
+                self._spinorama_curves_for_projection(dataset)
+            )
 
     def clear_comparison_history(self) -> None:
         self._solve_session().forget_comparison()
@@ -497,8 +504,16 @@ class PlotPresenterMixin:
         self.show_status(f"Maximum SPL configuration updated: {enabled_count} channel(s) enabled")
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:
+        self.set_spherical_spin_available(dataset.spinorama_spherical is not None)
+        self.spinorama_plot.update_curves(self._spinorama_curves_for_projection(dataset))
+
+    def _spinorama_curves_for_projection(self, dataset: VisualizationProjection):
+        if self.spherical_spin_action.isChecked() and dataset.spinorama_spherical is not None:
+            return dataset.spinorama_spherical
+        if dataset.spinorama_planes is not None:
+            return dataset.spinorama_planes
         response = dataset.response
-        self.spinorama_plot.update_plot(
+        return compute_spinorama_from_planes(
             response.freq_hz,
             response.angle_deg,
             response.horizontal_spl_db,
@@ -506,3 +521,21 @@ class PlotPresenterMixin:
             horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
             vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
         )
+
+    def set_spherical_spin_available(self, available: bool) -> None:
+        action = getattr(self, "spherical_spin_action", None)
+        if action is not None:
+            action.setEnabled(bool(available))
+
+    @Slot(bool)
+    def set_spherical_spin_enabled(self, _enabled: bool) -> None:
+        dataset = self.prepared_live_dataset()
+        if dataset is not None:
+            self._update_spinorama_plot(dataset)
+        comparison = self._last_completed_visualization_dataset
+        if comparison is None:
+            self.spinorama_plot.clear_comparison_plot()
+        else:
+            self.spinorama_plot.set_comparison_curves(
+                self._spinorama_curves_for_projection(comparison)
+            )

@@ -1907,6 +1907,7 @@ def _snapshot_spinorama_curves(curves: SpinoramaCurves) -> SpinoramaCurves:
         estimated_in_room_db=np.asarray(curves.estimated_in_room_db).copy(),
         early_reflections_di_db=np.asarray(curves.early_reflections_di_db).copy(),
         sound_power_di_db=np.asarray(curves.sound_power_di_db).copy(),
+        sound_power_di_label=curves.sound_power_di_label,
     )
 
 
@@ -1976,6 +1977,9 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
             horizontal_reference_angle_deg=horizontal_reference_angle_deg,
             vertical_reference_angle_deg=vertical_reference_angle_deg,
         )
+        self._set_comparison_plot_state(_snapshot_spinorama_curves(curves))
+
+    def set_comparison_curves(self, curves: SpinoramaCurves) -> None:
         self._set_comparison_plot_state(_snapshot_spinorama_curves(curves))
 
     def _current_plot_state(self) -> SpinoramaCurves | None:
