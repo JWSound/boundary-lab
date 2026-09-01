@@ -364,8 +364,16 @@ function assemble_burton_miller_neumann_system_cuda(
         error("Direct Burton-Miller image-near correction requires a matching device cache.")
     end
     p1_count = p1_space.global_dof_count
-    matrix_re = CUDA.zeros(T, p1_count, p1_count)
-    matrix_im = CUDA.zeros(T, p1_count, p1_count)
+    # PROTOTYPE: with BLAB_UNIFIED_MEM=1 the two system matrices (and the complex
+    # matrix broadcast from them) are allocated as CUDA unified memory, so the
+    # driver may oversubscribe VRAM and page to host RAM. Trades speed for capacity.
+    _bm_unified = get(ENV, "BLAB_UNIFIED_MEM", "0") == "1"
+    _bm_zeros(dims...) =
+        _bm_unified ?
+        fill!(CUDA.CuArray{T,length(dims),CUDA.UnifiedMemory}(undef, dims...), zero(T)) :
+        CUDA.zeros(T, dims...)
+    matrix_re = _bm_zeros(p1_count, p1_count)
+    matrix_im = _bm_zeros(p1_count, p1_count)
     rhs_re = CUDA.zeros(T, p1_count)
     rhs_im = CUDA.zeros(T, p1_count)
     matrix = rhs = nothing
