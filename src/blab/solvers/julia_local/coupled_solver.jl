@@ -21,6 +21,416 @@ const SPEAKER_MACRO_QUANTITIES = Set([
     "speaker_macro_e",
 ])
 
+function speaker_macro_state_layout(system)
+    gamma_count = length(system.gamma_range)
+    interface_count = length(system.flux_range)
+    transducer_count = length(system.transducers)
+    gamma_range = 1:gamma_count
+    flux_range = (gamma_count + 1):(gamma_count + interface_count)
+    mechanical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(flux_range) + 1):(last(flux_range) + transducer_count))
+    electrical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(mechanical_range) + 1):(last(mechanical_range) + transducer_count))
+    return (
+        gamma_range=gamma_range,
+        flux_range=flux_range,
+        mechanical_range=mechanical_range,
+        electrical_range=electrical_range,
+        state_count=gamma_count + interface_count + 2 * transducer_count,
+    )
+end
+
+function speaker_macro_k_matrix(system)
+    system.formulation == :fem_interface_condensed || error(
+        "Speaker macro construction requires the FEM-interface-condensed formulation.",
+    )
+    condensation = system.condensation
+    schur = if hasproperty(condensation, :schur)
+        condensation.schur
+    elseif hasproperty(condensation, :device_schur)
+        Array(condensation.device_schur)
+    else
+        error("Speaker macro construction requires a retained FEM Schur complement.")
+    end
+    T = system.scalar_type
+    layout = speaker_macro_state_layout(system)
+    retained = system.retained_fem_vertices
+    interface_operators = system.interface_operators
+    transducer_operators = system.transducer_operators
+    normal_derivative_scale = Complex{T}(0, system.density * system.omega)
+
+    k_matrix = zeros(Complex{T}, layout.state_count, layout.state_count)
+    k_matrix[layout.gamma_range, layout.gamma_range] .= Complex{T}.(schur)
+    k_matrix[layout.gamma_range, layout.flux_range] .= -Complex{T}.(
+        Matrix(interface_operators.fem_load[retained, :]),
+    )
+    k_matrix[layout.flux_range, layout.gamma_range] .= Complex{T}.(
+        Matrix(interface_operators.fem_trace[:, retained]),
+    )
+    if !isempty(system.transducers)
+        k_matrix[layout.gamma_range, layout.mechanical_range] .=
+            -normal_derivative_scale .* Complex{T}.(
+                Matrix(transducer_operators.fem_surface[retained, :]),
+            )
+        k_matrix[layout.mechanical_range, layout.gamma_range] .= -Complex{T}.(
+            transpose(Matrix(transducer_operators.fem_force[retained, :])),
+        )
+        mechanical = Complex{T}[
+            BeatEngineCoupled.mechanical_impedance(
+                transducer,
+                system.omega,
+                system.density,
+                system.wavenumber == zero(T) ? one(T) : system.omega / system.wavenumber,
+            ) for transducer in system.transducers
+        ]
+        electrical = Complex{T}[
+            BeatEngineCoupled.electrical_impedance(transducer, system.omega)
+            for transducer in system.transducers
+        ]
+        force_factor = Complex{T}[transducer.bl_n_per_a for transducer in system.transducers]
+        k_matrix[layout.mechanical_range, layout.mechanical_range] .=
+            Matrix(Diagonal(mechanical))
+        k_matrix[layout.mechanical_range, layout.electrical_range] .=
+            -Matrix(Diagonal(force_factor))
+        k_matrix[layout.electrical_range, layout.mechanical_range] .=
+            Matrix(Diagonal(force_factor))
+        k_matrix[layout.electrical_range, layout.electrical_range] .=
+            Matrix(Diagonal(electrical))
+    end
+    return k_matrix, layout
+end
+
+function _speaker_reflection_node_map(vertices, axis::Int)
+    1 <= axis <= 3 || error("Reflection axis must be 1, 2, or 3.")
+    mins = [minimum(vertex[index] for vertex in vertices) for index in 1:3]
+    maxs = [maximum(vertex[index] for vertex in vertices) for index in 1:3]
+    extent = maximum(maxs .- mins)
+    tolerance = max(extent * 2.0e-5, 1.0e-7)
+    center = (mins[axis] + maxs[axis]) / 2
+    key(vertex) = ntuple(
+        index -> round(Int, (Float64(vertex[index]) - mins[index]) / tolerance),
+        3,
+    )
+    index_by_key = Dict(key(vertex) => index for (index, vertex) in enumerate(vertices))
+    mapping = Vector{Int}(undef, length(vertices))
+    for (index, vertex) in enumerate(vertices)
+        reflected = collect(Float64.(vertex))
+        reflected[axis] = 2 * center - reflected[axis]
+        mapped = get(index_by_key, key(reflected), 0)
+        mapped > 0 || error(
+            "Could not construct speaker parity reflection map on axis $axis at node $index.",
+        )
+        maximum(abs.(Float64.(vertices[mapped]) .- reflected)) <= 2 * tolerance || error(
+            "Speaker parity reflection map exceeded tolerance on axis $axis at node $index.",
+        )
+        mapping[index] = mapped
+    end
+    all(mapping[mapping[index]] == index for index in eachindex(mapping)) || error(
+        "Speaker parity reflection map on axis $axis is not involutory.",
+    )
+    return mapping
+end
+
+function _speaker_reflection_face_map(mesh, node_map)
+    index_by_vertices = Dict{NTuple{3,Int},Int}()
+    for (index, face) in enumerate(mesh.faces)
+        index_by_vertices[Tuple(sort(collect(Int.(face))))] = index
+    end
+    mapping = Vector{Int}(undef, length(mesh.faces))
+    for (index, face) in enumerate(mesh.faces)
+        reflected = Tuple(sort([node_map[Int(vertex)] for vertex in face]))
+        mapped = get(index_by_vertices, reflected, 0)
+        mapped > 0 || error(
+            "Could not construct speaker parity reflection map at BEM face $index.",
+        )
+        mapping[index] = mapped
+    end
+    return mapping
+end
+
+function _speaker_parity_projection(values, map_x, map_y, sign_x, sign_y)
+    projected = similar(values)
+    map_xy = map_x[map_y]
+    projected .= (
+        values .+
+        sign_x .* values[map_x, :] .+
+        sign_y .* values[map_y, :] .+
+        (sign_x * sign_y) .* values[map_xy, :]
+    ) ./ 4
+    return projected
+end
+
+function _normalize_speaker_columns!(values)
+    for column in axes(values, 2)
+        column_norm = norm(view(values, :, column))
+        column_norm > eps(real(one(eltype(values)))) || error(
+            "A parity-projected speaker rank sample was numerically zero.",
+        )
+        view(values, :, column) ./= column_norm
+    end
+    return values
+end
+
+function _speaker_rank_boundary_patterns(system, count::Int, sequence_offset::Int)
+    T = system.scalar_type
+    vertices = system.bem_mesh.vertices
+    mins = T[minimum(vertex[index] for vertex in vertices) for index in 1:3]
+    maxs = T[maximum(vertex[index] for vertex in vertices) for index in 1:3]
+    center = (mins .+ maxs) ./ T(2)
+    half_extent = (maxs .- mins) ./ T(2)
+    scale = maximum(maxs .- mins)
+    golden_angle = T(pi * (3 - sqrt(5)))
+    patterns = zeros(Complex{T}, length(vertices), count)
+    for column in 1:count
+        sample_index = column + sequence_offset
+        z = T(1) - T(2) * T(mod(sample_index * 0.6180339887498949, 1.0))
+        radius_xy = sqrt(max(zero(T), one(T) - z^2))
+        phi = golden_angle * T(sample_index)
+        direction = T[radius_xy * cos(phi), radius_xy * sin(phi), z]
+        if isodd(sample_index)
+            for (row, vertex) in enumerate(vertices)
+                phase = system.wavenumber * dot(T.(vertex) .- center, direction)
+                patterns[row, column] = cis(phase)
+            end
+        else
+            exit_distance = minimum(
+                half_extent[index] / max(abs(direction[index]), T(1.0e-4))
+                for index in 1:3
+            )
+            clearance_levels = T[0.02, 0.05, 0.10, 0.20, 0.40, 0.80]
+            clearance = clearance_levels[mod1(sample_index, length(clearance_levels))] * scale
+            source = center .+ (exit_distance + clearance) .* direction
+            for (row, vertex) in enumerate(vertices)
+                distance = norm(T.(vertex) .- source)
+                patterns[row, column] = cis(system.wavenumber * distance) / distance
+            end
+        end
+    end
+    return patterns
+end
+
+function _speaker_macro_factorization(system, k_matrix)
+    if system.linear_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        device_matrix = cuda.CuArray(k_matrix)
+        factorization = lu!(device_matrix)
+        cuda.synchronize()
+        return (backend=:cuda, factorization=factorization, storage=device_matrix)
+    end
+    return (backend=:cpu, factorization=lu!(k_matrix), storage=nothing)
+end
+
+function _release_speaker_macro_factorization!(factor)
+    factor.backend == :cuda || return nothing
+    BeatEngineCore.cuda_module().unsafe_free!(factor.storage)
+    return nothing
+end
+
+function _speaker_macro_solve(factor, rhs)
+    if factor.backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        device_rhs = cuda.CuArray(rhs)
+        device_solution = nothing
+        try
+            device_solution = factor.factorization \ device_rhs
+            cuda.synchronize()
+            return Array(device_solution)
+        finally
+            cuda.unsafe_free!(device_rhs)
+            isnothing(device_solution) || cuda.unsafe_free!(device_solution)
+        end
+    end
+    return factor.factorization \ rhs
+end
+
+function _speaker_rank_curve(training, testing, ranks)
+    _normalize_speaker_columns!(training)
+    _normalize_speaker_columns!(testing)
+    # Accumulate the POD Gram matrices in Float64 even when the production solve is
+    # Float32. Small tail singular values otherwise make held-out projection energy
+    # round above one and hide the useful part of the rank curve.
+    training_analysis = ComplexF64.(training)
+    testing_analysis = ComplexF64.(testing)
+    gram = Hermitian(training_analysis' * training_analysis)
+    decomposition = eigen(gram)
+    order = sortperm(real.(decomposition.values); rev=true)
+    eigenvalues = max.(real.(decomposition.values[order]), 0.0)
+    eigenvectors = decomposition.vectors[:, order]
+    total_energy = sum(eigenvalues)
+    total_energy > 0 || error("Speaker rank training responses have zero energy.")
+    cross_gram = training_analysis' * testing_analysis
+    usable = findall(value -> value > total_energy * 1.0e-12, eigenvalues)
+    coefficients = isempty(usable) ?
+                   zeros(ComplexF64, 0, size(testing, 2)) :
+                   Diagonal(inv.(sqrt.(eigenvalues[usable]))) *
+                   (eigenvectors[:, usable]' * cross_gram)
+    curve = Dict{String,Any}[]
+    for requested_rank in ranks
+        rank = min(Int(requested_rank), length(usable))
+        captured = rank == 0 ? 0.0 : sum(eigenvalues[1:rank]) / total_energy
+        projected_energy = rank == 0 ?
+                           zeros(Float64, size(testing, 2)) :
+                           vec(sum(abs2, view(coefficients, 1:rank, :); dims=1))
+        errors = sqrt.(max.(0.0, 1.0 .- projected_energy))
+        push!(
+            curve,
+            Dict(
+                "rank" => rank,
+                "requested_rank" => Int(requested_rank),
+                "training_energy_residual" => sqrt(max(0.0, 1.0 - captured)),
+                "test_relative_error_median" => median(errors),
+                "test_relative_error_p95" => quantile(errors, 0.95),
+                "test_relative_error_max" => maximum(errors),
+            ),
+        )
+    end
+    singular_ratios = sqrt.(eigenvalues ./ first(eigenvalues))
+    return curve, singular_ratios, length(usable)
+end
+
+function speaker_rom_rank_experiment(system, raw_config)
+    system.formulation == :fem_interface_condensed || error(
+        "Speaker ROM rank experiment requires FEM interface condensation.",
+    )
+    system.linear_backend in (:cpu, :cuda) || error(
+        "Speaker ROM rank experiment currently supports CPU or CUDA condensation.",
+    )
+    train_count = Int(get(raw_config, "train_per_sector", 128))
+    test_count = Int(get(raw_config, "test_per_sector", 32))
+    train_count > 0 && test_count > 0 || error(
+        "Speaker ROM rank train and test sample counts must be positive.",
+    )
+    ranks = sort(unique(Int.(get(raw_config, "ranks", [8, 16, 32, 64, 96, 128]))))
+    all(rank -> rank > 0, ranks) || error("Speaker ROM experiment ranks must be positive.")
+    started = time_ns()
+    node_map_x = _speaker_reflection_node_map(system.bem_mesh.vertices, 1)
+    node_map_y = _speaker_reflection_node_map(system.bem_mesh.vertices, 2)
+    face_map_x = _speaker_reflection_face_map(system.bem_mesh, node_map_x)
+    face_map_y = _speaker_reflection_face_map(system.bem_mesh, node_map_y)
+    mapping_s = (time_ns() - started) / 1.0e9
+
+    patterns_started = time_ns()
+    base_training = _speaker_rank_boundary_patterns(system, train_count, 0)
+    base_testing = _speaker_rank_boundary_patterns(system, test_count, 100003)
+    patterns_s = (time_ns() - patterns_started) / 1.0e9
+
+    factor_started = time_ns()
+    k_matrix, layout = speaker_macro_k_matrix(system)
+    factor = _speaker_macro_factorization(system, k_matrix)
+    factor_s = (time_ns() - factor_started) / 1.0e9
+    T = system.scalar_type
+    trace_operator = system.interface_operators.bem_trace
+    bem_force = system.transducer_operators.bem_force
+    bem_flux = system.interface_operators.bem_flux
+    bem_velocity = system.transducer_operators.bem_normal_velocity
+    normal_derivative_scale = Complex{T}(0, system.density * system.omega)
+    sectors = Dict{String,Any}[]
+    solve_s = 0.0
+    analysis_s = 0.0
+    try
+        for (label, sign_x, sign_y) in (
+            ("even_even", 1, 1),
+            ("odd_even", -1, 1),
+            ("even_odd", 1, -1),
+            ("odd_odd", -1, -1),
+        )
+            pressure = hcat(
+                _speaker_parity_projection(base_training, node_map_x, node_map_y, sign_x, sign_y),
+                _speaker_parity_projection(base_testing, node_map_x, node_map_y, sign_x, sign_y),
+            )
+            _normalize_speaker_columns!(pressure)
+            rhs = zeros(Complex{T}, layout.state_count, size(pressure, 2))
+            rhs[layout.flux_range, :] .= trace_operator * pressure
+            if !isempty(layout.mechanical_range)
+                rhs[layout.mechanical_range, :] .= -transpose(bem_force) * pressure
+            end
+            sector_solve_started = time_ns()
+            state = _speaker_macro_solve(factor, rhs)
+            solve_s += (time_ns() - sector_solve_started) / 1.0e9
+            output = bem_flux * view(state, layout.flux_range, :)
+            if !isempty(layout.mechanical_range)
+                output .+= normal_derivative_scale .* (
+                    bem_velocity * view(state, layout.mechanical_range, :)
+                )
+            end
+            sector_analysis_started = time_ns()
+            projected_output = _speaker_parity_projection(
+                output,
+                face_map_x,
+                face_map_y,
+                sign_x,
+                sign_y,
+            )
+            leakage = [
+                norm(view(output, :, column) .- view(projected_output, :, column)) /
+                max(norm(view(output, :, column)), eps(T))
+                for column in axes(output, 2)
+            ]
+            training = Matrix(view(output, :, 1:train_count))
+            testing = Matrix(view(output, :, (train_count + 1):(train_count + test_count)))
+            curve, singular_ratios, numerical_rank = _speaker_rank_curve(
+                training,
+                testing,
+                ranks,
+            )
+            push!(
+                sectors,
+                Dict(
+                    "sector" => label,
+                    "sign_x" => sign_x,
+                    "sign_y" => sign_y,
+                    "numerical_rank" => numerical_rank,
+                    "parity_leakage_median" => median(leakage),
+                    "parity_leakage_max" => maximum(leakage),
+                    "singular_value_ratios" => singular_ratios[1:min(length(singular_ratios), 32)],
+                    "curve" => curve,
+                ),
+            )
+            analysis_s += (time_ns() - sector_analysis_started) / 1.0e9
+        end
+    finally
+        _release_speaker_macro_factorization!(factor)
+    end
+    complex_bytes = sizeof(Complex{T})
+    package_estimates = [
+        Dict(
+            "rank_per_sector" => rank,
+            "bytes_per_frequency" => complex_bytes * (
+                (layout.state_count + length(system.bem_mesh.vertices) + length(system.bem_mesh.faces)) * rank +
+                4 * rank^2
+            ),
+            "bytes_for_100_frequencies" => 100 * complex_bytes * (
+                (layout.state_count + length(system.bem_mesh.vertices) + length(system.bem_mesh.faces)) * rank +
+                4 * rank^2
+            ),
+        ) for rank in ranks
+    ]
+    return Dict(
+        "method" => "four-sector parity-projected output POD with held-out physical boundary fields",
+        "frequency_hz" => system.omega / (2pi),
+        "precision" => string(T),
+        "backend" => String(system.linear_backend),
+        "state_count" => layout.state_count,
+        "bem_node_count" => length(system.bem_mesh.vertices),
+        "bem_face_count" => length(system.bem_mesh.faces),
+        "train_per_sector" => train_count,
+        "test_per_sector" => test_count,
+        "pattern_family" => "50% plane waves, 50% exterior point sources at 0.02-0.80 cabinet spans clearance",
+        "sectors" => sectors,
+        "package_estimates" => package_estimates,
+        "timings" => Dict(
+            "reflection_mapping_s" => mapping_s,
+            "pattern_generation_s" => patterns_s,
+            "interior_factorization_s" => factor_s,
+            "interior_multi_rhs_solve_s" => solve_s,
+            "rank_analysis_s" => analysis_s,
+            "total_s" => (time_ns() - started) / 1.0e9,
+        ),
+    )
+end
+
 function object_by_id(items, object_id, label)
     for item in items
         String(item["id"]) == object_id && return item
@@ -51,64 +461,24 @@ function speaker_macro_matrices(system, excitations, interface_ids, interface_ra
     system.linear_backend == :cpu || error(
         "Speaker macro export currently requires the BEAT CPU condensation backend.",
     )
-    hasproperty(system.condensation, :schur) || error(
-        "Speaker macro export requires a retained FEM Schur complement.",
-    )
     T = system.scalar_type
-    gamma_count = length(system.gamma_range)
-    interface_count = length(system.flux_range)
+    k_matrix, layout = speaker_macro_k_matrix(system)
+    gamma_count = length(layout.gamma_range)
+    interface_count = length(layout.flux_range)
     transducer_count = length(system.transducers)
     bem_node_count = length(system.bem_mesh.vertices)
     bem_face_count = length(system.bem_mesh.faces)
     excitation_count = length(excitations)
-    gamma_range = 1:gamma_count
-    flux_range = (gamma_count + 1):(gamma_count + interface_count)
-    mechanical_range = transducer_count == 0 ?
-                       (1:0) :
-                       ((last(flux_range) + 1):(last(flux_range) + transducer_count))
-    electrical_range = transducer_count == 0 ?
-                       (1:0) :
-                       ((last(mechanical_range) + 1):(last(mechanical_range) + transducer_count))
-    state_count = gamma_count + interface_count + 2 * transducer_count
+    gamma_range = layout.gamma_range
+    flux_range = layout.flux_range
+    mechanical_range = layout.mechanical_range
+    electrical_range = layout.electrical_range
+    state_count = layout.state_count
 
     retained = system.retained_fem_vertices
     interface_operators = system.interface_operators
     transducer_operators = system.transducer_operators
     normal_derivative_scale = Complex{T}(0, system.density * system.omega)
-
-    k_matrix = zeros(Complex{T}, state_count, state_count)
-    k_matrix[gamma_range, gamma_range] .= Complex{T}.(system.condensation.schur)
-    k_matrix[gamma_range, flux_range] .= -Complex{T}.(
-        Matrix(interface_operators.fem_load[retained, :]),
-    )
-    k_matrix[flux_range, gamma_range] .= Complex{T}.(
-        Matrix(interface_operators.fem_trace[:, retained]),
-    )
-    if transducer_count > 0
-        k_matrix[gamma_range, mechanical_range] .= -normal_derivative_scale .* Complex{T}.(
-            Matrix(transducer_operators.fem_surface[retained, :]),
-        )
-        k_matrix[mechanical_range, gamma_range] .= -Complex{T}.(
-            transpose(Matrix(transducer_operators.fem_force[retained, :])),
-        )
-        mechanical = Complex{T}[
-            BeatEngineCoupled.mechanical_impedance(
-                transducer,
-                system.omega,
-                system.density,
-                system.wavenumber == zero(T) ? one(T) : system.omega / system.wavenumber,
-            ) for transducer in system.transducers
-        ]
-        electrical = Complex{T}[
-            BeatEngineCoupled.electrical_impedance(transducer, system.omega)
-            for transducer in system.transducers
-        ]
-        force_factor = Complex{T}[transducer.bl_n_per_a for transducer in system.transducers]
-        k_matrix[mechanical_range, mechanical_range] .= Matrix(Diagonal(mechanical))
-        k_matrix[mechanical_range, electrical_range] .= -Matrix(Diagonal(force_factor))
-        k_matrix[electrical_range, mechanical_range] .= Matrix(Diagonal(force_factor))
-        k_matrix[electrical_range, electrical_range] .= Matrix(Diagonal(electrical))
-    end
 
     c_matrix = zeros(Complex{T}, state_count, bem_node_count)
     c_matrix[flux_range, :] .= -Complex{T}.(Matrix(interface_operators.bem_trace))
@@ -2482,6 +2852,17 @@ function solve_request(request; event_mode=false)
             end
         end
 
+        rank_experiment_config = get(
+            solver_options,
+            "speaker_rom_rank_experiment",
+            nothing,
+        )
+        rank_experiment = isnothing(rank_experiment_config) ?
+                          nothing :
+                          speaker_rom_rank_experiment(
+            coupled_system,
+            rank_experiment_config,
+        )
         diagnostics = Dict{String,Any}(
             "precision" => precision_name,
             "bem_backend" => String(bem_backend),
@@ -2610,6 +2991,8 @@ function solve_request(request; event_mode=false)
         end
         diagnostics["fem_interior_residual"] = use_condensed_solver ?
             maximum(solution.fem_interior_residual for solution in solutions) : nothing
+        isnothing(rank_experiment) ||
+            (diagnostics["speaker_rom_rank_experiment"] = rank_experiment)
         result = Dict(
             "schema_version" => 2,
             "freq_hz" => frequency_hz,
