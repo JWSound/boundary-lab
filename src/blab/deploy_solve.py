@@ -316,7 +316,7 @@ def _load_deploy_package_data(
             geometry_bytes = archive.read(geometry_path)
         except KeyError as exc:
             raise ValueError(f"Speaker package is missing {exc.args[0]!r}.") from exc
-        coupled_model = _read_exact_coupled_descriptor(archive, manifest)
+        coupled_model = _read_coupled_descriptor(archive, manifest)
     with np.load(io.BytesIO(fixed_bytes), allow_pickle=False) as fixed:
         triangles = np.asarray(fixed["triangles"], dtype=np.int64)
         points = np.asarray(fixed["points_m"], dtype=np.float64)
@@ -337,12 +337,39 @@ def _load_deploy_package_data(
     )
 
 
-def _read_exact_coupled_descriptor(
+def _read_coupled_descriptor(
     archive: zipfile.ZipFile,
     manifest: dict[str, Any],
 ) -> dict[str, Any] | None:
     declaration = manifest.get("files", {}).get("coupled_model", {})
-    if declaration.get("representation") != "exact_frequency_parametric_fem":
+    representation = declaration.get("representation")
+    if representation == "parity_petrov_galerkin_rom":
+        model_path = str(declaration.get("path", ""))
+        if not model_path:
+            raise ValueError("Parity-ROM Level-3 package does not declare its model path.")
+        try:
+            payload = archive.read(model_path)
+        except KeyError as exc:
+            raise ValueError(f"Speaker package is missing {model_path!r}.") from exc
+        with np.load(io.BytesIO(payload), allow_pickle=False) as model:
+            arrays = {name: np.asarray(model[name]) for name in model.files}
+        required = {
+            "frequencies_hz",
+            "k",
+            "c",
+            "d",
+            "b",
+            "e",
+            "velocity",
+            "current",
+            "velocity_drive",
+            "current_drive",
+        }
+        missing = sorted(required - arrays.keys())
+        if missing:
+            raise ValueError(f"Parity-ROM Level-3 model is missing arrays: {', '.join(missing)}.")
+        return {**copy.deepcopy(declaration), "arrays": arrays}
+    if representation != "exact_frequency_parametric_fem":
         return None
     descriptor_path = str(declaration.get("path", ""))
     if not descriptor_path:
@@ -1301,6 +1328,143 @@ def prepare_deploy_solve_request(
         status_callback("Serializing BEAT request")
     request_path = work_path / "request.json"
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    return request_path, request
+
+
+def _write_deploy_binary_arrays(
+    path: Path,
+    arrays: dict[str, np.ndarray],
+) -> dict[str, dict[str, object]]:
+    descriptors: dict[str, dict[str, object]] = {}
+    offset = 0
+    with path.open("wb") as stream:
+        for name, values in arrays.items():
+            array = np.ascontiguousarray(values, dtype=np.complex64)
+            payload = array.astype(array.dtype.newbyteorder("<"), copy=False).tobytes(order="C")
+            stream.write(payload)
+            descriptors[name] = {
+                "file": str(path.resolve()),
+                "offset": offset,
+                "nbytes": len(payload),
+                "dtype": "complex64",
+                "shape": list(array.shape),
+                "order": "C",
+                "byte_order": "little",
+            }
+            offset += len(payload)
+    return descriptors
+
+
+def prepare_deploy_rom_request(
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Build a matrix-free Schur-eliminated Deploy request for a parity ROM."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Deploy Level 3 ROM request must be an object.")
+    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
+    package = cache.load_package(package_path) if cache is not None else _load_deploy_package_data(package_path)
+    model = package.coupled_model
+    if not isinstance(model, dict) or model.get("representation") != "parity_petrov_galerkin_rom":
+        raise ValueError("Deploy parity-ROM solve requires a parity Petrov-Galerkin package.")
+    arrays = model.get("arrays")
+    if not isinstance(arrays, dict):
+        raise ValueError("Deploy parity-ROM package did not load its reduced arrays.")
+
+    request_path, request = prepare_deploy_solve_request(
+        payload,
+        work_dir,
+        cache=cache,
+        status_callback=status_callback,
+    )
+    requested_frequency = float(request["frequency_hz"])
+    rom_frequencies = np.asarray(arrays["frequencies_hz"], dtype=np.float64)
+    frequency_index = int(np.argmin(np.abs(rom_frequencies - requested_frequency)))
+    tolerance = max(1e-4, abs(requested_frequency) * 1e-6)
+    if abs(float(rom_frequencies[frequency_index]) - requested_frequency) > tolerance:
+        raise ValueError(f"Parity ROM does not contain {requested_frequency:g} Hz.")
+
+    selected = {
+        name: np.asarray(arrays[name][frequency_index], dtype=np.complex64)
+        for name in (
+            "k",
+            "c",
+            "d",
+            "b",
+            "e",
+            "velocity",
+            "current",
+            "velocity_drive",
+            "current_drive",
+        )
+    }
+    rank = int(model.get("rank_per_sector", selected["k"].shape[-1]))
+    if selected["k"].shape != (4, rank, rank):
+        raise ValueError("Parity ROM K array has an invalid shape.")
+    node_orbits = model.get("node_orbits")
+    face_orbits = model.get("face_orbits")
+    if not isinstance(node_orbits, list) or not isinstance(face_orbits, list):
+        raise ValueError("Parity ROM is missing boundary orbit maps.")
+    if selected["c"].shape != (4, rank, len(node_orbits)):
+        raise ValueError("Parity ROM C array does not align with its node orbits.")
+    if selected["d"].shape[:2] != (4, len(face_orbits)):
+        raise ValueError("Parity ROM D array does not align with its face orbits.")
+
+    raw_sources = payload.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ValueError("Deploy parity-ROM solve requires at least one source.")
+    sources = [DeploySourcePlacement.from_payload(raw) for raw in raw_sources]
+    source_components = request["boundary_components"][: len(sources)]
+    input_count = selected["b"].shape[-1]
+    reference_voltage = float(payload.get("transducerReferenceVoltageV", 2.83))
+    instances = []
+    for source, component in zip(sources, source_components, strict=True):
+        phase = 2.0 * math.pi * requested_frequency * source.delay_ms / 1000.0
+        gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+        drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
+        instances.append(
+            {
+                "id": source.id,
+                "node_offset": int(component["vertex_offset"]),
+                "face_offset": int(component["face_offset"]),
+                "input_real": drive.real.tolist(),
+                "input_imag": drive.imag.tolist(),
+            }
+        )
+
+    binary_path = Path(work_dir).resolve() / "speaker-rom.bin"
+    binary_arrays = _write_deploy_binary_arrays(binary_path, selected)
+    face_count = sum(int(component["face_count"]) for component in request["boundary_components"])
+    node_count = sum(int(component["vertex_count"]) for component in request["boundary_components"])
+    zeros_faces = np.zeros(face_count, dtype=np.float32).tolist()
+    zeros_nodes = np.zeros(node_count, dtype=np.float32).tolist()
+    request.update(
+        schema="boundary_lab_deploy_rom",
+        schema_version=1,
+        burton_miller_assembly="direct_system",
+        boundary_neumann={"real": zeros_faces, "imag": zeros_faces},
+        reference_boundary_pressure={"real": zeros_nodes, "imag": zeros_nodes},
+        reference_boundary_pressure_mask=np.zeros(node_count, dtype=np.uint8).tolist(),
+        rom={
+            "format_version": 1,
+            "representation": "parity_petrov_galerkin_rom",
+            "rank_per_sector": rank,
+            "sector_signs": model["sector_signs"],
+            "node_orbits": node_orbits,
+            "face_orbits": face_orbits,
+            "instances": instances,
+            "binary_arrays": binary_arrays,
+            "gmres_tolerance": float(payload.get("romGmresTolerance", 1e-4)),
+            "gmres_max_iterations": int(payload.get("romGmresMaxIterations", 30)),
+        },
+    )
+    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    if status_callback is not None:
+        status_callback(f"Prepared rank-{rank} parity-ROM boundary feedback")
     return request_path, request
 
 

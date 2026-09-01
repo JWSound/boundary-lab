@@ -8,6 +8,8 @@ include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 include(joinpath(@__DIR__, "src", "BeatEngineCoupledCondensed.jl"))
 using .BeatEngineCoupledCondensed
+include(joinpath(@__DIR__, "src", "BeatEngineSpeakerRom.jl"))
+using .BeatEngineSpeakerRom
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
@@ -19,6 +21,17 @@ const SPEAKER_MACRO_QUANTITIES = Set([
     "speaker_macro_d",
     "speaker_macro_b",
     "speaker_macro_e",
+])
+const SPEAKER_ROM_QUANTITIES = Set([
+    "speaker_rom_k",
+    "speaker_rom_c",
+    "speaker_rom_d",
+    "speaker_rom_b",
+    "speaker_rom_e",
+    "speaker_rom_velocity",
+    "speaker_rom_current",
+    "speaker_rom_velocity_drive",
+    "speaker_rom_current_drive",
 ])
 
 function speaker_macro_state_layout(system)
@@ -2580,6 +2593,24 @@ function solve_request(request; event_mode=false)
             [String(interface["id"]) for interface in interfaces],
             combined_interfaces.ranges,
         ) : nothing
+        rom_requested = any(
+            String(output["quantity"]) in SPEAKER_ROM_QUANTITIES for output in outputs
+        )
+        rom_options = get(solver_options, "speaker_rom", Dict{String,Any}())
+        rom_matrices = if rom_requested
+            rom_k, rom_layout = speaker_macro_k_matrix(coupled_system)
+            build_parity_petrov_galerkin_rom(
+                coupled_system,
+                rom_k,
+                rom_layout,
+                excitations;
+                rank=Int(get(rom_options, "rank_per_sector", 32)),
+                training_count=Int(get(rom_options, "training_count_per_sector", 96)),
+                validation_count=Int(get(rom_options, "validation_count_per_sector", 24)),
+            )
+        else
+            nothing
+        end
         for output in outputs
             quantity = String(output["quantity"])
             if quantity == "fem_nodal_pressure"
@@ -2844,6 +2875,37 @@ function solve_request(request; event_mode=false)
                         metadata=merge(
                             copy(macro_matrices["metadata"]),
                             Dict("matrix" => uppercase(last(split(quantity, "_")))),
+                        ),
+                    ),
+                )
+            elseif quantity in SPEAKER_ROM_QUANTITIES
+                axes = if quantity == "speaker_rom_k"
+                    ["parity_sector", "reduced_row", "reduced_column"]
+                elseif quantity == "speaker_rom_c"
+                    ["parity_sector", "reduced_row", "boundary_node_orbit"]
+                elseif quantity == "speaker_rom_d"
+                    ["parity_sector", "boundary_face_orbit", "reduced_column"]
+                elseif quantity == "speaker_rom_b"
+                    ["parity_sector", "reduced_row", "input_port"]
+                elseif quantity == "speaker_rom_e"
+                    ["parity_sector", "boundary_face_orbit", "input_port"]
+                elseif quantity == "speaker_rom_velocity"
+                    ["parity_sector", "transducer", "reduced_column"]
+                elseif quantity == "speaker_rom_current"
+                    ["parity_sector", "transducer", "reduced_column"]
+                else
+                    ["parity_sector", "transducer", "input_port"]
+                end
+                push!(
+                    quantities,
+                    quantity_wire(
+                        output,
+                        rom_matrices[quantity],
+                        "mixed",
+                        axes,
+                        metadata=merge(
+                            copy(rom_matrices["metadata"]),
+                            Dict("matrix" => quantity),
                         ),
                     ),
                 )

@@ -40,6 +40,7 @@ from blab.speaker_package import (
     SPEAKER_MACRO_D_ID,
     SPEAKER_MACRO_E_ID,
     SPEAKER_MACRO_K_ID,
+    SPEAKER_ROM_QUANTITIES,
     SpeakerPackageConfig,
     SpeakerPackageCoupledRepresentation,
     SpeakerPackageFidelity,
@@ -212,6 +213,66 @@ def _coupled_macro_solved_system() -> SolvedSystem:
     )
 
 
+def _coupled_rom_solved_system() -> SolvedSystem:
+    solved = _solved_system()
+    frequency_count = solved.frequencies_hz.size
+    rank = 2
+    sector_count = 4
+    node_orbits = [[index, index, index, index] for index in range(4)]
+    face_orbits = [[index, index, index, index] for index in range(2)]
+    input_count = len(solved.excitation_ids)
+    transducer_count = 2
+    shapes = {
+        "k": (frequency_count, sector_count, rank, rank),
+        "c": (frequency_count, sector_count, rank, len(node_orbits)),
+        "d": (frequency_count, sector_count, len(face_orbits), rank),
+        "b": (frequency_count, sector_count, rank, input_count),
+        "e": (frequency_count, sector_count, len(face_orbits), input_count),
+        "velocity": (frequency_count, sector_count, transducer_count, rank),
+        "current": (frequency_count, sector_count, transducer_count, rank),
+        "velocity_drive": (frequency_count, sector_count, transducer_count, input_count),
+        "current_drive": (frequency_count, sector_count, transducer_count, input_count),
+    }
+    dimensions = {
+        "k": ("frequency", "parity_sector", "reduced_row", "reduced_column"),
+        "c": ("frequency", "parity_sector", "reduced_row", "boundary_node_orbit"),
+        "d": ("frequency", "parity_sector", "boundary_face_orbit", "reduced_column"),
+        "b": ("frequency", "parity_sector", "reduced_row", "input_port"),
+        "e": ("frequency", "parity_sector", "boundary_face_orbit", "input_port"),
+        "velocity": ("frequency", "parity_sector", "transducer", "reduced_column"),
+        "current": ("frequency", "parity_sector", "transducer", "reduced_column"),
+        "velocity_drive": ("frequency", "parity_sector", "transducer", "input_port"),
+        "current_drive": ("frequency", "parity_sector", "transducer", "input_port"),
+    }
+    metadata = {
+        "format_version": 1,
+        "rank_per_sector": rank,
+        "sector_names": ["even_even", "odd_even", "even_odd", "odd_odd"],
+        "sector_signs": [[1, 1], [-1, 1], [1, -1], [-1, -1]],
+        "node_orbits": node_orbits,
+        "face_orbits": face_orbits,
+        "transducer_count": transducer_count,
+        "equations": ["K_r a + C_r P_parity p = B_r u", "q = sum_parity R_parity (D_r a + E_r u)"],
+        "validation": [{"sector": "even_even", "boundary_output_error": {"p95": 1e-3}}],
+    }
+    quantities = dict(solved.quantities)
+    for index, (identifier, quantity, archive_name) in enumerate(SPEAKER_ROM_QUANTITIES, start=1):
+        quantities[identifier] = SolvedQuantity(
+            id=identifier,
+            quantity=quantity,
+            unit="mixed",
+            dimensions=dimensions[archive_name],
+            values=np.full(shapes[archive_name], complex(index, -index), dtype=np.complex64),
+            metadata={**metadata, "matrix": quantity},
+            available_frequency_mask=np.ones(frequency_count, dtype=bool),
+        )
+    return replace(
+        solved,
+        quantities=quantities,
+        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
+    )
+
+
 def _read_npz(archive: zipfile.ZipFile, member: str) -> dict[str, np.ndarray]:
     with np.load(archive.open(member)) as arrays:
         return {name: arrays[name].copy() for name in arrays.files}
@@ -314,6 +375,35 @@ def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
         model = _read_npz(archive, "data/coupled-model.npz")
     np.testing.assert_array_equal(model["matrix_k"], solved.quantities[SPEAKER_MACRO_K_ID].values)
     np.testing.assert_array_equal(model["matrix_e"], solved.quantities[SPEAKER_MACRO_E_ID].values)
+
+
+def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -> None:
+    solved = _coupled_rom_solved_system()
+    output = tmp_path / "speaker-rom.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(
+            output,
+            "Reduced speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.PARITY_ROM,
+        ),
+    )
+
+    manifest = validate_speaker_package(output)
+    declaration = manifest["files"]["coupled_model"]
+    assert declaration["representation"] == "parity_petrov_galerkin_rom"
+    assert declaration["rank_per_sector"] == 2
+    assert "parity_petrov_galerkin_rom" in manifest["capabilities"]
+    with zipfile.ZipFile(output) as archive:
+        assert "data/coupled-exact-system.json" not in archive.namelist()
+        model = _read_npz(archive, declaration["path"])
+    assert model["k"].shape == (2, 4, 2, 2)
+    assert model["d"].shape == (2, 4, 2, 2)
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
 
 
 def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ export BoundaryMesh,
     build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
     assemble_burton_miller_neumann_system_cuda,
+    assemble_burton_miller_rhs_cuda,
     solve_burton_miller_system_cuda!,
     release_burton_miller_system_cuda!,
     build_rocm_burton_miller_identity_cache,
@@ -1229,6 +1230,10 @@ end
 
 function assemble_burton_miller_neumann_system_cuda(args...; kwargs...)
     error("Direct Burton-Miller CUDA assembly requested, but CUDA.jl is not loaded.")
+end
+
+function assemble_burton_miller_rhs_cuda(args...; kwargs...)
+    error("Burton-Miller CUDA RHS assembly requested, but CUDA.jl is not loaded.")
 end
 
 function solve_burton_miller_system_cuda!(args...; kwargs...)

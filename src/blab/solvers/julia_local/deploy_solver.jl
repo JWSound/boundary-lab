@@ -181,8 +181,233 @@ function build_deploy_cuda_observation_points(plane)
     )
 end
 
+function deploy_rom_binary_array(descriptor, ::Type{T}) where {T<:AbstractFloat}
+    String(get_value(descriptor, "dtype", "")) == "complex64" || error(
+        "Deploy speaker ROM currently requires complex64 binary arrays.",
+    )
+    String(get_value(descriptor, "order", "")) == "C" || error(
+        "Deploy speaker ROM currently requires C-order binary arrays.",
+    )
+    path = String(descriptor["file"])
+    isfile(path) || error("Deploy speaker ROM binary array file does not exist: $path")
+    shape = Int.(get_value(descriptor, "shape", Any[]))
+    isempty(shape) && error("Deploy speaker ROM binary array has no shape.")
+    all(>(0), shape) || error("Deploy speaker ROM binary array has an invalid shape.")
+    element_count = prod(shape)
+    expected_bytes = element_count * sizeof(ComplexF32)
+    Int(get_value(descriptor, "nbytes", -1)) == expected_bytes || error(
+        "Deploy speaker ROM binary array byte count does not match its shape.",
+    )
+    offset = Int(get_value(descriptor, "offset", -1))
+    offset >= 0 || error("Deploy speaker ROM binary array offset is invalid.")
+    values = open(path, "r") do stream
+        seek(stream, offset)
+        read!(stream, Vector{ComplexF32}(undef, element_count))
+    end
+    native = if length(shape) == 1
+        reshape(values, shape...)
+    else
+        reversed_dimensions = reverse(collect(1:length(shape)))
+        permutedims(reshape(values, reverse(shape)...), reversed_dimensions)
+    end
+    return Complex{T}.(native)
+end
+
+function load_deploy_speaker_rom(request, ::Type{T}, node_count::Int, face_count::Int) where {T<:AbstractFloat}
+    raw = get_value(request, "rom", nothing)
+    raw isa AbstractDict || error("Deploy Level 3 ROM request is missing its rom object.")
+    String(get_value(raw, "representation", "")) == "parity_petrov_galerkin_rom" || error(
+        "Deploy Level 3 request uses an unsupported reduced representation.",
+    )
+    descriptors = get_value(raw, "binary_arrays", nothing)
+    descriptors isa AbstractDict || error("Deploy speaker ROM is missing binary array descriptors.")
+    arrays = Dict(
+        name => deploy_rom_binary_array(descriptors[name], T)
+        for name in (
+            "k",
+            "c",
+            "d",
+            "b",
+            "e",
+            "velocity",
+            "current",
+            "velocity_drive",
+            "current_drive",
+        )
+    )
+    rank = Int(get_value(raw, "rank_per_sector", 0))
+    rank > 0 || error("Deploy speaker ROM rank must be positive.")
+    size(arrays["k"]) == (4, rank, rank) || error("Deploy speaker ROM K shape is invalid.")
+    input_count = size(arrays["b"], 3)
+    size(arrays["b"]) == (4, rank, input_count) || error("Deploy speaker ROM B shape is invalid.")
+
+    raw_node_orbits = get_value(raw, "node_orbits", Any[])
+    raw_face_orbits = get_value(raw, "face_orbits", Any[])
+    node_orbits = [ntuple(index -> Int(orbit[index]) + 1, 4) for orbit in raw_node_orbits]
+    face_orbits = [ntuple(index -> Int(orbit[index]) + 1, 4) for orbit in raw_face_orbits]
+    isempty(node_orbits) && error("Deploy speaker ROM has no node orbits.")
+    isempty(face_orbits) && error("Deploy speaker ROM has no face orbits.")
+    size(arrays["c"]) == (4, rank, length(node_orbits)) || error("Deploy speaker ROM C shape is invalid.")
+    size(arrays["d"]) == (4, length(face_orbits), rank) || error("Deploy speaker ROM D shape is invalid.")
+    size(arrays["e"]) == (4, length(face_orbits), input_count) || error("Deploy speaker ROM E shape is invalid.")
+    transducer_count = size(arrays["velocity"], 2)
+    size(arrays["velocity"]) == (4, transducer_count, rank) || error(
+        "Deploy speaker ROM velocity output shape is invalid.",
+    )
+    size(arrays["current"]) == (4, transducer_count, rank) || error(
+        "Deploy speaker ROM current output shape is invalid.",
+    )
+    size(arrays["velocity_drive"]) == (4, transducer_count, input_count) || error(
+        "Deploy speaker ROM velocity drive shape is invalid.",
+    )
+    size(arrays["current_drive"]) == (4, transducer_count, input_count) || error(
+        "Deploy speaker ROM current drive shape is invalid.",
+    )
+    signs = [ntuple(index -> Int(sector[index]), 2) for sector in get_value(raw, "sector_signs", Any[])]
+    length(signs) == 4 || error("Deploy speaker ROM must contain four parity-sector signs.")
+
+    package_node_count = maximum(maximum(orbit) for orbit in node_orbits)
+    package_face_count = maximum(maximum(orbit) for orbit in face_orbits)
+    instances = NamedTuple[]
+    for instance in get_value(raw, "instances", Any[])
+        input_real = T.(get_value(instance, "input_real", Any[]))
+        input_imag = T.(get_value(instance, "input_imag", Any[]))
+        length(input_real) == input_count == length(input_imag) || error(
+            "Deploy speaker ROM instance input count is invalid.",
+        )
+        node_offset = Int(get_value(instance, "node_offset", -1))
+        face_offset = Int(get_value(instance, "face_offset", -1))
+        node_offset >= 0 && node_offset + package_node_count <= node_count || error(
+            "Deploy speaker ROM instance node range is outside the scene mesh.",
+        )
+        face_offset >= 0 && face_offset + package_face_count <= face_count || error(
+            "Deploy speaker ROM instance face range is outside the scene mesh.",
+        )
+        push!(instances, (
+            id=String(get_value(instance, "id", "")),
+            node_offset=node_offset,
+            face_offset=face_offset,
+            input=Complex{T}.(input_real, input_imag),
+        ))
+    end
+    isempty(instances) && error("Deploy speaker ROM requires at least one speaker instance.")
+    factors = [lu!(Matrix(view(arrays["k"], sector, :, :))) for sector in 1:4]
+    return (
+        rank=rank,
+        arrays=arrays,
+        node_orbits=node_orbits,
+        face_orbits=face_orbits,
+        signs=signs,
+        instances=instances,
+        factors=factors,
+        package_node_count=package_node_count,
+        package_face_count=package_face_count,
+        node_count=node_count,
+        face_count=face_count,
+        tolerance=T(get_value(raw, "gmres_tolerance", 1e-4)),
+        max_iterations=Int(get_value(raw, "gmres_max_iterations", 30)),
+    )
+end
+
+function deploy_speaker_rom_response(model, pressure::AbstractVector; include_drive::Bool)
+    T = typeof(real(zero(eltype(pressure))))
+    q = zeros(eltype(pressure), model.face_count)
+    velocities = [zeros(eltype(pressure), size(model.arrays["velocity"], 2)) for _ in model.instances]
+    currents = [zeros(eltype(pressure), size(model.arrays["current"], 2)) for _ in model.instances]
+    for (instance_index, instance) in enumerate(model.instances)
+        local_pressure = view(
+            pressure,
+            (instance.node_offset + 1):(instance.node_offset + model.package_node_count),
+        )
+        for sector in 1:4
+            sign_x, sign_y = model.signs[sector]
+            image_signs = (1, sign_x, sign_y, sign_x * sign_y)
+            compact_pressure = zeros(eltype(pressure), length(model.node_orbits))
+            for (orbit_index, orbit) in enumerate(model.node_orbits)
+                compact_pressure[orbit_index] = sum(
+                    image_signs[image] * local_pressure[orbit[image]] for image in 1:4
+                ) / T(4)
+            end
+            drive = include_drive ? instance.input : zeros(eltype(pressure), length(instance.input))
+            reduced_rhs = view(model.arrays["b"], sector, :, :) * drive -
+                          view(model.arrays["c"], sector, :, :) * compact_pressure
+            state = model.factors[sector] \ reduced_rhs
+            compact_q = view(model.arrays["d"], sector, :, :) * state +
+                        view(model.arrays["e"], sector, :, :) * drive
+            sector_q = zeros(eltype(pressure), model.package_face_count)
+            for (orbit_index, orbit) in enumerate(model.face_orbits), image in 1:4
+                sector_q[orbit[image]] = image_signs[image] * compact_q[orbit_index]
+            end
+            q[(instance.face_offset + 1):(instance.face_offset + model.package_face_count)] .+= sector_q
+            velocities[instance_index] .+= view(model.arrays["velocity"], sector, :, :) * state +
+                                            view(model.arrays["velocity_drive"], sector, :, :) * drive
+            currents[instance_index] .+= view(model.arrays["current"], sector, :, :) * state +
+                                         view(model.arrays["current_drive"], sector, :, :) * drive
+        end
+    end
+    return (q=q, velocities=velocities, currents=currents)
+end
+
+function deploy_cuda_gmres(apply_operator, right_hand_side; tolerance, max_iterations)
+    cuda = BeatEngineCore.CUDA_MODULE
+    T = typeof(real(zero(eltype(right_hand_side))))
+    max_iterations > 0 || error("Deploy speaker ROM GMRES iteration limit must be positive.")
+    tolerance > zero(T) || error("Deploy speaker ROM GMRES tolerance must be positive.")
+    beta = norm(right_hand_side)
+    beta > eps(T) || return (cuda.zeros(eltype(right_hand_side), length(right_hand_side)), 0, zero(T), T[])
+    basis = cuda.zeros(eltype(right_hand_side), length(right_hand_side), max_iterations + 1)
+    hessenberg = zeros(Complex{T}, max_iterations + 1, max_iterations)
+    residual_history = T[]
+    solution = nothing
+    used_iterations = 0
+    final_coefficients = Complex{T}[]
+    try
+        view(basis, :, 1) .= right_hand_side ./ beta
+        for iteration in 1:max_iterations
+            work = apply_operator(view(basis, :, iteration))
+            try
+                for previous in 1:iteration
+                    coefficient = dot(view(basis, :, previous), work)
+                    hessenberg[previous, iteration] = coefficient
+                    work .-= coefficient .* view(basis, :, previous)
+                end
+                next_norm = norm(work)
+                hessenberg[iteration + 1, iteration] = next_norm
+                if next_norm > eps(T)
+                    view(basis, :, iteration + 1) .= work ./ next_norm
+                end
+            finally
+                cuda.unsafe_free!(work)
+            end
+            small_rhs = zeros(Complex{T}, iteration + 1)
+            small_rhs[1] = beta
+            coefficients = view(hessenberg, 1:(iteration + 1), 1:iteration) \ small_rhs
+            residual = norm(small_rhs - view(hessenberg, 1:(iteration + 1), 1:iteration) * coefficients) / beta
+            push!(residual_history, T(residual))
+            used_iterations = iteration
+            final_coefficients = coefficients
+            (residual <= tolerance || abs(hessenberg[iteration + 1, iteration]) <= eps(T)) && break
+        end
+        coefficient_device = cuda.CuArray(final_coefficients)
+        try
+            solution = view(basis, :, 1:used_iterations) * coefficient_device
+            cuda.synchronize()
+        finally
+            cuda.unsafe_free!(coefficient_device)
+        end
+        return solution, used_iterations, last(residual_history), residual_history
+    finally
+        cuda.unsafe_free!(basis)
+    end
+end
+
 function solve_deploy_request_impl(request; emit_completed::Bool=true)
     request_started = time()
+    request_schema = String(get_value(request, "schema", "boundary_lab_deploy_solve"))
+    rom_request = request_schema == "boundary_lab_deploy_rom"
+    request_schema in ("boundary_lab_deploy_solve", "boundary_lab_deploy_rom") || error(
+        "Unsupported Deploy boundary solve schema $request_schema.",
+    )
     schema_version = Int(get_value(request, "schema_version", 1))
     schema_version in (1, 2) || error("Unsupported Deploy solve schema_version $(schema_version).")
     beat_backend = beat_backend_from_request(request)
@@ -192,6 +417,9 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
         "Deploy burton_miller_assembly must be 'direct_system' or 'operator_matrices'.",
     )
     direct_cuda_assembly = beat_backend == :cuda && requested_assembly_mode == "direct_system"
+    rom_request && !direct_cuda_assembly && error(
+        "Deploy Level 3 parity ROM currently requires direct-system BEAT CUDA.",
+    )
     assembly_mode = direct_cuda_assembly ? "direct_system" : "operator_matrices"
     retain_geometry_cache = Bool(get_value(request, "retain_geometry_cache", false))
     geometry_key = String(get_value(request, "geometry_key", ""))
@@ -248,7 +476,21 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
         source_meshes = [mesh]
         emit_event("status"; message="Reusing BEAT geometry caches")
     end
-    q_neumann = deploy_complex_vector(request["boundary_neumann"], FloatType)
+    speaker_rom = rom_request ? load_deploy_speaker_rom(
+        request,
+        FloatType,
+        length(mesh.vertices),
+        length(mesh.faces),
+    ) : nothing
+    initial_rom_response = rom_request ? deploy_speaker_rom_response(
+        speaker_rom,
+        zeros(Complex{FloatType}, length(mesh.vertices));
+        include_drive=true,
+    ) : nothing
+    q_neumann = rom_request ? initial_rom_response.q : deploy_complex_vector(
+        request["boundary_neumann"],
+        FloatType,
+    )
     length(q_neumann) == length(mesh.faces) || error(
         "Deploy boundary trace contains $(length(q_neumann)) faces, but the mesh contains $(length(mesh.faces)).",
     )
@@ -376,6 +618,11 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
     spl_db = nothing
     cached_q_neumann = nothing
     weighted_sources = nothing
+    rom_factorization = nothing
+    rom_iterations = 0
+    rom_residual = FloatType(NaN)
+    rom_residual_history = FloatType[]
+    final_rom_response = initial_rom_response
     try
         device_prepare_seconds = @elapsed begin
             if beat_backend == :cuda
@@ -449,7 +696,8 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
             )
         end
 
-        assembly_message = direct_cuda_assembly ?
+        assembly_message = rom_request ?
+            "Assembling Level 3 Schur exterior preconditioner" : direct_cuda_assembly ?
             "Assembling Level 2 rigid half-space Burton-Miller system" :
             "Assembling Level 2 rigid half-space boundary operators"
         emit_event("status"; message=assembly_message)
@@ -498,9 +746,73 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
             end
         end
 
-        emit_event("status"; message="Solving fixed-Neumann exterior system")
+        emit_event(
+            "status";
+            message=rom_request ?
+                "Solving Schur-eliminated rank-$(speaker_rom.rank)-per-sector system" :
+                "Solving fixed-Neumann exterior system",
+        )
         solve_seconds = @elapsed begin
-            pressure = if direct_cuda_assembly
+            pressure = if rom_request
+                cuda = BeatEngineCore.CUDA_MODULE
+                rom_factorization = lu!(direct_system.matrix)
+                direct_system_consumed = true
+                preconditioned_rhs = rom_factorization \ direct_system.rhs
+                try
+                    apply_schur = function(candidate_pressure)
+                        feedback = deploy_speaker_rom_response(
+                            speaker_rom,
+                            Complex{FloatType}.(Array(candidate_pressure));
+                            include_drive=false,
+                        )
+                        feedback_device = cuda.CuArray(feedback.q)
+                        feedback_rhs = feedback_solution = result = nothing
+                        try
+                            feedback_rhs = assemble_burton_miller_rhs_cuda(
+                                mesh,
+                                p1_space,
+                                dp0_space,
+                                feedback_device,
+                                k,
+                                rule;
+                                device_cache=device_cache,
+                                singular_cache=singular_cache,
+                                device_singular_cache=device_singular_cache,
+                                device_image_singular_cache=device_image_singular_cache,
+                                near_correction_cache=near_correction_cache,
+                                device_near_correction_cache=device_near_correction_cache,
+                                image_near_correction_cache=ground_near_correction_cache,
+                                device_image_near_correction_cache=device_ground_near_correction_cache,
+                                symmetry_mode=:ground,
+                            )
+                            feedback_solution = rom_factorization \ feedback_rhs
+                            result = copy(candidate_pressure)
+                            result .-= feedback_solution
+                            return result
+                        finally
+                            cuda.unsafe_free!(feedback_device)
+                            feedback_rhs === nothing || cuda.unsafe_free!(feedback_rhs)
+                            feedback_solution === nothing || cuda.unsafe_free!(feedback_solution)
+                        end
+                    end
+                    rom_pressure, rom_iterations, rom_residual, rom_residual_history = deploy_cuda_gmres(
+                        apply_schur,
+                        preconditioned_rhs;
+                        tolerance=speaker_rom.tolerance,
+                        max_iterations=speaker_rom.max_iterations,
+                    )
+                    final_rom_response = deploy_speaker_rom_response(
+                        speaker_rom,
+                        Complex{FloatType}.(Array(rom_pressure));
+                        include_drive=true,
+                    )
+                    cuda.unsafe_free!(cached_q_neumann)
+                    cached_q_neumann = cuda.CuArray(final_rom_response.q)
+                    rom_pressure
+                finally
+                    cuda.unsafe_free!(preconditioned_rhs)
+                end
+            elseif direct_cuda_assembly
                 direct_system_consumed = true
                 solve_burton_miller_system_cuda!(direct_system; return_gpu=true)
             elseif beat_backend == :cuda
@@ -582,7 +894,7 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                     max(norm(diagnostic_reference), eps(FloatType)),
                 )
             else
-                Float32(NaN)
+                nothing
             end
             proximity_pairs = get_value(proximity, "pairs", Any[])
             close_pair_count = count(pair -> Bool(get_value(pair, "close", false)), proximity_pairs)
@@ -629,8 +941,28 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                     "surface_padding_m" => Float32(get_value(proximity, "surface_padding_m", 0.01)),
                     "field_only" => false,
                     "gpu_resident_field" => beat_backend == :cuda,
+                    "fidelity" => rom_request ? "level3_parity_petrov_galerkin" : "level2",
                 ),
             )
+            if rom_request
+                result["diagnostics"]["rom_rank_per_sector"] = speaker_rom.rank
+                result["diagnostics"]["rom_sector_count"] = 4
+                result["diagnostics"]["schur_gmres_iterations"] = rom_iterations
+                result["diagnostics"]["schur_gmres_relative_residual"] = rom_residual
+                result["diagnostics"]["schur_gmres_residual_history"] = rom_residual_history
+                result["diagnostics"]["transducer_velocity"] = [
+                    Dict(
+                        "real" => Float32.(real.(values)),
+                        "imag" => Float32.(imag.(values)),
+                    ) for values in final_rom_response.velocities
+                ]
+                result["diagnostics"]["transducer_current"] = [
+                    Dict(
+                        "real" => Float32.(real.(values)),
+                        "imag" => Float32.(imag.(values)),
+                    ) for values in final_rom_response.currents
+                ]
+            end
             if include_complex_pressure
                 result["field_pressure"] = Dict(
                     "real" => Float32.(real.(field_pressure)),
@@ -652,6 +984,12 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
         operators === nothing || release_operator_storage!(operators)
         (direct_system === nothing || direct_system_consumed) ||
             release_burton_miller_system_cuda!(direct_system)
+        if rom_factorization !== nothing
+            cuda = BeatEngineCore.CUDA_MODULE
+            cuda.unsafe_free!(rom_factorization.factors)
+            cuda.unsafe_free!(rom_factorization.ipiv)
+            cuda.unsafe_free!(direct_system.rhs)
+        end
         retained_state = DEPLOY_GEOMETRY_STATE[]
         geometry_resources_retained = retain_geometry_cache && retained_state !== nothing &&
             retained_state.field_cache === field_cache

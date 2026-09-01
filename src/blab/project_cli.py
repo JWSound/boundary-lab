@@ -127,10 +127,13 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     export_speaker.add_argument("--fidelity", choices=("pattern", "fixed", "coupled"), default="pattern")
     export_speaker.add_argument(
         "--coupled-representation",
-        choices=("exact-system", "sampled-macro"),
-        default="exact-system",
-        help="Level-3 payload: frequency-parametric exact system (default) or legacy sampled dense macro matrices",
+        choices=("exact-system", "parity-rom", "sampled-macro"),
+        default="parity-rom",
+        help="Level-3 payload: rank-reduced parity ROM (default), exact system, or legacy dense macro matrices",
     )
+    export_speaker.add_argument("--speaker-rom-rank", type=int, default=32)
+    export_speaker.add_argument("--speaker-rom-training-count", type=int, default=96)
+    export_speaker.add_argument("--speaker-rom-validation-count", type=int, default=24)
     export_speaker.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
     export_speaker.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     export_speaker.add_argument("--events", choices=("text", "ndjson"), default="text")
@@ -375,6 +378,9 @@ def _export_speaker(args: argparse.Namespace) -> None:
             coupled_representation=coupled_representation,
             sphere_point_count=sphere_point_count,
             sphere_radius_m=project.preferences.polar_observation_distance_m,
+            speaker_rom_rank=args.speaker_rom_rank,
+            speaker_rom_training_count=args.speaker_rom_training_count,
+            speaker_rom_validation_count=args.speaker_rom_validation_count,
         )
 
         def emit(event: dict[str, Any]) -> None:

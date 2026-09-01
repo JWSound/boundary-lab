@@ -435,9 +435,11 @@ export function App() {
     window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable && rigidMeshesAvailable,
   );
   const coupledRepresentation = level2Package?.manifest.files.coupled_model?.representation;
+  const coupledRepresentationSupported = coupledRepresentation === "exact_frequency_parametric_fem" ||
+    coupledRepresentation === "parity_petrov_galerkin_rom";
   const coupledAvailable = Boolean(
     boundaryAvailable && level2Package && level2Package.manifest.fidelity_level >= 3 &&
-    coupledRepresentation === "exact_frequency_parametric_fem",
+    coupledRepresentationSupported,
   );
   const scenePackageLevel = Math.min(...sourceConfigs.map(
     (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
@@ -454,8 +456,8 @@ export function App() {
   const coupledUnavailableReason = boundaryUnavailableReason ?? (
     (level2Package?.manifest.fidelity_level ?? 0) < 3
       ? "The active speaker package does not contain Level 3 data."
-      : coupledRepresentation !== "exact_frequency_parametric_fem"
-        ? "Level 3 Deploy requires an exact frequency-parametric coupled model."
+      : !coupledRepresentationSupported
+        ? "Level 3 Deploy requires an exact or parity Petrov–Galerkin coupled model."
         : undefined
   );
   const selectedSolverAvailable = fidelity === "boundary"
@@ -566,8 +568,10 @@ export function App() {
       Boolean(
         window.boundaryLabDesktop && nextPackage.sourcePath &&
         nextPackage.manifest.fidelity_level >= (project.requested_fidelity === "coupled" ? 3 : 2) &&
-        (project.requested_fidelity !== "coupled" ||
-          nextPackage.manifest.files.coupled_model?.representation === "exact_frequency_parametric_fem"),
+        (project.requested_fidelity !== "coupled" || [
+          "exact_frequency_parametric_fem",
+          "parity_petrov_galerkin_rom",
+        ].includes(String(nextPackage.manifest.files.coupled_model?.representation))),
       )
       ? project.requested_fidelity
       : "pattern";

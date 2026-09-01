@@ -663,6 +663,19 @@ end
         @test Array(direct_system.matrix) ≈ Array(d_expected_lhs) rtol=2f-5 atol=2f-6
         @test Array(direct_system.rhs) ≈ Array(d_expected_rhs) rtol=2f-5 atol=2f-6
         @test haskey(direct_timing, "direct_system_regular")
+        d_direct_rhs_only = assemble_burton_miller_rhs_cuda(
+            mesh,
+            p1,
+            dp0,
+            d_q_neumann,
+            k,
+            rule;
+            device_cache=cuda_cache,
+            singular_cache=singular_cache,
+            device_singular_cache=cuda_singular_cache,
+        )
+        @test Array(d_direct_rhs_only) ≈ Array(d_expected_rhs) rtol=2f-5 atol=2f-6
+        CUDA_MODULE.unsafe_free!(d_direct_rhs_only)
         direct_pressure = solve_burton_miller_system_cuda!(direct_system)
         @test Array(d_matrix_free_rhs) ≈ Array(d_expected_rhs) rtol=2f-5
         CUDA_MODULE.unsafe_free!(d_q_neumann)
@@ -768,6 +781,21 @@ end
         @test symmetry_direct_system.image_singular_pairs == image_cache.pair_count
         @test Array(symmetry_direct_system.matrix) ≈ Array(symmetry_expected_lhs) rtol=5f-4 atol=5f-5
         @test Array(symmetry_direct_system.rhs) ≈ Array(symmetry_expected_rhs) rtol=5f-4 atol=5f-5
+        symmetry_rhs_only = assemble_burton_miller_rhs_cuda(
+            symmetry_mesh,
+            symmetry_p1,
+            symmetry_dp0,
+            d_symmetry_q,
+            k,
+            rule;
+            device_cache=symmetry_cuda_cache,
+            singular_cache=symmetry_singular_cache,
+            device_singular_cache=symmetry_cuda_singular_cache,
+            device_image_singular_cache=image_cache,
+            symmetry_mode=:xy,
+        )
+        @test Array(symmetry_rhs_only) ≈ Array(symmetry_expected_rhs) rtol=5f-4 atol=5f-5
+        CUDA_MODULE.unsafe_free!(symmetry_rhs_only)
         release_burton_miller_system_cuda!(symmetry_direct_system)
         CUDA_MODULE.unsafe_free!(symmetry_expected_lhs)
         CUDA_MODULE.unsafe_free!(symmetry_expected_rhs)

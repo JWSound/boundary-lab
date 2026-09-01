@@ -7,8 +7,17 @@ import json
 import time
 from pathlib import Path
 
-from blab.deploy_solve import DeploySolveCache, prepare_deploy_coupled_request
-from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT, BeatEngineWorkerProcess
+from blab.deploy_solve import (
+    DeploySolveCache,
+    prepare_deploy_coupled_request,
+    prepare_deploy_rom_request,
+    prepare_deploy_solve_request,
+)
+from blab.solvers.beat_engine_backend import (
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
+    BeatEngineWorkerProcess,
+)
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +29,7 @@ def main() -> int:
     parser.add_argument("--counts", default="1,4,8", help="Comma-separated cabinet counts.")
     parser.add_argument("--frequency", type=float, default=100.0)
     parser.add_argument("--backend", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--fidelity", choices=("boundary", "coupled"), default="coupled")
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--columns", type=int, default=33)
@@ -34,14 +44,20 @@ def main() -> int:
     if args.warmup < 0 or args.repeat < 1:
         parser.error("--warmup must be non-negative and --repeat must be positive.")
 
+    cache = DeploySolveCache()
+    package_data = cache.load_package(args.package.resolve())
+    is_rom = isinstance(package_data.coupled_model, dict) and (
+        args.fidelity == "coupled"
+        and package_data.coupled_model.get("representation") == "parity_petrov_galerkin_rom"
+    )
+    use_standard_worker = args.fidelity == "boundary" or is_rom
     project = DEFAULT_BEAT_ENGINE_CUDA_PROJECT if args.backend == "cuda" else DEFAULT_COUPLED_CPU_PROJECT
     worker = BeatEngineWorkerProcess(
         julia_executable=args.julia,
-        solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT,
+        solver_script=DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT if use_standard_worker else DEFAULT_COUPLED_SOLVER_SCRIPT,
         julia_threads="auto",
         julia_project=project,
     )
-    cache = DeploySolveCache()
     try:
         worker.ensure_started()
         for count in counts:
@@ -57,6 +73,7 @@ def main() -> int:
                     columns=args.columns,
                     rows=args.rows,
                     spacing_m=args.spacing_m,
+                    fidelity=args.fidelity,
                 )
                 result.update(phase=phase, run=run_index + 1 if phase == "warmup" else run_index - args.warmup + 1)
                 if args.json:
@@ -86,13 +103,14 @@ def _run_once(
     columns: int,
     rows: int,
     spacing_m: float,
+    fidelity: str,
 ) -> dict[str, object]:
     center = (cabinet_count - 1) / 2.0
     payload = {
         "packagePath": str(package.resolve()),
         "frequencyHz": frequency_hz,
         "backend": backend,
-        "fidelity": "coupled",
+        "fidelity": fidelity,
         "sources": [
             {
                 "id": f"s218bp-{index + 1}",
@@ -125,7 +143,18 @@ def _run_once(
     work_dir = ROOT / "runs" / ".deploy_level3_benchmark" / f"{cabinet_count}-cabinets"
     work_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
-    request_path, _ = prepare_deploy_coupled_request(payload, work_dir, cache=cache)
+    package_data = cache.load_package(package.resolve())
+    representation = (
+        package_data.coupled_model.get("representation")
+        if isinstance(package_data.coupled_model, dict)
+        else None
+    )
+    prepare = prepare_deploy_solve_request if fidelity == "boundary" else (
+        prepare_deploy_rom_request
+        if representation == "parity_petrov_galerkin_rom"
+        else prepare_deploy_coupled_request
+    )
+    request_path, _ = prepare(payload, work_dir, cache=cache)
     prepared = time.perf_counter()
     raw_result = None
     for event in worker.submit(request_path):
@@ -144,10 +173,12 @@ def _run_once(
         "wall_s": finished - started,
         "prepare_s": prepared - started,
         "worker_s": finished - prepared,
-        "timings": diagnostics.get("timings", {}),
+        "timings": raw_result.get("timings", diagnostics.get("timings", {})),
         "full_system_order": diagnostics.get("full_system_order"),
         "solved_system_order": diagnostics.get("solved_system_order"),
         "linear_solver": diagnostics.get("linear_solver"),
+        "schur_gmres_iterations": diagnostics.get("schur_gmres_iterations"),
+        "schur_gmres_relative_residual": diagnostics.get("schur_gmres_relative_residual"),
     }
 
 

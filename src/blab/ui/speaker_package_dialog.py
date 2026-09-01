@@ -19,7 +19,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.speaker_package import SpeakerPackageConfig, SpeakerPackageFidelity
+from blab.speaker_package import (
+    SpeakerPackageConfig,
+    SpeakerPackageCoupledRepresentation,
+    SpeakerPackageFidelity,
+)
 from blab.ui.file_dialogs import FileDialogService
 
 
@@ -46,9 +50,19 @@ class SpeakerPackageDialog(QDialog):
             int(SpeakerPackageFidelity.FIXED_SOURCES),
         )
         self.fidelity_combo.addItem(
-            "Level 3 — Exact frequency-parametric interior with coupled exterior BEM",
+            "Level 3 — Dynamic interior with coupled exterior BEM",
             int(SpeakerPackageFidelity.COUPLED),
         )
+        self.coupled_representation_combo = QComboBox()
+        self.coupled_representation_combo.addItem(
+            "Rank-32 parity Petrov–Galerkin ROM (recommended)",
+            SpeakerPackageCoupledRepresentation.PARITY_ROM.value,
+        )
+        self.coupled_representation_combo.addItem(
+            "Exact frequency-parametric interior",
+            SpeakerPackageCoupledRepresentation.EXACT_SYSTEM.value,
+        )
+        self.fidelity_combo.currentIndexChanged.connect(self._update_representation_enabled)
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("speaker.blabsp")
         browse_button = QPushButton("Browse…")
@@ -60,12 +74,13 @@ class SpeakerPackageDialog(QDialog):
         form = QFormLayout()
         form.addRow("Package name", self.name_edit)
         form.addRow("Fidelity", self.fidelity_combo)
+        form.addRow("Level 3 model", self.coupled_representation_combo)
         form.addRow("Output file", output_row)
 
         note = QLabel(
             "Boundary Lab will run a new solve with the complex spherical field and any boundary traces "
-            "required by the selected fidelity. Level 3 stores the compiled interior system and meshes, "
-            "not a dense matrix at every frequency. Exported packages use +Y as forward."
+            "required by the selected fidelity. The recommended Level 3 model stores four rank-32 parity "
+            "Petrov–Galerkin sectors at each exported frequency. Exported packages use +Y as forward."
         )
         note.setWordWrap(True)
 
@@ -78,13 +93,23 @@ class SpeakerPackageDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(note)
         layout.addWidget(buttons)
+        self._update_representation_enabled()
 
     def config(self) -> SpeakerPackageConfig:
         return SpeakerPackageConfig(
             output_path=Path(self.output_edit.text().strip()),
             name=self.name_edit.text().strip(),
             fidelity=SpeakerPackageFidelity(int(self.fidelity_combo.currentData())),
+            coupled_representation=SpeakerPackageCoupledRepresentation(
+                str(self.coupled_representation_combo.currentData())
+            ),
         ).normalized()
+
+    @Slot()
+    def _update_representation_enabled(self) -> None:
+        self.coupled_representation_combo.setEnabled(
+            int(self.fidelity_combo.currentData()) == int(SpeakerPackageFidelity.COUPLED)
+        )
 
     @Slot()
     def _browse(self) -> None:

@@ -46,6 +46,7 @@ function _cuda_regular_kernel!(
     trial_curl_sign_y,
     trial_curl_sign_z,
     direct_system,
+    rhs_only,
     system_re,
     system_im,
     rhs_re,
@@ -237,6 +238,7 @@ function _cuda_regular_kernel!(
                         adj2_im += tv2 * adj_value_im
                         adj3_im += tv3 * adj_value_im
 
+                        if !rhs_only
                         dlp11_re += tv1 * rv1 * dlp_value_re
                         dlp12_re += tv1 * rv2 * dlp_value_re
                         dlp13_re += tv1 * rv3 * dlp_value_re
@@ -284,6 +286,7 @@ function _cuda_regular_kernel!(
                         hyp31_im += h31 * weighted_im
                         hyp32_im += h32 * weighted_im
                         hyp33_im += h33 * weighted_im
+                        end
                     end
                 end
             end
@@ -304,15 +307,17 @@ function _cuda_regular_kernel!(
                 _cuda_bm_add_rhs!(rhs_re, rhs_im, row2, slp2_re, slp2_im, adj2_re, adj2_im, q, inverse_k)
                 _cuda_bm_add_rhs!(rhs_re, rhs_im, row3, slp3_re, slp3_im, adj3_re, adj3_im, q, inverse_k)
 
-                _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col1 - 1) * p1_dof_count, dlp11_re, dlp11_im, hyp11_re, hyp11_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col2 - 1) * p1_dof_count, dlp12_re, dlp12_im, hyp12_re, hyp12_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col3 - 1) * p1_dof_count, dlp13_re, dlp13_im, hyp13_re, hyp13_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col1 - 1) * p1_dof_count, dlp21_re, dlp21_im, hyp21_re, hyp21_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col2 - 1) * p1_dof_count, dlp22_re, dlp22_im, hyp22_re, hyp22_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col3 - 1) * p1_dof_count, dlp23_re, dlp23_im, hyp23_re, hyp23_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col1 - 1) * p1_dof_count, dlp31_re, dlp31_im, hyp31_re, hyp31_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col2 - 1) * p1_dof_count, dlp32_re, dlp32_im, hyp32_re, hyp32_im, inverse_k)
-                _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col3 - 1) * p1_dof_count, dlp33_re, dlp33_im, hyp33_re, hyp33_im, inverse_k)
+                if !rhs_only
+                    _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col1 - 1) * p1_dof_count, dlp11_re, dlp11_im, hyp11_re, hyp11_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col2 - 1) * p1_dof_count, dlp12_re, dlp12_im, hyp12_re, hyp12_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row1 + (dlp_col3 - 1) * p1_dof_count, dlp13_re, dlp13_im, hyp13_re, hyp13_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col1 - 1) * p1_dof_count, dlp21_re, dlp21_im, hyp21_re, hyp21_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col2 - 1) * p1_dof_count, dlp22_re, dlp22_im, hyp22_re, hyp22_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row2 + (dlp_col3 - 1) * p1_dof_count, dlp23_re, dlp23_im, hyp23_re, hyp23_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col1 - 1) * p1_dof_count, dlp31_re, dlp31_im, hyp31_re, hyp31_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col2 - 1) * p1_dof_count, dlp32_re, dlp32_im, hyp32_re, hyp32_im, inverse_k)
+                    _cuda_bm_add_lhs!(system_re, system_im, row3 + (dlp_col3 - 1) * p1_dof_count, dlp33_re, dlp33_im, hyp33_re, hyp33_im, inverse_k)
+                end
                 pair += stride
                 continue
             end

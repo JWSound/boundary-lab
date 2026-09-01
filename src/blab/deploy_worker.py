@@ -19,6 +19,7 @@ from blab.deploy_solve import (
     prepare_deploy_coupled_request,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
+    prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
 from blab.solvers.beat_engine_backend import (
@@ -51,7 +52,7 @@ def _emit(event_type: str, *, request_id: object | None = None, **values: Any) -
 
 
 def _worker(backend: str, *, coupled: bool = False) -> BeatEngineWorkerProcess:
-    normalized = backend.removeprefix("coupled:").strip().lower()
+    normalized = backend.removeprefix("coupled:").removeprefix("rom:").strip().lower()
     if normalized not in {"cuda", "cpu"}:
         raise ValueError("Deploy worker backend must be cuda or cpu.")
     project = (
@@ -120,6 +121,21 @@ def _solve(
 ) -> None:
     worker_key = _worker_key(payload)
     coupled = worker_key.startswith("coupled:")
+    rom = False
+    if coupled and isinstance(payload, dict):
+        package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
+        package = solve_cache.load_package(package_path)
+        representation = (
+            package.coupled_model.get("representation")
+            if isinstance(package.coupled_model, dict)
+            else None
+        )
+        if representation == "parity_petrov_galerkin_rom":
+            # The ROM path uses the same BEAT solver process as Level 2, so it
+            # benefits from the desktop's background CUDA warmup.
+            worker_key = str(payload.get("backend", "cuda")).strip().lower()
+            coupled = False
+            rom = True
     worker = workers.get(worker_key)
     if worker is None:
         worker = _worker(worker_key, coupled=coupled)
@@ -136,6 +152,13 @@ def _solve(
             request_path, _request = prepare_deploy_field_request(payload, temp_dir)
         elif coupled:
             request_path, _request = prepare_deploy_coupled_request(
+                payload,
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
+        elif rom:
+            request_path, _request = prepare_deploy_rom_request(
                 payload,
                 temp_dir,
                 cache=solve_cache,
