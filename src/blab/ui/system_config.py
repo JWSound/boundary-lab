@@ -1598,8 +1598,7 @@ class SystemConfigDialog(QDialog):
         row.addWidget(remove_button)
         row.addStretch(1)
         note = QLabel(
-            "A component may drive one or more moving surfaces. Electrodynamic transducers"
-            " assume a rigid-piston model and a 2.83 V reference excitation."
+            "A component may drive one or more moving surfaces."
         )
         note.setWordWrap(True)
         layout = QVBoxLayout(self.components_tab)

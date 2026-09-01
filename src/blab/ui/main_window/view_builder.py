@@ -124,7 +124,7 @@ class ViewBuilderMixin:
             elif entry.plot_id == "spinorama":
                 self.spherical_spin_action = QAction("Spherical Spin", self)
                 self.spherical_spin_action.setToolTip(
-                    "Use full-sphere samples for Sound Power and Spherical DI"
+                    "Use full-sphere samples"
                 )
                 self.spherical_spin_action.setCheckable(True)
                 self.spherical_spin_action.setChecked(False)
