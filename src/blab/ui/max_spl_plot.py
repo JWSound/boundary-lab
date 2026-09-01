@@ -33,7 +33,7 @@ class MaxSplCanvas(RawCoordinatePlotCanvas):
         self._series_actions: dict[str, QAction] = {}
         self._plot_state = None
         super().__init__(self.figure, "Maximum SPL")
-        self.calculate_action = QAction("M", self)
+        self.calculate_action = QAction("Config", self)
         self.calculate_action.setToolTip("Configure maximum SPL channel Xmax and Pmax ratings")
         self.calculate_action.setEnabled(False)
         self.trace_filter_menu = QMenu("Traces", self)

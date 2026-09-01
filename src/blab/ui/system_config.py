@@ -9,7 +9,7 @@ from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -48,6 +48,7 @@ from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
+    ProjectedAreaGeometryCache,
     ProjectedDiaphragmAreaInference,
     infer_component_symmetry,
     infer_projected_diaphragm_area,
@@ -81,6 +82,7 @@ INTERFACE_SEAM_SIMPLIFICATION_WARNING = (
     "The result passed topology and element-quality checks, but local mesh quality may have changed. "
     "Visually inspect the conformed interface and its surrounding surface in the 3D viewport before solving."
 )
+PROJECTED_AREA_DEBOUNCE_MS = 500
 
 
 @dataclass(frozen=True)
@@ -455,6 +457,17 @@ def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[Availabl
     return tuple(inspected)
 
 
+def inspect_system_mesh_variants(
+    mesh_entries: tuple[MeshDialogEntry, ...],
+    symmetry_mesh_entries: tuple[MeshDialogEntry, ...],
+) -> tuple[tuple[AvailableSystemMesh, ...], tuple[AvailableSystemMesh, ...]]:
+    """Inspect canonical and symmetry meshes without rereading identical inputs."""
+
+    meshes = inspect_system_meshes(mesh_entries)
+    symmetry_meshes = meshes if symmetry_mesh_entries == mesh_entries else inspect_system_meshes(symmetry_mesh_entries)
+    return meshes, symmetry_meshes
+
+
 def sync_physical_system_meshes(
     system: PhysicalSystem,
     meshes: tuple[AvailableSystemMesh, ...],
@@ -753,6 +766,7 @@ class _ComponentEditorDialog(QDialog):
         unavailable_boundary_ids: set[str],
         symmetry_mode: str,
         mesh_cache: dict[str, meshio.Mesh],
+        projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -761,6 +775,7 @@ class _ComponentEditorDialog(QDialog):
         self._boundaries_by_id = {boundary.id: boundary for boundary in boundaries}
         self._resources_by_id = resources_by_id
         self._mesh_cache = mesh_cache
+        self._projected_geometry_cache = projected_geometry_cache or ProjectedAreaGeometryCache()
         self._axis_inference: MotionAxisInference | None = None
         self._automatic_axis: np.ndarray | None = None
         self._axis_inference_error: str | None = None
@@ -947,14 +962,22 @@ class _ComponentEditorDialog(QDialog):
         self.flip_axis_button.clicked.connect(self._flip_axis)
         self.semi_inductance_button.clicked.connect(self._edit_semi_inductance)
         self.rear_chamber_check.toggled.connect(self.rear_chamber_volume_spin.setEnabled)
+        self._projected_area_update_timer = QTimer(self)
+        self._projected_area_update_timer.setSingleShot(True)
+        self._projected_area_update_timer.setInterval(PROJECTED_AREA_DEBOUNCE_MS)
+        self._projected_area_update_timer.timeout.connect(self._update_projected_area_readout)
         for spin in (*self.axis_spins, *self.boundary_weight_spins):
-            spin.valueChanged.connect(lambda _value: self._update_projected_area_readout())
+            spin.valueChanged.connect(self._schedule_projected_area_update)
         self._refresh_semi_inductance_controls()
-        self._refresh_type_controls()
-        self._refresh_axis_controls()
-        self._infer_component_symmetry()
-        if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER and draft.motion_axis_mode == "automatic":
-            self._infer_axis()
+        self._refresh_type_controls(update_geometry=False)
+        self._refresh_axis_controls(update_geometry=False)
+        if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
+            if symmetry_inference is not None:
+                if draft.motion_axis_mode == "automatic":
+                    self._infer_axis(symmetry_inference)
+                else:
+                    self._update_projected_area_readout(symmetry_inference)
 
     def selected_boundary_ids(self) -> tuple[str, ...]:
         return tuple(
@@ -974,6 +997,7 @@ class _ComponentEditorDialog(QDialog):
         }
 
     def component_draft(self) -> _ComponentDraft:
+        self._projected_area_update_timer.stop()
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("The component must have a name.")
@@ -982,7 +1006,7 @@ class _ComponentEditorDialog(QDialog):
             raise ValueError(f"Component '{name}' must select at least one moving boundary.")
         kind = ComponentKind(self.type_combo.currentData())
         if kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
-            symmetry_inference = self._infer_component_symmetry()
+            symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
             if symmetry_inference is None:
                 raise ValueError(self._symmetry_inference_error or "Component symmetry could not be inferred.")
             parameters = {}
@@ -1004,7 +1028,7 @@ class _ComponentEditorDialog(QDialog):
                 parameters[_SEMI_INDUCTANCE_KEY] = dict(self._semi_inductance_parameters)
             mode = str(self.axis_mode_combo.currentData())
             if mode == "automatic":
-                inference = self._infer_axis()
+                inference = self._infer_axis(symmetry_inference, update_projected_area=False)
                 if inference is None:
                     raise ValueError(self._axis_inference_error or "The motion axis could not be inferred.")
                 if inference.confidence < 0.2:
@@ -1073,11 +1097,19 @@ class _ComponentEditorDialog(QDialog):
             return
         self.accept()
 
-    def _refresh_type_controls(self, _index: int = -1) -> None:
+    def _refresh_type_controls(self, _index: int = -1, *, update_geometry: bool = True) -> None:
         electrodynamic = self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
         self.transducer_group.setVisible(electrodynamic)
-        if electrodynamic:
-            self._infer_component_symmetry()
+        if not electrodynamic:
+            self._projected_area_update_timer.stop()
+        if electrodynamic and update_geometry:
+            symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
+            if symmetry_inference is None:
+                return
+            if self.axis_mode_combo.currentData() == "automatic":
+                self._infer_axis(symmetry_inference)
+            else:
+                self._update_projected_area_readout(symmetry_inference)
 
     def _edit_semi_inductance(self) -> None:
         dialog = _SemiInductanceDialog(self._semi_inductance_parameters, self)
@@ -1111,12 +1143,13 @@ class _ComponentEditorDialog(QDialog):
             else "Simple voice-coil inductance."
         )
 
-    def _refresh_axis_controls(self, _index: int = -1) -> None:
+    def _refresh_axis_controls(self, _index: int = -1, *, update_geometry: bool = True) -> None:
         automatic = self.axis_mode_combo.currentData() == "automatic"
         for spin in self.axis_spins:
             spin.setEnabled(not automatic)
         if automatic:
-            self._infer_axis()
+            if update_geometry:
+                self._infer_axis()
         elif not self.axis_confidence_label.text():
             self.axis_confidence_label.setText("Manual direction; it will be normalized when saved.")
 
@@ -1125,11 +1158,19 @@ class _ComponentEditorDialog(QDialog):
             self.boundary_weight_spins[item.row()].setEnabled(
                 bool(item.flags() & Qt.ItemFlag.ItemIsEnabled) and item.checkState() == Qt.CheckState.Checked
             )
-        self._infer_component_symmetry()
+        symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
+        if symmetry_inference is None:
+            return
         if self.axis_mode_combo.currentData() == "automatic":
-            self._infer_axis()
+            self._infer_axis(symmetry_inference)
+        else:
+            self._update_projected_area_readout(symmetry_inference)
 
-    def _infer_component_symmetry(self) -> ComponentSymmetryInference | None:
+    def _infer_component_symmetry(
+        self,
+        *,
+        update_projected_area: bool = True,
+    ) -> ComponentSymmetryInference | None:
         selected = tuple(
             self._boundaries_by_id[boundary_id]
             for boundary_id in self.selected_boundary_ids()
@@ -1152,8 +1193,13 @@ class _ComponentEditorDialog(QDialog):
             return None
         self._symmetry_inference = inference
         self._symmetry_inference_error = None
-        self._update_projected_area_readout(inference)
+        if update_projected_area:
+            self._update_projected_area_readout(inference)
         return inference
+
+    def _schedule_projected_area_update(self, _value: float = 0.0) -> None:
+        if self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
+            self._projected_area_update_timer.start()
 
     def _update_projected_area_readout(
         self,
@@ -1161,6 +1207,8 @@ class _ComponentEditorDialog(QDialog):
         *,
         axis: np.ndarray | None = None,
     ) -> ProjectedDiaphragmAreaInference | None:
+        if hasattr(self, "_projected_area_update_timer"):
+            self._projected_area_update_timer.stop()
         inference = self._symmetry_inference if symmetry_inference is None else symmetry_inference
         if inference is None or not hasattr(self, "symmetry_inference_label"):
             return None
@@ -1183,6 +1231,7 @@ class _ComponentEditorDialog(QDialog):
                 inference.surface_completion_factor,
                 boundary_motion_weights=self.boundary_motion_weights(),
                 mesh_cache=self._mesh_cache,
+                projected_geometry_cache=self._projected_geometry_cache,
             )
         except ComponentSymmetryInferenceError as exc:
             self._projected_area_inference = None
@@ -1211,13 +1260,19 @@ class _ComponentEditorDialog(QDialog):
             self.projected_area_warning_label.setVisible(False)
         return area
 
-    def _infer_axis(self) -> MotionAxisInference | None:
+    def _infer_axis(
+        self,
+        symmetry_inference: ComponentSymmetryInference | None = None,
+        *,
+        update_projected_area: bool = True,
+    ) -> MotionAxisInference | None:
         selected = tuple(
             self._boundaries_by_id[boundary_id]
             for boundary_id in self.selected_boundary_ids()
             if boundary_id in self._boundaries_by_id
         )
-        symmetry_inference = self._infer_component_symmetry()
+        if symmetry_inference is None:
+            symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
         if symmetry_inference is None:
             self._axis_inference = None
             self._automatic_axis = None
@@ -1243,8 +1298,12 @@ class _ComponentEditorDialog(QDialog):
         current_axis = np.asarray([spin.value() for spin in self.axis_spins], dtype=float)
         if float(np.linalg.norm(current_axis)) > 0.0 and float(np.dot(inferred_axis, current_axis)) < 0.0:
             inferred_axis *= -1.0
-        for spin, value in zip(self.axis_spins, inferred_axis):
-            spin.setValue(float(value))
+        signal_blockers = [QSignalBlocker(spin) for spin in self.axis_spins]
+        try:
+            for spin, value in zip(self.axis_spins, inferred_axis):
+                spin.setValue(float(value))
+        finally:
+            del signal_blockers
         self._axis_inference = inference
         self._automatic_axis = inferred_axis.copy()
         self._axis_inference_error = None
@@ -1254,14 +1313,20 @@ class _ComponentEditorDialog(QDialog):
             f"{inference.triangle_count} triangles, projected-normal alignment "
             f"{inference.mean_squared_alignment:.0%}."
         )
-        self._update_projected_area_readout(symmetry_inference, axis=inferred_axis)
+        if update_projected_area:
+            self._update_projected_area_readout(symmetry_inference, axis=inferred_axis)
         return inference
 
     def _flip_axis(self) -> None:
-        for spin in self.axis_spins:
-            spin.setValue(-spin.value())
+        signal_blockers = [QSignalBlocker(spin) for spin in self.axis_spins]
+        try:
+            for spin in self.axis_spins:
+                spin.setValue(-spin.value())
+        finally:
+            del signal_blockers
         if self._automatic_axis is not None:
             self._automatic_axis *= -1.0
+        self._schedule_projected_area_update()
 
 
 class _WallImpedanceDialog(QDialog):
@@ -1399,6 +1464,7 @@ class SystemConfigDialog(QDialog):
         }
         self._component_drafts: list[_ComponentDraft] = []
         self._motion_axis_mesh_cache: dict[str, meshio.Mesh] = {}
+        self._projected_area_geometry_cache = ProjectedAreaGeometryCache()
         self._interface_mesh_cache: dict[tuple[str, float, tuple[float, float, float]], meshio.Mesh] = {}
 
         self.tabs = QTabWidget()
@@ -2287,11 +2353,6 @@ class SystemConfigDialog(QDialog):
         current_row = self.components_table.currentRow()
         boundaries = {boundary.id: boundary for boundary in self._collect_boundaries()}
         region_names = self._region_names_by_id()
-        try:
-            _regions, resources = self._collect_regions_and_resources()
-            analysis_resources = self._symmetry_analysis_resources_by_id(resources)
-        except ValueError:
-            analysis_resources = {}
         self.components_table.setRowCount(0)
         for row, draft in enumerate(self._component_drafts):
             self.components_table.insertRow(row)
@@ -2317,19 +2378,7 @@ class SystemConfigDialog(QDialog):
             )
             symmetry_summary = "Handled by acoustic symmetry"
             if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
-                selected = tuple(
-                    boundaries[boundary_id] for boundary_id in draft.boundary_ids if boundary_id in boundaries
-                )
-                try:
-                    inference = infer_component_symmetry(
-                        selected,
-                        analysis_resources,
-                        self._symmetry_mode,
-                        mesh_cache=self._motion_axis_mesh_cache,
-                    )
-                    symmetry_summary = inference.summary()
-                except ComponentSymmetryInferenceError as exc:
-                    symmetry_summary = f"Could not infer: {exc}"
+                symmetry_summary = self._stored_component_symmetry_summary(draft)
             values = (
                 draft.name,
                 kind_label,
@@ -2345,6 +2394,23 @@ class SystemConfigDialog(QDialog):
                 self.components_table.setItem(row, column, item)
         if self._component_drafts and current_row >= 0:
             self.components_table.selectRow(min(current_row, len(self._component_drafts) - 1))
+
+    def _stored_component_symmetry_summary(self, draft: _ComponentDraft) -> str:
+        try:
+            fractional_axes = tuple(str(axis) for axis in draft.parameters["fractional_symmetry_axes"])
+            completion_factor = int(draft.parameters["surface_completion_factor"])
+            orbit_count = int(draft.parameters["physical_driver_orbit_count"])
+        except (KeyError, TypeError, ValueError):
+            return "Inferred when the component is edited or the system is applied"
+        return ComponentSymmetryInference(
+            symmetry_mode=self._symmetry_mode,
+            fractional_symmetry_axes=fractional_axes,
+            surface_completion_factor=completion_factor,
+            physical_driver_orbit_count=orbit_count,
+            surface_patch_count=0,
+            perimeter_edge_count=0,
+            plane_edge_counts=(),
+        ).summary()
 
     def _edit_selected_component(self) -> None:
         row = self.components_table.currentRow()
@@ -2378,6 +2444,7 @@ class SystemConfigDialog(QDialog):
             unavailable_boundary_ids=unavailable,
             symmetry_mode=self._symmetry_mode,
             mesh_cache=self._motion_axis_mesh_cache,
+            projected_geometry_cache=self._projected_area_geometry_cache,
             parent=self,
         )
         if editor.exec() != QDialog.DialogCode.Accepted:
@@ -2797,6 +2864,7 @@ __all__ = [
     "SystemConfigDialog",
     "infer_component_motion_axis",
     "interface_bem_mesh_names_for_changes",
+    "inspect_system_mesh_variants",
     "inspect_system_meshes",
     "rebuild_configured_interfaces",
     "sync_physical_system_meshes",

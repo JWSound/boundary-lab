@@ -4,9 +4,11 @@ import meshio
 import numpy as np
 import pytest
 
+import blab.component_symmetry as component_symmetry_module
 from blab.component_symmetry import (
     ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
+    ProjectedAreaGeometryCache,
     infer_component_symmetry,
     infer_projected_diaphragm_area,
     infer_weighted_surface_area,
@@ -196,6 +198,47 @@ def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
     assert inferred.projected_area_m2 == pytest.approx(0.01)
     assert not inferred.has_opposing_sides
     assert inferred.relative_side_mismatch is None
+
+
+def test_projected_diaphragm_area_reuses_tetrahedron_orientation_geometry(monkeypatch) -> None:
+    resource = MeshResource("mesh:fem", "FEM", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        ),
+        cells=[
+            ("triangle", np.asarray(((0, 2, 1),), dtype=np.int64)),
+            ("tetra", np.asarray(((0, 1, 2, 3),), dtype=np.int64)),
+        ],
+        cell_data={
+            "gmsh:physical": [np.asarray((1,), dtype=np.int32), np.asarray((2,), dtype=np.int32)]
+        },
+        field_data={"Front": np.asarray((1, 2)), "Volume": np.asarray((2, 3))},
+    )
+    build_calls = 0
+    original = component_symmetry_module._tetrahedron_opposite_vertex_by_face
+
+    def count_builds(value):
+        nonlocal build_calls
+        build_calls += 1
+        return original(value)
+
+    monkeypatch.setattr(component_symmetry_module, "_tetrahedron_opposite_vertex_by_face", count_builds)
+    geometry_cache = ProjectedAreaGeometryCache()
+    boundary = _boundary(resource, "Front")
+    for weight in (1.0, 0.5):
+        infer_projected_diaphragm_area(
+            (boundary,),
+            {resource.id: resource},
+            (0.0, 0.0, 1.0),
+            1,
+            boundary_motion_weights={boundary.id: weight},
+            mesh_cache={resource.id: mesh},
+            projected_geometry_cache=geometry_cache,
+        )
+
+    assert build_calls == 1
+    assert len(geometry_cache.surface_geometry_by_resource_tag) == 1
 
 
 def test_weighted_surface_area_applies_motion_weights_and_symmetry_completion() -> None:

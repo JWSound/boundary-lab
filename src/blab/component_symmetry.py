@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import meshio
@@ -50,6 +50,14 @@ class ProjectedDiaphragmAreaInference:
             return None
         maximum = max(self.positive_side_area_m2, self.negative_side_area_m2)
         return abs(self.positive_side_area_m2 - self.negative_side_area_m2) / maximum
+
+
+@dataclass
+class ProjectedAreaGeometryCache:
+    """Reusable mesh geometry needed by projected diaphragm-area inference."""
+
+    opposite_vertex_by_resource: dict[tuple, dict[tuple[int, int, int], int]] = field(default_factory=dict)
+    surface_geometry_by_resource_tag: dict[tuple, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -209,6 +217,7 @@ def infer_projected_diaphragm_area(
     boundary_motion_weights: dict[str, float] | None = None,
     boundary_side_keys: dict[str, str] | None = None,
     mesh_cache: dict[str, meshio.Mesh] | None = None,
+    projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
 ) -> ProjectedDiaphragmAreaInference:
     """Integrate the solver's projected rigid-translation area by acoustic side."""
 
@@ -226,6 +235,7 @@ def infer_projected_diaphragm_area(
         raise ComponentSymmetryInferenceError("Surface completion factor must be 1, 2, or 4.")
     weights = {} if boundary_motion_weights is None else boundary_motion_weights
     cache = {} if mesh_cache is None else mesh_cache
+    geometry_cache = ProjectedAreaGeometryCache() if projected_geometry_cache is None else projected_geometry_cache
     positive_area = 0.0
     negative_area = 0.0
     area_by_side: dict[str, float] = {}
@@ -240,20 +250,37 @@ def infer_projected_diaphragm_area(
             mesh = _transformed_mesh(resource)
             cache[resource.id] = mesh
         tag = _boundary_surface_tag(mesh, boundary)
-        triangles = _triangles_for_tags(mesh, {tag}, resource.name)
-        points = np.asarray(mesh.points, dtype=float)
-        vertices = points[triangles]
-        cross = np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
-        double_area = np.linalg.norm(cross, axis=1)
-        nondegenerate = double_area > np.finfo(float).eps
-        if not np.any(nondegenerate):
-            continue
-        triangles = triangles[nondegenerate]
-        vertices = vertices[nondegenerate]
-        cross = cross[nondegenerate]
-        double_area = double_area[nondegenerate]
-        normals = cross / double_area[:, np.newaxis]
-        normals = _orient_surface_normals_outward(mesh, triangles, vertices, normals)
+        resource_key = _resource_geometry_key(resource)
+        surface_key = (*resource_key, tag)
+        surface_geometry = geometry_cache.surface_geometry_by_resource_tag.get(surface_key)
+        if surface_geometry is None:
+            triangles = _triangles_for_tags(mesh, {tag}, resource.name)
+            points = np.asarray(mesh.points, dtype=float)
+            vertices = points[triangles]
+            cross = np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
+            double_area = np.linalg.norm(cross, axis=1)
+            nondegenerate = double_area > np.finfo(float).eps
+            if not np.any(nondegenerate):
+                continue
+            triangles = triangles[nondegenerate]
+            vertices = vertices[nondegenerate]
+            cross = cross[nondegenerate]
+            double_area = double_area[nondegenerate]
+            normals = cross / double_area[:, np.newaxis]
+            opposite_vertices = geometry_cache.opposite_vertex_by_resource.get(resource_key)
+            if opposite_vertices is None:
+                opposite_vertices = _tetrahedron_opposite_vertex_by_face(mesh)
+                geometry_cache.opposite_vertex_by_resource[resource_key] = opposite_vertices
+            normals = _orient_surface_normals_outward(
+                mesh,
+                triangles,
+                vertices,
+                normals,
+                opposite_vertices,
+            )
+            surface_geometry = (normals, double_area)
+            geometry_cache.surface_geometry_by_resource_tag[surface_key] = surface_geometry
+        normals, double_area = surface_geometry
         try:
             coefficient = float(weights.get(boundary.id, 1.0))
         except (TypeError, ValueError) as exc:
@@ -353,12 +380,18 @@ def infer_weighted_surface_area(
     return total_area
 
 
-def _orient_surface_normals_outward(
+def _resource_geometry_key(resource: MeshResource) -> tuple:
+    return (
+        resource.id,
+        resource.file,
+        float(resource.scale_to_m),
+        tuple(float(value) for value in resource.translation_m),
+    )
+
+
+def _tetrahedron_opposite_vertex_by_face(
     mesh: meshio.Mesh,
-    triangles: np.ndarray,
-    vertices: np.ndarray,
-    normals: np.ndarray,
-) -> np.ndarray:
+) -> dict[tuple[int, int, int], int]:
     opposite_vertex_by_face: dict[tuple[int, int, int], int] = {}
     for block in mesh.cells:
         if block.type not in {"tetra", "tetra4", "tetra10"}:
@@ -372,6 +405,16 @@ def _orient_surface_normals_outward(
                 ((b, c, d), a),
             ):
                 opposite_vertex_by_face.setdefault(tuple(sorted(face)), opposite)
+    return opposite_vertex_by_face
+
+
+def _orient_surface_normals_outward(
+    mesh: meshio.Mesh,
+    triangles: np.ndarray,
+    vertices: np.ndarray,
+    normals: np.ndarray,
+    opposite_vertex_by_face: dict[tuple[int, int, int], int],
+) -> np.ndarray:
     if not opposite_vertex_by_face:
         return normals
     oriented = normals.copy()
@@ -496,6 +539,7 @@ def _perimeter_edges(triangles: np.ndarray) -> np.ndarray:
 __all__ = [
     "ComponentSymmetryInference",
     "ComponentSymmetryInferenceError",
+    "ProjectedAreaGeometryCache",
     "ProjectedDiaphragmAreaInference",
     "SYMMETRY_PARAMETER_KEYS",
     "infer_component_symmetry",

@@ -233,7 +233,7 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
         for button in max_spl_title_bar.tool_buttons
         if button.defaultAction() is main_window.max_spl_plot.calculate_action
     )
-    assert max_spl_button.text() == "M"
+    assert max_spl_button.text() == "Config"
     assert "Configure maximum SPL" in max_spl_button.toolTip()
 
     electrical_title_bar = main_window.plot_docks["electrical_impedance"].titleBarWidget()

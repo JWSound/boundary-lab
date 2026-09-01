@@ -24,6 +24,7 @@ from blab.acoustic_materials import (
 from blab.component_symmetry import (
     SYMMETRY_PARAMETER_KEYS,
     ComponentSymmetryInferenceError,
+    ProjectedAreaGeometryCache,
     infer_component_symmetry,
     infer_projected_diaphragm_area,
     infer_weighted_surface_area,
@@ -126,6 +127,7 @@ class PhysicalSystemCompiler:
         boundaries_by_id = {boundary.id: boundary for boundary in system.boundaries}
         resources_by_id = {resource.id: resource for resource in system.meshes}
         mesh_cache: dict[str, meshio.Mesh] = {}
+        projected_geometry_cache = ProjectedAreaGeometryCache()
         compiled = []
         normalization: dict[str, AcousticImpedanceNormalization] = {}
         unbounded_region_ids = {
@@ -195,6 +197,7 @@ class PhysicalSystemCompiler:
                     boundary_motion_weights=dict(parameters.get("boundary_motion_weights", {})),
                     boundary_side_keys={boundary.id: boundary.region_id for boundary in boundaries},
                     mesh_cache=mesh_cache,
+                    projected_geometry_cache=projected_geometry_cache,
                 )
             except (ComponentSymmetryInferenceError, TypeError, ValueError) as exc:
                 raise PhysicalModelCompileError(

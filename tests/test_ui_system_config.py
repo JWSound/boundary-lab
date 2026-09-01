@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import meshio
 import numpy as np
 import pytest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 import blab.ui.system_config as system_config_module
@@ -52,6 +53,7 @@ from blab.ui.system_config import (
     _SemiInductanceDialog,
     _WallImpedanceDialog,
     infer_component_motion_axis,
+    inspect_system_mesh_variants,
     inspect_system_meshes,
     interface_bem_mesh_names_for_changes,
     rebuild_configured_interfaces,
@@ -60,6 +62,24 @@ from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
 _APP = QApplication.instance() or QApplication([])
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_identical_system_mesh_variants_are_only_inspected_once(monkeypatch) -> None:
+    entries = _fixture_mesh_entries()
+    inspected = (object(),)
+    calls = []
+
+    def inspect(value):
+        calls.append(value)
+        return inspected
+
+    monkeypatch.setattr(system_config_module, "inspect_system_meshes", inspect)
+
+    canonical, symmetry = inspect_system_mesh_variants(entries, entries)
+
+    assert calls == [entries]
+    assert canonical is inspected
+    assert symmetry is inspected
 
 
 def _fixture_mesh_entries(
@@ -771,7 +791,7 @@ def test_semi_inductance_dialog_requires_a_complete_enabled_model() -> None:
         dialog.model_parameters()
 
 
-def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
+def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monkeypatch) -> None:
     resources = {
         "mesh:front": MeshResource(
             id="mesh:front",
@@ -824,6 +844,15 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
             "projected_area_m2": 0.5,
         },
     }
+    projected_area_calls = 0
+    original_projected_area = system_config_module.infer_projected_diaphragm_area
+
+    def count_projected_area_calls(*args, **kwargs):
+        nonlocal projected_area_calls
+        projected_area_calls += 1
+        return original_projected_area(*args, **kwargs)
+
+    monkeypatch.setattr(system_config_module, "infer_projected_diaphragm_area", count_projected_area_calls)
     editor = _ComponentEditorDialog(
         _ComponentDraft(
             id="component:woofer",
@@ -851,6 +880,7 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
         },
     )
 
+    assert projected_area_calls == 1
     assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
     assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
     assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
@@ -859,6 +889,18 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert editor.rear_chamber_check.isChecked()
     assert editor.rear_chamber_volume_spin.isEnabled()
     assert editor.rear_chamber_volume_spin.value() == pytest.approx(12.5)
+    debounce_spy = QSignalSpy(editor._projected_area_update_timer.timeout)
+    editor.boundary_weight_spins[0].setValue(-0.1)
+    QTest.qWait(300)
+    assert debounce_spy.count() == 0
+    editor.boundary_weight_spins[0].setValue(-0.2)
+    QTest.qWait(300)
+    assert debounce_spy.count() == 0
+    QTest.qWait(250)
+    assert debounce_spy.count() == 1
+    assert editor._projected_area_update_timer.interval() == 500
+    editor.boundary_weight_spins[0].setValue(0.0)
+    editor._update_projected_area_readout()
     editor.rear_chamber_check.setChecked(False)
     assert not editor.rear_chamber_volume_spin.isEnabled()
     editor.rear_chamber_check.setChecked(True)
