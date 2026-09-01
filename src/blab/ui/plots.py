@@ -282,6 +282,15 @@ class InteractivePlotCanvas(FigureCanvas):
         apply_figure_layout(self.figure, self._layout_profile)
         self._after_layout_profile_applied()
 
+    def _apply_layout(self) -> None:
+        """Re-apply the layout after an artist outside the axes comes or goes.
+
+        ``_remove_colorbar`` calls this on every canvas, so the base class has to
+        answer it. ``SpinoramaCanvas`` overrides it to also re-anchor its
+        right-hand DI axis; nothing else needs more than the layout profile.
+        """
+        self._apply_layout_profile()
+
     def _after_layout_profile_applied(self) -> None:
         """Reposition manually managed artists after the axes rectangle changes."""
 
