@@ -562,7 +562,11 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                 )
             end : nothing
             assembly_started = time_ns()
-            operators = assemble_regular_galerkin_operators(
+            # PROTOTYPE: route the CUDA exterior solve through the fused direct
+            # Burton-Miller assembly (2 p1xp1 matrices) instead of materialising
+            # all eight operator matrices. Gated for A/B comparison.
+            direct_cuda_bm = backend == :cuda && get(ENV, "BLAB_DIRECT_BM", "0") == "1"
+            operators = direct_cuda_bm ? nothing : assemble_regular_galerkin_operators(
                 mesh,
                 p1_space,
                 dp0_space,
@@ -589,11 +593,32 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
             neumann_values = Vector{Vector{Complex{FloatType}}}()
             for excitation in excitations
                 neumann = exterior_neumann(mesh, excitation, density, omega)
-                pressure = backend == :cpu ?
-                           solve_burton_miller_neumann_cpu_system(cpu_system, neumann, FloatType) :
-                           solve_burton_miller_neumann(
-                    operators, device_identity_cache, neumann, wavenumber,
-                )
+                pressure = if direct_cuda_bm
+                    cuda_mod = BeatEngineCore.cuda_module()
+                    d_q = cuda_mod.CuArray(Complex{FloatType}.(neumann))
+                    direct_system = assemble_burton_miller_neumann_system_cuda(
+                        mesh,
+                        p1_space,
+                        dp0_space,
+                        d_q,
+                        wavenumber,
+                        rule;
+                        device_cache=device_cache,
+                        singular_cache=singular_cache,
+                        device_singular_cache=device_singular_cache,
+                        device_image_singular_cache=device_image_singular_cache,
+                        symmetry_mode=symmetry_mode,
+                    )
+                    solved = solve_burton_miller_system_cuda!(direct_system; return_gpu=false)
+                    cuda_mod.unsafe_free!(d_q)
+                    solved
+                elseif backend == :cpu
+                    solve_burton_miller_neumann_cpu_system(cpu_system, neumann, FloatType)
+                else
+                    solve_burton_miller_neumann(
+                        operators, device_identity_cache, neumann, wavenumber,
+                    )
+                end
                 push!(pressures, Complex{FloatType}.(pressure))
                 push!(neumann_values, neumann)
             end
