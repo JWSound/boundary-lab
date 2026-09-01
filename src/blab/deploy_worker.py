@@ -12,8 +12,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from blab.deploy_solve import (
     DeploySolveCache,
+    prepare_deploy_coupled_request,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
     prepare_deploy_solve_request,
@@ -25,6 +28,8 @@ from blab.solvers.beat_engine_backend import (
     BeatEngineWorkerProcess,
     shutdown_beat_engine_workers,
 )
+from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
+from blab.system_contract import system_frequency_result_from_dict
 
 _EMIT_LOCK = threading.Lock()
 
@@ -45,17 +50,64 @@ def _emit(event_type: str, *, request_id: object | None = None, **values: Any) -
     }
 
 
-def _worker(backend: str) -> BeatEngineWorkerProcess:
-    normalized = backend.strip().lower()
+def _worker(backend: str, *, coupled: bool = False) -> BeatEngineWorkerProcess:
+    normalized = backend.removeprefix("coupled:").strip().lower()
     if normalized not in {"cuda", "cpu"}:
         raise ValueError("Deploy worker backend must be cuda or cpu.")
-    project = DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized == "cuda" else DEFAULT_BEAT_ENGINE_CPU_PROJECT
+    project = (
+        DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+        if normalized == "cuda"
+        else DEFAULT_COUPLED_CPU_PROJECT
+        if coupled
+        else DEFAULT_BEAT_ENGINE_CPU_PROJECT
+    )
     return BeatEngineWorkerProcess(
         julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
-        solver_script=DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
+        solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT if coupled else DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
         julia_threads=os.environ.get("BLAB_JULIA_THREADS", "auto"),
         julia_project=project,
     )
+
+
+def _worker_key(payload: object) -> str:
+    backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
+    fidelity = str(payload.get("fidelity", "boundary")) if isinstance(payload, dict) else "boundary"
+    normalized = backend.strip().lower()
+    return f"coupled:{normalized}" if fidelity.strip().lower() == "coupled" else normalized
+
+
+def _coupled_deploy_result(raw: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    parsed = system_frequency_result_from_dict(raw)
+    quantity = next((item for item in parsed.quantities if item.id == "deploy:field-pressure"), None)
+    if quantity is None:
+        raise RuntimeError("BEAT Engine Level 3 solve returned no synthesized audience pressure.")
+    pressure = np.asarray(quantity.values).reshape(-1)
+    deploy = request["deploy"]
+    sample_indices = [int(value) for value in deploy["sample_indices"]]
+    if pressure.shape != (len(sample_indices),):
+        raise RuntimeError("BEAT Engine Level 3 audience pressure has an unexpected shape.")
+    spl_db = 20.0 * np.log10(np.maximum(np.abs(pressure), np.finfo(np.float32).tiny) / 20.0e-6)
+    diagnostics = dict(parsed.diagnostics)
+    timings = dict(diagnostics.get("timings", {}))
+    diagnostics.update(
+        backend=str(diagnostics.get("bem_backend", "unknown")),
+        source_count=int(deploy["source_count"]),
+        rigid_object_count=int(deploy["rigid_object_count"]),
+        fidelity="coupled",
+    )
+    return {
+        "frequency_hz": float(parsed.freq_hz),
+        "rows": int(deploy["rows"]),
+        "columns": int(deploy["columns"]),
+        "spl_db": spl_db.astype(np.float32).tolist(),
+        "sample_indices": sample_indices,
+        "field_pressure": {
+            "real": pressure.real.astype(np.float32).tolist(),
+            "imag": pressure.imag.astype(np.float32).tolist(),
+        },
+        "timings": timings,
+        "diagnostics": diagnostics,
+    }
 
 
 def _solve(
@@ -66,22 +118,29 @@ def _solve(
     solve_cache: DeploySolveCache,
     solution_keys: dict[str, str],
 ) -> None:
-    backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
-    normalized = backend.strip().lower()
-    worker = workers.get(normalized)
+    worker_key = _worker_key(payload)
+    coupled = worker_key.startswith("coupled:")
+    worker = workers.get(worker_key)
     if worker is None:
-        worker = _worker(normalized)
-        workers[normalized] = worker
+        worker = _worker(worker_key, coupled=coupled)
+        workers[worker_key] = worker
 
     with tempfile.TemporaryDirectory(prefix="blab-deploy-") as temp_dir:
         prepare_started = time.perf_counter()
         requested_solution_key = str(payload.get("solutionKey", "")) if isinstance(payload, dict) else ""
         reuse_boundary = bool(payload.get("reuseBoundary", False)) if isinstance(payload, dict) else False
-        field_only = reuse_boundary and bool(requested_solution_key) and (
-            solution_keys.get(normalized) == requested_solution_key
+        field_only = not coupled and reuse_boundary and bool(requested_solution_key) and (
+            solution_keys.get(worker_key) == requested_solution_key
         )
         if field_only:
             request_path, _request = prepare_deploy_field_request(payload, temp_dir)
+        elif coupled:
+            request_path, _request = prepare_deploy_coupled_request(
+                payload,
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
         else:
             request_path, _request = prepare_deploy_solve_request(
                 payload,
@@ -104,9 +163,10 @@ def _solve(
             elif event_type == "initialized":
                 _emit("initialized", request_id=request_id, metadata=event)
             elif event_type == "result":
-                result = event.get("result")
-                if not isinstance(result, dict):
+                raw_result = event.get("result")
+                if not isinstance(raw_result, dict):
                     raise RuntimeError("BEAT Engine Deploy solve returned an invalid result payload.")
+                result = _coupled_deploy_result(raw_result, _request) if coupled else raw_result
                 julia_transport = event.get("_transport", {})
                 result["pipeline"] = {
                     "python_input_json_parse_s": float(input_transport.get("json_parse_s", 0.0)),
@@ -119,7 +179,7 @@ def _solve(
                     "field_only": int(field_only),
                 }
                 if not field_only:
-                    solution_keys[normalized] = str(_request.get("solution_key", requested_solution_key))
+                    solution_keys[worker_key] = str(_request.get("solution_key", requested_solution_key))
                 result_emit = _emit("result", request_id=request_id, result=result)
                 _emit(
                     "profile",
@@ -348,10 +408,12 @@ def main() -> int:
                         continue
                     if operation == "warmup":
                         backend = str(message.get("backend", "cuda")).strip().lower()
-                        worker = workers.get(backend)
+                        fidelity = str(message.get("fidelity", "boundary")).strip().lower()
+                        worker_key = f"coupled:{backend}" if fidelity == "coupled" else backend
+                        worker = workers.get(worker_key)
                         if worker is None:
-                            worker = _worker(backend)
-                            workers[backend] = worker
+                            worker = _worker(worker_key, coupled=fidelity == "coupled")
+                            workers[worker_key] = worker
                         worker.ensure_started()
                         _emit("completed", request_id=request_id)
                         continue
@@ -361,7 +423,7 @@ def main() -> int:
                         if active["thread"] is not None:
                             raise RuntimeError("A Deploy solve is already in progress.")
                         payload = message.get("payload")
-                        backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
+                        worker_key = _worker_key(payload)
                         cancel_event = threading.Event()
                         thread = threading.Thread(
                             target=run_job,
@@ -372,7 +434,7 @@ def main() -> int:
                             thread=thread,
                             request_id=request_id,
                             cancel=cancel_event,
-                            backend=backend.strip().lower(),
+                            backend=worker_key,
                         )
                         thread.start()
                 except Exception as exc:

@@ -9,13 +9,16 @@ import numpy as np
 import pytest
 
 import blab.speaker_package as speaker_package_module
+from blab.deploy_solve import DeploySolveCache, stage_exact_coupled_system
 from blab.physical_model import (
     AcousticRegionKind,
+    CompiledMesh,
     CompiledPhysicalSystem,
     CompiledRegion,
     ComponentKind,
     ExcitationPort,
     ExcitationPortKind,
+    MeshPurpose,
     PhysicalComponent,
     PhysicalSolveKind,
 )
@@ -38,6 +41,7 @@ from blab.speaker_package import (
     SPEAKER_MACRO_E_ID,
     SPEAKER_MACRO_K_ID,
     SpeakerPackageConfig,
+    SpeakerPackageCoupledRepresentation,
     SpeakerPackageFidelity,
     expand_bem_boundary_symmetry,
     export_speaker_package,
@@ -286,7 +290,12 @@ def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
 
     export_speaker_package(
         solved,
-        SpeakerPackageConfig(output, "Coupled speaker", SpeakerPackageFidelity.COUPLED),
+        SpeakerPackageConfig(
+            output,
+            "Coupled speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.SAMPLED_MACRO,
+        ),
     )
 
     manifest = validate_speaker_package(output)
@@ -305,6 +314,58 @@ def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
         model = _read_npz(archive, "data/coupled-model.npz")
     np.testing.assert_array_equal(model["matrix_k"], solved.quantities[SPEAKER_MACRO_K_ID].values)
     np.testing.assert_array_equal(model["matrix_e"], solved.quantities[SPEAKER_MACRO_E_ID].values)
+
+
+def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "interior.msh"
+    mesh_path.write_text("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n", encoding="utf-8")
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    bounded = CompiledRegion(
+        id="region:interior",
+        name="Interior",
+        kind=AcousticRegionKind.BOUNDED_AIR,
+        mesh_ids=("mesh:interior",),
+        volume_groups=(),
+        sound_speed_m_per_s=343.0,
+        density_kg_per_m3=1.21,
+        loss_model={"bulk_loss_factor": 0.05},
+    )
+    compiled = replace(
+        solved.compiled_system,
+        meshes=(CompiledMesh("mesh:interior", "Interior", str(mesh_path), MeshPurpose.FEM_VOLUME, 1.0, (0, 0, 0)),),
+        regions=(*solved.compiled_system.regions, bounded),
+    )
+    solved = replace(
+        solved,
+        compiled_system=compiled,
+        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
+    )
+    output = tmp_path / "speaker-exact.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(output, "Exact speaker", SpeakerPackageFidelity.COUPLED),
+    )
+
+    manifest = validate_speaker_package(output)
+    model = manifest["files"]["coupled_model"]
+    assert model["representation"] == "exact_frequency_parametric_fem"
+    assert model["runtime_assembly_required"] is True
+    assert "exact_frequency_parametric_interior" in manifest["capabilities"]
+    with zipfile.ZipFile(output) as archive:
+        assert "data/coupled-model.npz" not in archive.namelist()
+        descriptor = json.loads(archive.read(model["path"]))
+        member = descriptor["mesh_members"]["mesh:interior"]
+        assert descriptor["compiled_system"]["meshes"][0]["file"] == member
+        assert archive.read(member) == mesh_path.read_bytes()
+
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    staged = stage_exact_coupled_system(package, tmp_path / "deploy-worker")
+    staged_mesh = Path(staged["compiled_system"]["meshes"][0]["file"])
+    assert staged["mesh_path_kind"] == "local_file"
+    assert staged_mesh.read_bytes() == mesh_path.read_bytes()
 
 
 def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path) -> None:

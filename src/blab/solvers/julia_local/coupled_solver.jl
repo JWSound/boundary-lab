@@ -251,7 +251,7 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
 end
 
 function validate_volume_symmetry_fundamental_domain!(mesh, symmetry_mode; tolerance)
-    active_axes = symmetry_mode == :off ? () : symmetry_mode == :x ? (1,) : (1, 2)
+    active_axes = symmetry_mode == :x ? (1,) : symmetry_mode == :xy ? (1, 2) : ()
     for axis in active_axes
         minimum_coordinate, vertex_index = findmin(vertex[axis] for vertex in mesh.vertices)
         minimum_coordinate >= -tolerance || error(
@@ -980,6 +980,7 @@ function combined_interface_map_from_wire(
     for interface in interfaces
         interface_id = String(interface["id"])
         bounded_boundary_id = String(interface["bounded_boundary_id"])
+        unbounded_boundary_id = String(interface["unbounded_boundary_id"])
         domain_index = get(
             fem_domains.domain_by_boundary_id,
             bounded_boundary_id,
@@ -989,16 +990,32 @@ function combined_interface_map_from_wire(
             "Interface $(repr(String(interface["id"]))) does not reference a bounded FEM boundary.",
         )
         domain = fem_domains.domains[domain_index]
-        local_map = interface_map_from_wire(interface["topology"], domain.selection)
+        bounded_boundary = object_by_id(
+            boundaries,
+            bounded_boundary_id,
+            "bounded boundary",
+        )
+        # Rebuild from the meshes as loaded by Julia. Gmsh writers/readers may
+        # regroup same-type element blocks, so serialized flattened face
+        # indices are useful provenance but are not a stable runtime index.
+        fem_boundary_tag = Int(bounded_boundary["group"]["tag"])
+        bem_boundary_tag = bem_domain.boundary_tag_by_id[unbounded_boundary_id]
+        scalar_type = eltype(first(domain.selection.mesh.vertices))
+        local_map = build_conforming_interface_map(
+            domain.selection.mesh,
+            bem_domain.mesh,
+            fem_boundary_tag,
+            bem_boundary_tag;
+            coordinate_tolerance=scalar_type(1e-6),
+        )
         unbounded_boundary = object_by_id(
             boundaries,
-            String(interface["unbounded_boundary_id"]),
+            unbounded_boundary_id,
             "unbounded boundary",
         )
         bem_mesh_id = String(unbounded_boundary["group"]["mesh_id"])
-        bem_vertex_offset = get(bem_domain.vertex_offset_by_mesh_id, bem_mesh_id, -1)
-        bem_face_offset = get(bem_domain.face_offset_by_mesh_id, bem_mesh_id, -1)
-        bem_vertex_offset >= 0 && bem_face_offset >= 0 || error(
+        haskey(bem_domain.vertex_offset_by_mesh_id, bem_mesh_id) &&
+            haskey(bem_domain.face_offset_by_mesh_id, bem_mesh_id) || error(
             "Interface $(repr(interface_id)) references BEM mesh " *
             "$(repr(bem_mesh_id)) outside the unbounded region.",
         )
@@ -1006,8 +1023,6 @@ function combined_interface_map_from_wire(
             local_map;
             fem_vertex_offset=domain.vertex_offset,
             fem_face_offset=domain.face_offset,
-            bem_vertex_offset=bem_vertex_offset,
-            bem_face_offset=bem_face_offset,
         )
         push!(maps, mapped)
         count = length(mapped.fem_vertex_indices)
@@ -1223,11 +1238,11 @@ function electrodynamic_transducers_from_wire(
             error("fractional_symmetry_axes must not contain duplicates.")
         all(axis -> axis in ("x", "y"), fractional_symmetry_axes) ||
             error("fractional_symmetry_axes may contain only x and y.")
-        active_symmetry_axes = symmetry_mode == :off ?
-                               String[] :
-                               symmetry_mode == :x ?
+        active_symmetry_axes = symmetry_mode == :x ?
                                ["x"] :
-                               ["x", "y"]
+                               symmetry_mode == :xy ?
+                               ["x", "y"] :
+                               String[]
         all(axis -> axis in active_symmetry_axes, fractional_symmetry_axes) ||
             error("fractional_symmetry_axes must be active in the selected symmetry mode.")
         completion_factor == 2^length(fractional_symmetry_axes) || error(
@@ -1241,7 +1256,11 @@ function electrodynamic_transducers_from_wire(
             )
         end
         represented_images = completion_factor * orbit_count
-        expected_images = BeatEngineCore.symmetry_reduction_factor(symmetry_mode)
+        # Rigid-ground images alter only the exterior Green function. They do
+        # not create another physical FEM volume or transducer.
+        expected_images = symmetry_mode == :ground ?
+                          1 :
+                          BeatEngineCore.symmetry_reduction_factor(symmetry_mode)
         represented_images == expected_images || error(
             "Electrodynamic component $(repr(String(component["id"]))) represents " *
             "$represented_images symmetry images, but $(String(symmetry_mode)) symmetry " *
@@ -2330,13 +2349,73 @@ function solve_request(request; event_mode=false)
                 raw_points = get(options, "points_m", Any[])
                 isempty(raw_points) && error("exterior_pressure output requires options.points_m.")
                 points = [SVector{3,FloatType}(FloatType.(point)) for point in raw_points]
-                pressures = [
-                    if bem_backend == :cuda
+                raw_weights = get(options, "excitation_weights", Any[])
+                if isempty(raw_weights)
+                    pressures = [
+                        if bem_backend == :cuda
+                            evaluate_galerkin_field_cuda(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        elseif bem_backend == :rocm
+                            evaluate_galerkin_field_rocm(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        else
+                            evaluate_galerkin_field_cpu(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        end
+                        for solution in solutions
+                    ]
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(pressures, FloatType),
+                            "Pa",
+                            ["excitation", "observation"],
+                        ),
+                    )
+                else
+                    length(raw_weights) == length(solutions) || error(
+                        "exterior_pressure excitation_weights must match the excitation count.",
+                    )
+                    weights = Complex{FloatType}[
+                        Complex{FloatType}(
+                            FloatType(get(raw_weight, "real", 0.0)),
+                            FloatType(get(raw_weight, "imag", 0.0)),
+                        )
+                        for raw_weight in raw_weights
+                    ]
+                    combined_pressure = similar(first(solutions).bem_pressure)
+                    combined_neumann = similar(first(solutions).bem_neumann)
+                    fill!(combined_pressure, zero(Complex{FloatType}))
+                    fill!(combined_neumann, zero(Complex{FloatType}))
+                    for (weight, solution) in zip(weights, solutions)
+                        combined_pressure .+= weight .* solution.bem_pressure
+                        combined_neumann .+= weight .* solution.bem_neumann
+                    end
+                    pressure = if bem_backend == :cuda
                         evaluate_galerkin_field_cuda(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
@@ -2344,8 +2423,8 @@ function solve_request(request; event_mode=false)
                         evaluate_galerkin_field_rocm(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
@@ -2353,23 +2432,25 @@ function solve_request(request; event_mode=false)
                         evaluate_galerkin_field_cpu(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
                     end
-                    for solution in solutions
-                ]
-                push!(
-                    quantities,
-                    quantity_wire(
-                        output,
-                        rows(pressures, FloatType),
-                        "Pa",
-                        ["excitation", "observation"],
-                    ),
-                )
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            pressure,
+                            "Pa",
+                            ["observation"],
+                            metadata=Dict(
+                                "synthesized_excitation_count" => length(solutions),
+                            ),
+                        ),
+                    )
+                end
                 field_s += (time_ns() - field_started) / 1.0e9
             elseif quantity in SPEAKER_MACRO_QUANTITIES
                 axes = if quantity == "speaker_macro_k"
@@ -2554,7 +2635,7 @@ function solve_request(request; event_mode=false)
     return (cancelled=cancelled, solved_count=solved_count)
 end
 
-function reclaim_accelerator_memory_after_failure()
+function reclaim_accelerator_memory!()
     try
         release_all_bem_field_evaluation_caches!()
     catch
@@ -2856,13 +2937,17 @@ function run_worker()
             elseif operation == "solve"
                 release_all_bem_field_evaluation_caches!()
                 outcome = solve_request(request; event_mode=true)
+                # A Deploy worker may receive a differently sized array on its
+                # next job. Return freed solve buffers to the driver now so a
+                # previous dense BEM allocation cannot starve that request.
+                reclaim_accelerator_memory!()
                 event_type = outcome.cancelled ? "cancelled" : "completed"
                 println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
             else
                 error("Unsupported coupled worker operation: $operation")
             end
         catch exception
-            reclaim_accelerator_memory_after_failure()
+            reclaim_accelerator_memory!()
             error_text = sprint(showerror, exception, catch_backtrace())
             println(JSON.json(Dict("type" => "failed", "error" => error_text)))
         end
@@ -2874,7 +2959,7 @@ if "--worker" in ARGS
     try
         run_worker()
     catch exception
-        reclaim_accelerator_memory_after_failure()
+        reclaim_accelerator_memory!()
         showerror(stderr, exception, catch_backtrace())
         println(stderr)
         exit(1)

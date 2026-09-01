@@ -691,7 +691,10 @@ function assemble_boundary_mass_matrix(
         local_count = length(face)
         for local_row in 1:local_count, local_col in 1:local_count
             boundary_col = get(boundary_dof, face[local_col], 0)
-            boundary_col == 0 && error("Boundary face references a vertex outside the requested boundary space.")
+            boundary_col == 0 && error(
+                "Boundary face $face_index references vertex $(face[local_col]) outside " *
+                "the requested boundary space ($(length(boundary_vertex_indices)) vertices).",
+            )
             push!(rows, face[local_row])
             push!(cols, boundary_col)
             push!(values, local_mass[local_row, local_col])

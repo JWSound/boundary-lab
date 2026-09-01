@@ -46,7 +46,7 @@ class SpeakerPackageDialog(QDialog):
             int(SpeakerPackageFidelity.FIXED_SOURCES),
         )
         self.fidelity_combo.addItem(
-            "Level 3 — Condensed interior with coupled exterior BEM",
+            "Level 3 — Exact frequency-parametric interior with coupled exterior BEM",
             int(SpeakerPackageFidelity.COUPLED),
         )
         self.output_edit = QLineEdit()
@@ -64,7 +64,8 @@ class SpeakerPackageDialog(QDialog):
 
         note = QLabel(
             "Boundary Lab will run a new solve with the complex spherical field and any boundary traces "
-            "required by the selected fidelity. Exported packages use +Y as forward."
+            "required by the selected fidelity. Level 3 stores the compiled interior system and meshes, "
+            "not a dense matrix at every frequency. Exported packages use +Y as forward."
         )
         note.setWordWrap(True)
 

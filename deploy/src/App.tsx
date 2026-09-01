@@ -141,12 +141,16 @@ function FidelitySwitcher({
   packageLevel,
   boundaryAvailable,
   boundaryUnavailableReason,
+  coupledAvailable,
+  coupledUnavailableReason,
 }: {
   value: Fidelity;
   onChange: (value: Fidelity) => void;
   packageLevel: number;
   boundaryAvailable: boolean;
   boundaryUnavailableReason?: string;
+  coupledAvailable: boolean;
+  coupledUnavailableReason?: string;
 }) {
   const levels: Array<{ id: Fidelity; label: string; level: number }> = [
     { id: "pattern", label: "Pattern", level: 1 },
@@ -157,20 +161,28 @@ function FidelitySwitcher({
     <div className="fidelity-switcher">
       {levels.map((item) => {
         const available = item.level <= packageLevel;
-        const interactive = item.id === "pattern" || (item.id === "boundary" && available && boundaryAvailable);
+        const interactive = item.id === "pattern" ||
+          (item.id === "boundary" && available && boundaryAvailable) ||
+          (item.id === "coupled" && available && coupledAvailable);
         return (
           <button
             key={item.id}
             className={`${value === item.id ? "active" : ""} ${!interactive ? "engine-required" : ""}`}
             onClick={() => interactive && onChange(item.id)}
             title={interactive
-              ? (item.id === "boundary" ? "Exterior BEM with fixed distributed sources" : "Live complex pattern field")
+              ? (item.id === "boundary"
+                  ? "Exterior BEM with fixed distributed sources"
+                  : item.id === "coupled"
+                    ? "Exact coupled FEM–BEM interiors and transducers"
+                    : "Live complex pattern field")
               : item.id === "boundary" && boundaryUnavailableReason
                 ? boundaryUnavailableReason
+                : item.id === "coupled" && coupledUnavailableReason
+                  ? coupledUnavailableReason
                 : available ? "This fidelity is not connected yet" : "Package does not contain this fidelity"}
           >
             <span>{item.label}</span>
-            {item.id === "boundary" && interactive && <small>CUDA</small>}
+            {item.id !== "pattern" && interactive && <small>CUDA</small>}
             {!interactive && item.id !== "pattern" && <small>{available ? "ENGINE" : "N/A"}</small>}
           </button>
         );
@@ -199,7 +211,7 @@ export function App() {
   const [boundaryGeometryKey, setBoundaryGeometryKey] = useState<string | null>(null);
   const [solveRevision, setSolveRevision] = useState(0);
   const [solveState, setSolveState] = useState<"idle" | "solving" | "complete" | "error">("idle");
-  const [solveMessage, setSolveMessage] = useState("Ready for a Level 2 solve");
+  const [solveMessage, setSolveMessage] = useState("Ready to solve");
   const [liveSolveEnabled, setLiveSolveEnabled] = useState(false);
   const [transformMode, setTransformMode] = useState<SceneTransformMode>("select");
   const [angleSnapDisabled, setAngleSnapDisabled] = useState(false);
@@ -396,22 +408,24 @@ export function App() {
     frequencies: Array.from(microphonePatternResponses.frequenciesHz),
   }), [microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects, sourceConfigs]);
   const currentSolveKey = useMemo(() => JSON.stringify({
+    fidelity,
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
     rigidObjects,
     observation: observationAcousticKey,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs, observationAcousticKey]);
+  }), [fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs, observationAcousticKey]);
   const currentGeometryKey = useMemo(() => JSON.stringify({
+    fidelity,
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
     sources: sourceConfigs,
     rigidObjects,
-  }), [pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs]);
-  const field = fidelity === "boundary" && boundaryField && boundarySolveKey === currentSolveKey
+  }), [fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs]);
+  const field = fidelity !== "pattern" && boundaryField && boundarySolveKey === currentSolveKey
     ? boundaryField
     : patternField;
-  const boundaryCurrent = fidelity === "boundary" && boundaryField !== null && boundarySolveKey === currentSolveKey;
+  const boundaryCurrent = fidelity !== "pattern" && boundaryField !== null && boundarySolveKey === currentSolveKey;
   const level2Package = activeSourcePackageIds.length === 1 ? packageById.get(activeSourcePackageIds[0]) ?? null : null;
   const level2FrequencyAvailable = Boolean(level2Package && Array.from(level2Package.frequenciesHz).some(
     (frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6),
@@ -419,6 +433,11 @@ export function App() {
   const rigidMeshesAvailable = rigidObjects.every((object) => Boolean(rigidMeshById.get(object.assetId)?.sourcePath));
   const boundaryAvailable = Boolean(
     window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable && rigidMeshesAvailable,
+  );
+  const coupledRepresentation = level2Package?.manifest.files.coupled_model?.representation;
+  const coupledAvailable = Boolean(
+    boundaryAvailable && level2Package && level2Package.manifest.fidelity_level >= 3 &&
+    coupledRepresentation === "exact_frequency_parametric_fem",
   );
   const scenePackageLevel = Math.min(...sourceConfigs.map(
     (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
@@ -432,6 +451,18 @@ export function App() {
       : !level2FrequencyAvailable
         ? "The selected frequency was not exported by the active Level 2 package."
         : undefined;
+  const coupledUnavailableReason = boundaryUnavailableReason ?? (
+    (level2Package?.manifest.fidelity_level ?? 0) < 3
+      ? "The active speaker package does not contain Level 3 data."
+      : coupledRepresentation !== "exact_frequency_parametric_fem"
+        ? "Level 3 Deploy requires an exact frequency-parametric coupled model."
+        : undefined
+  );
+  const selectedSolverAvailable = fidelity === "boundary"
+    ? boundaryAvailable
+    : fidelity === "coupled"
+      ? coupledAvailable
+      : false;
   const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
@@ -528,10 +559,17 @@ export function App() {
     );
     const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
     const homogeneousProject = new Set(nextSources.map((source) => source.packageId)).size === 1;
-    const nextFidelity: Fidelity = project.requested_fidelity === "boundary" &&
+    const requestedSolverFidelity = project.requested_fidelity === "boundary" ||
+      project.requested_fidelity === "coupled";
+    const nextFidelity: Fidelity = requestedSolverFidelity &&
       homogeneousProject &&
-      Boolean(window.boundaryLabDesktop && nextPackage.sourcePath && nextPackage.manifest.fidelity_level >= 2)
-      ? "boundary"
+      Boolean(
+        window.boundaryLabDesktop && nextPackage.sourcePath &&
+        nextPackage.manifest.fidelity_level >= (project.requested_fidelity === "coupled" ? 3 : 2) &&
+        (project.requested_fidelity !== "coupled" ||
+          nextPackage.manifest.files.coupled_model?.representation === "exact_frequency_parametric_fem"),
+      )
+      ? project.requested_fidelity
       : "pattern";
     const normalizedContents = serializeDeployProject(createDeployProject(
       project.name,
@@ -564,7 +602,7 @@ export function App() {
     setBoundaryGeometryKey(null);
     setSolveRevision(0);
     setSolveState("idle");
-    setSolveMessage("Ready for a Level 2 solve");
+    setSolveMessage("Ready to solve");
     setLiveSolveEnabled(false);
     setMicrophoneSweepState("idle");
     setBemMicrophoneResponses(null);
@@ -746,9 +784,11 @@ export function App() {
 
   const solveLevel2 = useCallback(async () => {
     if (!window.boundaryLabDesktop || !level2Package?.sourcePath) {
-      setError("Level 2 solving currently requires every speaker to use the same disk-backed package.");
+      setError("Boundary and coupled solving require every speaker to use the same disk-backed package.");
       return;
     }
+    const coupled = fidelity === "coupled";
+    const fidelityLabel = coupled ? "Level 3" : "Level 2";
     const generation = ++solveGeneration.current;
     const requestedKey = currentSolveKey;
     const requestedGeometryKey = currentGeometryKey;
@@ -765,11 +805,12 @@ export function App() {
     }
     try {
       const rendererRequestStarted = performance.now();
-      const reuseBoundary = boundaryGeometryKey === requestedGeometryKey;
+      const reuseBoundary = !coupled && boundaryGeometryKey === requestedGeometryKey;
       const request: DesktopLevel2SolveRequest = {
         packagePath: level2Package.sourcePath,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
+        fidelity: coupled ? "coupled" : "boundary",
         sources: sourceConfigs,
         rigidObjects: rigidObjects.map((object) => ({
           ...object,
@@ -814,15 +855,15 @@ export function App() {
       setBoundaryGeometryKey(requestedGeometryKey);
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
-      setSolveMessage("Live Level 2 field current");
+      setSolveMessage(`Live ${fidelityLabel} field current`);
     } catch (caught) {
       if (generation !== solveGeneration.current) return;
       setSolveState("error");
       setLiveSolveEnabled(false);
-      setSolveMessage("Level 2 solve failed");
+      setSolveMessage(`${fidelityLabel} solve failed`);
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects, sourceConfigs]);
+  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, fidelity, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects, sourceConfigs]);
 
   const stopMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
@@ -1528,7 +1569,7 @@ export function App() {
   }, [canRemoveSelectedObjects, removeSelectedObjects, selectedInstance, selectedMicrophone, selectedRigid, selectedRigidIds, selectedSource, selectedSourceIds]);
 
   useEffect(() => {
-    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) {
+    if (!liveSolveEnabled || fidelity === "pattern" || !selectedSolverAvailable) {
       flushLiveSolveRef.current = false;
       return;
     }
@@ -1547,13 +1588,13 @@ export function App() {
       void solveLevel2();
     }, delayMs);
     return () => window.clearTimeout(timeout);
-  }, [boundaryAvailable, boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, sceneClearanceValid, solveLevel2, solveReleaseRevision, solveState, speakerManipulationActive]);
+  }, [boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, sceneClearanceValid, selectedSolverAvailable, solveLevel2, solveReleaseRevision, solveState, speakerManipulationActive]);
 
   const flushLiveSolve = useCallback(() => {
-    if (!liveSolveEnabled || fidelity !== "boundary" || !boundaryAvailable) return;
+    if (!liveSolveEnabled || fidelity === "pattern" || !selectedSolverAvailable) return;
     flushLiveSolveRef.current = true;
     setSolveReleaseRevision((revision) => revision + 1);
-  }, [boundaryAvailable, fidelity, liveSolveEnabled]);
+  }, [fidelity, liveSolveEnabled, selectedSolverAvailable]);
 
   const endSourceManipulation = useCallback(() => {
     const manipulation = sourceManipulationRef.current;
@@ -1607,9 +1648,10 @@ export function App() {
   }, [boundaryAssetById, constrainSourceConfigs, flushLiveSolve, selectedInstances, selectedMicrophoneIds]);
 
   useEffect(() => {
-    if (fidelity !== "boundary" || !boundaryAvailable) setLiveSolveEnabled(false);
+    if (fidelity === "pattern" || !selectedSolverAvailable) setLiveSolveEnabled(false);
     if (fidelity === "boundary" && !boundaryAvailable) setFidelity("pattern");
-  }, [boundaryAvailable, fidelity]);
+    if (fidelity === "coupled" && !coupledAvailable) setFidelity("pattern");
+  }, [boundaryAvailable, coupledAvailable, fidelity, selectedSolverAvailable]);
 
   return (
     <main
@@ -1628,6 +1670,8 @@ export function App() {
           packageLevel={scenePackageLevel}
           boundaryAvailable={boundaryAvailable}
           boundaryUnavailableReason={boundaryUnavailableReason}
+          coupledAvailable={coupledAvailable}
+          coupledUnavailableReason={coupledUnavailableReason}
         />
         <div className="topbar-actions">
           <button className="icon-button" title="Open project" aria-label="Open project" onClick={openProject}><FolderOpen size={17} /></button>
@@ -1635,8 +1679,8 @@ export function App() {
           <button className="icon-button" title="Settings"><Settings2 size={17} /></button>
           <button
             className={`primary-button ${liveSolveEnabled ? "live" : ""}`}
-            disabled={fidelity !== "boundary" || !boundaryAvailable}
-            title={fidelity === "boundary" ? (liveSolveEnabled ? "Pause automatic Level 2 solves" : "Start automatic Level 2 solves as the scene changes") : "Select Boundary fidelity to run Level 2"}
+            disabled={fidelity === "pattern" || !selectedSolverAvailable}
+            title={fidelity !== "pattern" ? (liveSolveEnabled ? "Pause automatic solves" : "Start automatic solves as the scene changes") : "Select Boundary or Coupled fidelity to solve"}
             aria-pressed={liveSolveEnabled}
             onClick={() => setLiveSolveEnabled((enabled) => !enabled)}
           >{liveSolveEnabled ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />} {liveSolveEnabled ? "Pause solve" : "Solve field"}</button>
@@ -1773,7 +1817,7 @@ export function App() {
         <div className="solve-status" data-solve-revision={solveRevision}>
           <span className={solveState === "solving" ? "live-dot solving" : "live-dot"} />
           <div>
-            <strong>{fidelity === "boundary" ? (boundaryCurrent ? "Boundary solution" : "Boundary preview") : "Pattern preview"}</strong>
+            <strong>{fidelity !== "pattern" ? (boundaryCurrent ? `${fidelity === "coupled" ? "Coupled" : "Boundary"} solution` : `${fidelity === "coupled" ? "Coupled" : "Boundary"} preview`) : "Pattern preview"}</strong>
             <small>{solveState === "solving" ? solveMessage : `${liveSolveEnabled ? "Live" : boundaryCurrent ? "BEAT CUDA" : "Current"} · ${formatFrequency(pkg.frequenciesHz[frequencyIndex])}`}</small>
           </div>
           <em>{field.columns} × {field.rows}</em>

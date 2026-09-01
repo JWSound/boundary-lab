@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 
 from blab import deploy_worker
+from blab.system_contract import (
+    QuantityResult,
+    SystemFrequencyResult,
+    system_frequency_result_to_dict,
+)
 
 
 class _PackageCache:
@@ -104,3 +109,45 @@ def test_microphone_sweep_honors_stop_before_first_frequency(monkeypatch) -> Non
     )
 
     assert event_types == ["cancelled"]
+
+
+def test_coupled_worker_key_is_separate_from_level_two_worker() -> None:
+    assert deploy_worker._worker_key({"backend": "cuda"}) == "cuda"
+    assert deploy_worker._worker_key({"backend": "cuda", "fidelity": "coupled"}) == "coupled:cuda"
+
+
+def test_coupled_result_maps_complex_pressure_to_deploy_field() -> None:
+    raw = system_frequency_result_to_dict(
+        SystemFrequencyResult(
+            freq_hz=100.0,
+            excitation_port_ids=("port:a", "port:b"),
+            quantities=(
+                QuantityResult(
+                    id="deploy:field-pressure",
+                    quantity="exterior_pressure",
+                    unit="Pa",
+                    axes=("observation",),
+                    values=np.asarray([0.2 + 0.0j, 0.0 + 0.02j], dtype=np.complex64),
+                ),
+            ),
+            diagnostics={"bem_backend": "cuda", "timings": {"solve_s": 0.25}},
+        )
+    )
+
+    result = deploy_worker._coupled_deploy_result(
+        raw,
+        {
+            "deploy": {
+                "rows": 1,
+                "columns": 2,
+                "sample_indices": [0, 1],
+                "source_count": 2,
+                "rigid_object_count": 0,
+            }
+        },
+    )
+
+    np.testing.assert_allclose(result["spl_db"], [80.0, 60.0], atol=1e-5)
+    assert result["field_pressure"] == {"real": [0.20000000298023224, 0.0], "imag": [0.0, 0.019999999552965164]}
+    assert result["timings"] == {"solve_s": 0.25}
+    assert result["diagnostics"]["fidelity"] == "coupled"

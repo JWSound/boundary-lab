@@ -35,6 +35,7 @@ npm start
 - Plots every microphone's package-derived SPL response across the exact exported frequency grid.
 - Calculates explicit Level 2 complex microphone pressure across the full package grid in one BEAT request, retaining host/CUDA geometry and correction caches between frequencies, streaming progress, and turning the Calculate button into a Stop control while the sweep is active.
 - Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
+- Runs exact Level 3 packages through the production coupled FEM–BEM–transducer solver, with all cabinet ports solved as right-hand sides of one array factorization and one gain/delay/polarity-weighted audience-field evaluation.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
@@ -42,7 +43,7 @@ npm start
 - Saves speaker packages, rigid-mesh assets and instances, and microphones as a strict schema-v5 `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
-Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Mixed-package scenes currently use the Level 1 preview. Coupled fidelity remains unavailable, and browser-only sessions retain Level 1.
+Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for an exact frequency-parametric Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.
 
 The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice uses a globally reflective rigid ground plane, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
 
@@ -65,4 +66,4 @@ timings. A reference run and interpretation are recorded in
 
 ## Next solver milestone
 
-Reuse the rigid-ground and close-pair geometry caches across geometry-identical live solves, then route the future Level 3 condensed-interior exterior operator through the same half-space path.
+Replace the full-order Level 3 array baseline with a validated symmetry-sector or interface/port-reduced package model. The exact path is interactive for one warmed S218BP, but the 4–8 cabinet target exceeds both the one-minute budget and the 2080 Ti memory pool. Measurements and the next-model gate are recorded in [`benchmarks/level3-s218bp-2026-09-01.md`](benchmarks/level3-s218bp-2026-09-01.md).

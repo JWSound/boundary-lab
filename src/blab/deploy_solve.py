@@ -1,4 +1,4 @@
-"""Qt-free preparation for Boundary Lab Deploy Level 2 solves."""
+"""Qt-free preparation for Boundary Lab Deploy boundary and coupled solves."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
 DEPLOY_SOLVE_SCHEMA_VERSION = 2
+DEPLOY_COUPLED_SCHEMA = "boundary_lab_deploy_coupled"
 DEPLOY_FIELD_SCHEMA = "boundary_lab_deploy_field"
 DEPLOY_MICROPHONE_SWEEP_SCHEMA = "boundary_lab_deploy_microphone_sweep"
 SOURCE_SURFACE_PADDING_M = 0.01
@@ -240,6 +241,7 @@ class DeployPackageData:
     pressure: np.ndarray
     normal: np.ndarray
     geometry_bytes: bytes
+    coupled_model: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -314,6 +316,7 @@ def _load_deploy_package_data(
             geometry_bytes = archive.read(geometry_path)
         except KeyError as exc:
             raise ValueError(f"Speaker package is missing {exc.args[0]!r}.") from exc
+        coupled_model = _read_exact_coupled_descriptor(archive, manifest)
     with np.load(io.BytesIO(fixed_bytes), allow_pickle=False) as fixed:
         triangles = np.asarray(fixed["triangles"], dtype=np.int64)
         points = np.asarray(fixed["points_m"], dtype=np.float64)
@@ -321,16 +324,424 @@ def _load_deploy_package_data(
         normal = np.asarray(fixed["normal_derivative_pa_per_m"])
     frequencies = np.asarray(manifest.get("frequencies_hz", ()), dtype=np.float64)
     return DeployPackageData(
-        package_path,
-        package_fingerprint,
-        manifest,
-        frequencies,
-        triangles,
-        points,
-        pressure,
-        normal,
-        geometry_bytes,
+        path=package_path,
+        fingerprint=package_fingerprint,
+        manifest=manifest,
+        frequencies=frequencies,
+        triangles=triangles,
+        points=points,
+        pressure=pressure,
+        normal=normal,
+        geometry_bytes=geometry_bytes,
+        coupled_model=coupled_model,
     )
+
+
+def _read_exact_coupled_descriptor(
+    archive: zipfile.ZipFile,
+    manifest: dict[str, Any],
+) -> dict[str, Any] | None:
+    declaration = manifest.get("files", {}).get("coupled_model", {})
+    if declaration.get("representation") != "exact_frequency_parametric_fem":
+        return None
+    descriptor_path = str(declaration.get("path", ""))
+    if not descriptor_path:
+        raise ValueError("Exact Level-3 package does not declare its system descriptor path.")
+    try:
+        descriptor = json.loads(archive.read(descriptor_path))
+    except KeyError as exc:
+        raise ValueError(f"Speaker package is missing {descriptor_path!r}.") from exc
+    if descriptor.get("representation") != "exact_frequency_parametric_fem":
+        raise ValueError("Exact Level-3 descriptor has an unsupported representation.")
+    mesh_members = descriptor.get("mesh_members")
+    if not isinstance(mesh_members, dict) or not mesh_members:
+        raise ValueError("Exact Level-3 descriptor does not contain mesh members.")
+    archive_members = set(archive.namelist())
+    for member in mesh_members.values():
+        path = Path(str(member))
+        if path.is_absolute() or ".." in path.parts or str(member) not in archive_members:
+            raise ValueError(f"Exact Level-3 descriptor references invalid mesh member {member!r}.")
+    return descriptor
+
+
+def stage_exact_coupled_system(
+    package: DeployPackageData,
+    work_dir: str | Path,
+) -> dict[str, Any]:
+    """Extract an exact Level-3 system into a worker-owned temporary directory.
+
+    The returned descriptor is a detached JSON value whose compiled mesh paths
+    point at extracted local files. Numeric operators remain lazy: the Julia
+    worker assembles/factors them only when a coupled frequency is requested.
+    """
+
+    if package.coupled_model is None:
+        raise ValueError("Speaker package does not contain an exact Level-3 interior system.")
+    descriptor = json.loads(json.dumps(package.coupled_model))
+    compiled = descriptor.get("compiled_system")
+    mesh_members = descriptor.get("mesh_members")
+    if not isinstance(compiled, dict) or not isinstance(mesh_members, dict):
+        raise ValueError("Exact Level-3 descriptor is incomplete.")
+    target_dir = Path(work_dir).resolve() / "speaker-interior"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    meshes = compiled.get("meshes", ())
+    with zipfile.ZipFile(package.path, "r") as archive:
+        for index, mesh in enumerate(meshes):
+            mesh_id = str(mesh.get("id", ""))
+            member = str(mesh_members.get(mesh_id, ""))
+            if not member:
+                raise ValueError(f"Exact Level-3 descriptor has no mesh member for {mesh_id!r}.")
+            suffix = Path(member).suffix or ".msh"
+            target = target_dir / f"{index:03d}{suffix}"
+            target.write_bytes(archive.read(member))
+            mesh["file"] = str(target)
+    descriptor["mesh_path_kind"] = "local_file"
+    return descriptor
+
+
+def prepare_deploy_coupled_request(
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
+    status_callback: Callable[[str], None] | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Build one full coupled system containing every Level-3 cabinet instance.
+
+    The production coupled backend factors the combined system once and solves
+    every requested package port as multiple right-hand sides. The output
+    carries complex cabinet weights so Julia evaluates only the synthesized
+    audience field rather than returning one field per port.
+    """
+
+    if not isinstance(payload, dict):
+        raise ValueError("Deploy Level 3 request must be an object.")
+    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
+    package = cache.load_package(package_path) if cache is not None else _load_deploy_package_data(package_path)
+    if package.coupled_model is None:
+        raise ValueError("Deploy Level 3 requires an exact coupled speaker package.")
+    declaration = package.manifest.get("files", {}).get("coupled_model", {})
+    if declaration.get("representation") != "exact_frequency_parametric_fem":
+        raise ValueError("Deploy Level 3 requires the exact frequency-parametric representation.")
+
+    requested_frequency = float(payload.get("frequencyHz", 0.0))
+    if not math.isfinite(requested_frequency) or requested_frequency <= 0.0:
+        raise ValueError("Deploy Level 3 frequency must be finite and positive.")
+    band = package.coupled_model.get("frequency_band_hz", ())
+    if isinstance(band, list) and len(band) == 2:
+        lower, upper = map(float, band)
+        tolerance = max(1e-4, max(abs(lower), abs(upper)) * 1e-6)
+        if requested_frequency < lower - tolerance or requested_frequency > upper + tolerance:
+            raise ValueError(
+                f"Deploy Level 3 frequency {requested_frequency:g} Hz is outside the package band "
+                f"{lower:g}-{upper:g} Hz."
+            )
+
+    raw_sources = payload.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ValueError("Deploy Level 3 requires at least one source.")
+    if len(raw_sources) > 8:
+        raise ValueError("Deploy Level 3 currently supports at most 8 sources.")
+    sources = [DeploySourcePlacement.from_payload(raw) for raw in raw_sources]
+    if len({source.id for source in sources}) != len(sources):
+        raise ValueError("Deploy Level 3 source ids must be unique.")
+
+    raw_rigid_objects = payload.get("rigidObjects", [])
+    if not isinstance(raw_rigid_objects, list):
+        raise ValueError("Deploy Level 3 rigidObjects must be an array.")
+    rigid_objects = [DeployRigidPlacement.from_payload(raw) for raw in raw_rigid_objects]
+    observation = DeployObservationPlane.from_payload(payload.get("observation"))
+    observation_points, observation_sample_indices = observation.points()
+    if observation_points.shape[0] == 0:
+        raise ValueError("Deploy Level 3 has no audience samples on or above the ground plane.")
+
+    work_path = Path(work_dir).resolve()
+    work_path.mkdir(parents=True, exist_ok=True)
+    staged = stage_exact_coupled_system(package, work_path)
+    base_system = staged["compiled_system"]
+    base_meshes = list(base_system.get("meshes", ()))
+    base_regions = list(base_system.get("regions", ()))
+    base_boundaries = list(base_system.get("boundaries", ()))
+    base_interfaces = list(base_system.get("interfaces", ()))
+    base_components = list(base_system.get("components", ()))
+    base_ports = list(base_system.get("excitation_ports", ()))
+    unbounded = [region for region in base_regions if region.get("kind") == "unbounded_air"]
+    if len(unbounded) != 1:
+        raise ValueError("Exact Level-3 package must contain one unbounded acoustic region.")
+    base_unbounded_id = str(unbounded[0]["id"])
+    combined_meshes: list[dict[str, Any]] = []
+    combined_regions: list[dict[str, Any]] = []
+    combined_boundaries: list[dict[str, Any]] = []
+    combined_interfaces: list[dict[str, Any]] = []
+    combined_components: list[dict[str, Any]] = []
+    combined_ports: list[dict[str, Any]] = []
+    unbounded_mesh_ids: list[str] = []
+    excitation_ids: list[str] = []
+    excitation_weights: list[dict[str, float]] = []
+    instance_dir = work_path / "coupled-instances"
+    instance_dir.mkdir(parents=True, exist_ok=True)
+
+    if status_callback is not None:
+        status_callback(f"Staging {len(sources)} exact cabinet interiors")
+    for source_index, source in enumerate(sources):
+        prefix = f"deploy:{source_index}:{source.id}:"
+        id_maps = {
+            category: {str(item["id"]): prefix + str(item["id"]) for item in items}
+            for category, items in (
+                ("mesh", base_meshes),
+                ("region", base_regions),
+                ("boundary", base_boundaries),
+                ("interface", base_interfaces),
+                ("component", base_components),
+                ("port", base_ports),
+            )
+        }
+        source_mesh_dir = instance_dir / f"{source_index:02d}"
+        source_mesh_dir.mkdir(parents=True, exist_ok=True)
+        for mesh_index, base_mesh in enumerate(base_meshes):
+            cloned = copy.deepcopy(base_mesh)
+            mesh_id = str(base_mesh["id"])
+            cloned["id"] = id_maps["mesh"][mesh_id]
+            cloned["name"] = f"{source.id} / {base_mesh.get('name', mesh_id)}"
+            source_file = Path(str(base_mesh["file"]))
+            target = source_mesh_dir / f"{mesh_index:03d}-{source_file.name}"
+            _write_transformed_coupled_mesh(source_file, target, base_mesh, source)
+            cloned["file"] = str(target)
+            cloned["scale_to_m"] = 1.0
+            cloned["translation_m"] = [0.0, 0.0, 0.0]
+            combined_meshes.append(cloned)
+            if mesh_id in unbounded[0].get("mesh_ids", ()):
+                unbounded_mesh_ids.append(str(cloned["id"]))
+
+        for base_region in base_regions:
+            if str(base_region["id"]) == base_unbounded_id:
+                continue
+            cloned = copy.deepcopy(base_region)
+            cloned["id"] = id_maps["region"][str(base_region["id"])]
+            cloned["name"] = f"{source.id} / {base_region.get('name', base_region['id'])}"
+            cloned["mesh_ids"] = [id_maps["mesh"][str(value)] for value in base_region.get("mesh_ids", ())]
+            for group in cloned.get("volume_groups", ()):
+                group["mesh_id"] = id_maps["mesh"][str(group["mesh_id"])]
+            combined_regions.append(cloned)
+
+        for base_boundary in base_boundaries:
+            cloned = copy.deepcopy(base_boundary)
+            boundary_id = str(base_boundary["id"])
+            cloned["id"] = id_maps["boundary"][boundary_id]
+            cloned["name"] = f"{source.id} / {base_boundary.get('name', boundary_id)}"
+            base_region_id = str(base_boundary["region_id"])
+            cloned["region_id"] = "deploy:exterior" if base_region_id == base_unbounded_id else id_maps["region"][base_region_id]
+            cloned["group"]["mesh_id"] = id_maps["mesh"][str(base_boundary["group"]["mesh_id"])]
+            combined_boundaries.append(cloned)
+
+        for base_interface in base_interfaces:
+            cloned = copy.deepcopy(base_interface)
+            cloned["id"] = id_maps["interface"][str(base_interface["id"])]
+            cloned["name"] = f"{source.id} / {base_interface.get('name', base_interface['id'])}"
+            cloned["bounded_boundary_id"] = id_maps["boundary"][str(base_interface["bounded_boundary_id"])]
+            cloned["unbounded_boundary_id"] = id_maps["boundary"][str(base_interface["unbounded_boundary_id"])]
+            # Julia reconstructs correspondence from the staged meshes; omit
+            # unstable flattened element indices and avoid duplicating them N times.
+            cloned["topology"] = {
+                "fem_vertex_indices": [],
+                "fem_to_bem_vertex_indices": [],
+                "fem_face_indices": [],
+                "bem_face_indices": [],
+                "normal_sign": [],
+                "max_coordinate_error": 0.0,
+                "fem_facets_on_tetra_boundary": 0,
+                "bem_boundary_edges": 0,
+            }
+            combined_interfaces.append(cloned)
+
+        for base_component in base_components:
+            cloned = copy.deepcopy(base_component)
+            component_id = str(base_component["id"])
+            cloned["id"] = id_maps["component"][component_id]
+            cloned["name"] = f"{source.id} / {base_component.get('name', component_id)}"
+            cloned["boundary_ids"] = [
+                id_maps["boundary"][str(value)] for value in base_component.get("boundary_ids", ())
+            ]
+            parameters = cloned.get("parameters", {})
+            for key in ("boundary_motion_weights", "boundary_motion_signs"):
+                mapping = parameters.get(key)
+                if isinstance(mapping, dict):
+                    parameters[key] = {id_maps["boundary"][str(name)]: value for name, value in mapping.items()}
+            if "motion_axis" in parameters:
+                parameters["motion_axis"] = _transform_scene_vector(
+                    np.asarray(parameters["motion_axis"], dtype=np.float64), source
+                ).tolist()
+            combined_components.append(cloned)
+
+        gain_phase = 2.0 * math.pi * requested_frequency * source.delay_ms / 1000.0
+        gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * gain_phase)
+        for base_port in base_ports:
+            cloned = copy.deepcopy(base_port)
+            port_id = str(base_port["id"])
+            cloned["id"] = id_maps["port"][port_id]
+            cloned["name"] = f"{source.id} / {base_port.get('name', port_id)}"
+            cloned["component_id"] = id_maps["component"][str(base_port["component_id"])]
+            combined_ports.append(cloned)
+            excitation_ids.append(str(cloned["id"]))
+            excitation_weights.append({"real": float(gain.real), "imag": float(gain.imag)})
+
+    for rigid_index, rigid in enumerate(rigid_objects):
+        asset = cache.load_rigid_mesh(rigid.mesh_path) if cache is not None else _load_rigid_mesh_data(rigid.mesh_path)
+        points = _transform_scene_points(
+            asset.points * rigid.scale_to_meters,
+            position_x_m=rigid.position_x_m,
+            position_height_m=rigid.position_height_m,
+            position_z_m=rigid.position_z_m,
+            pitch_deg=rigid.pitch_deg,
+            yaw_deg=rigid.yaw_deg,
+            roll_deg=rigid.roll_deg,
+        )
+        mesh_id = f"deploy:rigid-mesh:{rigid_index}:{rigid.id}"
+        boundary_id = f"deploy:rigid-boundary:{rigid_index}:{rigid.id}"
+        target = instance_dir / f"rigid-{rigid_index:02d}.msh"
+        _write_gmsh22_surface(target, [(points, asset.triangles)])
+        combined_meshes.append(
+            {
+                "id": mesh_id,
+                "name": rigid.id,
+                "file": str(target),
+                "purpose": "bem_surface",
+                "scale_to_m": 1.0,
+                "translation_m": [0.0, 0.0, 0.0],
+            }
+        )
+        unbounded_mesh_ids.append(mesh_id)
+        combined_boundaries.append(
+            {
+                "id": boundary_id,
+                "name": rigid.id,
+                "region_id": "deploy:exterior",
+                "kind": "rigid",
+                "group": {"mesh_id": mesh_id, "dimension": 2, "tag": 1, "name": None},
+                "parameters": {},
+            }
+        )
+
+    exterior = copy.deepcopy(unbounded[0])
+    exterior["id"] = "deploy:exterior"
+    exterior["name"] = "Deploy exterior"
+    exterior["mesh_ids"] = unbounded_mesh_ids
+    combined_regions.insert(0, exterior)
+    combined_system = {
+        **{key: copy.deepcopy(value) for key, value in base_system.items() if key not in {
+            "id", "name", "meshes", "regions", "boundaries", "interfaces", "components", "excitation_ports"
+        }},
+        "id": "deploy:coupled-array",
+        "name": "Deploy coupled array",
+        "meshes": combined_meshes,
+        "regions": combined_regions,
+        "boundaries": combined_boundaries,
+        "interfaces": combined_interfaces,
+        "components": combined_components,
+        "excitation_ports": combined_ports,
+    }
+    request: dict[str, Any] = {
+        "schema_version": 1,
+        "schema": DEPLOY_COUPLED_SCHEMA,
+        "compiled_system": combined_system,
+        "frequencies_hz": [requested_frequency],
+        "excitation_port_ids": excitation_ids,
+        "outputs": [
+            {
+                "id": "deploy:field-pressure",
+                "quantity": "exterior_pressure",
+                "target_ids": [],
+                "options": {
+                    "points_m": observation_points.tolist(),
+                    "excitation_weights": excitation_weights,
+                },
+            }
+        ],
+        "solver_options": {
+            "precision": "float32",
+            "bem_backend": str(payload.get("backend", "cuda")).strip().lower(),
+            "symmetry": "ground",
+            "quadrature_order": int(payload.get("quadratureOrder", 2)),
+            "singular_order": int(payload.get("singularOrder", 3)),
+            "static_condensation": True,
+            "validation_diagnostics": False,
+            "cache_frequency_invariant": True,
+            "transducer_reference_voltage_v": 2.83,
+        },
+        "deploy": {
+            "frequency_hz": requested_frequency,
+            "rows": observation.rows,
+            "columns": observation.columns,
+            "sample_indices": observation_sample_indices.tolist(),
+            "source_count": len(sources),
+            "rigid_object_count": len(rigid_objects),
+            "solution_key": str(payload.get("solutionKey", "")),
+        },
+    }
+    if status_callback is not None:
+        status_callback("Serializing exact Level 3 array request")
+    request_path = work_path / "coupled-request.json"
+    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    return request_path, request
+
+
+def _write_transformed_coupled_mesh(
+    source_path: Path,
+    target_path: Path,
+    mesh_resource: dict[str, Any],
+    placement: DeploySourcePlacement,
+) -> None:
+    mesh = meshio.read(source_path)
+    points = np.asarray(mesh.points, dtype=np.float64) * float(mesh_resource.get("scale_to_m", 1.0))
+    points += np.asarray(mesh_resource.get("translation_m", (0.0, 0.0, 0.0)), dtype=np.float64)
+    transformed = _transform_scene_points(
+        points,
+        position_x_m=placement.position_x_m,
+        position_height_m=placement.position_height_m,
+        position_z_m=placement.position_z_m,
+        pitch_deg=placement.pitch_deg,
+        yaw_deg=placement.yaw_deg,
+        roll_deg=placement.roll_deg,
+    )
+    output = meshio.Mesh(
+        points=transformed,
+        cells=mesh.cells,
+        point_data=mesh.point_data,
+        cell_data=mesh.cell_data,
+        field_data=mesh.field_data,
+        cell_sets=mesh.cell_sets,
+    )
+    purpose = str(mesh_resource.get("purpose", ""))
+    if purpose == "bem_surface":
+        meshio.write(target_path, output, file_format="gmsh22", binary=False)
+    else:
+        meshio.write(target_path, output, file_format="gmsh", binary=False)
+
+
+def _transform_scene_vector(vector: np.ndarray, placement: DeploySourcePlacement) -> np.ndarray:
+    values = np.asarray(vector, dtype=np.float64).reshape(1, 3)
+    origin = np.zeros((1, 3), dtype=np.float64)
+    transformed_vector = _transform_scene_points(
+        values,
+        position_x_m=placement.position_x_m,
+        position_height_m=placement.position_height_m,
+        position_z_m=placement.position_z_m,
+        pitch_deg=placement.pitch_deg,
+        yaw_deg=placement.yaw_deg,
+        roll_deg=placement.roll_deg,
+    )
+    transformed_origin = _transform_scene_points(
+        origin,
+        position_x_m=placement.position_x_m,
+        position_height_m=placement.position_height_m,
+        position_z_m=placement.position_z_m,
+        pitch_deg=placement.pitch_deg,
+        yaw_deg=placement.yaw_deg,
+        roll_deg=placement.roll_deg,
+    )
+    result = transformed_vector[0] - transformed_origin[0]
+    norm = float(np.linalg.norm(result))
+    return result if norm == 0.0 else result / norm
 
 
 def _load_rigid_mesh_data(

@@ -147,22 +147,20 @@ They preserve the independent excitation-port basis and the
   exterior BEM surface, continuous P1 pressure, and facewise DP0 pressure
   normal derivative. These traces define the fixed equivalent source
   `D[p] - S[q]`; they are not two simultaneously imposed boundary conditions.
-- **Level 3 — Condensed interior coupling** contains levels 1 and 2 plus a
-  frequency-indexed boundary macro-model. Its matrices satisfy
-  `K z + C p = B u` and `q = D z + E u`, where `p` and `q` use the exported
-  exterior mesh's P1-node and DP0-face ordering. The retained state `z`
-  includes condensed FEM pressure, interface flux, diaphragm velocity, and
-  voice-coil current. Inputs `u` are normalized to 1 V or 1 m/s by port kind.
-  An array solver can assemble one exterior BEM problem around multiple
-  packages and couple their boundary traces through these equations.
-- **Level 3 — Condensed interior coupling** contains levels 1 and 2 plus a
-  frequency-indexed boundary macro-model. Its matrices satisfy
-  `K z + C p = B u` and `q = D z + E u`, where `p` and `q` use the exported
-  exterior mesh's P1-node and DP0-face ordering. The retained state `z`
-  includes condensed FEM pressure, interface flux, diaphragm velocity, and
-  voice-coil current. Inputs `u` are normalized to 1 V or 1 m/s by port kind.
-  An array solver can assemble one exterior BEM problem around multiple
-  packages and couple their boundary traces through these equations.
+- **Level 3 — Exact interior coupling** contains levels 1 and 2 plus the
+  frequency-parametric compiled FEM/LEM system and its meshes. The intended
+  Deploy Level 3 worker assembles and factors the sparse interior only for the
+  requested frequency, then couples its boundary response to the shared
+  exterior BEM problem. Identical
+  package instances share one package model and frequency factorization; the
+  exact interior is not duplicated for every cabinet. This is the default
+  representation and does not store a dense matrix stack over the export grid.
+
+The legacy `sampled-macro` representation remains available for compatibility.
+It stores frequency-indexed matrices satisfying `K z + C p = B u` and
+`q = D z + E u`. Because those matrices scale quadratically with the retained
+interior and boundary state, this representation is not recommended for
+moderate or large Level 3 models.
 
 Boundary Lab uses +Z as forward. Exported speaker packages use the array-tool
 frame with +Y as forward by applying the proper right-handed rotation
@@ -178,16 +176,6 @@ derivative values are copied to each image. The archive records the source
 symmetry, image transforms, and source indices for every exported node and face.
 The package manifest records medium properties, units, coordinate conventions,
 frequency and excitation order, provenance, payload semantics, and checksums.
-
-Level 3 cannot use an even-symmetry sector because incident fields from other
-array elements are generally asymmetric. Boundary Lab therefore recompiles an
-export-only full-domain system with symmetry off. It prefers retained generated
-full-domain meshes; otherwise it reflects the reduced FEM and BEM meshes,
-welds cut-plane nodes, corrects element orientation, removes FEM cut facets,
-and rebuilds the physical interfaces. A driver divided by a cut plane remains
-one mechanical/electrical state, while complete off-axis drivers are cloned as
-independent components and excitation ports. The temporary system and meshes
-are discarded after export and are never written back to the project.
 
 Level 3 cannot use an even-symmetry sector because incident fields from other
 array elements are generally asymmetric. Boundary Lab therefore recompiles an

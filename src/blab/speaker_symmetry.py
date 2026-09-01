@@ -286,6 +286,7 @@ def _expand_reduced_mesh(mesh: meshio.Mesh, mode: str, purpose: MeshPurpose) -> 
             node_map[source_index] = target
         node_maps.append(node_map)
 
+    expanded_points_array = np.asarray(expanded_points, dtype=float).reshape((-1, 3))
     new_cells = []
     image_blocks: list[np.ndarray] = []
     kept_source_rows: list[np.ndarray] = []
@@ -302,7 +303,7 @@ def _expand_reduced_mesh(mesh: meshio.Mesh, mode: str, purpose: MeshPurpose) -> 
                 if reflected:
                     mapped = _reverse_cell_orientation(mapped, block.type)
                 if purpose == MeshPurpose.FEM_VOLUME and block.type in _TRIANGLE_TYPES:
-                    corners = np.asarray(expanded_points, dtype=float)[mapped[:3]]
+                    corners = expanded_points_array[mapped[:3]]
                     if _lies_on_active_plane(corners, mode, tolerance):
                         continue
                 key = (source_row, *sorted(int(value) for value in mapped[: _corner_count(block.type)]))
@@ -323,7 +324,7 @@ def _expand_reduced_mesh(mesh: meshio.Mesh, mode: str, purpose: MeshPurpose) -> 
             np.asarray(values)[source_rows] for values, source_rows in zip(blocks, kept_source_rows, strict=True)
         ]
     expanded_mesh = meshio.Mesh(
-        points=np.asarray(expanded_points, dtype=float).reshape((-1, 3)),
+        points=expanded_points_array,
         cells=new_cells,
         cell_data=new_cell_data,
         field_data={name: np.asarray(value).copy() for name, value in mesh.field_data.items()},
@@ -596,7 +597,11 @@ def _active_boundaries_after_expansion(system, boundaries, expanded_by_resource)
         for mesh_id in region.mesh_ids:
             mesh = expanded_by_resource[mesh_id].mesh
             if region.kind == AcousticRegionKind.BOUNDED_AIR:
-                volume_tags = {int(group.tag) for group in region.volume_groups if group.mesh_id == mesh_id}
+                volume_tags = {
+                    _physical_group_tag(mesh, group)
+                    for group in region.volume_groups
+                    if group.mesh_id == mesh_id
+                }
                 present = set(selected_volume_surface_tags(mesh, volume_tags))
             else:
                 physical = mesh.cell_data.get("gmsh:physical", [])

@@ -329,9 +329,13 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError("FEM static condensation cannot be combined with full-matrix validation diagnostics.")
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
     symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
-    symmetry_factors = {"off": 1, "x": 2, "xy": 4}
+    # Ground is a BEM image construction, not a reduced FEM/transducer
+    # fundamental domain. It therefore leaves component completion factors at 1.
+    symmetry_factors = {"off": 1, "x": 2, "xy": 4, "ground": 1}
     if symmetry_mode not in symmetry_factors:
-        raise ValueError(f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+        raise ValueError(
+            f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, xy, or ground."
+        )
     bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
     unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
     if not bounded_regions:
@@ -414,7 +418,13 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             _validate_electrodynamic_component(
                 component,
                 symmetry_factor=symmetry_factors[symmetry_mode],
-                active_symmetry_axes=(() if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")),
+                active_symmetry_axes=(
+                    ()
+                    if symmetry_mode in {"off", "ground"}
+                    else ("x",)
+                    if symmetry_mode == "x"
+                    else ("x", "y")
+                ),
             )
             continue
         unsupported_parameters = set(component.parameters) - {

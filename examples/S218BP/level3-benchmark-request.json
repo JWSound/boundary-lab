@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "frequencies_hz": [100.0],
+  "include_project_observations": false,
+  "retain": [],
+  "solver_options": {
+    "validation_diagnostics": false,
+    "static_condensation": true
+  }
+}

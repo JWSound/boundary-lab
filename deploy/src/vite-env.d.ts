@@ -23,6 +23,7 @@ interface DesktopLevel2SolveRequest {
   packagePath: string;
   frequencyHz: number;
   backend: "cuda";
+  fidelity?: "boundary" | "coupled";
   sources: import("./model/types").SourceConfiguration[];
   rigidObjects: DesktopRigidObject[];
   observation: import("./model/types").ObservationPlane;

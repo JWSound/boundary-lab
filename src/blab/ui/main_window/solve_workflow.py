@@ -264,6 +264,7 @@ class SolveWorkflowController(QObject):
             prepared = prepare_speaker_package_solve(
                 prepared,
                 fidelity=normalized.fidelity,
+                coupled_representation=normalized.coupled_representation,
                 sphere_point_count=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 sphere_radius_m=preferences.polar_observation_distance_m,
             )
