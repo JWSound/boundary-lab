@@ -298,16 +298,19 @@ def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
     arrays = {name: np.asarray([[[1.0 + 0.0j]], [[2.0 + 0.0j]]], dtype=np.complex64) for name in array_names}
     arrays["frequencies_hz"] = np.asarray([20.0, 40.0])
     package = type("Package", (), {
+        "fingerprint": ("speaker.blabsp", 1, 1),
         "frequencies": np.asarray([10.0, 20.0, 40.0, 80.0]),
         "coupled_model": {
             "representation": "parity_petrov_galerkin_rom",
             "arrays": arrays,
         },
     })()
-    cache = type("Cache", (), {"load_package": lambda self, _path: package})()
+    cache = DeploySolveCache()
+    monkeypatch.setattr(cache, "load_package", lambda _path: package)
 
     def prepare_single(payload, work_dir, **_kwargs):
         path = Path(work_dir) / "request.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
         request = {
             "schema": "boundary_lab_deploy_rom",
             "frequency_hz": payload["frequencyHz"],
@@ -354,7 +357,29 @@ def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
     )
     assert first_drive == pytest.approx(2.83j, abs=1e-6)
     assert second_drive == pytest.approx(-2.83 + 0j, abs=1e-6)
-    assert Path(request["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"]).is_file()
+    staged_path = Path(request["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"])
+    assert staged_path.is_file()
+    assert request["provenance"]["rom_sweep_stage_cache_hit"] == 0
+    assert request["provenance"]["rom_sweep_stage_binary_bytes_written"] > 0
+
+    repeated_statuses: list[str] = []
+    _, repeated = prepare_deploy_rom_microphone_sweep_request(
+        {
+            "packagePath": "speaker.blabsp",
+            "sources": [{"id": "source", "delayMs": 25.0}],
+            "observationPointsM": [[2.0, 1.2, 6.0]],
+        },
+        tmp_path / "repeated",
+        cache=cache,
+        status_callback=repeated_statuses.append,
+    )
+
+    repeated_path = Path(repeated["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"])
+    assert repeated_path == staged_path
+    assert repeated["provenance"]["rom_sweep_stage_cache_hit"] == 1
+    assert repeated["provenance"]["rom_sweep_stage_binary_bytes_written"] == 0
+    assert "Reusing staged Level 3 ROM sweep data" in repeated_statuses
+    cache.close()
 
 
 def test_prepare_rom_request_retains_scene_speaker_and_transducer_identity(tmp_path: Path) -> None:

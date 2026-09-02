@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import math
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -265,6 +266,13 @@ class DeployBoundaryComponent:
     reference_pressure: np.ndarray
 
 
+@dataclass(frozen=True)
+class DeployRomSweepStage:
+    binary_path: Path
+    frequency_descriptors: tuple[dict[str, dict[str, object]], ...]
+    binary_bytes: int
+
+
 @dataclass
 class DeploySolveCache:
     packages: dict[tuple[str, int, int], DeployPackageData] = field(default_factory=dict)
@@ -273,6 +281,63 @@ class DeploySolveCache:
         default_factory=dict
     )
     sweep_geometries: dict[str, tuple[dict[str, Any], str]] = field(default_factory=dict)
+    rom_sweep_stages: dict[tuple[Any, ...], DeployRomSweepStage] = field(default_factory=dict)
+    _rom_sweep_temp: tempfile.TemporaryDirectory = field(
+        default_factory=lambda: tempfile.TemporaryDirectory(prefix="blab-deploy-rom-cache-"),
+        init=False,
+        repr=False,
+    )
+
+    def _reset_rom_sweep_stages(self) -> None:
+        self.rom_sweep_stages.clear()
+        self._rom_sweep_temp.cleanup()
+        self._rom_sweep_temp = tempfile.TemporaryDirectory(prefix="blab-deploy-rom-cache-")
+
+    def close(self) -> None:
+        self.rom_sweep_stages.clear()
+        self._rom_sweep_temp.cleanup()
+
+    def stage_rom_sweep_arrays(
+        self,
+        package: DeployPackageData,
+        frequency_pairs: list[tuple[float, int]],
+        array_names: tuple[str, ...],
+    ) -> tuple[DeployRomSweepStage, bool]:
+        arrays = package.coupled_model.get("arrays") if isinstance(package.coupled_model, dict) else None
+        if not isinstance(arrays, dict):
+            raise ValueError("Deploy parity-ROM package did not load its reduced arrays.")
+        cache_key = (
+            package.fingerprint,
+            tuple(index for _frequency, index in frequency_pairs),
+            array_names,
+        )
+        cached = self.rom_sweep_stages.get(cache_key)
+        if cached is not None and cached.binary_path.is_file():
+            return cached, True
+
+        binary_values: dict[str, np.ndarray] = {}
+        descriptor_names: list[dict[str, str]] = []
+        for sweep_index, (_frequency_hz, array_index) in enumerate(frequency_pairs):
+            names: dict[str, str] = {}
+            for name in array_names:
+                binary_name = f"{name}_{sweep_index}"
+                binary_values[binary_name] = np.asarray(arrays[name][array_index], dtype=np.complex64)
+                names[name] = binary_name
+            descriptor_names.append(names)
+
+        key_text = json.dumps(cache_key, sort_keys=True, separators=(",", ":"), default=str)
+        binary_path = Path(self._rom_sweep_temp.name) / f"{hashlib.sha256(key_text.encode('utf-8')).hexdigest()}.bin"
+        all_descriptors = _write_deploy_binary_arrays(binary_path, binary_values)
+        stage = DeployRomSweepStage(
+            binary_path=binary_path,
+            frequency_descriptors=tuple(
+                {name: all_descriptors[binary_name] for name, binary_name in names.items()}
+                for names in descriptor_names
+            ),
+            binary_bytes=binary_path.stat().st_size,
+        )
+        self.rom_sweep_stages[cache_key] = stage
+        return stage, False
 
     def load_package(self, package_path: Path) -> DeployPackageData:
         stat = package_path.stat()
@@ -285,6 +350,7 @@ class DeploySolveCache:
         self.packages[fingerprint] = package
         self.ground_image_pairs.clear()
         self.sweep_geometries.clear()
+        self._reset_rom_sweep_stages()
         return package
 
     def load_rigid_mesh(self, mesh_path: Path) -> DeployRigidMeshData:
@@ -1659,15 +1725,40 @@ def prepare_deploy_rom_microphone_sweep_request(
     array_names = (
         "k", "c", "d", "b", "e", "velocity", "current", "velocity_drive", "current_drive",
     )
-    binary_values: dict[str, np.ndarray] = {}
     sweep_entries: list[dict[str, Any]] = []
     reference_voltage = float(payload.get("transducerReferenceVoltageV", 2.83))
+    if isinstance(cache, DeploySolveCache):
+        staged, stage_cache_hit = cache.stage_rom_sweep_arrays(package, frequency_pairs, array_names)
+        frequency_descriptors = staged.frequency_descriptors
+        binary_bytes = staged.binary_bytes
+        binary_bytes_written = 0 if stage_cache_hit else binary_bytes
+    else:
+        binary_values: dict[str, np.ndarray] = {}
+        descriptor_names: list[dict[str, str]] = []
+        for sweep_index, (_frequency_hz, array_index) in enumerate(frequency_pairs):
+            names: dict[str, str] = {}
+            for name in array_names:
+                binary_name = f"{name}_{sweep_index}"
+                binary_values[binary_name] = np.asarray(arrays[name][array_index], dtype=np.complex64)
+                names[name] = binary_name
+            descriptor_names.append(names)
+        binary_path = Path(work_dir).resolve() / "speaker-rom-sweep.bin"
+        all_descriptors = _write_deploy_binary_arrays(binary_path, binary_values)
+        frequency_descriptors = tuple(
+            {name: all_descriptors[binary_name] for name, binary_name in names.items()}
+            for names in descriptor_names
+        )
+        stage_cache_hit = False
+        binary_bytes = binary_path.stat().st_size
+        binary_bytes_written = binary_bytes
+
+    if status_callback is not None:
+        status_callback(
+            "Reusing staged Level 3 ROM sweep data"
+            if stage_cache_hit
+            else "Staging Level 3 ROM sweep data"
+        )
     for sweep_index, (frequency_hz, array_index) in enumerate(frequency_pairs):
-        descriptors: dict[str, str] = {}
-        for name in array_names:
-            binary_name = f"{name}_{sweep_index}"
-            binary_values[binary_name] = np.asarray(arrays[name][array_index], dtype=np.complex64)
-            descriptors[name] = binary_name
         input_count = int(np.asarray(arrays["b"][array_index]).shape[-1])
         instances: list[dict[str, Any]] = []
         for source, base_instance in zip(sources, base_instances, strict=True):
@@ -1682,17 +1773,9 @@ def prepare_deploy_rom_microphone_sweep_request(
                 "input_imag": drive.imag.tolist(),
             })
         sweep_entries.append({
-            "binary_array_names": descriptors,
+            "binary_arrays": frequency_descriptors[sweep_index],
             "instances": instances,
         })
-
-    binary_path = Path(work_dir).resolve() / "speaker-rom-sweep.bin"
-    all_descriptors = _write_deploy_binary_arrays(binary_path, binary_values)
-    for entry in sweep_entries:
-        entry["binary_arrays"] = {
-            name: all_descriptors[binary_name]
-            for name, binary_name in entry.pop("binary_array_names").items()
-        }
     request["schema"] = DEPLOY_MICROPHONE_SWEEP_SCHEMA
     request["schema_version"] = 2
     request["geometry_key"] = "coupled-rom-microphone-sweep"
@@ -1703,6 +1786,9 @@ def prepare_deploy_rom_microphone_sweep_request(
     }
     request.pop("rom", None)
     request["provenance"]["frequency_count"] = len(frequency_pairs)
+    request["provenance"]["rom_sweep_stage_cache_hit"] = int(stage_cache_hit)
+    request["provenance"]["rom_sweep_stage_binary_bytes"] = binary_bytes
+    request["provenance"]["rom_sweep_stage_binary_bytes_written"] = binary_bytes_written
     if status_callback is not None:
         status_callback(f"Serializing {len(frequency_pairs)}-frequency Level 3 ROM sweep")
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")

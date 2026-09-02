@@ -647,6 +647,18 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
     rom_iterations = 0
     rom_residual = FloatType(NaN)
     rom_residual_history = FloatType[]
+    rom_factorization_seconds = 0.0
+    rom_initial_preconditioner_seconds = 0.0
+    rom_gmres_seconds = 0.0
+    rom_feedback_pressure_download_seconds = 0.0
+    rom_feedback_model_seconds = 0.0
+    rom_feedback_upload_seconds = 0.0
+    rom_feedback_rhs_seconds = 0.0
+    rom_feedback_preconditioner_seconds = 0.0
+    rom_feedback_update_seconds = 0.0
+    rom_final_pressure_download_seconds = 0.0
+    rom_final_response_seconds = 0.0
+    rom_final_feedback_upload_seconds = 0.0
     final_rom_response = initial_rom_response
     try
         device_prepare_seconds = @elapsed begin
@@ -780,39 +792,65 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
         solve_seconds = @elapsed begin
             pressure = if rom_request
                 cuda = BeatEngineCore.CUDA_MODULE
-                rom_factorization = lu!(direct_system.matrix)
+                rom_factorization_seconds = @elapsed begin
+                    rom_factorization = lu!(direct_system.matrix)
+                    cuda.synchronize()
+                end
                 direct_system_consumed = true
-                preconditioned_rhs = rom_factorization \ direct_system.rhs
+                preconditioned_rhs = nothing
+                rom_initial_preconditioner_seconds = @elapsed begin
+                    preconditioned_rhs = rom_factorization \ direct_system.rhs
+                    cuda.synchronize()
+                end
                 try
                     apply_schur = function(candidate_pressure)
-                        feedback = deploy_speaker_rom_response(
-                            speaker_rom,
-                            Complex{FloatType}.(Array(candidate_pressure));
-                            include_drive=false,
-                        )
-                        feedback_device = cuda.CuArray(feedback.q)
+                        candidate_host = nothing
+                        rom_feedback_pressure_download_seconds += @elapsed begin
+                            candidate_host = Complex{FloatType}.(Array(candidate_pressure))
+                        end
+                        feedback = nothing
+                        rom_feedback_model_seconds += @elapsed begin
+                            feedback = deploy_speaker_rom_response(
+                                speaker_rom,
+                                candidate_host;
+                                include_drive=false,
+                            )
+                        end
+                        feedback_device = nothing
+                        rom_feedback_upload_seconds += @elapsed begin
+                            feedback_device = cuda.CuArray(feedback.q)
+                            cuda.synchronize()
+                        end
                         feedback_rhs = feedback_solution = result = nothing
                         try
-                            feedback_rhs = assemble_burton_miller_rhs_cuda(
-                                mesh,
-                                p1_space,
-                                dp0_space,
-                                feedback_device,
-                                k,
-                                rule;
-                                device_cache=device_cache,
-                                singular_cache=singular_cache,
-                                device_singular_cache=device_singular_cache,
-                                device_image_singular_cache=device_image_singular_cache,
-                                near_correction_cache=near_correction_cache,
-                                device_near_correction_cache=device_near_correction_cache,
-                                image_near_correction_cache=ground_near_correction_cache,
-                                device_image_near_correction_cache=device_ground_near_correction_cache,
-                                symmetry_mode=:ground,
-                            )
-                            feedback_solution = rom_factorization \ feedback_rhs
-                            result = copy(candidate_pressure)
-                            result .-= feedback_solution
+                            rom_feedback_rhs_seconds += @elapsed begin
+                                feedback_rhs = assemble_burton_miller_rhs_cuda(
+                                    mesh,
+                                    p1_space,
+                                    dp0_space,
+                                    feedback_device,
+                                    k,
+                                    rule;
+                                    device_cache=device_cache,
+                                    singular_cache=singular_cache,
+                                    device_singular_cache=device_singular_cache,
+                                    device_image_singular_cache=device_image_singular_cache,
+                                    near_correction_cache=near_correction_cache,
+                                    device_near_correction_cache=device_near_correction_cache,
+                                    image_near_correction_cache=ground_near_correction_cache,
+                                    device_image_near_correction_cache=device_ground_near_correction_cache,
+                                    symmetry_mode=:ground,
+                                )
+                            end
+                            rom_feedback_preconditioner_seconds += @elapsed begin
+                                feedback_solution = rom_factorization \ feedback_rhs
+                                cuda.synchronize()
+                            end
+                            rom_feedback_update_seconds += @elapsed begin
+                                result = copy(candidate_pressure)
+                                result .-= feedback_solution
+                                cuda.synchronize()
+                            end
                             return result
                         finally
                             cuda.unsafe_free!(feedback_device)
@@ -820,19 +858,32 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                             feedback_solution === nothing || cuda.unsafe_free!(feedback_solution)
                         end
                     end
-                    rom_pressure, rom_iterations, rom_residual, rom_residual_history = deploy_cuda_gmres(
-                        apply_schur,
-                        preconditioned_rhs;
-                        tolerance=speaker_rom.tolerance,
-                        max_iterations=speaker_rom.max_iterations,
-                    )
-                    final_rom_response = deploy_speaker_rom_response(
-                        speaker_rom,
-                        Complex{FloatType}.(Array(rom_pressure));
-                        include_drive=true,
-                    )
-                    cuda.unsafe_free!(cached_q_neumann)
-                    cached_q_neumann = cuda.CuArray(final_rom_response.q)
+                    gmres_result = nothing
+                    rom_gmres_seconds = @elapsed begin
+                        gmres_result = deploy_cuda_gmres(
+                            apply_schur,
+                            preconditioned_rhs;
+                            tolerance=speaker_rom.tolerance,
+                            max_iterations=speaker_rom.max_iterations,
+                        )
+                    end
+                    rom_pressure, rom_iterations, rom_residual, rom_residual_history = gmres_result
+                    final_pressure_host = nothing
+                    rom_final_pressure_download_seconds = @elapsed begin
+                        final_pressure_host = Complex{FloatType}.(Array(rom_pressure))
+                    end
+                    rom_final_response_seconds = @elapsed begin
+                        final_rom_response = deploy_speaker_rom_response(
+                            speaker_rom,
+                            final_pressure_host;
+                            include_drive=true,
+                        )
+                    end
+                    rom_final_feedback_upload_seconds = @elapsed begin
+                        cuda.unsafe_free!(cached_q_neumann)
+                        cached_q_neumann = cuda.CuArray(final_rom_response.q)
+                        cuda.synchronize()
+                    end
                     rom_pressure
                 finally
                     cuda.unsafe_free!(preconditioned_rhs)
@@ -1003,6 +1054,43 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
         result["timings"]["total_before_emit_s"] = Float32(time() - request_started)
         for (name, seconds) in direct_assembly_timings
             result["timings"][name] = Float32(seconds)
+        end
+        if rom_request
+            rom_feedback_profiled_seconds =
+                rom_feedback_pressure_download_seconds +
+                rom_feedback_model_seconds +
+                rom_feedback_upload_seconds +
+                rom_feedback_rhs_seconds +
+                rom_feedback_preconditioner_seconds +
+                rom_feedback_update_seconds
+            rom_gmres_other_seconds = max(0.0, rom_gmres_seconds - rom_feedback_profiled_seconds)
+            rom_profiled_solve_seconds =
+                rom_factorization_seconds +
+                rom_initial_preconditioner_seconds +
+                rom_gmres_seconds +
+                rom_final_pressure_download_seconds +
+                rom_final_response_seconds +
+                rom_final_feedback_upload_seconds
+            rom_solve_other_seconds = max(0.0, solve_seconds - rom_profiled_solve_seconds)
+            rom_timings = Dict(
+                "rom_factorization_s" => rom_factorization_seconds,
+                "rom_initial_preconditioner_s" => rom_initial_preconditioner_seconds,
+                "rom_gmres_s" => rom_gmres_seconds,
+                "rom_feedback_pressure_download_s" => rom_feedback_pressure_download_seconds,
+                "rom_feedback_model_s" => rom_feedback_model_seconds,
+                "rom_feedback_upload_s" => rom_feedback_upload_seconds,
+                "rom_feedback_rhs_s" => rom_feedback_rhs_seconds,
+                "rom_feedback_preconditioner_s" => rom_feedback_preconditioner_seconds,
+                "rom_feedback_update_s" => rom_feedback_update_seconds,
+                "rom_gmres_other_s" => rom_gmres_other_seconds,
+                "rom_final_pressure_download_s" => rom_final_pressure_download_seconds,
+                "rom_final_response_s" => rom_final_response_seconds,
+                "rom_final_feedback_upload_s" => rom_final_feedback_upload_seconds,
+                "rom_solve_other_s" => rom_solve_other_seconds,
+            )
+            for (name, seconds) in rom_timings
+                result["timings"][name] = Float32(seconds)
+            end
         end
         emit_event("result"; result=result)
     finally

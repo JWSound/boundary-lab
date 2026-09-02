@@ -379,6 +379,14 @@ def _microphone_sweep(
         frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
+        provenance = _request.get("provenance", {})
+        rom_stage_metrics = {
+            "rom_sweep_stage_cache_hit": int(provenance.get("rom_sweep_stage_cache_hit", 0)),
+            "rom_sweep_stage_binary_bytes": int(provenance.get("rom_sweep_stage_binary_bytes", 0)),
+            "rom_sweep_stage_binary_bytes_written": int(
+                provenance.get("rom_sweep_stage_binary_bytes_written", 0)
+            ),
+        } if rom_coupled and isinstance(provenance, dict) else {}
         julia_started = time.perf_counter()
         for event in worker.submit(
             request_path,
@@ -490,6 +498,7 @@ def _microphone_sweep(
                 "julia_request_json_bytes": request_bytes,
                 "python_julia_result_wait_s": time.perf_counter() - julia_started,
                 "batched_frequency_sweep": 1,
+                **rom_stage_metrics,
                 **{f"julia_{name}_total_s": seconds for name, seconds in julia_timing_totals.items()},
             },
         },
@@ -595,6 +604,7 @@ def main() -> int:
         thread = active.get("thread")
         if thread is not None:
             thread.join(timeout=2.0)
+        solve_cache.close()
         shutdown_beat_engine_workers()
     return 0
 
