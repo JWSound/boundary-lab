@@ -78,6 +78,11 @@ function electricalSample(voltageReal: number, voltageImag: number, currentReal:
   };
 }
 
+type SolvedFieldEntry = { key: string; field: FieldFrame };
+type SolvedFieldCache = Record<"boundary" | "coupled", SolvedFieldEntry | null>;
+
+const emptySolvedFieldCache = (): SolvedFieldCache => ({ boundary: null, coupled: null });
+
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   const centerSpacingM = pkg.boundsM[0] + 2;
   const positionHeightM = minimumSourceHeightM(pkg);
@@ -230,8 +235,7 @@ export function App() {
   const [selectedInstances, setSelectedInstances] = useState<string[]>(["subwoofer-1"]);
   const [error, setError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"library" | "scene">("library");
-  const [boundaryField, setBoundaryField] = useState<FieldFrame | null>(null);
-  const [boundarySolveKey, setBoundarySolveKey] = useState<string | null>(null);
+  const [solvedFields, setSolvedFields] = useState<SolvedFieldCache>(emptySolvedFieldCache);
   const [boundaryGeometryKey, setBoundaryGeometryKey] = useState<string | null>(null);
   const [solveRevision, setSolveRevision] = useState(0);
   const [solveState, setSolveState] = useState<"idle" | "solving" | "complete" | "error">("idle");
@@ -450,10 +454,11 @@ export function App() {
     sources: sourceConfigs,
     rigidObjects,
   }), [fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs]);
-  const field = fidelity !== "pattern" && boundaryField && boundarySolveKey === currentSolveKey
-    ? boundaryField
+  const selectedSolvedField = fidelity === "pattern" ? null : solvedFields[fidelity];
+  const field = selectedSolvedField?.key === currentSolveKey
+    ? selectedSolvedField.field
     : patternField;
-  const boundaryCurrent = fidelity !== "pattern" && boundaryField !== null && boundarySolveKey === currentSolveKey;
+  const boundaryCurrent = selectedSolvedField?.key === currentSolveKey;
   const level2Package = activeSourcePackageIds.length === 1 ? packageById.get(activeSourcePackageIds[0]) ?? null : null;
   const level2FrequencyAvailable = Boolean(level2Package && Array.from(level2Package.frequenciesHz).some(
     (frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6),
@@ -521,8 +526,7 @@ export function App() {
     setSelectedInstances(["subwoofer-1"]);
     setFrequencyIndex(nearestFrequencyIndex(next, 80));
     setFidelity("pattern");
-    setBoundaryField(null);
-    setBoundarySolveKey(null);
+    setSolvedFields(emptySolvedFieldCache());
     setBoundaryGeometryKey(null);
     setSolveRevision(0);
     setSolveState("idle");
@@ -630,8 +634,7 @@ export function App() {
     setFrequencyIndex(nextFrequencyIndex);
     setFidelity(nextFidelity);
     setSelectedInstances([nextSources[0].id]);
-    setBoundaryField(null);
-    setBoundarySolveKey(null);
+    setSolvedFields(emptySolvedFieldCache());
     setBoundaryGeometryKey(null);
     setSolveRevision(0);
     setSolveState("idle");
@@ -885,8 +888,10 @@ export function App() {
     setSolveMessage("Starting BEAT CUDA worker");
     setError(null);
     if (!patternField.validMask.some((value) => value !== 0)) {
-      setBoundaryField(patternField);
-      setBoundarySolveKey(requestedKey);
+      setSolvedFields((current) => ({
+        ...current,
+        [coupled ? "coupled" : "boundary"]: { key: requestedKey, field: patternField },
+      }));
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
       setSolveMessage("No audience-plane samples above ground");
@@ -939,9 +944,11 @@ export function App() {
             (result.field_pressure?.real.length ?? 0) + (result.field_pressure?.imag.length ?? 0),
         },
       };
-      setBoundaryField(nextField);
-      setBoundarySolveKey(requestedKey);
-      setBoundaryGeometryKey(requestedGeometryKey);
+      setSolvedFields((current) => ({
+        ...current,
+        [coupled ? "coupled" : "boundary"]: { key: requestedKey, field: nextField },
+      }));
+      if (!coupled) setBoundaryGeometryKey(requestedGeometryKey);
       setSolveRevision((revision) => revision + 1);
       setSolveState("complete");
       setSolveMessage(`Live ${fidelityLabel} field current`);
@@ -1706,7 +1713,7 @@ export function App() {
       flushLiveSolveRef.current = false;
       return;
     }
-    if (boundarySolveKey === currentSolveKey) {
+    if (selectedSolvedField?.key === currentSolveKey) {
       flushLiveSolveRef.current = false;
       return;
     }
@@ -1717,7 +1724,7 @@ export function App() {
       void solveLevel2();
     }, delayMs);
     return () => window.clearTimeout(timeout);
-  }, [boundarySolveKey, currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, sceneClearanceValid, selectedSolverAvailable, solveLevel2, solveReleaseRevision, solveState, speakerManipulationActive]);
+  }, [currentSolveKey, fidelity, liveSolveEnabled, microphoneSweepState, sceneClearanceValid, selectedSolvedField?.key, selectedSolverAvailable, solveLevel2, solveReleaseRevision, solveState, speakerManipulationActive]);
 
   const flushLiveSolve = useCallback(() => {
     if (!liveSolveEnabled || fidelity === "pattern" || !selectedSolverAvailable) return;

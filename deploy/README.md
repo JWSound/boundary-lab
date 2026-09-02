@@ -40,6 +40,7 @@ npm start
 - Schur-eliminates Level 3 parity-sector ROMs into the shared exterior BEM solve so cabinet loading and transducer feedback respond to the complete array.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
+- Retains separate current observation-plane frames for Boundary and Coupled fidelity so users can compare solver levels without repeating unchanged solves.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
 - Uses threshold-oriented triangle-BVH clearance validation with early exit and emits conservative higher-order corrections for close speaker/rigid face pairs and their ground images.
 - Saves speaker packages, rigid-mesh assets and instances, and microphones as a strict schema-v5 `.blabdeploy.json` project.
