@@ -236,13 +236,19 @@ end
 
 function _snapshot_coefficients(observations, rank::Int, ::Type{T}) where {T}
     analysis = ComplexF64.(observations)
-    decomposition = eigen(Hermitian(analysis' * analysis))
-    order = sortperm(real.(decomposition.values); rev=true)
-    values = max.(real.(decomposition.values[order]), 0.0)
-    values[rank] > max(first(values), eps(Float64)) * 1.0e-12 || error(
-        "Speaker ROM training snapshots do not support requested rank $rank.",
+    decomposition = svd(analysis; full=false)
+    singular_values = decomposition.S
+    cutoff = max(first(singular_values), eps(Float64)) * 1.0e-6
+    supported_rank = count(value -> value > cutoff, singular_values)
+    effective_rank = min(rank, supported_rank)
+    effective_rank > 0 || error(
+        "Speaker ROM training snapshots do not contain a numerically supported mode.",
     )
-    return Complex{T}.(decomposition.vectors[:, order[1:rank]]), values
+    return (
+        Complex{T}.(decomposition.V[:, 1:effective_rank]),
+        singular_values .^ 2,
+        effective_rank,
+    )
 end
 
 function _biorthogonalize(right_basis, left_basis, rank::Int, ::Type{T}) where {T}
@@ -299,10 +305,12 @@ end
 """
     build_parity_petrov_galerkin_rom(system, k_matrix, layout, excitations; ...)
 
-Build four rank-`rank` two-sided projection models. The right space is selected
+Build four rank-at-most-`rank` two-sided projection models. The right space is selected
 from exact state responses using boundary-flux POD; the left space is selected
 from adjoint responses using boundary-pressure sensitivity POD. The bases are
-then biorthogonalized before projecting K/C/D/B.
+then biorthogonalized before projecting K/C/D/B. Frequencies or parity sectors
+with fewer numerically supported modes are padded with decoupled states so the
+serialized package retains a fixed `rank` dimension.
 """
 function build_parity_petrov_galerkin_rom(
     system,
@@ -343,6 +351,7 @@ function build_parity_petrov_galerkin_rom(
     left_factor = _factor(system, Matrix(adjoint(k_matrix)))
     sector_models = NamedTuple[]
     validation = Dict{String,Any}[]
+    effective_ranks = Int[]
     try
         driven_state = _solve(right_factor, b_matrix)
         driven_boundary_output = _boundary_output(system, layout, driven_state) .+ e_matrix
@@ -372,13 +381,20 @@ function build_parity_petrov_galerkin_rom(
                 _right_hand_side(system, layout, training_pressure),
             )
             right_observations = _boundary_output(system, layout, right_snapshots)
-            right_coefficients, right_spectrum = _snapshot_coefficients(
+            right_coefficients, right_spectrum, effective_rank = _snapshot_coefficients(
                 right_observations,
                 rank,
                 T,
             )
+            effective_rank < rank && @warn(
+                "Speaker ROM sector uses fewer modes than requested",
+                sector=sector.name,
+                requested_rank=rank,
+                effective_rank=effective_rank,
+            )
+            push!(effective_ranks, effective_rank)
             right_seed = right_snapshots * right_coefficients
-            right_basis = Complex{T}.(Matrix(qr(right_seed).Q[:, 1:rank]))
+            right_basis = Complex{T}.(Matrix(qr(right_seed).Q[:, 1:effective_rank]))
             # Kᴴ W = V gives Wᴴ K V = Vᴴ V. This operator-induced Petrov
             # space avoids the poorly conditioned overlap produced by two
             # independently truncated snapshot spaces while retaining the
@@ -417,7 +433,7 @@ function build_parity_petrov_galerkin_rom(
             # direct affine term. The reduced state is reserved for pressure-
             # induced loading feedback, which is the response family used to
             # train and validate this basis.
-            reduced_b = zeros(Complex{T}, rank, size(b_matrix, 2))
+            reduced_b = zeros(Complex{T}, effective_rank, size(b_matrix, 2))
             projected_e = _parity_project(
                 driven_boundary_output,
                 face_map_x,
@@ -425,17 +441,17 @@ function build_parity_petrov_galerkin_rom(
                 sector.sign_x,
                 sector.sign_y,
             )
-            compact_c = zeros(Complex{T}, rank, length(node_orbits))
+            compact_c = zeros(Complex{T}, effective_rank, length(node_orbits))
             for (column, (orbit, orbit_size)) in enumerate(zip(node_orbits, node_orbit_sizes))
                 compact_c[:, column] .= orbit_size .* view(c_full, :, orbit[1])
             end
             compact_d = Matrix(d_full[[orbit[1] for orbit in face_orbits], :])
             compact_e = Matrix(projected_e[[orbit[1] for orbit in face_orbits], :])
             velocity_output = isempty(layout.mechanical_range) ?
-                              zeros(Complex{T}, 0, rank) :
+                              zeros(Complex{T}, 0, effective_rank) :
                               Matrix(view(right_basis, layout.mechanical_range, :))
             current_output = isempty(layout.electrical_range) ?
-                             zeros(Complex{T}, 0, rank) :
+                             zeros(Complex{T}, 0, effective_rank) :
                              Matrix(view(right_basis, layout.electrical_range, :))
             velocity_drive = sector.name == "even_even" ?
                              driven_velocity_output :
@@ -472,29 +488,50 @@ function build_parity_petrov_galerkin_rom(
                 validation,
                 Dict(
                     "sector" => sector.name,
+                    "requested_rank" => rank,
+                    "effective_rank" => effective_rank,
                     "boundary_output_error" => _curve_errors(
                         exact_validation_output,
                         candidate_output,
                     ),
                     "petrov_overlap_condition" => overlap_condition,
                     "right_snapshot_tail_ratio" => sqrt(
-                        right_spectrum[rank] / first(right_spectrum),
+                        right_spectrum[min(rank, length(right_spectrum))] /
+                        first(right_spectrum),
                     ),
                     "petrov_identity_error" => norm(
-                        petrov_identity - Matrix{Complex{T}}(I, rank, rank),
-                    ) / sqrt(T(rank)),
+                        petrov_identity -
+                        Matrix{Complex{T}}(I, effective_rank, effective_rank),
+                    ) / sqrt(T(effective_rank)),
                 ),
             )
+
+            # Deploy packages use a fixed state dimension across every
+            # frequency and sector. Keep the supported model in the leading
+            # block and make any remaining slots inert but nonsingular so the
+            # Deploy Schur factorization can use the existing package layout.
+            padded_k = Matrix{Complex{T}}(I, rank, rank)
+            padded_k[1:effective_rank, 1:effective_rank] .= reduced_k
+            padded_c = zeros(Complex{T}, rank, size(compact_c, 2))
+            padded_c[1:effective_rank, :] .= compact_c
+            padded_d = zeros(Complex{T}, size(compact_d, 1), rank)
+            padded_d[:, 1:effective_rank] .= compact_d
+            padded_b = zeros(Complex{T}, rank, size(reduced_b, 2))
+            padded_b[1:effective_rank, :] .= reduced_b
+            padded_velocity = zeros(Complex{T}, size(velocity_output, 1), rank)
+            padded_velocity[:, 1:effective_rank] .= velocity_output
+            padded_current = zeros(Complex{T}, size(current_output, 1), rank)
+            padded_current[:, 1:effective_rank] .= current_output
             push!(
                 sector_models,
                 (
-                    k=Matrix(reduced_k),
-                    c=compact_c,
-                    d=compact_d,
-                    b=Matrix(reduced_b),
+                    k=padded_k,
+                    c=padded_c,
+                    d=padded_d,
+                    b=padded_b,
                     e=compact_e,
-                    velocity=velocity_output,
-                    current=current_output,
+                    velocity=padded_velocity,
+                    current=padded_current,
                     velocity_drive=velocity_drive,
                     current_drive=current_drive,
                 ),
@@ -515,6 +552,7 @@ function build_parity_petrov_galerkin_rom(
         "format_version" => 1,
         "method" => "response_pod_with_operator_induced_petrov_test_space",
         "rank_per_sector" => rank,
+        "effective_rank_per_sector" => effective_ranks,
         "training_count_per_sector" => training_count,
         "validation_count_per_sector" => validation_count,
         "sector_names" => [sector.name for sector in PARITY_SECTORS],

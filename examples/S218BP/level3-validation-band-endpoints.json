@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "frequencies_hz": [20.0, 250.0],
+  "outputs": [],
+  "solver_options": {
+    "precision": "float32",
+    "quadrature_order": 2,
+    "singular_order": 3
+  }
+}

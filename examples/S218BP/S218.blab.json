@@ -401,7 +401,7 @@
   "project_preferences": {
     "balloon_angle_precision_deg": 2.5,
     "freq_count": 100,
-    "freq_max_hz": 500,
+    "freq_max_hz": 250,
     "freq_min_hz": 20,
     "horizontal_normalization_angle": 0.0,
     "isobar_contour_step_db": 3.0,
