@@ -7,7 +7,7 @@ from blab.speaker_preflight import estimate_level_three_package
 
 
 def test_s218bp_level_three_preflight_tracks_full_domain_storage() -> None:
-    project_path = Path(__file__).parents[1] / "examples" / "S218BP" / "S218.blab.json"
+    project_path = Path(__file__).parents[1] / "examples" / "S218BP" / "S218BP.blab.json"
     project = load_headless_project(project_path)
 
     estimate = estimate_level_three_package(
@@ -15,7 +15,7 @@ def test_s218bp_level_three_preflight_tracks_full_domain_storage() -> None:
         symmetry=project.symmetry,
         frequency_count=100,
         complex_bytes=8,
-        rom_rank=256,
+        rom_rank=32,
         sphere_point_count=6600,
     )
 
@@ -28,7 +28,7 @@ def test_s218bp_level_three_preflight_tracks_full_domain_storage() -> None:
     assert estimate.transducer_count == 2
     assert estimate.excitation_count == 2
     assert estimate.state_count == 4667
-    assert estimate.exact_package_bytes_estimate < estimate.dense_sampled_package_bytes_estimate // 1000
-    assert estimate.eight_cabinet_shared_schur_bytes == estimate.current_frequency_schur_bytes
-    assert estimate.eight_cabinet_independent_schur_bytes == 8 * estimate.current_frequency_schur_bytes
-
+    assert estimate.rom_rank == 32
+    assert estimate.parity_rom_numeric_bytes > 0
+    assert estimate.parity_rom_package_bytes_estimate > estimate.parity_rom_numeric_bytes
+    assert estimate.rom_training_schur_bytes == estimate.retained_fem_node_count**2 * 8

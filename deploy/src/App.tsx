@@ -436,8 +436,7 @@ export function App() {
     window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable && rigidMeshesAvailable,
   );
   const coupledRepresentation = level2Package?.manifest.files.coupled_model?.representation;
-  const coupledRepresentationSupported = coupledRepresentation === "exact_frequency_parametric_fem" ||
-    coupledRepresentation === "parity_petrov_galerkin_rom";
+  const coupledRepresentationSupported = coupledRepresentation === "parity_petrov_galerkin_rom";
   const coupledAvailable = Boolean(
     boundaryAvailable && level2Package && level2Package.manifest.fidelity_level >= 3 &&
     coupledRepresentationSupported,
@@ -458,7 +457,7 @@ export function App() {
     (level2Package?.manifest.fidelity_level ?? 0) < 3
       ? "The active speaker package does not contain Level 3 data."
       : !coupledRepresentationSupported
-        ? "Level 3 Deploy requires an exact or parity Petrov–Galerkin coupled model."
+        ? "Level 3 Deploy requires a parity Petrov–Galerkin ROM package."
         : undefined
   );
   const selectedSolverAvailable = fidelity === "boundary"
@@ -569,10 +568,8 @@ export function App() {
       Boolean(
         window.boundaryLabDesktop && nextPackage.sourcePath &&
         nextPackage.manifest.fidelity_level >= (project.requested_fidelity === "coupled" ? 3 : 2) &&
-        (project.requested_fidelity !== "coupled" || [
-          "exact_frequency_parametric_fem",
-          "parity_petrov_galerkin_rom",
-        ].includes(String(nextPackage.manifest.files.coupled_model?.representation))),
+        (project.requested_fidelity !== "coupled" ||
+          nextPackage.manifest.files.coupled_model?.representation === "parity_petrov_galerkin_rom"),
       )
       ? project.requested_fidelity
       : "pattern";

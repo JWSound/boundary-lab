@@ -45,20 +45,10 @@ class SpeakerPackagePreflight:
     estimated_full_domain_mesh_bytes: int
     level_one_numeric_bytes: int
     level_two_numeric_bytes: int
-    dense_sampled_macro_bytes: int
-    dense_sampled_package_bytes_estimate: int
-    dense_schur_bytes: int
-    packed_symmetric_schur_bytes: int
-    symmetry_sector_packed_schur_bytes: int
-    exact_system_archive_bytes_estimate: int
-    exact_package_bytes_estimate: int
     rom_rank: int
-    affine_rom_bytes_estimate: int
-    current_frequency_schur_bytes: int
-    four_cabinet_independent_schur_bytes: int
-    eight_cabinet_independent_schur_bytes: int
-    four_cabinet_shared_schur_bytes: int
-    eight_cabinet_shared_schur_bytes: int
+    parity_rom_numeric_bytes: int
+    parity_rom_package_bytes_estimate: int
+    rom_training_schur_bytes: int
 
     def to_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -76,7 +66,7 @@ def estimate_level_three_package(
     symmetry: object,
     frequency_count: int,
     complex_bytes: int = 8,
-    rom_rank: int = 256,
+    rom_rank: int = 32,
     sphere_point_count: int = 6600,
 ) -> SpeakerPackagePreflight:
     """Estimate Level-3 storage without materializing full-domain meshes or matrices.
@@ -141,24 +131,8 @@ def estimate_level_three_package(
     excitation_count = sum(transducer_count_by_component.get(port.component_id, 1) for port in system.excitation_ports)
     state_count = retained_nodes + interface_faces + 2 * transducer_count
 
-    matrix_entries = (
-        state_count * state_count
-        + state_count * bem_nodes
-        + bem_faces * state_count
-        + state_count * excitation_count
-        + bem_faces * excitation_count
-    )
-    dense_sampled = frequency_count * matrix_entries * complex_bytes
-    dense_schur = frequency_count * retained_nodes * retained_nodes * complex_bytes
-    packed_schur = frequency_count * retained_nodes * (retained_nodes + 1) // 2 * complex_bytes
     image_count = len(_IMAGE_SIGNS[mode])
-    sector_packed = packed_schur if image_count == 1 else max(packed_schur // image_count, 1)
-
-    # The exact-system representation archives meshes and reconstructs sparse
-    # operators at runtime. ASCII reflection grows approximately with the image
-    # count; ZIP normally recovers much of the repeated connectivity/text.
     full_mesh_bytes = source_mesh_bytes * image_count
-    exact_archive_estimate = max(full_mesh_bytes, source_mesh_bytes)
 
     # Levels 1 and 2 remain in every Level-3 package. Include their dominant
     # complex arrays so the package estimates are comparable rather than only
@@ -167,13 +141,20 @@ def estimate_level_three_package(
     level_two_numeric = frequency_count * excitation_count * (bem_nodes + bem_faces) * complex_bytes
     common_numeric = level_one_numeric + level_two_numeric
 
-    # A projected affine acoustic model generally needs stiffness, mass,
-    # loss, and one aggregate boundary operator. Include complex interface
-    # bases and small transducer/port maps as a conservative first estimate.
     rank = min(rom_rank, max(state_count, 1))
-    affine_rom = 4 * rank * rank * 4 + (retained_nodes + interface_faces) * rank * complex_bytes
-
-    current_schur = retained_nodes * retained_nodes * complex_bytes
+    node_orbits = max((bem_nodes + image_count - 1) // image_count, 1)
+    face_orbits = max((bem_faces + image_count - 1) // image_count, 1)
+    entries_per_sector = (
+        rank * rank
+        + rank * node_orbits
+        + face_orbits * rank
+        + rank * excitation_count
+        + face_orbits * excitation_count
+        + 2 * transducer_count * rank
+        + 2 * transducer_count * excitation_count
+    )
+    parity_rom_numeric = frequency_count * image_count * entries_per_sector * complex_bytes
+    training_schur = retained_nodes * retained_nodes * complex_bytes
     return SpeakerPackagePreflight(
         frequency_count=frequency_count,
         source_symmetry=mode,
@@ -190,20 +171,10 @@ def estimate_level_three_package(
         estimated_full_domain_mesh_bytes=full_mesh_bytes,
         level_one_numeric_bytes=level_one_numeric,
         level_two_numeric_bytes=level_two_numeric,
-        dense_sampled_macro_bytes=dense_sampled,
-        dense_sampled_package_bytes_estimate=dense_sampled + common_numeric + full_mesh_bytes,
-        dense_schur_bytes=dense_schur,
-        packed_symmetric_schur_bytes=packed_schur,
-        symmetry_sector_packed_schur_bytes=sector_packed,
-        exact_system_archive_bytes_estimate=exact_archive_estimate,
-        exact_package_bytes_estimate=exact_archive_estimate + common_numeric,
         rom_rank=rank,
-        affine_rom_bytes_estimate=affine_rom,
-        current_frequency_schur_bytes=current_schur,
-        four_cabinet_independent_schur_bytes=4 * current_schur,
-        eight_cabinet_independent_schur_bytes=8 * current_schur,
-        four_cabinet_shared_schur_bytes=current_schur,
-        eight_cabinet_shared_schur_bytes=current_schur,
+        parity_rom_numeric_bytes=parity_rom_numeric,
+        parity_rom_package_bytes_estimate=parity_rom_numeric + common_numeric,
+        rom_training_schur_bytes=training_schur,
     )
 
 

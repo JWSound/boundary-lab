@@ -36,18 +36,6 @@ from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_res
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
-SPEAKER_MACRO_K_ID = "speaker:macro:k"
-SPEAKER_MACRO_C_ID = "speaker:macro:c"
-SPEAKER_MACRO_D_ID = "speaker:macro:d"
-SPEAKER_MACRO_B_ID = "speaker:macro:b"
-SPEAKER_MACRO_E_ID = "speaker:macro:e"
-SPEAKER_MACRO_QUANTITIES = (
-    (SPEAKER_MACRO_K_ID, "speaker_macro_k"),
-    (SPEAKER_MACRO_C_ID, "speaker_macro_c"),
-    (SPEAKER_MACRO_D_ID, "speaker_macro_d"),
-    (SPEAKER_MACRO_B_ID, "speaker_macro_b"),
-    (SPEAKER_MACRO_E_ID, "speaker_macro_e"),
-)
 SPEAKER_ROM_QUANTITIES = (
     ("speaker:rom:k", "speaker_rom_k", "k"),
     ("speaker:rom:c", "speaker_rom_c", "c"),
@@ -110,7 +98,6 @@ class SpeakerPackageCoupledRepresentation(str, Enum):
 
     EXACT_SYSTEM = "exact_system"
     PARITY_ROM = "parity_rom"
-    SAMPLED_MACRO = "sampled_macro"
 
     @classmethod
     def parse(
@@ -128,15 +115,12 @@ class SpeakerPackageCoupledRepresentation(str, Enum):
             "parity_rom": cls.PARITY_ROM,
             "parity_petrov_galerkin": cls.PARITY_ROM,
             "petrov_galerkin": cls.PARITY_ROM,
-            "sampled": cls.SAMPLED_MACRO,
-            "sampled_macro": cls.SAMPLED_MACRO,
-            "legacy": cls.SAMPLED_MACRO,
         }
         try:
             return aliases[normalized]
         except KeyError as exc:
             raise ValueError(
-                "Coupled speaker representation must be 'exact-system', 'parity-rom', or 'sampled-macro'."
+                "Coupled speaker representation must be 'parity-rom' or the developer-only 'exact-system'."
             ) from exc
 
 
@@ -145,7 +129,7 @@ class SpeakerPackageConfig:
     output_path: Path
     name: str
     fidelity: SpeakerPackageFidelity = SpeakerPackageFidelity.PATTERN
-    coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.EXACT_SYSTEM
+    coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM
 
     def normalized(self) -> SpeakerPackageConfig:
         path = Path(self.output_path)
@@ -202,7 +186,7 @@ def prepare_speaker_package_solve(
     prepared: SystemUiSolveRequest,
     *,
     fidelity: int | str | SpeakerPackageFidelity,
-    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.EXACT_SYSTEM,
+    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
     sphere_point_count: int,
     sphere_radius_m: float,
     speaker_rom_rank: int = 32,
@@ -288,12 +272,7 @@ def prepare_speaker_package_solve(
             raise ValueError(
                 "Level-3 speaker package preparation requires a temporary full-domain system with symmetry off."
             )
-        if representation == SpeakerPackageCoupledRepresentation.SAMPLED_MACRO:
-            existing_output_ids = {item.id for item in outputs}
-            for identifier, quantity in SPEAKER_MACRO_QUANTITIES:
-                if identifier not in existing_output_ids:
-                    outputs.append(OutputRequest(id=identifier, quantity=quantity))
-        elif representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+        if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
             if speaker_rom_rank <= 0:
                 raise ValueError("Speaker ROM rank must be positive.")
             if speaker_rom_training_count < speaker_rom_rank:
@@ -333,12 +312,7 @@ def prepare_speaker_package_solve(
         prepared,
         request=updated_request,
         result_domains=tuple(domains),
-        backend_id=(
-            "beat_cpu"
-            if level >= SpeakerPackageFidelity.COUPLED
-            and representation == SpeakerPackageCoupledRepresentation.SAMPLED_MACRO
-            else prepared.backend_id
-        ),
+        backend_id=prepared.backend_id,
     )
 
 
@@ -396,7 +370,7 @@ def solve_speaker_package_system(
 def speaker_package_issues(
     solved: SolvedSystem | None,
     fidelity: int | str | SpeakerPackageFidelity,
-    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.EXACT_SYSTEM,
+    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
 ) -> tuple[SpeakerPackageIssue, ...]:
     level = SpeakerPackageFidelity.parse(fidelity)
     representation = SpeakerPackageCoupledRepresentation.parse(coupled_representation)
@@ -539,69 +513,6 @@ def speaker_package_issues(
                     SpeakerPackageIssue(
                         "incomplete_speaker_rom",
                         "Parity speaker ROM quantities are incomplete.",
-                    )
-                )
-    if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.SAMPLED_MACRO:
-        matrices = {identifier: solved.quantities.get(identifier) for identifier, _quantity in SPEAKER_MACRO_QUANTITIES}
-        for identifier, matrix in matrices.items():
-            if matrix is None:
-                issues.append(
-                    SpeakerPackageIssue(
-                        "missing_coupled_macro_matrix",
-                        f"Coupled macro-model matrix {identifier!r} was not retained.",
-                    )
-                )
-        if all(matrix is not None for matrix in matrices.values()):
-            k = np.asarray(matrices[SPEAKER_MACRO_K_ID].values)
-            c = np.asarray(matrices[SPEAKER_MACRO_C_ID].values)
-            d = np.asarray(matrices[SPEAKER_MACRO_D_ID].values)
-            b = np.asarray(matrices[SPEAKER_MACRO_B_ID].values)
-            e = np.asarray(matrices[SPEAKER_MACRO_E_ID].values)
-            frequency_count = solved.frequencies_hz.size
-            excitation_count = len(solved.excitation_ids)
-            state_count = k.shape[1] if k.ndim == 3 else -1
-            bem_domain = solved.domains.get(BEM_BOUNDARY_DOMAIN_ID)
-            bem_points = (
-                np.asarray(bem_domain.coordinates.get("points_m")) if bem_domain is not None else np.asarray(None)
-            )
-            bem_triangles = (
-                np.asarray(bem_domain.topology.get("triangles")) if bem_domain is not None else np.asarray(None)
-            )
-            bem_node_count = bem_points.shape[0] if bem_points.ndim == 2 else -1
-            bem_face_count = bem_triangles.shape[0] if bem_triangles.ndim == 2 else -1
-            expected_dimensions = {
-                SPEAKER_MACRO_K_ID: ("frequency", "state_row", "state_column"),
-                SPEAKER_MACRO_C_ID: ("frequency", "state_row", "bem_node"),
-                SPEAKER_MACRO_D_ID: ("frequency", "bem_face", "state_column"),
-                SPEAKER_MACRO_B_ID: ("frequency", "state_row", "excitation"),
-                SPEAKER_MACRO_E_ID: ("frequency", "bem_face", "excitation"),
-            }
-            expected = (
-                k.shape == (frequency_count, state_count, state_count)
-                and c.shape == (frequency_count, state_count, bem_node_count)
-                and d.shape == (frequency_count, bem_face_count, state_count)
-                and b.shape == (frequency_count, state_count, excitation_count)
-                and e.shape == (frequency_count, bem_face_count, excitation_count)
-                and all(
-                    matrices[identifier].dimensions == dimensions
-                    for identifier, dimensions in expected_dimensions.items()
-                )
-            )
-            if not expected or not all(np.iscomplexobj(value) for value in (k, c, d, b, e)):
-                issues.append(
-                    SpeakerPackageIssue(
-                        "invalid_coupled_macro_model",
-                        "Coupled macro-model matrix shapes or complex dtypes are invalid.",
-                    )
-                )
-            elif any(
-                not np.all(np.asarray(matrices[identifier].available_frequency_mask, dtype=bool))
-                for identifier, _quantity in SPEAKER_MACRO_QUANTITIES
-            ):
-                issues.append(
-                    SpeakerPackageIssue(
-                        "incomplete_coupled_macro_model",
-                        "Coupled macro-model matrices are incomplete.",
                     )
                 )
     return tuple(issues)
@@ -759,7 +670,6 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             },
         }
     if config.fidelity >= SpeakerPackageFidelity.COUPLED:
-        capabilities.append("dynamic_boundary_macro_model")
         if config.coupled_representation == SpeakerPackageCoupledRepresentation.EXACT_SYSTEM:
             exact_members, exact_descriptor = _exact_system_archive_members(solved)
             members.update(exact_members)
@@ -811,37 +721,6 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                     "current_drive": ["frequency", "parity_sector", "transducer", "input_port"],
                 },
                 "metadata": rom_metadata,
-            }
-        else:
-            matrix_by_name = {
-                "K": np.asarray(solved.quantities[SPEAKER_MACRO_K_ID].values),
-                "C": np.asarray(solved.quantities[SPEAKER_MACRO_C_ID].values),
-                "D": np.asarray(solved.quantities[SPEAKER_MACRO_D_ID].values),
-                "B": np.asarray(solved.quantities[SPEAKER_MACRO_B_ID].values),
-                "E": np.asarray(solved.quantities[SPEAKER_MACRO_E_ID].values),
-            }
-            macro_metadata = dict(solved.quantities[SPEAKER_MACRO_K_ID].metadata)
-            macro_metadata.pop("matrix", None)
-            members["data/coupled-model.npz"] = _npz_bytes(
-                frequencies_hz=np.asarray(solved.frequencies_hz, dtype=np.float64),
-                **{f"matrix_{name.lower()}": values for name, values in matrix_by_name.items()},
-            )
-            files["coupled_model"] = {
-                "path": "data/coupled-model.npz",
-                "representation": "sampled_dense_macro",
-                "format_version": 1,
-                "equations": ["K z + C p = B u", "q = D z + E u"],
-                "exterior_pressure_space": "P1",
-                "exterior_normal_derivative_space": "DP0",
-                "matrix_dimensions": {
-                    "K": ["frequency", "state_row", "state_column"],
-                    "C": ["frequency", "state_row", "bem_node"],
-                    "D": ["frequency", "bem_face", "state_column"],
-                    "B": ["frequency", "state_row", "excitation"],
-                    "E": ["frequency", "bem_face", "excitation"],
-                },
-                "input_ports": _coupled_input_ports(solved),
-                "metadata": macro_metadata,
             }
     manifest = {
         "schema": SPEAKER_PACKAGE_SCHEMA,
@@ -1192,11 +1071,6 @@ __all__ = [
     "SpeakerPackageCoupledRepresentation",
     "SpeakerPackageExportResult",
     "SpeakerPackageFidelity",
-    "SPEAKER_MACRO_B_ID",
-    "SPEAKER_MACRO_C_ID",
-    "SPEAKER_MACRO_D_ID",
-    "SPEAKER_MACRO_E_ID",
-    "SPEAKER_MACRO_K_ID",
     "SPEAKER_ROM_QUANTITIES",
     "SpeakerPackageIssue",
     "export_speaker_package",

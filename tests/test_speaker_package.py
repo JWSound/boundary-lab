@@ -35,11 +35,6 @@ from blab.solve_results import (
 )
 from blab.speaker_package import (
     SOURCE_TO_PACKAGE_ROTATION,
-    SPEAKER_MACRO_B_ID,
-    SPEAKER_MACRO_C_ID,
-    SPEAKER_MACRO_D_ID,
-    SPEAKER_MACRO_E_ID,
-    SPEAKER_MACRO_K_ID,
     SPEAKER_ROM_QUANTITIES,
     SpeakerPackageConfig,
     SpeakerPackageCoupledRepresentation,
@@ -151,68 +146,6 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
     )
 
 
-def _coupled_macro_solved_system() -> SolvedSystem:
-    solved = _solved_system()
-    frequency_count = solved.frequencies_hz.size
-    excitation_count = len(solved.excitation_ids)
-    state_count = 3
-    bem_node_count = solved.domains[BEM_BOUNDARY_DOMAIN_ID].coordinates["points_m"].shape[0]
-    bem_face_count = solved.domains[BEM_BOUNDARY_DOMAIN_ID].topology["triangles"].shape[0]
-    quantities = dict(solved.quantities)
-    definitions = (
-        (
-            SPEAKER_MACRO_K_ID,
-            "speaker_macro_k",
-            (frequency_count, state_count, state_count),
-            ("frequency", "state_row", "state_column"),
-        ),
-        (
-            SPEAKER_MACRO_C_ID,
-            "speaker_macro_c",
-            (frequency_count, state_count, bem_node_count),
-            ("frequency", "state_row", "bem_node"),
-        ),
-        (
-            SPEAKER_MACRO_D_ID,
-            "speaker_macro_d",
-            (frequency_count, bem_face_count, state_count),
-            ("frequency", "bem_face", "state_column"),
-        ),
-        (
-            SPEAKER_MACRO_B_ID,
-            "speaker_macro_b",
-            (frequency_count, state_count, excitation_count),
-            ("frequency", "state_row", "excitation"),
-        ),
-        (
-            SPEAKER_MACRO_E_ID,
-            "speaker_macro_e",
-            (frequency_count, bem_face_count, excitation_count),
-            ("frequency", "bem_face", "excitation"),
-        ),
-    )
-    for index, (identifier, quantity, shape, dimensions) in enumerate(definitions, start=1):
-        values = np.full(shape, complex(index, -index), dtype=np.complex64)
-        quantities[identifier] = SolvedQuantity(
-            id=identifier,
-            quantity=quantity,
-            unit="mixed",
-            dimensions=dimensions,
-            values=values,
-            metadata={
-                "format_version": 1,
-                "state_count": state_count,
-                "state_blocks": [{"name": "test", "offset": 0, "count": state_count}],
-            },
-            available_frequency_mask=np.ones(frequency_count, dtype=bool),
-        )
-    return replace(
-        solved,
-        quantities=quantities,
-        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
-    )
-
-
 def _coupled_rom_solved_system(symmetry_mode: str = "xy") -> SolvedSystem:
     solved = _solved_system()
     frequency_count = solved.frequencies_hz.size
@@ -290,6 +223,11 @@ def _read_npz(archive: zipfile.ZipFile, member: str) -> dict[str, np.ndarray]:
         return {name: arrays[name].copy() for name in arrays.files}
 
 
+def test_sampled_macro_representation_is_no_longer_supported() -> None:
+    with pytest.raises(ValueError, match="parity-rom"):
+        SpeakerPackageCoupledRepresentation.parse("sampled-macro")
+
+
 def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: Path) -> None:
     solved = _solved_system(include_bem=False)
     output = tmp_path / "speaker.blabsp"
@@ -355,38 +293,6 @@ def test_level_two_manifest_accepts_legacy_string_model_kinds(tmp_path: Path) ->
 
     manifest = validate_speaker_package(output)
     assert manifest["physical_system"]["regions"][0]["kind"] == "unbounded_air"
-
-
-def test_level_three_contains_dynamic_macro_model(tmp_path: Path) -> None:
-    solved = _coupled_macro_solved_system()
-    output = tmp_path / "speaker-coupled.blabsp"
-
-    export_speaker_package(
-        solved,
-        SpeakerPackageConfig(
-            output,
-            "Coupled speaker",
-            SpeakerPackageFidelity.COUPLED,
-            SpeakerPackageCoupledRepresentation.SAMPLED_MACRO,
-        ),
-    )
-
-    manifest = validate_speaker_package(output)
-    assert manifest["fidelity_level"] == 3
-    assert manifest["fidelity"] == "coupled"
-    assert manifest["capabilities"] == [
-        "complex_spherical_pattern",
-        "fixed_distributed_sources",
-        "dynamic_boundary_macro_model",
-    ]
-    assert manifest["files"]["coupled_model"]["equations"] == [
-        "K z + C p = B u",
-        "q = D z + E u",
-    ]
-    with zipfile.ZipFile(output) as archive:
-        model = _read_npz(archive, "data/coupled-model.npz")
-    np.testing.assert_array_equal(model["matrix_k"], solved.quantities[SPEAKER_MACRO_K_ID].values)
-    np.testing.assert_array_equal(model["matrix_e"], solved.quantities[SPEAKER_MACRO_E_ID].values)
 
 
 def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -> None:
@@ -478,7 +384,12 @@ def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(t
 
     export_speaker_package(
         solved,
-        SpeakerPackageConfig(output, "Exact speaker", SpeakerPackageFidelity.COUPLED),
+        SpeakerPackageConfig(
+            output,
+            "Exact speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.EXACT_SYSTEM,
+        ),
     )
 
     manifest = validate_speaker_package(output)

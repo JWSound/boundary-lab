@@ -125,12 +125,6 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     export_speaker.add_argument("--output", type=Path, required=True, help="Output .blabsp package path")
     export_speaker.add_argument("--name", help="Package display name; defaults to the physical-system name")
     export_speaker.add_argument("--fidelity", choices=("pattern", "fixed", "coupled"), default="pattern")
-    export_speaker.add_argument(
-        "--coupled-representation",
-        choices=("exact-system", "parity-rom", "sampled-macro"),
-        default="parity-rom",
-        help="Level-3 payload: rank-reduced parity ROM (default), exact system, or legacy dense macro matrices",
-    )
     export_speaker.add_argument("--speaker-rom-rank", type=int, default=32)
     export_speaker.add_argument("--speaker-rom-training-count", type=int, default=96)
     export_speaker.add_argument("--speaker-rom-validation-count", type=int, default=24)
@@ -150,7 +144,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     speaker_preflight.add_argument("project_file", type=Path, help="Path to the .blab.json project")
     speaker_preflight.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
-    speaker_preflight.add_argument("--rom-rank", type=int, default=256, help="Candidate affine port-ROM rank")
+    speaker_preflight.add_argument("--rom-rank", type=int, default=32, help="Parity ROM rank per sector")
     speaker_preflight.add_argument(
         "--precision",
         choices=("float32", "float64"),
@@ -328,13 +322,13 @@ def _speaker_preflight(args: argparse.Namespace) -> None:
         f"{estimate.frequency_count} frequencies, {estimate.state_count} retained states, "
         f"{estimate.bem_node_count} BEM nodes / {estimate.bem_face_count} faces."
     )
-    print(f"Dense sampled package estimate: {sizes['dense_sampled_package_estimate']['gib']:.3f} GiB")
-    print(f"Exact-system package estimate: {sizes['exact_package_estimate']['mib']:.1f} MiB")
-    print(f"Rank-{estimate.rom_rank} affine ROM estimate: {sizes['affine_rom_estimate']['mib']:.1f} MiB")
     print(
-        "Current-frequency Schur working set: "
-        f"{sizes['current_frequency_schur']['mib']:.1f} MiB shared, "
-        f"{sizes['eight_cabinet_independent_schur']['gib']:.3f} GiB if duplicated across 8 cabinets."
+        f"Rank-{estimate.rom_rank}-per-sector parity ROM package estimate: "
+        f"{sizes['parity_rom_package_estimate']['mib']:.1f} MiB"
+    )
+    print(
+        "ROM-training current-frequency Schur working set: "
+        f"{sizes['rom_training_schur']['mib']:.1f} MiB"
     )
 
 
@@ -344,13 +338,8 @@ def _export_speaker(args: argparse.Namespace) -> None:
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
     sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
     fidelity = SpeakerPackageFidelity.parse(args.fidelity)
-    coupled_representation = SpeakerPackageCoupledRepresentation.parse(args.coupled_representation)
-    backend_id = (
-        "beat_cpu"
-        if fidelity >= SpeakerPackageFidelity.COUPLED
-        and coupled_representation == SpeakerPackageCoupledRepresentation.SAMPLED_MACRO
-        else resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
-    )
+    coupled_representation = SpeakerPackageCoupledRepresentation.PARITY_ROM
+    backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
     temporary: tempfile.TemporaryDirectory[str] | None = None
     try:
         if fidelity >= SpeakerPackageFidelity.COUPLED and project.symmetry != "off":

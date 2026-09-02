@@ -6,13 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from blab import deploy_worker
-from blab.system_contract import (
-    QuantityResult,
-    SystemFrequencyResult,
-    system_frequency_result_to_dict,
-)
 
 
 class _PackageCache:
@@ -116,109 +112,17 @@ def test_microphone_sweep_honors_stop_before_first_frequency(monkeypatch) -> Non
     assert event_types == ["cancelled"]
 
 
-def test_coupled_worker_key_is_separate_from_level_two_worker() -> None:
+def test_level_three_rom_uses_the_shared_exterior_worker() -> None:
     assert deploy_worker._worker_key({"backend": "cuda"}) == "cuda"
-    assert deploy_worker._worker_key({"backend": "cuda", "fidelity": "coupled"}) == "coupled:cuda"
+    assert deploy_worker._worker_key({"backend": "cuda", "fidelity": "coupled"}) == "cuda"
 
 
-def test_coupled_execution_worker_routes_exact_and_rom_packages() -> None:
+def test_level_three_execution_rejects_exact_and_routes_rom_packages() -> None:
     payload = {"packagePath": "speaker.blabsp", "backend": "cuda", "fidelity": "coupled"}
-    assert deploy_worker._execution_worker_key(
-        payload, _CoupledPackageCache("exact_frequency_parametric_fem")
-    ) == "coupled:cuda"
+    with pytest.raises(ValueError, match="parity Petrov"):
+        deploy_worker._execution_worker_key(
+            payload, _CoupledPackageCache("exact_frequency_parametric_fem")
+        )
     assert deploy_worker._execution_worker_key(
         payload, _CoupledPackageCache("parity_petrov_galerkin_rom")
     ) == "cuda"
-
-
-def test_exact_coupled_microphone_sweep_filters_band_and_maps_results(monkeypatch) -> None:
-    events: list[tuple[str, dict]] = []
-
-    def prepare(payload, work_dir, **_kwargs):
-        assert payload["frequenciesHz"] == [20.0, 40.0]
-        path = Path(work_dir) / "coupled-request.json"
-        request = {
-            "frequencies_hz": payload["frequenciesHz"],
-            "deploy": {
-                "rows": 1,
-                "columns": 2,
-                "sample_indices": [0, 1],
-                "source_count": 1,
-                "rigid_object_count": 0,
-            },
-        }
-        path.write_text(json.dumps(request), encoding="utf-8")
-        return path, request
-
-    class CoupledSweepWorker:
-        def submit(self, _request_path: Path, **_kwargs):
-            for frequency in (20.0, 40.0):
-                yield {
-                    "type": "result",
-                    "result": system_frequency_result_to_dict(SystemFrequencyResult(
-                        freq_hz=frequency,
-                        excitation_port_ids=("port:a",),
-                        quantities=(QuantityResult(
-                            id="deploy:field-pressure",
-                            quantity="exterior_pressure",
-                            unit="Pa",
-                            axes=("observation",),
-                            values=np.asarray([frequency / 100.0, 0.02j], dtype=np.complex64),
-                        ),),
-                        diagnostics={"bem_backend": "cuda", "timings": {}},
-                    )),
-                }
-            yield {"type": "completed"}
-
-    monkeypatch.setattr(deploy_worker, "prepare_deploy_coupled_request", prepare)
-    monkeypatch.setattr(deploy_worker, "_emit", lambda event_type, **values: events.append((event_type, values)) or {})
-    payload = {**_payload(), "fidelity": "coupled"}
-    deploy_worker._microphone_sweep(
-        9,
-        payload,
-        {"coupled:cuda": CoupledSweepWorker()},
-        _CoupledPackageCache("exact_frequency_parametric_fem"),
-        threading.Event(),
-    )
-
-    result = next(values["result"] for event_type, values in events if event_type == "result")
-    assert result["frequencies_hz"] == [20.0, 40.0]
-    np.testing.assert_allclose(result["pressure"]["real"][0], [0.2, 0.4])
-    assert len([event for event, _values in events if event == "microphone-progress"]) == 2
-
-
-def test_coupled_result_maps_complex_pressure_to_deploy_field() -> None:
-    raw = system_frequency_result_to_dict(
-        SystemFrequencyResult(
-            freq_hz=100.0,
-            excitation_port_ids=("port:a", "port:b"),
-            quantities=(
-                QuantityResult(
-                    id="deploy:field-pressure",
-                    quantity="exterior_pressure",
-                    unit="Pa",
-                    axes=("observation",),
-                    values=np.asarray([0.2 + 0.0j, 0.0 + 0.02j], dtype=np.complex64),
-                ),
-            ),
-            diagnostics={"bem_backend": "cuda", "timings": {"solve_s": 0.25}},
-        )
-    )
-
-    result = deploy_worker._coupled_deploy_result(
-        raw,
-        {
-            "deploy": {
-                "rows": 1,
-                "columns": 2,
-                "sample_indices": [0, 1],
-                "source_count": 2,
-                "rigid_object_count": 0,
-            }
-        },
-    )
-
-    np.testing.assert_allclose(result["spl_db"], [80.0, 60.0], atol=1e-5)
-    assert result["field_pressure"] == {"real": [0.20000000298023224, 0.0], "imag": [0.0, 0.019999999552965164]}
-    assert result["timings"] == {"solve_s": 0.25}
-    assert result["diagnostics"]["fidelity"] == "coupled"

@@ -33,9 +33,9 @@ npm start
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
 - Plots every microphone's package-derived SPL response across the exact exported frequency grid.
-- Calculates explicit complex microphone pressure across the package grid for both Level 2 exterior BEM and Level 3 coupled solves. Exact coupled sweeps reuse frequency-invariant FEM/BEM data and apply frequency-dependent array gain, delay, and polarity to the mutually loaded port solutions; parity-ROM sweeps retain exterior geometry while selecting each frequency's reduced operators. Both paths stream progress and turn the Calculate button into a Stop control while active.
+- Calculates explicit complex microphone pressure across the package grid for both Level 2 exterior BEM and Level 3 parity-ROM coupled solves. ROM sweeps retain exterior geometry while selecting each frequency's reduced operators. Both paths stream progress and turn the Calculate button into a Stop control while active.
 - Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
-- Runs exact Level 3 packages through the production coupled FEM–BEM–transducer solver, with all cabinet ports solved as right-hand sides of one array factorization and one gain/delay/polarity-weighted audience-field evaluation.
+- Schur-eliminates Level 3 parity-sector ROMs into the shared exterior BEM solve so cabinet loading and transducer feedback respond to the complete array.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
 - Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
@@ -43,7 +43,7 @@ npm start
 - Saves speaker packages, rigid-mesh assets and instances, and microphones as a strict schema-v5 `.blabdeploy.json` project.
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
-Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for an exact frequency-parametric Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.
+Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for a parity Petrov–Galerkin Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.
 
 The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice uses a globally reflective rigid ground plane, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
 
@@ -64,6 +64,10 @@ Julia, Python, Electron IPC, field-frame parsing, and heatmap rasterization
 timings. A reference run and interpretation are recorded in
 [`benchmarks/level2-pipeline-2026-08-26.md`](benchmarks/level2-pipeline-2026-08-26.md).
 
-## Next solver milestone
+## Level 3 validation history
 
-Replace the full-order Level 3 array baseline with a validated symmetry-sector or interface/port-reduced package model. The exact path is interactive for one warmed S218BP, but the 4–8 cabinet target exceeds both the one-minute budget and the 2080 Ti memory pool. Measurements and the next-model gate are recorded in [`benchmarks/level3-s218bp-2026-09-01.md`](benchmarks/level3-s218bp-2026-09-01.md).
+The retired full-order Level 3 baseline and the performance gate that motivated
+the parity-ROM implementation are recorded in
+[`benchmarks/level3-s218bp-2026-09-01.md`](benchmarks/level3-s218bp-2026-09-01.md).
+Exact-system execution remains available only to standalone developer validation
+scripts as a ROM accuracy oracle.

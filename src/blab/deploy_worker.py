@@ -16,7 +16,6 @@ import numpy as np
 
 from blab.deploy_solve import (
     DeploySolveCache,
-    prepare_deploy_coupled_request,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
     prepare_deploy_rom_microphone_sweep_request,
@@ -30,8 +29,6 @@ from blab.solvers.beat_engine_backend import (
     BeatEngineWorkerProcess,
     shutdown_beat_engine_workers,
 )
-from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
-from blab.system_contract import system_frequency_result_from_dict
 
 _EMIT_LOCK = threading.Lock()
 
@@ -52,20 +49,18 @@ def _emit(event_type: str, *, request_id: object | None = None, **values: Any) -
     }
 
 
-def _worker(backend: str, *, coupled: bool = False) -> BeatEngineWorkerProcess:
-    normalized = backend.removeprefix("coupled:").removeprefix("rom:").strip().lower()
+def _worker(backend: str) -> BeatEngineWorkerProcess:
+    normalized = backend.strip().lower()
     if normalized not in {"cuda", "cpu"}:
         raise ValueError("Deploy worker backend must be cuda or cpu.")
     project = (
         DEFAULT_BEAT_ENGINE_CUDA_PROJECT
         if normalized == "cuda"
-        else DEFAULT_COUPLED_CPU_PROJECT
-        if coupled
         else DEFAULT_BEAT_ENGINE_CPU_PROJECT
     )
     return BeatEngineWorkerProcess(
         julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
-        solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT if coupled else DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
+        solver_script=DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
         julia_threads=os.environ.get("BLAB_JULIA_THREADS", "auto"),
         julia_project=project,
     )
@@ -73,55 +68,22 @@ def _worker(backend: str, *, coupled: bool = False) -> BeatEngineWorkerProcess:
 
 def _worker_key(payload: object) -> str:
     backend = str(payload.get("backend", "cuda")) if isinstance(payload, dict) else "cuda"
-    fidelity = str(payload.get("fidelity", "boundary")) if isinstance(payload, dict) else "boundary"
     normalized = backend.strip().lower()
-    return f"coupled:{normalized}" if fidelity.strip().lower() == "coupled" else normalized
+    return normalized
 
 
 def _execution_worker_key(payload: object, solve_cache: DeploySolveCache) -> str:
     """Resolve Level 3 ROM jobs onto the exterior worker that executes them."""
 
     worker_key = _worker_key(payload)
-    if not worker_key.startswith("coupled:") or not isinstance(payload, dict):
+    if not isinstance(payload, dict) or str(payload.get("fidelity", "boundary")).strip().lower() != "coupled":
         return worker_key
     package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
     package = solve_cache.load_package(package_path)
     representation = package.coupled_model.get("representation") if isinstance(package.coupled_model, dict) else None
-    return str(payload.get("backend", "cuda")).strip().lower() if representation == "parity_petrov_galerkin_rom" else worker_key
-
-
-def _coupled_deploy_result(raw: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
-    parsed = system_frequency_result_from_dict(raw)
-    quantity = next((item for item in parsed.quantities if item.id == "deploy:field-pressure"), None)
-    if quantity is None:
-        raise RuntimeError("BEAT Engine Level 3 solve returned no synthesized audience pressure.")
-    pressure = np.asarray(quantity.values).reshape(-1)
-    deploy = request["deploy"]
-    sample_indices = [int(value) for value in deploy["sample_indices"]]
-    if pressure.shape != (len(sample_indices),):
-        raise RuntimeError("BEAT Engine Level 3 audience pressure has an unexpected shape.")
-    spl_db = 20.0 * np.log10(np.maximum(np.abs(pressure), np.finfo(np.float32).tiny) / 20.0e-6)
-    diagnostics = dict(parsed.diagnostics)
-    timings = dict(diagnostics.get("timings", {}))
-    diagnostics.update(
-        backend=str(diagnostics.get("bem_backend", "unknown")),
-        source_count=int(deploy["source_count"]),
-        rigid_object_count=int(deploy["rigid_object_count"]),
-        fidelity="coupled",
-    )
-    return {
-        "frequency_hz": float(parsed.freq_hz),
-        "rows": int(deploy["rows"]),
-        "columns": int(deploy["columns"]),
-        "spl_db": spl_db.astype(np.float32).tolist(),
-        "sample_indices": sample_indices,
-        "field_pressure": {
-            "real": pressure.real.astype(np.float32).tolist(),
-            "imag": pressure.imag.astype(np.float32).tolist(),
-        },
-        "timings": timings,
-        "diagnostics": diagnostics,
-    }
+    if representation != "parity_petrov_galerkin_rom":
+        raise ValueError("Deploy Level 3 requires a parity Petrov–Galerkin ROM package.")
+    return worker_key
 
 
 def _solve(
@@ -133,7 +95,6 @@ def _solve(
     solution_keys: dict[str, str],
 ) -> None:
     worker_key = _execution_worker_key(payload, solve_cache)
-    coupled = worker_key.startswith("coupled:")
     rom = False
     if isinstance(payload, dict) and str(payload.get("fidelity", "boundary")).strip().lower() == "coupled":
         package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
@@ -149,25 +110,18 @@ def _solve(
             rom = True
     worker = workers.get(worker_key)
     if worker is None:
-        worker = _worker(worker_key, coupled=coupled)
+        worker = _worker(worker_key)
         workers[worker_key] = worker
 
     with tempfile.TemporaryDirectory(prefix="blab-deploy-") as temp_dir:
         prepare_started = time.perf_counter()
         requested_solution_key = str(payload.get("solutionKey", "")) if isinstance(payload, dict) else ""
         reuse_boundary = bool(payload.get("reuseBoundary", False)) if isinstance(payload, dict) else False
-        field_only = not coupled and reuse_boundary and bool(requested_solution_key) and (
+        field_only = reuse_boundary and bool(requested_solution_key) and (
             solution_keys.get(worker_key) == requested_solution_key
         )
         if field_only:
             request_path, _request = prepare_deploy_field_request(payload, temp_dir)
-        elif coupled:
-            request_path, _request = prepare_deploy_coupled_request(
-                payload,
-                temp_dir,
-                cache=solve_cache,
-                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
-            )
         elif rom:
             request_path, _request = prepare_deploy_rom_request(
                 payload,
@@ -200,7 +154,7 @@ def _solve(
                 raw_result = event.get("result")
                 if not isinstance(raw_result, dict):
                     raise RuntimeError("BEAT Engine Deploy solve returned an invalid result payload.")
-                result = _coupled_deploy_result(raw_result, _request) if coupled else raw_result
+                result = raw_result
                 julia_transport = event.get("_transport", {})
                 result["pipeline"] = {
                     "python_input_json_parse_s": float(input_transport.get("json_parse_s", 0.0)),
@@ -246,13 +200,7 @@ def _microphone_sweep(
     coupled_model = package_data.coupled_model if fidelity == "coupled" else None
     representation = coupled_model.get("representation") if isinstance(coupled_model, dict) else None
     frequencies = sorted({float(value) for value in package_data.frequencies})
-    if representation == "exact_frequency_parametric_fem":
-        band = coupled_model.get("frequency_band_hz", ())
-        if isinstance(band, list) and len(band) == 2:
-            lower, upper = map(float, band)
-            tolerance = max(1e-4, max(abs(lower), abs(upper)) * 1e-6)
-            frequencies = [value for value in frequencies if lower - tolerance <= value <= upper + tolerance]
-    elif representation == "parity_petrov_galerkin_rom":
+    if representation == "parity_petrov_galerkin_rom":
         arrays = coupled_model.get("arrays")
         rom_frequencies = np.asarray(arrays.get("frequencies_hz", ()), dtype=np.float64) if isinstance(arrays, dict) else np.empty(0)
         frequencies = [
@@ -289,13 +237,12 @@ def _microphone_sweep(
         raise ValueError("Deploy microphone ids must be unique.")
 
     worker_key = _execution_worker_key(payload, solve_cache)
-    exact_coupled = representation == "exact_frequency_parametric_fem"
     rom_coupled = representation == "parity_petrov_galerkin_rom"
-    if fidelity == "coupled" and not (exact_coupled or rom_coupled):
-        raise ValueError("Deploy Level 3 microphone sweep requires an exact or parity-ROM coupled package.")
+    if fidelity == "coupled" and not rom_coupled:
+        raise ValueError("Deploy Level 3 microphone sweep requires a parity-ROM package.")
     worker = workers.get(worker_key)
     if worker is None:
-        worker = _worker(worker_key, coupled=exact_coupled)
+        worker = _worker(worker_key)
         workers[worker_key] = worker
     julia_timing_totals: dict[str, float] = {}
     completed_count = 0
@@ -310,14 +257,7 @@ def _microphone_sweep(
             "reuseBoundary": False,
         }
         prepare_started = time.perf_counter()
-        if exact_coupled:
-            request_path, _request = prepare_deploy_coupled_request(
-                {**sweep_payload, "frequenciesHz": frequencies},
-                temp_dir,
-                cache=solve_cache,
-                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
-            )
-        elif rom_coupled:
+        if rom_coupled:
             request_path, _request = prepare_deploy_rom_microphone_sweep_request(
                 {**sweep_payload, "frequenciesHz": frequencies},
                 temp_dir,
@@ -352,8 +292,6 @@ def _microphone_sweep(
                 frequency_result = event.get("result")
                 if not isinstance(frequency_result, dict):
                     raise RuntimeError("BEAT Engine microphone sweep returned an invalid result.")
-                if exact_coupled:
-                    frequency_result = _coupled_deploy_result(frequency_result, _request)
                 frequency_hz = float(frequency_result.get("frequency_hz", math.nan))
                 timings = frequency_result.get("timings")
                 if isinstance(timings, dict):
@@ -480,11 +418,10 @@ def main() -> int:
                         continue
                     if operation == "warmup":
                         backend = str(message.get("backend", "cuda")).strip().lower()
-                        fidelity = str(message.get("fidelity", "boundary")).strip().lower()
-                        worker_key = f"coupled:{backend}" if fidelity == "coupled" else backend
+                        worker_key = backend
                         worker = workers.get(worker_key)
                         if worker is None:
-                            worker = _worker(worker_key, coupled=fidelity == "coupled")
+                            worker = _worker(worker_key)
                             workers[worker_key] = worker
                         worker.ensure_started()
                         _emit("completed", request_id=request_id)

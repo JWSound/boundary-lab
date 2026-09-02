@@ -217,14 +217,13 @@ coupling:
 blab project export-speaker speaker.blab.json --output speaker.blabsp --fidelity coupled
 ```
 
-Level 3 requires a coupled FEM-BEM physical system. It temporarily expands X/XY
-symmetry to a full-domain system before compilation; the project file is not
-changed. The default `parity-rom` representation preserves the source project's
+Level 3 requires a coupled FEM-BEM physical system and exports a parity
+Petrov–Galerkin ROM. It temporarily expands X/XY symmetry to a full-domain
+system before compilation; the project file is not changed. The ROM preserves the source project's
 symmetry: full-domain projects use one general sector, X-symmetric projects use
 even-X and odd-X sectors, and XY-symmetric projects use four parity sectors.
-Use `--coupled-representation exact-system` to archive the compiled system and
-its meshes, or `--coupled-representation sampled-macro` for the legacy dense
-macro matrices.
+Exact-system models remain internal validation oracles and are not offered as
+user-facing speaker-package exports.
 
 The command accepts the same `--request`, `--backend`, `--julia-executable`,
 `--julia-threads`, and `--events` controls as the headless solve. It forces the
