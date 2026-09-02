@@ -631,6 +631,39 @@ function createWindow() {
           });
         });
       })`);
+      const chartResizeInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+        const shell = document.querySelector('.app-shell');
+        const sample = (height) => new Promise((sampleResolve) => {
+          shell?.style.setProperty('--analysis-drawer-height', height + 'px');
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            const svg = document.querySelector('.response-chart');
+            const labels = Array.from(svg?.querySelectorAll('.axis-title') || []);
+            const svgBounds = svg?.getBoundingClientRect();
+            const measurements = labels.map((label) => {
+              const bounds = label.getBoundingClientRect();
+              return {
+                text: label.textContent?.trim() || '',
+                width: Number(bounds.width.toFixed(2)),
+                height: Number(bounds.height.toFixed(2)),
+                inside: Boolean(svgBounds) && bounds.left >= svgBounds.left - 0.5 && bounds.right <= svgBounds.right + 0.5 && bounds.top >= svgBounds.top - 0.5 && bounds.bottom <= svgBounds.bottom + 0.5
+              };
+            });
+            sampleResolve({ height: Number(svgBounds?.height.toFixed(2) || 0), measurements });
+          }));
+        });
+        (async () => {
+          const compact = await sample(180);
+          const expanded = await sample(420);
+          const stable = compact.measurements.every((measurement, index) => {
+            const comparison = expanded.measurements[index];
+            return comparison && Math.abs(measurement.width - comparison.width) <= 1 && Math.abs(measurement.height - comparison.height) <= 1;
+          });
+          resolve({ compact, expanded, stable, allInside: [...compact.measurements, ...expanded.measurements].every((measurement) => measurement.inside) });
+        })();
+      })`);
+      if (!chartResizeInteraction.stable || !chartResizeInteraction.allInside) {
+        throw new Error("Plot axis labels changed size or left the SVG bounds during drawer resize.");
+      }
       let level2Move = null;
       if (level2Smoke) {
         level2Move = await window.webContents.executeJavaScript(`new Promise((resolve) => {
@@ -685,13 +718,13 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, chartResizeInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
       console.error("Deploy desktop smoke test timed out.");
       app.exit(1);
-    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 30000).unref();
+    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 45000).unref();
   }
 
   if (app.isPackaged || process.argv.includes("--built")) {

@@ -1,5 +1,6 @@
 import { Activity, Square } from "lucide-react";
 import { useMemo, useState } from "react";
+import { usePlotDimensions } from "./usePlotDimensions";
 
 const AUDIO_FREQUENCY_MINIMUM_HZ = 20;
 const AUDIO_FREQUENCY_MAJOR_TICKS_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
@@ -68,9 +69,8 @@ export function DriverExcursionPlot({
   totalCount: number;
   onCalculateOrStop: () => void;
 }) {
-  const width = 1000;
-  const height = 240;
-  const padding = { left: 54, right: 24, top: 13, bottom: 30 };
+  const { ref: chartRef, width, height } = usePlotDimensions();
+  const padding = { left: 54, right: 24, top: 13, bottom: 34 };
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
   const traces = data ? Array.from(data.traces.entries()) : [];
   const maximumExcursion = useMemo(() => {
@@ -82,8 +82,8 @@ export function DriverExcursionPlot({
   }, [data]);
   const logMinimum = Math.log10(AUDIO_FREQUENCY_MINIMUM_HZ);
   const logRange = Math.log10(frequencyMaximum) - logMinimum;
-  const plotRight = width - padding.right;
-  const plotBottom = height - padding.bottom;
+  const plotRight = Math.max(padding.left + 1, width - padding.right);
+  const plotBottom = Math.max(padding.top + 1, height - padding.bottom);
   const x = (frequency: number) => padding.left + ((Math.log10(frequency) - logMinimum) / logRange) * (plotRight - padding.left);
   const y = (value: number) => padding.top + (1 - value / maximumExcursion) * (plotBottom - padding.top);
   const paths = (frequencies: Float64Array, values: Float32Array) => {
@@ -120,14 +120,14 @@ export function DriverExcursionPlot({
       {!coupledSelected ? <div className="response-empty">Select Level 3 Coupled fidelity to calculate driver excursion.</div>
         : traces.length === 0 ? <div className="response-empty">Run the coupled frequency sweep to display every transducer in the scene.</div>
           : <>
-            <svg className="response-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label="Per-transducer peak driver excursion over frequency">
+            <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Per-transducer peak driver excursion over frequency">
               <defs><clipPath id="driver-excursion-clip"><rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} /></clipPath></defs>
               <rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} className="plot-well" />
               {xMinorTicks.map((tick) => <line key={`xm-${tick}`} x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid minor" />)}
               {yTicks.map((tick, index) => <g key={index}><line x1={padding.left} x2={plotRight} y1={y(tick)} y2={y(tick)} className="plot-grid major" /><text x={padding.left - 7} y={y(tick) + 3} textAnchor="end">{tick < 0.1 ? tick.toFixed(3) : tick.toFixed(1)}</text></g>)}
-              {xMajorTicks.map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid major" /><text x={x(tick)} y={height - 14} textAnchor="middle">{formatFrequency(tick)}</text></g>)}
-              <text x={(padding.left + plotRight) / 2} y={height - 3} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
-              <text x={13} y={padding.top + 8} transform={`rotate(-90 13 ${padding.top + 8})`} className="axis-title">Peak excursion (mm)</text>
+              {xMajorTicks.map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid major" /><text x={x(tick)} y={height - 18} textAnchor="middle">{formatFrequency(tick)}</text></g>)}
+              <text x={(padding.left + plotRight) / 2} y={height - 5} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
+              <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Peak excursion (mm)</text>
               <g clipPath="url(#driver-excursion-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
                 {traces.flatMap(([id, trace], index) => paths(data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}

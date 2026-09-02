@@ -1,6 +1,7 @@
 import { Gauge, Square, Waves } from "lucide-react";
 import { useMemo, useState } from "react";
 import { driverTraceColor } from "./DriverExcursionPlot";
+import { usePlotDimensions } from "./usePlotDimensions";
 
 const FREQUENCY_MINIMUM_HZ = 20;
 const MAJOR_FREQUENCIES_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
@@ -72,11 +73,10 @@ export function ElectricalPlot({
   const [view, setView] = useState<ElectricalView>("impedance");
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
   const traces = data ? Array.from(data.traces.entries()) : [];
-  const width = 1000;
-  const height = 240;
-  const padding = { left: 55, right: view === "impedance" ? 55 : 24, top: 13, bottom: 30 };
-  const plotRight = width - padding.right;
-  const plotBottom = height - padding.bottom;
+  const { ref: chartRef, width, height } = usePlotDimensions();
+  const padding = { left: 55, right: view === "impedance" ? 55 : 24, top: 13, bottom: 34 };
+  const plotRight = Math.max(padding.left + 1, width - padding.right);
+  const plotBottom = Math.max(padding.top + 1, height - padding.bottom);
   const logMinimum = Math.log10(FREQUENCY_MINIMUM_HZ);
   const logRange = Math.log10(frequencyMaximum) - logMinimum;
   const x = (frequency: number) => padding.left + ((Math.log10(frequency) - logMinimum) / logRange) * (plotRight - padding.left);
@@ -125,16 +125,16 @@ export function ElectricalPlot({
       {!coupledSelected ? <div className="response-empty">Select Level 3 Coupled fidelity to calculate electrical response.</div>
         : traces.length === 0 ? <div className="response-empty">Run the coupled frequency sweep to display each speaker object.</div>
           : <>
-            <svg className="response-chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img" aria-label={`${unit} per speaker over frequency`}>
+            <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${unit} per speaker over frequency`}>
               <defs><clipPath id="electrical-plot-clip"><rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} /></clipPath></defs>
               <rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} className="plot-well" />
               {minorFrequencyTicks(frequencyMaximum).map((tick) => <line key={`xm-${tick}`} x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid minor" />)}
               {yTicks.map((tick, index) => <g key={index}><line x1={padding.left} x2={plotRight} y1={y(tick)} y2={y(tick)} className="plot-grid major" /><text x={padding.left - 7} y={y(tick) + 3} textAnchor="end">{Math.abs(tick) < 0.1 ? tick.toFixed(3) : tick.toFixed(1)}</text></g>)}
-              {majorFrequencies.map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid major" /><text x={x(tick)} y={height - 14} textAnchor="middle">{formatFrequency(tick)}</text></g>)}
+              {majorFrequencies.map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid major" /><text x={x(tick)} y={height - 18} textAnchor="middle">{formatFrequency(tick)}</text></g>)}
               {view === "impedance" && phaseTicks.map((tick) => <text key={tick} x={plotRight + 7} y={phaseY(tick) + 3}>{tick}°</text>)}
-              <text x={(padding.left + plotRight) / 2} y={height - 3} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
-              <text x={13} y={padding.top + 8} transform={`rotate(-90 13 ${padding.top + 8})`} className="axis-title">{unit}</text>
-              {view === "impedance" && <text x={width - 10} y={padding.top + 8} transform={`rotate(90 ${width - 10} ${padding.top + 8})`} className="axis-title">Phase (deg)</text>}
+              <text x={(padding.left + plotRight) / 2} y={height - 5} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
+              <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">{unit}</text>
+              {view === "impedance" && <text x={width - 12} y={(padding.top + plotBottom) / 2} transform={`rotate(90 ${width - 12} ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Phase (deg)</text>}
               <g clipPath="url(#electrical-plot-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
                 {traces.map(([id, trace], index) => <path key={`${id}-${view}`} d={path(data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
