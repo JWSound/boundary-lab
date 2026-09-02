@@ -181,7 +181,8 @@ export function MicrophoneResponsePlot({
         {pattern.traces.length === 0 ? (
           <div className="response-empty">Add a microphone to display its package-derived frequency response.</div>
         ) : (
-          <>
+          <div className="response-plot-layout">
+            <div className="response-plot-area">
             <svg
               ref={chartRef}
               className={`response-chart ${crosshairDragging ? "dragging" : ""}`}
@@ -238,9 +239,6 @@ export function MicrophoneResponsePlot({
               <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">SPL (dB)</text>
             </svg>
             <div className="response-legend">
-              {pattern.traces.map((trace, index) => (
-                <span key={trace.microphoneId}><i style={{ background: TRACE_COLORS[index % TRACE_COLORS.length] }} />{trace.microphoneName}</span>
-              ))}
               <em><b className="line-sample pattern" />Pattern</em>
               {bem && <em><b className="line-sample bem" />BEM</em>}
             </div>
@@ -250,7 +248,13 @@ export function MicrophoneResponsePlot({
               title={`Switch frequency axis to 20 Hz–${frequencyMaximum === 2000 ? "20 kHz" : "2 kHz"}`}
               onClick={() => setFrequencyMaximum((current) => current === 2000 ? 20000 : 2000)}
             >20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>
-          </>
+            </div>
+            <TraceVisibilityFilter
+              items={pattern.traces.map((trace, index) => ({ id: trace.microphoneId, name: trace.microphoneName, color: TRACE_COLORS[index % TRACE_COLORS.length] }))}
+              hiddenIds={hiddenTraceIds}
+              onToggle={toggleTrace}
+            />
+          </div>
         )}
       </div>
     </div>

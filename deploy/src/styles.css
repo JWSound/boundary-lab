@@ -271,6 +271,18 @@ button { color: inherit; }
 .bem-pressure-button:disabled { color: #747474; cursor: not-allowed; }
 .bem-pressure-button.stop { color: #fff; border-color: #c98a80; background: #7b3027; }
 .response-content { position: relative; min-height: 0; overflow: hidden; }
+.response-plot-layout { width: 100%; height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 190px; }
+.response-plot-area { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.trace-filter { min-width: 0; min-height: 0; display: grid; grid-template-rows: 28px minmax(0, 1fr); border-left: 1px solid var(--line-soft); background: #171b18; }
+.trace-filter-heading { display: flex; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--line-soft); color: #c4cbc2; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.trace-filter-list { min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 5px 6px; }
+.trace-filter-row { height: 25px; display: grid; grid-template-columns: 14px 9px minmax(0, 1fr); align-items: center; gap: 6px; padding: 0 4px; color: #d0d5cf; font-size: 9px; cursor: pointer; }
+.trace-filter-row:hover { background: #252b26; }
+.trace-filter-row.hidden { color: #777e78; }
+.trace-filter-row input { width: 12px; height: 12px; margin: 0; accent-color: var(--classic-selection); }
+.trace-filter-row i { width: 8px; height: 8px; border: 1px solid rgba(255,255,255,.35); }
+.trace-filter-row.hidden i { opacity: .35; }
+.trace-filter-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .response-empty { height: 100%; display: grid; place-items: center; color: #717971; font-size: 10px; }
 .response-chart { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; user-select: none; }
 .response-chart text { fill: #aeb5ad; font: 10px Arial, sans-serif; }
@@ -554,6 +566,9 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .analysis-drawer { border-top: 2px solid var(--classic-highlight); }
+.trace-filter { border-left-color: var(--classic-dark-shadow); background: var(--classic-face); box-shadow: inset 1px 0 var(--classic-highlight); }
+.trace-filter-heading { border-bottom-color: var(--classic-dark-shadow); box-shadow: inset 0 -1px var(--classic-highlight); }
+.trace-filter-row:hover { background: var(--classic-selection); color: #fff; }
 .frequency-control,
 .metrics-grid > div { border-color: var(--classic-shadow); }
 .frequency-label span,

@@ -127,7 +127,8 @@ export function DriverExcursionPlot({
     <div className="response-content">
       {!coupledSelected ? <div className="response-empty">Select Level 3 Coupled fidelity to calculate driver excursion.</div>
         : traces.length === 0 ? <div className="response-empty">Run the coupled frequency sweep to display every transducer in the scene.</div>
-          : <>
+          : <div className="response-plot-layout">
+            <div className="response-plot-area">
             <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Per-transducer peak driver excursion over frequency">
               <defs><clipPath id="driver-excursion-clip"><rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} /></clipPath></defs>
               <rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} className="plot-well" />
@@ -141,9 +142,10 @@ export function DriverExcursionPlot({
                 {traces.flatMap(([id, trace], index) => hiddenTraceIds.has(id) ? [] : paths(data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
               </g>
             </svg>
-            <div className="response-legend driver-response-legend">{traces.map(([id, trace], index) => <span key={id}><i style={{ background: driverTraceColor(index) }} />{trace.name}</span>)}</div>
             <button className="response-range-toggle" type="button" onClick={() => setFrequencyMaximum((current) => current === 2000 ? 20000 : 2000)}>20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>
-          </>}
+            </div>
+            <TraceVisibilityFilter items={traces.map(([id, trace], index) => ({ id, name: trace.name, color: driverTraceColor(index) }))} hiddenIds={hiddenTraceIds} onToggle={toggleTrace} />
+          </div>}
     </div>
   </div>;
 }

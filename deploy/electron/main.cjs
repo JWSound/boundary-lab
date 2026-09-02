@@ -633,6 +633,26 @@ function createWindow() {
           });
         });
       })`);
+      const traceFilterInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+        const checkbox = document.querySelector('.trace-filter input[type="checkbox"]');
+        const count = () => document.querySelectorAll('.pattern-trace').length;
+        const before = count();
+        checkbox?.click();
+        requestAnimationFrame(() => {
+          const afterHide = count();
+          checkbox?.click();
+          requestAnimationFrame(() => resolve({
+            available: Boolean(checkbox),
+            filterRows: document.querySelectorAll('.trace-filter-row').length,
+            before,
+            afterHide,
+            afterRestore: count()
+          }));
+        });
+      })`);
+      if (!traceFilterInteraction.available || traceFilterInteraction.afterHide !== 0 || traceFilterInteraction.afterRestore !== traceFilterInteraction.before) {
+        throw new Error("Plot trace visibility filter did not hide and restore its line.");
+      }
       const chartResizeInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
         const shell = document.querySelector('.app-shell');
         const sample = (height) => new Promise((sampleResolve) => {
@@ -747,7 +767,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, chartResizeInteraction, emptySourceInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, traceFilterInteraction, chartResizeInteraction, emptySourceInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
