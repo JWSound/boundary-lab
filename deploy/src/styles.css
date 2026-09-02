@@ -240,9 +240,12 @@ button { color: inherit; }
 .number-row input { width: 53px; padding: 0 4px 0 7px; border: 0; outline: none; color: #d2d8d0; background: transparent; font: 500 9px/1 "Cascadia Mono", "Consolas", monospace; }
 .number-row em { color: #5d665f; font-size: 8px; font-style: normal; }
 .toggle-row { grid-template-columns: 1fr auto; }
+.select-row { grid-template-columns: 74px minmax(0, 1fr); gap: 8px; }
+.select-row select { height: 25px; padding: 0 6px; border: 1px solid #343b35; color: #d2d8d0; background: #121613; font-size: 9px; }
 .toggle { min-width: 72px; height: 25px; border: 1px solid #343b35; border-radius: 5px; color: #8c958d; background: #121613; font-size: 8px; cursor: pointer; }
 .toggle.active { border-color: #8c7441; color: #efd28f; background: #2e281c; }
 .analysis-drawer { grid-column: 2 / 4; grid-row: 3; position: relative; min-width: 0; min-height: 0; border-top: 1px solid var(--line); background: #141815; }
+.color-legend.pressure-color-legend { background: linear-gradient(90deg, #1b4db0 0%, #f4f4f4 50%, #c21b23 100%); }
 .analysis-resize-handle { position: absolute; left: 0; right: 0; top: -5px; z-index: 12; height: 10px; cursor: row-resize; touch-action: none; outline: none; }
 .analysis-resize-handle::after { content: ""; position: absolute; left: 50%; top: 3px; width: 54px; height: 3px; transform: translateX(-50%); border: 1px solid #171917; background: #697069; opacity: 0; transition: opacity .12s; }
 .analysis-resize-handle:hover::after, .analysis-resize-handle:focus-visible::after, .resizing-analysis .analysis-resize-handle::after { opacity: 1; }

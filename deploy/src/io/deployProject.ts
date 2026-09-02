@@ -1,7 +1,7 @@
 import type { Fidelity, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, RigidMeshConfiguration, SourceConfiguration } from "../model/types";
 
 export const DEPLOY_PROJECT_SCHEMA = "boundary-lab-deploy-project";
-export const DEPLOY_PROJECT_SCHEMA_VERSION = 5;
+export const DEPLOY_PROJECT_SCHEMA_VERSION = 6;
 
 export interface DeployPackageReference {
   id: string;
@@ -124,13 +124,25 @@ function rigidConfiguration(value: unknown, index: number): RigidMeshConfigurati
   };
 }
 
-function observationPlane(value: unknown): ObservationPlane {
+function observationPlane(value: unknown, legacyVersion = false): ObservationPlane {
   const plane = record(value, "observation_plane");
   const minimumDb = finite(plane.heatmapMinimumDb, "observation_plane.heatmapMinimumDb");
   const maximumDb = finite(plane.heatmapMaximumDb, "observation_plane.heatmapMaximumDb");
   if (maximumDb <= minimumDb) throw new Error("The heatmap maximum must be greater than its minimum.");
   const bandingDb = finite(plane.heatmapBandingDb, "observation_plane.heatmapBandingDb");
   if (bandingDb < 0) throw new Error("observation_plane.heatmapBandingDb cannot be negative.");
+  const displayMode = legacyVersion && plane.displayMode === undefined ? "spl" : plane.displayMode;
+  if (displayMode !== "spl" && displayMode !== "real_pressure" && displayMode !== "imaginary_pressure") {
+    throw new Error("observation_plane.displayMode must be spl, real_pressure, or imaginary_pressure.");
+  }
+  const pressureScalePa = legacyVersion && plane.pressureScalePa === undefined ? 10 : finite(plane.pressureScalePa, "observation_plane.pressureScalePa");
+  if (pressureScalePa < 1 || pressureScalePa > 100) {
+    throw new Error("observation_plane.pressureScalePa must be between 1 and 100.");
+  }
+  const phaseAnimationSpeedHz = legacyVersion && plane.phaseAnimationSpeedHz === undefined ? 1 : finite(plane.phaseAnimationSpeedHz, "observation_plane.phaseAnimationSpeedHz");
+  if (phaseAnimationSpeedHz < 0.1 || phaseAnimationSpeedHz > 4) {
+    throw new Error("observation_plane.phaseAnimationSpeedHz must be between 0.1 and 4 Hz.");
+  }
   return {
     widthM: positive(plane.widthM, "observation_plane.widthM"),
     depthM: positive(plane.depthM, "observation_plane.depthM"),
@@ -145,6 +157,9 @@ function observationPlane(value: unknown): ObservationPlane {
     heatmapMinimumDb: minimumDb,
     heatmapMaximumDb: maximumDb,
     heatmapBandingDb: bandingDb,
+    displayMode,
+    pressureScalePa,
+    phaseAnimationSpeedHz,
   };
 }
 
@@ -158,7 +173,7 @@ export function parseDeployProject(contents: string): DeployProject {
   const project = record(raw, "Project");
   if (project.schema !== DEPLOY_PROJECT_SCHEMA) throw new Error("This is not a Boundary Lab Deploy project.");
   const version = finite(project.schema_version, "schema_version");
-  if (version !== DEPLOY_PROJECT_SCHEMA_VERSION) {
+  if (version !== 5 && version !== DEPLOY_PROJECT_SCHEMA_VERSION) {
     throw new Error(`Unsupported Boundary Lab Deploy project schema version ${version}.`);
   }
   if (typeof project.name !== "string" || project.name.trim().length === 0) {
@@ -244,7 +259,7 @@ export function parseDeployProject(contents: string): DeployProject {
     sources,
     rigid_objects: rigidObjects,
     microphones,
-    observation_plane: observationPlane(project.observation_plane),
+    observation_plane: observationPlane(project.observation_plane, version === 5),
     selected_frequency_hz: frequencyHz,
     requested_fidelity: requestedFidelity,
   };

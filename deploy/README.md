@@ -43,7 +43,7 @@ npm start
 - Retains separate current observation-plane frames for Boundary and Coupled fidelity so users can compare solver levels without repeating unchanged solves.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
 - Uses threshold-oriented triangle-BVH clearance validation with early exit and emits conservative higher-order corrections for close speaker/rigid face pairs and their ground images.
-- Saves speaker packages, rigid-mesh assets and instances, and microphones as a strict schema-v5 `.blabdeploy.json` project.
+- Saves speaker packages, rigid-mesh assets and instances, microphones, and observation-plane display settings as a schema-v6 `.blabdeploy.json` project (schema v5 remains loadable).
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
 Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for a parity Petrov–Galerkin Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.

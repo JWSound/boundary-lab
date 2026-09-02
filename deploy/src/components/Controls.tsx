@@ -290,9 +290,13 @@ export function planeGridShape(widthM: number, depthM: number, majorSamples: num
 export function PlaneResolutionInspector({
   value,
   onChange,
+  phaseAnimationEnabled,
+  onPhaseAnimationEnabledChange,
 }: {
   value: ObservationPlane;
   onChange: (next: ObservationPlane) => void;
+  phaseAnimationEnabled: boolean;
+  onPhaseAnimationEnabledChange: (enabled: boolean) => void;
 }) {
   const resolution = Math.max(value.columns, value.rows);
   const set = <K extends keyof ObservationPlane>(key: K, next: ObservationPlane[K]) => {
@@ -304,6 +308,25 @@ export function PlaneResolutionInspector({
   };
   return (
     <>
+      <SectionHeader icon={Palette} title="Plane Type" />
+      <div className="inspector-section">
+        <label className="control-row select-row">
+          <span>Plane type</span>
+          <select
+            aria-label="Plane type"
+            value={value.displayMode}
+            onChange={(event) => {
+              const displayMode = event.target.value as ObservationPlane["displayMode"];
+              if (displayMode === "spl") onPhaseAnimationEnabledChange(false);
+              set("displayMode", displayMode);
+            }}
+          >
+            <option value="spl">SPL</option>
+            <option value="real_pressure">Real Pressure</option>
+            <option value="imaginary_pressure">Imaginary Pressure</option>
+          </select>
+        </label>
+      </div>
       <SectionHeader icon={CircleDot} title="Placement" />
       <div className="inspector-section two-column-fields">
         <NumberField label="X" value={value.centerXM} unit="m" step={0.1} onChange={(next) => set("centerXM", next)} />
@@ -336,36 +359,28 @@ export function PlaneResolutionInspector({
           <output>{value.columns} × {value.rows}</output>
         </label>
       </div>
-      <SectionHeader icon={Palette} title="Heatmap" />
-      <div className="inspector-section">
-        <div className="two-column-fields">
-          <NumberField
-            label="Scale minimum"
-            value={value.heatmapMinimumDb}
-            unit="dB"
-            step={1}
-            maximum={value.heatmapMaximumDb - 1}
-            onChange={(next) => set("heatmapMinimumDb", next)}
-          />
-          <NumberField
-            label="Scale maximum"
-            value={value.heatmapMaximumDb}
-            unit="dB"
-            step={1}
-            minimum={value.heatmapMinimumDb + 1}
-            onChange={(next) => set("heatmapMaximumDb", next)}
-          />
+      {value.displayMode === "spl" ? <>
+        <SectionHeader icon={Palette} title="Heatmap" />
+        <div className="inspector-section">
+          <div className="two-column-fields">
+            <NumberField label="Scale minimum" value={value.heatmapMinimumDb} unit="dB" step={1} maximum={value.heatmapMaximumDb - 1} onChange={(next) => set("heatmapMinimumDb", next)} />
+            <NumberField label="Scale maximum" value={value.heatmapMaximumDb} unit="dB" step={1} minimum={value.heatmapMinimumDb + 1} onChange={(next) => set("heatmapMaximumDb", next)} />
+          </div>
+          <Slider label="Banding" value={value.heatmapBandingDb} minimum={0} maximum={12} step={1} unit=" dB" onChange={(next) => set("heatmapBandingDb", next)} />
         </div>
-        <Slider
-          label="Banding"
-          value={value.heatmapBandingDb}
-          minimum={0}
-          maximum={12}
-          step={1}
-          unit=" dB"
-          onChange={(next) => set("heatmapBandingDb", next)}
-        />
-      </div>
+      </> : <>
+        <SectionHeader icon={Palette} title="Pressure" />
+        <div className="inspector-section">
+          <Slider label="Scale" value={value.pressureScalePa} minimum={1} maximum={100} step={1} unit=" Pa" onChange={(next) => set("pressureScalePa", next)} />
+          <label className="control-row toggle-row">
+            <span>Phase animation</span>
+            <button className={phaseAnimationEnabled ? "toggle active" : "toggle"} onClick={() => onPhaseAnimationEnabledChange(!phaseAnimationEnabled)}>
+              {phaseAnimationEnabled ? "On" : "Off"}
+            </button>
+          </label>
+          <Slider label="Speed" value={value.phaseAnimationSpeedHz} minimum={0.1} maximum={4} step={0.1} unit=" Hz" onChange={(next) => set("phaseAnimationSpeedHz", next)} />
+        </div>
+      </>}
     </>
   );
 }

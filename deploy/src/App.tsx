@@ -143,6 +143,9 @@ const defaultObservation: ObservationPlane = {
   heatmapMinimumDb: 50,
   heatmapMaximumDb: 145,
   heatmapBandingDb: 0,
+  displayMode: "spl",
+  pressureScalePa: 10,
+  phaseAnimationSpeedHz: 1,
 };
 
 function observationAcousticState(value: ObservationPlane) {
@@ -230,6 +233,7 @@ export function App() {
   const [rigidObjects, setRigidObjects] = useState<RigidMeshConfiguration[]>([]);
   const [microphones, setMicrophones] = useState<MicrophoneConfiguration[]>([]);
   const [observation, setObservation] = useState(defaultObservation);
+  const [phaseAnimationEnabled, setPhaseAnimationEnabled] = useState(false);
   const [frequencyIndex, setFrequencyIndex] = useState(() => nearestFrequencyIndex(pkg, 80));
   const [fidelity, setFidelity] = useState<Fidelity>("pattern");
   const [selectedInstances, setSelectedInstances] = useState<string[]>(["subwoofer-1"]);
@@ -914,7 +918,7 @@ export function App() {
         observation,
         solutionKey: requestedGeometryKey,
         reuseBoundary,
-        includeComplexPressure: false,
+        includeComplexPressure: true,
       };
       let result;
       try {
@@ -927,7 +931,8 @@ export function App() {
       if (generation !== solveGeneration.current) return;
       const rendererResultReceived = performance.now();
       const fieldParseStarted = performance.now();
-      const nextField = fieldFrameFromSpl(result.spl_db, result.columns, result.rows, result.sample_indices);
+      if (!result.field_pressure) throw new Error("The solver did not return complex field pressure.");
+      const nextField = fieldFrameFromSpl(result.spl_db, result.columns, result.rows, result.sample_indices, result.field_pressure);
       const fieldParseSeconds = (performance.now() - fieldParseStarted) / 1000;
       pendingRenderProfile.current = {
         generation,
@@ -1926,6 +1931,7 @@ export function App() {
           microphones={microphones}
           observation={observation}
           field={field}
+          phaseAnimationEnabled={phaseAnimationEnabled}
           selectedInstances={selectedInstances}
           activeInstance={selectedInstance}
           transformMode={transformMode}
@@ -1969,7 +1975,12 @@ export function App() {
               <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>Audience plane</strong><span>Observation surface</span></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
-            <PlaneResolutionInspector value={observation} onChange={setObservation} />
+            <PlaneResolutionInspector
+              value={observation}
+              onChange={setObservation}
+              phaseAnimationEnabled={phaseAnimationEnabled}
+              onPhaseAnimationEnabledChange={setPhaseAnimationEnabled}
+            />
           </>
         ) : selectedSource ? (
           <>
@@ -2068,17 +2079,14 @@ export function App() {
             />}
           </div>
           <div className="legend-block">
-            {analysisTab === "microphones" ? <>
+            {analysisTab === "microphones" ? observation.displayMode === "spl" ? <>
               <div className="legend-title"><span>SPL</span></div>
-              <div
-                className="color-legend"
-                style={{ background: heatmapLegendGradient(
-                  observation.heatmapMinimumDb,
-                  observation.heatmapMaximumDb,
-                  observation.heatmapBandingDb,
-                ) }}
-              />
+              <div className="color-legend" style={{ background: heatmapLegendGradient(observation.heatmapMinimumDb, observation.heatmapMaximumDb, observation.heatmapBandingDb) }} />
               <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
+            </> : <>
+              <div className="legend-title"><span>{phaseAnimationEnabled ? "Phase animation" : observation.displayMode === "real_pressure" ? "Real pressure" : "Imaginary pressure"}</span></div>
+              <div className="color-legend pressure-color-legend" />
+              <div><span>-{observation.pressureScalePa.toFixed(0)}</span><span>0</span><span>+{observation.pressureScalePa.toFixed(0)} Pa</span></div>
             </> : analysisTab === "excursion"
               ? <div className="excursion-note"><strong>PEAK EXCURSION</strong><span>Derived from RMS diaphragm velocity</span><code>sqrt(2) |v| / 2 pi f</code></div>
               : <div className="excursion-note"><strong>CABINET INPUT</strong><span>Complex RMS voltage and summed coil current</span><code>Z = V / I</code></div>}

@@ -258,13 +258,19 @@ export function fieldFrameFromSpl(
   columns: number,
   rows: number,
   sampleIndices?: ArrayLike<number>,
+  pressure?: { real: ArrayLike<number>; imag: ArrayLike<number> },
 ): FieldFrame {
   const pointCount = columns * rows;
   const indices = sampleIndices ?? Array.from({ length: pointCount }, (_, index) => index);
   if (samples.length !== indices.length) {
     throw new Error("Level 2 field dimensions do not match the audience-plane samples.");
   }
+  if (pressure && (pressure.real.length !== samples.length || pressure.imag.length !== samples.length)) {
+    throw new Error("Complex field pressure dimensions do not match the audience-plane samples.");
+  }
   const values = new Float32Array(pointCount);
+  const pressureReal = new Float32Array(pointCount);
+  const pressureImag = new Float32Array(pointCount);
   const validMask = new Uint8Array(pointCount);
   const validValues = new Float32Array(samples.length);
   let sum = 0;
@@ -278,6 +284,15 @@ export function fieldFrameFromSpl(
       throw new Error("Level 2 field contains an invalid audience-plane sample index.");
     }
     values[gridIndex] = value;
+    if (pressure) {
+      const real = Number(pressure.real[sampleIndex]);
+      const imag = Number(pressure.imag[sampleIndex]);
+      if (!Number.isFinite(real) || !Number.isFinite(imag)) {
+        throw new Error("Complex field pressure contains a non-finite value.");
+      }
+      pressureReal[gridIndex] = real;
+      pressureImag[gridIndex] = imag;
+    }
     validMask[gridIndex] = 1;
     validValues[sampleIndex] = value;
     sum += value;
@@ -287,6 +302,8 @@ export function fieldFrameFromSpl(
   if (validValues.length === 0) minimum = maximum = 0;
   return {
     splDb: values,
+    pressureReal,
+    pressureImag,
     validMask,
     columns,
     rows,
@@ -464,6 +481,8 @@ export function computeFieldFrame(
 ): FieldFrame {
   const pointCount = observation.columns * observation.rows;
   const values = new Float32Array(pointCount);
+  const pressureReal = new Float32Array(pointCount);
+  const pressureImag = new Float32Array(pointCount);
   const frequency = pkg.frequenciesHz[frequencyIndex];
   const wavenumber = (2 * Math.PI * frequency) / pkg.manifest.medium.sound_speed_m_per_s;
   if (sources.length !== configs.length || sources.length === 0) {
@@ -548,6 +567,8 @@ export function computeFieldFrame(
       const magnitude = Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag));
       const spl = 20 * Math.log10(magnitude / PRESSURE_REFERENCE_PA);
       values[index] = spl;
+      pressureReal[index] = totalReal;
+      pressureImag[index] = totalImag;
       sum += spl;
       minimum = Math.min(minimum, spl);
       maximum = Math.max(maximum, spl);
@@ -559,6 +580,8 @@ export function computeFieldFrame(
   const populatedValues = validCount === validValues.length ? validValues : validValues.slice(0, validCount);
   return {
     splDb: values,
+    pressureReal,
+    pressureImag,
     validMask,
     columns: observation.columns,
     rows: observation.rows,
@@ -583,6 +606,8 @@ export function computeMixedFieldFrame(
   }
   const pointCount = observation.columns * observation.rows;
   const values = new Float32Array(pointCount);
+  const pressureReal = new Float32Array(pointCount);
+  const pressureImag = new Float32Array(pointCount);
   const validMask = new Uint8Array(pointCount);
   const validValues = new Float32Array(pointCount);
   const sourceData = sources.map((source, index) => {
@@ -651,6 +676,8 @@ export function computeMixedFieldFrame(
       }
       const spl = 20 * Math.log10(Math.max(Number.MIN_VALUE, Math.hypot(totalReal, totalImag)) / PRESSURE_REFERENCE_PA);
       values[index] = spl;
+      pressureReal[index] = totalReal;
+      pressureImag[index] = totalImag;
       validValues[validCount++] = spl;
       sum += spl;
       minimum = Math.min(minimum, spl);
@@ -661,6 +688,8 @@ export function computeMixedFieldFrame(
   const populatedValues = validCount === validValues.length ? validValues : validValues.slice(0, validCount);
   return {
     splDb: values,
+    pressureReal,
+    pressureImag,
     validMask,
     columns: observation.columns,
     rows: observation.rows,

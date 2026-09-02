@@ -135,6 +135,9 @@ export interface ObservationPlane {
   heatmapMinimumDb: number;
   heatmapMaximumDb: number;
   heatmapBandingDb: number;
+  displayMode: "spl" | "real_pressure" | "imaginary_pressure";
+  pressureScalePa: number;
+  phaseAnimationSpeedHz: number;
 }
 
 export interface PatternLookup {
@@ -147,6 +150,8 @@ export interface PatternLookup {
 
 export interface FieldFrame {
   splDb: Float32Array;
+  pressureReal: Float32Array;
+  pressureImag: Float32Array;
   validMask: Uint8Array;
   columns: number;
   rows: number;
