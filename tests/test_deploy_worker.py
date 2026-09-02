@@ -126,3 +126,77 @@ def test_level_three_execution_rejects_exact_and_routes_rom_packages() -> None:
     assert deploy_worker._execution_worker_key(
         payload, _CoupledPackageCache("parity_petrov_galerkin_rom")
     ) == "cuda"
+
+
+def test_transducer_velocity_result_flattens_scene_instances() -> None:
+    request = {
+        "transducers": [
+            {"id": "left:transducer:0", "name": "Left / Transducer 1"},
+            {"id": "left:transducer:1", "name": "Left / Transducer 2"},
+            {"id": "right:transducer:0", "name": "Right / Transducer 1"},
+            {"id": "right:transducer:1", "name": "Right / Transducer 2"},
+        ]
+    }
+    result = {
+        "diagnostics": {
+            "transducer_velocity": [
+                {"real": [1.0, 2.0], "imag": [0.1, 0.2]},
+                {"real": [3.0, 4.0], "imag": [0.3, 0.4]},
+            ]
+        }
+    }
+
+    velocity = deploy_worker._transducer_velocity_result(result, request)
+
+    assert velocity["ids"] == [item["id"] for item in request["transducers"]]
+    assert velocity["names"][2] == "Right / Transducer 1"
+    assert velocity["real"] == [1.0, 2.0, 3.0, 4.0]
+    assert velocity["imag"] == [0.1, 0.2, 0.3, 0.4]
+
+
+def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    package = SimpleNamespace(
+        frequencies=np.asarray([20.0, 40.0]),
+        coupled_model={
+            "representation": "parity_petrov_galerkin_rom",
+            "arrays": {"frequencies_hz": np.asarray([20.0, 40.0])},
+        },
+    )
+    cache = SimpleNamespace(load_package=lambda _path: package)
+
+    def prepare(payload, work_dir, **_kwargs):
+        assert payload["observationPointsM"] == [[0.0, 1.0, 1.0]]
+        path = Path(work_dir) / "request.json"
+        request = {
+            "frequencies_hz": [20.0, 40.0],
+            "transducers": [{"id": "source:transducer:0", "name": "Source / Transducer 1"}],
+        }
+        path.write_text(json.dumps(request), encoding="utf-8")
+        return path, request
+
+    class Worker:
+        def submit(self, _request_path, **_kwargs):
+            for frequency, velocity in ((20.0, 2.0), (40.0, 4.0)):
+                yield {"type": "result", "result": {
+                    "frequency_hz": frequency,
+                    "spl_db": [80.0],
+                    "field_pressure": {"real": [0.2], "imag": [0.0]},
+                    "diagnostics": {"transducer_velocity": [{"real": [velocity], "imag": [0.0]}]},
+                }}
+            yield {"type": "completed"}
+
+    monkeypatch.setattr(deploy_worker, "prepare_deploy_rom_microphone_sweep_request", prepare)
+    monkeypatch.setattr(deploy_worker, "_emit", lambda event_type, **values: events.append((event_type, values)) or {})
+    deploy_worker._microphone_sweep(
+        9,
+        {"packagePath": "speaker.blabsp", "backend": "cuda", "fidelity": "coupled", "sources": [{"id": "source"}], "microphones": []},
+        {"cuda": Worker()},
+        cache,
+        threading.Event(),
+    )
+
+    result = next(values["result"] for event_type, values in events if event_type == "result")
+    assert result["microphone_ids"] == []
+    assert result["transducer_ids"] == ["source:transducer:0"]
+    assert result["transducer_velocity"] == {"real": [[2.0, 4.0]], "imag": [[0.0, 0.0]]}

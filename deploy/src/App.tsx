@@ -25,6 +25,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourceGroupPoseUpdate, type SourcePoseUpdate } from "./components/SceneView";
 import { type BemResponseData, MicrophoneResponsePlot } from "./components/MicrophoneResponsePlot";
+import { DriverExcursionPlot, type DriverExcursionData } from "./components/DriverExcursionPlot";
 import {
   browserFileHandler,
   MicrophoneInspector,
@@ -53,6 +54,10 @@ import {
 import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, RigidMeshConfiguration, SourceConfiguration } from "./model/types";
 import { heatmapLegendGradient } from "./model/heatmap";
 import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement, type BoundaryMeshAsset } from "./model/cabinetPlacement";
+
+function peakExcursionMillimeters(real: number, imag: number, frequencyHz: number): number {
+  return Math.hypot(real, imag) * 1000 / (2 * Math.PI * frequencyHz);
+}
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
   const centerSpacingM = pkg.boundsM[0] + 2;
@@ -223,6 +228,8 @@ export function App() {
   const [microphoneSweepState, setMicrophoneSweepState] = useState<"idle" | "solving" | "complete" | "error">("idle");
   const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
+  const [driverExcursion, setDriverExcursion] = useState<DriverExcursionData | null>(null);
+  const [analysisTab, setAnalysisTab] = useState<"microphones" | "excursion">("microphones");
   const [analysisDrawerHeight, setAnalysisDrawerHeight] = useState(220);
   const [analysisDrawerResizing, setAnalysisDrawerResizing] = useState(false);
   const packageFileInput = useRef<HTMLInputElement>(null);
@@ -466,6 +473,7 @@ export function App() {
       ? coupledAvailable
       : false;
   const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
+  const currentDriverExcursion = driverExcursion?.key === microphoneSweepKey ? driverExcursion : null;
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     packages,
@@ -500,6 +508,7 @@ export function App() {
     setLiveSolveEnabled(false);
     setMicrophoneSweepState("idle");
     setBemMicrophoneResponses(null);
+    setDriverExcursion(null);
     setTransformMode("select");
     setProjectName(`${next.manifest.name} Subwoofer Study`);
     setProjectFileName(`${next.manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "deploy"}-study.blabdeploy.json`);
@@ -608,6 +617,7 @@ export function App() {
     setLiveSolveEnabled(false);
     setMicrophoneSweepState("idle");
     setBemMicrophoneResponses(null);
+    setDriverExcursion(null);
     setTransformMode("select");
     setProjectName(project.name);
     setProjectFileName(fileName);
@@ -637,6 +647,25 @@ export function App() {
         const next = values.slice();
         next[frequencyIndex] = progress.spl_db[index];
         traces.set(id, next);
+      });
+      return { ...current, traces };
+    });
+    setDriverExcursion((current) => {
+      if (!current || current.key !== microphoneSweepKeyRef.current) return current;
+      const frequencyIndex = Array.from(current.frequenciesHz).findIndex(
+        (frequency) => Math.abs(frequency - progress.frequency_hz) <= Math.max(1e-4, frequency * 1e-6),
+      );
+      if (frequencyIndex < 0) return current;
+      const traces = new Map(current.traces);
+      progress.transducer_ids.forEach((id, index) => {
+        const existing = traces.get(id);
+        const values = existing?.excursionMm.slice() ?? new Float32Array(current.frequenciesHz.length).fill(Number.NaN);
+        values[frequencyIndex] = peakExcursionMillimeters(
+          progress.transducer_velocity.real[index],
+          progress.transducer_velocity.imag[index],
+          progress.frequency_hz,
+        );
+        traces.set(id, { name: progress.transducer_names[index] ?? id, excursionMm: values });
       });
       return { ...current, traces };
     });
@@ -879,7 +908,7 @@ export function App() {
   }, [microphoneSweepState]);
 
   const calculateMicrophoneSweep = useCallback(async () => {
-    if (!window.boundaryLabDesktop || !level2Package?.sourcePath || microphones.length === 0) return;
+    if (!window.boundaryLabDesktop || !level2Package?.sourcePath || (microphones.length === 0 && fidelity !== "coupled")) return;
     const requestedKey = microphoneSweepKey;
     microphoneSweepKeyRef.current = requestedKey;
     stoppingMicrophoneSweep.current = false;
@@ -893,6 +922,11 @@ export function App() {
         microphone.id,
         new Float32Array(microphonePatternResponses.frequenciesHz.length).fill(Number.NaN),
       ])),
+    });
+    setDriverExcursion({
+      key: requestedKey,
+      frequenciesHz: microphonePatternResponses.frequenciesHz.slice(),
+      traces: new Map(),
     });
     setError(null);
     try {
@@ -923,6 +957,18 @@ export function App() {
       const traces = new Map<string, Float32Array>();
       result.microphone_ids.forEach((id, index) => traces.set(id, Float32Array.from(result.spl_db[index])));
       setBemMicrophoneResponses({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces });
+      const excursionTraces = new Map<string, { name: string; excursionMm: Float32Array }>();
+      result.transducer_ids.forEach((id, transducerIndex) => {
+        excursionTraces.set(id, {
+          name: result.transducer_names[transducerIndex] ?? id,
+          excursionMm: Float32Array.from(result.frequencies_hz.map((frequencyHz, frequencyIndex) => peakExcursionMillimeters(
+            result.transducer_velocity.real[transducerIndex][frequencyIndex],
+            result.transducer_velocity.imag[transducerIndex][frequencyIndex],
+            frequencyHz,
+          ))),
+        });
+      });
+      setDriverExcursion({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces: excursionTraces });
       setMicrophoneSweepProgress({ completed: result.completed_count, total: result.total_count });
       setMicrophoneSweepState("complete");
     } catch (caught) {
@@ -1889,31 +1935,51 @@ export function App() {
           }}
         />
         <div className="analysis-body">
-          <MicrophoneResponsePlot
-            pattern={microphonePatternResponses}
-            bem={currentBemMicrophoneResponses}
-            currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
-            frequencyPosition={sortedPosition}
-            frequencyCount={usableFrequencyIndices.length}
-            onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
-            canCalculatePressure={selectedSolverAvailable && microphones.length > 0 && solveState !== "solving"}
-            calculationLabel={fidelity === "coupled" ? "Calculate Coupled Pressure" : "Calculate BEM Pressure"}
-            calculating={microphoneSweepState === "solving"}
-            completedCount={microphoneSweepProgress.completed}
-            totalCount={microphoneSweepProgress.total}
-            onCalculateOrStop={calculateOrStopMicrophoneSweep}
-          />
+          <div className="analysis-plot-stack">
+            <div className="analysis-tabs" role="tablist" aria-label="Frequency analysis plots">
+              <button role="tab" aria-selected={analysisTab === "microphones"} className={analysisTab === "microphones" ? "active" : ""} onClick={() => setAnalysisTab("microphones")}><Mic2 size={11} /> Microphones</button>
+              <button role="tab" aria-selected={analysisTab === "excursion"} className={analysisTab === "excursion" ? "active" : ""} onClick={() => setAnalysisTab("excursion")}><Waves size={11} /> Driver excursion</button>
+            </div>
+            {analysisTab === "microphones" ? <MicrophoneResponsePlot
+              pattern={microphonePatternResponses}
+              bem={currentBemMicrophoneResponses}
+              currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
+              frequencyPosition={sortedPosition}
+              frequencyCount={usableFrequencyIndices.length}
+              onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
+              canCalculatePressure={selectedSolverAvailable && microphones.length > 0 && solveState !== "solving"}
+              calculationLabel={fidelity === "coupled" ? "Calculate Coupled Pressure" : "Calculate BEM Pressure"}
+              calculating={microphoneSweepState === "solving"}
+              completedCount={microphoneSweepProgress.completed}
+              totalCount={microphoneSweepProgress.total}
+              onCalculateOrStop={calculateOrStopMicrophoneSweep}
+            /> : <DriverExcursionPlot
+              data={currentDriverExcursion}
+              coupledSelected={fidelity === "coupled"}
+              currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
+              frequencyPosition={sortedPosition}
+              frequencyCount={usableFrequencyIndices.length}
+              onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
+              canCalculate={coupledAvailable && solveState !== "solving"}
+              calculating={microphoneSweepState === "solving"}
+              completedCount={microphoneSweepProgress.completed}
+              totalCount={microphoneSweepProgress.total}
+              onCalculateOrStop={calculateOrStopMicrophoneSweep}
+            />}
+          </div>
           <div className="legend-block">
-            <div className="legend-title"><span>SPL</span></div>
-            <div
-              className="color-legend"
-              style={{ background: heatmapLegendGradient(
-                observation.heatmapMinimumDb,
-                observation.heatmapMaximumDb,
-                observation.heatmapBandingDb,
-              ) }}
-            />
-            <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
+            {analysisTab === "microphones" ? <>
+              <div className="legend-title"><span>SPL</span></div>
+              <div
+                className="color-legend"
+                style={{ background: heatmapLegendGradient(
+                  observation.heatmapMinimumDb,
+                  observation.heatmapMaximumDb,
+                  observation.heatmapBandingDb,
+                ) }}
+              />
+              <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
+            </> : <div className="excursion-note"><strong>PEAK EXCURSION</strong><span>Derived from complex diaphragm velocity</span><code>|v| / 2πf</code></div>}
           </div>
         </div>
       </section>

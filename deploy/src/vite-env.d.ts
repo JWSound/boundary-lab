@@ -55,6 +55,9 @@ interface DesktopMicrophoneSweepProgress {
   total_count: number;
   microphone_ids: string[];
   spl_db: number[];
+  transducer_ids: string[];
+  transducer_names: string[];
+  transducer_velocity: { real: number[]; imag: number[] };
 }
 
 interface Window {

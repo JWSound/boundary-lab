@@ -190,6 +190,9 @@ export interface MicrophoneSweepResult {
   microphone_ids: string[];
   spl_db: number[][];
   pressure: { real: number[][]; imag: number[][] };
+  transducer_ids: string[];
+  transducer_names: string[];
+  transducer_velocity: { real: number[][]; imag: number[][] };
   completed_count: number;
   total_count: number;
   pipeline?: Record<string, number>;

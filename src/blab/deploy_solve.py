@@ -1531,6 +1531,18 @@ def prepare_deploy_rom_request(
             }
         )
 
+    transducer_count = int(selected["velocity"].shape[-2])
+    transducers = [
+        {
+            "id": f"{source.id}:transducer:{transducer_index}",
+            "name": f"{str(raw_source.get('name', source.id)).strip() or source.id} / Transducer {transducer_index + 1}",
+            "source_id": source.id,
+            "transducer_index": transducer_index,
+        }
+        for raw_source, source in zip(raw_sources, sources, strict=True)
+        for transducer_index in range(transducer_count)
+    ]
+
     binary_path = Path(work_dir).resolve() / "speaker-rom.bin"
     binary_arrays = _write_deploy_binary_arrays(binary_path, selected)
     face_count = sum(int(component["face_count"]) for component in request["boundary_components"])
@@ -1558,6 +1570,7 @@ def prepare_deploy_rom_request(
             "gmres_tolerance": float(payload.get("romGmresTolerance", 1e-4)),
             "gmres_max_iterations": int(payload.get("romGmresMaxIterations", 30)),
         },
+        transducers=transducers,
     )
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
     if status_callback is not None:

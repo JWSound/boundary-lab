@@ -86,6 +86,37 @@ def _execution_worker_key(payload: object, solve_cache: DeploySolveCache) -> str
     return worker_key
 
 
+def _transducer_velocity_result(result: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """Flatten per-instance ROM diaphragm velocities into stable scene traces."""
+
+    raw_descriptors = request.get("transducers", [])
+    diagnostics = result.get("diagnostics", {})
+    raw_instances = diagnostics.get("transducer_velocity", []) if isinstance(diagnostics, dict) else []
+    if not isinstance(raw_descriptors, list) or not isinstance(raw_instances, list):
+        return {"ids": [], "names": [], "real": [], "imag": []}
+    real: list[float] = []
+    imag: list[float] = []
+    for instance in raw_instances:
+        if not isinstance(instance, dict):
+            raise RuntimeError("BEAT Engine transducer velocity result is invalid.")
+        instance_real = instance.get("real")
+        instance_imag = instance.get("imag")
+        if not isinstance(instance_real, list) or not isinstance(instance_imag, list):
+            raise RuntimeError("BEAT Engine transducer velocity result is invalid.")
+        if len(instance_real) != len(instance_imag):
+            raise RuntimeError("BEAT Engine transducer velocity real and imaginary counts differ.")
+        real.extend(float(value) for value in instance_real)
+        imag.extend(float(value) for value in instance_imag)
+    if len(real) != len(raw_descriptors):
+        raise RuntimeError("BEAT Engine transducer velocity result does not match the scene transducer count.")
+    return {
+        "ids": [str(item["id"]) for item in raw_descriptors],
+        "names": [str(item["name"]) for item in raw_descriptors],
+        "real": real,
+        "imag": imag,
+    }
+
+
 def _solve(
     request_id: object,
     payload: object,
@@ -210,7 +241,7 @@ def _microphone_sweep(
     if not frequencies:
         raise ValueError("Speaker package contains no frequencies supported by the selected microphone sweep.")
     raw_microphones = payload.get("microphones")
-    if not isinstance(raw_microphones, list) or not raw_microphones:
+    if not isinstance(raw_microphones, list) or (not raw_microphones and fidelity != "coupled"):
         raise ValueError("Deploy microphone sweep requires at least one microphone.")
     if len(raw_microphones) > 64:
         raise ValueError("Deploy microphone sweep supports at most 64 microphones.")
@@ -250,9 +281,13 @@ def _microphone_sweep(
         if cancel_event.is_set():
             _emit("cancelled", request_id=request_id, completed_count=completed_count)
             return
+        # The shared coupled analysis sweep can produce transducer motion with
+        # no microphones. The exterior solver still needs one evaluation point;
+        # its dummy pressure is deliberately discarded below.
+        evaluation_points = observation_points or [[0.0, 1.0, 1.0]]
         sweep_payload = {
             **payload,
-            "observationPointsM": observation_points,
+            "observationPointsM": evaluation_points,
             "includeComplexPressure": True,
             "reuseBoundary": False,
         }
@@ -275,6 +310,11 @@ def _microphone_sweep(
         spl_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
         pressure_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
         pressure_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+        raw_transducers = _request.get("transducers", [])
+        transducer_ids = [str(item["id"]) for item in raw_transducers] if isinstance(raw_transducers, list) else []
+        transducer_names = [str(item["name"]) for item in raw_transducers] if isinstance(raw_transducers, list) else []
+        velocity_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
+        velocity_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
         frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
@@ -306,20 +346,28 @@ def _microphone_sweep(
                     )
                 spl = frequency_result.get("spl_db")
                 pressure = frequency_result.get("field_pressure")
-                if not isinstance(spl, list) or len(spl) != len(microphone_ids):
+                if microphone_ids and (not isinstance(spl, list) or len(spl) != len(microphone_ids)):
                     raise RuntimeError("BEAT Engine microphone SPL result does not match the microphone count.")
-                if not isinstance(pressure, dict):
+                if microphone_ids and not isinstance(pressure, dict):
                     raise RuntimeError("BEAT Engine microphone sweep did not return complex pressure.")
-                pressure_real = pressure.get("real")
-                pressure_imag = pressure.get("imag")
-                if not isinstance(pressure_real, list) or not isinstance(pressure_imag, list):
+                pressure_real = pressure.get("real") if isinstance(pressure, dict) else []
+                pressure_imag = pressure.get("imag") if isinstance(pressure, dict) else []
+                if microphone_ids and (not isinstance(pressure_real, list) or not isinstance(pressure_imag, list)):
                     raise RuntimeError("BEAT Engine microphone pressure result is invalid.")
-                if len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids):
+                if microphone_ids and (len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids)):
                     raise RuntimeError("BEAT Engine microphone pressure result does not match the microphone count.")
                 for microphone_index in range(len(microphone_ids)):
                     spl_rows[microphone_index][frequency_index] = float(spl[microphone_index])
                     pressure_real_rows[microphone_index][frequency_index] = float(pressure_real[microphone_index])
                     pressure_imag_rows[microphone_index][frequency_index] = float(pressure_imag[microphone_index])
+                transducer_velocity = _transducer_velocity_result(frequency_result, _request) if rom_coupled else {
+                    "ids": [], "names": [], "real": [], "imag": [],
+                }
+                if transducer_velocity["ids"] != transducer_ids:
+                    raise RuntimeError("BEAT Engine transducer ordering changed during the frequency sweep.")
+                for transducer_index in range(len(transducer_ids)):
+                    velocity_real_rows[transducer_index][frequency_index] = transducer_velocity["real"][transducer_index]
+                    velocity_imag_rows[transducer_index][frequency_index] = transducer_velocity["imag"][transducer_index]
                 completed_count += 1
                 _emit(
                     "microphone-progress",
@@ -329,6 +377,12 @@ def _microphone_sweep(
                     total_count=len(frequencies),
                     microphone_ids=microphone_ids,
                     spl_db=spl,
+                    transducer_ids=transducer_ids,
+                    transducer_names=transducer_names,
+                    transducer_velocity={
+                        "real": transducer_velocity["real"],
+                        "imag": transducer_velocity["imag"],
+                    },
                 )
             elif event_type == "cancelled":
                 _emit("cancelled", request_id=request_id, completed_count=completed_count)
@@ -347,6 +401,9 @@ def _microphone_sweep(
             "microphone_ids": microphone_ids,
             "spl_db": spl_rows,
             "pressure": {"real": pressure_real_rows, "imag": pressure_imag_rows},
+            "transducer_ids": transducer_ids,
+            "transducer_names": transducer_names,
+            "transducer_velocity": {"real": velocity_real_rows, "imag": velocity_imag_rows},
             "completed_count": completed_count,
             "total_count": len(frequencies),
             "pipeline": {
