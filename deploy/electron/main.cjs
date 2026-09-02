@@ -750,6 +750,20 @@ function createWindow() {
           });
         })`);
       }
+      const paneLayoutInteraction = await window.webContents.executeJavaScript(`(() => {
+        const properties = document.querySelector('.right-panel')?.getBoundingClientRect();
+        const plots = document.querySelector('.analysis-drawer')?.getBoundingClientRect();
+        return {
+          propertiesReachesBottom: Boolean(properties) && Math.abs(properties.bottom - window.innerHeight) <= 1,
+          plotsEndBeforeProperties: Boolean(properties && plots) && plots.right <= properties.left + 1,
+          propertiesBottom: Number(properties?.bottom.toFixed(2) || 0),
+          plotsRight: Number(plots?.right.toFixed(2) || 0),
+          propertiesLeft: Number(properties?.left.toFixed(2) || 0)
+        };
+      })()`);
+      if (!paneLayoutInteraction.propertiesReachesBottom || !paneLayoutInteraction.plotsEndBeforeProperties) {
+        throw new Error("Properties and plot panes did not occupy their requested grid regions.");
+      }
       const snapshot = await window.webContents.executeJavaScript(`({
         title: document.title,
         shell: Boolean(document.querySelector('.app-shell')),
@@ -767,13 +781,13 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, traceFilterInteraction, chartResizeInteraction, emptySourceInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, traceFilterInteraction, chartResizeInteraction, emptySourceInteraction, paneLayoutInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
       console.error("Deploy desktop smoke test timed out.");
       app.exit(1);
-    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 45000).unref();
+    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 60000).unref();
   }
 
   if (app.isPackaged || process.argv.includes("--built")) {
