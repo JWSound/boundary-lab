@@ -373,13 +373,61 @@ function deploy_speaker_rom_response(model, pressure::AbstractVector; include_dr
     return (q=q, velocities=velocities, currents=currents)
 end
 
-function deploy_cuda_gmres(apply_operator, right_hand_side; tolerance, max_iterations)
+function deploy_cuda_gmres(
+    apply_operator,
+    right_hand_side;
+    tolerance,
+    max_iterations,
+    initial_guess=nothing,
+)
     cuda = BeatEngineCore.CUDA_MODULE
     T = typeof(real(zero(eltype(right_hand_side))))
     max_iterations > 0 || error("Deploy speaker ROM GMRES iteration limit must be positive.")
     tolerance > zero(T) || error("Deploy speaker ROM GMRES tolerance must be positive.")
-    beta = norm(right_hand_side)
-    beta > eps(T) || return (cuda.zeros(eltype(right_hand_side), length(right_hand_side)), 0, zero(T), T[])
+    initial_guess === nothing || length(initial_guess) == length(right_hand_side) || error(
+        "Deploy speaker ROM GMRES initial guess size mismatch.",
+    )
+    rhs_norm = norm(right_hand_side)
+    if initial_guess === nothing && rhs_norm <= eps(T)
+        return (
+            cuda.zeros(eltype(right_hand_side), length(right_hand_side)),
+            0,
+            zero(T),
+            T[],
+            0,
+            zero(T),
+        )
+    end
+    residual_vector = nothing
+    operator_applications = 0
+    initial_guess_scale = one(eltype(right_hand_side))
+    if initial_guess === nothing
+        residual_vector = copy(right_hand_side)
+    else
+        initial_action = apply_operator(initial_guess)
+        operator_applications += 1
+        try
+            action_norm_squared = real(dot(initial_action, initial_action))
+            if action_norm_squared > eps(T)
+                initial_guess_scale = dot(initial_action, right_hand_side) / action_norm_squared
+            end
+            residual_vector = copy(right_hand_side)
+            residual_vector .-= initial_guess_scale .* initial_action
+            cuda.synchronize()
+        finally
+            cuda.unsafe_free!(initial_action)
+        end
+    end
+    beta = norm(residual_vector)
+    residual_scale = max(rhs_norm, eps(T))
+    initial_relative_residual = beta / residual_scale
+    if beta <= eps(T) || initial_relative_residual <= tolerance
+        solution = initial_guess === nothing ?
+                   cuda.zeros(eltype(right_hand_side), length(right_hand_side)) :
+                   initial_guess_scale .* initial_guess
+        cuda.unsafe_free!(residual_vector)
+        return (solution, 0, T(initial_relative_residual), T[], operator_applications, T(initial_relative_residual))
+    end
     basis = cuda.zeros(eltype(right_hand_side), length(right_hand_side), max_iterations + 1)
     hessenberg = zeros(Complex{T}, max_iterations + 1, max_iterations)
     residual_history = T[]
@@ -387,9 +435,10 @@ function deploy_cuda_gmres(apply_operator, right_hand_side; tolerance, max_itera
     used_iterations = 0
     final_coefficients = Complex{T}[]
     try
-        view(basis, :, 1) .= right_hand_side ./ beta
+        view(basis, :, 1) .= residual_vector ./ beta
         for iteration in 1:max_iterations
             work = apply_operator(view(basis, :, iteration))
+            operator_applications += 1
             try
                 for previous in 1:iteration
                     coefficient = dot(view(basis, :, previous), work)
@@ -407,7 +456,9 @@ function deploy_cuda_gmres(apply_operator, right_hand_side; tolerance, max_itera
             small_rhs = zeros(Complex{T}, iteration + 1)
             small_rhs[1] = beta
             coefficients = view(hessenberg, 1:(iteration + 1), 1:iteration) \ small_rhs
-            residual = norm(small_rhs - view(hessenberg, 1:(iteration + 1), 1:iteration) * coefficients) / beta
+            residual = norm(
+                small_rhs - view(hessenberg, 1:(iteration + 1), 1:iteration) * coefficients,
+            ) / residual_scale
             push!(residual_history, T(residual))
             used_iterations = iteration
             final_coefficients = coefficients
@@ -415,18 +466,38 @@ function deploy_cuda_gmres(apply_operator, right_hand_side; tolerance, max_itera
         end
         coefficient_device = cuda.CuArray(final_coefficients)
         try
-            solution = view(basis, :, 1:used_iterations) * coefficient_device
+            correction = view(basis, :, 1:used_iterations) * coefficient_device
+            if initial_guess === nothing
+                solution = correction
+            else
+                solution = initial_guess_scale .* initial_guess
+                solution .+= correction
+                cuda.synchronize()
+                cuda.unsafe_free!(correction)
+            end
             cuda.synchronize()
         finally
             cuda.unsafe_free!(coefficient_device)
         end
-        return solution, used_iterations, last(residual_history), residual_history
+        return (
+            solution,
+            used_iterations,
+            last(residual_history),
+            residual_history,
+            operator_applications,
+            T(initial_relative_residual),
+        )
     finally
         cuda.unsafe_free!(basis)
+        cuda.unsafe_free!(residual_vector)
     end
 end
 
-function solve_deploy_request_impl(request; emit_completed::Bool=true)
+function solve_deploy_request_impl(
+    request;
+    emit_completed::Bool=true,
+    rom_initial_pressure=nothing,
+)
     request_started = time()
     request_schema = String(get_value(request, "schema", "boundary_lab_deploy_solve"))
     rom_request = request_schema == "boundary_lab_deploy_rom"
@@ -645,7 +716,9 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
     weighted_sources = nothing
     rom_factorization = nothing
     rom_iterations = 0
+    rom_operator_applications = 0
     rom_residual = FloatType(NaN)
+    rom_initial_relative_residual = FloatType(NaN)
     rom_residual_history = FloatType[]
     rom_factorization_seconds = 0.0
     rom_initial_preconditioner_seconds = 0.0
@@ -654,6 +727,7 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
     rom_feedback_model_seconds = 0.0
     rom_feedback_upload_seconds = 0.0
     rom_feedback_rhs_seconds = 0.0
+    rom_feedback_rhs_stage_seconds = Dict{String,Float64}()
     rom_feedback_preconditioner_seconds = 0.0
     rom_feedback_update_seconds = 0.0
     rom_final_pressure_download_seconds = 0.0
@@ -823,6 +897,7 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                         end
                         feedback_rhs = feedback_solution = result = nothing
                         try
+                            rhs_stage_timings = Dict{String,Float64}()
                             rom_feedback_rhs_seconds += @elapsed begin
                                 feedback_rhs = assemble_burton_miller_rhs_cuda(
                                     mesh,
@@ -840,7 +915,21 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                                     image_near_correction_cache=ground_near_correction_cache,
                                     device_image_near_correction_cache=device_ground_near_correction_cache,
                                     symmetry_mode=:ground,
+                                    timing=rhs_stage_timings,
                                 )
+                            end
+                            for (name, seconds) in rhs_stage_timings
+                                normalized_name = if startswith(name, "rhs_")
+                                    name[5:end]
+                                elseif startswith(name, "direct_system_singular_")
+                                    "singular_" * name[24:end]
+                                elseif startswith(name, "direct_system_image_")
+                                    "image_singular_" * name[21:end]
+                                else
+                                    name
+                                end
+                                rom_feedback_rhs_stage_seconds[normalized_name] =
+                                    get(rom_feedback_rhs_stage_seconds, normalized_name, 0.0) + seconds
                             end
                             rom_feedback_preconditioner_seconds += @elapsed begin
                                 feedback_solution = rom_factorization \ feedback_rhs
@@ -865,9 +954,17 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                             preconditioned_rhs;
                             tolerance=speaker_rom.tolerance,
                             max_iterations=speaker_rom.max_iterations,
+                            initial_guess=rom_initial_pressure,
                         )
                     end
-                    rom_pressure, rom_iterations, rom_residual, rom_residual_history = gmres_result
+                    (
+                        rom_pressure,
+                        rom_iterations,
+                        rom_residual,
+                        rom_residual_history,
+                        rom_operator_applications,
+                        rom_initial_relative_residual,
+                    ) = gmres_result
                     final_pressure_host = nothing
                     rom_final_pressure_download_seconds = @elapsed begin
                         final_pressure_host = Complex{FloatType}.(Array(rom_pressure))
@@ -1025,6 +1122,10 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                 result["diagnostics"]["rom_sector_count"] = speaker_rom.sector_count
                 result["diagnostics"]["rom_symmetry"] = String(speaker_rom.symmetry)
                 result["diagnostics"]["schur_gmres_iterations"] = rom_iterations
+                result["diagnostics"]["schur_operator_applications"] = rom_operator_applications
+                result["diagnostics"]["schur_gmres_warm_started"] = rom_initial_pressure !== nothing
+                result["diagnostics"]["schur_gmres_initial_relative_residual"] =
+                    rom_initial_relative_residual
                 result["diagnostics"]["schur_gmres_relative_residual"] = rom_residual
                 result["diagnostics"]["schur_gmres_residual_history"] = rom_residual_history
                 result["diagnostics"]["transducer_velocity"] = [
@@ -1064,6 +1165,11 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                 rom_feedback_preconditioner_seconds +
                 rom_feedback_update_seconds
             rom_gmres_other_seconds = max(0.0, rom_gmres_seconds - rom_feedback_profiled_seconds)
+            rom_feedback_rhs_profiled_seconds = sum(values(rom_feedback_rhs_stage_seconds))
+            rom_feedback_rhs_other_seconds = max(
+                0.0,
+                rom_feedback_rhs_seconds - rom_feedback_rhs_profiled_seconds,
+            )
             rom_profiled_solve_seconds =
                 rom_factorization_seconds +
                 rom_initial_preconditioner_seconds +
@@ -1080,6 +1186,7 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
                 "rom_feedback_model_s" => rom_feedback_model_seconds,
                 "rom_feedback_upload_s" => rom_feedback_upload_seconds,
                 "rom_feedback_rhs_s" => rom_feedback_rhs_seconds,
+                "rom_feedback_rhs_other_s" => rom_feedback_rhs_other_seconds,
                 "rom_feedback_preconditioner_s" => rom_feedback_preconditioner_seconds,
                 "rom_feedback_update_s" => rom_feedback_update_seconds,
                 "rom_gmres_other_s" => rom_gmres_other_seconds,
@@ -1090,6 +1197,9 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
             )
             for (name, seconds) in rom_timings
                 result["timings"][name] = Float32(seconds)
+            end
+            for (name, seconds) in rom_feedback_rhs_stage_seconds
+                result["timings"]["rom_feedback_rhs_$(name)_s"] = Float32(seconds)
             end
         end
         emit_event("result"; result=result)
@@ -1144,7 +1254,11 @@ function solve_deploy_microphone_sweep_request_impl(request)
     end
     geometry_key = String(get_value(request, "geometry_key", ""))
     isempty(geometry_key) && error("Deploy microphone sweep requires a geometry_key.")
+    rom_frequency_warm_start = rom_sweep isa AbstractDict && Bool(
+        get_value(request, "rom_frequency_warm_start", true),
+    )
     release_deploy_geometry_state!()
+    previous_rom_pressure = nothing
     try
         for index in eachindex(frequencies)
             emit_event(
@@ -1177,7 +1291,16 @@ function solve_deploy_microphone_sweep_request_impl(request)
             end
             frequency_request["solution_key"] = "$(geometry_key):$(frequencies[index])"
             frequency_request["retain_geometry_cache"] = true
-            solve_deploy_request_impl(frequency_request; emit_completed=false)
+            solve_deploy_request_impl(
+                frequency_request;
+                emit_completed=false,
+                rom_initial_pressure=rom_frequency_warm_start ? previous_rom_pressure : nothing,
+            )
+            if rom_frequency_warm_start
+                state = DEPLOY_BOUNDARY_STATE[]
+                state === nothing && error("Deploy ROM sweep did not retain its boundary solution.")
+                previous_rom_pressure = state.pressure
+            end
         end
     finally
         release_deploy_geometry_state!()
