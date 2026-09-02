@@ -2607,6 +2607,7 @@ function solve_request(request; event_mode=false)
                 rank=Int(get(rom_options, "rank_per_sector", 32)),
                 training_count=Int(get(rom_options, "training_count_per_sector", 96)),
                 validation_count=Int(get(rom_options, "validation_count_per_sector", 24)),
+                symmetry=Symbol(lowercase(String(get(rom_options, "symmetry", "xy")))),
             )
         else
             nothing

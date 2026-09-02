@@ -1485,15 +1485,28 @@ def prepare_deploy_rom_request(
         )
     }
     rank = int(model.get("rank_per_sector", selected["k"].shape[-1]))
-    if selected["k"].shape != (4, rank, rank):
+    symmetry_mode = str(model.get("symmetry_mode", "xy")).lower()
+    expected_image_count = {"off": 1, "x": 2, "xy": 4}.get(symmetry_mode)
+    if expected_image_count is None:
+        raise ValueError(f"Parity ROM has unsupported symmetry mode {symmetry_mode!r}.")
+    image_count = int(model.get("image_count", expected_image_count))
+    sector_signs = model.get("sector_signs")
+    if not isinstance(sector_signs, list) or len(sector_signs) != expected_image_count:
+        raise ValueError("Parity ROM sector count does not match its symmetry mode.")
+    sector_count = len(sector_signs)
+    if image_count != expected_image_count:
+        raise ValueError("Parity ROM image count does not match its symmetry mode.")
+    if selected["k"].shape != (sector_count, rank, rank):
         raise ValueError("Parity ROM K array has an invalid shape.")
     node_orbits = model.get("node_orbits")
     face_orbits = model.get("face_orbits")
     if not isinstance(node_orbits, list) or not isinstance(face_orbits, list):
         raise ValueError("Parity ROM is missing boundary orbit maps.")
-    if selected["c"].shape != (4, rank, len(node_orbits)):
+    if any(len(orbit) != image_count for orbit in (*node_orbits, *face_orbits)):
+        raise ValueError("Parity ROM boundary orbit width does not match its symmetry mode.")
+    if selected["c"].shape != (sector_count, rank, len(node_orbits)):
         raise ValueError("Parity ROM C array does not align with its node orbits.")
-    if selected["d"].shape[:2] != (4, len(face_orbits)):
+    if selected["d"].shape[:2] != (sector_count, len(face_orbits)):
         raise ValueError("Parity ROM D array does not align with its face orbits.")
 
     raw_sources = payload.get("sources")
@@ -1534,8 +1547,10 @@ def prepare_deploy_rom_request(
         rom={
             "format_version": 1,
             "representation": "parity_petrov_galerkin_rom",
+            "symmetry_mode": symmetry_mode,
+            "image_count": image_count,
             "rank_per_sector": rank,
-            "sector_signs": model["sector_signs"],
+            "sector_signs": sector_signs,
             "node_orbits": node_orbits,
             "face_orbits": face_orbits,
             "instances": instances,

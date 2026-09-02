@@ -7,12 +7,20 @@ using ..BeatEngineCoupled
 
 export build_parity_petrov_galerkin_rom
 
-const PARITY_SECTORS = (
-    (name="even_even", sign_x=1, sign_y=1),
-    (name="odd_even", sign_x=-1, sign_y=1),
-    (name="even_odd", sign_x=1, sign_y=-1),
-    (name="odd_odd", sign_x=-1, sign_y=-1),
-)
+function _parity_sectors(symmetry::Symbol)
+    symmetry == :off && return ((name="general", sign_x=1, sign_y=1, image_signs=(1,)),)
+    symmetry == :x && return (
+        (name="even_x", sign_x=1, sign_y=1, image_signs=(1, 1)),
+        (name="odd_x", sign_x=-1, sign_y=1, image_signs=(1, -1)),
+    )
+    symmetry == :xy && return (
+        (name="even_even", sign_x=1, sign_y=1, image_signs=(1, 1, 1, 1)),
+        (name="odd_even", sign_x=-1, sign_y=1, image_signs=(1, -1, 1, -1)),
+        (name="even_odd", sign_x=1, sign_y=-1, image_signs=(1, 1, -1, -1)),
+        (name="odd_odd", sign_x=-1, sign_y=-1, image_signs=(1, -1, -1, 1)),
+    )
+    error("Speaker ROM parity symmetry must be off, x, or xy.")
+end
 
 function _reflection_map(points, axis::Int)
     mins = [minimum(point[index] for point in points) for index in 1:3]
@@ -57,13 +65,30 @@ function _face_reflection_map(mesh, node_map)
     return mapping
 end
 
-function _orbits(map_x, map_y)
-    visited = falses(length(map_x))
-    rows = NTuple{4,Int}[]
+function _image_maps(points, symmetry::Symbol)
+    identity_map = collect(eachindex(points))
+    symmetry == :off && return [identity_map]
+    map_x = _reflection_map(points, 1)
+    symmetry == :x && return [identity_map, map_x]
+    map_y = _reflection_map(points, 2)
+    return [identity_map, map_x, map_y, map_x[map_y]]
+end
+
+function _face_image_maps(mesh, node_image_maps)
+    return [
+        image == 1 ? collect(eachindex(mesh.faces)) :
+        _face_reflection_map(mesh, node_image_maps[image])
+        for image in eachindex(node_image_maps)
+    ]
+end
+
+function _orbits(image_maps)
+    visited = falses(length(first(image_maps)))
+    rows = Vector{Int}[]
     sizes = Int[]
-    for index in eachindex(map_x)
+    for index in eachindex(first(image_maps))
         visited[index] && continue
-        images = (index, map_x[index], map_y[index], map_x[map_y[index]])
+        images = [mapping[index] for mapping in image_maps]
         unique_images = unique(images)
         representative = minimum(unique_images)
         representative == index || continue
@@ -75,35 +100,32 @@ function _orbits(map_x, map_y)
     return rows, sizes
 end
 
-function _parity_project(values, map_x, map_y, sign_x, sign_y)
-    map_xy = map_x[map_y]
-    return (
-        values .+
-        sign_x .* values[map_x, :] .+
-        sign_y .* values[map_y, :] .+
-        (sign_x * sign_y) .* values[map_xy, :]
-    ) ./ 4
+function _parity_project(values, image_maps, image_signs)
+    result = zeros(eltype(values), size(values))
+    for (mapping, sign) in zip(image_maps, image_signs)
+        result .+= sign .* values[mapping, :]
+    end
+    return result ./ length(image_maps)
 end
 
-function _compact_parity_values(values, orbits, sign_x, sign_y)
+function _compact_parity_values(values, orbits, image_signs)
     result = similar(values, length(orbits), size(values, 2))
-    signs = (1, sign_x, sign_y, sign_x * sign_y)
     for (row, orbit) in enumerate(orbits)
         for column in axes(values, 2)
             result[row, column] = sum(
-                signs[image] * values[orbit[image], column] for image in 1:4
-            ) / 4
+                image_signs[image] * values[orbit[image], column]
+                for image in eachindex(orbit)
+            ) / length(orbit)
         end
     end
     return result
 end
 
-function _reconstruct_parity_values(compact, orbits, sign_x, sign_y, full_count)
+function _reconstruct_parity_values(compact, orbits, image_signs, full_count)
     result = zeros(eltype(compact), full_count, size(compact, 2))
-    signs = (1, sign_x, sign_y, sign_x * sign_y)
-    for (row, orbit) in enumerate(orbits), image in 1:4
+    for (row, orbit) in enumerate(orbits), image in eachindex(orbit)
         target = orbit[image]
-        result[target, :] .= signs[image] .* view(compact, row, :)
+        result[target, :] .= image_signs[image] .* view(compact, row, :)
     end
     return result
 end
@@ -305,12 +327,12 @@ end
 """
     build_parity_petrov_galerkin_rom(system, k_matrix, layout, excitations; ...)
 
-Build four rank-at-most-`rank` two-sided projection models. The right space is selected
-from exact state responses using boundary-flux POD; the left space is selected
-from adjoint responses using boundary-pressure sensitivity POD. The bases are
-then biorthogonalized before projecting K/C/D/B. Frequencies or parity sectors
-with fewer numerically supported modes are padded with decoupled states so the
-serialized package retains a fixed `rank` dimension.
+Build one, two, or four rank-at-most-`rank` projection models for full-domain,
+X-symmetric, or XY-symmetric cabinets. The right space is selected from exact
+state responses using boundary-flux POD and the operator-induced left space
+forms the Petrov projection. Frequencies or parity sectors with fewer
+numerically supported modes are padded with decoupled states so the serialized
+package retains a fixed `rank` dimension.
 """
 function build_parity_petrov_galerkin_rom(
     system,
@@ -320,17 +342,18 @@ function build_parity_petrov_galerkin_rom(
     rank::Int=32,
     training_count::Int=max(96, 3 * rank),
     validation_count::Int=24,
+    symmetry::Symbol=:xy,
 )
     rank > 0 || error("Speaker ROM rank must be positive.")
     training_count >= rank || error("Speaker ROM training count must be at least its rank.")
     validation_count > 0 || error("Speaker ROM validation count must be positive.")
+    symmetry in (:off, :x, :xy) || error("Speaker ROM parity symmetry must be off, x, or xy.")
     T = system.scalar_type
-    node_map_x = _reflection_map(system.bem_mesh.vertices, 1)
-    node_map_y = _reflection_map(system.bem_mesh.vertices, 2)
-    face_map_x = _face_reflection_map(system.bem_mesh, node_map_x)
-    face_map_y = _face_reflection_map(system.bem_mesh, node_map_y)
-    node_orbits, node_orbit_sizes = _orbits(node_map_x, node_map_y)
-    face_orbits, _face_orbit_sizes = _orbits(face_map_x, face_map_y)
+    sectors = _parity_sectors(symmetry)
+    node_image_maps = _image_maps(system.bem_mesh.vertices, symmetry)
+    face_image_maps = _face_image_maps(system.bem_mesh, node_image_maps)
+    node_orbits, node_orbit_sizes = _orbits(node_image_maps)
+    face_orbits, _face_orbit_sizes = _orbits(face_image_maps)
     pressure_training = _sample_patterns(
         system.bem_mesh.vertices,
         system.wavenumber,
@@ -361,20 +384,16 @@ function build_parity_petrov_galerkin_rom(
         driven_current_output = isempty(layout.electrical_range) ?
                                 zeros(Complex{T}, 0, size(b_matrix, 2)) :
                                 Matrix(view(driven_state, layout.electrical_range, :))
-        for sector in PARITY_SECTORS
+        for sector in sectors
             training_pressure = _normalize_columns!(_parity_project(
                 pressure_training,
-                node_map_x,
-                node_map_y,
-                sector.sign_x,
-                sector.sign_y,
+                node_image_maps,
+                sector.image_signs,
             ))
             validation_pressure = _normalize_columns!(_parity_project(
                 pressure_validation,
-                node_map_x,
-                node_map_y,
-                sector.sign_x,
-                sector.sign_y,
+                node_image_maps,
+                sector.image_signs,
             ))
             right_snapshots = _solve(
                 right_factor,
@@ -417,17 +436,13 @@ function build_parity_petrov_galerkin_rom(
             # tail modes are amplified by quarter-boundary reconstruction.
             c_full = Matrix(transpose(_parity_project(
                 Matrix(transpose(c_full)),
-                node_map_x,
-                node_map_y,
-                sector.sign_x,
-                sector.sign_y,
+                node_image_maps,
+                sector.image_signs,
             )))
             d_full = _parity_project(
                 d_full,
-                face_map_x,
-                face_map_y,
-                sector.sign_x,
-                sector.sign_y,
+                face_image_maps,
+                sector.image_signs,
             )
             # The isolated electrical/source response is stored exactly as a
             # direct affine term. The reduced state is reserved for pressure-
@@ -436,10 +451,8 @@ function build_parity_petrov_galerkin_rom(
             reduced_b = zeros(Complex{T}, effective_rank, size(b_matrix, 2))
             projected_e = _parity_project(
                 driven_boundary_output,
-                face_map_x,
-                face_map_y,
-                sector.sign_x,
-                sector.sign_y,
+                face_image_maps,
+                sector.image_signs,
             )
             compact_c = zeros(Complex{T}, effective_rank, length(node_orbits))
             for (column, (orbit, orbit_size)) in enumerate(zip(node_orbits, node_orbit_sizes))
@@ -453,10 +466,10 @@ function build_parity_petrov_galerkin_rom(
             current_output = isempty(layout.electrical_range) ?
                              zeros(Complex{T}, 0, effective_rank) :
                              Matrix(view(right_basis, layout.electrical_range, :))
-            velocity_drive = sector.name == "even_even" ?
+            velocity_drive = sector.sign_x == 1 && sector.sign_y == 1 ?
                              driven_velocity_output :
                              zeros(Complex{T}, size(driven_velocity_output))
-            current_drive = sector.name == "even_even" ?
+            current_drive = sector.sign_x == 1 && sector.sign_y == 1 ?
                             driven_current_output :
                             zeros(Complex{T}, size(driven_current_output))
 
@@ -472,16 +485,14 @@ function build_parity_petrov_galerkin_rom(
             compact_pressure = _compact_parity_values(
                 validation_pressure,
                 node_orbits,
-                sector.sign_x,
-                sector.sign_y,
+                sector.image_signs,
             )
             reduced_state = reduced_k \ (-compact_c * compact_pressure)
             compact_output = compact_d * reduced_state
             candidate_output = _reconstruct_parity_values(
                 compact_output,
                 face_orbits,
-                sector.sign_x,
-                sector.sign_y,
+                sector.image_signs,
                 length(system.bem_mesh.faces),
             )
             push!(
@@ -551,12 +562,14 @@ function build_parity_petrov_galerkin_rom(
     metadata = Dict{String,Any}(
         "format_version" => 1,
         "method" => "response_pod_with_operator_induced_petrov_test_space",
+        "symmetry_mode" => String(symmetry),
+        "image_count" => length(node_image_maps),
         "rank_per_sector" => rank,
         "effective_rank_per_sector" => effective_ranks,
         "training_count_per_sector" => training_count,
         "validation_count_per_sector" => validation_count,
-        "sector_names" => [sector.name for sector in PARITY_SECTORS],
-        "sector_signs" => [[sector.sign_x, sector.sign_y] for sector in PARITY_SECTORS],
+        "sector_names" => [sector.name for sector in sectors],
+        "sector_signs" => [[sector.sign_x, sector.sign_y] for sector in sectors],
         "node_orbits" => [[index - 1 for index in orbit] for orbit in node_orbits],
         "face_orbits" => [[index - 1 for index in orbit] for orbit in face_orbits],
         "input_port_count" => length(excitations),

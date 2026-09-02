@@ -237,34 +237,56 @@ function load_deploy_speaker_rom(request, ::Type{T}, node_count::Int, face_count
     )
     rank = Int(get_value(raw, "rank_per_sector", 0))
     rank > 0 || error("Deploy speaker ROM rank must be positive.")
-    size(arrays["k"]) == (4, rank, rank) || error("Deploy speaker ROM K shape is invalid.")
+    symmetry = Symbol(lowercase(String(get_value(raw, "symmetry_mode", "xy"))))
+    expected_image_count = symmetry == :off ? 1 : symmetry == :x ? 2 : symmetry == :xy ? 4 : 0
+    expected_image_count > 0 || error("Deploy speaker ROM symmetry must be off, x, or xy.")
+    image_count = Int(get_value(raw, "image_count", expected_image_count))
+    image_count == expected_image_count || error(
+        "Deploy speaker ROM image count does not match its symmetry mode.",
+    )
+    signs = [ntuple(index -> Int(sector[index]), 2) for sector in get_value(raw, "sector_signs", Any[])]
+    sector_count = length(signs)
+    sector_count == image_count || error(
+        "Deploy speaker ROM sector count does not match its symmetry mode.",
+    )
+    size(arrays["k"]) == (sector_count, rank, rank) || error("Deploy speaker ROM K shape is invalid.")
     input_count = size(arrays["b"], 3)
-    size(arrays["b"]) == (4, rank, input_count) || error("Deploy speaker ROM B shape is invalid.")
+    size(arrays["b"]) == (sector_count, rank, input_count) || error("Deploy speaker ROM B shape is invalid.")
 
     raw_node_orbits = get_value(raw, "node_orbits", Any[])
     raw_face_orbits = get_value(raw, "face_orbits", Any[])
-    node_orbits = [ntuple(index -> Int(orbit[index]) + 1, 4) for orbit in raw_node_orbits]
-    face_orbits = [ntuple(index -> Int(orbit[index]) + 1, 4) for orbit in raw_face_orbits]
+    all(length(orbit) == image_count for orbit in raw_node_orbits) || error(
+        "Deploy speaker ROM node orbit width does not match its symmetry mode.",
+    )
+    all(length(orbit) == image_count for orbit in raw_face_orbits) || error(
+        "Deploy speaker ROM face orbit width does not match its symmetry mode.",
+    )
+    node_orbits = [[Int(index) + 1 for index in orbit] for orbit in raw_node_orbits]
+    face_orbits = [[Int(index) + 1 for index in orbit] for orbit in raw_face_orbits]
     isempty(node_orbits) && error("Deploy speaker ROM has no node orbits.")
     isempty(face_orbits) && error("Deploy speaker ROM has no face orbits.")
-    size(arrays["c"]) == (4, rank, length(node_orbits)) || error("Deploy speaker ROM C shape is invalid.")
-    size(arrays["d"]) == (4, length(face_orbits), rank) || error("Deploy speaker ROM D shape is invalid.")
-    size(arrays["e"]) == (4, length(face_orbits), input_count) || error("Deploy speaker ROM E shape is invalid.")
+    size(arrays["c"]) == (sector_count, rank, length(node_orbits)) || error("Deploy speaker ROM C shape is invalid.")
+    size(arrays["d"]) == (sector_count, length(face_orbits), rank) || error("Deploy speaker ROM D shape is invalid.")
+    size(arrays["e"]) == (sector_count, length(face_orbits), input_count) || error("Deploy speaker ROM E shape is invalid.")
     transducer_count = size(arrays["velocity"], 2)
-    size(arrays["velocity"]) == (4, transducer_count, rank) || error(
+    size(arrays["velocity"]) == (sector_count, transducer_count, rank) || error(
         "Deploy speaker ROM velocity output shape is invalid.",
     )
-    size(arrays["current"]) == (4, transducer_count, rank) || error(
+    size(arrays["current"]) == (sector_count, transducer_count, rank) || error(
         "Deploy speaker ROM current output shape is invalid.",
     )
-    size(arrays["velocity_drive"]) == (4, transducer_count, input_count) || error(
+    size(arrays["velocity_drive"]) == (sector_count, transducer_count, input_count) || error(
         "Deploy speaker ROM velocity drive shape is invalid.",
     )
-    size(arrays["current_drive"]) == (4, transducer_count, input_count) || error(
+    size(arrays["current_drive"]) == (sector_count, transducer_count, input_count) || error(
         "Deploy speaker ROM current drive shape is invalid.",
     )
-    signs = [ntuple(index -> Int(sector[index]), 2) for sector in get_value(raw, "sector_signs", Any[])]
-    length(signs) == 4 || error("Deploy speaker ROM must contain four parity-sector signs.")
+    image_signs = [
+        image_count == 1 ? (1,) :
+        image_count == 2 ? (1, sign_x) :
+        (1, sign_x, sign_y, sign_x * sign_y)
+        for (sign_x, sign_y) in signs
+    ]
 
     package_node_count = maximum(maximum(orbit) for orbit in node_orbits)
     package_face_count = maximum(maximum(orbit) for orbit in face_orbits)
@@ -291,13 +313,17 @@ function load_deploy_speaker_rom(request, ::Type{T}, node_count::Int, face_count
         ))
     end
     isempty(instances) && error("Deploy speaker ROM requires at least one speaker instance.")
-    factors = [lu!(Matrix(view(arrays["k"], sector, :, :))) for sector in 1:4]
+    factors = [lu!(Matrix(view(arrays["k"], sector, :, :))) for sector in 1:sector_count]
     return (
         rank=rank,
+        symmetry=symmetry,
+        image_count=image_count,
+        sector_count=sector_count,
         arrays=arrays,
         node_orbits=node_orbits,
         face_orbits=face_orbits,
         signs=signs,
+        image_signs=image_signs,
         instances=instances,
         factors=factors,
         package_node_count=package_node_count,
@@ -319,14 +345,13 @@ function deploy_speaker_rom_response(model, pressure::AbstractVector; include_dr
             pressure,
             (instance.node_offset + 1):(instance.node_offset + model.package_node_count),
         )
-        for sector in 1:4
-            sign_x, sign_y = model.signs[sector]
-            image_signs = (1, sign_x, sign_y, sign_x * sign_y)
+        for sector in 1:model.sector_count
+            image_signs = model.image_signs[sector]
             compact_pressure = zeros(eltype(pressure), length(model.node_orbits))
             for (orbit_index, orbit) in enumerate(model.node_orbits)
                 compact_pressure[orbit_index] = sum(
-                    image_signs[image] * local_pressure[orbit[image]] for image in 1:4
-                ) / T(4)
+                    image_signs[image] * local_pressure[orbit[image]] for image in eachindex(orbit)
+                ) / T(model.image_count)
             end
             drive = include_drive ? instance.input : zeros(eltype(pressure), length(instance.input))
             reduced_rhs = view(model.arrays["b"], sector, :, :) * drive -
@@ -335,7 +360,7 @@ function deploy_speaker_rom_response(model, pressure::AbstractVector; include_dr
             compact_q = view(model.arrays["d"], sector, :, :) * state +
                         view(model.arrays["e"], sector, :, :) * drive
             sector_q = zeros(eltype(pressure), model.package_face_count)
-            for (orbit_index, orbit) in enumerate(model.face_orbits), image in 1:4
+            for (orbit_index, orbit) in enumerate(model.face_orbits), image in eachindex(orbit)
                 sector_q[orbit[image]] = image_signs[image] * compact_q[orbit_index]
             end
             q[(instance.face_offset + 1):(instance.face_offset + model.package_face_count)] .+= sector_q
@@ -946,7 +971,8 @@ function solve_deploy_request_impl(request; emit_completed::Bool=true)
             )
             if rom_request
                 result["diagnostics"]["rom_rank_per_sector"] = speaker_rom.rank
-                result["diagnostics"]["rom_sector_count"] = 4
+                result["diagnostics"]["rom_sector_count"] = speaker_rom.sector_count
+                result["diagnostics"]["rom_symmetry"] = String(speaker_rom.symmetry)
                 result["diagnostics"]["schur_gmres_iterations"] = rom_iterations
                 result["diagnostics"]["schur_gmres_relative_residual"] = rom_residual
                 result["diagnostics"]["schur_gmres_residual_history"] = rom_residual_history

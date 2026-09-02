@@ -315,10 +315,17 @@ def prepare_speaker_package_solve(
             }
         )
         if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+            expansion = request.compiled_system.metadata.get("speaker_export_symmetry_expansion", {})
+            source_symmetry = (
+                expansion.get("source_symmetry", "off")
+                if isinstance(expansion, dict)
+                else "off"
+            )
             solver_options["speaker_rom"] = {
                 "rank_per_sector": int(speaker_rom_rank),
                 "training_count_per_sector": int(speaker_rom_training_count),
                 "validation_count_per_sector": int(speaker_rom_validation_count),
+                "symmetry": normalize_symmetry(source_symmetry),
             }
     updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
     validate_solve_plan(updated_request)
@@ -486,25 +493,35 @@ def speaker_package_issues(
             rank = int(metadata.get("rank_per_sector", 0))
             node_orbits = metadata.get("node_orbits", ())
             face_orbits = metadata.get("face_orbits", ())
+            sector_signs = metadata.get("sector_signs", ())
+            sector_names = metadata.get("sector_names", ())
+            sector_count = len(sector_signs)
+            symmetry_mode = str(metadata.get("symmetry_mode", "xy"))
+            expected_image_count = {"off": 1, "x": 2, "xy": 4}.get(symmetry_mode, 0)
+            image_count = int(metadata.get("image_count", expected_image_count))
             frequency_count = solved.frequencies_hz.size
             input_count = len(solved.excitation_ids)
             transducer_count = int(metadata.get("transducer_count", -1))
             expected_shapes = {
-                "k": (frequency_count, 4, rank, rank),
-                "c": (frequency_count, 4, rank, len(node_orbits)),
-                "d": (frequency_count, 4, len(face_orbits), rank),
-                "b": (frequency_count, 4, rank, input_count),
-                "e": (frequency_count, 4, len(face_orbits), input_count),
-                "velocity": (frequency_count, 4, transducer_count, rank),
-                "current": (frequency_count, 4, transducer_count, rank),
-                "velocity_drive": (frequency_count, 4, transducer_count, input_count),
-                "current_drive": (frequency_count, 4, transducer_count, input_count),
+                "k": (frequency_count, sector_count, rank, rank),
+                "c": (frequency_count, sector_count, rank, len(node_orbits)),
+                "d": (frequency_count, sector_count, len(face_orbits), rank),
+                "b": (frequency_count, sector_count, rank, input_count),
+                "e": (frequency_count, sector_count, len(face_orbits), input_count),
+                "velocity": (frequency_count, sector_count, transducer_count, rank),
+                "current": (frequency_count, sector_count, transducer_count, rank),
+                "velocity_drive": (frequency_count, sector_count, transducer_count, input_count),
+                "current_drive": (frequency_count, sector_count, transducer_count, input_count),
             }
             if (
                 rank <= 0
-                or len(metadata.get("sector_signs", ())) != 4
+                or sector_count != expected_image_count
+                or len(sector_names) != sector_count
+                or image_count != expected_image_count
                 or not node_orbits
                 or not face_orbits
+                or any(len(orbit) != image_count for orbit in (*node_orbits, *face_orbits))
+                or any(len(signs) != 2 for signs in sector_signs)
                 or any(values[name].shape != shape for name, shape in expected_shapes.items())
                 or not all(np.iscomplexobj(array) for array in values.values())
             ):
@@ -763,10 +780,14 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                 },
             )
             capabilities.append("parity_petrov_galerkin_rom")
+            rom_symmetry = str(rom_metadata.get("symmetry_mode", "xy"))
+            default_image_count = {"off": 1, "x": 2, "xy": 4}.get(rom_symmetry, 4)
             files["coupled_model"] = {
                 "path": "data/coupled-rom.npz",
                 "representation": "parity_petrov_galerkin_rom",
                 "format_version": 1,
+                "symmetry_mode": rom_symmetry,
+                "image_count": int(rom_metadata.get("image_count", default_image_count)),
                 "rank_per_sector": int(rom_metadata["rank_per_sector"]),
                 "sector_names": rom_metadata["sector_names"],
                 "sector_signs": rom_metadata["sector_signs"],

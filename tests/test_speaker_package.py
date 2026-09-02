@@ -213,13 +213,23 @@ def _coupled_macro_solved_system() -> SolvedSystem:
     )
 
 
-def _coupled_rom_solved_system() -> SolvedSystem:
+def _coupled_rom_solved_system(symmetry_mode: str = "xy") -> SolvedSystem:
     solved = _solved_system()
     frequency_count = solved.frequencies_hz.size
     rank = 2
-    sector_count = 4
-    node_orbits = [[index, index, index, index] for index in range(4)]
-    face_orbits = [[index, index, index, index] for index in range(2)]
+    sector_configuration = {
+        "off": (["general"], [[1, 1]]),
+        "x": (["even_x", "odd_x"], [[1, 1], [-1, 1]]),
+        "xy": (
+            ["even_even", "odd_even", "even_odd", "odd_odd"],
+            [[1, 1], [-1, 1], [1, -1], [-1, -1]],
+        ),
+    }
+    sector_names, sector_signs = sector_configuration[symmetry_mode]
+    sector_count = len(sector_names)
+    image_count = sector_count
+    node_orbits = [[index] * image_count for index in range(4)]
+    face_orbits = [[index] * image_count for index in range(2)]
     input_count = len(solved.excitation_ids)
     transducer_count = 2
     shapes = {
@@ -246,9 +256,11 @@ def _coupled_rom_solved_system() -> SolvedSystem:
     }
     metadata = {
         "format_version": 1,
+        "symmetry_mode": symmetry_mode,
+        "image_count": image_count,
         "rank_per_sector": rank,
-        "sector_names": ["even_even", "odd_even", "even_odd", "odd_odd"],
-        "sector_signs": [[1, 1], [-1, 1], [1, -1], [-1, -1]],
+        "sector_names": sector_names,
+        "sector_signs": sector_signs,
         "node_orbits": node_orbits,
         "face_orbits": face_orbits,
         "transducer_count": transducer_count,
@@ -404,6 +416,37 @@ def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -
     package = DeploySolveCache().load_package(output)
     assert package.coupled_model is not None
     assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
+
+
+def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
+    tmp_path: Path,
+) -> None:
+    solved = _coupled_rom_solved_system("x")
+    output = tmp_path / "speaker-rom-x.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(
+            output,
+            "X-symmetric reduced speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.PARITY_ROM,
+        ),
+    )
+
+    manifest = validate_speaker_package(output)
+    declaration = manifest["files"]["coupled_model"]
+    assert declaration["symmetry_mode"] == "x"
+    assert declaration["image_count"] == 2
+    assert declaration["sector_names"] == ["even_x", "odd_x"]
+    with zipfile.ZipFile(output) as archive:
+        model = _read_npz(archive, declaration["path"])
+    assert model["k"].shape == (2, 2, 2, 2)
+    assert model["d"].shape == (2, 2, 2, 2)
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    assert package.coupled_model["symmetry_mode"] == "x"
+    assert package.coupled_model["arrays"]["velocity"].shape == (2, 2, 2, 2)
 
 
 def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:
@@ -705,3 +748,47 @@ def test_export_solve_preparation_forces_sphere_and_level_two_traces() -> None:
     )
     assert sphere_block["count"] == 32
     assert len(compact.options["points_m"]) == 33
+
+
+def test_parity_rom_preparation_preserves_source_x_symmetry(monkeypatch) -> None:
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    compiled = replace(
+        solved.compiled_system,
+        metadata={
+            "speaker_export_symmetry_expansion": {
+                "source_symmetry": "x",
+                "temporary_full_domain": True,
+            }
+        },
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(100.0,),
+        excitation_port_ids=(),
+        outputs=(),
+        solver_options={"symmetry": "off"},
+    )
+    prepared = SystemUiSolveRequest(
+        request=request,
+        backend_id="beat_cpu",
+        solve_kind=PhysicalSolveKind.COUPLED_BEM_FEM,
+        polar_angle_deg=np.empty(0),
+        excitation_channel_names=np.empty(0),
+        excitation_component_names=np.empty(0),
+        horizontal_count=0,
+        vertical_count=0,
+        result_domains=(solved.domains[BEM_BOUNDARY_DOMAIN_ID], solved.domains[SPHERE_DOMAIN_ID]),
+    )
+    monkeypatch.setattr(speaker_package_module, "validate_solve_plan", lambda _request: None)
+
+    updated = prepare_speaker_package_solve(
+        prepared,
+        fidelity="coupled",
+        coupled_representation="parity-rom",
+        sphere_point_count=32,
+        sphere_radius_m=2.0,
+    )
+
+    assert updated.request.solver_options["symmetry"] == "off"
+    assert updated.request.solver_options["speaker_rom"]["symmetry"] == "x"

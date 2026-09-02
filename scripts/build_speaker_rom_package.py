@@ -56,6 +56,9 @@ def main() -> int:
     frequencies = [float(value) for value in manifest.get("frequencies_hz", ())]
     if not frequencies:
         raise ValueError("Source speaker package contains no frequencies.")
+    physical_metadata = manifest.get("physical_system", {}).get("metadata", {})
+    expansion = physical_metadata.get("speaker_export_symmetry_expansion", {})
+    source_symmetry = str(expansion.get("source_symmetry", "off"))
 
     payload = {
         "packagePath": str(source),
@@ -106,6 +109,7 @@ def main() -> int:
             "rank_per_sector": args.rank,
             "training_count_per_sector": args.training,
             "validation_count_per_sector": args.validation,
+            "symmetry": source_symmetry,
         }
         request_path.write_text(json.dumps(request, separators=(",", ":")), encoding="utf-8")
         worker = BeatEngineWorkerProcess(
@@ -158,6 +162,8 @@ def main() -> int:
         "path": "data/coupled-rom.npz",
         "representation": "parity_petrov_galerkin_rom",
         "format_version": 1,
+        "symmetry_mode": metadata["symmetry_mode"],
+        "image_count": metadata["image_count"],
         "rank_per_sector": args.rank,
         "sector_names": metadata["sector_names"],
         "sector_signs": metadata["sector_signs"],
