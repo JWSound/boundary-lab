@@ -217,7 +217,7 @@ export function parseDeployProject(contents: string): DeployProject {
   });
   if (new Set(rigidMeshes.map((item) => item.id)).size !== rigidMeshes.length) throw new Error("Every rigid mesh asset must have a unique id.");
   const sourcesValue = project.sources;
-  if (!Array.isArray(sourcesValue) || sourcesValue.length === 0) throw new Error("A project must contain at least one source.");
+  if (!Array.isArray(sourcesValue)) throw new Error("sources must be an array.");
   const sources = sourcesValue.map(sourceConfiguration);
   if (new Set(sources.map((source) => source.id)).size !== sources.length) {
     throw new Error("Every project source must have a unique id.");

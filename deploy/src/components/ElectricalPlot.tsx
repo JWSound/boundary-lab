@@ -1,6 +1,7 @@
 import { Gauge, Square, Waves } from "lucide-react";
 import { useMemo, useState } from "react";
 import { driverTraceColor } from "./DriverExcursionPlot";
+import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
 
 const FREQUENCY_MINIMUM_HZ = 20;
@@ -72,6 +73,7 @@ export function ElectricalPlot({
 }) {
   const [view, setView] = useState<ElectricalView>("impedance");
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
+  const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
   const traces = data ? Array.from(data.traces.entries()) : [];
   const { ref: chartRef, width, height } = usePlotDimensions();
   const padding = { left: 55, right: view === "impedance" ? 55 : 24, top: 13, bottom: 34 };
@@ -104,6 +106,12 @@ export function ElectricalPlot({
   const majorFrequencies = MAJOR_FREQUENCIES_HZ.filter((frequency) => frequency <= frequencyMaximum);
   const cursorX = x(Math.max(FREQUENCY_MINIMUM_HZ, Math.min(frequencyMaximum, currentFrequencyHz)));
   const unit = view === "impedance" ? "|Z| (ohm)" : view === "current" ? "RMS current (A)" : "Real input power (W)";
+  const toggleTrace = (id: string) => setHiddenTraceIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
 
   return <div className="microphone-response electrical-response">
     <div className="response-toolbar">
@@ -137,8 +145,8 @@ export function ElectricalPlot({
               {view === "impedance" && <text x={width - 12} y={(padding.top + plotBottom) / 2} transform={`rotate(90 ${width - 12} ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Phase (deg)</text>}
               <g clipPath="url(#electrical-plot-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {traces.map(([id, trace], index) => <path key={`${id}-${view}`} d={path(data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
-                {view === "impedance" && traces.map(([id, trace], index) => <path key={`${id}-phase`} d={path(data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
+                {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
+                {view === "impedance" && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-phase`} d={path(data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
               </g>
             </svg>
             <div className="response-legend electrical-legend">

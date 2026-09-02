@@ -1,6 +1,7 @@
 import { Square, Waves } from "lucide-react";
 import { useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import type { MicrophoneResponseSet } from "../model/types";
+import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
 
 const TRACE_COLORS = ["#ffdf00", "#00dfff", "#ff6f00", "#7fe35b", "#e08cff", "#ff748c"];
@@ -64,6 +65,7 @@ export function MicrophoneResponsePlot({
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
   const [crosshair, setCrosshair] = useState<{ frequencyHz: number; splDb: number } | null>(null);
   const [crosshairDragging, setCrosshairDragging] = useState(false);
+  const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
   const crosshairDraggingRef = useRef(false);
   const frequencies = pattern.frequenciesHz;
   const limits = useMemo(() => {
@@ -107,6 +109,12 @@ export function MicrophoneResponsePlot({
   const xMajorTicks = AUDIO_FREQUENCY_MAJOR_TICKS_HZ.filter((frequency) => frequency <= frequencyMaximum);
   const xMinorTicks = logarithmicMinorTicks(frequencyMaximum);
   const cursorX = x(Math.max(AUDIO_FREQUENCY_MINIMUM_HZ, Math.min(frequencyMaximum, currentFrequencyHz)));
+  const toggleTrace = (id: string) => setHiddenTraceIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
 
   const updateCrosshair = (event: ReactPointerEvent<SVGSVGElement>) => {
     const bounds = event.currentTarget.getBoundingClientRect();
@@ -206,10 +214,11 @@ export function MicrophoneResponsePlot({
               <text x={(padding.left + plotRight) / 2} y={height - 5} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
               <g clipPath="url(#microphone-response-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {pattern.traces.flatMap((trace, index) => paths(pattern.frequenciesHz, trace.splDb).map((path, pathIndex) => (
+                {pattern.traces.flatMap((trace, index) => hiddenTraceIds.has(trace.microphoneId) ? [] : paths(pattern.frequenciesHz, trace.splDb).map((path, pathIndex) => (
                   <path key={`pattern-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="pattern-trace" />
                 )))}
                 {bem && pattern.traces.flatMap((trace, index) => {
+                  if (hiddenTraceIds.has(trace.microphoneId)) return [];
                   const values = bem.traces.get(trace.microphoneId);
                   return values ? paths(bem.frequenciesHz, values).map((path, pathIndex) => (
                     <path key={`bem-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" />

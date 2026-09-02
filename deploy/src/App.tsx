@@ -1,6 +1,5 @@
 import {
   ChevronRight,
-  CircleHelp,
   Box,
   FolderOpen,
   Grid3X3,
@@ -75,6 +74,23 @@ function electricalSample(voltageReal: number, voltageImag: number, currentReal:
     impedancePhaseDeg: Math.atan2(impedanceImag, impedanceReal) * 180 / Math.PI,
     rmsCurrentA: currentMagnitude,
     realPowerW: voltageReal * currentReal + voltageImag * currentImag,
+  };
+}
+
+function emptyFieldFrame(observation: ObservationPlane): FieldFrame {
+  const pointCount = observation.columns * observation.rows;
+  return {
+    splDb: new Float32Array(pointCount),
+    pressureReal: new Float32Array(pointCount),
+    pressureImag: new Float32Array(pointCount),
+    validMask: new Uint8Array(pointCount),
+    columns: observation.columns,
+    rows: observation.rows,
+    minimumDb: 0,
+    maximumDb: 0,
+    averageDb: 0,
+    spreadDb: 0,
+    clippedNearFieldPoints: 0,
   };
 }
 
@@ -428,11 +444,15 @@ export function App() {
   const sourceMinimumHeightM = minimumSourceHeightM(selectedSourcePackage);
   const observationAcousticKey = JSON.stringify(observationAcousticState(observation));
   const patternField = useMemo(
-    () => computeMixedFieldFrame(packageById, patternLookups, sources, sourceConfigs, observation, selectedFrequencyHz),
+    () => sourceConfigs.length > 0
+      ? computeMixedFieldFrame(packageById, patternLookups, sources, sourceConfigs, observation, selectedFrequencyHz)
+      : emptyFieldFrame(observation),
     [packageById, patternLookups, sources, sourceConfigs, observationAcousticKey, selectedFrequencyHz],
   );
   const microphonePatternResponses = useMemo(
-    () => computeMixedMicrophonePatternResponses(packageById, sources, sourceConfigs, microphones),
+    () => sourceConfigs.length > 0
+      ? computeMixedMicrophonePatternResponses(packageById, sources, sourceConfigs, microphones)
+      : { frequenciesHz: new Float64Array(), traces: [] },
     [packageById, sources, sourceConfigs, microphones],
   );
   const microphoneSweepKey = useMemo(() => JSON.stringify({
@@ -477,10 +497,12 @@ export function App() {
     boundaryAvailable && level2Package && level2Package.manifest.fidelity_level >= 3 &&
     coupledRepresentationSupported,
   );
-  const scenePackageLevel = Math.min(...sourceConfigs.map(
+  const scenePackageLevel = sourceConfigs.length > 0 ? Math.min(...sourceConfigs.map(
     (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
-  ));
-  const boundaryUnavailableReason = activeSourcePackageIds.length > 1
+  )) : 1;
+  const boundaryUnavailableReason = activeSourcePackageIds.length === 0
+    ? "Add a speaker object to enable Boundary solving."
+    : activeSourcePackageIds.length > 1
     ? "Level 2 currently requires all speakers to use the same package; mixed-package Level 1 remains available."
     : !level2Package?.sourcePath
       ? "Level 2 requires a disk-backed speaker package in the desktop app."
@@ -592,7 +614,7 @@ export function App() {
         object.positionHeightM,
       ),
     }));
-    const nextPackage = nextPackageById.get(nextSources[0].packageId) ?? nextPackages[0];
+    const nextPackage = (nextSources[0] ? nextPackageById.get(nextSources[0].packageId) : null) ?? nextPackages[0];
     const nextBoundaryAssets = new Map<string, BoundaryMeshAsset>([...nextPackageById, ...nextRigidMeshById]);
     const clearanceViolations = cabinetClearanceViolations(
       nextBoundaryAssets,
@@ -637,7 +659,7 @@ export function App() {
     observationRef.current = project.observation_plane;
     setFrequencyIndex(nextFrequencyIndex);
     setFidelity(nextFidelity);
-    setSelectedInstances([nextSources[0].id]);
+    setSelectedInstances(nextSources[0] ? [nextSources[0].id] : []);
     setSolvedFields(emptySolvedFieldCache());
     setBoundaryGeometryKey(null);
     setSolveRevision(0);
@@ -1652,20 +1674,29 @@ export function App() {
     setTransformMode("select");
   };
 
-  const canRemoveSelectedSources = selectedSourceIds.length > 0 && selectedSourceIds.length < sourceConfigs.length;
+  const canRemoveSelectedSources = selectedSourceIds.length > 0;
   const canRemoveSelectedObjects = canRemoveSelectedSources || selectedRigidIds.length > 0 || selectedMicrophoneIds.length > 0;
   const removeSelectedObjects = useCallback(() => {
     if (!canRemoveSelectedObjects) return;
-    const removedSources = canRemoveSelectedSources ? new Set(selectedSourceIds) : new Set<string>();
+    const removedSources = new Set(selectedSourceIds);
     const removedMicrophones = new Set(selectedMicrophoneIds);
     const removedRigid = new Set(selectedRigidIds);
     const removed = new Set([...removedSources, ...removedRigid, ...removedMicrophones]);
-    setSourceConfigs((current) => current.filter((source) => !removedSources.has(source.id)));
+    const nextSources = sourceConfigs.filter((source) => !removedSources.has(source.id));
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
     setMicrophones((current) => current.filter((microphone) => !removedMicrophones.has(microphone.id)));
     setRigidObjects((current) => current.filter((object) => !removedRigid.has(object.id)));
     setSelectedInstances((current) => current.filter((id) => !removed.has(id)));
     setTransformMode("select");
-  }, [canRemoveSelectedObjects, canRemoveSelectedSources, selectedMicrophoneIds, selectedRigidIds, selectedSourceIds]);
+    if (nextSources.length === 0) {
+      solveGeneration.current += 1;
+      setFidelity("pattern");
+      setLiveSolveEnabled(false);
+      setSolveState("idle");
+      setSolveMessage("Add a speaker object to solve");
+    }
+  }, [canRemoveSelectedObjects, selectedMicrophoneIds, selectedRigidIds, selectedSourceIds, sourceConfigs]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
@@ -1673,6 +1704,11 @@ export function App() {
       const target = event.target;
       const transformableSelected = Boolean(selectedSource) || Boolean(selectedRigid) || Boolean(selectedMicrophone) || selectedInstance === "audience-plane";
       if (target instanceof Element && target.matches("input, textarea, [contenteditable='true']")) return;
+      if (event.key.toLowerCase() === "q") {
+        event.preventDefault();
+        setTransformMode("select");
+        return;
+      }
       if ((event.key === "Delete" || event.key === "Backspace") && canRemoveSelectedObjects) {
         event.preventDefault();
         removeSelectedObjects();
@@ -1949,7 +1985,7 @@ export function App() {
           onFieldTextureReady={recordFieldTexture}
         />
         <div className="viewport-toolbar">
-          <button className={transformMode === "select" ? "active" : ""} title="Select (corner drag)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
+          <button className={transformMode === "select" ? "active" : ""} title="Select (Q)" onClick={() => setTransformMode("select")}><MousePointer2 size={15} /></button>
           <button className={transformMode === "translate" ? "active" : ""} disabled={!selectedInstance} title="Translate (W)" onClick={() => setTransformMode("translate")}><Move3D size={15} /></button>
           <button className={transformMode === "rotate" ? "active" : ""} disabled={!selectedInstance || Boolean(selectedMicrophone)} title="Rotate (E)" onClick={() => setTransformMode("rotate")}><Rotate3D size={15} /></button>
           <button className={transformMode === "scale" ? "active" : ""} disabled={selectedInstance !== "audience-plane"} title="Resize plane (R)" onClick={() => setTransformMode("scale")}><Maximize2 size={15} /></button>
@@ -1964,6 +2000,13 @@ export function App() {
           </div>
           <em>{field.columns} × {field.rows}</em>
         </div>
+        <div className="viewport-color-legend">
+          <div className="legend-title"><span>{observation.displayMode === "spl" ? "SPL" : phaseAnimationEnabled ? "Phase animation" : observation.displayMode === "real_pressure" ? "Real pressure" : "Imaginary pressure"}</span></div>
+          <div className={`color-legend ${observation.displayMode === "spl" ? "" : "pressure-color-legend"}`} style={observation.displayMode === "spl" ? { background: heatmapLegendGradient(observation.heatmapMinimumDb, observation.heatmapMaximumDb, observation.heatmapBandingDb) } : undefined} />
+          <div className="viewport-legend-values">
+            {observation.displayMode === "spl" ? <><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></> : <><span>-{observation.pressureScalePa.toFixed(0)}</span><span>0</span><span>+{observation.pressureScalePa.toFixed(0)} Pa</span></>}
+          </div>
+        </div>
         <div className="viewport-hint">Ctrl+click: multi-select · Orbit: left drag · Pan: right drag · Zoom: wheel</div>
       </section>
 
@@ -1972,7 +2015,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Grid3X3 size={19} /></div>
-              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>Audience plane</strong><span>Observation surface</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>Audience plane</strong></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <PlaneResolutionInspector
@@ -1986,7 +2029,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Speaker size={19} /></div>
-              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedSource.name}</strong><span>{selectedSourcePackage.manifest.name} source</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedSource.name}</strong></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
@@ -1995,7 +2038,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Box size={19} /></div>
-              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedRigid.name}</strong><span>Rigid Neumann boundary</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedRigid.name}</strong></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <RigidMeshInspector config={selectedRigid} onChange={updateSelectedRigid} />
@@ -2004,7 +2047,7 @@ export function App() {
           <>
             <div className="inspector-heading">
               <div className="object-icon"><Mic2 size={19} /></div>
-              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedMicrophone.name}</strong><span>Point pressure probe</span></div>
+              <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedMicrophone.name}</strong></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
             <MicrophoneInspector config={selectedMicrophone} onChange={updateSelectedMicrophone} />
@@ -2078,25 +2121,8 @@ export function App() {
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
             />}
           </div>
-          <div className="legend-block">
-            {analysisTab === "microphones" ? observation.displayMode === "spl" ? <>
-              <div className="legend-title"><span>SPL</span></div>
-              <div className="color-legend" style={{ background: heatmapLegendGradient(observation.heatmapMinimumDb, observation.heatmapMaximumDb, observation.heatmapBandingDb) }} />
-              <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
-            </> : <>
-              <div className="legend-title"><span>{phaseAnimationEnabled ? "Phase animation" : observation.displayMode === "real_pressure" ? "Real pressure" : "Imaginary pressure"}</span></div>
-              <div className="color-legend pressure-color-legend" />
-              <div><span>-{observation.pressureScalePa.toFixed(0)}</span><span>0</span><span>+{observation.pressureScalePa.toFixed(0)} Pa</span></div>
-            </> : analysisTab === "excursion"
-              ? <div className="excursion-note"><strong>PEAK EXCURSION</strong><span>Derived from RMS diaphragm velocity</span><code>sqrt(2) |v| / 2 pi f</code></div>
-              : <div className="excursion-note"><strong>CABINET INPUT</strong><span>Complex RMS voltage and summed coil current</span><code>Z = V / I</code></div>}
-          </div>
         </div>
       </section>
-
-      {field.clippedNearFieldPoints > 0 && (
-        <div className="near-field-warning"><CircleHelp size={15} /><span>Some plane samples are inside the package reference sphere; use Boundary fidelity for authoritative near-field results.</span></div>
-      )}
       {error && <div className="error-toast" onClick={() => setError(null)}><strong>Boundary Lab Deploy</strong><span>{error}</span></div>}
       <input
         ref={packageFileInput}

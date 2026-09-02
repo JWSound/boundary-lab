@@ -1,5 +1,6 @@
 import { Activity, Square } from "lucide-react";
 import { useMemo, useState } from "react";
+import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
 
 const AUDIO_FREQUENCY_MINIMUM_HZ = 20;
@@ -72,6 +73,7 @@ export function DriverExcursionPlot({
   const { ref: chartRef, width, height } = usePlotDimensions();
   const padding = { left: 54, right: 24, top: 13, bottom: 34 };
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
+  const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
   const traces = data ? Array.from(data.traces.entries()) : [];
   const maximumExcursion = useMemo(() => {
     let maximum = 0;
@@ -103,6 +105,12 @@ export function DriverExcursionPlot({
   const xMajorTicks = AUDIO_FREQUENCY_MAJOR_TICKS_HZ.filter((frequency) => frequency <= frequencyMaximum);
   const xMinorTicks = logarithmicMinorTicks(frequencyMaximum);
   const cursorX = x(Math.max(AUDIO_FREQUENCY_MINIMUM_HZ, Math.min(frequencyMaximum, currentFrequencyHz)));
+  const toggleTrace = (id: string) => setHiddenTraceIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
 
   return <div className="microphone-response driver-excursion-response">
     <div className="response-toolbar">
@@ -130,7 +138,7 @@ export function DriverExcursionPlot({
               <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Peak excursion (mm)</text>
               <g clipPath="url(#driver-excursion-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {traces.flatMap(([id, trace], index) => paths(data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
+                {traces.flatMap(([id, trace], index) => hiddenTraceIds.has(id) ? [] : paths(data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
               </g>
             </svg>
             <div className="response-legend driver-response-legend">{traces.map(([id, trace], index) => <span key={id}><i style={{ background: driverTraceColor(index) }} />{trace.name}</span>)}</div>

@@ -503,12 +503,14 @@ function createWindow() {
             requestAnimationFrame(() => {
               const altDisablesSnap = viewport?.getAttribute('data-angle-snap-disabled');
               window.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', bubbles: true }));
-              resolve({
-                translateMode,
-                rotateMode,
-                altDisablesSnap,
-                grabPointCount: viewport?.getAttribute('data-grab-point-count')
-              });
+              window.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', bubbles: true }));
+              requestAnimationFrame(() => resolve({
+                  translateMode,
+                  rotateMode,
+                  altDisablesSnap,
+                  selectMode: viewport?.getAttribute('data-transform-mode'),
+                  grabPointCount: viewport?.getAttribute('data-grab-point-count')
+                }));
             });
           });
         });
@@ -664,6 +666,33 @@ function createWindow() {
       if (!chartResizeInteraction.stable || !chartResizeInteraction.allInside) {
         throw new Error("Plot axis labels changed size or left the SVG bounds during drawer resize.");
       }
+      let emptySourceInteraction = null;
+      if (!level2Smoke) {
+        emptySourceInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
+          const sourceRows = Array.from(document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]'));
+          sourceRows.forEach((row, index) => row.dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: index > 0 })));
+          requestAnimationFrame(() => {
+            const remove = document.querySelector('button[aria-label="Remove selected objects"]');
+            const removeEnabledForAll = !remove?.disabled;
+            remove?.click();
+            requestAnimationFrame(() => {
+              const sourceCountAfterRemoveAll = document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length;
+              const solveStatusAfterRemoveAll = document.querySelector('.solve-status strong')?.textContent?.trim() || '';
+              const add = document.querySelector('button[aria-label="Add speaker"]');
+              add?.click();
+              requestAnimationFrame(() => {
+                add?.click();
+                requestAnimationFrame(() => resolve({
+                  removeEnabledForAll,
+                  sourceCountAfterRemoveAll,
+                  solveStatusAfterRemoveAll,
+                  sourceCountAfterRestore: document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]').length
+                }));
+              });
+            });
+          });
+        })`);
+      }
       let level2Move = null;
       if (level2Smoke) {
         level2Move = await window.webContents.executeJavaScript(`new Promise((resolve) => {
@@ -718,7 +747,7 @@ function createWindow() {
         solveStatus: document.querySelector('.solve-status strong')?.textContent,
         solveError: document.querySelector('.error-toast span')?.textContent || null
       })`);
-      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, chartResizeInteraction, level2Move, consoleErrors }));
+      console.log(JSON.stringify({ ...snapshot, openProjectInteraction, packageImportInteraction, rigidMeshInteraction, transformInteraction, planeResolutionInteraction, sceneObjectInteraction, chartResizeInteraction, emptySourceInteraction, level2Move, consoleErrors }));
       app.quit();
     });
     setTimeout(() => {
