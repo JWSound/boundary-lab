@@ -33,7 +33,7 @@ npm start
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
 - Plots every microphone's package-derived SPL response across the exact exported frequency grid.
-- Calculates explicit Level 2 complex microphone pressure across the full package grid in one BEAT request, retaining host/CUDA geometry and correction caches between frequencies, streaming progress, and turning the Calculate button into a Stop control while the sweep is active.
+- Calculates explicit complex microphone pressure across the package grid for both Level 2 exterior BEM and Level 3 coupled solves. Exact coupled sweeps reuse frequency-invariant FEM/BEM data and apply frequency-dependent array gain, delay, and polarity to the mutually loaded port solutions; parity-ROM sweeps retain exterior geometry while selecting each frequency's reduced operators. Both paths stream progress and turn the Calculate button into a Stop control while active.
 - Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
 - Runs exact Level 3 packages through the production coupled FEM–BEM–transducer solver, with all cabinet ports solved as right-hand sides of one array factorization and one gain/delay/polarity-weighted audience-field evaluation.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.

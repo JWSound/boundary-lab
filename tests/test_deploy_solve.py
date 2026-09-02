@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import blab.deploy_solve as deploy_solve_module
 from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_within
 from blab.deploy_solve import (
     CLOSE_PAIR_DISTANCE_M,
@@ -19,8 +20,10 @@ from blab.deploy_solve import (
     DeploySolveCache,
     _combined_excitation_trace,
     _logical_excitation_indices,
+    prepare_deploy_coupled_request,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
+    prepare_deploy_rom_microphone_sweep_request,
     prepare_deploy_solve_request,
 )
 
@@ -285,6 +288,133 @@ def test_prepare_microphone_sweep_stages_geometry_and_all_frequencies_once(tmp_p
     assert repeated_statuses[0] == "Reusing prepared scene geometry"
     np.testing.assert_allclose(repeated["observation_points_m"], [[3.0, 1.0, 5.0]])
     assert Path(repeated["mesh_file"]).is_file()
+
+
+def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
+    monkeypatch, tmp_path: Path
+) -> None:
+    array_names = ("k", "c", "d", "b", "e", "velocity", "current", "velocity_drive", "current_drive")
+    arrays = {name: np.asarray([[[1.0 + 0.0j]], [[2.0 + 0.0j]]], dtype=np.complex64) for name in array_names}
+    arrays["frequencies_hz"] = np.asarray([20.0, 40.0])
+    package = type("Package", (), {
+        "frequencies": np.asarray([10.0, 20.0, 40.0, 80.0]),
+        "coupled_model": {
+            "representation": "parity_petrov_galerkin_rom",
+            "arrays": arrays,
+        },
+    })()
+    cache = type("Cache", (), {"load_package": lambda self, _path: package})()
+
+    def prepare_single(payload, work_dir, **_kwargs):
+        path = Path(work_dir) / "request.json"
+        request = {
+            "schema": "boundary_lab_deploy_rom",
+            "frequency_hz": payload["frequencyHz"],
+            "boundary_neumann": {"real": [0.0], "imag": [0.0]},
+            "reference_boundary_pressure": {"real": [0.0], "imag": [0.0]},
+            "rom": {
+                "format_version": 1,
+                "representation": "parity_petrov_galerkin_rom",
+                "rank_per_sector": 1,
+                "sector_signs": [[1, 1], [-1, 1], [1, -1], [-1, -1]],
+                "node_orbits": [[0, 0, 0, 0]],
+                "face_orbits": [[0, 0, 0, 0]],
+                "instances": [{"id": "source", "node_offset": 0, "face_offset": 0}],
+                "binary_arrays": {},
+                "gmres_tolerance": 1e-4,
+                "gmres_max_iterations": 30,
+            },
+            "provenance": {},
+        }
+        path.write_text(json.dumps(request), encoding="utf-8")
+        return path, request
+
+    monkeypatch.setattr(deploy_solve_module, "prepare_deploy_rom_request", prepare_single)
+    request_path, request = prepare_deploy_rom_microphone_sweep_request(
+        {
+            "packagePath": "speaker.blabsp",
+            "sources": [{"id": "source", "delayMs": 12.5}],
+            "observationPointsM": [[0.0, 1.2, 4.0]],
+        },
+        tmp_path,
+        cache=cache,
+    )
+
+    assert json.loads(request_path.read_text(encoding="utf-8"))["schema"] == DEPLOY_MICROPHONE_SWEEP_SCHEMA
+    assert request["frequencies_hz"] == [20.0, 40.0]
+    assert len(request["rom_sweep"]["frequencies"]) == 2
+    first_drive = complex(
+        request["rom_sweep"]["frequencies"][0]["instances"][0]["input_real"][0],
+        request["rom_sweep"]["frequencies"][0]["instances"][0]["input_imag"][0],
+    )
+    second_drive = complex(
+        request["rom_sweep"]["frequencies"][1]["instances"][0]["input_real"][0],
+        request["rom_sweep"]["frequencies"][1]["instances"][0]["input_imag"][0],
+    )
+    assert first_drive == pytest.approx(2.83j, abs=1e-6)
+    assert second_drive == pytest.approx(-2.83 + 0j, abs=1e-6)
+    assert Path(request["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"]).is_file()
+
+
+def test_prepare_exact_coupled_request_batches_microphones_and_frequency_weights(
+    monkeypatch, tmp_path: Path
+) -> None:
+    package = type("Package", (), {
+        "coupled_model": {
+            "representation": "exact_frequency_parametric_fem",
+            "frequency_band_hz": [20.0, 80.0],
+        },
+        "manifest": {"files": {"coupled_model": {"representation": "exact_frequency_parametric_fem"}}},
+    })()
+    cache = type("Cache", (), {
+        "load_package": lambda self, _path: package,
+        "load_rigid_mesh": lambda self, _path: None,
+    })()
+    compiled_system = {
+        "id": "base",
+        "name": "Base",
+        "meshes": [{"id": "mesh:exterior", "file": str(tmp_path / "base.msh"), "scale_to_m": 1.0}],
+        "regions": [{"id": "region:exterior", "kind": "unbounded_air", "mesh_ids": ["mesh:exterior"]}],
+        "boundaries": [{
+            "id": "boundary:exterior",
+            "region_id": "region:exterior",
+            "kind": "rigid",
+            "group": {"mesh_id": "mesh:exterior", "dimension": 2, "tag": 1},
+            "parameters": {},
+        }],
+        "interfaces": [],
+        "components": [{"id": "component:driver", "boundary_ids": ["boundary:exterior"], "parameters": {}}],
+        "excitation_ports": [{"id": "port:driver", "component_id": "component:driver"}],
+    }
+    monkeypatch.setattr(
+        deploy_solve_module,
+        "stage_exact_coupled_system",
+        lambda _package, _work_dir: {"compiled_system": compiled_system},
+    )
+    monkeypatch.setattr(
+        deploy_solve_module,
+        "_write_transformed_coupled_mesh",
+        lambda _source, target, _base_mesh, _placement: target.write_text("mesh", encoding="utf-8"),
+    )
+
+    _path, request = prepare_deploy_coupled_request(
+        {
+            "packagePath": "speaker.blabsp",
+            "backend": "cuda",
+            "frequenciesHz": [20.0, 40.0],
+            "sources": [{"id": "source", "delayMs": 12.5}],
+            "observationPointsM": [[0.0, 1.2, 4.0], [1.0, 1.2, 5.0]],
+        },
+        tmp_path,
+        cache=cache,
+    )
+
+    assert request["frequencies_hz"] == [20.0, 40.0]
+    assert request["deploy"]["rows"] == 1
+    assert request["deploy"]["columns"] == 2
+    weights = request["outputs"][0]["options"]["excitation_weights_sweep"]
+    assert complex(weights[0][0]["real"], weights[0][0]["imag"]) == pytest.approx(1j, abs=1e-7)
+    assert complex(weights[1][0]["real"], weights[1][0]["imag"]) == pytest.approx(-1 + 0j, abs=1e-7)
 
 
 def test_prepare_deploy_solve_request_can_select_operator_matrix_fallback(tmp_path: Path) -> None:

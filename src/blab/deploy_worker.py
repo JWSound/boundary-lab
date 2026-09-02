@@ -19,6 +19,7 @@ from blab.deploy_solve import (
     prepare_deploy_coupled_request,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
+    prepare_deploy_rom_microphone_sweep_request,
     prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
@@ -77,6 +78,18 @@ def _worker_key(payload: object) -> str:
     return f"coupled:{normalized}" if fidelity.strip().lower() == "coupled" else normalized
 
 
+def _execution_worker_key(payload: object, solve_cache: DeploySolveCache) -> str:
+    """Resolve Level 3 ROM jobs onto the exterior worker that executes them."""
+
+    worker_key = _worker_key(payload)
+    if not worker_key.startswith("coupled:") or not isinstance(payload, dict):
+        return worker_key
+    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
+    package = solve_cache.load_package(package_path)
+    representation = package.coupled_model.get("representation") if isinstance(package.coupled_model, dict) else None
+    return str(payload.get("backend", "cuda")).strip().lower() if representation == "parity_petrov_galerkin_rom" else worker_key
+
+
 def _coupled_deploy_result(raw: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     parsed = system_frequency_result_from_dict(raw)
     quantity = next((item for item in parsed.quantities if item.id == "deploy:field-pressure"), None)
@@ -119,10 +132,10 @@ def _solve(
     solve_cache: DeploySolveCache,
     solution_keys: dict[str, str],
 ) -> None:
-    worker_key = _worker_key(payload)
+    worker_key = _execution_worker_key(payload, solve_cache)
     coupled = worker_key.startswith("coupled:")
     rom = False
-    if coupled and isinstance(payload, dict):
+    if isinstance(payload, dict) and str(payload.get("fidelity", "boundary")).strip().lower() == "coupled":
         package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
         package = solve_cache.load_package(package_path)
         representation = (
@@ -133,8 +146,6 @@ def _solve(
         if representation == "parity_petrov_galerkin_rom":
             # The ROM path uses the same BEAT solver process as Level 2, so it
             # benefits from the desktop's background CUDA warmup.
-            worker_key = str(payload.get("backend", "cuda")).strip().lower()
-            coupled = False
             rom = True
     worker = workers.get(worker_key)
     if worker is None:
@@ -231,9 +242,25 @@ def _microphone_sweep(
         raise ValueError("Deploy microphone sweep request must be an object.")
     package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
     package_data = solve_cache.load_package(package_path)
+    fidelity = str(payload.get("fidelity", "boundary")).strip().lower()
+    coupled_model = package_data.coupled_model if fidelity == "coupled" else None
+    representation = coupled_model.get("representation") if isinstance(coupled_model, dict) else None
     frequencies = sorted({float(value) for value in package_data.frequencies})
+    if representation == "exact_frequency_parametric_fem":
+        band = coupled_model.get("frequency_band_hz", ())
+        if isinstance(band, list) and len(band) == 2:
+            lower, upper = map(float, band)
+            tolerance = max(1e-4, max(abs(lower), abs(upper)) * 1e-6)
+            frequencies = [value for value in frequencies if lower - tolerance <= value <= upper + tolerance]
+    elif representation == "parity_petrov_galerkin_rom":
+        arrays = coupled_model.get("arrays")
+        rom_frequencies = np.asarray(arrays.get("frequencies_hz", ()), dtype=np.float64) if isinstance(arrays, dict) else np.empty(0)
+        frequencies = [
+            value for value in frequencies
+            if rom_frequencies.size and np.min(np.abs(rom_frequencies - value)) <= max(1e-4, abs(value) * 1e-6)
+        ]
     if not frequencies:
-        raise ValueError("Speaker package contains no frequencies for the microphone sweep.")
+        raise ValueError("Speaker package contains no frequencies supported by the selected microphone sweep.")
     raw_microphones = payload.get("microphones")
     if not isinstance(raw_microphones, list) or not raw_microphones:
         raise ValueError("Deploy microphone sweep requires at least one microphone.")
@@ -261,15 +288,15 @@ def _microphone_sweep(
     if len(set(microphone_ids)) != len(microphone_ids):
         raise ValueError("Deploy microphone ids must be unique.")
 
-    backend = str(payload.get("backend", "cuda")).strip().lower()
-    worker = workers.get(backend)
+    worker_key = _execution_worker_key(payload, solve_cache)
+    exact_coupled = representation == "exact_frequency_parametric_fem"
+    rom_coupled = representation == "parity_petrov_galerkin_rom"
+    if fidelity == "coupled" and not (exact_coupled or rom_coupled):
+        raise ValueError("Deploy Level 3 microphone sweep requires an exact or parity-ROM coupled package.")
+    worker = workers.get(worker_key)
     if worker is None:
-        worker = _worker(backend)
-        workers[backend] = worker
-    spl_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
-    pressure_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
-    pressure_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
-    frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
+        worker = _worker(worker_key, coupled=exact_coupled)
+        workers[worker_key] = worker
     julia_timing_totals: dict[str, float] = {}
     completed_count = 0
     with tempfile.TemporaryDirectory(prefix="blab-deploy-microphones-") as temp_dir:
@@ -283,12 +310,32 @@ def _microphone_sweep(
             "reuseBoundary": False,
         }
         prepare_started = time.perf_counter()
-        request_path, _request = prepare_deploy_microphone_sweep_request(
-            sweep_payload,
-            temp_dir,
-            cache=solve_cache,
-            status_callback=lambda message: _emit("status", request_id=request_id, message=message),
-        )
+        if exact_coupled:
+            request_path, _request = prepare_deploy_coupled_request(
+                {**sweep_payload, "frequenciesHz": frequencies},
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
+        elif rom_coupled:
+            request_path, _request = prepare_deploy_rom_microphone_sweep_request(
+                {**sweep_payload, "frequenciesHz": frequencies},
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
+        else:
+            request_path, _request = prepare_deploy_microphone_sweep_request(
+                sweep_payload,
+                temp_dir,
+                cache=solve_cache,
+                status_callback=lambda message: _emit("status", request_id=request_id, message=message),
+            )
+        frequencies = [float(value) for value in _request["frequencies_hz"]]
+        spl_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+        pressure_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+        pressure_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in microphone_ids]
+        frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
         julia_started = time.perf_counter()
@@ -305,6 +352,8 @@ def _microphone_sweep(
                 frequency_result = event.get("result")
                 if not isinstance(frequency_result, dict):
                     raise RuntimeError("BEAT Engine microphone sweep returned an invalid result.")
+                if exact_coupled:
+                    frequency_result = _coupled_deploy_result(frequency_result, _request)
                 frequency_hz = float(frequency_result.get("frequency_hz", math.nan))
                 timings = frequency_result.get("timings")
                 if isinstance(timings, dict):
@@ -446,7 +495,7 @@ def main() -> int:
                         if active["thread"] is not None:
                             raise RuntimeError("A Deploy solve is already in progress.")
                         payload = message.get("payload")
-                        worker_key = _worker_key(payload)
+                        worker_key = _execution_worker_key(payload, solve_cache)
                         cancel_event = threading.Event()
                         thread = threading.Thread(
                             target=run_job,

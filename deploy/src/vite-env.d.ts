@@ -42,6 +42,7 @@ interface DesktopSolveStatus {
 interface DesktopMicrophoneSweepRequest {
   packagePath: string;
   backend: "cuda";
+  fidelity: "boundary" | "coupled";
   sources: import("./model/types").SourceConfiguration[];
   rigidObjects: DesktopRigidObject[];
   microphones: import("./model/types").MicrophoneConfiguration[];

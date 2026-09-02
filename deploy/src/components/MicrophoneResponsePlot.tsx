@@ -38,7 +38,8 @@ export function MicrophoneResponsePlot({
   frequencyPosition,
   frequencyCount,
   onFrequencyPositionChange,
-  canCalculateBem,
+  canCalculatePressure,
+  calculationLabel,
   calculating,
   completedCount,
   totalCount,
@@ -50,7 +51,8 @@ export function MicrophoneResponsePlot({
   frequencyPosition: number;
   frequencyCount: number;
   onFrequencyPositionChange: (position: number) => void;
-  canCalculateBem: boolean;
+  canCalculatePressure: boolean;
+  calculationLabel: string;
   calculating: boolean;
   completedCount: number;
   totalCount: number;
@@ -163,9 +165,9 @@ export function MicrophoneResponsePlot({
         </label>
         <button
           className={`bem-pressure-button ${calculating ? "stop" : ""}`}
-          disabled={!calculating && !canCalculateBem}
+          disabled={!calculating && !canCalculatePressure}
           onClick={onCalculateOrStop}
-        >{calculating ? <Square size={11} fill="currentColor" /> : <Waves size={12} />} {calculating ? `Stop ${completedCount}/${totalCount}` : "Calculate BEM Pressure"}</button>
+        >{calculating ? <Square size={11} fill="currentColor" /> : <Waves size={12} />} {calculating ? `Stop ${completedCount}/${totalCount}` : calculationLabel}</button>
       </div>
       <div className="response-content">
         {pattern.traces.length === 0 ? (

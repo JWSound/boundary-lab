@@ -1009,16 +1009,25 @@ end
 function solve_deploy_microphone_sweep_request_impl(request)
     frequencies = Float64.(get_value(request, "frequencies_hz", Any[]))
     isempty(frequencies) && error("Deploy microphone sweep requires at least one frequency.")
+    rom_sweep = get_value(request, "rom_sweep", nothing)
+    rom_frequency_entries = rom_sweep isa AbstractDict ? get_value(rom_sweep, "frequencies", Any[]) : Any[]
+    if rom_sweep isa AbstractDict
+        length(rom_frequency_entries) == length(frequencies) || error(
+            "Deploy ROM microphone sweep data does not match the frequency count.",
+        )
+    end
     neumann_sweep = get_value(request, "boundary_neumann_sweep", nothing)
     pressure_sweep = get_value(request, "reference_boundary_pressure_sweep", nothing)
-    neumann_sweep isa AbstractDict || error("Deploy microphone sweep requires boundary_neumann_sweep.")
-    pressure_sweep isa AbstractDict || error("Deploy microphone sweep requires reference_boundary_pressure_sweep.")
-    neumann_real = get_value(neumann_sweep, "real", Any[])
-    neumann_imag = get_value(neumann_sweep, "imag", Any[])
-    pressure_real = get_value(pressure_sweep, "real", Any[])
-    pressure_imag = get_value(pressure_sweep, "imag", Any[])
-    all(length(rows) == length(frequencies) for rows in (neumann_real, neumann_imag, pressure_real, pressure_imag)) ||
-        error("Deploy microphone sweep traces do not match the frequency count.")
+    neumann_real = neumann_sweep isa AbstractDict ? get_value(neumann_sweep, "real", Any[]) : Any[]
+    neumann_imag = neumann_sweep isa AbstractDict ? get_value(neumann_sweep, "imag", Any[]) : Any[]
+    pressure_real = pressure_sweep isa AbstractDict ? get_value(pressure_sweep, "real", Any[]) : Any[]
+    pressure_imag = pressure_sweep isa AbstractDict ? get_value(pressure_sweep, "imag", Any[]) : Any[]
+    if !(rom_sweep isa AbstractDict)
+        neumann_sweep isa AbstractDict || error("Deploy microphone sweep requires boundary_neumann_sweep.")
+        pressure_sweep isa AbstractDict || error("Deploy microphone sweep requires reference_boundary_pressure_sweep.")
+        all(length(rows) == length(frequencies) for rows in (neumann_real, neumann_imag, pressure_real, pressure_imag)) ||
+            error("Deploy microphone sweep traces do not match the frequency count.")
+    end
     geometry_key = String(get_value(request, "geometry_key", ""))
     isempty(geometry_key) && error("Deploy microphone sweep requires a geometry_key.")
     release_deploy_geometry_state!()
@@ -1029,17 +1038,29 @@ function solve_deploy_microphone_sweep_request_impl(request)
                 message="Solving microphone frequency $(index)/$(length(frequencies)) ($(round(frequencies[index]; digits=2)) Hz)",
             )
             frequency_request = copy(request)
-            frequency_request["schema"] = "boundary_lab_deploy_solve"
+            frequency_request["schema"] = rom_sweep isa AbstractDict ?
+                                          "boundary_lab_deploy_rom" :
+                                          "boundary_lab_deploy_solve"
             frequency_request["schema_version"] = 2
             frequency_request["frequency_hz"] = frequencies[index]
-            frequency_request["boundary_neumann"] = Dict(
-                "real" => neumann_real[index],
-                "imag" => neumann_imag[index],
-            )
-            frequency_request["reference_boundary_pressure"] = Dict(
-                "real" => pressure_real[index],
-                "imag" => pressure_imag[index],
-            )
+            if rom_sweep isa AbstractDict
+                entry = rom_frequency_entries[index]
+                frequency_rom = copy(rom_sweep)
+                delete!(frequency_rom, "frequencies")
+                frequency_rom["binary_arrays"] = get_value(entry, "binary_arrays", nothing)
+                frequency_rom["instances"] = get_value(entry, "instances", nothing)
+                frequency_request["rom"] = frequency_rom
+                delete!(frequency_request, "rom_sweep")
+            else
+                frequency_request["boundary_neumann"] = Dict(
+                    "real" => neumann_real[index],
+                    "imag" => neumann_imag[index],
+                )
+                frequency_request["reference_boundary_pressure"] = Dict(
+                    "real" => pressure_real[index],
+                    "imag" => pressure_imag[index],
+                )
+            end
             frequency_request["solution_key"] = "$(geometry_key):$(frequencies[index])"
             frequency_request["retain_geometry_cache"] = true
             solve_deploy_request_impl(frequency_request; emit_completed=false)

@@ -20,6 +20,15 @@ class _PackageCache:
         return SimpleNamespace(frequencies=np.asarray([40.0, 20.0, 40.0]))
 
 
+class _CoupledPackageCache:
+    def __init__(self, representation: str):
+        self.representation = representation
+
+    def load_package(self, _path: Path):
+        model = {"representation": self.representation, "frequency_band_hz": [20.0, 40.0]}
+        return SimpleNamespace(frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]), coupled_model=model)
+
+
 class _SweepWorker:
     def submit(self, request_path: Path, **_kwargs):
         request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -56,16 +65,12 @@ def test_microphone_sweep_uses_sorted_unique_package_frequencies(monkeypatch) ->
 
     def prepare(payload, work_dir, **_kwargs):
         path = Path(work_dir) / "request.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "frequencies_hz": [20.0, 40.0],
-                    "observation_points_m": payload["observationPointsM"],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return path, {}
+        request = {
+            "frequencies_hz": [20.0, 40.0],
+            "observation_points_m": payload["observationPointsM"],
+        }
+        path.write_text(json.dumps(request), encoding="utf-8")
+        return path, request
 
     monkeypatch.setattr(deploy_worker, "prepare_deploy_microphone_sweep_request", prepare)
     monkeypatch.setattr(
@@ -114,6 +119,72 @@ def test_microphone_sweep_honors_stop_before_first_frequency(monkeypatch) -> Non
 def test_coupled_worker_key_is_separate_from_level_two_worker() -> None:
     assert deploy_worker._worker_key({"backend": "cuda"}) == "cuda"
     assert deploy_worker._worker_key({"backend": "cuda", "fidelity": "coupled"}) == "coupled:cuda"
+
+
+def test_coupled_execution_worker_routes_exact_and_rom_packages() -> None:
+    payload = {"packagePath": "speaker.blabsp", "backend": "cuda", "fidelity": "coupled"}
+    assert deploy_worker._execution_worker_key(
+        payload, _CoupledPackageCache("exact_frequency_parametric_fem")
+    ) == "coupled:cuda"
+    assert deploy_worker._execution_worker_key(
+        payload, _CoupledPackageCache("parity_petrov_galerkin_rom")
+    ) == "cuda"
+
+
+def test_exact_coupled_microphone_sweep_filters_band_and_maps_results(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+
+    def prepare(payload, work_dir, **_kwargs):
+        assert payload["frequenciesHz"] == [20.0, 40.0]
+        path = Path(work_dir) / "coupled-request.json"
+        request = {
+            "frequencies_hz": payload["frequenciesHz"],
+            "deploy": {
+                "rows": 1,
+                "columns": 2,
+                "sample_indices": [0, 1],
+                "source_count": 1,
+                "rigid_object_count": 0,
+            },
+        }
+        path.write_text(json.dumps(request), encoding="utf-8")
+        return path, request
+
+    class CoupledSweepWorker:
+        def submit(self, _request_path: Path, **_kwargs):
+            for frequency in (20.0, 40.0):
+                yield {
+                    "type": "result",
+                    "result": system_frequency_result_to_dict(SystemFrequencyResult(
+                        freq_hz=frequency,
+                        excitation_port_ids=("port:a",),
+                        quantities=(QuantityResult(
+                            id="deploy:field-pressure",
+                            quantity="exterior_pressure",
+                            unit="Pa",
+                            axes=("observation",),
+                            values=np.asarray([frequency / 100.0, 0.02j], dtype=np.complex64),
+                        ),),
+                        diagnostics={"bem_backend": "cuda", "timings": {}},
+                    )),
+                }
+            yield {"type": "completed"}
+
+    monkeypatch.setattr(deploy_worker, "prepare_deploy_coupled_request", prepare)
+    monkeypatch.setattr(deploy_worker, "_emit", lambda event_type, **values: events.append((event_type, values)) or {})
+    payload = {**_payload(), "fidelity": "coupled"}
+    deploy_worker._microphone_sweep(
+        9,
+        payload,
+        {"coupled:cuda": CoupledSweepWorker()},
+        _CoupledPackageCache("exact_frequency_parametric_fem"),
+        threading.Event(),
+    )
+
+    result = next(values["result"] for event_type, values in events if event_type == "result")
+    assert result["frequencies_hz"] == [20.0, 40.0]
+    np.testing.assert_allclose(result["pressure"]["real"][0], [0.2, 0.4])
+    assert len([event for event, _values in events if event == "microphone-progress"]) == 2
 
 
 def test_coupled_result_maps_complex_pressure_to_deploy_field() -> None:

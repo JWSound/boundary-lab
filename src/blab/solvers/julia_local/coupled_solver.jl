@@ -2750,7 +2750,15 @@ function solve_request(request; event_mode=false)
                 raw_points = get(options, "points_m", Any[])
                 isempty(raw_points) && error("exterior_pressure output requires options.points_m.")
                 points = [SVector{3,FloatType}(FloatType.(point)) for point in raw_points]
-                raw_weights = get(options, "excitation_weights", Any[])
+                raw_weight_sweep = get(options, "excitation_weights_sweep", Any[])
+                if !isempty(raw_weight_sweep)
+                    length(raw_weight_sweep) == length(request["frequencies_hz"]) || error(
+                        "exterior_pressure excitation_weights_sweep must match the frequency count.",
+                    )
+                end
+                raw_weights = isempty(raw_weight_sweep) ?
+                              get(options, "excitation_weights", Any[]) :
+                              raw_weight_sweep[frequency_index]
                 if isempty(raw_weights)
                     pressures = [
                         if bem_backend == :cuda

@@ -401,12 +401,13 @@ export function App() {
     [packageById, sources, sourceConfigs, microphones],
   );
   const microphoneSweepKey = useMemo(() => JSON.stringify({
+    fidelity,
     packages: packages.map((item) => ({ id: item.id, sourcePath: item.sourcePath })),
     sources: sourceConfigs,
     rigidObjects,
     microphones,
     frequencies: Array.from(microphonePatternResponses.frequenciesHz),
-  }), [microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects, sourceConfigs]);
+  }), [fidelity, microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects, sourceConfigs]);
   const currentSolveKey = useMemo(() => JSON.stringify({
     fidelity,
     packages: sourceConfigs.map((source) => source.packageId),
@@ -901,6 +902,7 @@ export function App() {
       const result = await window.boundaryLabDesktop.calculateMicrophoneSweep({
         packagePath: level2Package.sourcePath,
         backend: "cuda",
+        fidelity: fidelity === "coupled" ? "coupled" : "boundary",
         sources: sourceConfigs,
         rigidObjects: rigidObjects.map((object) => ({
           ...object,
@@ -936,7 +938,7 @@ export function App() {
     } finally {
       stoppingMicrophoneSweep.current = false;
     }
-  }, [level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects, sourceConfigs]);
+  }, [fidelity, level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects, sourceConfigs]);
 
   const calculateOrStopMicrophoneSweep = () => {
     if (microphoneSweepState === "solving") void stopMicrophoneSweep();
@@ -1897,7 +1899,8 @@ export function App() {
             frequencyPosition={sortedPosition}
             frequencyCount={usableFrequencyIndices.length}
             onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
-            canCalculateBem={fidelity === "boundary" && boundaryAvailable && microphones.length > 0 && solveState !== "solving"}
+            canCalculatePressure={selectedSolverAvailable && microphones.length > 0 && solveState !== "solving"}
+            calculationLabel={fidelity === "coupled" ? "Calculate Coupled Pressure" : "Calculate BEM Pressure"}
             calculating={microphoneSweepState === "solving"}
             completedCount={microphoneSweepProgress.completed}
             totalCount={microphoneSweepProgress.total}
