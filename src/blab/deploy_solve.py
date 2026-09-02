@@ -298,6 +298,51 @@ class DeploySolveCache:
         return mesh
 
 
+def _logical_excitation_indices(
+    manifest: dict[str, Any],
+    excitation_count: int,
+    selected_index: int = 0,
+) -> tuple[int, ...]:
+    """Return symmetry-expanded ports belonging to one logical package input."""
+
+    if not 0 <= selected_index < excitation_count:
+        raise ValueError("Selected speaker-package excitation index is out of range.")
+    port_ids = manifest.get("excitation_port_ids")
+    if not isinstance(port_ids, list) or len(port_ids) != excitation_count:
+        return (selected_index,)
+    physical_system = manifest.get("physical_system")
+    if not isinstance(physical_system, dict):
+        return (selected_index,)
+    metadata = physical_system.get("metadata")
+    if not isinstance(metadata, dict):
+        return (selected_index,)
+    expansion = metadata.get("speaker_export_symmetry_expansion")
+    if not isinstance(expansion, dict):
+        return (selected_index,)
+    source_ids = expansion.get("excitation_port_source_ids")
+    if not isinstance(source_ids, dict):
+        return (selected_index,)
+    selected_port_id = str(port_ids[selected_index])
+    logical_source_id = source_ids.get(selected_port_id)
+    if not isinstance(logical_source_id, str) or not logical_source_id:
+        return (selected_index,)
+    grouped = tuple(
+        index
+        for index, port_id in enumerate(port_ids)
+        if source_ids.get(str(port_id)) == logical_source_id
+    )
+    return grouped or (selected_index,)
+
+
+def _combined_excitation_trace(
+    values: np.ndarray,
+    frequency_index: int,
+    excitation_indices: tuple[int, ...],
+) -> np.ndarray:
+    selected = np.asarray(values[frequency_index, excitation_indices, :])
+    return selected[0] if len(excitation_indices) == 1 else np.sum(selected, axis=0)
+
+
 def _load_deploy_package_data(
     package_path: Path,
     fingerprint: tuple[str, int, int] | None = None,
@@ -984,6 +1029,9 @@ def prepare_deploy_solve_request(
         raise ValueError("Fixed-source package contains no excitation ports.")
     if pressure.shape[1] != normal.shape[1]:
         raise ValueError("Fixed-source pressure and Neumann traces have different excitation counts.")
+    excitation_indices = _logical_excitation_indices(manifest, normal.shape[1])
+    logical_normal = _combined_excitation_trace(normal, frequency_index, excitation_indices)
+    logical_pressure = _combined_excitation_trace(pressure, frequency_index, excitation_indices)
 
     components: list[DeployBoundaryComponent] = []
     face_offset = 0
@@ -1008,8 +1056,8 @@ def prepare_deploy_solve_request(
             triangles=triangles,
             face_offset=face_offset,
             vertex_offset=vertex_offset,
-            q_neumann=np.asarray(normal[frequency_index, 0] * gain, dtype=np.complex64),
-            reference_pressure=np.asarray(pressure[frequency_index, 0] * gain, dtype=np.complex64),
+            q_neumann=np.asarray(logical_normal * gain, dtype=np.complex64),
+            reference_pressure=np.asarray(logical_pressure * gain, dtype=np.complex64),
         )
         components.append(component)
         face_offset += triangles.shape[0]
@@ -1315,6 +1363,8 @@ def prepare_deploy_solve_request(
             "node_count": int(sum(component.points.shape[0] for component in components)),
             "face_count": int(sum(component.triangles.shape[0] for component in components)),
             "excitation_index": 0,
+            "excitation_indices": list(excitation_indices),
+            "excitation_port_ids": [str(manifest["excitation_port_ids"][index]) for index in excitation_indices],
             "exterior_domain": "rigid_y0_half_space",
         },
     }
@@ -1580,17 +1630,31 @@ def prepare_deploy_microphone_sweep_request(
     q_imag_rows: list[list[float]] = []
     pressure_real_rows: list[list[float]] = []
     pressure_imag_rows: list[list[float]] = []
+    excitation_indices = _logical_excitation_indices(
+        package_data.manifest,
+        package_data.normal.shape[1],
+    )
     if status_callback is not None:
         status_callback(f"Encoding {len(frequencies)} frequency traces")
     for frequency_hz in frequencies:
         frequency_index = int(np.argmin(np.abs(package_data.frequencies - frequency_hz)))
         q_parts: list[np.ndarray] = []
         pressure_parts: list[np.ndarray] = []
+        logical_normal = _combined_excitation_trace(
+            package_data.normal,
+            frequency_index,
+            excitation_indices,
+        )
+        logical_pressure = _combined_excitation_trace(
+            package_data.pressure,
+            frequency_index,
+            excitation_indices,
+        )
         for source in sources:
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
             gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
-            q_parts.append(np.asarray(package_data.normal[frequency_index, 0] * gain, dtype=np.complex64))
-            pressure_parts.append(np.asarray(package_data.pressure[frequency_index, 0] * gain, dtype=np.complex64))
+            q_parts.append(np.asarray(logical_normal * gain, dtype=np.complex64))
+            pressure_parts.append(np.asarray(logical_pressure * gain, dtype=np.complex64))
         if rigid_face_count:
             q_parts.append(np.zeros(rigid_face_count, dtype=np.complex64))
         if rigid_vertex_count:

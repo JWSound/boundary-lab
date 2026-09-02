@@ -29,6 +29,13 @@ export interface SpeakerPackageManifest {
     sound_speed_m_per_s: number;
     density_kg_per_m3: number;
   };
+  physical_system?: {
+    metadata?: {
+      speaker_export_symmetry_expansion?: {
+        excitation_port_source_ids?: Record<string, string>;
+      };
+    };
+  };
 }
 
 export interface LoadedSpeakerPackage {

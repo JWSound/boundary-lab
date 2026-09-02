@@ -13,6 +13,44 @@ import type {
 
 const PRESSURE_REFERENCE_PA = 20e-6;
 
+export function logicalExcitationIndices(
+  pkg: LoadedSpeakerPackage,
+  selectedIndex = 0,
+): number[] {
+  const excitationCount = pkg.pressureShape[1];
+  if (selectedIndex < 0 || selectedIndex >= excitationCount) {
+    throw new Error("Selected speaker-package excitation index is out of range.");
+  }
+  const portIds = pkg.manifest.excitation_port_ids;
+  const sourceIds = pkg.manifest.physical_system?.metadata
+    ?.speaker_export_symmetry_expansion?.excitation_port_source_ids;
+  if (portIds.length !== excitationCount || !sourceIds) return [selectedIndex];
+  const logicalSourceId = sourceIds[portIds[selectedIndex]];
+  if (!logicalSourceId) return [selectedIndex];
+  const grouped = portIds.flatMap((portId, index) => (
+    sourceIds[portId] === logicalSourceId ? [index] : []
+  ));
+  return grouped.length > 0 ? grouped : [selectedIndex];
+}
+
+function patternPressureSample(
+  pkg: LoadedSpeakerPackage,
+  frequencyIndex: number,
+  directionIndex: number,
+  excitationIndices: number[],
+): [number, number] {
+  const excitationCount = pkg.pressureShape[1];
+  const directionCount = pkg.pressureShape[2];
+  let real = 0;
+  let imag = 0;
+  excitationIndices.forEach((excitationIndex) => {
+    const offset = (frequencyIndex * excitationCount + excitationIndex) * directionCount + directionIndex;
+    real += pkg.pressure.real[offset];
+    imag += pkg.pressure.imag[offset];
+  });
+  return [real, imag];
+}
+
 function selectKth(values: Float32Array, target: number): number {
   let left = 0;
   let right = values.length - 1;
@@ -77,8 +115,7 @@ export function computeMicrophonePatternResponses(
     }
     return { distance, directionIndex, referenceRadius: pkg.radiiM[directionIndex] };
   }));
-  const excitationCount = pkg.pressureShape[1];
-  const directionCount = pkg.pressureShape[2];
+  const excitationIndices = logicalExcitationIndices(pkg);
   return {
     frequenciesHz,
     traces: microphones.map((microphone, microphoneIndex) => {
@@ -92,9 +129,12 @@ export function computeMicrophonePatternResponses(
         sources.forEach((_source, sourceIndex) => {
           const sample = sourceDirectionData[microphoneIndex][sourceIndex];
           const config = configs[sourceIndex];
-          const pressureIndex = (frequencyIndex * excitationCount) * directionCount + sample.directionIndex;
-          const sampleReal = pkg.pressure.real[pressureIndex];
-          const sampleImag = pkg.pressure.imag[pressureIndex];
+          const [sampleReal, sampleImag] = patternPressureSample(
+            pkg,
+            frequencyIndex,
+            sample.directionIndex,
+            excitationIndices,
+          );
           const scale = sample.referenceRadius / sample.distance;
           const propagationPhase = wavenumber * (sample.distance - sample.referenceRadius);
           const propagationReal = Math.cos(propagationPhase) * scale;
@@ -169,14 +209,21 @@ export function computeMixedMicrophonePatternResponses(
         let totalImag = 0;
         sourceData[microphoneIndex].forEach((sample) => {
           const [lower, upper, mix] = frequencyBracket(sample.pkg, frequency);
-          const excitationCount = sample.pkg.pressureShape[1];
-          const directionCount = sample.pkg.pressureShape[2];
-          const lowerOffset = (lower * excitationCount) * directionCount + sample.directionIndex;
-          const upperOffset = (upper * excitationCount) * directionCount + sample.directionIndex;
-          const sampleReal = sample.pkg.pressure.real[lowerOffset]
-            + (sample.pkg.pressure.real[upperOffset] - sample.pkg.pressure.real[lowerOffset]) * mix;
-          const sampleImag = sample.pkg.pressure.imag[lowerOffset]
-            + (sample.pkg.pressure.imag[upperOffset] - sample.pkg.pressure.imag[lowerOffset]) * mix;
+          const excitationIndices = logicalExcitationIndices(sample.pkg);
+          const [lowerReal, lowerImag] = patternPressureSample(
+            sample.pkg,
+            lower,
+            sample.directionIndex,
+            excitationIndices,
+          );
+          const [upperReal, upperImag] = patternPressureSample(
+            sample.pkg,
+            upper,
+            sample.directionIndex,
+            excitationIndices,
+          );
+          const sampleReal = lowerReal + (upperReal - lowerReal) * mix;
+          const sampleImag = lowerImag + (upperImag - lowerImag) * mix;
           const scale = sample.referenceRadius / sample.distance;
           const wavenumber = (2 * Math.PI * frequency) / sample.pkg.manifest.medium.sound_speed_m_per_s;
           const propagationPhase = wavenumber * (sample.distance - sample.referenceRadius);
@@ -318,8 +365,7 @@ export function buildPatternLookup(
   const imag = new Float32Array(real.length);
   const radius = new Float32Array(real.length);
   const directionCount = pkg.pressureShape[2];
-  const excitationCount = pkg.pressureShape[1];
-  const pressureOffset = (frequencyIndex * excitationCount + excitationIndex) * directionCount;
+  const excitationIndices = logicalExcitationIndices(pkg, excitationIndex);
 
   for (let elevationIndex = 0; elevationIndex < elevationBins; elevationIndex += 1) {
     const elevation = -Math.PI / 2 + (Math.PI * elevationIndex) / (elevationBins - 1);
@@ -343,8 +389,14 @@ export function buildPatternLookup(
         }
       }
       const lookupOffset = elevationIndex * azimuthBins + azimuthIndex;
-      real[lookupOffset] = pkg.pressure.real[pressureOffset + bestDirection];
-      imag[lookupOffset] = pkg.pressure.imag[pressureOffset + bestDirection];
+      const [sampleReal, sampleImag] = patternPressureSample(
+        pkg,
+        frequencyIndex,
+        bestDirection,
+        excitationIndices,
+      );
+      real[lookupOffset] = sampleReal;
+      imag[lookupOffset] = sampleImag;
       radius[lookupOffset] = pkg.radiiM[bestDirection];
     }
   }

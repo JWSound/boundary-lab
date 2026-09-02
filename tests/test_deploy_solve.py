@@ -17,6 +17,8 @@ from blab.deploy_solve import (
     DEPLOY_SOLVE_SCHEMA,
     SOURCE_SURFACE_PADDING_M,
     DeploySolveCache,
+    _combined_excitation_trace,
+    _logical_excitation_indices,
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
     prepare_deploy_solve_request,
@@ -24,12 +26,16 @@ from blab.deploy_solve import (
 
 PACKAGE_PATH = Path(__file__).parents[1] / "deploy" / "library" / "S218BP_LOD.blabsp"
 RIGID_MESH_PATH = Path(__file__).parents[1] / "deploy" / "library" / "RigidStage_LOD.msh"
+with zipfile.ZipFile(PACKAGE_PATH, "r") as _package_archive:
+    PACKAGE_FREQUENCIES = json.loads(_package_archive.read("manifest.json"))["frequencies_hz"]
+TEST_FREQUENCY_INDEX = 43
+TEST_FREQUENCY_HZ = float(PACKAGE_FREQUENCIES[TEST_FREQUENCY_INDEX])
 
 
 def _payload() -> dict:
     return {
         "packagePath": str(PACKAGE_PATH),
-        "frequencyHz": 80.43587493896484,
+        "frequencyHz": TEST_FREQUENCY_HZ,
         "backend": "cuda",
         "sources": [
             {
@@ -110,13 +116,46 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
 
     with zipfile.ZipFile(PACKAGE_PATH, "r") as archive:
         with np.load(io.BytesIO(archive.read("data/fixed-sources.npz")), allow_pickle=False) as fixed:
-            source_q = np.asarray(fixed["normal_derivative_pa_per_m"])[43, 0]
+            source_q = np.sum(
+                np.asarray(fixed["normal_derivative_pa_per_m"])[TEST_FREQUENCY_INDEX, [0, 1]],
+                axis=0,
+            )
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
     expected = np.asarray(source_q * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(1j * phase), dtype=np.complex64)
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
     np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+    assert request["provenance"]["excitation_indices"] == [0, 1]
+    assert request["provenance"]["excitation_port_ids"] == [
+        "excitation:component-18ds115-4",
+        "excitation:component-18ds115-4__reflect_x",
+    ]
+
+
+def test_logical_excitation_grouping_preserves_independent_and_legacy_ports() -> None:
+    manifest = {
+        "excitation_port_ids": ["port:a", "port:a-reflected", "port:b"],
+        "physical_system": {
+            "metadata": {
+                "speaker_export_symmetry_expansion": {
+                    "excitation_port_source_ids": {
+                        "port:a": "port:a",
+                        "port:a-reflected": "port:a",
+                        "port:b": "port:b",
+                    }
+                }
+            }
+        },
+    }
+
+    assert _logical_excitation_indices(manifest, 3) == (0, 1)
+    assert _logical_excitation_indices(manifest, 3, selected_index=2) == (2,)
+    assert _logical_excitation_indices({"excitation_port_ids": ["port:a", "port:b"]}, 2) == (0,)
+
+    traces = np.asarray([[[1, 2], [10, 20], [100, 200]]], dtype=np.complex64)
+    np.testing.assert_array_equal(_combined_excitation_trace(traces, 0, (0, 1)), [11, 22])
+    np.testing.assert_array_equal(_combined_excitation_trace(traces, 0, (2,)), [100, 200])
 
 
 def test_prepare_deploy_solve_request_adds_rigid_zero_neumann_boundary(tmp_path: Path) -> None:
@@ -221,8 +260,8 @@ def test_prepare_microphone_sweep_stages_geometry_and_all_frequencies_once(tmp_p
     )
 
     assert json.loads(request_path.read_text(encoding="utf-8"))["schema"] == DEPLOY_MICROPHONE_SWEEP_SCHEMA
-    assert len(request["frequencies_hz"]) == 50
-    assert len(request["boundary_neumann_sweep"]["real"]) == 50
+    assert len(request["frequencies_hz"]) == len(PACKAGE_FREQUENCIES)
+    assert len(request["boundary_neumann_sweep"]["real"]) == len(PACKAGE_FREQUENCIES)
     assert len(request["boundary_neumann_sweep"]["real"][0]) == 5152
     assert len(request["reference_boundary_pressure_sweep"]["real"][0]) == 2580
     assert "boundary_neumann" not in request
