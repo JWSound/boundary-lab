@@ -34,7 +34,8 @@ npm start
 - Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
 - Plots every microphone's package-derived SPL response across the exact exported frequency grid.
 - Calculates explicit complex microphone pressure across the package grid for both Level 2 exterior BEM and Level 3 parity-ROM coupled solves. ROM sweeps retain exterior geometry while selecting each frequency's reduced operators. Both paths stream progress and turn the Calculate button into a Stop control while active.
-- Reuses the Level 3 sweep to plot peak diaphragm excursion (`|v| / 2πf`) as one progressively updated line per scene transducer; the excursion sweep does not require a microphone probe.
+- Reuses the Level 3 sweep to plot peak diaphragm excursion (`sqrt(2) |v| / 2πf`) from RMS velocity as one progressively updated line per scene transducer; the excursion sweep does not require a microphone probe.
+- Adds a cabinet-level Electrical tab with switchable impedance magnitude/phase, RMS current, and real input-power plots derived from each speaker object's applied complex RMS voltage and summed complex coil current.
 - Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
 - Schur-eliminates Level 3 parity-sector ROMs into the shared exterior BEM solve so cabinet loading and transducer feedback respond to the complete array.
 - Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.

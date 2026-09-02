@@ -193,6 +193,10 @@ export interface MicrophoneSweepResult {
   transducer_ids: string[];
   transducer_names: string[];
   transducer_velocity: { real: number[][]; imag: number[][] };
+  speaker_ids: string[];
+  speaker_names: string[];
+  speaker_voltage: { real: number[][]; imag: number[][] };
+  speaker_current: { real: number[][]; imag: number[][] };
   completed_count: number;
   total_count: number;
   pipeline?: Record<string, number>;

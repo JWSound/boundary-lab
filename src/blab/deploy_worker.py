@@ -117,6 +117,60 @@ def _transducer_velocity_result(result: dict[str, Any], request: dict[str, Any])
     }
 
 
+def _speaker_electrical_result(
+    result: dict[str, Any], request: dict[str, Any], frequency_index: int,
+) -> dict[str, Any]:
+    """Aggregate ROM coil currents and applied RMS voltage per cabinet instance."""
+
+    speakers = request.get("speakers", [])
+    transducers = request.get("transducers", [])
+    diagnostics = result.get("diagnostics", {})
+    raw_currents = diagnostics.get("transducer_current", []) if isinstance(diagnostics, dict) else []
+    if not isinstance(speakers, list) or not isinstance(transducers, list) or not isinstance(raw_currents, list):
+        return {"ids": [], "names": [], "voltage_real": [], "voltage_imag": [], "current_real": [], "current_imag": []}
+    if not speakers:
+        return {"ids": [], "names": [], "voltage_real": [], "voltage_imag": [], "current_real": [], "current_imag": []}
+    rom_sweep = request.get("rom_sweep", {})
+    sweep_frequencies = rom_sweep.get("frequencies", []) if isinstance(rom_sweep, dict) else []
+    if frequency_index >= len(sweep_frequencies):
+        raise RuntimeError("BEAT Engine electrical result has no matching ROM drive entry.")
+    drive_instances = sweep_frequencies[frequency_index].get("instances", [])
+    if len(raw_currents) != len(speakers) or len(drive_instances) != len(speakers):
+        raise RuntimeError("BEAT Engine electrical result does not match the scene speaker count.")
+    voltage_real: list[float] = []
+    voltage_imag: list[float] = []
+    current_real: list[float] = []
+    current_imag: list[float] = []
+    for speaker, raw_current, drive in zip(speakers, raw_currents, drive_instances, strict=True):
+        real_values = raw_current.get("real") if isinstance(raw_current, dict) else None
+        imag_values = raw_current.get("imag") if isinstance(raw_current, dict) else None
+        input_real = drive.get("input_real") if isinstance(drive, dict) else None
+        input_imag = drive.get("input_imag") if isinstance(drive, dict) else None
+        if not all(isinstance(values, list) and values for values in (real_values, imag_values, input_real, input_imag)):
+            raise RuntimeError("BEAT Engine electrical current or voltage result is invalid.")
+        if len(real_values) != len(imag_values):
+            raise RuntimeError("BEAT Engine coil-current real and imaginary counts differ.")
+        speaker_transducers = [item for item in transducers if item.get("source_id") == speaker.get("id")]
+        if len(speaker_transducers) != len(real_values):
+            raise RuntimeError("BEAT Engine coil-current result does not match the cabinet transducer count.")
+        total = sum(
+            complex(float(real), float(imag)) * int(descriptor.get("physical_driver_orbit_count", 1))
+            for real, imag, descriptor in zip(real_values, imag_values, speaker_transducers, strict=True)
+        )
+        voltage_real.append(float(input_real[0]))
+        voltage_imag.append(float(input_imag[0]))
+        current_real.append(float(total.real))
+        current_imag.append(float(total.imag))
+    return {
+        "ids": [str(item["id"]) for item in speakers],
+        "names": [str(item["name"]) for item in speakers],
+        "voltage_real": voltage_real,
+        "voltage_imag": voltage_imag,
+        "current_real": current_real,
+        "current_imag": current_imag,
+    }
+
+
 def _solve(
     request_id: object,
     payload: object,
@@ -315,6 +369,13 @@ def _microphone_sweep(
         transducer_names = [str(item["name"]) for item in raw_transducers] if isinstance(raw_transducers, list) else []
         velocity_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
         velocity_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
+        raw_speakers = _request.get("speakers", [])
+        speaker_ids = [str(item["id"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []
+        speaker_names = [str(item["name"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []
+        voltage_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in speaker_ids]
+        voltage_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in speaker_ids]
+        current_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in speaker_ids]
+        current_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in speaker_ids]
         frequency_indices = {frequency: index for index, frequency in enumerate(frequencies)}
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
@@ -368,6 +429,16 @@ def _microphone_sweep(
                 for transducer_index in range(len(transducer_ids)):
                     velocity_real_rows[transducer_index][frequency_index] = transducer_velocity["real"][transducer_index]
                     velocity_imag_rows[transducer_index][frequency_index] = transducer_velocity["imag"][transducer_index]
+                electrical = _speaker_electrical_result(frequency_result, _request, frequency_index) if rom_coupled else {
+                    "ids": [], "names": [], "voltage_real": [], "voltage_imag": [], "current_real": [], "current_imag": [],
+                }
+                if electrical["ids"] != speaker_ids:
+                    raise RuntimeError("BEAT Engine speaker ordering changed during the frequency sweep.")
+                for speaker_index in range(len(speaker_ids)):
+                    voltage_real_rows[speaker_index][frequency_index] = electrical["voltage_real"][speaker_index]
+                    voltage_imag_rows[speaker_index][frequency_index] = electrical["voltage_imag"][speaker_index]
+                    current_real_rows[speaker_index][frequency_index] = electrical["current_real"][speaker_index]
+                    current_imag_rows[speaker_index][frequency_index] = electrical["current_imag"][speaker_index]
                 completed_count += 1
                 _emit(
                     "microphone-progress",
@@ -383,6 +454,10 @@ def _microphone_sweep(
                         "real": transducer_velocity["real"],
                         "imag": transducer_velocity["imag"],
                     },
+                    speaker_ids=speaker_ids,
+                    speaker_names=speaker_names,
+                    speaker_voltage={"real": electrical["voltage_real"], "imag": electrical["voltage_imag"]},
+                    speaker_current={"real": electrical["current_real"], "imag": electrical["current_imag"]},
                 )
             elif event_type == "cancelled":
                 _emit("cancelled", request_id=request_id, completed_count=completed_count)
@@ -404,6 +479,10 @@ def _microphone_sweep(
             "transducer_ids": transducer_ids,
             "transducer_names": transducer_names,
             "transducer_velocity": {"real": velocity_real_rows, "imag": velocity_imag_rows},
+            "speaker_ids": speaker_ids,
+            "speaker_names": speaker_names,
+            "speaker_voltage": {"real": voltage_real_rows, "imag": voltage_imag_rows},
+            "speaker_current": {"real": current_real_rows, "imag": current_imag_rows},
             "completed_count": completed_count,
             "total_count": len(frequencies),
             "pipeline": {

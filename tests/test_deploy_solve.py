@@ -24,6 +24,7 @@ from blab.deploy_solve import (
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
     prepare_deploy_rom_microphone_sweep_request,
+    prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
 
@@ -354,6 +355,18 @@ def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
     assert first_drive == pytest.approx(2.83j, abs=1e-6)
     assert second_drive == pytest.approx(-2.83 + 0j, abs=1e-6)
     assert Path(request["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"]).is_file()
+
+
+def test_prepare_rom_request_retains_scene_speaker_and_transducer_identity(tmp_path: Path) -> None:
+    _path, request = prepare_deploy_rom_request(_payload(), tmp_path)
+
+    assert request["speakers"] == [
+        {"id": "subwoofer-1", "name": "subwoofer-1"},
+        {"id": "subwoofer-2", "name": "subwoofer-2"},
+    ]
+    assert len(request["transducers"]) == 4
+    assert request["transducers"][0]["id"] == "subwoofer-1:component:18ds115-4"
+    assert request["transducers"][0]["name"] == "subwoofer-1 / 18DS115-8"
 
 
 def test_prepare_exact_coupled_request_batches_microphones_and_frequency_weights(

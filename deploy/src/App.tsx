@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type SceneTransformMode, type SourceGroupPoseUpdate, type SourcePoseUpdate } from "./components/SceneView";
 import { type BemResponseData, MicrophoneResponsePlot } from "./components/MicrophoneResponsePlot";
 import { DriverExcursionPlot, type DriverExcursionData } from "./components/DriverExcursionPlot";
+import { ElectricalPlot, type ElectricalData, type ElectricalTrace } from "./components/ElectricalPlot";
 import {
   browserFileHandler,
   MicrophoneInspector,
@@ -56,7 +57,25 @@ import { heatmapLegendGradient } from "./model/heatmap";
 import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement, type BoundaryMeshAsset } from "./model/cabinetPlacement";
 
 function peakExcursionMillimeters(real: number, imag: number, frequencyHz: number): number {
-  return Math.hypot(real, imag) * 1000 / (2 * Math.PI * frequencyHz);
+  return Math.SQRT2 * Math.hypot(real, imag) * 1000 / (2 * Math.PI * frequencyHz);
+}
+
+function electricalSample(voltageReal: number, voltageImag: number, currentReal: number, currentImag: number) {
+  const currentMagnitude = Math.hypot(currentReal, currentImag);
+  if (currentMagnitude <= Number.EPSILON) return {
+    impedanceMagnitudeOhm: Number.NaN,
+    impedancePhaseDeg: Number.NaN,
+    rmsCurrentA: 0,
+    realPowerW: 0,
+  };
+  const impedanceReal = (voltageReal * currentReal + voltageImag * currentImag) / (currentMagnitude * currentMagnitude);
+  const impedanceImag = (voltageImag * currentReal - voltageReal * currentImag) / (currentMagnitude * currentMagnitude);
+  return {
+    impedanceMagnitudeOhm: Math.hypot(impedanceReal, impedanceImag),
+    impedancePhaseDeg: Math.atan2(impedanceImag, impedanceReal) * 180 / Math.PI,
+    rmsCurrentA: currentMagnitude,
+    realPowerW: voltageReal * currentReal + voltageImag * currentImag,
+  };
 }
 
 function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
@@ -229,7 +248,8 @@ export function App() {
   const [microphoneSweepProgress, setMicrophoneSweepProgress] = useState({ completed: 0, total: 0 });
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
   const [driverExcursion, setDriverExcursion] = useState<DriverExcursionData | null>(null);
-  const [analysisTab, setAnalysisTab] = useState<"microphones" | "excursion">("microphones");
+  const [electricalResponse, setElectricalResponse] = useState<ElectricalData | null>(null);
+  const [analysisTab, setAnalysisTab] = useState<"microphones" | "excursion" | "electrical">("microphones");
   const [analysisDrawerHeight, setAnalysisDrawerHeight] = useState(220);
   const [analysisDrawerResizing, setAnalysisDrawerResizing] = useState(false);
   const packageFileInput = useRef<HTMLInputElement>(null);
@@ -474,6 +494,7 @@ export function App() {
       : false;
   const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
   const currentDriverExcursion = driverExcursion?.key === microphoneSweepKey ? driverExcursion : null;
+  const currentElectricalResponse = electricalResponse?.key === microphoneSweepKey ? electricalResponse : null;
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     packages,
@@ -509,6 +530,7 @@ export function App() {
     setMicrophoneSweepState("idle");
     setBemMicrophoneResponses(null);
     setDriverExcursion(null);
+    setElectricalResponse(null);
     setTransformMode("select");
     setProjectName(`${next.manifest.name} Subwoofer Study`);
     setProjectFileName(`${next.manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "deploy"}-study.blabdeploy.json`);
@@ -618,6 +640,7 @@ export function App() {
     setMicrophoneSweepState("idle");
     setBemMicrophoneResponses(null);
     setDriverExcursion(null);
+    setElectricalResponse(null);
     setTransformMode("select");
     setProjectName(project.name);
     setProjectFileName(fileName);
@@ -666,6 +689,41 @@ export function App() {
           progress.frequency_hz,
         );
         traces.set(id, { name: progress.transducer_names[index] ?? id, excursionMm: values });
+      });
+      return { ...current, traces };
+    });
+    setElectricalResponse((current) => {
+      if (!current || current.key !== microphoneSweepKeyRef.current) return current;
+      const frequencyIndex = Array.from(current.frequenciesHz).findIndex(
+        (frequency) => Math.abs(frequency - progress.frequency_hz) <= Math.max(1e-4, frequency * 1e-6),
+      );
+      if (frequencyIndex < 0) return current;
+      const traces = new Map(current.traces);
+      progress.speaker_ids.forEach((id, index) => {
+        const existing = traces.get(id);
+        const blank = () => new Float32Array(current.frequenciesHz.length).fill(Number.NaN);
+        const next: ElectricalTrace = existing ? {
+          name: existing.name,
+          impedanceMagnitudeOhm: existing.impedanceMagnitudeOhm.slice(),
+          impedancePhaseDeg: existing.impedancePhaseDeg.slice(),
+          rmsCurrentA: existing.rmsCurrentA.slice(),
+          realPowerW: existing.realPowerW.slice(),
+        } : {
+          name: progress.speaker_names[index] ?? id,
+          impedanceMagnitudeOhm: blank(),
+          impedancePhaseDeg: blank(),
+          rmsCurrentA: blank(),
+          realPowerW: blank(),
+        };
+        const sample = electricalSample(
+          progress.speaker_voltage.real[index], progress.speaker_voltage.imag[index],
+          progress.speaker_current.real[index], progress.speaker_current.imag[index],
+        );
+        next.impedanceMagnitudeOhm[frequencyIndex] = sample.impedanceMagnitudeOhm;
+        next.impedancePhaseDeg[frequencyIndex] = sample.impedancePhaseDeg;
+        next.rmsCurrentA[frequencyIndex] = sample.rmsCurrentA;
+        next.realPowerW[frequencyIndex] = sample.realPowerW;
+        traces.set(id, next);
       });
       return { ...current, traces };
     });
@@ -928,6 +986,11 @@ export function App() {
       frequenciesHz: microphonePatternResponses.frequenciesHz.slice(),
       traces: new Map(),
     });
+    setElectricalResponse({
+      key: requestedKey,
+      frequenciesHz: microphonePatternResponses.frequenciesHz.slice(),
+      traces: new Map(),
+    });
     setError(null);
     try {
       const result = await window.boundaryLabDesktop.calculateMicrophoneSweep({
@@ -969,6 +1032,23 @@ export function App() {
         });
       });
       setDriverExcursion({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces: excursionTraces });
+      const electricalTraces = new Map<string, ElectricalTrace>();
+      result.speaker_ids.forEach((id, speakerIndex) => {
+        const samples = result.frequencies_hz.map((_frequencyHz, frequencyIndex) => electricalSample(
+          result.speaker_voltage.real[speakerIndex][frequencyIndex],
+          result.speaker_voltage.imag[speakerIndex][frequencyIndex],
+          result.speaker_current.real[speakerIndex][frequencyIndex],
+          result.speaker_current.imag[speakerIndex][frequencyIndex],
+        ));
+        electricalTraces.set(id, {
+          name: result.speaker_names[speakerIndex] ?? id,
+          impedanceMagnitudeOhm: Float32Array.from(samples.map((sample) => sample.impedanceMagnitudeOhm)),
+          impedancePhaseDeg: Float32Array.from(samples.map((sample) => sample.impedancePhaseDeg)),
+          rmsCurrentA: Float32Array.from(samples.map((sample) => sample.rmsCurrentA)),
+          realPowerW: Float32Array.from(samples.map((sample) => sample.realPowerW)),
+        });
+      });
+      setElectricalResponse({ key: requestedKey, frequenciesHz: Float64Array.from(result.frequencies_hz), traces: electricalTraces });
       setMicrophoneSweepProgress({ completed: result.completed_count, total: result.total_count });
       setMicrophoneSweepState("complete");
     } catch (caught) {
@@ -1939,6 +2019,7 @@ export function App() {
             <div className="analysis-tabs" role="tablist" aria-label="Frequency analysis plots">
               <button role="tab" aria-selected={analysisTab === "microphones"} className={analysisTab === "microphones" ? "active" : ""} onClick={() => setAnalysisTab("microphones")}><Mic2 size={11} /> Microphones</button>
               <button role="tab" aria-selected={analysisTab === "excursion"} className={analysisTab === "excursion" ? "active" : ""} onClick={() => setAnalysisTab("excursion")}><Waves size={11} /> Driver excursion</button>
+              <button role="tab" aria-selected={analysisTab === "electrical"} className={analysisTab === "electrical" ? "active" : ""} onClick={() => setAnalysisTab("electrical")}><SlidersHorizontal size={11} /> Electrical</button>
             </div>
             {analysisTab === "microphones" ? <MicrophoneResponsePlot
               pattern={microphonePatternResponses}
@@ -1953,8 +2034,20 @@ export function App() {
               completedCount={microphoneSweepProgress.completed}
               totalCount={microphoneSweepProgress.total}
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
-            /> : <DriverExcursionPlot
+            /> : analysisTab === "excursion" ? <DriverExcursionPlot
               data={currentDriverExcursion}
+              coupledSelected={fidelity === "coupled"}
+              currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
+              frequencyPosition={sortedPosition}
+              frequencyCount={usableFrequencyIndices.length}
+              onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
+              canCalculate={coupledAvailable && solveState !== "solving"}
+              calculating={microphoneSweepState === "solving"}
+              completedCount={microphoneSweepProgress.completed}
+              totalCount={microphoneSweepProgress.total}
+              onCalculateOrStop={calculateOrStopMicrophoneSweep}
+            /> : <ElectricalPlot
+              data={currentElectricalResponse}
               coupledSelected={fidelity === "coupled"}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
@@ -1979,7 +2072,9 @@ export function App() {
                 ) }}
               />
               <div><span>{observation.heatmapMinimumDb.toFixed(0)}</span><span>{observation.heatmapMaximumDb.toFixed(0)} dB</span></div>
-            </> : <div className="excursion-note"><strong>PEAK EXCURSION</strong><span>Derived from complex diaphragm velocity</span><code>|v| / 2πf</code></div>}
+            </> : analysisTab === "excursion"
+              ? <div className="excursion-note"><strong>PEAK EXCURSION</strong><span>Derived from RMS diaphragm velocity</span><code>sqrt(2) |v| / 2 pi f</code></div>
+              : <div className="excursion-note"><strong>CABINET INPUT</strong><span>Complex RMS voltage and summed coil current</span><code>Z = V / I</code></div>}
           </div>
         </div>
       </section>

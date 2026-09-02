@@ -290,6 +290,15 @@ button { color: inherit; }
 .response-range-toggle:active { border-style: inset; }
 .driver-response-legend { right: 90px; flex-wrap: wrap; row-gap: 5px; max-height: 34px; overflow: hidden; }
 .driver-response-legend span { white-space: nowrap; }
+.electrical-view-switcher { display: flex; gap: 1px; }
+.electrical-view-switcher button { height: 21px; padding: 0 7px; border: 1px solid #4b524c; color: #919891; background: #191e1a; font: 700 8px/1 Arial, sans-serif; cursor: pointer; }
+.electrical-view-switcher button.active { color: #fff; border-color: #6d7b70; background: #303832; }
+.electrical-response .response-frequency { min-width: 165px; }
+.electrical-response .response-frequency input { width: 95px; }
+.electrical-phase-trace { fill: none; stroke-width: 1.7; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+.electrical-legend { right: 90px; flex-wrap: wrap; row-gap: 5px; max-height: 34px; overflow: hidden; }
+.electrical-legend em { margin-left: auto; }
+.line-sample.phase { margin-left: 5px; border-top-style: dashed; }
 .excursion-note { display: flex; flex-direction: column; gap: 8px; color: #7d867e; font-size: 8px; line-height: 1.35; }
 .excursion-note strong { color: #c4cbc2; font-size: 9px; }
 .excursion-note code { color: var(--accent); font: 600 11px/1 "Cascadia Mono", "Consolas", monospace; }

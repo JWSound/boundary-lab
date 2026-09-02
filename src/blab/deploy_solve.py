@@ -1532,15 +1532,35 @@ def prepare_deploy_rom_request(
         )
 
     transducer_count = int(selected["velocity"].shape[-2])
+    physical_system = package.manifest.get("physical_system", {})
+    package_transducers = [
+        item for item in physical_system.get("components", [])
+        if isinstance(item, dict) and item.get("kind") == "electrodynamic_transducer"
+    ] if isinstance(physical_system, dict) else []
+    if len(package_transducers) != transducer_count:
+        package_transducers = [
+            {"id": f"transducer:{index}", "name": f"Transducer {index + 1}", "parameters": {}}
+            for index in range(transducer_count)
+        ]
     transducers = [
         {
-            "id": f"{source.id}:transducer:{transducer_index}",
-            "name": f"{str(raw_source.get('name', source.id)).strip() or source.id} / Transducer {transducer_index + 1}",
+            "id": f"{source.id}:{package_transducer['id']}",
+            "name": f"{str(raw_source.get('name', source.id)).strip() or source.id} / {package_transducer['name']}",
             "source_id": source.id,
             "transducer_index": transducer_index,
+            "physical_driver_orbit_count": int(
+                package_transducer.get("parameters", {}).get("physical_driver_orbit_count", 1)
+            ),
         }
         for raw_source, source in zip(raw_sources, sources, strict=True)
-        for transducer_index in range(transducer_count)
+        for transducer_index, package_transducer in enumerate(package_transducers)
+    ]
+    speakers = [
+        {
+            "id": source.id,
+            "name": str(raw_source.get("name", source.id)).strip() or source.id,
+        }
+        for raw_source, source in zip(raw_sources, sources, strict=True)
     ]
 
     binary_path = Path(work_dir).resolve() / "speaker-rom.bin"
@@ -1571,6 +1591,7 @@ def prepare_deploy_rom_request(
             "gmres_max_iterations": int(payload.get("romGmresMaxIterations", 30)),
         },
         transducers=transducers,
+        speakers=speakers,
     )
     request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
     if status_callback is not None:

@@ -200,3 +200,26 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> N
     assert result["microphone_ids"] == []
     assert result["transducer_ids"] == ["source:transducer:0"]
     assert result["transducer_velocity"] == {"real": [[2.0, 4.0]], "imag": [[0.0, 0.0]]}
+
+
+def test_speaker_electrical_result_sums_coil_current_per_cabinet() -> None:
+    request = {
+        "speakers": [{"id": "cabinet-a", "name": "Cabinet A"}],
+        "transducers": [
+            {"source_id": "cabinet-a", "physical_driver_orbit_count": 1},
+            {"source_id": "cabinet-a", "physical_driver_orbit_count": 2},
+        ],
+        "rom_sweep": {"frequencies": [{"instances": [{
+            "input_real": [2.83, 2.83], "input_imag": [0.0, 0.0],
+        }]}]},
+    }
+    result = {"diagnostics": {"transducer_current": [{
+        "real": [0.1, 0.2], "imag": [-0.01, -0.02],
+    }]}}
+
+    electrical = deploy_worker._speaker_electrical_result(result, request, 0)
+
+    assert electrical["ids"] == ["cabinet-a"]
+    assert electrical["voltage_real"] == [2.83]
+    assert electrical["current_real"] == pytest.approx([0.5])
+    assert electrical["current_imag"] == pytest.approx([-0.05])
