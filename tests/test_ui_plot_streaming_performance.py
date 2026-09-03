@@ -166,6 +166,26 @@ def test_isobar_canvas_reuses_mesh_colorbar_and_colormap() -> None:
     assert canvas._colormap is first_colormap
 
 
+def test_clearing_a_colorbar_canvas_does_not_need_a_spinorama_layout_hook() -> None:
+    """``_draw_empty`` runs on every canvas at the start of every solve.
+
+    It reaches ``_remove_colorbar``, which asks the canvas to re-apply its
+    layout. Only ``SpinoramaCanvas`` defined that hook, so a second solve died
+    here on an isobar plot before the solver was ever invoked.
+    """
+    canvas = IsobarCanvas("Horizontal")
+    freqs = np.asarray([100.0, 1000.0, 10000.0], dtype=np.float32)
+    angles = np.asarray([-90.0, 0.0, 90.0], dtype=np.float32)
+    values = np.arange(9, dtype=np.float32).reshape(3, 3) - 8.0
+
+    canvas.update_plot(freqs, angles, values, -30.0, 0.0, shading="nearest")
+    assert canvas._colorbar is not None
+
+    canvas._draw_empty()
+
+    assert canvas._colorbar is None
+
+
 def test_line_plot_canvases_reuse_existing_artists() -> None:
     freqs = np.asarray([100.0, 1000.0, 10000.0], dtype=np.float32)
 
