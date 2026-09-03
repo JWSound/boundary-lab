@@ -65,6 +65,25 @@ export interface CornerSnapTarget {
   key: string;
   position: Vector3;
   objectCenter: Vector3;
+  paddingDirections?: readonly Vector3[];
+}
+
+/** Return target-face outward normals that oppose faces at the dragged corner. */
+export function matchingCornerPaddingDirections(
+  movingSigns: readonly [number, number, number],
+  movingAxes: readonly [Vector3, Vector3, Vector3],
+  targetSigns: readonly [number, number, number],
+  targetAxes: readonly [Vector3, Vector3, Vector3],
+): Vector3[] {
+  const directions: Vector3[] = [];
+  for (let movingAxis = 0; movingAxis < 3; movingAxis += 1) {
+    const movingNormal = movingAxes[movingAxis].clone().multiplyScalar(movingSigns[movingAxis]);
+    for (let targetAxis = 0; targetAxis < 3; targetAxis += 1) {
+      const targetNormal = targetAxes[targetAxis].clone().multiplyScalar(targetSigns[targetAxis]);
+      if (movingNormal.dot(targetNormal) <= -1 + 1e-8) directions.push(targetNormal);
+    }
+  }
+  return directions;
 }
 
 export interface ScreenViewport {
@@ -140,6 +159,18 @@ export function paddedCornerSnapDelta(
   // which become coincident at the snap point.
   const sourceCenterProbe = startObjectCenter.clone().add(probeDelta);
   const separation = sourceCenterProbe.sub(target.objectCenter);
+  if (target.paddingDirections?.length) {
+    let direction = target.paddingDirections[0];
+    let bestProjection = separation.dot(direction);
+    for (const candidate of target.paddingDirections.slice(1)) {
+      const projection = separation.dot(candidate);
+      if (projection > bestProjection) {
+        direction = candidate;
+        bestProjection = projection;
+      }
+    }
+    return target.position.clone().addScaledVector(direction, paddingM).sub(startCorner);
+  }
   const components = [Math.abs(separation.x), Math.abs(separation.y), Math.abs(separation.z)];
   let axis = 0;
   if (components[1] > components[axis]) axis = 1;

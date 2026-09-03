@@ -23,10 +23,11 @@ import {
 } from "three";
 import type { FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, SpeakerInstance } from "../model/types";
 import { SOURCE_GROUND_CLEARANCE_M } from "../model/field";
-import { cabinetLocalBounds, type BoundaryMeshAsset } from "../model/cabinetPlacement";
+import { cabinetClearanceViolations, cabinetLocalBounds, type BoundaryMeshAsset } from "../model/cabinetPlacement";
 import {
   configureAxisOnlyRotation,
   groundParallelPosition,
+  matchingCornerPaddingDirections,
   paddedCornerSnapDelta,
   rotationReadout,
   stickyCornerSnapTarget,
@@ -104,6 +105,40 @@ export interface FieldTextureProfile {
 }
 
 const packageSceneBounds = cabinetLocalBounds;
+
+function instanceAxes(instance: SpeakerInstance): [Vector3, Vector3, Vector3] {
+  const rotation = new Quaternion().setFromEuler(new Euler(
+    MathUtils.degToRad(instance.pitchDeg),
+    MathUtils.degToRad(instance.yawDeg),
+    MathUtils.degToRad(instance.rollDeg),
+    "YXZ",
+  ));
+  return [
+    new Vector3(1, 0, 0).applyQuaternion(rotation),
+    new Vector3(0, 1, 0).applyQuaternion(rotation),
+    new Vector3(0, 0, 1).applyQuaternion(rotation),
+  ];
+}
+
+function cornerSigns(corner: readonly [number, number, number], bounds: SceneBounds): [number, number, number] {
+  return [
+    corner[0] === bounds.minimum[0] ? -1 : 1,
+    corner[1] === bounds.minimum[1] ? -1 : 1,
+    corner[2] === bounds.minimum[2] ? -1 : 1,
+  ];
+}
+
+function snappedPosesHaveClearance(
+  packages: readonly BoundaryMeshAsset[],
+  moving: readonly SpeakerInstance[],
+  stationary: readonly SpeakerInstance[],
+): boolean {
+  const movingIds = new Set(moving.map((instance) => instance.id));
+  const packageMap = new Map(packages.map((item) => [item.id, item]));
+  return !cabinetClearanceViolations(packageMap, [...moving, ...stationary]).some(
+    ([left, right]) => movingIds.has(left) || movingIds.has(right),
+  );
+}
 
 function cornerInWorld(
   corner: [number, number, number],
@@ -776,14 +811,25 @@ function SpeakerGeometry({
       ? probePoint.sub(drag.startProbePoint)
       : pointerDelta;
     const targetCorners: CornerSnapTarget[] = [];
+    const movingBounds = packageSceneBounds(pkg);
+    const movingSigns = cornerSigns(drag.corner, movingBounds);
+    const movingAxes = instanceAxes(instance);
     for (const other of allInstances) {
       if (movingInstanceIds.includes(other.id)) continue;
       const targetPackage = packages.find((candidate) => candidate.id === other.packageId) ?? pkg;
-      for (const [cornerIndex, targetCorner] of packageSceneBounds(targetPackage).corners.entries()) {
+      const targetBounds = packageSceneBounds(targetPackage);
+      const targetAxes = instanceAxes(other);
+      for (const [cornerIndex, targetCorner] of targetBounds.corners.entries()) {
         targetCorners.push({
           key: `${other.id}:${cornerIndex}`,
           position: cornerInWorld(targetCorner, other),
           objectCenter: new Vector3(...other.position),
+          paddingDirections: matchingCornerPaddingDirections(
+            movingSigns,
+            movingAxes,
+            cornerSigns(targetCorner, targetBounds),
+            targetAxes,
+          ),
         });
       }
     }
@@ -796,8 +842,6 @@ function SpeakerGeometry({
       viewport,
       drag.snapKey,
     );
-    drag.snapKey = snapTarget?.key ?? null;
-    setSnapHighlight(snapTarget?.position.clone() ?? null);
     const snappedDelta = paddedCornerSnapDelta(
       cornerInWorld(drag.corner, instance, drag.startPosition),
       drag.startObjectCenter,
@@ -807,6 +851,17 @@ function SpeakerGeometry({
     );
     const snapped = groundParallelPosition(drag.startPosition, snappedDelta);
     snapped[1] += snappedDelta.y;
+    const snappedInstance = { ...instance, position: snapped };
+    const stationary = allInstances.filter((other) => !movingInstanceIds.includes(other.id));
+    const validSnap = snapTarget && snappedPosesHaveClearance(packages, [snappedInstance], stationary);
+    drag.snapKey = validSnap ? snapTarget.key : null;
+    setSnapHighlight(validSnap ? snapTarget.position.clone() : null);
+    if (snapTarget && !validSnap) {
+      const unsnapped = groundParallelPosition(drag.startPosition, pointerDelta);
+      snapped[0] = unsnapped[0];
+      snapped[1] = unsnapped[1];
+      snapped[2] = unsnapped[2];
+    }
     onTransform({
       positionX: snapped[0],
       positionHeightM: snapped[1],
@@ -1274,14 +1329,31 @@ function SpeakerSelectionControls({
       ? probePoint.sub(drag.startProbePoint)
       : rawDelta;
     const targetCorners: CornerSnapTarget[] = [];
+    const movingSigns = cornerSigns(
+      [drag.startCorner.x, drag.startCorner.y, drag.startCorner.z],
+      bounds,
+    );
+    const movingAxes: [Vector3, Vector3, Vector3] = [
+      new Vector3(1, 0, 0),
+      new Vector3(0, 1, 0),
+      new Vector3(0, 0, 1),
+    ];
     for (const other of allInstances) {
       if (instances.some((instance) => instance.id === other.id)) continue;
       const targetPackage = packages.find((pkg) => pkg.id === other.packageId) ?? packages[0];
-      for (const [cornerIndex, targetCorner] of packageSceneBounds(targetPackage).corners.entries()) {
+      const targetBounds = packageSceneBounds(targetPackage);
+      const targetAxes = instanceAxes(other);
+      for (const [cornerIndex, targetCorner] of targetBounds.corners.entries()) {
         targetCorners.push({
           key: `${other.id}:${cornerIndex}`,
           position: cornerInWorld(targetCorner, other),
           objectCenter: new Vector3(...other.position),
+          paddingDirections: matchingCornerPaddingDirections(
+            movingSigns,
+            movingAxes,
+            cornerSigns(targetCorner, targetBounds),
+            targetAxes,
+          ),
         });
       }
     }
@@ -1294,8 +1366,6 @@ function SpeakerSelectionControls({
       viewport,
       drag.snapKey,
     );
-    drag.snapKey = snapTarget?.key ?? null;
-    setSnapHighlight(snapTarget?.position.clone() ?? null);
     const snappedDelta = paddedCornerSnapDelta(
       drag.startCorner,
       drag.startCenter,
@@ -1303,7 +1373,15 @@ function SpeakerSelectionControls({
       probeDelta,
       snapTarget,
     );
-    emitTranslation(drag.instances, snappedDelta);
+    const snappedInstances = drag.instances.map((start) => ({
+      ...start,
+      position: new Vector3(...start.position).add(snappedDelta).toArray() as [number, number, number],
+    }));
+    const stationary = allInstances.filter((other) => !instances.some((moving) => moving.id === other.id));
+    const validSnap = snapTarget && snappedPosesHaveClearance(packages, snappedInstances, stationary);
+    drag.snapKey = validSnap ? snapTarget.key : null;
+    setSnapHighlight(validSnap ? snapTarget.position.clone() : null);
+    emitTranslation(drag.instances, snapTarget && !validSnap ? rawDelta : snappedDelta);
   };
 
   const finishHandlePointer = (event: ThreeEvent<PointerEvent>) => {
