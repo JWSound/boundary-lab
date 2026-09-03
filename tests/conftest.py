@@ -81,7 +81,6 @@ def _stub_mesh_preview_class():
 
         def __init__(self, *args, **kwargs):
             super().__init__()
-            self.region_visibility_mode: str | None = None
             self.loaded: list[tuple] = []
             self.clear_count = 0
             self.observation_planes = ()
@@ -97,9 +96,6 @@ def _stub_mesh_preview_class():
 
         def load_mesh_configs(self, *args, **kwargs) -> None:
             self.loaded.append((args, kwargs))
-
-        def set_region_visibility_mode(self, mode) -> None:
-            self.region_visibility_mode = mode
 
         def set_observation_planes(self, planes, *, selected_id=None) -> None:
             self.observation_planes = tuple(planes)

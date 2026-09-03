@@ -9,7 +9,7 @@ from pathlib import Path
 import meshio
 import numpy as np
 
-from blab.config import RadiatorConfig
+from blab.config import MeshConfig, RadiatorConfig
 from blab.physical_model import (
     AcousticRegion,
     AcousticRegionKind,
@@ -27,6 +27,10 @@ from blab.physical_model import (
 from blab.ui.system_config import AvailableSystemMesh
 
 AUTO_SEEDED_EXTERIOR_KEY = "auto_seeded_exterior"
+
+
+class PhysicalSystemMigrationError(ValueError):
+    """A legacy exterior project could not be represented as a physical system."""
 
 
 @dataclass
@@ -160,6 +164,37 @@ def seed_exterior_system(
     )
 
 
+def seed_exterior_system_from_solver_inputs(
+    meshes: tuple[MeshConfig, ...],
+    radiators: tuple[RadiatorConfig, ...],
+) -> tuple[PhysicalSystem, dict[str, str]]:
+    """Represent a materialized legacy mesh assembly as a physical system."""
+
+    available = []
+    for mesh_config in meshes:
+        path = Path(mesh_config.file)
+        mesh = meshio.read(path)
+        surface_groups = tuple(
+            sorted(str(name) for name, raw in mesh.field_data.items() if int(np.asarray(raw).tolist()[1]) == 2)
+        )
+        has_tetrahedra = any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
+        if has_tetrahedra:
+            raise ValueError(f"Exterior compatibility mesh '{mesh_config.name}' contains tetrahedra.")
+        available.append(
+            AvailableSystemMesh(
+                name=mesh_config.name,
+                source_file=str(path),
+                file=str(path),
+                scale_to_m=float(mesh_config.scale_factor if mesh_config.scale_factor is not None else 0.001),
+                translation_m=tuple(float(value) for value in mesh_config.translation_m),
+                surface_groups=surface_groups,
+                volume_groups=(),
+                has_tetrahedra=False,
+            )
+        )
+    return seed_exterior_system(tuple(available), radiators)
+
+
 def _radiators_by_mesh_tag(
     radiators: tuple[RadiatorConfig, ...],
     mesh_names: tuple[str, ...],
@@ -192,4 +227,9 @@ def _unique_id(base: str, used: set[str]) -> str:
     return candidate
 
 
-__all__ = ["AUTO_SEEDED_EXTERIOR_KEY", "seed_exterior_system"]
+__all__ = [
+    "AUTO_SEEDED_EXTERIOR_KEY",
+    "PhysicalSystemMigrationError",
+    "seed_exterior_system",
+    "seed_exterior_system_from_solver_inputs",
+]

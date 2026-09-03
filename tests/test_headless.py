@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,7 @@ from blab.physical_model import (
 )
 from blab.project_cli import _build_arg_parser
 from blab.solve_results import ResultDomain
+from blab.solvers.coupled_backend import validate_solve_plan
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
 from blab.ui.project_state import ProjectPreferencesState
@@ -154,8 +156,16 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     validate = parser.parse_args(["validate", "speaker.blab.json", "--json"])
     solve = parser.parse_args(["solve", "speaker.blab.json", "--events", "ndjson"])
     export = parser.parse_args(
-        ["export-speaker", "speaker.blab.json", "--output", "speaker.blabsp", "--fidelity", "fixed"]
+        [
+            "export-speaker",
+            "speaker.blab.json",
+            "--output",
+            "speaker.blabsp",
+            "--fidelity",
+            "coupled",
+        ]
     )
+    speaker_preflight = parser.parse_args(["speaker-preflight", "speaker.blab.json", "--rom-rank", "128"])
     evaluate_fem = parser.parse_args(["evaluate-fem", "runs/case"])
     compare_fem = parser.parse_args(["compare-fem", "coarse.json", "fine.json"])
 
@@ -166,7 +176,10 @@ def test_project_cli_exposes_validate_and_solve_commands() -> None:
     assert solve.events == "ndjson"
     assert export.project_command == "export-speaker"
     assert export.output == Path("speaker.blabsp")
-    assert export.fidelity == "fixed"
+    assert export.fidelity == "coupled"
+    assert not hasattr(export, "coupled_representation")
+    assert speaker_preflight.project_command == "speaker-preflight"
+    assert speaker_preflight.rom_rank == 128
     assert evaluate_fem.project_command == "evaluate-fem"
     assert evaluate_fem.run_dir == Path("runs/case")
     assert evaluate_fem.min_points_per_wavelength_p95 == 8.0
@@ -215,6 +228,13 @@ def test_explicit_backend_does_not_probe_cuda(monkeypatch) -> None:
     assert resolve_headless_backend("beat_cpu_condensed") == "beat_cpu"
 
 
+def test_solve_plan_validation_checks_protocol_before_backend_capabilities() -> None:
+    request = replace(_prepared_request().request, frequencies_hz=())
+
+    with pytest.raises(ValueError, match="at least one frequency"):
+        validate_solve_plan(request)
+
+
 def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypatch, tmp_path: Path) -> None:
     prepared = _prepared_request()
     request = SystemSolveRequest(
@@ -236,8 +256,8 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         result_domains=prepared.result_domains,
     )
     monkeypatch.setattr(headless_module, "prepare_system_ui_solve", lambda *_args, **_kwargs: prepared)
-    monkeypatch.setattr(headless_module, "validate_system_solve_request", lambda _request: None)
-    monkeypatch.setattr(headless_module, "validate_system_capabilities", lambda _request: None)
+    validated = []
+    monkeypatch.setattr(headless_module, "validate_solve_plan", validated.append)
     project_path = tmp_path / "project.blab.json"
     project_path.write_text("{}", encoding="utf-8")
     project = HeadlessProject(
@@ -254,6 +274,8 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         HeadlessSolveSpec(solver_options={"validation_diagnostics": True}),
         backend_id="beat_cpu",
     )
+
+    assert validated == [result.request]
 
     assert result.request.solver_options["validation_diagnostics"] is True
     assert result.request.solver_options["static_condensation"] is False

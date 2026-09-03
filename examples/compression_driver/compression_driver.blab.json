@@ -156,7 +156,7 @@
     "polar_observation_distance_m": 1.0,
     "spherical_sampling_enabled": false
   },
-  "schema_version": 8,
+  "schema_version": 9,
   "stitch_exterior_meshes": false,
   "symmetry": "off"
 }

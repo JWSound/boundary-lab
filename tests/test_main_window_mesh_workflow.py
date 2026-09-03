@@ -33,7 +33,7 @@ from blab.ui.main_window import (
 )
 from blab.ui.main_window.project_session import ProjectSession
 from blab.ui.main_window.project_workflow import ProjectWorkflowController
-from blab.ui.project_state import ProjectPreferencesState
+from blab.ui.project_state import ProjectPreferencesState, new_project_document
 from blab.ui.system_config import InterfaceRebuildResult
 from repo_paths import MAIN_WINDOW_PKG
 
@@ -536,7 +536,8 @@ def test_system_and_channel_config_use_bottom_buttons() -> None:
     assert "self.system_config_button.clicked.connect(self.open_system_config)" in source
     assert "self.channel_config_button.clicked.connect(self.open_channel_config)" in source
     assert '("channel_config", "Channel Config Panel")' not in source
-    assert "ChannelConfigDialog(self._channel_configs_for_current_radiators(), self)" in open_channel_config
+    assert "ChannelConfigDialog(" in open_channel_config
+    assert "prescribed_velocity_channel_names=self.prescribed_velocity_channel_names()" in open_channel_config
     assert "dialog.show()" in open_channel_config
     assert "dialog.activateWindow()" in open_channel_config
     assert "_make_panel_dock" not in open_channel_config
@@ -571,10 +572,26 @@ def _project_controller(monkeypatch, *, payload=None, project_preferences=None):
             self.confirmed.append((title, message))
             return self.answer
 
+        def show_error(self, title, message):
+            raise AssertionError(f"{title}: {message}")
+
+        def show_status(self, _message):
+            pass
+
     session = ProjectSession()
-    controller = ProjectWorkflowController.__new__(ProjectWorkflowController)
-    controller._session = session
-    controller._view = FakeView()
+    controller = ProjectWorkflowController(
+        None,
+        view=FakeView(),
+        inputs=None,
+        session=session,
+        geometry_store=None,
+        preferences=lambda: None,
+        set_preferences=lambda _preferences: None,
+        save_preferences=lambda: None,
+        save_frequency_settings=lambda: None,
+        remember_recent=lambda _path: None,
+        forget_recent=lambda _path: None,
+    )
     if payload is not None:
         monkeypatch.setattr(controller, "project_payload", lambda: payload)
     if project_preferences is not None:
@@ -626,3 +643,97 @@ def test_project_preference_prompt_only_appears_for_differences(monkeypatch) -> 
     different = ProjectPreferencesState(horizontal_normalization_angle=15.0)
     assert controller._confirm_apply_project_preferences(different) is True
     assert "unique application preferences" in controller._view.confirmed[0][1]
+
+
+def test_declined_project_preferences_remain_attached_to_loaded_project(monkeypatch, tmp_path: Path) -> None:
+    current = ProjectPreferencesState()
+    stored = ProjectPreferencesState(horizontal_normalization_angle=15.0)
+    controller = _project_controller(monkeypatch, project_preferences=current)
+    controller._view.answer = False
+    controller._remember_recent = lambda _path: None
+
+    class FakeInputs:
+        @staticmethod
+        def discard_channel_config_dialog():
+            pass
+
+        @staticmethod
+        def result_from_generator_document(_document):
+            return None
+
+        @staticmethod
+        def rebuild_generator_document_tabs():
+            pass
+
+        @staticmethod
+        def reconcile_symmetry_with_backend():
+            pass
+
+        @staticmethod
+        def surface_tags_for_meshes():
+            return {}
+
+        @staticmethod
+        def apply_saved_imported_source_config(_surface_tags):
+            pass
+
+        @staticmethod
+        def ensure_seeded_exterior_system():
+            pass
+
+        @staticmethod
+        def source_config_by_name():
+            return {}
+
+        @staticmethod
+        def channel_config_by_name():
+            return {}
+
+    class FakeGeometryStore:
+        generated_by_document_id = {}
+
+        @staticmethod
+        def clear_imported_radiators():
+            pass
+
+    controller._inputs = FakeInputs()
+    controller._geometry_store = FakeGeometryStore()
+    monkeypatch.setattr(
+        "blab.ui.main_window.project_workflow.read_project_file",
+        lambda _path: {"project_preferences": stored.to_payload()},
+    )
+    monkeypatch.setattr(
+        controller,
+        "_apply_project_preferences",
+        lambda _preferences: pytest.fail("declined preferences must not be applied to the application"),
+    )
+    controller._load_project_from_path(tmp_path / "stored.blab.json")
+
+    assert controller._session.document.project_preferences == stored
+    assert controller._session.path == tmp_path / "stored.blab.json"
+
+
+def test_project_serialization_is_pure_and_uses_document_preferences(monkeypatch) -> None:
+    current = ProjectPreferencesState(horizontal_normalization_angle=0.0)
+    stored = ProjectPreferencesState(horizontal_normalization_angle=15.0)
+    controller = _project_controller(monkeypatch, project_preferences=current)
+    controller._session.document = new_project_document(project_preferences=stored)
+
+    class FakeInputs:
+        @staticmethod
+        def source_config_by_name():
+            return {}
+
+        @staticmethod
+        def channel_config_by_name():
+            return {}
+
+    controller._inputs = FakeInputs()
+    before = controller._session.document.project_preferences
+
+    first = controller.project_payload()
+    second = controller.project_payload()
+
+    assert first == second
+    assert ProjectPreferencesState.from_payload(first["project_preferences"]) == stored
+    assert controller._session.document.project_preferences is before

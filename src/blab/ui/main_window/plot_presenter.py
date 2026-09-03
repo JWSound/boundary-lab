@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer, Slot
 
+from blab.max_spl import max_spl_limits_from_payload, max_spl_limits_payload
+from blab.spinorama import compute_spinorama_from_planes
 from blab.ui.main_window.plot_controls import contour_controls
 from blab.ui.main_window_widgets import (
     PlotEntry,
 )
+from blab.ui.max_spl_dialog import MaxSplLimitsDialog
+from blab.ui.plot_limits_dialog import PlotLimitsDialog
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
@@ -111,16 +115,32 @@ class PlotPresenterMixin:
     def clear_plots(self) -> None:
         self.cancel_live_refresh()
         self._solve_session().begin()
+        self.set_spherical_spin_available(False)
         observation_planes = getattr(self, "observation_plane_controller", None)
         if observation_planes is not None:
             observation_planes.sync_view()
         for entry in self.plot_entries:
             entry.widget._draw_empty()
         self.set_plot_exports_available(False)
-        self.set_polar_export_available(False)
-        self.set_on_axis_export_available(False)
         self.set_balloon_plot_available(False)
+        self.set_max_spl_available(False)
         self.refresh_contour_controls()
+
+    @Slot(str)
+    def open_plot_limits(self, plot_id: str) -> None:
+        entry = next((item for item in self.plot_entries if item.plot_id == plot_id), None)
+        if entry is None:
+            return
+        canvas = entry.widget
+        dialog = PlotLimitsDialog(
+            entry.title,
+            canvas.displayed_axis_limits(),
+            automatic=canvas.automatic_axis_limits,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+        canvas.set_axis_limits(dialog.limits())
 
     def apply_last_completed_comparison(self) -> None:
         dataset = self._last_completed_visualization_dataset
@@ -156,6 +176,16 @@ class PlotPresenterMixin:
             impedance.real,
             impedance.imaginary,
         )
+        electrical_impedance = dataset.electrical_impedance
+        if electrical_impedance is None:
+            self.electrical_impedance_plot.clear_comparison_plot()
+        else:
+            self.electrical_impedance_plot.set_comparison_plot(
+                electrical_impedance.freq_hz,
+                electrical_impedance.channel_names,
+                electrical_impedance.magnitude_ohm,
+                electrical_impedance.phase_deg,
+            )
         response = dataset.response
         self.on_axis_plot.set_comparison_plot(
             response.freq_hz,
@@ -166,14 +196,42 @@ class PlotPresenterMixin:
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
         )
-        self.spinorama_plot.set_comparison_plot(
-            response.freq_hz,
-            response.angle_deg,
-            response.horizontal_spl_db,
-            response.vertical_spl_db,
-            horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
-            vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
-        )
+        group_delay = dataset.group_delay
+        if group_delay is None:
+            self.group_delay_plot.clear_comparison_plot()
+        else:
+            self.group_delay_plot.set_comparison_plot(
+                group_delay.freq_hz,
+                group_delay.trace_names,
+                group_delay.group_delay_ms,
+            )
+        if dataset.excursion is None:
+            self.excursion_plot.clear_comparison_plot()
+        else:
+            self.excursion_plot.set_comparison_plot(
+                dataset.excursion.freq_hz,
+                dataset.excursion.transducer_names,
+                dataset.excursion.excursion_mm,
+            )
+        if dataset.max_spl is None:
+            self.max_spl_plot.clear_comparison_plot()
+        else:
+            self.max_spl_plot.set_comparison_plot(
+                dataset.max_spl.freq_hz,
+                dataset.max_spl.channel_names,
+                dataset.max_spl.spl_db,
+            )
+        if dataset.spinorama_planes is None:
+            self.spinorama_plot.set_comparison_plot(
+                response.freq_hz,
+                response.angle_deg,
+                response.horizontal_spl_db,
+                response.vertical_spl_db,
+                horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
+                vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
+            )
+        else:
+            self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(dataset))
 
     def clear_comparison_history(self) -> None:
         self._solve_session().forget_comparison()
@@ -263,6 +321,15 @@ class PlotPresenterMixin:
                 min_db=self.preferences.spl_min_db,
                 max_db=self.preferences.spl_max_db,
             ),
+            transducer_motion=self._solve_session().transducer_motion,
+            electrical_impedance=self._solve_session().electrical_impedance,
+            acoustic_load_impedance=self._solve_session().acoustic_load_impedance,
+            max_spl_limits=(
+                max_spl_limits_from_payload(self.project.max_spl_limits_by_channel)
+                if self._solve_session().max_spl_requested
+                else None
+            ),
+            voltage_channel_names=self._solve_session().voltage_channel_names,
         )
 
     def _plot_entry_is_actively_visible(self, entry: PlotEntry) -> bool:
@@ -348,9 +415,103 @@ class PlotPresenterMixin:
             response.channel_on_axis_phase_deg,
         )
 
+    def _update_electrical_impedance_plot(self, dataset: VisualizationProjection) -> None:
+        impedance = dataset.electrical_impedance
+        if impedance is None:
+            if self.electrical_impedance_plot._plot_state is not None:
+                self.electrical_impedance_plot._draw_empty()
+            return
+        self.electrical_impedance_plot.update_plot(
+            impedance.freq_hz,
+            impedance.channel_names,
+            impedance.magnitude_ohm,
+            impedance.phase_deg,
+        )
+
+    def _update_group_delay_plot(self, dataset: VisualizationProjection) -> None:
+        group_delay = dataset.group_delay
+        if group_delay is None:
+            if self.group_delay_plot._plot_state is not None:
+                self.group_delay_plot._draw_empty()
+            return
+        self.group_delay_plot.update_plot(
+            group_delay.freq_hz,
+            group_delay.trace_names,
+            group_delay.group_delay_ms,
+        )
+
+    def _update_excursion_plot(self, dataset: VisualizationProjection) -> None:
+        excursion = dataset.excursion
+        if excursion is None:
+            if self.excursion_plot._plot_state is not None:
+                self.excursion_plot._draw_empty()
+            return
+        self.excursion_plot.update_plot(
+            excursion.freq_hz,
+            excursion.transducer_names,
+            excursion.excursion_mm,
+        )
+
+    def _update_max_spl_plot(self, dataset: VisualizationProjection) -> None:
+        maximum = dataset.max_spl
+        if maximum is None:
+            if self.max_spl_plot._plot_state is not None:
+                self.max_spl_plot._draw_empty()
+            return
+        self.max_spl_plot.update_plot(
+            maximum.freq_hz,
+            maximum.channel_names,
+            maximum.spl_db,
+        )
+
+    @Slot()
+    def calculate_max_spl(self) -> None:
+        session = self._solve_session()
+        motion = session.transducer_motion
+        channel_names = self.max_spl_channel_names()
+        if not channel_names and motion is not None:
+            channel_names = motion.eligible_max_spl_channel_names(session.voltage_channel_names)
+        if not channel_names:
+            self.warn("Maximum SPL", "No voltage-only electrodynamic channels are available.")
+            return
+        dialog = MaxSplLimitsDialog(
+            channel_names,
+            max_spl_limits_from_payload(self.project.max_spl_limits_by_channel),
+            self,
+        )
+        if not dialog.exec():
+            return
+        limits = dialog.limits()
+        self.project.max_spl_limits_by_channel = max_spl_limits_payload(limits)
+        session.max_spl_requested = any(limit.enabled for limit in limits.values())
+        if motion is None or self.live_dataset is None:
+            self.show_status("Maximum SPL configuration updated")
+            return
+        if not session.max_spl_requested:
+            self.max_spl_plot._draw_empty()
+            self.set_max_spl_export_available(False)
+            self.show_status("Maximum SPL configuration updated; all channels disabled")
+            return
+        dataset = self.prepared_live_dataset()
+        if dataset is None or dataset.max_spl is None:
+            self.warn("Maximum SPL", "Maximum SPL could not be calculated from the current solve.")
+            return
+        self._update_max_spl_plot(dataset)
+        self.set_max_spl_export_available(True)
+        enabled_count = sum(limit.enabled for limit in limits.values())
+        self.show_status(f"Maximum SPL configuration updated: {enabled_count} channel(s) enabled")
+
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:
+        self.set_spherical_spin_available(dataset.spinorama_spherical is not None)
+        self.spinorama_plot.update_curves(self._spinorama_curves_for_projection(dataset))
+
+    def _spinorama_curves_for_projection(self, dataset: VisualizationProjection):
+        if self.spherical_spin_action.isChecked() and dataset.spinorama_spherical is not None:
+            return dataset.spinorama_spherical
+        if dataset.spinorama_planes is not None:
+            return dataset.spinorama_planes
         response = dataset.response
-        self.spinorama_plot.update_plot(
+        return compute_spinorama_from_planes(
             response.freq_hz,
             response.angle_deg,
             response.horizontal_spl_db,
@@ -358,3 +519,19 @@ class PlotPresenterMixin:
             horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
             vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
         )
+
+    def set_spherical_spin_available(self, available: bool) -> None:
+        action = getattr(self, "spherical_spin_action", None)
+        if action is not None:
+            action.setEnabled(bool(available))
+
+    @Slot(bool)
+    def set_spherical_spin_enabled(self, _enabled: bool) -> None:
+        dataset = self.prepared_live_dataset()
+        if dataset is not None:
+            self._update_spinorama_plot(dataset)
+        comparison = self._last_completed_visualization_dataset
+        if comparison is None:
+            self.spinorama_plot.clear_comparison_plot()
+        else:
+            self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(comparison))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -37,13 +38,8 @@ PLOT_LEGEND_SIZE = 9
 PLOT_TITLE_PAD = 7
 GRID_LINE_ALPHA = 0.6
 MINOR_GRID_LINE_ALPHA = 0.3
-PLOT_LEFT_MARGIN = 0.14
-PLOT_RIGHT_MARGIN = 0.86
-PLOT_TOP_MARGIN = 0.9
-# Shared, so panels in the same units get the same axes height.
-PLOT_BOTTOM_MARGIN = 0.2
-ISOBAR_COLORBAR_GAP = 0.025
-ISOBAR_COLORBAR_WIDTH = 0.025
+ISOBAR_COLORBAR_GAP_PT = 7.0
+ISOBAR_COLORBAR_WIDTH_PT = 10.0
 ON_AXIS_DB_SPAN = 50.0
 SPINORAMA_SPL_LIMITS = (-40.0, 10.0)
 SPINORAMA_DI_LIMITS = (-5.0, 45.0)
@@ -54,6 +50,90 @@ ISOBAR_CROSSHAIR_COLOR = "#101214"
 ISOBAR_CROSSHAIR_LABEL_FACE = "#f8fbff"
 ISOBAR_CROSSHAIR_LABEL_EDGE = "#2868ff"
 ISOBAR_CROSSHAIR_DB_FACE = "#101214"
+
+
+@dataclass(frozen=True)
+class PlotLayoutProfile:
+    """Physical padding around plot axes, independent of dock dimensions."""
+
+    left_pt: float
+    right_pt: float
+    top_pt: float = 22.0
+    bottom_pt: float = 36.0
+    min_axes_width_pt: float = 110.0
+    min_axes_height_pt: float = 72.0
+
+
+@dataclass(frozen=True)
+class PlotAxisLimits:
+    """User-domain limits for a plot's primary x and y axes."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+
+    def validated(self) -> PlotAxisLimits:
+        values = np.asarray((self.x_min, self.x_max, self.y_min, self.y_max), dtype=float)
+        if not np.isfinite(values).all():
+            raise ValueError("Plot limits must be finite numbers.")
+        if self.x_min <= 0.0:
+            raise ValueError("The lower X limit must be greater than zero for frequency plots.")
+        if self.x_min >= self.x_max:
+            raise ValueError("The lower X limit must be less than the upper X limit.")
+        if self.y_min >= self.y_max:
+            raise ValueError("The lower Y limit must be less than the upper Y limit.")
+        return self
+
+
+SINGLE_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=14.0)
+DUAL_AXIS_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=52.0)
+ISOBAR_LAYOUT = PlotLayoutProfile(left_pt=50.0, right_pt=58.0)
+SPINORAMA_LAYOUT = PlotLayoutProfile(left_pt=52.0, right_pt=52.0, bottom_pt=58.0)
+
+
+def apply_figure_layout(figure: Figure, profile: PlotLayoutProfile) -> None:
+    """Apply point-based margins, scaling them only when a figure is exceptionally small."""
+
+    width_pt, height_pt = np.asarray(figure.get_size_inches(), dtype=float) * 72.0
+    left, right = _layout_axis_edges(
+        width_pt,
+        profile.left_pt,
+        profile.right_pt,
+        profile.min_axes_width_pt,
+    )
+    bottom, top = _layout_axis_edges(
+        height_pt,
+        profile.bottom_pt,
+        profile.top_pt,
+        profile.min_axes_height_pt,
+    )
+    figure.subplots_adjust(left=left, right=right, top=top, bottom=bottom)
+
+
+def figure_point_fraction(figure: Figure, points: float, *, axis: str) -> float:
+    """Convert physical points into a normalized figure-coordinate distance."""
+
+    dimension_inches = figure.get_figwidth() if axis == "x" else figure.get_figheight()
+    return float(points) / max(float(dimension_inches) * 72.0, 1.0)
+
+
+def _layout_axis_edges(
+    total_pt: float,
+    leading_pt: float,
+    trailing_pt: float,
+    minimum_content_pt: float,
+) -> tuple[float, float]:
+    total = max(float(total_pt), 1.0)
+    leading = max(float(leading_pt), 0.0)
+    trailing = max(float(trailing_pt), 0.0)
+    requested = leading + trailing
+    available = max(total - min(float(minimum_content_pt), total * 0.72), total * 0.08)
+    if requested > available and requested > 0.0:
+        scale = available / requested
+        leading *= scale
+        trailing *= scale
+    return leading / total, 1.0 - trailing / total
 
 
 def apply_audio_frequency_axis(axes) -> None:
@@ -133,6 +213,9 @@ class InteractivePlotCanvas(FigureCanvas):
 
     def __init__(self, figure: Figure, title: str) -> None:
         self.title = title
+        self._manual_axis_limits: PlotAxisLimits | None = None
+        self._automatic_axis_limits_snapshot: PlotAxisLimits | None = None
+        self._layout_profile: PlotLayoutProfile | None = None
         self._comparison_plot: Any | None = None
         self._comparison_restore_plot: Any | None = None
         self._comparison_active = False
@@ -141,6 +224,71 @@ class InteractivePlotCanvas(FigureCanvas):
         self._crosshair_background = None
         super().__init__(figure)
         self._connect_interaction_events()
+
+    @property
+    def automatic_axis_limits(self) -> bool:
+        return self._manual_axis_limits is None
+
+    def displayed_axis_limits(self) -> PlotAxisLimits:
+        x_min, x_max = self._x_limits_to_user_domain(self.axes.get_xlim())
+        y_min, y_max = self.axes.get_ylim()
+        return PlotAxisLimits(float(x_min), float(x_max), float(y_min), float(y_max))
+
+    def set_axis_limits(self, limits: PlotAxisLimits | None) -> None:
+        if limits is None:
+            automatic_limits = self._automatic_axis_limits_snapshot
+            self._manual_axis_limits = None
+            self._automatic_axis_limits_snapshot = None
+            if automatic_limits is not None:
+                self._apply_axis_limits(automatic_limits)
+            state = self._current_plot_state()
+            if state is None:
+                self._draw_empty()
+            else:
+                self._apply_plot_state(state)
+            return
+        if self._manual_axis_limits is None:
+            self._automatic_axis_limits_snapshot = self.displayed_axis_limits()
+        self._manual_axis_limits = limits.validated()
+        self._apply_manual_axis_limits()
+        self._invalidate_crosshair_background()
+        if self._crosshair_visible:
+            self._redraw_crosshair()
+        self.draw_idle()
+
+    def _x_limits_to_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        return float(limits[0]), float(limits[1])
+
+    def _x_limits_from_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        return float(limits[0]), float(limits[1])
+
+    def _apply_manual_axis_limits(self) -> None:
+        limits = self._manual_axis_limits
+        if limits is None:
+            return
+        self._apply_axis_limits(limits)
+
+    def _apply_axis_limits(self, limits: PlotAxisLimits) -> None:
+        self.axes.set_xlim(*self._x_limits_from_user_domain((limits.x_min, limits.x_max)))
+        self.axes.set_ylim(limits.y_min, limits.y_max)
+
+    def set_layout_profile(self, profile: PlotLayoutProfile) -> None:
+        self._layout_profile = profile
+        self._apply_layout_profile()
+
+    def _apply_layout_profile(self) -> None:
+        if self._layout_profile is None:
+            return
+        apply_figure_layout(self.figure, self._layout_profile)
+        self._after_layout_profile_applied()
+
+    def _after_layout_profile_applied(self) -> None:
+        """Reposition manually managed artists after the axes rectangle changes."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._apply_layout_profile()
+        self.draw_idle()
 
     def _connect_interaction_events(self) -> None:
         self.mpl_connect("button_press_event", self._on_crosshair_button_press)
@@ -304,9 +452,14 @@ class IsobarCanvas(InteractivePlotCanvas):
         self.figure = Figure(figsize=(5.5, 2.8), dpi=100)
         self.axes = self.figure.add_subplot(111)
         super().__init__(self.figure, title)
-        self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)
-        self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)
         self.show_colorbar = bool(show_colorbar)
+        profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT
+        if left_margin is not None or right_margin is not None:
+            figure_width_pt = self.figure.get_figwidth() * 72.0
+            profile = PlotLayoutProfile(
+                left_pt=(profile.left_pt if left_margin is None else float(left_margin) * figure_width_pt),
+                right_pt=(profile.right_pt if right_margin is None else (1.0 - float(right_margin)) * figure_width_pt),
+            )
         self.colors = VisualizerConfig.custom_colors
         self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
         self._mesh_artist = None
@@ -334,19 +487,11 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._crosshair_freq_label = None
         self._crosshair_angle_label = None
         self._crosshair_db_label = None
-        self._apply_layout()
+        self.set_layout_profile(profile)
         self._draw_empty()
 
-    def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(
-            left=self.left_margin,
-            right=self.right_margin,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
-
     def _configure_axes(self) -> None:
-        self._apply_layout()
+        self._apply_layout_profile()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
         self.axes.set_ylabel("Angle (deg)")
@@ -359,6 +504,16 @@ class IsobarCanvas(InteractivePlotCanvas):
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
         self._axis_configuration_mode = self._x_axis_mode
+
+    def _x_limits_to_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        if self._x_axis_mode == "log_image":
+            return float(10.0 ** limits[0]), float(10.0 ** limits[1])
+        return super()._x_limits_to_user_domain(limits)
+
+    def _x_limits_from_user_domain(self, limits: tuple[float, float]) -> tuple[float, float]:
+        if self._x_axis_mode == "log_image":
+            return float(np.log10(limits[0])), float(np.log10(limits[1]))
+        return super()._x_limits_from_user_domain(limits)
 
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
@@ -382,6 +537,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._mesh_render_mode = None
         self._x_axis_mode = "frequency"
         self._configure_axes()
+        self._apply_manual_axis_limits()
         self._redraw_captured_contours()
         self._redraw_crosshair()
         self.draw_idle()
@@ -835,9 +991,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         else:
             self._colorbar_mappable = ScalarMappable(norm=norm, cmap=cmap)
             self._colorbar_mappable.set_array([])
-            self._colorbar_axes = self.figure.add_axes(
-                [self.right_margin + ISOBAR_COLORBAR_GAP, 0.2, ISOBAR_COLORBAR_WIDTH, 0.71]
-            )
+            self._colorbar_axes = self.figure.add_axes(self._colorbar_bounds())
             self._colorbar = self.figure.colorbar(
                 self._colorbar_mappable,
                 cax=self._colorbar_axes,
@@ -845,6 +999,21 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._colorbar.set_ticks(self._colorbar_ticks(clip_min_db, clip_max_db, contour_step_db))
         self._colorbar.ax.tick_params(labelsize=PLOT_TICK_SIZE)
         self._colorbar_state = state
+
+    def _after_layout_profile_applied(self) -> None:
+        if self._colorbar_axes is not None:
+            self._colorbar_axes.set_position(self._colorbar_bounds())
+
+    def _colorbar_bounds(self) -> list[float]:
+        axes_position = self.axes.get_position()
+        gap = figure_point_fraction(self.figure, ISOBAR_COLORBAR_GAP_PT, axis="x")
+        width = figure_point_fraction(self.figure, ISOBAR_COLORBAR_WIDTH_PT, axis="x")
+        return [
+            axes_position.x1 + gap,
+            axes_position.y0,
+            width,
+            axes_position.height,
+        ]
 
     def _image_from_values(
         self,
@@ -982,6 +1151,7 @@ class IsobarCanvas(InteractivePlotCanvas):
         if self._axis_configuration_mode != self._x_axis_mode:
             self._configure_axes()
             self._redraw_captured_contours()
+        self._apply_manual_axis_limits()
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
@@ -1177,20 +1347,21 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self.axes = self.figure.add_subplot(111)
         self._lines: list[object] = []
         self._series_labels: tuple[str, ...] = ()
+        self._series_visibility: dict[str, bool] = {}
+        self._series_actions: dict[str, QAction] = {}
         self._plot_state = None
         super().__init__(self.figure, "Acoustic Impedance")
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.trace_filter_menu = QMenu("Traces", self)
+        self.trace_filter_action = QAction("Traces", self)
+        self.trace_filter_action.setToolTip("Choose visible acoustic load impedance traces")
+        self.trace_filter_action.setMenu(self.trace_filter_menu)
+        self.set_layout_profile(SINGLE_AXIS_LAYOUT)
         self._draw_empty()
 
     def _configure_axes(self) -> None:
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
+        self.axes.set_ylabel("Normalized Acoustic Impedance (Z / ρcSd)")
         apply_audio_frequency_axis(self.axes)
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
@@ -1203,6 +1374,8 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
         self._configure_axes()
+        self._sync_trace_filter_actions(())
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1258,35 +1431,92 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self._plot_state = state
         self._invalidate_crosshair_background()
 
-        labels: list[str] = []
-        for index in range(impedance_real.shape[0]):
-            name = str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
-            labels.extend((f"{name} Z real", f"{name} Z imag"))
-        series_labels = tuple(labels)
+        series_labels = tuple(
+            str(radiator_names[index]) if index < radiator_names.size else f"Radiator {index + 1}"
+            for index in range(impedance_real.shape[0])
+        )
         if series_labels != self._series_labels:
             for line in self._lines:
                 line.remove()
             self._lines = []
-            for index in range(impedance_real.shape[0]):
-                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=series_labels[index * 2])
-                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=series_labels[index * 2 + 1])
+            for name in series_labels:
+                (real_line,) = self.axes.plot([], [], linewidth=1.5, label=f"{name} Z real")
+                (imag_line,) = self.axes.plot([], [], linewidth=1.5, linestyle="--", label=f"{name} Z imag")
                 self._lines.extend((real_line, imag_line))
-            legend = self.axes.get_legend()
-            if legend is not None:
-                legend.remove()
-            if self._lines:
-                self.axes.legend(loc="best")
             self._series_labels = series_labels
+            for label in series_labels:
+                self._series_visibility.setdefault(label, True)
+            self._sync_trace_filter_actions(series_labels)
 
         for index in range(impedance_real.shape[0]):
             self._lines[index * 2].set_data(freqs_hz, impedance_real[index])
             self._lines[index * 2 + 1].set_data(freqs_hz, impedance_imag[index])
-        self.axes.relim()
-        self.axes.autoscale_view(scalex=False, scaley=True)
+        self._apply_series_visibility()
+        self._update_y_limits()
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         if self._crosshair_visible:
             self._redraw_crosshair()
         self.draw_idle()
+
+    def _sync_trace_filter_actions(self, labels: tuple[str, ...]) -> None:
+        self.trace_filter_menu.clear()
+        self._series_actions = {}
+        for label in labels:
+            action = self.trace_filter_menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(self._series_visibility.get(label, True))
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
+            self._series_actions[label] = action
+        self.trace_filter_action.setEnabled(bool(labels))
+
+    def set_series_visible(self, label: str, visible: bool) -> None:
+        if label not in self._series_labels:
+            return
+        self._series_visibility[label] = bool(visible)
+        self._apply_series_visibility()
+        self._update_y_limits()
+        self._apply_manual_axis_limits()
+        self._invalidate_crosshair_background()
+        self.draw_idle()
+
+    def _apply_series_visibility(self) -> None:
+        visible_lines = []
+        for index, label in enumerate(self._series_labels):
+            visible = self._series_visibility.get(label, True)
+            pair = self._lines[index * 2 : index * 2 + 2]
+            for line in pair:
+                line.set_visible(visible)
+                if visible:
+                    visible_lines.append(line)
+        legend = self.axes.get_legend()
+        if legend is not None:
+            legend.remove()
+        if visible_lines:
+            self.axes.legend(
+                visible_lines,
+                [line.get_label() for line in visible_lines],
+                loc="best",
+            )
+
+    def _update_y_limits(self) -> None:
+        finite_rows = []
+        for line in self._lines:
+            if not line.get_visible():
+                continue
+            values = np.asarray(line.get_ydata(), dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                finite_rows.append(finite)
+        if not finite_rows:
+            self.axes.set_ylim(-0.1, 0.1)
+            return
+        values = np.concatenate(finite_rows)
+        minimum = float(np.min(values))
+        maximum = float(np.max(values))
+        span = maximum - minimum
+        padding = max(0.08 * span, 1.0e-3)
+        self.axes.set_ylim(minimum - padding, maximum + padding)
 
 
 class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
@@ -1313,12 +1543,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self.show_phase_action.setCheckable(True)
         self.show_phase_action.setEnabled(False)
         self.show_phase_action.toggled.connect(self._set_phase_visible)
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self.set_layout_profile(DUAL_AXIS_LAYOUT)
         self.phase_axes.yaxis.set_label_position("right")
         self.phase_axes.yaxis.tick_right()
         self._draw_empty()
@@ -1362,6 +1587,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._configure_axes()
         self._sync_trace_filter_actions(())
         self.show_phase_action.setEnabled(False)
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1558,6 +1784,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
             self._apply_series_visibility()
             self._update_magnitude_limits()
 
+        self._apply_manual_axis_limits()
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.phase_axes)
         if self._crosshair_visible:
@@ -1589,6 +1816,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._series_visibility[label] = bool(visible)
         self._apply_series_visibility()
         self._update_magnitude_limits()
+        self._apply_manual_axis_limits()
         self._invalidate_crosshair_background()
         self.draw_idle()
 
@@ -1669,6 +1897,7 @@ def _snapshot_spinorama_curves(curves: SpinoramaCurves) -> SpinoramaCurves:
         estimated_in_room_db=np.asarray(curves.estimated_in_room_db).copy(),
         early_reflections_di_db=np.asarray(curves.early_reflections_di_db).copy(),
         sound_power_di_db=np.asarray(curves.sound_power_di_db).copy(),
+        sound_power_di_label=curves.sound_power_di_label,
     )
 
 
@@ -1682,16 +1911,11 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self._series_labels: tuple[tuple[str, ...], tuple[str, ...]] = ((), ())
         self._plot_state = None
         super().__init__(self.figure, "Spinorama", secondary_axes=self.di_axes)
-        self._apply_layout()
+        self.set_layout_profile(SPINORAMA_LAYOUT)
         self._draw_empty()
 
     def _apply_layout(self) -> None:
-        self.figure.subplots_adjust(
-            left=PLOT_LEFT_MARGIN,
-            right=PLOT_RIGHT_MARGIN,
-            top=PLOT_TOP_MARGIN,
-            bottom=PLOT_BOTTOM_MARGIN,
-        )
+        self._apply_layout_profile()
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
 
@@ -1715,6 +1939,7 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)
+        self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
 
@@ -1742,6 +1967,9 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
             horizontal_reference_angle_deg=horizontal_reference_angle_deg,
             vertical_reference_angle_deg=vertical_reference_angle_deg,
         )
+        self._set_comparison_plot_state(_snapshot_spinorama_curves(curves))
+
+    def set_comparison_curves(self, curves: SpinoramaCurves) -> None:
         self._set_comparison_plot_state(_snapshot_spinorama_curves(curves))
 
     def _current_plot_state(self) -> SpinoramaCurves | None:
@@ -1836,6 +2064,7 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
 
         self.axes.set_ylim(*SPINORAMA_SPL_LIMITS)
         self.di_axes.set_ylim(*SPINORAMA_DI_LIMITS)
+        self._apply_manual_axis_limits()
 
         apply_compact_plot_text(self.axes)
         apply_compact_plot_text(self.di_axes)

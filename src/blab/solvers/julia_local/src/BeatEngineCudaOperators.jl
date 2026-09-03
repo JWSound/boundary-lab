@@ -260,6 +260,13 @@ function _launch_regular_symmetry_image_kernel!(
         trial_curl_sign_x,
         trial_curl_sign_y,
         trial_curl_sign_z,
+        false,
+        false,
+        slp_re,
+        slp_im,
+        adj_re,
+        adj_im,
+        slp_re,
     )
     return nothing
 end

@@ -7,8 +7,15 @@ from dataclasses import dataclass
 import numpy as np
 
 from blab.config import ChannelConfig
-from blab.live import LiveSolveDataset
+from blab.live import (
+    AcousticLoadImpedanceDataset,
+    ElectricalImpedanceDataset,
+    LiveSolveDataset,
+    TransducerMotionDataset,
+)
+from blab.max_spl import MaxSplLimit
 from blab.postprocess import PrepConfig
+from blab.spinorama import SpinoramaCurves, compute_spinorama_from_planes
 
 
 @dataclass(frozen=True)
@@ -95,16 +102,86 @@ class PolarResponseProjection:
 
 
 @dataclass(frozen=True)
+class ExcursionProjection:
+    freq_hz: np.ndarray
+    transducer_names: np.ndarray
+    excursion_mm: np.ndarray
+
+    def snapshot(self) -> ExcursionProjection:
+        return ExcursionProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            transducer_names=np.asarray(self.transducer_names).copy(),
+            excursion_mm=np.asarray(self.excursion_mm).copy(),
+        )
+
+
+@dataclass(frozen=True)
+class ElectricalImpedanceProjection:
+    freq_hz: np.ndarray
+    channel_names: np.ndarray
+    magnitude_ohm: np.ndarray
+    phase_deg: np.ndarray
+
+    def snapshot(self) -> ElectricalImpedanceProjection:
+        return ElectricalImpedanceProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            channel_names=np.asarray(self.channel_names).copy(),
+            magnitude_ohm=np.asarray(self.magnitude_ohm).copy(),
+            phase_deg=np.asarray(self.phase_deg).copy(),
+        )
+
+
+@dataclass(frozen=True)
+class GroupDelayProjection:
+    freq_hz: np.ndarray
+    trace_names: np.ndarray
+    group_delay_ms: np.ndarray
+
+    def snapshot(self) -> GroupDelayProjection:
+        return GroupDelayProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            trace_names=np.asarray(self.trace_names).copy(),
+            group_delay_ms=np.asarray(self.group_delay_ms).copy(),
+        )
+
+
+@dataclass(frozen=True)
+class MaxSplProjection:
+    freq_hz: np.ndarray
+    channel_names: np.ndarray
+    spl_db: np.ndarray
+
+    def snapshot(self) -> MaxSplProjection:
+        return MaxSplProjection(
+            freq_hz=np.asarray(self.freq_hz).copy(),
+            channel_names=np.asarray(self.channel_names).copy(),
+            spl_db=np.asarray(self.spl_db).copy(),
+        )
+
+
+@dataclass(frozen=True)
 class VisualizationProjection:
     isobar: IsobarProjection
     impedance: ImpedanceProjection
     response: PolarResponseProjection
+    excursion: ExcursionProjection | None = None
+    electrical_impedance: ElectricalImpedanceProjection | None = None
+    group_delay: GroupDelayProjection | None = None
+    max_spl: MaxSplProjection | None = None
+    spinorama_planes: SpinoramaCurves | None = None
+    spinorama_spherical: SpinoramaCurves | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
             isobar=self.isobar.snapshot(),
             impedance=self.impedance.snapshot(),
             response=self.response.snapshot(),
+            excursion=None if self.excursion is None else self.excursion.snapshot(),
+            electrical_impedance=(None if self.electrical_impedance is None else self.electrical_impedance.snapshot()),
+            group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
+            max_spl=None if self.max_spl is None else self.max_spl.snapshot(),
+            spinorama_planes=_snapshot_spinorama_curves(self.spinorama_planes),
+            spinorama_spherical=_snapshot_spinorama_curves(self.spinorama_spherical),
         )
 
 
@@ -116,6 +193,11 @@ class ResultProjectionService:
         dataset: LiveSolveDataset,
         channels: tuple[ChannelConfig, ...],
         options: ProjectionOptions,
+        transducer_motion: TransducerMotionDataset | None = None,
+        electrical_impedance: ElectricalImpedanceDataset | None = None,
+        acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None,
+        max_spl_limits: dict[str, MaxSplLimit] | None = None,
+        voltage_channel_names: frozenset[str] = frozenset(),
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -138,6 +220,65 @@ class ResultProjectionService:
         )
         if arrays is None:
             return None
+        excursion = None
+        if transducer_motion is not None:
+            excursion_arrays = transducer_motion.as_excursion_arrays(dataset)
+            if excursion_arrays is not None:
+                excursion = ExcursionProjection(*excursion_arrays)
+        electrical_projection = None
+        if electrical_impedance is not None:
+            electrical_arrays = electrical_impedance.as_impedance_arrays()
+            if electrical_arrays is not None:
+                electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
+        group_delay_projection = None
+        group_delay_arrays = dataset.as_group_delay_arrays()
+        if group_delay_arrays is not None:
+            group_delay_projection = GroupDelayProjection(*group_delay_arrays)
+        max_spl_projection = None
+        if transducer_motion is not None and max_spl_limits is not None:
+            max_spl_arrays = transducer_motion.as_max_spl_arrays(
+                dataset,
+                max_spl_limits,
+                voltage_channel_names,
+            )
+            if max_spl_arrays is not None:
+                max_spl_projection = MaxSplProjection(*max_spl_arrays)
+        impedance_projection = ImpedanceProjection(
+            freq_hz=arrays["impedance_freq_hz"],
+            radiator_names=arrays["impedance_radiator_names"],
+            real=arrays["impedance_real"],
+            imaginary=arrays["impedance_imag"],
+        )
+        if acoustic_load_impedance is not None:
+            acoustic_load_arrays = acoustic_load_impedance.as_impedance_arrays()
+            if acoustic_load_arrays is not None:
+                impedance_projection = ImpedanceProjection(*acoustic_load_arrays)
+        spinorama_options = {
+            "horizontal_reference_angle_deg": options.spin_horizontal_reference_angle_deg,
+            "vertical_reference_angle_deg": options.spin_vertical_reference_angle_deg,
+        }
+        spinorama_planes = compute_spinorama_from_planes(
+            arrays["freq_hz"],
+            arrays["polar_angle_deg"],
+            arrays["horizontal_spl_db"],
+            arrays["vertical_spl_db"],
+            **spinorama_options,
+        )
+        spinorama_spherical = None
+        sphere = dataset.as_balloon_raw_bundle()
+        if sphere is not None:
+            sphere_freqs = np.asarray(sphere.get("freq_hz"), dtype=np.float32)
+            sphere_spl = np.asarray(sphere.get("spl_norm"), dtype=np.float32)
+            if sphere_freqs.shape == arrays["freq_hz"].shape and np.allclose(sphere_freqs, arrays["freq_hz"]):
+                spinorama_spherical = compute_spinorama_from_planes(
+                    arrays["freq_hz"],
+                    arrays["polar_angle_deg"],
+                    arrays["horizontal_spl_db"],
+                    arrays["vertical_spl_db"],
+                    spherical_spl_relative_db=sphere_spl,
+                    use_native_plane_resolution=True,
+                    **spinorama_options,
+                )
         return VisualizationProjection(
             isobar=IsobarProjection(
                 freq_hz=arrays["isobar_freq_hz"],
@@ -147,12 +288,7 @@ class ResultProjectionService:
                 clip_min_db=float(arrays["clip_min_db"]),
                 clip_max_db=float(arrays["clip_max_db"]),
             ),
-            impedance=ImpedanceProjection(
-                freq_hz=arrays["impedance_freq_hz"],
-                radiator_names=arrays["impedance_radiator_names"],
-                real=arrays["impedance_real"],
-                imaginary=arrays["impedance_imag"],
-            ),
+            impedance=impedance_projection,
             response=PolarResponseProjection(
                 freq_hz=arrays["freq_hz"],
                 angle_deg=arrays["polar_angle_deg"],
@@ -165,4 +301,26 @@ class ResultProjectionService:
                 spin_horizontal_reference_angle_deg=float(arrays["spin_horizontal_reference_angle_deg"]),
                 spin_vertical_reference_angle_deg=float(arrays["spin_vertical_reference_angle_deg"]),
             ),
+            excursion=excursion,
+            electrical_impedance=electrical_projection,
+            group_delay=group_delay_projection,
+            max_spl=max_spl_projection,
+            spinorama_planes=spinorama_planes,
+            spinorama_spherical=spinorama_spherical,
         )
+
+
+def _snapshot_spinorama_curves(curves: SpinoramaCurves | None) -> SpinoramaCurves | None:
+    if curves is None:
+        return None
+    return SpinoramaCurves(
+        freq_hz=np.asarray(curves.freq_hz).copy(),
+        on_axis_db=np.asarray(curves.on_axis_db).copy(),
+        listening_window_db=np.asarray(curves.listening_window_db).copy(),
+        early_reflections_db=np.asarray(curves.early_reflections_db).copy(),
+        sound_power_db=np.asarray(curves.sound_power_db).copy(),
+        estimated_in_room_db=np.asarray(curves.estimated_in_room_db).copy(),
+        early_reflections_di_db=np.asarray(curves.early_reflections_di_db).copy(),
+        sound_power_di_db=np.asarray(curves.sound_power_di_db).copy(),
+        sound_power_di_label=curves.sound_power_di_label,
+    )

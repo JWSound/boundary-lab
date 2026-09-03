@@ -230,7 +230,7 @@ def _save_impedance_plot(
 
     _setup_log_frequency_axis(ax)
     ax.set_xlabel("Frequency (Hz)")
-    ax.set_ylabel("Acoustic Impedance (Pa*s/m^3)")
+    ax.set_ylabel("Acoustic Load Impedance (N*s/m)")
     ax.set_title("Acoustic Impedance", pad=PLOT_TITLE_PAD)
     ax.grid(which="major", color="#808080", linewidth=0.8)
     ax.legend()

@@ -11,12 +11,8 @@ too large or specialized to construct inside individual tests.
   across multiple physical surface groups.
 - `noncubic_cavity/` contains the documented analytic cavity and mesh-density
   convergence family.
-- `SAWMOD/` contains full and symmetry-reduced interface/component cases. Its
-  project file uses paths relative to that directory; the conformed exterior
-  mesh is committed so the project opens ready to compile on a fresh clone.
-- `SAWMOD_Full/` retains the separate full-domain SAWMOD geometry pair.
-- `SKRAM/` is the multi-chamber, multi-interface compilation and symmetry case.
+- `SAWMOD/` contains the full and symmetry-reduced mesh variants used by
+  interface-conformance, component-symmetry, and system-editor tests. The
+  ready-to-open project lives in `examples/Multi_region_SAWMOD/`.
 
-Project fixtures must not contain workstation-specific absolute paths. Keep a
-derived mesh only when it is required to make a project immediately usable;
-ordinary cleaning and solver output belong under the ignored `runs/` tree.
+Ordinary cleaning and solver output belong under the ignored `runs/` tree.

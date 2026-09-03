@@ -6,10 +6,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from blab.channel_synthesis import channel_drive, flat_target_corrections
+from blab.channel_synthesis import channel_drive, channel_voltage_gain, flat_target_corrections
 from blab.config import ChannelConfig
 from blab.observation_planes import ObservationPlaneDisplay, ObservationPlaneType
-from blab.physical_model import AcousticRegionKind
+from blab.physical_model import AcousticRegionKind, ExcitationPortKind
 from blab.solve_results import (
     FEM_NODAL_PRESSURE_ID,
     FEM_VOLUME_DOMAIN_ID,
@@ -20,6 +20,8 @@ from blab.solve_results import (
     phase_deg,
     pressure_spl_db,
 )
+
+PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S = 35.0
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class InteriorFieldResults:
     excitation_ids: tuple[str, ...]
     channel_names_by_excitation: tuple[str, ...]
     channel_configs: tuple[ChannelConfig, ...]
+    voltage_channel_names: frozenset[str] = frozenset()
     horizontal_pressure_by_frequency: np.ndarray | None = None
     horizontal_angles_deg: np.ndarray | None = None
     flat_target_enabled: bool = False
@@ -74,6 +77,7 @@ class InteriorFieldResults:
             excitation_ids=self.excitation_ids,
             channel_names_by_excitation=self.channel_names_by_excitation,
             channel_configs=self.channel_configs,
+            voltage_channel_names=self.voltage_channel_names,
             horizontal_pressure_by_frequency=self.horizontal_pressure_by_frequency,
             horizontal_angles_deg=self.horizontal_angles_deg,
             flat_target_enabled=self.flat_target_enabled,
@@ -107,6 +111,7 @@ class ExteriorFieldResults:
     sound_speed_m_per_s: float
     channel_names_by_excitation: tuple[str, ...]
     channel_configs: tuple[ChannelConfig, ...]
+    voltage_channel_names: frozenset[str] = frozenset()
     horizontal_pressure_by_frequency: np.ndarray | None = None
     horizontal_angles_deg: np.ndarray | None = None
     flat_target_enabled: bool = False
@@ -144,6 +149,7 @@ class ExteriorFieldResults:
             excitation_ids=self.traces.excitation_ids,
             channel_names_by_excitation=self.channel_names_by_excitation,
             channel_configs=self.channel_configs,
+            voltage_channel_names=self.voltage_channel_names,
             horizontal_pressure_by_frequency=self.horizontal_pressure_by_frequency,
             horizontal_angles_deg=self.horizontal_angles_deg,
             flat_target_enabled=self.flat_target_enabled,
@@ -230,6 +236,7 @@ def interior_field_results_from_solved_system(
     ]
 
     channel_names = _channel_names_by_excitation(solved, component_channel_by_id)
+    voltage_channel_names = _voltage_channel_names(solved, channel_names)
     horizontal_values, horizontal_angles = _horizontal_pressure_basis(solved, pressure.shape[:2])
 
     symmetry = str(solved.provenance.solver_options.get("symmetry", "off")).strip().lower()
@@ -247,6 +254,7 @@ def interior_field_results_from_solved_system(
         excitation_ids=solved.excitation_ids,
         channel_names_by_excitation=channel_names,
         channel_configs=tuple(channel_configs),
+        voltage_channel_names=voltage_channel_names,
         horizontal_pressure_by_frequency=horizontal_values,
         horizontal_angles_deg=horizontal_angles,
         flat_target_enabled=bool(flat_target_enabled),
@@ -343,6 +351,7 @@ def exterior_field_results_from_solved_system(
     if len(unbounded_regions) != 1:
         raise ValueError("Exterior field results require exactly one unbounded acoustic region.")
     channel_names = _channel_names_by_excitation(solved, component_channel_by_id)
+    voltage_channel_names = _voltage_channel_names(solved, channel_names)
     horizontal_values, horizontal_angles = _horizontal_pressure_basis(
         solved,
         (solved.frequencies_hz.size, len(solved.excitation_ids)),
@@ -353,6 +362,7 @@ def exterior_field_results_from_solved_system(
         sound_speed_m_per_s=float(unbounded_regions[0].sound_speed_m_per_s),
         channel_names_by_excitation=channel_names,
         channel_configs=tuple(channel_configs),
+        voltage_channel_names=voltage_channel_names,
         horizontal_pressure_by_frequency=horizontal_values,
         horizontal_angles_deg=horizontal_angles,
         flat_target_enabled=bool(flat_target_enabled),
@@ -394,6 +404,28 @@ def _channel_names_by_excitation(
     )
 
 
+def _voltage_channel_names(
+    solved: SolvedSystem,
+    channel_names_by_excitation: tuple[str, ...],
+) -> frozenset[str]:
+    if solved.compiled_system is None:
+        return frozenset()
+    port_by_id = {port.id: port for port in solved.compiled_system.excitation_ports}
+    kinds_by_channel: dict[str, set[object]] = {}
+    for excitation_id, channel_name in zip(
+        solved.excitation_ids,
+        channel_names_by_excitation,
+        strict=True,
+    ):
+        port = port_by_id.get(excitation_id)
+        kind = None if port is None else getattr(port, "kind", None)
+        if kind is not None:
+            kinds_by_channel.setdefault(channel_name, set()).add(kind)
+    return frozenset(
+        channel_name for channel_name, kinds in kinds_by_channel.items() if kinds == {ExcitationPortKind.VOLTAGE}
+    )
+
+
 def _horizontal_pressure_basis(
     solved: SolvedSystem,
     leading_shape: tuple[int, int],
@@ -432,6 +464,7 @@ def _excitation_weights(
     excitation_ids: tuple[str, ...],
     channel_names_by_excitation: tuple[str, ...],
     channel_configs: tuple[ChannelConfig, ...],
+    voltage_channel_names: frozenset[str],
     horizontal_pressure_by_frequency: np.ndarray | None,
     horizontal_angles_deg: np.ndarray | None,
     flat_target_enabled: bool,
@@ -471,7 +504,8 @@ def _excitation_weights(
         if selected_channel is not None and channel_name != selected_channel:
             continue
         config = configs.get(channel_name, ChannelConfig(name=channel_name))
-        weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz)
+        voltage_gain = channel_voltage_gain(config) if channel_name in voltage_channel_names else 1.0
+        weights[index] = correction_by_channel[channel_name] * channel_drive(config, frequency_hz) * voltage_gain
     return weights
 
 
@@ -496,8 +530,12 @@ def project_field_scalars(
             instantaneous = np.real(pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg))))
             values = np.linalg.norm(instantaneous, axis=1)
             title = "Instantaneous Particle Speed (m/s)"
-        maximum = _finite_abs_max(complex_magnitude)
-        return FieldScalarProjection(values.astype(np.float32, copy=False), title, "turbo", (0.0, maximum))
+        return FieldScalarProjection(
+            values.astype(np.float32, copy=False),
+            title,
+            "turbo",
+            (0.0, PARTICLE_VELOCITY_COLOR_LIMIT_M_PER_S),
+        )
     if animation_phase_deg is not None:
         values = np.real(pressure * np.exp(-1j * np.deg2rad(float(animation_phase_deg))))
         # Keep the animation scale stable for the entire cycle.  The complex

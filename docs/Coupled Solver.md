@@ -56,6 +56,8 @@ system:
 - single-axis rigid-body piston motion with an explicit `motion_axis`;
 - one or more FEM or BEM moving boundaries per electrodynamic transducer;
 - direct `Re`, `Le`, `Bl`, `Mmd`, `Cms`, and `Rms` transducer parameters;
+- an optional ideal lumped sealed rear-chamber compliance for an unmeshed rear
+  volume;
 - rigid boundaries everywhere else except configured interface boundaries;
 - linear pressure acoustics, with optional homogeneous bulk loss in every
   bounded FEM air volume;
@@ -124,6 +126,12 @@ The component editor accepts direct Re, Le, Bl, Mmd, Cms, and Rms values for an
 electrodynamic transducer, plus an automatic or manual motion axis. Component
 symmetry completion and physical-driver count are inferred from moving-surface
 adjacency to the active symmetry planes rather than selected manually.
+It also integrates the completed projected diaphragm area. If an enabled
+lumped sealed rear chamber has volume `V` and projected area `Sd`, every solve
+path adds `rho*c^2*Sd^2/V` to the transducer's mechanical stiffness. The model
+assumes a uniform, perfectly sealed, linear adiabatic air volume with no
+frequency-dependent cavity modes, leakage, stuffing loss, or thermal loss.
+It must not be combined with an FEM model of the same rear chamber.
 
 The physical-system compiler resolves group names to Gmsh tags, checks boundary
 coverage and model relationships, and records explicit interface vertex, face,
@@ -297,6 +305,23 @@ are
 $$
 Z_e=R_e-i\omega L_e,
 $$
+
+by default. A transducer may instead enable the optional Thorborg-Futtrup
+semi-inductance model. With (s=-i\omega), its electrical impedance is
+
+$$
+Z_e=R_e' + sL_{eb}+
+\left(
+\frac{1}{R_{ss}}+\frac{1}{sL_e}+\frac{1}{K_e\sqrt{s}}
+\right)^{-1}.
+$$
+
+The component editor opens these settings from the **Semi-Inductance** button
+beside the simple `Le` input. `Re'` is the fitted series resistance, `Leb` is
+the free or out-of-gap inductance, `Le` is the bound or air-gap inductance,
+`Ke` is the semi-inductance coefficient in sH, and `Rss` is the shunt-loss
+resistance. Disabling the option preserves its values and restores the simple
+top-level `Re` and `Le` model.
 
 $$
 Z_m=R_\mathrm{ms}
@@ -497,9 +522,32 @@ The main application path always requests `exterior_pressure`. For systems
 containing electrodynamic transducers it also retains `diaphragm_velocity` and
 `voice_coil_current`, from which diaphragm excursion and electrical input
 impedance can be derived. These raw complex quantities are assembled into the
-in-memory solved-system model even though dedicated reporting plots have not
-yet been added. Impedance fields in the legacy live-plot shape remain
-unavailable.
+in-memory solved-system model. The application synthesizes the complex
+excitation basis before converting diaphragm velocity to excursion magnitude
+for the Transducer Excursion plot. The Electrical Impedance plot instead
+constructs each voltage-driven channel independently, applies equal voltage to
+every component assigned to that channel, sums their complex coil currents and
+symmetry orbit counts, and divides the reference voltage by that parallel
+current. Its phase traces wrap at +/-180 degrees. Prescribed-velocity and mixed
+channels are excluded, and the plot remains disabled for interior-FEM-only
+solves.
+
+The Acoustic Impedance plot uses the same independent voltage basis to recover
+the intrinsic generalized acoustic load matrix. For each excitation, mechanical
+equilibrium gives the net load force as `Bl * current - Zm * velocity`; solving
+that force matrix against the transducer velocity matrix isolates each diagonal
+self impedance. Each displayed trace is therefore the transducer's net interior
+plus exterior acoustic load in N·s/m with the other transducer generalized
+velocities held at zero. It is not the impedance under the current channel
+drive mix, and it is not normalized by diaphragm volume velocity or area.
+
+This first implementation plots electrodynamic transducers only. A coupled
+prescribed-velocity component does not expose the current and mechanical model
+needed for the equilibrium recovery, although such components may coexist in
+the solve. A singular, ill-conditioned, or near-zero transducer velocity basis
+is masked at that frequency and appears as a plot gap. Front and rear loads are
+combined rather than decomposed. Interior-FEM-only impedance plotting remains
+disabled.
 
 When an exterior or combined observation plane is declared, the application
 also retains the BEM P1 boundary pressure and DP0 boundary normal derivative.
@@ -582,8 +630,8 @@ rejected during application preparation or backend validation:
 - `Mms` input or automatic conversion from conventional T/S parameter sets;
 - passive radiators;
 - nonideal amplifier/source impedance;
-- cone breakup, nonlinear or asymmetric `Bl`, thermal effects, and lossy or
-  frequency-dependent voice-coil inductance;
+- cone breakup, nonlinear or asymmetric `Bl`, thermal effects, and
+  excursion-dependent voice-coil impedance;
 - nonuniform prescribed-motion profiles;
 - more than one unbounded exterior region;
 - different fluid properties among coupled acoustic regions;

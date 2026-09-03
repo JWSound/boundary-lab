@@ -130,14 +130,8 @@ class SolveInputs(Protocol):
     def mesh_service(self):
         """The geometry preparation service."""
 
-    def prepare_mesh_assembly(self, *args, **kwargs):
-        """Build the solver mesh set, stitching if configured."""
-
-    def all_radiators(self) -> tuple:
-        """Every radiator across generated and imported geometry."""
-
-    def ensure_seeded_exterior_system(self) -> None:
-        """Create a default exterior physical system if none is configured."""
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
+        """Represent legacy exterior sources as a physical system."""
 
     def channel_configs(self) -> tuple:
         """The configured channels."""
@@ -166,7 +160,7 @@ class GeometryInputs(Protocol):
     def record_generated_geometry(self, document_id: str, result) -> None:
         """Store generated geometry against its design and update the document."""
 
-    def ensure_seeded_exterior_system(self) -> None:
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
         """Create a default exterior physical system if none is configured."""
 
 
@@ -207,7 +201,7 @@ class ProjectInputs(Protocol):
     def reconcile_symmetry_with_backend(self) -> bool:
         """Downgrade project symmetry if the backend cannot honour it."""
 
-    def ensure_seeded_exterior_system(self) -> None:
+    def ensure_seeded_exterior_system(self, *, required: bool = False) -> bool:
         """Create a default exterior physical system if none is configured."""
 
     def active_generator_document(self):
@@ -248,6 +242,9 @@ class PlotPresenter(Protocol):
     def clear_comparison_history(self) -> None:
         """Forget the stored previous solve."""
 
+    def set_spherical_spin_available(self, available: bool) -> None:
+        """Enable spherical spin calculations when a solve contains sphere samples."""
+
     def refresh_contour_controls(self) -> None:
         """Re-evaluate whether contour capture/clear are currently offered."""
 
@@ -281,6 +278,12 @@ class WorkflowView(Protocol):
 
     def confirm(self, title: str, message: str) -> bool:
         """Ask a yes/no question, returning True for yes."""
+
+    def confirm_mesh_topology_warning(self, report) -> bool:
+        """Offer a cancel-safe override for an exterior mesh topology warning."""
+
+    def show_mesh_topology_issues(self, report) -> None:
+        """Highlight invalid exterior mesh edges, or clear an earlier highlight."""
 
     def ask_unsaved_changes(self, *, closing: bool) -> UnsavedChoice:
         """Warn that the project has unsaved work and report the choice.
@@ -335,11 +338,11 @@ class WorkflowView(Protocol):
     def set_balloon_plot_available(self, available: bool) -> None:
         """Offer or withdraw the balloon plot entry point."""
 
-    def set_polar_export_available(self, available: bool) -> None:
-        """Offer or withdraw polar data export."""
+    def set_max_spl_available(self, available: bool) -> None:
+        """Offer or withdraw maximum-SPL configuration."""
 
-    def set_on_axis_export_available(self, available: bool) -> None:
-        """Offer or withdraw per-channel on-axis data export."""
+    def set_max_spl_export_available(self, available: bool) -> None:
+        """Offer or withdraw image export for a calculated maximum-SPL plot."""
 
     def set_system_config_available(self, available: bool) -> None:
         """Offer or withdraw the System Config entry point.
@@ -353,6 +356,3 @@ class WorkflowView(Protocol):
 
     def show_mesh_preview(self, meshes, **options) -> None:
         """Render the given solver meshes in the 3D preview."""
-
-    def set_preview_region_mode(self, mode: str) -> None:
-        """Filter which acoustic regions the preview shows."""

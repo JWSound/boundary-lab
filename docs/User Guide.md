@@ -51,7 +51,7 @@ buttons to capture and clear contour overlays.
 
 <img src="../assets/plotviewer.png" alt="Boundary Lab plot panel" width="400">
 
-All five plot types share the same mouse interactions:
+All plot types share the same mouse interactions:
 
 - Press and drag the left mouse button to position a crosshair. The crosshair
   remains after release; double-click the plot to remove it.
@@ -87,7 +87,69 @@ and the summed response is always black. Phase is available when the solve retai
 complex channel-basis pressure. On-axis phase removes the propagation time from
 the acoustic origin to the configured polar observation distance. On-axis text
 exports use the same reference, including any channel delay changes made after
-the solve.
+the solve. Solver quantities retain BEAT's `exp(-i omega t)` convention
+internally; displayed and exported phase is converted to the standard audio
+`exp(+i omega t)` convention before channel delay and crossover phase is
+reported.
+
+The **Group Delay** dock derives source-referenced delay in milliseconds from
+the complex on-axis response. It provides **Sum** and per-channel traces with a
+**Traces** menu, removes propagation time to the observation point, and responds
+to channel delay, trim, polarity, crossover, and correction changes made after
+the solve. Values more than 40 dB below each trace's peak are hidden because
+group delay is not meaningful near response nulls. The derivative uses the
+solved frequency samples directly, so denser frequency spacing produces a more
+detailed curve.
+
+The **Transducer Excursion** dock is available for systems containing
+electrodynamic transducers. It plots synthesized excursion magnitude in
+millimetres for each transducer, with a **Traces** menu for hiding individual
+components. Excursion uses the same channel gain, polarity, delay, crossover,
+and normalized channel correction as the acoustic response.
+
+The **Maximum SPL** dock is initially empty. Press **M** to configure the
+one-way peak Xmax in millimetres and rated Pmax in watts per physical driver
+for each voltage-only electrodynamic channel. Set both values to zero to
+disable a channel. Boundary Lab saves the ratings in the project, immediately
+refreshes an existing compatible solve, and automatically calculates the
+configured curves after subsequent completed exterior or coupled solves. The
+calculation applies the same voltage to parallel components and uses the most
+restrictive component. Mixed prescribed-velocity/electrodynamic channels are
+omitted.
+
+Maximum SPL is a physical capacity projection from the raw equal-voltage solve
+basis. Channel Voltage, Trim, crossover, polarity, delay, and Normalized
+Channel Correction do not alter it. Pmax is converted to an RMS voltage limit
+using each component's Re (or Re' when semi-inductance is enabled), while Xmax
+is treated as peak and compared with the peak displacement derived from the
+RMS solve basis. The linear model does not include thermal compression,
+amplifier voltage/current limits, or excursion-dependent motor parameters.
+
+The **Acoustic Impedance** dock reports dimensionless normalized acoustic load
+impedance, `Z / (rho*c*Sd)`. For exterior-only prescribed-velocity sources,
+`Sd` is the symmetry-completed physical surface area weighted by each boundary's
+motion coefficient. For electrodynamic transducers, it is the average projected
+area of the two diaphragm sides; Boundary Lab warns before solving if those
+areas differ by more than 10%. Coupled FEM-BEM solves report each transducer's
+net acoustic self load, including its interior and exterior loading; the other
+transducer velocities are mathematically held at zero when each self trace is
+recovered. Real and imaginary traces can be hidden together per component with
+the **Traces** menu. Frequencies at which the coupled velocity basis is too
+small or ill-conditioned are left as gaps. Interior-FEM-only solves do not
+currently populate this plot. Saved canonical solve quantities retain the raw
+generalized impedance in N*s/m for reproducibility.
+
+The **Electrical Impedance** dock reports the driving-point load of each
+voltage-driven channel in ohms. Electrodynamic transducers assigned to the same
+channel are treated as electrically paralleled, including the full driver count
+represented by symmetry. The **Traces** menu controls individual channels and
+the phi icon adds matching dotted phase traces. Phase wraps between -180 and
+180 degrees while the right axis retains the fixed -180 to 600 degree display
+range used by the on-axis plot. Prescribed-velocity and mixed-source channels
+are omitted. Electrical impedance is a property of the linear load, so changing
+Voltage, Trim, polarity, delay, crossover, or normalized response correction
+after the solve does not change the impedance curve. Interior-FEM-only solves
+do not currently populate this plot.
 
 All application file and directory pickers share one last-used directory. It
 is remembered between application sessions, falls back to an existing folder
@@ -103,7 +165,7 @@ application settings.
 
 <img src="../assets/viewmenu.png" alt="View menu" width="260">
 
-The View menu shows or hides the design editor, mesh preview, and five plot
+The View menu shows or hides the design editor, mesh preview, and eight plot
 panels. **Balloon Plot** opens its own window and is enabled only when the
 current solve contains spherical samples.
 
@@ -149,6 +211,12 @@ guide.
 - **Spin Horizontal/Vertical Ref Angle** chooses the reference axes for the
   spinorama on-axis and listening-window curves without changing the early
   reflections or sound-power data.
+- The globe button in the **Spinorama** dock enables full-sphere Sound Power,
+  PIR, and Spherical DI calculations. Listening Window, Early Reflections, and
+  ERDI then use every native horizontal/vertical sample inside their standard
+  angular sectors. The button is available only when **Balloon Sampling** data
+  exists for the solve. When disabled, the plot retains its CEA-2034-style
+  10-degree horizontal/vertical calculation.
 - **Polar Smoothing** applies fractional-octave smoothing to directivity,
   spinorama, and balloon presentation data.
 - **SPL Min/Max** set the displayed and exported directivity clipping range.
@@ -230,7 +298,10 @@ They are useful for multiway interference and crossover studies.
 <img src="../assets/channelconfig.png" alt="Channels window" width="600">
 
 - **Name** identifies the channel used by components.
-- **Level dB**, **Polarity**, and **Delay ms** apply complex channel weights.
+- **Voltage** sets the nominal voltage shared by electrodynamic transducers on
+  the channel. It is unavailable when the channel contains a
+  prescribed-velocity source.
+- **Trim dB**, **Polarity**, and **Delay ms** apply complex channel weights.
 - **HPF/LPF Type** and **Frequency** define idealized analog crossover transfer
   functions.
 
@@ -300,12 +371,25 @@ surround to share a component while using different motion amplitudes.
 Ath-generated driver groups are initially seeded as prescribed-velocity
 components.
 
-Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters
-with a 2.83 V reference excitation. Their rigid-translation motion axis can be
+Electrodynamic components use direct Re, Le, Bl, Mmd, Cms, and Rms parameters.
+The **Semi-Inductance** button beside Le optionally opens the advanced Re′,
+Leb, Le, Ke, and Rss voice-coil impedance model.
+The solver retains a 2.83 V reference basis, while the channel Voltage control
+scales that basis after the solve. Their rigid-translation motion axis can be
 inferred from the selected surface normals or entered manually. In a symmetry
 model, Boundary Lab also infers whether moving surfaces are cut by the active
 planes and reports how many distinct components exist in the fully mirrored
-system; there is no manual component-symmetry multiplier.
+system. The same readout includes the completed projected diaphragm area in
+cm². When explicit front and rear faces differ in projected area by more than
+10%, a highlighted warning identifies both values.
+
+Enable **Lumped sealed rear chamber** and enter its net air volume in litres to
+represent a small sealed chamber that is not included as a FEM acoustic
+region. The volume field is locked while the option is disabled. This adds an
+ideal linear air-spring load using the automatically calculated projected
+area; do not enable it when the rear chamber is already meshed, because that
+would model the same compliance twice. There is no manual component-symmetry
+multiplier.
 
 See [Physical System Model](Physical%20System%20Model.md) for the object model
 and [Coupled Solver](Coupled%20Solver.md) for numerical requirements and
@@ -320,7 +404,8 @@ animated instantaneous pressure use a diverging color map centered on zero.
 Interior planes can also display **Particle Velocity Magnitude**. Boundary Lab
 derives the complex particle-velocity vector from the P1 FEM pressure gradient
 using the bounded region density, then colors the plane by its magnitude in
-metres per second. Phase animation shows instantaneous particle speed. The
+metres per second on a fixed 0 to 35 m/s color scale. Phase animation shows
+instantaneous particle speed using the same fixed scale. The
 option is unavailable for Exterior and Combined planes because their exterior
 BEM field evaluator currently returns pressure only.
 

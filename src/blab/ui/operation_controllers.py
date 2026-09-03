@@ -3,27 +3,13 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
-import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from blab.config import SimulationConfig
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
 from blab.ui.generator_worker import GeneratorWorker
-from blab.ui.solve_worker import SolveWorker
 from blab.ui.system_solve import SystemSolveWorker, SystemUiSolveRequest
-
-
-@dataclass(frozen=True)
-class SolveRequest:
-    config: SimulationConfig
-    ordered_frequencies: np.ndarray
-    backend_id: str
-    server_url: str
-    server_access_token: str = ""
-    worker_count: int = 1
 
 
 class GeometryController(QObject):
@@ -130,7 +116,7 @@ class SolveController(QObject):
         super().__init__(parent)
         self.state = OperationState()
         self._thread: QThread | None = None
-        self._worker: SolveWorker | SystemSolveWorker | None = None
+        self._worker: SystemSolveWorker | None = None
         self._started_at: float | None = None
         self._expected_count = 0
         self._solved_count = 0
@@ -143,14 +129,10 @@ class SolveController(QObject):
     def active(self) -> bool:
         return self.state.active
 
-    def start(self, request: SolveRequest | SystemUiSolveRequest) -> bool:
+    def start(self, request: SystemUiSolveRequest) -> bool:
         if self.active:
             return False
-        self._expected_count = (
-            len(request.request.frequencies_hz)
-            if isinstance(request, SystemUiSolveRequest)
-            else int(request.ordered_frequencies.size)
-        )
+        self._expected_count = len(request.request.frequencies_hz)
         self._solved_count = 0
         self._failed = False
         self._cancelled = False
@@ -159,25 +141,14 @@ class SolveController(QObject):
         self._started_at = time.perf_counter()
         self._set_state(OperationPhase.RUNNING, "Initializing solver")
         thread = QThread(self)
-        if isinstance(request, SystemUiSolveRequest):
-            worker = SystemSolveWorker(request)
-        else:
-            worker = SolveWorker(
-                request.config,
-                request.ordered_frequencies,
-                worker_count=request.worker_count,
-                backend_id=request.backend_id,
-                server_url=request.server_url,
-                server_access_token=request.server_access_token,
-            )
+        worker = SystemSolveWorker(request)
         self._thread = thread
         self._worker = worker
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.initialized.connect(self.initialized)
         worker.result_ready.connect(self._on_result)
-        if hasattr(worker, "system_result_ready"):
-            worker.system_result_ready.connect(self._on_system_result)
+        worker.system_result_ready.connect(self._on_system_result)
         worker.status.connect(self._on_status)
         worker.failed.connect(self._on_failed)
         worker.finished.connect(thread.quit)

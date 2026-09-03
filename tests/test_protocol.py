@@ -50,6 +50,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
         channels=(
             ChannelConfig(
                 name="tweeter",
+                voltage_v=4.0,
                 level_db=-3.0,
                 polarity=-1,
                 delay_ms=0.25,
@@ -72,6 +73,7 @@ def test_simulation_config_round_trips_through_wire_dict() -> None:
     assert restored.radiators[0].drive_group_name == "horn_driver"
     assert restored.radiators[0].velocity_offset_db == -1.5
     assert restored.channels[0].polarity == -1
+    assert restored.channels[0].voltage_v == 4.0
     assert restored.channels[0].lpf.frequency_hz == 20000.0
     assert restored.spherical_sampling_enabled is True
     assert restored.symmetry == "xy"

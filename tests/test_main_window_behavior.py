@@ -8,14 +8,17 @@ window being reorganised into modules.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtGui import QCloseEvent  # noqa: E402
-from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar  # noqa: E402
+from PySide6.QtWidgets import QDockWidget, QFrame, QMessageBox, QTabBar, QToolButton  # noqa: E402
 
 import blab.ui.main_window.state_sync as state_sync_module  # noqa: E402
 import blab.ui.main_window.view_builder as view_builder_module  # noqa: E402
 from blab.config import ChannelConfig  # noqa: E402
+from blab.physical_model import ComponentKind, ExcitationPortKind  # noqa: E402
 from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, LIVE_PLOT_REFRESH_INTERVAL_MS  # noqa: E402
 from blab.ui.main_window_widgets import DockTitleBar  # noqa: E402
 from repo_paths import BLAB_SRC, MAIN_WINDOW_PKG  # noqa: E402
@@ -26,7 +29,8 @@ def test_app_root_resolves_to_the_repository_root() -> None:
 
     assert (APP_ROOT / "pyproject.toml").is_file(), f"APP_ROOT resolved to {APP_ROOT}"
     assert (APP_ROOT / "assets").is_dir()
-    assert asset("save_dark.ico").is_file()
+    assert asset("snapshot_dark.ico").is_file()
+    assert asset("export_dark.ico").is_file()
 
 
 def test_every_bundled_resource_path_actually_exists() -> None:
@@ -66,11 +70,31 @@ def test_every_bundled_resource_path_actually_exists() -> None:
     assert missing == [], f"declared resource paths that do not exist: {missing}"
 
 
+def test_spherical_spin_toolbar_action_requires_spherical_data(main_window) -> None:
+    action = main_window.spherical_spin_action
+
+    assert action.isCheckable()
+    assert not action.isChecked()
+    assert not action.isEnabled()
+    assert not action.icon().isNull()
+    title_bar = main_window.plot_docks["spinorama"].titleBarWidget()
+    assert isinstance(title_bar, DockTitleBar)
+    assert any(button.defaultAction() is action for button in title_bar.tool_buttons)
+
+    main_window.set_spherical_spin_available(True)
+
+    assert action.isEnabled()
+
+
 PLOT_IDS = {
     "horizontal_isobar",
     "vertical_isobar",
     "acoustic_impedance",
+    "electrical_impedance",
     "on_axis_frequency_response",
+    "group_delay",
+    "transducer_excursion",
+    "max_spl",
     "spinorama",
 }
 ISOBAR_IDS = ("horizontal_isobar", "vertical_isobar")
@@ -161,6 +185,14 @@ def test_dock_title_bar_uses_a_native_raised_frame(main_window) -> None:
 
 
 def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> None:
+    acoustic_title_bar = main_window.plot_docks["acoustic_impedance"].titleBarWidget()
+    acoustic_trace_button = next(
+        button
+        for button in acoustic_title_bar.tool_buttons
+        if button.menu() is main_window.impedance_plot.trace_filter_menu
+    )
+    assert acoustic_trace_button.text() == "Traces"
+
     title_bar = main_window.plot_docks["on_axis_frequency_response"].titleBarWidget()
     actions = [button.defaultAction() for button in title_bar.tool_buttons]
 
@@ -177,11 +209,113 @@ def test_on_axis_dock_exposes_trace_filter_and_phase_controls(main_window) -> No
     )
     assert trace_button.text() == "Traces"
 
+    group_delay_title_bar = main_window.plot_docks["group_delay"].titleBarWidget()
+    group_delay_trace_button = next(
+        button
+        for button in group_delay_title_bar.tool_buttons
+        if button.menu() is main_window.group_delay_plot.trace_filter_menu
+    )
+    assert group_delay_trace_button.text() == "Traces"
+
+    excursion_title_bar = main_window.plot_docks["transducer_excursion"].titleBarWidget()
+    excursion_trace_button = next(
+        button
+        for button in excursion_title_bar.tool_buttons
+        if button.menu() is main_window.excursion_plot.trace_filter_menu
+    )
+    assert excursion_trace_button.text() == "Traces"
+
+    max_spl_title_bar = main_window.plot_docks["max_spl"].titleBarWidget()
+    max_spl_actions = [button.defaultAction() for button in max_spl_title_bar.tool_buttons]
+    assert main_window.max_spl_plot.calculate_action in max_spl_actions
+    max_spl_button = next(
+        button
+        for button in max_spl_title_bar.tool_buttons
+        if button.defaultAction() is main_window.max_spl_plot.calculate_action
+    )
+    assert max_spl_button.text() == "Config"
+    assert "Configure maximum SPL" in max_spl_button.toolTip()
+
+    electrical_title_bar = main_window.plot_docks["electrical_impedance"].titleBarWidget()
+    electrical_actions = [button.defaultAction() for button in electrical_title_bar.tool_buttons]
+    assert main_window.electrical_impedance_plot.show_phase_action in electrical_actions
+    electrical_trace_button = next(
+        button
+        for button in electrical_title_bar.tool_buttons
+        if button.menu() is main_window.electrical_impedance_plot.trace_filter_menu
+    )
+    assert electrical_trace_button.text() == "Traces"
+
+
+def test_prescribed_velocity_channel_detection_uses_physical_excitation_ports(main_window) -> None:
+    main_window.project.physical_system = SimpleNamespace(
+        excitation_ports=(
+            SimpleNamespace(component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:port", kind=ExcitationPortKind.NORMAL_VELOCITY),
+        )
+    )
+    main_window.project.component_channel_by_id = {
+        "component:woofer": "low",
+        "component:port": "mixed",
+    }
+
+    assert main_window.prescribed_velocity_channel_names() == frozenset({"mixed"})
+
+
+def test_max_spl_configuration_channels_are_available_before_solving(main_window) -> None:
+    main_window.project.physical_system = SimpleNamespace(
+        components=(
+            SimpleNamespace(id="component:woofer", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
+            SimpleNamespace(id="component:mixed-driver", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),
+            SimpleNamespace(id="component:port", kind=ComponentKind.IDEAL_VELOCITY_SOURCE),
+        ),
+        excitation_ports=(
+            SimpleNamespace(component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:mixed-driver", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(component_id="component:port", kind=ExcitationPortKind.NORMAL_VELOCITY),
+        ),
+    )
+    main_window.project.component_channel_by_id = {
+        "component:woofer": "low",
+        "component:mixed-driver": "mixed",
+        "component:port": "mixed",
+    }
+
+    assert main_window.max_spl_channel_names() == ("low",)
+
 
 def test_dock_state_round_trips_through_workspace(main_window) -> None:
     state = main_window.workspace.saveState()
     assert not state.isEmpty()
     assert main_window.workspace.restoreState(state)
+
+
+def test_first_run_shows_preview_and_hides_all_plot_docks(main_window) -> None:
+    main_window.settings.remove("window/dock_state")
+    main_window.preview_dock.hide()
+    for dock in main_window.plot_docks.values():
+        dock.show()
+
+    main_window._restore_window_state()
+
+    assert not main_window.preview_dock.isHidden()
+    assert main_window.panel_view_actions["preview"].isChecked()
+    for plot_id, dock in main_window.plot_docks.items():
+        assert dock.isHidden(), plot_id
+        assert not main_window.plot_view_actions[plot_id].isChecked(), plot_id
+
+
+def test_saved_layout_can_restore_a_visible_plot_dock(main_window) -> None:
+    plot_id = "on_axis_frequency_response"
+    dock = main_window.plot_docks[plot_id]
+    dock.show()
+    main_window.settings.setValue("window/dock_state", main_window.workspace.saveState())
+    dock.hide()
+
+    main_window._restore_window_state()
+
+    assert not dock.isHidden()
+    assert main_window.plot_view_actions[plot_id].isChecked()
 
 
 def test_panel_visibility_actions_drive_their_docks(main_window) -> None:
@@ -210,33 +344,45 @@ def test_plot_export_is_offered_per_dock_and_not_in_the_file_menu(main_window) -
     assert "Export Plot" not in [a.text() for a in file_menu.actions()]
 
     assert set(main_window.export_plot_actions) == PLOT_IDS
+    assert set(main_window.export_plot_data_actions) == PLOT_IDS
+    assert set(main_window.plot_limit_actions) == PLOT_IDS
     for entry in main_window.plot_entries:
-        action = main_window.export_plot_actions[entry.plot_id]
-        assert action.toolTip() == f"Export {entry.title}"
-        assert not action.icon().isNull(), entry.plot_id
+        limits_action = main_window.plot_limit_actions[entry.plot_id]
+        snapshot_action = main_window.export_plot_actions[entry.plot_id]
+        data_action = main_window.export_plot_data_actions[entry.plot_id]
+        assert limits_action.toolTip() == f"Set axis limits for {entry.title}"
+        assert snapshot_action.toolTip() == f"Save {entry.title} image"
+        assert data_action.toolTip() == f"Export {entry.title} data"
+        assert not limits_action.icon().isNull(), entry.plot_id
+        assert not snapshot_action.icon().isNull(), entry.plot_id
+        assert not data_action.icon().isNull(), entry.plot_id
+        title_bar = main_window.plot_docks[entry.plot_id].titleBarWidget()
+        dock_actions = {
+            button.defaultAction()
+            for button in title_bar.findChildren(QToolButton)
+            if button.defaultAction() is not None
+        }
+        assert {limits_action, snapshot_action, data_action} <= dock_actions
 
 
-def test_data_exports_are_explicit_file_menu_actions(main_window) -> None:
+def test_plot_data_exports_are_removed_from_the_file_menu(main_window) -> None:
     file_action = next(action for action in main_window.menuBar().actions() if action.text() == "File")
     labels = [action.text() for action in file_action.menu().actions()]
 
-    assert "Export Polar Data" in labels
-    assert "Export On-Axis Data" in labels
+    assert "Export Polar Data" not in labels
+    assert "Export On-Axis Data" not in labels
     assert "Export Speaker Package..." in labels
-    assert not main_window.export_polar_data_action.isEnabled()
-    assert not main_window.export_on_axis_data_action.isEnabled()
-
-    main_window.set_on_axis_export_available(True)
-    assert main_window.export_on_axis_data_action.isEnabled()
-
-    main_window.set_on_axis_export_available(False)
-    assert not main_window.export_on_axis_data_action.isEnabled()
+    assert all(not action.isEnabled() for action in main_window.export_plot_data_actions.values())
 
 
 def test_export_and_contour_icons_survive_a_palette_refresh(main_window) -> None:
     main_window._refresh_plot_export_icons()
 
     for action in main_window.export_plot_actions.values():
+        assert not action.icon().isNull()
+    for action in main_window.export_plot_data_actions.values():
+        assert not action.icon().isNull()
+    for action in main_window.plot_limit_actions.values():
         assert not action.icon().isNull()
     for plot_id in ISOBAR_IDS:
         assert not main_window.capture_contour_actions[plot_id].icon().isNull()
@@ -397,6 +543,28 @@ def test_no_confirmation_when_there_is_nothing_solved_to_lose(main_window, messa
     assert message_box.instances == []
 
 
+def test_exterior_topology_override_uses_cancel_as_the_safe_default(main_window, message_box) -> None:
+    mesh = SimpleNamespace(mesh_name="cabinet", open_edge_count=4, nonmanifold_edge_count=0)
+    report = SimpleNamespace(
+        meshes=(mesh,),
+        open_edge_count=4,
+        nonmanifold_edge_count=0,
+        symmetry_edge_count=0,
+    )
+
+    message_box.click = "Cancel Solve"
+    assert main_window.confirm_mesh_topology_warning(report) is False
+
+    box = message_box.instances[-1]
+    assert box.button_texts == ["Continue", "Cancel Solve"]
+    assert box.default is not None and box.default.text == "Cancel Solve"
+    assert "highlighted red" in box.text
+    assert "Open edges: 4" in box.text
+
+    message_box.click = "Continue"
+    assert main_window.confirm_mesh_topology_warning(report) is True
+
+
 # --------------------------------------------------------------- unsaved project guard
 
 
@@ -532,17 +700,12 @@ def test_add_design_tab_is_a_button_not_a_closable_document(main_window) -> None
     assert bar.tabButton(add_index, QTabBar.ButtonPosition.LeftSide) is None
 
 
-# ------------------------------------------------------------------- preview regions
+# --------------------------------------------------------------------- preview tree
 
 
-def test_preview_region_filters_reach_the_mesh_preview(main_window) -> None:
-    assert not main_window.show_interior_regions_action.icon().isNull()
-    assert not main_window.show_exterior_region_action.icon().isNull()
-
-    main_window._on_show_interior_regions(True)
-    main_window._on_show_exterior_region(True)
-
-    assert main_window.preview.region_visibility_mode is not None
+def test_preview_region_toolbar_buttons_were_replaced_by_body_tree(main_window) -> None:
+    assert not hasattr(main_window, "show_interior_regions_action")
+    assert not hasattr(main_window, "show_exterior_region_action")
 
 
 # ------------------------------------------------------------------ contracts

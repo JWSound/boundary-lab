@@ -6,6 +6,7 @@ import copy
 
 import numpy as np
 
+from blab.phasor import solver_phase_deg
 from blab.physical_model import ExcitationPortKind
 from blab.solve_results.model import (
     VOICE_COIL_CURRENT_ID,
@@ -25,7 +26,9 @@ def pressure_spl_db(pressure: np.ndarray) -> np.ndarray:
 
 
 def phase_deg(values: np.ndarray) -> np.ndarray:
-    return np.rad2deg(np.angle(np.asarray(values))).astype(np.float32, copy=False)
+    """Return standard-audio phase for solver-native complex values."""
+
+    return solver_phase_deg(values)
 
 
 def velocity_to_excursion(

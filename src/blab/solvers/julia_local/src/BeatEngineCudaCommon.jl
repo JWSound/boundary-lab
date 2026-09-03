@@ -25,6 +25,20 @@ struct CudaFieldEvaluationCache{T}
     source_count::Int
 end
 
+struct CudaObservationPoints{T}
+    points
+    sample_indices
+    point_count::Int
+end
+
+struct CudaWeightedFieldSources{T}
+    pressure_re
+    pressure_im
+    neumann_re
+    neumann_im
+    source_count::Int
+end
+
 struct CudaSingularCorrectionCache{T}
     test_indices
     trial_indices

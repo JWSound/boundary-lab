@@ -16,6 +16,7 @@ import numpy as np
 
 from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.physical_model import PhysicalSolveKind, PhysicalSystem, physical_system_from_dict
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
@@ -31,13 +32,12 @@ from blab.solve_results import (
     fem_volume_result_domain,
 )
 from blab.solvers.beat_engine_backend import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import (
     OutputRequest,
     SystemFrequencyResult,
     compiled_system_to_dict,
-    validate_system_solve_request,
 )
 from blab.system_solve import (
     SystemUiSolveRequest,
@@ -277,8 +277,7 @@ def prepare_headless_solve(
         outputs=tuple(outputs),
         solver_options=options,
     )
-    validate_system_solve_request(request)
-    validate_system_capabilities(request)
+    validate_solve_plan(request)
     return replace(prepared, request=request, result_domains=tuple(domains))
 
 
@@ -359,7 +358,7 @@ class HeadlessResultWriter:
             "domains_metadata_file": "domains.json",
             "backend_id": backend_id,
             "solve_kind": prepared.solve_kind.value,
-            "phasor_convention": "exp(-i omega t)",
+            "phasor_convention": SOLVER_PHASOR_CONVENTION,
             "frequencies_hz": self.frequencies.tolist(),
             "excitation_port_ids": list(prepared.request.excitation_port_ids),
             "solver_options": _json_safe(prepared.request.solver_options),

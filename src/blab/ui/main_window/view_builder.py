@@ -88,11 +88,22 @@ class ViewBuilderMixin:
         file_menu.addAction(export_cfg_action)
 
         for entry in self.plot_entries:
-            action = QAction(entry.title, self)
-            action.setToolTip(f"Export {entry.title}")
+            limits_action = QAction("Plot Limits", self)
+            limits_action.setToolTip(f"Set axis limits for {entry.title}")
+            limits_action.triggered.connect(
+                lambda _checked=False, plot_id=entry.plot_id: self.open_plot_limits(plot_id)
+            )
+            self.plot_limit_actions[entry.plot_id] = limits_action
+            action = QAction("Save Plot Image", self)
+            action.setToolTip(f"Save {entry.title} image")
             action.setEnabled(False)
             action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot(plot_id))
             self.export_plot_actions[entry.plot_id] = action
+            data_action = QAction("Export Plot Data", self)
+            data_action.setToolTip(f"Export {entry.title} data")
+            data_action.setEnabled(False)
+            data_action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id))
+            self.export_plot_data_actions[entry.plot_id] = data_action
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 capture_action = QAction("Capture Contours", self)
                 capture_action.setToolTip(f"Capture contours for {entry.title}")
@@ -108,16 +119,13 @@ class ViewBuilderMixin:
                     lambda _checked=False, plot_id=entry.plot_id: self.clear_isobar_contours(plot_id)
                 )
                 self.clear_contour_actions[entry.plot_id] = clear_action
-
-        self.export_polar_data_action = QAction("Export Polar Data", self)
-        self.export_polar_data_action.setEnabled(False)
-        self.export_polar_data_action.triggered.connect(self.export_polar_data)
-        file_menu.addAction(self.export_polar_data_action)
-
-        self.export_on_axis_data_action = QAction("Export On-Axis Data", self)
-        self.export_on_axis_data_action.setEnabled(False)
-        self.export_on_axis_data_action.triggered.connect(self.export_on_axis_data)
-        file_menu.addAction(self.export_on_axis_data_action)
+            elif entry.plot_id == "spinorama":
+                self.spherical_spin_action = QAction("Spherical Spin", self)
+                self.spherical_spin_action.setToolTip("Use full-sphere samples")
+                self.spherical_spin_action.setCheckable(True)
+                self.spherical_spin_action.setChecked(False)
+                self.spherical_spin_action.setEnabled(False)
+                self.spherical_spin_action.toggled.connect(self.set_spherical_spin_enabled)
 
         self.export_speaker_package_action = QAction("Export Speaker Package...", self)
         self.export_speaker_package_action.setToolTip("Configure, solve, and export a .blabsp speaker package")
@@ -171,7 +179,6 @@ class ViewBuilderMixin:
         title: str,
         widget: QWidget,
         *,
-        save_action: QAction | None = None,
         tool_actions: tuple[QAction, ...] = (),
     ) -> QDockWidget:
         dock = QDockWidget(title, self)
@@ -181,7 +188,7 @@ class ViewBuilderMixin:
         dock.setFeatures(
             QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable | QDockWidget.DockWidgetClosable
         )
-        dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))
+        dock.setTitleBarWidget(DockTitleBar(title, dock, tool_actions=tool_actions))
         return dock
 
     def _build_layout(self) -> None:
@@ -211,42 +218,41 @@ class ViewBuilderMixin:
             self.editor_container,
             tool_actions=(self.syntax_highlighting_action,),
         )
-        self.show_interior_regions_action = QAction("Show interior regions", self)
-        self.show_interior_regions_action.setToolTip("Show interior regions")
-        self.show_interior_regions_action.setCheckable(True)
-        self.show_interior_regions_action.setEnabled(False)
-        self.show_interior_regions_action.triggered.connect(self._on_show_interior_regions)
-        self.show_exterior_region_action = QAction("Show exterior region", self)
-        self.show_exterior_region_action.setToolTip("Show exterior region")
-        self.show_exterior_region_action.setCheckable(True)
-        self.show_exterior_region_action.setEnabled(False)
-        self.show_exterior_region_action.triggered.connect(self._on_show_exterior_region)
         self.preview_dock = self._make_panel_dock(
             "mesh_preview_dock",
             "Mesh Preview",
             self.preview,
-            tool_actions=(self.show_interior_regions_action, self.show_exterior_region_action),
         )
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.editor_dock)
         self.workspace.addDockWidget(Qt.LeftDockWidgetArea, self.preview_dock)
         self.workspace.splitDockWidget(self.editor_dock, self.preview_dock, Qt.Horizontal)
         previous_plot_dock = None
         for entry in self.plot_entries:
-            tool_actions = [
-                action
-                for action in (
-                    self.capture_contour_actions.get(entry.plot_id),
-                    self.clear_contour_actions.get(entry.plot_id),
-                )
-                if action is not None
-            ]
-            if entry.plot_id == "on_axis_frequency_response":
+            tool_actions = [self.plot_limit_actions[entry.plot_id]]
+            tool_actions.extend(
+                [
+                    action
+                    for action in (
+                        self.export_plot_actions.get(entry.plot_id),
+                        self.export_plot_data_actions.get(entry.plot_id),
+                        self.capture_contour_actions.get(entry.plot_id),
+                        self.clear_contour_actions.get(entry.plot_id),
+                    )
+                    if action is not None
+                ]
+            )
+            if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
+            elif entry.plot_id in {"acoustic_impedance", "group_delay", "transducer_excursion"}:
+                tool_actions.append(entry.widget.trace_filter_action)
+            elif entry.plot_id == "max_spl":
+                tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))
+            elif entry.plot_id == "spinorama":
+                tool_actions.append(self.spherical_spin_action)
             dock = self._make_panel_dock(
                 f"{entry.plot_id}_dock",
                 entry.title,
                 entry.widget,
-                save_action=self.export_plot_actions.get(entry.plot_id),
                 tool_actions=tuple(tool_actions),
             )
             self.plot_docks[entry.plot_id] = dock
@@ -382,6 +388,25 @@ class ViewBuilderMixin:
             == QMessageBox.Yes
         )
 
+    def confirm_mesh_topology_warning(self, report) -> bool:
+        from blab.mesh_topology import exterior_mesh_topology_warning_text
+
+        message = QMessageBox(
+            QMessageBox.Warning,
+            "Exterior Mesh Is Not Watertight",
+            exterior_mesh_topology_warning_text(report),
+            QMessageBox.NoButton,
+            self,
+        )
+        continue_button = message.addButton("Continue", QMessageBox.AcceptRole)
+        cancel_button = message.addButton("Cancel Solve", QMessageBox.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+        return message.clickedButton() is continue_button
+
+    def show_mesh_topology_issues(self, report) -> None:
+        self.preview.set_topology_report(report)
+
     def ask_unsaved_changes(self, *, closing: bool) -> UnsavedChoice:
         message = QMessageBox(
             QMessageBox.Warning,
@@ -439,15 +464,22 @@ class ViewBuilderMixin:
             )
         )
 
-    def set_polar_export_available(self, available: bool) -> None:
-        self.export_polar_data_action.setEnabled(available)
-
-    def set_on_axis_export_available(self, available: bool) -> None:
-        self.export_on_axis_data_action.setEnabled(available)
-
     def set_plot_exports_available(self, available: bool) -> None:
-        for action in self.export_plot_actions.values():
+        for plot_id, action in self.export_plot_actions.items():
+            action.setEnabled(available and self.plot_data_is_available(plot_id))
+        for plot_id, action in self.export_plot_data_actions.items():
+            action.setEnabled(available and self.plot_data_is_available(plot_id))
+
+    def set_max_spl_available(self, available: bool) -> None:
+        self.max_spl_plot.calculate_action.setEnabled(available)
+
+    def set_max_spl_export_available(self, available: bool) -> None:
+        action = self.export_plot_actions.get("max_spl")
+        if action is not None:
             action.setEnabled(available)
+        data_action = self.export_plot_data_actions.get("max_spl")
+        if data_action is not None:
+            data_action.setEnabled(available)
 
     def set_system_config_available(self, available: bool) -> None:
         self.system_config_button.setEnabled(available)
@@ -464,9 +496,6 @@ class ViewBuilderMixin:
         controller = getattr(self, "observation_plane_controller", None)
         if controller is not None:
             controller.sync_view()
-
-    def set_preview_region_mode(self, mode: str) -> None:
-        self.preview.set_region_visibility_mode(mode)
 
     def set_balloon_plot_available(self, available: bool) -> None:
         self.balloon_plot_action.setEnabled(available)

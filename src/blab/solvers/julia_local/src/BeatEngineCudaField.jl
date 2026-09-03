@@ -49,6 +49,103 @@ function build_cuda_field_evaluation_cache(mesh::BoundaryMesh{T}, rule::Triangle
     return build_cuda_field_evaluation_cache(build_field_evaluation_cache(mesh, rule; symmetry_mode=symmetry_mode))
 end
 
+function release_cuda_field_evaluation_cache!(cache::CudaFieldEvaluationCache)
+    CUDA.unsafe_free!(cache.source_points)
+    CUDA.unsafe_free!(cache.source_normals)
+    CUDA.unsafe_free!(cache.source_weights)
+    CUDA.unsafe_free!(cache.source_faces)
+    CUDA.unsafe_free!(cache.source_elements)
+    CUDA.unsafe_free!(cache.basis_values)
+    return nothing
+end
+
+function _cuda_observation_grid_kernel!(
+    points,
+    sample_indices,
+    width,
+    depth,
+    center_x,
+    center_z,
+    height,
+    roll_cosine,
+    roll_sine,
+    pitch_cosine,
+    pitch_sine,
+    yaw_cosine,
+    yaw_sine,
+    columns,
+    rows,
+    point_count,
+)
+    point_index = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    stride = blockDim().x * gridDim().x
+    while point_index <= point_count
+        grid_index = sample_indices[point_index]
+        row = grid_index ÷ columns
+        column = grid_index - row * columns
+        local_x = -width / 2 + width * column / max(columns - 1, 1)
+        local_z = -depth / 2 + depth * row / max(rows - 1, 1)
+        rolled_x = roll_cosine * local_x
+        rolled_y = roll_sine * local_x
+        pitched_y = pitch_cosine * rolled_y - pitch_sine * local_z
+        pitched_z = pitch_sine * rolled_y + pitch_cosine * local_z
+        points[point_index] = center_x + yaw_cosine * rolled_x + yaw_sine * pitched_z
+        points[point_index + point_count] = height + pitched_y
+        points[point_index + 2 * point_count] = center_z - yaw_sine * rolled_x + yaw_cosine * pitched_z
+        point_index += stride
+    end
+    return nothing
+end
+
+function build_cuda_observation_points(
+    sample_indices,
+    width::T,
+    depth::T,
+    center_x::T,
+    center_z::T,
+    height::T,
+    roll_cosine::T,
+    roll_sine::T,
+    pitch_cosine::T,
+    pitch_sine::T,
+    yaw_cosine::T,
+    yaw_sine::T,
+    columns::Int,
+    rows::Int,
+) where {T<:AbstractFloat}
+    point_count = length(sample_indices)
+    point_count > 0 || error("CUDA observation grid requires at least one valid sample.")
+    d_sample_indices = CuArray(Int32.(sample_indices))
+    d_points = CUDA.zeros(T, point_count, 3)
+    threads = 256
+    blocks = min(cld(point_count, threads), 65_535)
+    CUDA.@cuda threads=threads blocks=blocks _cuda_observation_grid_kernel!(
+        d_points,
+        d_sample_indices,
+        width,
+        depth,
+        center_x,
+        center_z,
+        height,
+        roll_cosine,
+        roll_sine,
+        pitch_cosine,
+        pitch_sine,
+        yaw_cosine,
+        yaw_sine,
+        Int32(columns),
+        Int32(rows),
+        point_count,
+    )
+    return CudaObservationPoints{T}(d_points, d_sample_indices, point_count)
+end
+
+function release_cuda_observation_points!(cache::CudaObservationPoints)
+    CUDA.unsafe_free!(cache.points)
+    CUDA.unsafe_free!(cache.sample_indices)
+    return nothing
+end
+
 function _cuda_eval_point_arrays(eval_points, ::Type{T}) where {T}
     point_count = length(eval_points)
     points = Matrix{T}(undef, point_count, 3)
@@ -96,6 +193,47 @@ function _cuda_weighted_field_sources_kernel!(
         source_index += stride
     end
 
+    return nothing
+end
+
+function build_cuda_weighted_field_sources(
+    cache::CudaFieldEvaluationCache{T},
+    pressure::CuArray,
+    q_neumann::CuArray,
+) where {T<:AbstractFloat}
+    pressure_re = CUDA.zeros(T, cache.source_count)
+    pressure_im = CUDA.zeros(T, cache.source_count)
+    neumann_re = CUDA.zeros(T, cache.source_count)
+    neumann_im = CUDA.zeros(T, cache.source_count)
+    threads = 256
+    blocks = min(cld(cache.source_count, threads), 65_535)
+    CUDA.@cuda threads=threads blocks=blocks _cuda_weighted_field_sources_kernel!(
+        pressure_re,
+        pressure_im,
+        neumann_re,
+        neumann_im,
+        pressure,
+        q_neumann,
+        cache.source_weights,
+        cache.source_faces,
+        cache.source_elements,
+        cache.basis_values,
+        cache.source_count,
+    )
+    return CudaWeightedFieldSources{T}(
+        pressure_re,
+        pressure_im,
+        neumann_re,
+        neumann_im,
+        cache.source_count,
+    )
+end
+
+function release_cuda_weighted_field_sources!(cache::CudaWeightedFieldSources)
+    CUDA.unsafe_free!(cache.pressure_re)
+    CUDA.unsafe_free!(cache.pressure_im)
+    CUDA.unsafe_free!(cache.neumann_re)
+    CUDA.unsafe_free!(cache.neumann_im)
     return nothing
 end
 
@@ -196,38 +334,27 @@ function evaluate_galerkin_field_cuda(
     k::T,
     cache::CudaFieldEvaluationCache{T};
     return_gpu::Bool=false,
+    weighted_sources=nothing,
 ) where {T<:AbstractFloat}
-    point_count = length(eval_points)
+    points_on_gpu = eval_points isa CudaObservationPoints
+    point_count = points_on_gpu ? eval_points.point_count : length(eval_points)
     point_count == 0 && return return_gpu ? CuArray(Complex{T}[]) : Complex{T}[]
     CUDA.functional() || error("CUDA field evaluation requested, but CUDA.functional() is false.")
 
-    d_eval_points = CuArray(_cuda_eval_point_arrays(eval_points, T))
+    d_eval_points = points_on_gpu ? eval_points.points : CuArray(_cuda_eval_point_arrays(eval_points, T))
     pressure_on_gpu = pressure isa CuArray
     neumann_on_gpu = q_neumann isa CuArray
     d_pressure = pressure_on_gpu ? pressure : CuArray(pressure)
     d_q_neumann = neumann_on_gpu ? q_neumann : CuArray(q_neumann)
-    d_pressure_re = CUDA.zeros(T, cache.source_count)
-    d_pressure_im = CUDA.zeros(T, cache.source_count)
-    d_neumann_re = CUDA.zeros(T, cache.source_count)
-    d_neumann_im = CUDA.zeros(T, cache.source_count)
-    d_pot_re = CUDA.zeros(T, point_count)
-    d_pot_im = CUDA.zeros(T, point_count)
-
-    threads = 256
-    source_blocks = min(cld(cache.source_count, threads), 65_535)
-    CUDA.@cuda threads=threads blocks=source_blocks _cuda_weighted_field_sources_kernel!(
-        d_pressure_re,
-        d_pressure_im,
-        d_neumann_re,
-        d_neumann_im,
+    owns_weighted_sources = weighted_sources === nothing
+    selected_sources = owns_weighted_sources ? build_cuda_weighted_field_sources(
+        cache,
         d_pressure,
         d_q_neumann,
-        cache.source_weights,
-        cache.source_faces,
-        cache.source_elements,
-        cache.basis_values,
-        cache.source_count,
-    )
+    ) : weighted_sources
+    selected_sources.source_count == cache.source_count || error("CUDA weighted field source count mismatch.")
+    d_pot_re = CUDA.zeros(T, point_count)
+    d_pot_im = CUDA.zeros(T, point_count)
 
     eval_threads = 256
     CUDA.@cuda threads=eval_threads blocks=point_count shmem=2 * eval_threads * sizeof(T) _cuda_field_eval_kernel!(
@@ -236,10 +363,10 @@ function evaluate_galerkin_field_cuda(
         d_eval_points,
         cache.source_points,
         cache.source_normals,
-        d_pressure_re,
-        d_pressure_im,
-        d_neumann_re,
-        d_neumann_im,
+        selected_sources.pressure_re,
+        selected_sources.pressure_im,
+        selected_sources.neumann_re,
+        selected_sources.neumann_im,
         k,
         cache.source_count,
         point_count,
@@ -249,16 +376,41 @@ function evaluate_galerkin_field_cuda(
     d_pot = complex.(d_pot_re, d_pot_im)
     result = return_gpu ? d_pot : Complex{T}.(Array(d_pot))
 
-    CUDA.unsafe_free!(d_eval_points)
+    points_on_gpu || CUDA.unsafe_free!(d_eval_points)
     pressure_on_gpu || CUDA.unsafe_free!(d_pressure)
     neumann_on_gpu || CUDA.unsafe_free!(d_q_neumann)
-    CUDA.unsafe_free!(d_pressure_re)
-    CUDA.unsafe_free!(d_pressure_im)
-    CUDA.unsafe_free!(d_neumann_re)
-    CUDA.unsafe_free!(d_neumann_im)
+    owns_weighted_sources && release_cuda_weighted_field_sources!(selected_sources)
     CUDA.unsafe_free!(d_pot_re)
     CUDA.unsafe_free!(d_pot_im)
     return_gpu || CUDA.unsafe_free!(d_pot)
 
     return result
+end
+
+
+function evaluate_galerkin_spl_cuda(
+    eval_points,
+    mesh::BoundaryMesh{T},
+    pressure,
+    q_neumann,
+    k::T,
+    cache::CudaFieldEvaluationCache{T};
+    weighted_sources=nothing,
+) where {T<:AbstractFloat}
+    d_pressure = evaluate_galerkin_field_cuda(
+        eval_points,
+        mesh,
+        pressure,
+        q_neumann,
+        k,
+        cache;
+        return_gpu=true,
+        weighted_sources=weighted_sources,
+    )
+    reference_squared = T(20e-6)^2
+    d_spl = @. T(10) * log10((real(d_pressure)^2 + imag(d_pressure)^2) / reference_squared)
+    spl = Float32.(Array(d_spl))
+    CUDA.unsafe_free!(d_spl)
+    CUDA.unsafe_free!(d_pressure)
+    return spl
 end

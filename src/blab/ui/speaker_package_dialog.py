@@ -19,7 +19,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.speaker_package import SpeakerPackageConfig, SpeakerPackageFidelity
+from blab.speaker_package import (
+    SpeakerPackageConfig,
+    SpeakerPackageCoupledRepresentation,
+    SpeakerPackageFidelity,
+)
 from blab.ui.file_dialogs import FileDialogService
 
 
@@ -45,6 +49,10 @@ class SpeakerPackageDialog(QDialog):
             "Level 2 — Exterior BEM with fixed distributed sources",
             int(SpeakerPackageFidelity.FIXED_SOURCES),
         )
+        self.fidelity_combo.addItem(
+            "Level 3 — Dynamic interior with coupled exterior BEM",
+            int(SpeakerPackageFidelity.COUPLED),
+        )
         self.output_edit = QLineEdit()
         self.output_edit.setPlaceholderText("speaker.blabsp")
         browse_button = QPushButton("Browse…")
@@ -60,7 +68,9 @@ class SpeakerPackageDialog(QDialog):
 
         note = QLabel(
             "Boundary Lab will run a new solve with the complex spherical field and any boundary traces "
-            "required by the selected fidelity. Exported packages use +Y as forward."
+            "required by the selected fidelity. Level 3 stores a rank-32 parity Petrov–Galerkin ROM "
+            "with one, two, or four sectors according to the project's symmetry. Exported packages use "
+            "+Y as forward."
         )
         note.setWordWrap(True)
 
@@ -79,6 +89,7 @@ class SpeakerPackageDialog(QDialog):
             output_path=Path(self.output_edit.text().strip()),
             name=self.name_edit.text().strip(),
             fidelity=SpeakerPackageFidelity(int(self.fidelity_combo.currentData())),
+            coupled_representation=SpeakerPackageCoupledRepresentation.PARITY_ROM,
         ).normalized()
 
     @Slot()

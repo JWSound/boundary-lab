@@ -108,6 +108,12 @@ Users can export simulated polar data as individual .txt files per angle sampled
 
 Users can export each solved channel's on-axis response as a tab-separated .txt file containing frequency in Hz, SPL in dB, and phase in degrees. Single-channel solves use a save-file dialog. Multi-channel solves use a directory picker and write one file per channel; the combined system response is not exported. The files use the original solved frequency samples and can be imported into tools such as REW and VituixCAD.
 
+BEAT and canonical solved-result artifacts use the `exp(-i omega t)` phasor
+convention. Boundary Lab converts phase shown in plots, observation planes, and
+REW/VituixCAD-compatible text exports to the standard audio
+`exp(+i omega t)` convention. Channel delays and crossover filters are converted
+to BEAT's convention before they are combined with solver-native pressures.
+
 ## Exporting Balloon Data
 
 The balloon viewer exports a schema-versioned directory containing:
@@ -141,6 +147,11 @@ They preserve the independent excitation-port basis and the
   exterior BEM surface, continuous P1 pressure, and facewise DP0 pressure
   normal derivative. These traces define the fixed equivalent source
   `D[p] - S[q]`; they are not two simultaneously imposed boundary conditions.
+- **Level 3 — Reduced interior coupling** contains levels 1 and 2 plus a
+  rank-32-per-sector parity Petrov–Galerkin ROM at every exported frequency.
+  Deploy Schur-eliminates each reduced interior response into the shared
+  exterior BEM problem, retaining mutual loading and transducer feedback while
+  keeping package size and array-solve cost practical.
 
 Boundary Lab uses +Z as forward. Exported speaker packages use the array-tool
 frame with +Y as forward by applying the proper right-handed rotation
@@ -156,3 +167,15 @@ derivative values are copied to each image. The archive records the source
 symmetry, image transforms, and source indices for every exported node and face.
 The package manifest records medium properties, units, coordinate conventions,
 frequency and excitation order, provenance, payload semantics, and checksums.
+
+Level 3 must represent asymmetric incident fields from other array elements.
+Boundary Lab therefore recompiles an export-only full-domain system with
+symmetry off, then decomposes its response into every parity sector required by
+the source project: one general sector for no symmetry, even-X and odd-X for X
+symmetry, or four sectors for XY symmetry. It prefers retained generated
+full-domain meshes; otherwise it reflects the reduced FEM and BEM meshes,
+welds cut-plane nodes, corrects element orientation, removes FEM cut facets,
+and rebuilds the physical interfaces. A driver divided by a cut plane remains
+one mechanical/electrical state, while complete off-axis drivers are cloned as
+independent components and excitation ports. The temporary system and meshes
+are discarded after export and are never written back to the project.

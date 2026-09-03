@@ -12,19 +12,21 @@ from blab.ui.dialogs import (
     PreferencesDialog,
 )
 from blab.ui.main_window.constants import (
-    BEM_PREVIEW_DARK_ICON,
-    BEM_PREVIEW_LIGHT_ICON,
     CAPTURE_CONTOURS_DARK_ICON,
     CAPTURE_CONTOURS_LIGHT_ICON,
     CLEAR_CONTOURS_DARK_ICON,
     CLEAR_CONTOURS_LIGHT_ICON,
     DEFAULT_DOCK_STATE_B64,
-    FEM_PREVIEW_DARK_ICON,
-    FEM_PREVIEW_LIGHT_ICON,
+    EXPORT_DARK_ICON,
+    EXPORT_LIGHT_ICON,
     PHASE_DARK_ICON,
     PHASE_LIGHT_ICON,
-    SAVE_DARK_ICON,
-    SAVE_LIGHT_ICON,
+    PLOT_LIMITS_DARK_ICON,
+    PLOT_LIMITS_LIGHT_ICON,
+    SNAPSHOT_DARK_ICON,
+    SNAPSHOT_LIGHT_ICON,
+    SPHERICAL_SPIN_DARK_ICON,
+    SPHERICAL_SPIN_LIGHT_ICON,
     SYNTAX_HIGHLIGHT_DARK_ICON,
     SYNTAX_HIGHLIGHT_LIGHT_ICON,
 )
@@ -70,33 +72,39 @@ class PreferencesMixin:
             )
 
     def _refresh_plot_export_icons(self) -> None:
-        if not hasattr(self, "export_plot_actions") and not hasattr(self, "show_interior_regions_action"):
+        if not hasattr(self, "export_plot_actions"):
             return
         palette = self.palette()
         window_color = palette.color(QPalette.Window)
         light_theme = window_color.lightness() >= 128
-        icon = QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON))
+        snapshot_icon = QIcon(str(SNAPSHOT_LIGHT_ICON if light_theme else SNAPSHOT_DARK_ICON))
+        export_icon = QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON))
         capture_icon = QIcon(str(CAPTURE_CONTOURS_LIGHT_ICON if light_theme else CAPTURE_CONTOURS_DARK_ICON))
         clear_icon = QIcon(str(CLEAR_CONTOURS_LIGHT_ICON if light_theme else CLEAR_CONTOURS_DARK_ICON))
-        fem_icon = QIcon(str(FEM_PREVIEW_LIGHT_ICON if light_theme else FEM_PREVIEW_DARK_ICON))
-        bem_icon = QIcon(str(BEM_PREVIEW_LIGHT_ICON if light_theme else BEM_PREVIEW_DARK_ICON))
         syntax_icon = QIcon(str(SYNTAX_HIGHLIGHT_LIGHT_ICON if light_theme else SYNTAX_HIGHLIGHT_DARK_ICON))
         phase_icon = QIcon(str(PHASE_LIGHT_ICON if light_theme else PHASE_DARK_ICON))
+        plot_limits_icon = QIcon(str(PLOT_LIMITS_LIGHT_ICON if light_theme else PLOT_LIMITS_DARK_ICON))
+        spherical_spin_icon = QIcon(str(SPHERICAL_SPIN_LIGHT_ICON if light_theme else SPHERICAL_SPIN_DARK_ICON))
         for action in getattr(self, "export_plot_actions", {}).values():
-            action.setIcon(icon)
+            action.setIcon(snapshot_icon)
+        for action in getattr(self, "export_plot_data_actions", {}).values():
+            action.setIcon(export_icon)
         for action in getattr(self, "capture_contour_actions", {}).values():
             action.setIcon(capture_icon)
         for action in getattr(self, "clear_contour_actions", {}).values():
             action.setIcon(clear_icon)
-        if hasattr(self, "show_interior_regions_action"):
-            self.show_interior_regions_action.setIcon(fem_icon)
-        if hasattr(self, "show_exterior_region_action"):
-            self.show_exterior_region_action.setIcon(bem_icon)
+        for action in getattr(self, "plot_limit_actions", {}).values():
+            action.setIcon(plot_limits_icon)
         if hasattr(self, "syntax_highlighting_action"):
             self.syntax_highlighting_action.setIcon(syntax_icon)
+        if hasattr(self, "spherical_spin_action"):
+            self.spherical_spin_action.setIcon(spherical_spin_icon)
         on_axis_plot = getattr(self, "on_axis_plot", None)
         if on_axis_plot is not None:
             on_axis_plot.show_phase_action.setIcon(phase_icon)
+        electrical_impedance_plot = getattr(self, "electrical_impedance_plot", None)
+        if electrical_impedance_plot is not None:
+            electrical_impedance_plot.show_phase_action.setIcon(phase_icon)
 
     @Slot()
     def _save_frequency_settings(self) -> None:
@@ -113,10 +121,15 @@ class PreferencesMixin:
             self.restoreGeometry(geometry)
 
         dock_state = self.settings.value("window/dock_state")
-        if dock_state is None:
+        first_run = dock_state is None
+        if first_run:
             dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
+        if first_run:
+            self.preview_dock.show()
+            for dock in self.plot_docks.values():
+                dock.hide()
         for dock_id in ("editor", "preview"):
             self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:

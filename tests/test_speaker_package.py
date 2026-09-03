@@ -9,13 +9,16 @@ import numpy as np
 import pytest
 
 import blab.speaker_package as speaker_package_module
+from blab.deploy_solve import DeploySolveCache, stage_exact_coupled_system
 from blab.physical_model import (
     AcousticRegionKind,
+    CompiledMesh,
     CompiledPhysicalSystem,
     CompiledRegion,
     ComponentKind,
     ExcitationPort,
     ExcitationPortKind,
+    MeshPurpose,
     PhysicalComponent,
     PhysicalSolveKind,
 )
@@ -32,7 +35,9 @@ from blab.solve_results import (
 )
 from blab.speaker_package import (
     SOURCE_TO_PACKAGE_ROTATION,
+    SPEAKER_ROM_QUANTITIES,
     SpeakerPackageConfig,
+    SpeakerPackageCoupledRepresentation,
     SpeakerPackageFidelity,
     expand_bem_boundary_symmetry,
     export_speaker_package,
@@ -141,9 +146,86 @@ def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> Solved
     )
 
 
+def _coupled_rom_solved_system(symmetry_mode: str = "xy") -> SolvedSystem:
+    solved = _solved_system()
+    frequency_count = solved.frequencies_hz.size
+    rank = 2
+    sector_configuration = {
+        "off": (["general"], [[1, 1]]),
+        "x": (["even_x", "odd_x"], [[1, 1], [-1, 1]]),
+        "xy": (
+            ["even_even", "odd_even", "even_odd", "odd_odd"],
+            [[1, 1], [-1, 1], [1, -1], [-1, -1]],
+        ),
+    }
+    sector_names, sector_signs = sector_configuration[symmetry_mode]
+    sector_count = len(sector_names)
+    image_count = sector_count
+    node_orbits = [[index] * image_count for index in range(4)]
+    face_orbits = [[index] * image_count for index in range(2)]
+    input_count = len(solved.excitation_ids)
+    transducer_count = 2
+    shapes = {
+        "k": (frequency_count, sector_count, rank, rank),
+        "c": (frequency_count, sector_count, rank, len(node_orbits)),
+        "d": (frequency_count, sector_count, len(face_orbits), rank),
+        "b": (frequency_count, sector_count, rank, input_count),
+        "e": (frequency_count, sector_count, len(face_orbits), input_count),
+        "velocity": (frequency_count, sector_count, transducer_count, rank),
+        "current": (frequency_count, sector_count, transducer_count, rank),
+        "velocity_drive": (frequency_count, sector_count, transducer_count, input_count),
+        "current_drive": (frequency_count, sector_count, transducer_count, input_count),
+    }
+    dimensions = {
+        "k": ("frequency", "parity_sector", "reduced_row", "reduced_column"),
+        "c": ("frequency", "parity_sector", "reduced_row", "boundary_node_orbit"),
+        "d": ("frequency", "parity_sector", "boundary_face_orbit", "reduced_column"),
+        "b": ("frequency", "parity_sector", "reduced_row", "input_port"),
+        "e": ("frequency", "parity_sector", "boundary_face_orbit", "input_port"),
+        "velocity": ("frequency", "parity_sector", "transducer", "reduced_column"),
+        "current": ("frequency", "parity_sector", "transducer", "reduced_column"),
+        "velocity_drive": ("frequency", "parity_sector", "transducer", "input_port"),
+        "current_drive": ("frequency", "parity_sector", "transducer", "input_port"),
+    }
+    metadata = {
+        "format_version": 1,
+        "symmetry_mode": symmetry_mode,
+        "image_count": image_count,
+        "rank_per_sector": rank,
+        "sector_names": sector_names,
+        "sector_signs": sector_signs,
+        "node_orbits": node_orbits,
+        "face_orbits": face_orbits,
+        "transducer_count": transducer_count,
+        "equations": ["K_r a + C_r P_parity p = B_r u", "q = sum_parity R_parity (D_r a + E_r u)"],
+        "validation": [{"sector": "even_even", "boundary_output_error": {"p95": 1e-3}}],
+    }
+    quantities = dict(solved.quantities)
+    for index, (identifier, quantity, archive_name) in enumerate(SPEAKER_ROM_QUANTITIES, start=1):
+        quantities[identifier] = SolvedQuantity(
+            id=identifier,
+            quantity=quantity,
+            unit="mixed",
+            dimensions=dimensions[archive_name],
+            values=np.full(shapes[archive_name], complex(index, -index), dtype=np.complex64),
+            metadata={**metadata, "matrix": quantity},
+            available_frequency_mask=np.ones(frequency_count, dtype=bool),
+        )
+    return replace(
+        solved,
+        quantities=quantities,
+        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
+    )
+
+
 def _read_npz(archive: zipfile.ZipFile, member: str) -> dict[str, np.ndarray]:
     with np.load(archive.open(member)) as arrays:
         return {name: arrays[name].copy() for name in arrays.files}
+
+
+def test_sampled_macro_representation_is_no_longer_supported() -> None:
+    with pytest.raises(ValueError, match="parity-rom"):
+        SpeakerPackageCoupledRepresentation.parse("sampled-macro")
 
 
 def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: Path) -> None:
@@ -194,6 +276,140 @@ def test_level_two_contains_progressive_pattern_and_fixed_source_data(tmp_path: 
     np.testing.assert_array_equal(
         fixed["normal_derivative_pa_per_m"], solved.quantities[BEM_BOUNDARY_NEUMANN_ID].values
     )
+
+
+def test_level_two_manifest_accepts_legacy_string_model_kinds(tmp_path: Path) -> None:
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    system = solved.compiled_system
+    legacy_regions = tuple(replace(region, kind=region.kind.value) for region in system.regions)
+    solved = replace(solved, compiled_system=replace(system, regions=legacy_regions))
+    output = tmp_path / "speaker.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(output, "Legacy string model", SpeakerPackageFidelity.FIXED_SOURCES),
+    )
+
+    manifest = validate_speaker_package(output)
+    assert manifest["physical_system"]["regions"][0]["kind"] == "unbounded_air"
+
+
+def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -> None:
+    solved = _coupled_rom_solved_system()
+    output = tmp_path / "speaker-rom.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(
+            output,
+            "Reduced speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.PARITY_ROM,
+        ),
+    )
+
+    manifest = validate_speaker_package(output)
+    declaration = manifest["files"]["coupled_model"]
+    assert declaration["representation"] == "parity_petrov_galerkin_rom"
+    assert declaration["rank_per_sector"] == 2
+    assert "parity_petrov_galerkin_rom" in manifest["capabilities"]
+    with zipfile.ZipFile(output) as archive:
+        assert "data/coupled-exact-system.json" not in archive.namelist()
+        model = _read_npz(archive, declaration["path"])
+    assert model["k"].shape == (2, 4, 2, 2)
+    assert model["d"].shape == (2, 4, 2, 2)
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
+
+
+def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
+    tmp_path: Path,
+) -> None:
+    solved = _coupled_rom_solved_system("x")
+    output = tmp_path / "speaker-rom-x.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(
+            output,
+            "X-symmetric reduced speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.PARITY_ROM,
+        ),
+    )
+
+    manifest = validate_speaker_package(output)
+    declaration = manifest["files"]["coupled_model"]
+    assert declaration["symmetry_mode"] == "x"
+    assert declaration["image_count"] == 2
+    assert declaration["sector_names"] == ["even_x", "odd_x"]
+    with zipfile.ZipFile(output) as archive:
+        model = _read_npz(archive, declaration["path"])
+    assert model["k"].shape == (2, 2, 2, 2)
+    assert model["d"].shape == (2, 2, 2, 2)
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    assert package.coupled_model["symmetry_mode"] == "x"
+    assert package.coupled_model["arrays"]["velocity"].shape == (2, 2, 2, 2)
+
+
+def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:
+    mesh_path = tmp_path / "interior.msh"
+    mesh_path.write_text("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n", encoding="utf-8")
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    bounded = CompiledRegion(
+        id="region:interior",
+        name="Interior",
+        kind=AcousticRegionKind.BOUNDED_AIR,
+        mesh_ids=("mesh:interior",),
+        volume_groups=(),
+        sound_speed_m_per_s=343.0,
+        density_kg_per_m3=1.21,
+        loss_model={"bulk_loss_factor": 0.05},
+    )
+    compiled = replace(
+        solved.compiled_system,
+        meshes=(CompiledMesh("mesh:interior", "Interior", str(mesh_path), MeshPurpose.FEM_VOLUME, 1.0, (0, 0, 0)),),
+        regions=(*solved.compiled_system.regions, bounded),
+    )
+    solved = replace(
+        solved,
+        compiled_system=compiled,
+        provenance=replace(solved.provenance, solve_kind="coupled_bem_fem"),
+    )
+    output = tmp_path / "speaker-exact.blabsp"
+
+    export_speaker_package(
+        solved,
+        SpeakerPackageConfig(
+            output,
+            "Exact speaker",
+            SpeakerPackageFidelity.COUPLED,
+            SpeakerPackageCoupledRepresentation.EXACT_SYSTEM,
+        ),
+    )
+
+    manifest = validate_speaker_package(output)
+    model = manifest["files"]["coupled_model"]
+    assert model["representation"] == "exact_frequency_parametric_fem"
+    assert model["runtime_assembly_required"] is True
+    assert "exact_frequency_parametric_interior" in manifest["capabilities"]
+    with zipfile.ZipFile(output) as archive:
+        assert "data/coupled-model.npz" not in archive.namelist()
+        descriptor = json.loads(archive.read(model["path"]))
+        member = descriptor["mesh_members"]["mesh:interior"]
+        assert descriptor["compiled_system"]["meshes"][0]["file"] == member
+        assert archive.read(member) == mesh_path.read_bytes()
+
+    package = DeploySolveCache().load_package(output)
+    assert package.coupled_model is not None
+    staged = stage_exact_coupled_system(package, tmp_path / "deploy-worker")
+    staged_mesh = Path(staged["compiled_system"]["meshes"][0]["file"])
+    assert staged["mesh_path_kind"] == "local_file"
+    assert staged_mesh.read_bytes() == mesh_path.read_bytes()
 
 
 def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path) -> None:
@@ -443,3 +659,47 @@ def test_export_solve_preparation_forces_sphere_and_level_two_traces() -> None:
     )
     assert sphere_block["count"] == 32
     assert len(compact.options["points_m"]) == 33
+
+
+def test_parity_rom_preparation_preserves_source_x_symmetry(monkeypatch) -> None:
+    solved = _solved_system()
+    assert solved.compiled_system is not None
+    compiled = replace(
+        solved.compiled_system,
+        metadata={
+            "speaker_export_symmetry_expansion": {
+                "source_symmetry": "x",
+                "temporary_full_domain": True,
+            }
+        },
+    )
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(100.0,),
+        excitation_port_ids=(),
+        outputs=(),
+        solver_options={"symmetry": "off"},
+    )
+    prepared = SystemUiSolveRequest(
+        request=request,
+        backend_id="beat_cpu",
+        solve_kind=PhysicalSolveKind.COUPLED_BEM_FEM,
+        polar_angle_deg=np.empty(0),
+        excitation_channel_names=np.empty(0),
+        excitation_component_names=np.empty(0),
+        horizontal_count=0,
+        vertical_count=0,
+        result_domains=(solved.domains[BEM_BOUNDARY_DOMAIN_ID], solved.domains[SPHERE_DOMAIN_ID]),
+    )
+    monkeypatch.setattr(speaker_package_module, "validate_solve_plan", lambda _request: None)
+
+    updated = prepare_speaker_package_solve(
+        prepared,
+        fidelity="coupled",
+        coupled_representation="parity-rom",
+        sphere_point_count=32,
+        sphere_radius_m=2.0,
+    )
+
+    assert updated.request.solver_options["symmetry"] == "off"
+    assert updated.request.solver_options["speaker_rom"]["symmetry"] == "x"

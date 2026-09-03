@@ -7,13 +7,14 @@ from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 import blab.ui.operation_controllers as controller_module
 from blab.config import SimulationConfig
 from blab.ui.application_state import OperationPhase
-from blab.ui.operation_controllers import GeometryController, SolveController, SolveRequest
+from blab.ui.operation_controllers import GeometryController, SolveController
 from blab.ui.solve_worker import SolveWorker
 
 
 class _SolveWorkerStub(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
+    system_result_ready = Signal(object)
     status = Signal(str)
     failed = Signal(str)
     finished = Signal()
@@ -35,21 +36,14 @@ class _SolveWorkerStub(QObject):
 
 def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -> None:
     app = QCoreApplication.instance() or QCoreApplication([])
-    monkeypatch.setattr(controller_module, "SolveWorker", _SolveWorkerStub)
+    monkeypatch.setattr(controller_module, "SystemSolveWorker", _SolveWorkerStub)
     controller = SolveController()
     results = []
     completions = []
     controller.result_ready.connect(results.append)
     controller.finished.connect(completions.append)
 
-    started = controller.start(
-        SolveRequest(
-            config=SimulationConfig(mesh_file="speaker.msh"),
-            ordered_frequencies=np.array([1000.0]),
-            backend_id="local",
-            server_url="http://127.0.0.1:8765",
-        )
-    )
+    started = controller.start(SimpleNamespace(request=SimpleNamespace(frequencies_hz=(1000.0,))))
     thread = controller._thread
     assert thread is not None
     thread_state_at_completion = []

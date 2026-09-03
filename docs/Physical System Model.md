@@ -312,6 +312,28 @@ both use each face's projection onto the motion axis. Diaphragm projected area
 and pressure force are therefore integrated from the attached moving meshes,
 including shaped rigid cones.
 
+An optional nested `semi_inductance` parameter object replaces the simple
+`Re`-`Le` electrical impedance when its `enabled` flag is true. It contains
+`re_prime_ohm`, `leb_h`, `le_h`, `ke_semi_h`, and `rss_ohm`. The object may be
+retained with `enabled` false so advanced values survive switching back to the
+simple model.
+
+An optional nested `lumped_sealed_rear_chamber` object adds the compliance of
+an unmeshed sealed rear volume. When `enabled` is true it contains positive
+`volume_m3` and `projected_area_m2` values. The ideal adiabatic air spring adds
+
+```text
+Kbox = density * sound_speed^2 * projected_area_m2^2 / volume_m3
+```
+
+to the mechanical stiffness. The component editor derives projected area from
+the selected moving faces, their relative-motion weights, and symmetry surface
+completion. A front-only diaphragm is sufficient. If opposing front and rear
+surfaces are selected, their completed projected areas are averaged and a
+visible warning appears when they differ by more than 10 percent. This lumped
+load is intended only when the rear air volume is not already represented by a
+bounded FEM region; enabling both would count the rear compliance twice.
+
 Reduced electrodynamic models keep full physical-driver T/S parameters. The
 compiler determines whether a driver is cut by each active symmetry plane by
 examining perimeter edges in the union of its selected moving surface groups.

@@ -11,6 +11,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 from matplotlib.path import Path as MplPath
+from matplotlib.transforms import ScaledTranslation
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
@@ -52,9 +53,12 @@ from blab.ui.plots import (
     LIVE_ISOBAR_FREQ_SAMPLES,
     LIVE_ISOBAR_SHADING,
     IsobarCanvas,
+    PlotLayoutProfile,
     apply_audio_frequency_axis,
     apply_compact_plot_text,
+    apply_figure_layout,
     clear_plot_axes,
+    figure_point_fraction,
 )
 from blab.ui.settings import application_settings
 from blab.ui.theme import themed_content_background
@@ -73,9 +77,22 @@ WAVEFRONT_LEVEL_DB = -6.0
 WAVEFRONT_RAY_COUNT = 145
 WAVEFRONT_RAY_SAMPLES = 181
 WAVEFRONT_MAX_FRONT_ANGLE_DEG = 89.0
+WAVEFRONT_LAYOUT = PlotLayoutProfile(left_pt=46.0, right_pt=82.0, bottom_pt=36.0)
+WAVEFRONT_COLORBAR_GAP_PT = 36.0
+WAVEFRONT_COLORBAR_WIDTH_PT = 8.0
+RADAR_LAYOUT = PlotLayoutProfile(
+    left_pt=8.0,
+    right_pt=24.0,
+    top_pt=10.0,
+    bottom_pt=10.0,
+    min_axes_width_pt=110.0,
+    min_axes_height_pt=110.0,
+)
 _WAVEFRONT_RAY_SAMPLE_CACHE: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
-SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
-SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+EXPORT_DARK_ICON = APP_ROOT / "assets" / "export_dark.ico"
+EXPORT_LIGHT_ICON = APP_ROOT / "assets" / "export_light.ico"
+SNAPSHOT_DARK_ICON = APP_ROOT / "assets" / "snapshot_dark.ico"
+SNAPSHOT_LIGHT_ICON = APP_ROOT / "assets" / "snapshot_light.ico"
 HIRES_RENDER_DARK_ICON = APP_ROOT / "assets" / "hiresrender_dark.ico"
 HIRES_RENDER_LIGHT_ICON = APP_ROOT / "assets" / "hiresrender_light.ico"
 
@@ -132,12 +149,12 @@ class BalloonPlotWindow(QMainWindow):
         self.file_dialogs = file_dialog_service or FileDialogService(self.settings)
 
         menu_bar = self.menuBar()
-        file_menu = menu_bar.addMenu("File")
-        export_action = QAction("Export Balloon Data", self)
-        export_action.triggered.connect(self._export_balloon_data)
-        file_menu.addAction(export_action)
-
         view_menu = menu_bar.addMenu("View")
+
+        self.export_balloon_data_action = QAction("Export Balloon Data", self)
+        self.export_balloon_data_action.setToolTip("Export complete balloon data")
+        self.export_balloon_data_action.setEnabled(False)
+        self.export_balloon_data_action.triggered.connect(self._export_balloon_data)
 
         self.plotter = QtInteractor(self)
         self._refresh_3d_view_theme()
@@ -172,7 +189,7 @@ class BalloonPlotWindow(QMainWindow):
         self.protractor_toggle.setChecked(True)
         self.protractor_toggle.toggled.connect(self._on_protractor_toggled)
 
-        self.slice_plot = IsobarCanvas("Isobar Angle Slice", left_margin=0.17, right_margin=0.83, show_colorbar=False)
+        self.slice_plot = IsobarCanvas("Isobar Angle Slice", show_colorbar=False)
         self.slice_plot.setMinimumSize(330, 286)
         self.slice_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -236,7 +253,12 @@ class BalloonPlotWindow(QMainWindow):
         workspace_placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.workspace.setCentralWidget(workspace_placeholder)
 
-        self.balloon_dock = self._make_dock("3D Balloon Plot", viewport, object_name="balloon_3d")
+        self.balloon_dock = self._make_dock(
+            "3D Balloon Plot",
+            viewport,
+            object_name="balloon_3d",
+            tool_actions=(self.export_balloon_data_action,),
+        )
         self.radar_dock = self._make_dock("Radar Slicer Plot", self.radar_plot, object_name="radar_slicer")
         self.wavefront_shape_dock = self._make_dock(
             "Forward Beam Shape",
@@ -369,6 +391,7 @@ class BalloonPlotWindow(QMainWindow):
         self.hires_slice_action.setEnabled(frequency_count > 0)
         self.save_slice_action.setEnabled(frequency_count > 0)
         self.save_wavefront_shape_action.setEnabled(frequency_count > 0)
+        self.export_balloon_data_action.setEnabled(frequency_count > 0)
 
         if not self.wavefront_shape_dock.isHidden():
             self._render_wavefront_shape_plot()
@@ -404,8 +427,10 @@ class BalloonPlotWindow(QMainWindow):
         window_color = palette.color(QPalette.Window)
         light_theme = window_color.lightness() >= 128
         self.hires_slice_action.setIcon(QIcon(str(HIRES_RENDER_LIGHT_ICON if light_theme else HIRES_RENDER_DARK_ICON)))
-        self.save_slice_action.setIcon(QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON)))
-        self.save_wavefront_shape_action.setIcon(QIcon(str(SAVE_LIGHT_ICON if light_theme else SAVE_DARK_ICON)))
+        snapshot_icon = QIcon(str(SNAPSHOT_LIGHT_ICON if light_theme else SNAPSHOT_DARK_ICON))
+        self.save_slice_action.setIcon(snapshot_icon)
+        self.save_wavefront_shape_action.setIcon(snapshot_icon)
+        self.export_balloon_data_action.setIcon(QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON)))
 
     @Slot()
     def _render_high_resolution_isobar_slice(self) -> None:
@@ -1455,6 +1480,11 @@ class WavefrontShapeCanvas(FigureCanvas):
     def sizeHint(self) -> QSize:
         return QSize(330, 245)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._apply_layout()
+        self.draw_idle()
+
     def _draw_empty(self) -> None:
         clear_plot_axes(self.axes)
         clear_plot_axes(self.di_axes)
@@ -1564,7 +1594,7 @@ class WavefrontShapeCanvas(FigureCanvas):
             edgecolors="#101214",
             zorder=3,
         )
-        self._colorbar_axes = self.figure.add_axes([0.89, 0.22, 0.025, 0.68])
+        self._colorbar_axes = self.figure.add_axes(self._colorbar_bounds())
         self._colorbar = self.figure.colorbar(scatter, cax=self._colorbar_axes)
         self._colorbar.set_label("Fit residual (%)", fontsize=8)
         self._colorbar.ax.tick_params(labelsize=8)
@@ -1582,7 +1612,7 @@ class WavefrontShapeCanvas(FigureCanvas):
 
     def _configure_axes(self) -> None:
         self.figure.patch.set_facecolor("#ffffff")
-        self.figure.subplots_adjust(left=0.18, right=0.74, top=0.9, bottom=0.22)
+        self._apply_layout()
         self.axes.set_facecolor("#ffffff")
         self.axes.set_title("Forward Beam Shape", pad=1)
         self.axes.set_xlabel("Frequency (Hz)")
@@ -1590,7 +1620,6 @@ class WavefrontShapeCanvas(FigureCanvas):
         self.di_axes.set_ylabel("Spherical DI (dB)", labelpad=2)
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
-        self.di_axes.yaxis.set_label_coords(1.17, 0.5)
         apply_audio_frequency_axis(self.axes)
         apply_audio_frequency_axis(self.di_axes)
         self.axes.set_ylim(0.75, 8.5)
@@ -1617,11 +1646,15 @@ class WavefrontShapeCanvas(FigureCanvas):
             (4.0, _rounded_square_marker()),
             (8.0, "s"),
         )
-        transform = self.axes.get_yaxis_transform()
+        transform = self.axes.get_yaxis_transform() + ScaledTranslation(
+            -10.0 / 72.0,
+            0.0,
+            self.figure.dpi_scale_trans,
+        )
         marker_color = self._theme_marker_color()
         for value, marker in marker_specs:
             self.axes.scatter(
-                [-0.12],
+                [0.0],
                 [value],
                 marker=marker,
                 s=42,
@@ -1632,6 +1665,22 @@ class WavefrontShapeCanvas(FigureCanvas):
                 clip_on=False,
                 zorder=4,
             )
+
+    def _apply_layout(self) -> None:
+        apply_figure_layout(self.figure, WAVEFRONT_LAYOUT)
+        if getattr(self, "_colorbar_axes", None) is not None:
+            self._colorbar_axes.set_position(self._colorbar_bounds())
+
+    def _colorbar_bounds(self) -> list[float]:
+        axes_position = self.axes.get_position()
+        gap = figure_point_fraction(self.figure, WAVEFRONT_COLORBAR_GAP_PT, axis="x")
+        width = figure_point_fraction(self.figure, WAVEFRONT_COLORBAR_WIDTH_PT, axis="x")
+        return [
+            axes_position.x1 + gap,
+            axes_position.y0,
+            width,
+            axes_position.height,
+        ]
 
     def _theme_marker_color(self) -> str:
         return "#101214" if self.palette().color(QPalette.Window).lightness() >= 128 else "#f2f2f2"
@@ -1674,6 +1723,11 @@ class SliceRadarCanvas(FigureCanvas):
     def sizeHint(self) -> QSize:
         return QSize(235, 286)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        apply_figure_layout(self.figure, RADAR_LAYOUT)
+        self.draw_idle()
+
     def _draw_empty(self) -> None:
         self.axes.clear()
         self._apply_axes()
@@ -1696,7 +1750,7 @@ class SliceRadarCanvas(FigureCanvas):
         radius_max = max(self._max_db - self._min_db, 1.0)
         self.figure.patch.set_facecolor("#1f1f1f")
         self.axes.set_facecolor("#1f1f1f")
-        self.figure.subplots_adjust(left=0.04, right=0.88, top=0.94, bottom=0.06)
+        apply_figure_layout(self.figure, RADAR_LAYOUT)
         self.axes.set_theta_zero_location("N")
         self.axes.set_theta_direction(-1)
         self.axes.set_ylim(0.0, radius_max)

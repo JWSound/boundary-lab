@@ -279,7 +279,9 @@ function butterworth_response(crossover_type::String, order::Int, cutoff_hz, fre
     cutoff = T(cutoff_hz)
     omega = T(2pi) * freq
     omega_c = T(2pi) * cutoff
-    s = Complex{T}(0, omega)
+    # Channel DSP is applied directly to BEAT's exp(-i omega t) solver
+    # phasors, so evaluate the causal analog response at s = -i*omega.
+    s = Complex{T}(0, -omega)
     response = one(Complex{T})
 
     for pole in butterworth_poles(order, T)
@@ -311,7 +313,7 @@ end
 function channel_drive(channel, freq::T) where {T<:AbstractFloat}
     omega = T(2pi) * freq
     level = T(10.0) ^ (T(channel["level_db"]) / T(20.0))
-    delay = exp(Complex{T}(0, -omega * T(channel["delay_ms"]) / T(1000.0)))
+    delay = exp(Complex{T}(0, omega * T(channel["delay_ms"]) / T(1000.0)))
     crossover = crossover_response(get_value(channel, "hpf", nothing), freq) *
         crossover_response(get_value(channel, "lpf", nothing), freq)
     return Complex{T}(T(channel["polarity"]) * level) * delay * crossover
@@ -399,7 +401,7 @@ function drive_for_radiator(radiator, channels, freq::T) where {T<:AbstractFloat
     polarity = T(radiator["polarity"])
     delay_ms = T(radiator["delay_ms"])
     level = T(10.0) ^ (level_db / T(20.0))
-    delay = exp(Complex{T}(0, -omega * delay_ms / T(1000.0)))
+    delay = exp(Complex{T}(0, omega * delay_ms / T(1000.0)))
     crossover = crossover_response(get_value(radiator, "hpf", nothing), freq) *
         crossover_response(get_value(radiator, "lpf", nothing), freq)
     return Complex{T}(polarity * level) * delay * crossover
@@ -630,9 +632,20 @@ function impedance_for_radiators(mesh, element_mesh_ids, pressure, radiators, dr
     return impedance
 end
 
+include(joinpath(@__DIR__, "deploy_solver.jl"))
+
 function solve_request(request)
     try
-        solve_request_impl(request)
+        schema = String(get_value(request, "schema", ""))
+        if schema in ("boundary_lab_deploy_solve", "boundary_lab_deploy_rom")
+            solve_deploy_request_impl(request)
+        elseif schema == "boundary_lab_deploy_microphone_sweep"
+            solve_deploy_microphone_sweep_request_impl(request)
+        elseif schema == "boundary_lab_deploy_field"
+            evaluate_deploy_field_request_impl(request)
+        else
+            solve_request_impl(request)
+        end
     finally
         cleanup_accelerators_after_solve!()
     end

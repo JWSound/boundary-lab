@@ -1,0 +1,43 @@
+{
+  "name": "boundary-lab-deploy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Interactive array deployment prototype for Boundary Lab speaker packages",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:desktop\"",
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:desktop": "wait-on http://127.0.0.1:5173 && electron .",
+    "build": "tsc -b && vite build",
+    "test:placement": "esbuild tests/cabinetPlacement.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/cabinetPlacement.test.mjs && node node_modules/.tmp/cabinetPlacement.test.mjs",
+    "test:channels": "esbuild tests/channels.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/channels.test.mjs && node node_modules/.tmp/channels.test.mjs",
+    "start": "electron . --built",
+    "test:package": "node scripts/package-smoke.mjs library/S218BP_LOD.blabsp",
+    "test:desktop": "electron . --built --smoke-test",
+    "test:level2": "electron . --built --smoke-level2",
+    "benchmark:level2": "electron . --built --benchmark-level2",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@react-three/drei": "9.108.3",
+    "@react-three/fiber": "8.16.8",
+    "fflate": "0.8.2",
+    "lucide-react": "0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "three": "0.166.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.12",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/three": "0.166.0",
+    "@vitejs/plugin-react": "4.3.1",
+    "concurrently": "8.2.2",
+    "electron": "30.3.1",
+    "typescript": "5.5.4",
+    "vite": "5.3.5",
+    "wait-on": "7.2.0"
+  }
+}

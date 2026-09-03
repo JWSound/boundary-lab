@@ -9,14 +9,14 @@ import os
 import tempfile
 import zipfile
 from dataclasses import dataclass, replace
-from enum import IntEnum
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
 
 from blab.config import normalize_symmetry
-from blab.physical_model import AcousticRegionKind
+from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -29,13 +29,24 @@ from blab.solve_results import (
     SolveProvenance,
     bem_boundary_result_domain,
 )
-from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_system_capabilities
+from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.symmetry import snap_points_to_symmetry_planes
-from blab.system_contract import OutputRequest, validate_system_solve_request
+from blab.system_contract import OutputRequest, compiled_system_to_dict
 from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
+SPEAKER_ROM_QUANTITIES = (
+    ("speaker:rom:k", "speaker_rom_k", "k"),
+    ("speaker:rom:c", "speaker_rom_c", "c"),
+    ("speaker:rom:d", "speaker_rom_d", "d"),
+    ("speaker:rom:b", "speaker_rom_b", "b"),
+    ("speaker:rom:e", "speaker_rom_e", "e"),
+    ("speaker:rom:velocity", "speaker_rom_velocity", "velocity"),
+    ("speaker:rom:current", "speaker_rom_current", "current"),
+    ("speaker:rom:velocity-drive", "speaker_rom_velocity_drive", "velocity_drive"),
+    ("speaker:rom:current-drive", "speaker_rom_current_drive", "current_drive"),
+)
 
 # A proper right-handed rotation about X by -90 degrees. Boundary Lab +Z
 # becomes package +Y; source +Y becomes package -Z.
@@ -48,6 +59,7 @@ SOURCE_TO_PACKAGE_ROTATION = np.asarray(
 class SpeakerPackageFidelity(IntEnum):
     PATTERN = 1
     FIXED_SOURCES = 2
+    COUPLED = 3
 
     @classmethod
     def parse(cls, value: int | str | SpeakerPackageFidelity) -> SpeakerPackageFidelity:
@@ -62,17 +74,54 @@ class SpeakerPackageFidelity(IntEnum):
                 "2": cls.FIXED_SOURCES,
                 "fixed": cls.FIXED_SOURCES,
                 "fixed_sources": cls.FIXED_SOURCES,
+                "3": cls.COUPLED,
+                "coupled": cls.COUPLED,
+                "dynamic": cls.COUPLED,
+                "condensed": cls.COUPLED,
             }
             if normalized in names:
                 return names[normalized]
         try:
             return cls(int(value))
         except (TypeError, ValueError) as exc:
-            raise ValueError("Speaker package fidelity must be 'pattern' or 'fixed'.") from exc
+            raise ValueError("Speaker package fidelity must be 'pattern', 'fixed', or 'coupled'.") from exc
 
     @property
     def cli_name(self) -> str:
-        return "pattern" if self == self.PATTERN else "fixed"
+        if self == self.PATTERN:
+            return "pattern"
+        return "fixed" if self == self.FIXED_SOURCES else "coupled"
+
+
+class SpeakerPackageCoupledRepresentation(str, Enum):
+    """On-disk representation of a Level-3 interior model."""
+
+    EXACT_SYSTEM = "exact_system"
+    PARITY_ROM = "parity_rom"
+
+    @classmethod
+    def parse(
+        cls,
+        value: str | SpeakerPackageCoupledRepresentation,
+    ) -> SpeakerPackageCoupledRepresentation:
+        if isinstance(value, cls):
+            return value
+        normalized = str(value).strip().lower().replace("-", "_")
+        aliases = {
+            "exact": cls.EXACT_SYSTEM,
+            "exact_system": cls.EXACT_SYSTEM,
+            "sparse": cls.EXACT_SYSTEM,
+            "rom": cls.PARITY_ROM,
+            "parity_rom": cls.PARITY_ROM,
+            "parity_petrov_galerkin": cls.PARITY_ROM,
+            "petrov_galerkin": cls.PARITY_ROM,
+        }
+        try:
+            return aliases[normalized]
+        except KeyError as exc:
+            raise ValueError(
+                "Coupled speaker representation must be 'parity-rom' or the developer-only 'exact-system'."
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -80,6 +129,7 @@ class SpeakerPackageConfig:
     output_path: Path
     name: str
     fidelity: SpeakerPackageFidelity = SpeakerPackageFidelity.PATTERN
+    coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM
 
     def normalized(self) -> SpeakerPackageConfig:
         path = Path(self.output_path)
@@ -88,7 +138,12 @@ class SpeakerPackageConfig:
         name = str(self.name).strip()
         if not name:
             raise ValueError("Speaker package name must not be empty.")
-        return SpeakerPackageConfig(path, name, SpeakerPackageFidelity.parse(self.fidelity))
+        return SpeakerPackageConfig(
+            path,
+            name,
+            SpeakerPackageFidelity.parse(self.fidelity),
+            SpeakerPackageCoupledRepresentation.parse(self.coupled_representation),
+        )
 
 
 @dataclass(frozen=True)
@@ -131,12 +186,17 @@ def prepare_speaker_package_solve(
     prepared: SystemUiSolveRequest,
     *,
     fidelity: int | str | SpeakerPackageFidelity,
+    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
     sphere_point_count: int,
     sphere_radius_m: float,
+    speaker_rom_rank: int = 32,
+    speaker_rom_training_count: int = 96,
+    speaker_rom_validation_count: int = 24,
 ) -> SystemUiSolveRequest:
     """Add the physical outputs required by a speaker package solve."""
 
     level = SpeakerPackageFidelity.parse(fidelity)
+    representation = SpeakerPackageCoupledRepresentation.parse(coupled_representation)
     if sphere_point_count <= 0:
         raise ValueError("Speaker package sphere point count must be greater than zero.")
     if not np.isfinite(sphere_radius_m) or sphere_radius_m <= 0.0:
@@ -204,10 +264,52 @@ def prepare_speaker_package_solve(
         if BEM_BOUNDARY_DOMAIN_ID not in domain_ids:
             domains.append(bem_boundary_result_domain(request.compiled_system, symmetry=symmetry))
 
-    updated_request = replace(request, outputs=tuple(outputs))
-    validate_system_solve_request(updated_request)
-    validate_system_capabilities(updated_request)
-    return replace(prepared, request=updated_request, result_domains=tuple(domains))
+    if level >= SpeakerPackageFidelity.COUPLED:
+        if prepared.solve_kind != PhysicalSolveKind.COUPLED_BEM_FEM:
+            raise ValueError("Level-3 speaker packages require a coupled FEM-BEM physical system.")
+        symmetry = normalize_symmetry(request.solver_options.get("symmetry", "off"))
+        if symmetry != "off":
+            raise ValueError(
+                "Level-3 speaker package preparation requires a temporary full-domain system with symmetry off."
+            )
+        if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+            if speaker_rom_rank <= 0:
+                raise ValueError("Speaker ROM rank must be positive.")
+            if speaker_rom_training_count < speaker_rom_rank:
+                raise ValueError("Speaker ROM training count must be at least its rank.")
+            if speaker_rom_validation_count <= 0:
+                raise ValueError("Speaker ROM validation count must be positive.")
+            existing_output_ids = {item.id for item in outputs}
+            for identifier, quantity, _archive_name in SPEAKER_ROM_QUANTITIES:
+                if identifier not in existing_output_ids:
+                    outputs.append(OutputRequest(id=identifier, quantity=quantity))
+
+    solver_options = dict(request.solver_options)
+    if level >= SpeakerPackageFidelity.COUPLED:
+        solver_options.update(
+            {
+                "validation_diagnostics": False,
+                "static_condensation": True,
+                "symmetry": "off",
+            }
+        )
+        if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+            expansion = request.compiled_system.metadata.get("speaker_export_symmetry_expansion", {})
+            source_symmetry = expansion.get("source_symmetry", "off") if isinstance(expansion, dict) else "off"
+            solver_options["speaker_rom"] = {
+                "rank_per_sector": int(speaker_rom_rank),
+                "training_count_per_sector": int(speaker_rom_training_count),
+                "validation_count_per_sector": int(speaker_rom_validation_count),
+                "symmetry": normalize_symmetry(source_symmetry),
+            }
+    updated_request = replace(request, outputs=tuple(outputs), solver_options=solver_options)
+    validate_solve_plan(updated_request)
+    return replace(
+        prepared,
+        request=updated_request,
+        result_domains=tuple(domains),
+        backend_id=prepared.backend_id,
+    )
 
 
 def solve_speaker_package_system(
@@ -264,8 +366,10 @@ def solve_speaker_package_system(
 def speaker_package_issues(
     solved: SolvedSystem | None,
     fidelity: int | str | SpeakerPackageFidelity,
+    coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
 ) -> tuple[SpeakerPackageIssue, ...]:
     level = SpeakerPackageFidelity.parse(fidelity)
+    representation = SpeakerPackageCoupledRepresentation.parse(coupled_representation)
     issues: list[SpeakerPackageIssue] = []
     if solved is None:
         return (SpeakerPackageIssue("missing_solved_system", "No solved system is available."),)
@@ -325,6 +429,90 @@ def speaker_package_issues(
                 np.asarray(neumann.available_frequency_mask, dtype=bool)
             ):
                 issues.append(SpeakerPackageIssue("incomplete_bem_traces", "BEM boundary traces are incomplete."))
+    if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.EXACT_SYSTEM:
+        system = solved.compiled_system
+        if system is None:
+            issues.append(
+                SpeakerPackageIssue("missing_compiled_system", "Exact Level-3 export requires a compiled system.")
+            )
+        elif not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions):
+            issues.append(
+                SpeakerPackageIssue("missing_bounded_region", "Exact Level-3 export requires a bounded FEM region.")
+            )
+        elif any(not Path(mesh.file).is_file() for mesh in system.meshes):
+            issues.append(
+                SpeakerPackageIssue("missing_system_mesh", "Exact Level-3 export requires every compiled mesh file.")
+            )
+    if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+        matrices = {
+            identifier: solved.quantities.get(identifier)
+            for identifier, _quantity, _archive_name in SPEAKER_ROM_QUANTITIES
+        }
+        for identifier, matrix in matrices.items():
+            if matrix is None:
+                issues.append(
+                    SpeakerPackageIssue(
+                        "missing_speaker_rom_matrix",
+                        f"Parity speaker ROM quantity {identifier!r} was not retained.",
+                    )
+                )
+        if all(matrix is not None for matrix in matrices.values()):
+            values = {
+                archive_name: np.asarray(matrices[identifier].values)
+                for identifier, _quantity, archive_name in SPEAKER_ROM_QUANTITIES
+            }
+            metadata = matrices["speaker:rom:k"].metadata
+            rank = int(metadata.get("rank_per_sector", 0))
+            node_orbits = metadata.get("node_orbits", ())
+            face_orbits = metadata.get("face_orbits", ())
+            sector_signs = metadata.get("sector_signs", ())
+            sector_names = metadata.get("sector_names", ())
+            sector_count = len(sector_signs)
+            symmetry_mode = str(metadata.get("symmetry_mode", "xy"))
+            expected_image_count = {"off": 1, "x": 2, "xy": 4}.get(symmetry_mode, 0)
+            image_count = int(metadata.get("image_count", expected_image_count))
+            frequency_count = solved.frequencies_hz.size
+            input_count = len(solved.excitation_ids)
+            transducer_count = int(metadata.get("transducer_count", -1))
+            expected_shapes = {
+                "k": (frequency_count, sector_count, rank, rank),
+                "c": (frequency_count, sector_count, rank, len(node_orbits)),
+                "d": (frequency_count, sector_count, len(face_orbits), rank),
+                "b": (frequency_count, sector_count, rank, input_count),
+                "e": (frequency_count, sector_count, len(face_orbits), input_count),
+                "velocity": (frequency_count, sector_count, transducer_count, rank),
+                "current": (frequency_count, sector_count, transducer_count, rank),
+                "velocity_drive": (frequency_count, sector_count, transducer_count, input_count),
+                "current_drive": (frequency_count, sector_count, transducer_count, input_count),
+            }
+            if (
+                rank <= 0
+                or sector_count != expected_image_count
+                or len(sector_names) != sector_count
+                or image_count != expected_image_count
+                or not node_orbits
+                or not face_orbits
+                or any(len(orbit) != image_count for orbit in (*node_orbits, *face_orbits))
+                or any(len(signs) != 2 for signs in sector_signs)
+                or any(values[name].shape != shape for name, shape in expected_shapes.items())
+                or not all(np.iscomplexobj(array) for array in values.values())
+            ):
+                issues.append(
+                    SpeakerPackageIssue(
+                        "invalid_speaker_rom",
+                        "Parity speaker ROM shapes, metadata, or complex dtypes are invalid.",
+                    )
+                )
+            elif any(
+                not np.all(np.asarray(matrices[identifier].available_frequency_mask, dtype=bool))
+                for identifier, _quantity, _archive_name in SPEAKER_ROM_QUANTITIES
+            ):
+                issues.append(
+                    SpeakerPackageIssue(
+                        "incomplete_speaker_rom",
+                        "Parity speaker ROM quantities are incomplete.",
+                    )
+                )
     return tuple(issues)
 
 
@@ -333,7 +521,7 @@ def export_speaker_package(
     config: SpeakerPackageConfig,
 ) -> SpeakerPackageExportResult:
     normalized = config.normalized()
-    issues = speaker_package_issues(solved, normalized.fidelity)
+    issues = speaker_package_issues(solved, normalized.fidelity, normalized.coupled_representation)
     if issues:
         raise ValueError("Speaker package is not exportable: " + "; ".join(issue.message for issue in issues))
 
@@ -479,6 +667,59 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                 "normal_derivative": ["frequency", "excitation", "bem_face"],
             },
         }
+    if config.fidelity >= SpeakerPackageFidelity.COUPLED:
+        if config.coupled_representation == SpeakerPackageCoupledRepresentation.EXACT_SYSTEM:
+            exact_members, exact_descriptor = _exact_system_archive_members(solved)
+            members.update(exact_members)
+            capabilities.append("exact_frequency_parametric_interior")
+            files["coupled_model"] = exact_descriptor
+        elif config.coupled_representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
+            quantity_by_archive_name = {
+                archive_name: solved.quantities[identifier]
+                for identifier, _quantity, archive_name in SPEAKER_ROM_QUANTITIES
+            }
+            rom_metadata = dict(quantity_by_archive_name["k"].metadata)
+            rom_metadata.pop("matrix", None)
+            members["data/coupled-rom.npz"] = _npz_bytes(
+                frequencies_hz=np.asarray(solved.frequencies_hz, dtype=np.float64),
+                **{
+                    name: np.asarray(quantity.values, dtype=np.complex64)
+                    for name, quantity in quantity_by_archive_name.items()
+                },
+            )
+            capabilities.append("parity_petrov_galerkin_rom")
+            rom_symmetry = str(rom_metadata.get("symmetry_mode", "xy"))
+            default_image_count = {"off": 1, "x": 2, "xy": 4}.get(rom_symmetry, 4)
+            files["coupled_model"] = {
+                "path": "data/coupled-rom.npz",
+                "representation": "parity_petrov_galerkin_rom",
+                "format_version": 1,
+                "symmetry_mode": rom_symmetry,
+                "image_count": int(rom_metadata.get("image_count", default_image_count)),
+                "rank_per_sector": int(rom_metadata["rank_per_sector"]),
+                "sector_names": rom_metadata["sector_names"],
+                "sector_signs": rom_metadata["sector_signs"],
+                "node_orbits": rom_metadata["node_orbits"],
+                "face_orbits": rom_metadata["face_orbits"],
+                "equations": rom_metadata["equations"],
+                "exterior_pressure_space": "P1",
+                "exterior_normal_derivative_space": "DP0",
+                "frequency_continuous_within_band": False,
+                "input_ports": _coupled_input_ports(solved),
+                "validation": rom_metadata["validation"],
+                "matrix_dimensions": {
+                    "k": ["frequency", "parity_sector", "reduced_row", "reduced_column"],
+                    "c": ["frequency", "parity_sector", "reduced_row", "boundary_node_orbit"],
+                    "d": ["frequency", "parity_sector", "boundary_face_orbit", "reduced_column"],
+                    "b": ["frequency", "parity_sector", "reduced_row", "input_port"],
+                    "e": ["frequency", "parity_sector", "boundary_face_orbit", "input_port"],
+                    "velocity": ["frequency", "parity_sector", "transducer", "reduced_column"],
+                    "current": ["frequency", "parity_sector", "transducer", "reduced_column"],
+                    "velocity_drive": ["frequency", "parity_sector", "transducer", "input_port"],
+                    "current_drive": ["frequency", "parity_sector", "transducer", "input_port"],
+                },
+                "metadata": rom_metadata,
+            }
     manifest = {
         "schema": SPEAKER_PACKAGE_SCHEMA,
         "schema_version": SPEAKER_PACKAGE_SCHEMA_VERSION,
@@ -510,6 +751,71 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
         },
     }
     return members, manifest
+
+
+def _exact_system_archive_members(solved: SolvedSystem) -> tuple[dict[str, bytes], dict[str, Any]]:
+    system = solved.compiled_system
+    if system is None:
+        raise ValueError("Exact Level-3 export requires a compiled physical system.")
+    compiled = compiled_system_to_dict(system)
+    members: dict[str, bytes] = {}
+    mesh_members: dict[str, str] = {}
+    compiled_meshes = {str(item["id"]): item for item in compiled.get("meshes", ())}
+    for index, mesh in enumerate(system.meshes):
+        source = Path(mesh.file)
+        if not source.is_file():
+            raise ValueError(f"Exact Level-3 mesh {source!s} is unavailable.")
+        suffix = source.suffix.lower() or ".msh"
+        member = f"geometry/coupled/{index:03d}-{_safe_member_stem(mesh.name)}{suffix}"
+        members[member] = source.read_bytes()
+        mesh_members[mesh.id] = member
+        compiled_meshes[mesh.id]["file"] = member
+
+    descriptor_path = "data/coupled-exact-system.json"
+    payload = {
+        "format_version": 1,
+        "representation": "exact_frequency_parametric_fem",
+        "mesh_path_kind": "package_member",
+        "compiled_system": compiled,
+        "mesh_members": mesh_members,
+        "solver_options": _portable_solver_options(solved.provenance.solver_options),
+        "frequencies_hz": np.asarray(solved.frequencies_hz, dtype=float).tolist(),
+        "frequency_band_hz": [float(np.min(solved.frequencies_hz)), float(np.max(solved.frequencies_hz))],
+        "phasor_convention": solved.provenance.phasor_convention,
+        "source_to_package_rotation": SOURCE_TO_PACKAGE_ROTATION.tolist(),
+    }
+    members[descriptor_path] = _json_bytes(payload)
+    descriptor = {
+        "path": descriptor_path,
+        "representation": "exact_frequency_parametric_fem",
+        "format_version": 2,
+        "equations": ["K z + C p = B u", "q = D z + E u"],
+        "exterior_pressure_space": "P1",
+        "exterior_normal_derivative_space": "DP0",
+        "runtime_assembly_required": True,
+        "frequency_continuous_within_band": True,
+        "mesh_members": mesh_members,
+        "input_ports": _coupled_input_ports(solved),
+    }
+    return members, descriptor
+
+
+def _coupled_input_ports(solved: SolvedSystem) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": port.id,
+            "kind": _enum_value(port.kind),
+            "unit": "V" if _enum_value(port.kind) == "voltage" else "m/s",
+            "normalization": 1.0,
+        }
+        for port in (solved.compiled_system.excitation_ports if solved.compiled_system is not None else ())
+        if port.id in solved.excitation_ids
+    ]
+
+
+def _safe_member_stem(value: str) -> str:
+    cleaned = "".join(character if character.isalnum() or character in "-_" else "_" for character in value)
+    return cleaned.strip("_") or "mesh"
 
 
 def expand_bem_boundary_symmetry(
@@ -649,12 +955,12 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
     return {
         "id": system.id,
         "name": system.name,
-        "meshes": [{"id": item.id, "name": item.name, "purpose": item.purpose.value} for item in system.meshes],
+        "meshes": [{"id": item.id, "name": item.name, "purpose": _enum_value(item.purpose)} for item in system.meshes],
         "regions": [
             {
                 "id": item.id,
                 "name": item.name,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "sound_speed_m_per_s": float(item.sound_speed_m_per_s),
                 "density_kg_per_m3": float(item.density_kg_per_m3),
             }
@@ -665,18 +971,29 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
                 "id": item.id,
                 "name": item.name,
                 "region_id": item.region_id,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "mesh_id": item.group.mesh_id,
                 "physical_tag": int(item.group.tag),
                 "physical_name": item.group.name,
             }
             for item in system.boundaries
         ],
+        "interfaces": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "bounded_boundary_id": item.bounded_boundary_id,
+                "unbounded_boundary_id": item.unbounded_boundary_id,
+                "node_count": len(item.topology.fem_vertex_indices),
+                "face_count": len(item.topology.fem_face_indices),
+            }
+            for item in system.interfaces
+        ],
         "components": [
             {
                 "id": item.id,
                 "name": item.name,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
                 "boundary_ids": list(item.boundary_ids),
                 "parameters": item.parameters,
             }
@@ -687,11 +1004,18 @@ def _physical_system_metadata(solved: SolvedSystem) -> dict[str, Any]:
                 "id": item.id,
                 "name": item.name,
                 "component_id": item.component_id,
-                "kind": item.kind.value,
+                "kind": _enum_value(item.kind),
             }
             for item in system.excitation_ports
         ],
+        "metadata": system.metadata,
     }
+
+
+def _enum_value(value: object) -> str:
+    """Return a portable enum value while tolerating legacy string-backed models."""
+
+    return str(value.value) if isinstance(value, Enum) else str(value)
 
 
 def _npz_bytes(**arrays: np.ndarray) -> bytes:
@@ -742,8 +1066,10 @@ __all__ = [
     "SOURCE_TO_PACKAGE_ROTATION",
     "SPEAKER_PACKAGE_SCHEMA_VERSION",
     "SpeakerPackageConfig",
+    "SpeakerPackageCoupledRepresentation",
     "SpeakerPackageExportResult",
     "SpeakerPackageFidelity",
+    "SPEAKER_ROM_QUANTITIES",
     "SpeakerPackageIssue",
     "export_speaker_package",
     "expand_bem_boundary_symmetry",

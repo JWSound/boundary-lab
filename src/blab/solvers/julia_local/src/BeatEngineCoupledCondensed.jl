@@ -687,14 +687,11 @@ function build_condensed_coupled_system(
     )
     system_count = acoustic_system_count + 2 * transducer_count
     mechanical_impedance = Complex{T}[
-        Complex{T}(
-            transducer.rms_n_s_per_m,
-            -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
-        )
+        BeatEngineCoupled.mechanical_impedance(transducer, omega, density, sound_speed)
         for transducer in transducers
     ]
     electrical_impedance = Complex{T}[
-        Complex{T}(transducer.re_ohm, -omega * transducer.le_h)
+        BeatEngineCoupled.electrical_impedance(transducer, omega)
         for transducer in transducers
     ]
     force_factor = T[transducer.bl_n_per_a for transducer in transducers]

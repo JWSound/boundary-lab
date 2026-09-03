@@ -88,7 +88,9 @@ This avoids a slow serial scatter stage and lets regular-pair assembly remain ma
 
 ## GPU Dense Solve
 
-If operators are returned on GPU, `solve_burton_miller_neumann` forms the Burton-Miller matrix and RHS directly as `CuArray`s:
+Deploy Level 2 defaults to direct Burton-Miller system assembly. Its regular,
+singular, close-pair, and symmetry-image kernels scatter directly into the real
+and imaginary parts of the final matrix and right-hand side:
 
 $$
 A = \frac{1}{2}I - D + \eta H,
@@ -98,17 +100,30 @@ $$
 b = \left(-S - \eta(D^{*} + \frac{1}{2}I_{P1,DP0})\right)q.
 $$
 
-For systems above 768 P1 unknowns, the RHS is evaluated matrix-free with three
-accumulating GPU matrix-vector products, avoiding a dense combined
-RHS-operator temporary. Smaller systems retain the single-GEMV materialized
-path because it benchmarks faster. The solver then calls Julia's dense linear
-solve:
+The fixed Neumann trace is consumed during assembly, so the path never
+materializes separate dense S, D, D*, and H matrices or dense identity matrices.
+Compact singular, close-pair, and cabinet-to-ground image corrections are
+computed as before, but their corrected element blocks are combined and
+scattered directly into A and b. After row weighting, only the final complex
+system is retained for the destructive in-place LU solve.
+
+The legacy four-operator path remains available to Deploy requests with
+`"burton_miller_assembly": "operator_matrices"` for numerical and performance
+comparisons. Outside Deploy, `solve_burton_miller_neumann` continues to accept
+preassembled operators. For systems above 768 P1 unknowns, that legacy path
+evaluates its RHS matrix-free with three accumulating GPU matrix-vector
+products.
+
+Both paths dispatch through CUDA.jl to GPU dense linear algebra. The direct path
+uses an in-place factorization:
 
 ```julia
-d_pressure = d_lhs \ d_rhs
+factorization = lu!(d_system)
+d_pressure = factorization \ d_rhs
 ```
 
-With CUDA arrays, this dispatches through CUDA.jl to GPU dense linear algebra. The solved pressure vector is currently copied back to CPU after the solve; CUDA field evaluation then transfers pressure and Neumann vectors back to the GPU for the observation pass. This keeps the public result path simple while leaving room to keep pressure resident across downstream stages later.
+Deploy retains the solved pressure, Neumann trace, and weighted field sources on
+the GPU for observation-plane evaluation and live plane-only updates.
 
 Temporary GPU allocations are explicitly released with `CUDA.unsafe_free!` after assembly or solve stages to reduce memory pressure during frequency sweeps.
 
@@ -150,6 +165,7 @@ Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight
 - `src/blab/solvers/julia_local/src/BeatEngineCudaRegular.jl`: CUDA geometry/rule cache builders and regular-pair kernels.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaSingular.jl`: GPU Duffy corrections, singular cache mirroring, image-singular corrections, and scatter kernels.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaOperators.jl`: GPU operator storage helpers, timing helpers, and regular kernel launch helpers.
+- `src/blab/solvers/julia_local/src/BeatEngineCudaBurtonMiller.jl`: direct final-system assembly, correction scatter, identity contribution, and destructive CUDA solve.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaAssembly.jl`: public CUDA Galerkin operator assembly entry point.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaField.jl`: GPU field-evaluation cache, source weighting, and observation kernels.
 - `src/blab/solvers/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.

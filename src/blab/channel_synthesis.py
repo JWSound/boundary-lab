@@ -5,12 +5,15 @@ from __future__ import annotations
 import numpy as np
 from scipy import signal
 
-from blab.config import ChannelConfig, CrossoverConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, CrossoverConfig
+from blab.phasor import standard_to_solver_phasor
 
 REFERENCE_PRESSURE_PA = 20e-6
 
 
 def crossover_response(crossover: CrossoverConfig, freq_hz: float) -> complex:
+    """Return a crossover coefficient in the solver's ``exp(-i omega t)`` convention."""
+
     crossover_type = crossover.type.lower()
     if crossover_type == "none":
         return 1.0 + 0.0j
@@ -32,18 +35,29 @@ def butterworth_response(crossover_type: str, order: int, cutoff_hz: float, freq
         analog=True,
     )
     _, h = signal.freqs(b, a, worN=[2.0 * np.pi * freq_hz])
-    return complex(h[0])
+    return complex(standard_to_solver_phasor(h[0]))
 
 
 def channel_drive(channel: ChannelConfig, freq_hz: float) -> complex:
+    """Return channel DSP in the solver's ``exp(-i omega t)`` convention."""
+
     omega = 2.0 * np.pi * freq_hz
     level = 10.0 ** (channel.level_db / 20.0)
-    delay = np.exp(-1j * omega * (channel.delay_ms / 1000.0))
+    delay = np.exp(1j * omega * (channel.delay_ms / 1000.0))
     crossover = 1.0 + 0.0j
     for crossover_config in (channel.hpf, channel.lpf):
         if crossover_config.type.lower() != "none":
             crossover *= crossover_response(crossover_config, freq_hz)
     return complex(level * channel.polarity * delay * crossover)
+
+
+def channel_voltage_gain(channel: ChannelConfig) -> float:
+    """Return a channel voltage relative to the fixed transducer solve basis."""
+
+    voltage = float(channel.voltage_v)
+    if not np.isfinite(voltage) or voltage < 0.0:
+        raise ValueError("Channel voltage must be finite and non-negative.")
+    return voltage / DEFAULT_CHANNEL_VOLTAGE_V
 
 
 def flat_target_corrections(
@@ -84,6 +98,7 @@ def synthesize_channel_basis_spl(
     flat_target_reference_angle_deg: float,
     flat_target_enabled: bool = True,
     sphere_pressure: np.ndarray | None = None,
+    voltage_channel_names: frozenset[str] = frozenset(),
 ) -> dict[str, np.ndarray | None]:
     names = [str(name) for name in np.asarray(channel_names).tolist()]
     channels_by_name = {channel.name: channel for channel in channel_configs}
@@ -98,7 +113,13 @@ def synthesize_channel_basis_spl(
     )
     weights = np.asarray(
         [
-            channel_drive(channels_by_name.get(name, ChannelConfig(name=name)), freq_hz) * corrections[index]
+            channel_drive(channels_by_name.get(name, ChannelConfig(name=name)), freq_hz)
+            * (
+                channel_voltage_gain(channels_by_name.get(name, ChannelConfig(name=name)))
+                if name in voltage_channel_names
+                else 1.0
+            )
+            * corrections[index]
             for index, name in enumerate(names)
         ],
         dtype=np.complex64,

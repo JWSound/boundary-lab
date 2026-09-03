@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -30,10 +32,16 @@ from blab.headless import (
 )
 from blab.speaker_package import (
     SpeakerPackageConfig,
+    SpeakerPackageCoupledRepresentation,
     SpeakerPackageFidelity,
     export_speaker_package,
     prepare_speaker_package_solve,
     solve_speaker_package_system,
+)
+from blab.speaker_preflight import estimate_level_three_package
+from blab.speaker_symmetry import (
+    expand_speaker_system_for_export,
+    preferred_full_meshes_from_project_payload,
 )
 
 
@@ -111,12 +119,15 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
 
     export_speaker = commands.add_parser(
         "export-speaker",
-        help="Solve a project and export a level 1 or 2 .blabsp speaker package",
+        help="Solve a project and export a level 1, 2, or 3 .blabsp speaker package",
     )
     export_speaker.add_argument("project_file", type=Path, help="Path to the .blab.json project")
     export_speaker.add_argument("--output", type=Path, required=True, help="Output .blabsp package path")
     export_speaker.add_argument("--name", help="Package display name; defaults to the physical-system name")
-    export_speaker.add_argument("--fidelity", choices=("pattern", "fixed"), default="pattern")
+    export_speaker.add_argument("--fidelity", choices=("pattern", "fixed", "coupled"), default="pattern")
+    export_speaker.add_argument("--speaker-rom-rank", type=int, default=32)
+    export_speaker.add_argument("--speaker-rom-training-count", type=int, default=96)
+    export_speaker.add_argument("--speaker-rom-validation-count", type=int, default=24)
     export_speaker.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
     export_speaker.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     export_speaker.add_argument("--events", choices=("text", "ndjson"), default="text")
@@ -126,6 +137,21 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
         help="Julia executable used by BEAT Engine",
     )
     export_speaker.add_argument("--julia-threads", default=None, help="Julia thread count, or auto")
+
+    speaker_preflight = commands.add_parser(
+        "speaker-preflight",
+        help="Estimate Level-3 package storage and per-frequency interior working sets",
+    )
+    speaker_preflight.add_argument("project_file", type=Path, help="Path to the .blab.json project")
+    speaker_preflight.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
+    speaker_preflight.add_argument("--rom-rank", type=int, default=32, help="Parity ROM rank per sector")
+    speaker_preflight.add_argument(
+        "--precision",
+        choices=("float32", "float64"),
+        default="float32",
+        help="Complex matrix precision used for storage estimates",
+    )
+    speaker_preflight.add_argument("--json", action="store_true", help="Print the complete estimate as JSON")
     return parser
 
 
@@ -141,6 +167,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             _evaluate_fem(args)
         elif args.project_command == "compare-fem":
             _compare_fem(args)
+        elif args.project_command == "speaker-preflight":
+            _speaker_preflight(args)
         else:
             _export_speaker(args)
     except KeyboardInterrupt:
@@ -270,45 +298,107 @@ def _compare_fem(args: argparse.Namespace) -> None:
     )
 
 
+def _speaker_preflight(args: argparse.Namespace) -> None:
+    project = load_headless_project(args.project_file)
+    spec = load_headless_solve_spec(args.request)
+    frequency_count = (
+        len(spec.frequencies_hz) if spec.frequencies_hz is not None else int(project.preferences.freq_count)
+    )
+    sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
+    sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
+    estimate = estimate_level_three_package(
+        project.physical_system,
+        symmetry=project.symmetry,
+        frequency_count=frequency_count,
+        complex_bytes=8 if args.precision == "float32" else 16,
+        rom_rank=args.rom_rank,
+        sphere_point_count=sphere_point_count,
+    )
+    payload = estimate.to_dict()
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    sizes = payload["sizes"]
+    print(
+        f"Level-3 preflight for '{project.physical_system.name}': "
+        f"{estimate.frequency_count} frequencies, {estimate.state_count} retained states, "
+        f"{estimate.bem_node_count} BEM nodes / {estimate.bem_face_count} faces."
+    )
+    print(
+        f"Rank-{estimate.rom_rank}-per-sector parity ROM package estimate: "
+        f"{sizes['parity_rom_package_estimate']['mib']:.1f} MiB"
+    )
+    print(f"ROM-training current-frequency Schur working set: {sizes['rom_training_schur']['mib']:.1f} MiB")
+
+
 def _export_speaker(args: argparse.Namespace) -> None:
     project = load_headless_project(args.project_file)
     spec = load_headless_solve_spec(args.request)
-    backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
-    prepared = prepare_headless_solve(project, spec, backend_id=backend_id)
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
     sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
     fidelity = SpeakerPackageFidelity.parse(args.fidelity)
-    prepared = prepare_speaker_package_solve(
-        prepared,
-        fidelity=fidelity,
-        sphere_point_count=sphere_point_count,
-        sphere_radius_m=project.preferences.polar_observation_distance_m,
-    )
-
-    def emit(event: dict[str, Any]) -> None:
-        if args.events == "ndjson":
-            print(json.dumps(event, separators=(",", ":")), flush=True)
-        elif event.get("event") == "frequency_completed":
-            print(
-                f"Solved {event['solved_count']}/{event['frequency_count']}: {event['freq_hz']:.6g} Hz",
-                file=sys.stderr,
-                flush=True,
+    coupled_representation = SpeakerPackageCoupledRepresentation.PARITY_ROM
+    backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if fidelity >= SpeakerPackageFidelity.COUPLED and project.symmetry != "off":
+            temporary = tempfile.TemporaryDirectory(prefix="blab-speaker-full-")
+            expanded = expand_speaker_system_for_export(
+                project.physical_system,
+                symmetry=project.symmetry,
+                output_dir=temporary.name,
+                preferred_full_mesh_by_name=preferred_full_meshes_from_project_payload(project.payload),
             )
-
-    solved = solve_speaker_package_system(
-        prepared,
-        event_callback=emit,
-        julia_executable=args.julia_executable,
-        julia_threads=args.julia_threads,
-    )
-    result = export_speaker_package(
-        solved,
-        SpeakerPackageConfig(
-            output_path=args.output,
-            name=args.name or project.physical_system.name,
+            channel_by_component = {
+                component_id: project.component_channel_by_id.get(source_id, "main")
+                for component_id, source_id in expanded.component_source_ids.items()
+            }
+            project = replace(
+                project,
+                physical_system=expanded.system,
+                symmetry="off",
+                component_channel_by_id=channel_by_component,
+            )
+        prepared = prepare_headless_solve(project, spec, backend_id=backend_id)
+        prepared = prepare_speaker_package_solve(
+            prepared,
             fidelity=fidelity,
-        ),
-    )
+            coupled_representation=coupled_representation,
+            sphere_point_count=sphere_point_count,
+            sphere_radius_m=project.preferences.polar_observation_distance_m,
+            speaker_rom_rank=args.speaker_rom_rank,
+            speaker_rom_training_count=args.speaker_rom_training_count,
+            speaker_rom_validation_count=args.speaker_rom_validation_count,
+        )
+
+        def emit(event: dict[str, Any]) -> None:
+            if args.events == "ndjson":
+                print(json.dumps(event, separators=(",", ":")), flush=True)
+            elif event.get("event") == "frequency_completed":
+                print(
+                    f"Solved {event['solved_count']}/{event['frequency_count']}: {event['freq_hz']:.6g} Hz",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        solved = solve_speaker_package_system(
+            prepared,
+            event_callback=emit,
+            julia_executable=args.julia_executable,
+            julia_threads=args.julia_threads,
+        )
+        result = export_speaker_package(
+            solved,
+            SpeakerPackageConfig(
+                output_path=args.output,
+                name=args.name or project.physical_system.name,
+                fidelity=fidelity,
+                coupled_representation=coupled_representation,
+            ),
+        )
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
     summary = {
         "event": "package_completed",
         "output": str(result.path),

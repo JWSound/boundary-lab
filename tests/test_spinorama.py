@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from blab.spinorama import compute_spinorama_from_planes
 
@@ -99,3 +100,67 @@ def test_spinorama_reference_axis_wraps_around_periodic_polar_grid() -> None:
     )
 
     assert np.isfinite(curves.listening_window_db[0])
+
+
+def test_spinorama_can_replace_plane_sound_power_with_equal_area_sphere() -> None:
+    freqs = np.asarray([1000.0], dtype=np.float32)
+    angles = np.arange(-180.0, 181.0, 10.0, dtype=np.float32)
+    horizontal = np.zeros((1, angles.size), dtype=np.float32)
+    vertical = np.zeros_like(horizontal)
+    sphere = np.asarray([[0.0, -10.0, -10.0, -10.0]], dtype=np.float32)
+
+    curves = compute_spinorama_from_planes(
+        freqs,
+        angles,
+        horizontal,
+        vertical,
+        spherical_spl_relative_db=sphere,
+    )
+
+    expected_power = 10.0 * np.log10(np.mean(10.0 ** (sphere[0] / 10.0)))
+    assert curves.sound_power_db[0] == pytest.approx(expected_power)
+    assert curves.sound_power_di_db[0] == pytest.approx(-expected_power)
+    assert curves.sound_power_di_label == "Spherical DI"
+    assert curves.listening_window_db[0] == pytest.approx(0.0)
+    assert curves.early_reflections_db[0] == pytest.approx(0.0)
+
+
+def test_native_sector_mode_matches_cea_curves_on_a_ten_degree_grid() -> None:
+    freqs = np.asarray([1000.0], dtype=np.float32)
+    angles = np.arange(-180.0, 181.0, 10.0, dtype=np.float32)
+    horizontal = (-0.03 * np.abs(angles))[np.newaxis, :]
+    vertical = (-0.04 * np.abs(angles))[np.newaxis, :]
+
+    cea = compute_spinorama_from_planes(freqs, angles, horizontal, vertical)
+    native = compute_spinorama_from_planes(
+        freqs,
+        angles,
+        horizontal,
+        vertical,
+        use_native_plane_resolution=True,
+    )
+
+    np.testing.assert_allclose(native.listening_window_db, cea.listening_window_db)
+    np.testing.assert_allclose(native.early_reflections_db, cea.early_reflections_db)
+    np.testing.assert_allclose(native.early_reflections_di_db, cea.early_reflections_di_db)
+
+
+def test_native_sector_mode_uses_intermediate_polar_samples() -> None:
+    freqs = np.asarray([1000.0], dtype=np.float32)
+    angles = np.arange(-180.0, 180.0 + 2.5, 2.5, dtype=np.float32)
+    intermediate = ~np.isclose(np.mod(np.abs(angles), 10.0), 0.0)
+    horizontal = np.where(intermediate, -20.0, 0.0)[np.newaxis, :]
+    vertical = horizontal.copy()
+
+    cea = compute_spinorama_from_planes(freqs, angles, horizontal, vertical)
+    native = compute_spinorama_from_planes(
+        freqs,
+        angles,
+        horizontal,
+        vertical,
+        use_native_plane_resolution=True,
+    )
+
+    assert native.listening_window_db[0] < cea.listening_window_db[0]
+    assert native.early_reflections_db[0] < cea.early_reflections_db[0]
+    assert native.early_reflections_di_db[0] != pytest.approx(cea.early_reflections_di_db[0])

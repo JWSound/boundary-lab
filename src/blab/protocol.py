@@ -9,7 +9,14 @@ from typing import Any
 
 import numpy as np
 
-from blab.config import ChannelConfig, CrossoverConfig, MeshConfig, RadiatorConfig, SimulationConfig
+from blab.config import (
+    DEFAULT_CHANNEL_VOLTAGE_V,
+    ChannelConfig,
+    CrossoverConfig,
+    MeshConfig,
+    RadiatorConfig,
+    SimulationConfig,
+)
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 
 PROTOCOL_VERSION = 2
@@ -124,6 +131,7 @@ def radiator_from_dict(raw: dict[str, Any]) -> RadiatorConfig:
 def channel_to_dict(channel: ChannelConfig) -> dict[str, Any]:
     return {
         "name": channel.name,
+        "voltage_v": float(channel.voltage_v),
         "level_db": float(channel.level_db),
         "polarity": int(channel.polarity),
         "delay_ms": float(channel.delay_ms),
@@ -135,6 +143,7 @@ def channel_to_dict(channel: ChannelConfig) -> dict[str, Any]:
 def channel_from_dict(raw: dict[str, Any]) -> ChannelConfig:
     return ChannelConfig(
         name=str(raw["name"]),
+        voltage_v=float(raw.get("voltage_v", DEFAULT_CHANNEL_VOLTAGE_V)),
         level_db=float(raw.get("level_db", 0.0)),
         polarity=int(raw.get("polarity", 1)),
         delay_ms=float(raw.get("delay_ms", 0.0)),

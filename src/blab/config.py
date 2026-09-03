@@ -13,6 +13,7 @@ from pathlib import Path
 from blab.defaults import SOLVER_OUTPUT_NPZ
 
 SYMMETRY_OPTIONS = {"off", "x", "xy"}
+DEFAULT_CHANNEL_VOLTAGE_V = 2.83
 
 
 def normalize_symmetry(value: object) -> str:
@@ -49,6 +50,7 @@ class RadiatorConfig:
 @dataclass
 class ChannelConfig:
     name: str
+    voltage_v: float = DEFAULT_CHANNEL_VOLTAGE_V
     level_db: float = 0.0
     polarity: int = 1
     delay_ms: float = 0.0

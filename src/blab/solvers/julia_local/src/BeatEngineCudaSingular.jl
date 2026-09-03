@@ -210,7 +210,7 @@ function image_singular_cache_arrays(
         end
     end
 
-    total_rule_points = sum(length(rule.weights) for rule in rules)
+    total_rule_points = sum((length(rule.weights) for rule in rules); init=0)
     rule_offsets = Vector{Int32}(undef, length(rules) + 1)
     rule_test_points = Matrix{T}(undef, total_rule_points, 2)
     rule_trial_points = Matrix{T}(undef, total_rule_points, 2)
@@ -293,6 +293,64 @@ function _free_cuda_image_singular_correction_cache!(cache::CudaImageSingularCor
     CUDA.unsafe_free!(cache.transform_signs)
     CUDA.unsafe_free!(cache.curl_signs)
     return nothing
+end
+
+function _paired_regular_rule(rule::TriangleRule{T}) where {T<:AbstractFloat}
+    test_points = SVector{2,T}[]
+    trial_points = SVector{2,T}[]
+    weights = T[]
+    point_count = length(rule.points)
+    sizehint!(test_points, point_count * point_count)
+    sizehint!(trial_points, point_count * point_count)
+    sizehint!(weights, point_count * point_count)
+    for test_q in eachindex(rule.points)
+        for trial_q in eachindex(rule.points)
+            push!(test_points, rule.points[test_q])
+            push!(trial_points, rule.points[trial_q])
+            push!(weights, rule.weights[test_q] * rule.weights[trial_q])
+        end
+    end
+    return DuffyRule(test_points, trial_points, weights)
+end
+
+function build_cuda_near_correction_cache(
+    cache::NearCorrectionCache{T},
+    p1_space::P1Space,
+    dp0_space::DP0Space,
+) where {T<:AbstractFloat}
+    singular_shape = SingularCorrectionCache(
+        cache.pairs_by_test,
+        cache.pairs,
+        [_paired_regular_rule(rule) for rule in cache.correction_rules],
+        NTuple{3,SVector{3,T}}[],
+        cache.pair_count,
+    )
+    arrays = _singular_cache_cuda_arrays(singular_shape, p1_space, dp0_space)
+    signs = cache.trial_transform.signs
+    curl_signs = SVector{3,Int}(
+        cache.trial_transform.determinant * signs[1],
+        cache.trial_transform.determinant * signs[2],
+        cache.trial_transform.determinant * signs[3],
+    )
+    transform_signs = repeat(reshape(T.(signs), 1, 3), cache.pair_count, 1)
+    transformed_curl_signs = repeat(reshape(T.(curl_signs), 1, 3), cache.pair_count, 1)
+    return CudaImageSingularCorrectionCache{T}(
+        CuArray(arrays.test_indices),
+        CuArray(arrays.trial_indices),
+        CuArray(arrays.rule_indices),
+        CuArray(arrays.jac_scales),
+        CuArray(arrays.normal_products),
+        CuArray(arrays.p1_rows),
+        CuArray(arrays.p1_cols),
+        CuArray(arrays.dp0_cols),
+        CuArray(arrays.rule_offsets),
+        CuArray(arrays.rule_test_points),
+        CuArray(arrays.rule_trial_points),
+        CuArray(arrays.rule_weights),
+        CuArray(transform_signs),
+        CuArray(transformed_curl_signs),
+        cache.pair_count,
+    )
 end
 
 release_cuda_image_singular_correction_cache!(cache::CudaImageSingularCorrectionCache) =
@@ -1016,7 +1074,7 @@ function add_image_singular_corrections_cuda_compact!(
     timing=nothing,
 ) where {T<:AbstractFloat}
     CUDA.functional() || error("CUDA image singular correction scatter requested, but CUDA.functional() is false.")
-    normalized_symmetry_mode(symmetry_mode) == :off && return 0
+    normalized_symmetry_mode(symmetry_mode) == :off && cuda_image_singular_cache === nothing && return 0
 
     owns_cache = cuda_image_singular_cache === nothing
     cuda_cache = if owns_cache
@@ -1197,5 +1255,46 @@ function add_image_singular_corrections_cuda_compact!(
     CUDA.unsafe_free!(hyp_re)
     CUDA.unsafe_free!(hyp_im)
     owns_cache && _free_cuda_image_singular_correction_cache!(cuda_cache)
+    return pair_count
+end
+
+function add_near_corrections_cuda_compact!(
+    operators,
+    mesh::BoundaryMesh{T},
+    p1_space::P1Space,
+    dp0_space::DP0Space,
+    k::T,
+    regular_rule::TriangleRule{T},
+    near_cache::NearCorrectionCache{T};
+    cuda_regular_cache=nothing,
+    cuda_near_correction_cache=nothing,
+    timing=nothing,
+) where {T<:AbstractFloat}
+    near_cache.pair_count == 0 && return 0
+    owns_cache = cuda_near_correction_cache === nothing
+    cuda_cache = owns_cache ? build_cuda_near_correction_cache(near_cache, p1_space, dp0_space) :
+        cuda_near_correction_cache
+    pair_count = 0
+    elapsed = @elapsed begin
+        try
+            pair_count = add_image_singular_corrections_cuda_compact!(
+                operators,
+                mesh,
+                p1_space,
+                dp0_space,
+                k,
+                regular_rule,
+                near_cache.correction_order,
+                eachindex(mesh.faces),
+                :off;
+                cuda_regular_cache=cuda_regular_cache,
+                cuda_image_singular_cache=cuda_cache,
+                timing=timing,
+            )
+        finally
+            owns_cache && _free_cuda_image_singular_correction_cache!(cuda_cache)
+        end
+    end
+    timing !== nothing && (timing["near_pair_corrections_cuda"] = elapsed)
     return pair_count
 end

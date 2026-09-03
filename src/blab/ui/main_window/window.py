@@ -27,7 +27,10 @@ from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
 )
+from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
+from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.file_dialogs import FileDialogService
+from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window.backend_health import BackendHealthController
 from blab.ui.main_window.channels import ChannelsMixin
 from blab.ui.main_window.constants import (
@@ -51,8 +54,10 @@ from blab.ui.main_window.solve_workflow import SolveWorkflowController
 from blab.ui.main_window.state_sync import StateSyncMixin
 from blab.ui.main_window.view_builder import ViewBuilderMixin
 from blab.ui.main_window_widgets import (
+    PlotDataExportSpec,
     PlotEntry,
 )
+from blab.ui.max_spl_plot import MaxSplCanvas
 from blab.ui.mesh_assembly import (
     MeshAssemblyService,
 )
@@ -419,7 +424,12 @@ class MainWindow(
         self.horizontal_plot = IsobarCanvas("Horizontal Isobar")
         self.vertical_plot = IsobarCanvas("Vertical Isobar")
         self.impedance_plot = ImpedanceCanvas()
+        self.electrical_impedance_plot = ElectricalImpedanceCanvas()
         self.on_axis_plot = OnAxisResponseCanvas()
+        self.group_delay_plot = GroupDelayCanvas()
+        self.excursion_plot = ExcursionCanvas()
+        self.max_spl_plot = MaxSplCanvas()
+        self.max_spl_plot.calculate_action.triggered.connect(self.calculate_max_spl)
         self.spinorama_plot = SpinoramaCanvas()
         self.plot_entries = (
             PlotEntry(
@@ -428,6 +438,7 @@ class MainWindow(
                 "horizontal_isobar.png",
                 self.horizontal_plot,
                 self._update_horizontal_plot,
+                PlotDataExportSpec("horizontal_polar", target_kind="directory"),
             ),
             PlotEntry(
                 "vertical_isobar",
@@ -435,6 +446,7 @@ class MainWindow(
                 "vertical_isobar.png",
                 self.vertical_plot,
                 self._update_vertical_plot,
+                PlotDataExportSpec("vertical_polar", target_kind="directory"),
             ),
             PlotEntry(
                 "acoustic_impedance",
@@ -442,6 +454,15 @@ class MainWindow(
                 "acoustic_impedance.png",
                 self.impedance_plot,
                 self._update_impedance_plot,
+                PlotDataExportSpec("acoustic_impedance.txt"),
+            ),
+            PlotEntry(
+                "electrical_impedance",
+                "Electrical Impedance",
+                "electrical_impedance.png",
+                self.electrical_impedance_plot,
+                self._update_electrical_impedance_plot,
+                PlotDataExportSpec("electrical_impedance.txt"),
             ),
             PlotEntry(
                 "on_axis_frequency_response",
@@ -449,6 +470,31 @@ class MainWindow(
                 "on_axis_frequency_response.png",
                 self.on_axis_plot,
                 self._update_on_axis_plot,
+                PlotDataExportSpec("on_axis_responses", target_kind="directory"),
+            ),
+            PlotEntry(
+                "group_delay",
+                "Group Delay",
+                "group_delay.png",
+                self.group_delay_plot,
+                self._update_group_delay_plot,
+                PlotDataExportSpec("group_delay.txt"),
+            ),
+            PlotEntry(
+                "transducer_excursion",
+                "Transducer Excursion",
+                "transducer_excursion.png",
+                self.excursion_plot,
+                self._update_excursion_plot,
+                PlotDataExportSpec("transducer_excursion.txt"),
+            ),
+            PlotEntry(
+                "max_spl",
+                "Maximum SPL",
+                "maximum_spl.png",
+                self.max_spl_plot,
+                self._update_max_spl_plot,
+                PlotDataExportSpec("maximum_spl.txt"),
             ),
             PlotEntry(
                 "spinorama",
@@ -456,10 +502,13 @@ class MainWindow(
                 "spinorama.png",
                 self.spinorama_plot,
                 self._update_spinorama_plot,
+                PlotDataExportSpec("spinorama.txt"),
             ),
         )
         self.plot_view_actions: dict[str, QAction] = {}
         self.export_plot_actions: dict[str, QAction] = {}
+        self.export_plot_data_actions: dict[str, QAction] = {}
+        self.plot_limit_actions: dict[str, QAction] = {}
         self.panel_view_actions: dict[str, QAction] = {}
         self.plot_docks: dict[str, QDockWidget] = {}
         self.capture_contour_actions: dict[str, QAction] = {}

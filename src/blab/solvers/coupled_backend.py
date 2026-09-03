@@ -17,6 +17,7 @@ from blab.acoustic_materials import (
     region_bulk_loss_factor,
     wall_impedance_parameters,
 )
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V
 from blab.physical_model import (
     AcousticRegionKind,
     BoundaryKind,
@@ -36,6 +37,7 @@ from blab.system_contract import (
     SystemSolveRequest,
     system_frequency_result_from_dict,
     system_solve_request_to_dict,
+    validate_system_solve_request,
 )
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
@@ -46,7 +48,7 @@ COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.MOVING,
     BoundaryKind.INTERFACE,
 }
-DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = DEFAULT_CHANNEL_VOLTAGE_V
 ELECTRODYNAMIC_REQUIRED_PARAMETERS = {
     "re_ohm",
     "le_h",
@@ -64,6 +66,19 @@ ELECTRODYNAMIC_OPTIONAL_PARAMETERS = {
     "surface_completion_factor",
     "physical_driver_orbit_count",
     "fractional_symmetry_axes",
+    "semi_inductance",
+    "lumped_sealed_rear_chamber",
+}
+SEMI_INDUCTANCE_PARAMETERS = {
+    "re_prime_ohm",
+    "leb_h",
+    "le_h",
+    "ke_semi_h",
+    "rss_ohm",
+}
+LUMPED_SEALED_REAR_CHAMBER_PARAMETERS = {
+    "volume_m3",
+    "projected_area_m2",
 }
 
 
@@ -293,7 +308,7 @@ class _CoupledBackend:
         solver_options["bem_backend"] = "cpu" if is_interior else self.bem_backend
         solver_options["transducer_reference_voltage_v"] = DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V
         typed_request = replace(request, solver_options=solver_options)
-        validate_system_capabilities(typed_request)
+        validate_solve_plan(typed_request)
         return CoupledSession(
             typed_request,
             julia_executable=self.julia_executable,
@@ -314,9 +329,11 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError("FEM static condensation cannot be combined with full-matrix validation diagnostics.")
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
     symmetry_mode = "off" if requested_symmetry in {"", "none"} else requested_symmetry
-    symmetry_factors = {"off": 1, "x": 2, "xy": 4}
+    # Ground is a BEM image construction, not a reduced FEM/transducer
+    # fundamental domain. It therefore leaves component completion factors at 1.
+    symmetry_factors = {"off": 1, "x": 2, "xy": 4, "ground": 1}
     if symmetry_mode not in symmetry_factors:
-        raise ValueError(f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
+        raise ValueError(f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, xy, or ground.")
     bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
     unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
     if not bounded_regions:
@@ -399,7 +416,9 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
             _validate_electrodynamic_component(
                 component,
                 symmetry_factor=symmetry_factors[symmetry_mode],
-                active_symmetry_axes=(() if symmetry_mode == "off" else ("x",) if symmetry_mode == "x" else ("x", "y")),
+                active_symmetry_axes=(
+                    () if symmetry_mode in {"off", "ground"} else ("x",) if symmetry_mode == "x" else ("x", "y")
+                ),
             )
             continue
         unsupported_parameters = set(component.parameters) - {
@@ -451,6 +470,13 @@ def validate_system_capabilities(request: SystemSolveRequest) -> None:
         validate_interior_capabilities(request)
         return
     validate_exterior_capabilities(request)
+
+
+def validate_solve_plan(request: SystemSolveRequest) -> None:
+    """Validate both the protocol contract and supported solver capabilities."""
+
+    validate_system_solve_request(request)
+    validate_system_capabilities(request)
 
 
 def validate_interior_capabilities(request: SystemSolveRequest) -> None:
@@ -654,6 +680,75 @@ def _validate_boundary_motion_weights(component) -> None:
             )
 
 
+def _validate_semi_inductance(component_id: str, raw_model) -> None:
+    if raw_model is None:
+        return
+    if not isinstance(raw_model, dict):
+        raise ValueError(f"Electrodynamic component '{component_id}' semi_inductance must be an object.")
+    unsupported = sorted(set(raw_model) - SEMI_INDUCTANCE_PARAMETERS - {"enabled"})
+    if unsupported:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' has unsupported semi_inductance parameters: "
+            + ", ".join(unsupported)
+        )
+    enabled = raw_model.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"Electrodynamic component '{component_id}' semi_inductance enabled must be a boolean.")
+    missing = sorted(SEMI_INDUCTANCE_PARAMETERS - set(raw_model))
+    if enabled and missing:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' enabled semi_inductance is missing: " + ", ".join(missing)
+        )
+    for name in sorted(SEMI_INDUCTANCE_PARAMETERS & set(raw_model)):
+        value = raw_model[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(
+                f"Electrodynamic component '{component_id}' semi_inductance parameter "
+                f"'{name}' must be a finite number greater than zero."
+            )
+
+
+def _validate_lumped_sealed_rear_chamber(component_id: str, raw_model) -> None:
+    if raw_model is None:
+        return
+    if not isinstance(raw_model, dict):
+        raise ValueError(f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber must be an object.")
+    unsupported = sorted(set(raw_model) - LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - {"enabled"})
+    if unsupported:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' has unsupported "
+            "lumped_sealed_rear_chamber parameters: " + ", ".join(unsupported)
+        )
+    enabled = raw_model.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber enabled must be a boolean."
+        )
+    missing = sorted(LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - set(raw_model))
+    if enabled and missing:
+        raise ValueError(
+            f"Electrodynamic component '{component_id}' enabled lumped_sealed_rear_chamber "
+            "is missing: " + ", ".join(missing)
+        )
+    for name in sorted(LUMPED_SEALED_REAR_CHAMBER_PARAMETERS & set(raw_model)):
+        value = raw_model[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) <= 0.0
+        ):
+            raise ValueError(
+                f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber "
+                f"parameter '{name}' must be a finite number greater than zero."
+            )
+
+
 def _validate_electrodynamic_component(
     component,
     *,
@@ -683,6 +778,12 @@ def _validate_electrodynamic_component(
             raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must be greater than zero.")
         if name in nonnegative and float(value) < 0.0:
             raise ValueError(f"Electrodynamic component '{component.id}' parameter '{name}' must not be negative.")
+
+    _validate_semi_inductance(component.id, parameters.get("semi_inductance"))
+    _validate_lumped_sealed_rear_chamber(
+        component.id,
+        parameters.get("lumped_sealed_rear_chamber"),
+    )
 
     raw_axis = parameters["motion_axis"]
     if (

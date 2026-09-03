@@ -15,11 +15,12 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.physical_model import CompiledPhysicalSystem
 from blab.system_contract import QuantityResult, SystemFrequencyResult, validate_system_frequency_result
 
 RESULT_MODEL_VERSION = 1
-PHASOR_CONVENTION = "exp(-i omega t)"
+PHASOR_CONVENTION = SOLVER_PHASOR_CONVENTION
 HORIZONTAL_POLAR_DOMAIN_ID = "observation:horizontal-polar"
 VERTICAL_POLAR_DOMAIN_ID = "observation:vertical-polar"
 SPHERE_DOMAIN_ID = "observation:sphere"

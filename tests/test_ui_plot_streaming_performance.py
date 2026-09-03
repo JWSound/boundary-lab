@@ -2,6 +2,7 @@ import os
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from cycler import cycler
 from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
@@ -10,11 +11,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from blab.spinorama import SpinoramaCurves
+from blab.ui.balloon import SliceRadarCanvas, WavefrontShapeCanvas
+from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
+from blab.ui.excursion_plot import ExcursionCanvas
+from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window import MainWindow
+from blab.ui.max_spl_plot import MaxSplCanvas
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
 from blab.ui.result_projection import (
+    ElectricalImpedanceProjection,
+    ExcursionProjection,
+    GroupDelayProjection,
     ImpedanceProjection,
     IsobarProjection,
+    MaxSplProjection,
     PolarResponseProjection,
     VisualizationProjection,
 )
@@ -173,6 +183,42 @@ def test_line_plot_canvases_reuse_existing_artists() -> None:
     on_axis.update_plot(freqs, angles, response + 1.0)
     assert tuple(on_axis._lines) == on_axis_lines
 
+    excursion = ExcursionCanvas()
+    excursion.update_plot(freqs, np.asarray(["Woofer"]), np.asarray([[1.0, 2.0, 3.0]]))
+    excursion_lines = dict(excursion._lines)
+    excursion.update_plot(freqs, np.asarray(["Woofer"]), np.asarray([[2.0, 3.0, 4.0]]))
+    assert excursion._lines == excursion_lines
+
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[4.0, 8.0, 6.0]]),
+        np.asarray([[10.0, 20.0, 30.0]]),
+    )
+    electrical_lines = dict(electrical._magnitude_lines)
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[5.0, 9.0, 7.0]]),
+        np.asarray([[20.0, 30.0, 40.0]]),
+    )
+    assert electrical._magnitude_lines == electrical_lines
+
+    group_delay = GroupDelayCanvas()
+    group_delay.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF"]),
+        np.asarray([[1.0, 2.0, 1.0], [2.0, 3.0, 2.0]]),
+    )
+    group_delay_lines = dict(group_delay._lines)
+    group_delay.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF"]),
+        np.asarray([[1.5, 2.5, 1.5], [2.5, 3.5, 2.5]]),
+    )
+    assert group_delay._lines == group_delay_lines
+
     spinorama = SpinoramaCanvas()
     curves = _spinorama_curves()
     spinorama.update_curves(curves)
@@ -206,6 +252,104 @@ def test_on_axis_plot_uses_log_frequency_and_five_db_minor_grids() -> None:
 
     assert {30, 40, 60, 70, 80, 90, 300, 3000}.issubset(visible_x_minor)
     assert {35, 45, 55, 65, 75, 85}.issubset(visible_y_minor)
+
+
+def test_excursion_plot_uses_audio_frequency_axis_zero_baseline_and_trace_filter() -> None:
+    canvas = ExcursionCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Woofer", "Passive radiator"]),
+        np.asarray([[1.0, 2.0, 1.5], [0.5, 3.0, 2.0]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylim()[0] == 0.0
+    assert canvas.axes.get_ylabel() == "Excursion (mm)"
+    canvas._series_actions["Passive radiator"].setChecked(False)
+    assert not canvas._lines["Passive radiator"].get_visible()
+    assert canvas._lines["Woofer"].get_visible()
+
+
+def test_acoustic_impedance_trace_filter_hides_real_and_imaginary_pair() -> None:
+    canvas = ImpedanceCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Woofer", "Tweeter"]),
+        np.asarray([[2.0, 8.0, 4.0], [1.0, 3.0, 2.0]], dtype=np.float32),
+        np.asarray([[0.0, 6.0, -2.0], [0.5, 1.0, -0.5]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_ylabel() == "Normalized Acoustic Impedance (Z / ρcSd)"
+    assert set(canvas._series_actions) == {"Woofer", "Tweeter"}
+    canvas._series_actions["Woofer"].setChecked(False)
+    assert not canvas._lines[0].get_visible()
+    assert not canvas._lines[1].get_visible()
+    assert canvas._lines[2].get_visible()
+    assert canvas._lines[3].get_visible()
+
+
+def test_electrical_impedance_plot_uses_parallel_load_magnitude_and_phase_toggle() -> None:
+    canvas = ElectricalImpedanceCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["LF", "HF"]),
+        np.asarray([[4.0, 20.0, 8.0], [8.0, 10.0, 12.0]], dtype=np.float32),
+        np.asarray([[170.0, -170.0, -90.0], [10.0, 20.0, 30.0]], dtype=np.float32),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylim()[0] == 0.0
+    assert canvas.axes.get_ylabel() == "Impedance (Ω)"
+    assert canvas.show_phase_action.isEnabled()
+    assert not canvas.phase_axes.get_visible()
+    assert all(line.get_linestyle() == ":" for line in canvas._phase_lines.values())
+    assert all(
+        canvas._phase_lines[label].get_color() == canvas._magnitude_lines[label].get_color()
+        for label in canvas._series_labels
+    )
+
+    canvas.show_phase_action.setChecked(True)
+    assert canvas.phase_axes.get_visible()
+    assert canvas.phase_axes.get_ylim() == (-180.0, 600.0)
+    assert np.isnan(np.asarray(canvas._phase_lines["LF"].get_ydata())).any()
+    finite_phase = np.asarray(canvas._phase_lines["LF"].get_ydata(), dtype=float)
+    finite_phase = finite_phase[np.isfinite(finite_phase)]
+    assert np.all(finite_phase >= -180.0)
+    assert np.all(finite_phase <= 180.0)
+
+    canvas._series_actions["HF"].setChecked(False)
+    assert not canvas._magnitude_lines["HF"].get_visible()
+    assert not canvas._phase_lines["HF"].get_visible()
+
+
+def test_group_delay_plot_uses_audio_axis_trace_filter_and_signed_milliseconds() -> None:
+    canvas = GroupDelayCanvas()
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    canvas.update_plot(
+        freqs,
+        np.asarray(["Sum", "LF", "HF"]),
+        np.asarray(
+            [[0.5, 1.0, 0.25], [2.0, 3.0, 1.0], [-0.5, -1.0, -0.25]],
+            dtype=np.float32,
+        ),
+    )
+
+    assert canvas.axes.get_xscale() == "log"
+    assert canvas.axes.get_xlim() == (20.0, 20_000.0)
+    assert canvas.axes.get_ylabel() == "Group Delay (ms)"
+    assert canvas.axes.get_ylim()[0] < -1.0
+    assert canvas.axes.get_ylim()[1] > 3.0
+    assert canvas._lines["Sum"].get_color() == "#000000"
+    assert canvas._lines["Sum"].get_linewidth() > canvas._lines["LF"].get_linewidth()
+
+    canvas._series_actions["HF"].setChecked(False)
+    assert not canvas._lines["HF"].get_visible()
+    assert canvas._lines["Sum"].get_visible()
 
 
 def test_on_axis_plot_filters_solid_magnitudes_and_dotted_wrapped_phase(monkeypatch) -> None:
@@ -338,6 +482,34 @@ def test_remaining_plots_restore_current_solve_when_comparison_ends() -> None:
     assert impedance.axes.get_title() == "Acoustic Impedance"
     np.testing.assert_allclose(impedance._lines[0].get_ydata(), [1.0, 2.0, 3.0])
 
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        names,
+        np.asarray([[4.0, 8.0, 6.0]]),
+        np.asarray([[10.0, 20.0, 30.0]]),
+    )
+    electrical.set_comparison_plot(
+        freqs,
+        names,
+        np.asarray([[5.0, 9.0, 7.0]]),
+        np.asarray([[20.0, 30.0, 40.0]]),
+    )
+    electrical._on_comparison_button_press(_mouse_event(electrical.axes, MouseButton.RIGHT))
+    np.testing.assert_allclose(electrical._lines[0].get_ydata(), [5.0, 9.0, 7.0])
+    electrical._on_comparison_button_release(_mouse_event(electrical.axes, MouseButton.RIGHT))
+    assert electrical.axes.get_title() == "Electrical Impedance"
+    np.testing.assert_allclose(electrical._lines[0].get_ydata(), [4.0, 8.0, 6.0])
+
+    group_delay = GroupDelayCanvas()
+    group_delay.update_plot(freqs, names, np.asarray([[1.0, 2.0, 3.0]]))
+    group_delay.set_comparison_plot(freqs, names, np.asarray([[4.0, 5.0, 6.0]]))
+    group_delay._on_comparison_button_press(_mouse_event(group_delay.axes, MouseButton.RIGHT))
+    np.testing.assert_allclose(group_delay._lines["HF"].get_ydata(), [4.0, 5.0, 6.0])
+    group_delay._on_comparison_button_release(_mouse_event(group_delay.axes, MouseButton.RIGHT))
+    assert group_delay.axes.get_title() == "Group Delay"
+    np.testing.assert_allclose(group_delay._lines["HF"].get_ydata(), [1.0, 2.0, 3.0])
+
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     current_response = np.asarray([[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]])
     on_axis = OnAxisResponseCanvas()
@@ -384,44 +556,181 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         spin_horizontal_reference_angle_deg=10.0,
         spin_vertical_reference_angle_deg=-5.0,
     )
-    plots = [PlotRecorder() for _index in range(5)]
+    excursion = ExcursionProjection(freqs, np.asarray(["Woofer"]), np.ones((1, 2)))
+    electrical = ElectricalImpedanceProjection(
+        freqs,
+        np.asarray(["main"]),
+        np.ones((1, 2)),
+        np.zeros((1, 2)),
+    )
+    group_delay = GroupDelayProjection(
+        freqs,
+        np.asarray(["Sum", "main"]),
+        np.ones((2, 2)),
+    )
+    maximum = MaxSplProjection(freqs, np.asarray(["main"]), np.full((1, 2), 110.0))
+    plots = [PlotRecorder() for _index in range(9)]
     window = SimpleNamespace(
-        _last_completed_visualization_dataset=VisualizationProjection(isobar, impedance, response),
+        _last_completed_visualization_dataset=VisualizationProjection(
+            isobar,
+            impedance,
+            response,
+            excursion,
+            electrical,
+            group_delay,
+            maximum,
+        ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
         impedance_plot=plots[2],
-        on_axis_plot=plots[3],
-        spinorama_plot=plots[4],
+        electrical_impedance_plot=plots[3],
+        on_axis_plot=plots[4],
+        group_delay_plot=plots[5],
+        excursion_plot=plots[6],
+        max_spl_plot=plots[7],
+        spinorama_plot=plots[8],
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
     MainWindow.apply_last_completed_comparison(window)
 
-    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1]
-    assert plots[4].calls[0][1] == {
+    assert [len(plot.calls) for plot in plots] == [1, 1, 1, 1, 1, 1, 1, 1, 1]
+    assert plots[8].calls[0][1] == {
         "horizontal_reference_angle_deg": 10.0,
         "vertical_reference_angle_deg": -5.0,
     }
-    assert len(plots[3].calls[0][0]) == 7
+    assert len(plots[4].calls[0][0]) == 7
 
 
-def test_every_chart_panel_gets_the_same_axes_box() -> None:
-    """The spinorama used to reserve extra bottom margin for its legend."""
-    canvases = (
+def test_chart_panels_share_layout_profiles_by_artist_requirements() -> None:
+    single_axis = (
         ImpedanceCanvas(),
-        OnAxisResponseCanvas(),
-        SpinoramaCanvas(),
-        IsobarCanvas("Horizontal Isobar"),
+        GroupDelayCanvas(),
+        ExcursionCanvas(),
+        MaxSplCanvas(),
     )
-    boxes = {type(canvas).__name__: canvas.axes.get_position().bounds[1::2] for canvas in canvases}
+    dual_axis = (ElectricalImpedanceCanvas(), OnAxisResponseCanvas())
 
-    assert len(set(boxes.values())) == 1, f"axes boxes disagree: {boxes}"
+    single_boxes = {canvas.axes.get_position().bounds for canvas in single_axis}
+    dual_boxes = {canvas.axes.get_position().bounds for canvas in dual_axis}
+
+    assert len(single_boxes) == 1
+    assert len(dual_boxes) == 1
+    assert single_axis[0].axes.get_position().x1 > dual_axis[0].axes.get_position().x1
+    assert SpinoramaCanvas().axes.get_position().y0 > single_axis[0].axes.get_position().y0
+    assert IsobarCanvas("Horizontal Isobar").axes.get_position().x1 < single_axis[0].axes.get_position().x1
+
+
+def test_adaptive_layout_keeps_physical_margins_constant_as_a_plot_grows() -> None:
+    canvas = ExcursionCanvas()
+
+    for width, height in ((420, 260), (900, 520)):
+        canvas.resize(width, height)
+        _APP.processEvents()
+        canvas.figure.canvas.draw()
+        position = canvas.axes.get_position()
+        width_pt, height_pt = canvas.figure.get_size_inches() * 72.0
+
+        assert position.x0 * width_pt == pytest.approx(52.0, abs=1.0)
+        assert (1.0 - position.x1) * width_pt == pytest.approx(14.0, abs=1.0)
+        assert position.y0 * height_pt == pytest.approx(36.0, abs=1.0)
+        assert (1.0 - position.y1) * height_pt == pytest.approx(22.0, abs=1.0)
+
+
+def _assert_visible_axes_artists_fit_figure(canvas, *, tolerance_px: float = 1.5) -> None:
+    canvas.figure.canvas.draw()
+    renderer = canvas.figure.canvas.get_renderer()
+    figure_bounds = canvas.figure.bbox
+
+    for axes in canvas.figure.axes:
+        if not axes.get_visible():
+            continue
+        bounds = axes.get_tightbbox(renderer)
+        assert bounds.x0 >= figure_bounds.x0 - tolerance_px
+        assert bounds.y0 >= figure_bounds.y0 - tolerance_px
+        assert bounds.x1 <= figure_bounds.x1 + tolerance_px
+        assert bounds.y1 <= figure_bounds.y1 + tolerance_px
+
+
+def test_adaptive_layout_keeps_plot_text_colorbars_and_legends_visible() -> None:
+    freqs = np.asarray([20.0, 1000.0, 20_000.0], dtype=np.float32)
+    angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
+    response = np.asarray(
+        [[80.0, 81.0, 80.0], [82.0, 83.0, 82.0], [84.0, 85.0, 84.0]],
+        dtype=np.float32,
+    )
+
+    acoustic = ImpedanceCanvas()
+    acoustic.update_plot(
+        freqs,
+        np.asarray(["Woofer"]),
+        np.asarray([[2.0, 8.0, 4.0]], dtype=np.float32),
+        np.asarray([[0.0, 6.0, -2.0]], dtype=np.float32),
+    )
+
+    electrical = ElectricalImpedanceCanvas()
+    electrical.update_plot(
+        freqs,
+        np.asarray(["LF"]),
+        np.asarray([[4.0, 20.0, 8.0]], dtype=np.float32),
+        np.asarray([[170.0, -170.0, -90.0]], dtype=np.float32),
+    )
+    electrical.show_phase_action.setChecked(True)
+
+    on_axis = OnAxisResponseCanvas()
+    on_axis.update_plot(
+        freqs,
+        angles,
+        response,
+        np.asarray(["LF"]),
+        np.asarray([[81.0, 82.0, 83.0]], dtype=np.float32),
+        np.asarray([170.0, -170.0, -90.0], dtype=np.float32),
+        np.asarray([[10.0, 20.0, 30.0]], dtype=np.float32),
+    )
+    on_axis.show_phase_action.setChecked(True)
+
+    isobar = IsobarCanvas("Horizontal Isobar")
+    isobar.update_plot(freqs, angles, response, -30.0, 6.0)
+
+    spinorama = SpinoramaCanvas()
+    spinorama.update_curves(_spinorama_curves())
+
+    for canvas in (acoustic, electrical, on_axis, isobar):
+        canvas.resize(420, 260)
+        _APP.processEvents()
+        _assert_visible_axes_artists_fit_figure(canvas)
+
+    spinorama.resize(480, 300)
+    _APP.processEvents()
+    _assert_visible_axes_artists_fit_figure(spinorama)
+
+
+def test_specialized_balloon_charts_use_resize_aware_layouts() -> None:
+    frequencies = np.asarray([100.0, 1000.0, 10_000.0], dtype=np.float32)
+    wavefront = WavefrontShapeCanvas()
+    wavefront.update_plot(
+        {
+            "freq_hz": frequencies,
+            "shape_exponent": np.asarray([1.0, 2.5, 5.0], dtype=np.float32),
+            "fit_residual_percent": np.asarray([2.0, 6.0, 12.0], dtype=np.float32),
+            "directivity_index_db": np.asarray([2.0, 8.0, 18.0], dtype=np.float32),
+            "valid": np.ones(3, dtype=bool),
+        }
+    )
+    radar = SliceRadarCanvas(-30.0, 6.0)
+    radar.update_plot(
+        np.arange(0.0, 360.0, 30.0),
+        np.linspace(0.0, -24.0, 12, dtype=np.float32),
+    )
+
+    for canvas, size in ((wavefront, (420, 260)), (radar, (320, 320))):
+        canvas.resize(*size)
+        _APP.processEvents()
+        _assert_visible_axes_artists_fit_figure(canvas)
 
 
 def test_spinorama_legend_clears_the_x_label_at_panel_height() -> None:
-    """Both are sized in points while the margin is a figure fraction, so
-    they collide only on a short panel. Checked at the dock's real height.
-    """
+    """The external legend and x label remain separate at a representative dock height."""
     canvas = SpinoramaCanvas()
     canvas.resize(520, 740)
     canvas.update_curves(_spinorama_curves())

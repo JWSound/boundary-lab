@@ -32,14 +32,12 @@ def test_on_axis_and_spinorama_canvases_keep_distinct_update_signatures() -> Non
     assert "vertical_spl_db: np.ndarray," in spinorama_block
 
 
-def test_spinorama_canvas_uses_fixed_layout_and_external_legend() -> None:
+def test_spinorama_canvas_uses_adaptive_layout_and_external_legend() -> None:
     source = source_text("ui", "plots.py")
     spinorama_block = source[source.index("class SpinoramaCanvas") :]
 
     assert "tight_layout=True" not in spinorama_block
-    assert "subplots_adjust" in spinorama_block
-    assert "left=PLOT_LEFT_MARGIN" in spinorama_block
-    assert "right=PLOT_RIGHT_MARGIN" in spinorama_block
+    assert "set_layout_profile(SPINORAMA_LAYOUT)" in spinorama_block
     assert 'set_label_position("right")' in spinorama_block
     assert "bbox_to_anchor=(0.5, SPINORAMA_LEGEND_BOTTOM)" in spinorama_block
     # Figure coords: an axes-relative drop scales with the axes height.
@@ -53,6 +51,9 @@ def test_plot_widgets_use_compact_title_padding() -> None:
     plot_source = source_text("ui", "plots.py")
 
     assert "PLOT_TITLE_PAD = 7" in plot_source
+    assert "class PlotLayoutProfile" in plot_source
+    assert "SINGLE_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
+    assert "DUAL_AXIS_LAYOUT = PlotLayoutProfile" in plot_source
     assert "GRID_LINE_ALPHA = 0.6" in plot_source
     assert "set_title(self.title, pad=PLOT_TITLE_PAD)" in plot_source
     assert "set_yticks(np.arange(-180, 181, 45))" in plot_source
@@ -65,15 +66,12 @@ def test_main_window_uses_detachable_panel_docks() -> None:
 
     assert "QDockWidget" in source
     assert "class DockTitleBar" in widgets_source
-    assert "save_action: QAction | None = None" in widgets_source
     assert "tool_actions: tuple[QAction, ...] = ()" in widgets_source
     assert "button.setDefaultAction(action)" in widgets_source
     assert "self.tool_buttons.append(button)" in widgets_source
-    assert (
-        "dock.setTitleBarWidget(DockTitleBar(title, dock, save_action=save_action, tool_actions=tool_actions))"
-        in source
-    )
-    assert "save_action=self.export_plot_actions.get(entry.plot_id)" in source
+    assert "dock.setTitleBarWidget(DockTitleBar(title, dock, tool_actions=tool_actions))" in source
+    assert "self.export_plot_actions.get(entry.plot_id)" in source
+    assert "self.export_plot_data_actions.get(entry.plot_id)" in source
     assert "tool_actions=tuple(" in source
     assert "close_button.clicked.connect(dock.close)" in widgets_source
     assert "event.ignore()" in widgets_source
@@ -149,6 +147,8 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
     assert "buttons.rejected.connect(self.closeRequested.emit if self._embedded else self.reject)" in channel_dialog
     assert "button_row.addWidget(buttons)" in channel_dialog
     assert "layout.addWidget(buttons)" not in channel_dialog
+    assert '"Voltage"' in channel_dialog
+    assert '"Trim dB"' in channel_dialog
     assert "_preview_channel_config" not in main_source
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 
@@ -180,7 +180,6 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
     assert "workers=1" in assembler_source
-    assert "worker_count=1" in solve_source
     assert "workers: int = 1" in config_source
 
 
@@ -275,28 +274,22 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "QApplication.processEvents()" not in solve_finished
     assert "angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES" in main_source
     assert "freq_samples=FINAL_ISOBAR_FREQ_SAMPLES" in main_source
-    assert (
-        'angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
-        in main_source
-    )
-    assert (
-        'freq_samples=FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None'
-        in main_source
-    )
+    exports_source = main_window_source("exports")
+    assert "FINAL_ISOBAR_ANGLE_SAMPLES" in exports_source
+    assert "FINAL_ISOBAR_FREQ_SAMPLES" in exports_source
     assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
     assert "contour_step_db=self.preferences.isobar_contour_step_db" in main_source
 
 
-def test_isobar_canvas_allows_custom_right_margin() -> None:
+def test_isobar_canvas_uses_a_colorbar_aware_adaptive_layout() -> None:
     source = source_text("ui", "plots.py")
 
     assert "left_margin: float | None = None" in source
     assert "right_margin: float | None = None" in source
     assert "show_colorbar: bool = True" in source
-    assert "self.left_margin = PLOT_LEFT_MARGIN if left_margin is None else float(left_margin)" in source
-    assert "self.right_margin = PLOT_RIGHT_MARGIN if right_margin is None else float(right_margin)" in source
-    assert "left=self.left_margin" in source
-    assert "right=self.right_margin" in source
+    assert "profile = ISOBAR_LAYOUT if self.show_colorbar else SINGLE_AXIS_LAYOUT" in source
+    assert "self.set_layout_profile(profile)" in source
+    assert "figure_point_fraction" in source
 
 
 def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
@@ -323,6 +316,7 @@ def test_isobar_canvas_reuses_heatmap_artist_between_grid_changes() -> None:
     assert "BoundaryNorm(boundaries, cmap.N)" in isobar_block
     assert "ScalarMappable(norm=norm, cmap=cmap)" in isobar_block
     assert "self.figure.add_axes" in isobar_block
+    assert "self._colorbar_bounds()" in isobar_block
     assert "cax=self._colorbar_axes" in isobar_block
     assert "ISOBAR_COLORBAR_MIN_TICK_STEP_DB = 3.0" in source
     assert "tick_step_db = max(ISOBAR_COLORBAR_MIN_TICK_STEP_DB, contour_step_db)" in isobar_block
@@ -416,7 +410,9 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "refreshed_dataset.snapshot()" in main_source
     assert "self._plots.apply_last_completed_comparison()" in main_source
     assert "self.impedance_plot.set_comparison_plot(" in main_source
+    assert "self.electrical_impedance_plot.set_comparison_plot(" in main_source
     assert "self.on_axis_plot.set_comparison_plot(" in main_source
+    assert "self.group_delay_plot.set_comparison_plot(" in main_source
     assert "self.spinorama_plot.set_comparison_plot(" in main_source
     assert "SolveInvalidationReason.NEW_PROJECT" in state_source
     assert "clear_comparison_history=True" in state_source

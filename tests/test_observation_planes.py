@@ -113,6 +113,20 @@ def test_relative_rotation_overlay_reports_signed_angle() -> None:
     assert _relative_rotation_text(-2.25) == "Relative rotation: -2.2°"
 
 
+def test_observation_plane_help_is_compact_right_aligned_arial_text() -> None:
+    from blab.ui.observation_plane_viewport import _observation_plane_help_text
+    from repo_paths import source_text
+
+    assert _observation_plane_help_text("Listening Plane", "rotate") == (
+        "Listening Plane\nW - Move\nE - Rotate\nR - Scale\nMode: Rotate"
+    )
+    source = source_text("ui", "observation_plane_viewport.py")
+    assert 'position="upper_right"' in source
+    assert "font_size=8" in source
+    assert source.count("font=OBSERVATION_PLANE_FONT") == 3
+    assert '"font_family": OBSERVATION_PLANE_FONT' in source
+
+
 def test_particle_velocity_scalar_bar_title_wraps_for_narrow_viewports() -> None:
     from blab.ui.observation_plane_viewport import _scalar_bar_position_x, _scalar_bar_title
 
@@ -376,6 +390,7 @@ def test_frequency_sweep_and_phase_animation_are_mutually_exclusive(qapp) -> Non
 
 def test_interior_field_results_synthesize_system_and_channel_responses() -> None:
     from blab.config import ChannelConfig
+    from blab.physical_model import ExcitationPortKind
     from blab.solve_results import (
         FEM_NODAL_PRESSURE_ID,
         FEM_VOLUME_DOMAIN_ID,
@@ -411,8 +426,8 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     )
     compiled = SimpleNamespace(
         excitation_ports=(
-            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
-            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+            SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
         )
     )
     solved = SolvedSystem(
@@ -446,6 +461,13 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     np.testing.assert_allclose(results.pressure(1000.0, "channel:low"), 1.0)
     np.testing.assert_allclose(results.pressure(1000.0, "channel:high"), 1.0, rtol=1e-5)
     np.testing.assert_allclose(results.pressure(100.0, "system"), 20.0, rtol=1e-5)
+
+    voltage_results = interior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low", voltage_v=5.66), ChannelConfig(name="high", level_db=-6.0206)),
+    )
+    np.testing.assert_allclose(voltage_results.pressure(1000.0, "channel:low"), 2.0)
 
 
 def test_interior_particle_velocity_uses_exact_p1_pressure_gradient() -> None:
@@ -581,7 +603,7 @@ def test_channel_synthesis_update_reuses_field_geometry_and_refreshes_active_sca
 
 def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     from blab.config import ChannelConfig
-    from blab.physical_model import AcousticRegionKind
+    from blab.physical_model import AcousticRegionKind, ExcitationPortKind
     from blab.solve_results import (
         BEM_BOUNDARY_DOMAIN_ID,
         BEM_BOUNDARY_NEUMANN_ID,
@@ -613,8 +635,8 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     compiled = SimpleNamespace(
         regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
         excitation_ports=(
-            SimpleNamespace(id="port:woofer", component_id="component:woofer"),
-            SimpleNamespace(id="port:tweeter", component_id="component:tweeter"),
+            SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
         ),
     )
     solved = SolvedSystem(
@@ -666,6 +688,15 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     _frequency, channel_pressure, channel_normal = results.boundary_response(1000.0, "channel:high")
     np.testing.assert_allclose(channel_pressure, 2.0)
     np.testing.assert_allclose(channel_normal, 4.0)
+
+    voltage_results = exterior_field_results_from_solved_system(
+        solved,
+        component_channel_by_id={"component:woofer": "low", "component:tweeter": "high"},
+        channel_configs=(ChannelConfig(name="low"), ChannelConfig(name="high", voltage_v=5.66)),
+    )
+    _frequency, channel_pressure, channel_normal = voltage_results.boundary_response(1000.0, "channel:high")
+    np.testing.assert_allclose(channel_pressure, 4.0)
+    np.testing.assert_allclose(channel_normal, 8.0)
 
 
 def test_exterior_viewport_requests_then_reuses_an_evaluated_field() -> None:
@@ -1141,11 +1172,13 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
         ObservationPlaneDisplay.SPL,
         animation_phase_deg=90.0,
     )
+    phase = project_field_scalars(pressure, ObservationPlaneDisplay.PHASE)
 
     assert normalized.clim == (-40.0, 0.0)
     np.testing.assert_allclose(normalized.values, [0.0, 0.0])
     np.testing.assert_allclose(animated.values, [0.0, 1.0], atol=1e-12)
     assert animated.clim == (-1.0, 1.0)
+    np.testing.assert_allclose(phase.values, [0.0, -90.0], atol=1e-12)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
     relative_to_initial = project_field_scalars(
@@ -1205,7 +1238,7 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
     np.testing.assert_allclose(velocity_magnitude.values, [5.0, 5.0])
     np.testing.assert_allclose(velocity_at_zero.values, [5.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(velocity_at_ninety.values, [0.0, 5.0], atol=1e-6)
-    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 5.0)
+    assert velocity_magnitude.clim == velocity_at_zero.clim == velocity_at_ninety.clim == (0.0, 35.0)
     assert velocity_magnitude.title == "Particle Velocity Magnitude (m/s)"
 
 

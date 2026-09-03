@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import meshio
 import numpy as np
-from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry
+from blab.preview_hierarchy import PreviewHierarchy, build_preview_hierarchy
 from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
 
@@ -43,14 +55,70 @@ INTERFACE_COLOR = "#1cad0c"
 INTERFACE_MIRROR_COLOR = "#116b07"
 INTERFACE_EDGE_COLOR = "#155b0d"
 INTERFACE_MIRROR_EDGE_COLOR = "#0b3506"
-PREVIEW_REGION_ALL = "all"
+TOPOLOGY_ISSUE_COLOR = "#ff2020"
+TOPOLOGY_ISSUE_LINE_WIDTH = 6.0
 PREVIEW_REGION_INTERIOR = "interior"
 PREVIEW_REGION_EXTERIOR = "exterior"
-PREVIEW_REGION_MODES = {
-    PREVIEW_REGION_ALL,
-    PREVIEW_REGION_INTERIOR,
-    PREVIEW_REGION_EXTERIOR,
-}
+BODY_TREE_OVERLAY_WIDTH = 240
+BODY_TREE_OVERLAY_MAX_HEIGHT = 420
+BODY_TREE_OVERLAY_MARGIN = 5
+BODY_TREE_PROJECT_NODE_ID = "project"
+
+_TREE_SURFACE_KEYS_ROLE = int(Qt.ItemDataRole.UserRole)
+_TREE_NODE_ID_ROLE = _TREE_SURFACE_KEYS_ROLE + 1
+
+
+@dataclass
+class _PreviewActorRecord:
+    actor: object
+    mesh_name: str
+    surface_key: tuple[str, int | None] | None
+    mesh_region: str | None
+    diagnostic: bool = False
+
+
+class _ViewportTreeOverlay(QFrame):
+    """Compositor-backed transparent window kept over a native VTK viewport."""
+
+    _SYNC_EVENTS = {
+        QEvent.Type.Hide,
+        QEvent.Type.Move,
+        QEvent.Type.ParentChange,
+        QEvent.Type.Resize,
+        QEvent.Type.Show,
+        QEvent.Type.WindowStateChange,
+    }
+
+    def __init__(self, anchor: QWidget):
+        flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+        super().__init__(anchor, flags)
+        self._anchor = anchor
+        self._tracked_window: QWidget | None = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        anchor.installEventFilter(self)
+        QTimer.singleShot(0, self.sync_to_anchor)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() in self._SYNC_EVENTS:
+            QTimer.singleShot(0, self.sync_to_anchor)
+        return super().eventFilter(watched, event)
+
+    def sync_to_anchor(self) -> None:
+        owner = self._anchor.window()
+        if owner is not self and owner is not self._tracked_window:
+            if self._tracked_window is not None:
+                self._tracked_window.removeEventFilter(self)
+            self._tracked_window = owner
+            owner.installEventFilter(self)
+
+        owner_minimized = bool(owner.windowState() & Qt.WindowState.WindowMinimized)
+        if not self._anchor.isVisible() or not owner.isVisible() or owner_minimized:
+            self.hide()
+            return
+        self.move(self._anchor.mapToGlobal(QPoint(0, 0)))
+        self.show()
+        self.raise_()
 
 
 class MeshPreview(QWidget):
@@ -65,8 +133,11 @@ class MeshPreview(QWidget):
         self._hover_picker = None
         self._hover_observer = None
         self._actor_surface_labels: dict[str, str] = {}
-        self._mesh_region_actors: list[tuple[object, str | None]] = []
-        self._region_visibility_mode = PREVIEW_REGION_ALL
+        self._actor_records: list[_PreviewActorRecord] = []
+        self._topology_issue_actors: list[object] = []
+        self._surface_visibility: dict[tuple[str, int | None], bool] = {}
+        self._hierarchy: PreviewHierarchy | None = None
+        self._tree_updating = False
         self._observation_clip_active = False
         self._observation_editor = None
         layout = QVBoxLayout(self)
@@ -78,8 +149,74 @@ class MeshPreview(QWidget):
             layout.addWidget(label)
             return
 
-        self.viewer = QtInteractor(self)
-        layout.addWidget(self.viewer)
+        scene = QWidget(self)
+        scene_layout = QGridLayout(scene)
+        scene_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.viewer = QtInteractor(scene)
+        scene_layout.addWidget(self.viewer, 0, 0)
+
+        self.body_tree_overlay = _ViewportTreeOverlay(scene)
+        self.body_tree_overlay.setObjectName("mesh_body_tree_overlay")
+        self.body_tree_overlay.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.body_tree_overlay.setFixedWidth(BODY_TREE_OVERLAY_WIDTH)
+        overlay_layout = QVBoxLayout(self.body_tree_overlay)
+        overlay_layout.setContentsMargins(
+            BODY_TREE_OVERLAY_MARGIN,
+            BODY_TREE_OVERLAY_MARGIN,
+            BODY_TREE_OVERLAY_MARGIN,
+            BODY_TREE_OVERLAY_MARGIN,
+        )
+        self.body_tree = QTreeWidget()
+        self.body_tree.setObjectName("mesh_body_tree")
+        self.body_tree.setHeaderHidden(True)
+        self.body_tree.setIndentation(15)
+        self.body_tree.setUniformRowHeights(True)
+        self.body_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.body_tree.setAlternatingRowColors(False)
+        self.body_tree.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.body_tree.setStyleSheet(
+            """
+            QTreeWidget#mesh_body_tree {
+                background: transparent;
+                border: none;
+                color: #f0f2f5;
+                outline: none;
+            }
+            QTreeWidget#mesh_body_tree::item {
+                background: transparent;
+                min-height: 22px;
+            }
+            QTreeWidget#mesh_body_tree::item:hover {
+                background: rgba(255, 255, 255, 24);
+            }
+            QTreeWidget#mesh_body_tree::item:selected {
+                background: rgba(92, 132, 181, 145);
+                color: white;
+            }
+            """
+        )
+        self.body_tree.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.body_tree.viewport().setAutoFillBackground(False)
+        self.body_tree.viewport().setStyleSheet("background: transparent;")
+        self.body_tree.itemChanged.connect(self._on_body_tree_item_changed)
+        self.body_tree.itemExpanded.connect(self._resize_body_tree_overlay)
+        self.body_tree.itemCollapsed.connect(self._resize_body_tree_overlay)
+        overlay_layout.addWidget(self.body_tree)
+        self.body_tree_overlay.setStyleSheet(
+            """
+            QFrame#mesh_body_tree_overlay {
+                background: transparent;
+                border: none;
+            }
+            """
+        )
+        self._rebuild_body_tree()
+
+        viewport = QWidget()
+        viewport_layout = QVBoxLayout(viewport)
+        viewport_layout.setContentsMargins(0, 0, 0, 0)
+        viewport_layout.addWidget(scene)
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
         self.hover_label = QLabel("")
@@ -93,7 +230,9 @@ class MeshPreview(QWidget):
         self.total_elements_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         status_row.addWidget(self.hover_label, 1)
         status_row.addWidget(self.total_elements_label)
-        layout.addLayout(status_row)
+        viewport_layout.addLayout(status_row)
+
+        layout.addWidget(viewport)
         self._refresh_viewer_theme()
         self._observation_editor = ObservationPlaneViewport(self.viewer, vtk, self)
         self._observation_editor.newPlaneRequested.connect(self.newObservationPlaneRequested.emit)
@@ -118,7 +257,13 @@ class MeshPreview(QWidget):
             observation_editor.refresh_theme()
 
     def clear(self) -> None:
-        self._mesh_region_actors = []
+        self._actor_records = []
+        self._topology_issue_actors = []
+        self._hierarchy = None
+        self._surface_visibility = {}
+        body_tree = getattr(self, "body_tree", None)
+        if body_tree is not None:
+            self._rebuild_body_tree()
         if self.viewer is None:
             return
         self.viewer.clear()
@@ -164,20 +309,13 @@ class MeshPreview(QWidget):
 
     def _set_observation_clip_active(self, active: bool) -> None:
         self._observation_clip_active = bool(active)
-        self._apply_region_visibility(render=False)
+        self._apply_actor_visibility(render=False)
 
     def _restore_observation_plane_scene(self, points: np.ndarray) -> None:
         if self._observation_editor is None:
             return
         self._observation_editor.set_scene_bounds(points)
         self._observation_editor.scene_cleared()
-
-    def set_region_visibility_mode(self, mode: str) -> None:
-        normalized = str(mode).strip().lower()
-        if normalized not in PREVIEW_REGION_MODES:
-            raise ValueError(f"Unsupported preview region visibility mode {mode!r}.")
-        self._region_visibility_mode = normalized
-        self._apply_region_visibility()
 
     def load_generated_geometry(self, result: GeneratedGeometry) -> None:
         self.load_mesh_configs(
@@ -200,7 +338,11 @@ class MeshPreview(QWidget):
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
         self.viewer.clear()
         self._actor_surface_labels = {}
-        self._mesh_region_actors = []
+        self._actor_records = []
+        self._topology_issue_actors = []
+        self._hierarchy = None
+        self._surface_visibility = {}
+        self._rebuild_body_tree()
         self.hover_label.setText("")
         display_points = np.asarray(mesh.points, dtype=float)
         self._restore_observation_plane_scene(display_points)
@@ -262,13 +404,16 @@ class MeshPreview(QWidget):
         interface_surfaces: set[tuple[str, int]] | None = None,
         mesh_regions: dict[str, str] | None = None,
         symmetry: str = "off",
+        topology_report=None,
+        hierarchy: PreviewHierarchy | None = None,
     ) -> None:
         if self.viewer is None:
             return
         camera_position = self._camera_position()
         self.viewer.clear()
         self._actor_surface_labels = {}
-        self._mesh_region_actors = []
+        self._actor_records = []
+        self._topology_issue_actors = []
         self.hover_label.setText("")
         total_elements = 0
         preview_points = []
@@ -295,8 +440,164 @@ class MeshPreview(QWidget):
         )
         if preview_points:
             self._add_orientation_guides(display_points)
-        self._apply_region_visibility(render=False)
+        if hierarchy is None:
+            identity_map = {
+                record.surface_key: record.surface_key
+                for record in self._actor_records
+                if record.surface_key is not None
+            }
+            hierarchy = build_preview_hierarchy(
+                None,
+                source_mesh_configs=meshes,
+                source_surface_tags_by_mesh=surface_tags_by_mesh or {},
+                solver_surface_by_source=identity_map,
+            )
+        self.set_hierarchy(hierarchy, render=False)
+        self.set_topology_report(topology_report, render=False)
+        self._apply_actor_visibility(render=False)
         self._restore_camera_or_reset(camera_position)
+
+    def set_topology_report(self, report, *, render: bool = True) -> None:
+        """Replace the red invalid-edge overlay without rebuilding the mesh scene."""
+
+        if self.viewer is None:
+            return
+        old_actor_ids = {id(actor) for actor in self._topology_issue_actors}
+        self._actor_records = [record for record in self._actor_records if id(record.actor) not in old_actor_ids]
+        for actor in self._topology_issue_actors:
+            self.viewer.remove_actor(actor, render=False)
+        self._topology_issue_actors = []
+
+        if report is not None:
+            for mesh in report.meshes:
+                source_segments = mesh.problem_edge_segments_m
+                if not len(source_segments):
+                    continue
+                segments = _line_segments_with_symmetry_images(
+                    source_segments,
+                    report.symmetry,
+                )
+                actor = self.viewer.add_mesh(
+                    _line_segments_to_polydata(segments),
+                    color=TOPOLOGY_ISSUE_COLOR,
+                    line_width=TOPOLOGY_ISSUE_LINE_WIDTH,
+                    render_lines_as_tubes=True,
+                    lighting=False,
+                    pickable=False,
+                )
+                self._topology_issue_actors.append(actor)
+                self._register_mesh_actor(
+                    actor,
+                    PREVIEW_REGION_EXTERIOR,
+                    mesh_name=mesh.mesh_name,
+                    surface_tag=None,
+                    diagnostic=True,
+                )
+        self._apply_actor_visibility(render=render)
+
+    def set_hierarchy(self, hierarchy: PreviewHierarchy, *, render: bool = True) -> None:
+        """Populate the body tree while preserving visibility for stable surface IDs."""
+
+        old_visibility = self._surface_visibility
+        self._hierarchy = hierarchy
+        self._surface_visibility = {
+            surface_key: old_visibility.get(surface_key, True) for surface_key in hierarchy.surface_keys
+        }
+        self._rebuild_body_tree()
+        self._apply_actor_visibility(render=render)
+
+    def _rebuild_body_tree(self) -> None:
+        if not hasattr(self, "body_tree"):
+            return
+        had_hierarchy = any(
+            str(item.data(0, _TREE_NODE_ID_ROLE)) != BODY_TREE_PROJECT_NODE_ID for item in _tree_items(self.body_tree)
+        )
+        expanded_ids = set()
+        for item in _tree_items(self.body_tree):
+            if item.isExpanded():
+                expanded_ids.add(str(item.data(0, _TREE_NODE_ID_ROLE)))
+
+        self._tree_updating = True
+        try:
+            self.body_tree.clear()
+            project_keys = () if self._hierarchy is None else self._hierarchy.surface_keys
+            project_item = _body_tree_item(
+                "Project",
+                BODY_TREE_PROJECT_NODE_ID,
+                project_keys,
+                self._surface_visibility,
+            )
+            project_font = project_item.font(0)
+            project_font.setBold(True)
+            project_item.setFont(0, project_font)
+            self.body_tree.addTopLevelItem(project_item)
+            if self._hierarchy is None:
+                return
+            for region in self._hierarchy.regions:
+                region_keys = tuple(
+                    dict.fromkeys(
+                        key for mesh in region.meshes for boundary in mesh.boundaries for key in boundary.surface_keys
+                    )
+                )
+                region_item = _body_tree_item(region.name, region.id, region_keys, self._surface_visibility)
+                project_item.addChild(region_item)
+                for mesh in region.meshes:
+                    mesh_keys = tuple(
+                        dict.fromkeys(key for boundary in mesh.boundaries for key in boundary.surface_keys)
+                    )
+                    mesh_item = _body_tree_item(mesh.name, mesh.id, mesh_keys, self._surface_visibility)
+                    region_item.addChild(mesh_item)
+                    for boundary in mesh.boundaries:
+                        mesh_item.addChild(
+                            _body_tree_item(
+                                boundary.name,
+                                boundary.id,
+                                boundary.surface_keys,
+                                self._surface_visibility,
+                            )
+                        )
+            if had_hierarchy:
+                for item in _tree_items(self.body_tree):
+                    item.setExpanded(str(item.data(0, _TREE_NODE_ID_ROLE)) in expanded_ids)
+            else:
+                project_item.setExpanded(False)
+                for child_index in range(project_item.childCount()):
+                    project_item.child(child_index).setExpanded(True)
+        finally:
+            self._tree_updating = False
+            self._resize_body_tree_overlay()
+
+    def _resize_body_tree_overlay(self, _item: QTreeWidgetItem | None = None) -> None:
+        if not hasattr(self, "body_tree_overlay"):
+            return
+        row_height = max(22, self.body_tree.fontMetrics().height() + 7)
+        tree_height = min(
+            BODY_TREE_OVERLAY_MAX_HEIGHT - (2 * BODY_TREE_OVERLAY_MARGIN),
+            max(1, _visible_tree_row_count(self.body_tree)) * row_height + 2,
+        )
+        self.body_tree.setFixedHeight(tree_height)
+        self.body_tree_overlay.setFixedHeight(tree_height + (2 * BODY_TREE_OVERLAY_MARGIN))
+        self.body_tree_overlay.sync_to_anchor()
+
+    def _on_body_tree_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
+        if self._tree_updating:
+            return
+        state = item.checkState(0)
+        if state == Qt.CheckState.PartiallyChecked:
+            return
+        surface_keys = tuple(item.data(0, _TREE_SURFACE_KEYS_ROLE) or ())
+        visible = state == Qt.CheckState.Checked
+        for surface_key in surface_keys:
+            self._surface_visibility[tuple(surface_key)] = visible
+
+        self._tree_updating = True
+        try:
+            for tree_item in _tree_items(self.body_tree):
+                keys = tuple(tree_item.data(0, _TREE_SURFACE_KEYS_ROLE) or ())
+                tree_item.setCheckState(0, _visibility_check_state(keys, self._surface_visibility))
+        finally:
+            self._tree_updating = False
+        self._apply_actor_visibility()
 
     def _add_msh_mesh(
         self,
@@ -331,7 +632,12 @@ class MeshPreview(QWidget):
                 None,
                 int(triangles.shape[0]),
             )
-            self._register_mesh_actor(actor, mesh_region)
+            self._register_mesh_actor(
+                actor,
+                mesh_region,
+                mesh_name=mesh_cfg.name,
+                surface_tag=None,
+            )
             for mirror_label, mirror_points, mirror_triangles, _source_indices in mirrored_images:
                 if not mirror_triangles.size:
                     continue
@@ -348,7 +654,12 @@ class MeshPreview(QWidget):
                     None,
                     int(mirror_triangles.shape[0]),
                 )
-                self._register_mesh_actor(actor, mesh_region)
+                self._register_mesh_actor(
+                    actor,
+                    mesh_region,
+                    mesh_name=mesh_cfg.name,
+                    surface_tag=None,
+                )
             return base_count, _preview_points_with_images(points, mirrored_images)
 
         names_by_tag = {tag: name for name, tag in surface_tags.items()}
@@ -379,7 +690,12 @@ class MeshPreview(QWidget):
                 int(tag),
                 int(tag_triangles.shape[0]),
             )
-            self._register_mesh_actor(actor, mesh_region)
+            self._register_mesh_actor(
+                actor,
+                mesh_region,
+                mesh_name=mesh_cfg.name,
+                surface_tag=int(tag),
+            )
             for mirror_label, mirror_points, mirror_triangles, source_indices in mirrored_images:
                 mirror_tag_triangles = mirror_triangles[physical_tags[source_indices] == tag]
                 if not mirror_tag_triangles.size:
@@ -402,20 +718,45 @@ class MeshPreview(QWidget):
                     int(tag),
                     int(mirror_tag_triangles.shape[0]),
                 )
-                self._register_mesh_actor(actor, mesh_region)
+                self._register_mesh_actor(
+                    actor,
+                    mesh_region,
+                    mesh_name=mesh_cfg.name,
+                    surface_tag=int(tag),
+                )
         return base_count, _preview_points_with_images(points, mirrored_images)
 
-    def _register_mesh_actor(self, actor: object, mesh_region: str | None) -> None:
-        self._mesh_region_actors.append((actor, mesh_region))
+    def _register_mesh_actor(
+        self,
+        actor: object,
+        mesh_region: str | None,
+        *,
+        mesh_name: str,
+        surface_tag: int | None,
+        diagnostic: bool = False,
+    ) -> None:
+        self._actor_records.append(
+            _PreviewActorRecord(
+                actor=actor,
+                mesh_name=mesh_name,
+                surface_key=None if diagnostic else (mesh_name, surface_tag),
+                mesh_region=mesh_region,
+                diagnostic=diagnostic,
+            )
+        )
 
-    def _apply_region_visibility(self, *, render: bool = True) -> None:
+    def _apply_actor_visibility(self, *, render: bool = True) -> None:
         if self.viewer is None:
             return
-        for actor, mesh_region in self._mesh_region_actors:
-            visible = _actor_visible_for_region(mesh_region, self._region_visibility_mode)
-            if self._observation_clip_active and mesh_region == PREVIEW_REGION_INTERIOR:
+        visible_meshes = {mesh_name for (mesh_name, _tag), visible in self._surface_visibility.items() if visible}
+        for record in self._actor_records:
+            if record.diagnostic:
+                visible = record.mesh_name in visible_meshes or not self._surface_visibility
+            else:
+                visible = self._surface_visibility.get(record.surface_key, True)
+            if self._observation_clip_active and record.mesh_region == PREVIEW_REGION_INTERIOR:
                 visible = False
-            actor.SetVisibility(visible)
+            record.actor.SetVisibility(visible)
         if render:
             self.viewer.render()
 
@@ -577,10 +918,55 @@ def _surface_preview_colors(
     return RIGID_COLOR, RIGID_EDGE_COLOR
 
 
-def _actor_visible_for_region(mesh_region: str | None, visibility_mode: str) -> bool:
-    if visibility_mode == PREVIEW_REGION_ALL or mesh_region is None:
-        return True
-    return mesh_region == visibility_mode
+def _body_tree_item(
+    name: str,
+    node_id: str,
+    surface_keys: tuple[tuple[str, int | None], ...],
+    visibility: dict[tuple[str, int | None], bool],
+) -> QTreeWidgetItem:
+    item = QTreeWidgetItem([name])
+    item.setData(0, _TREE_SURFACE_KEYS_ROLE, surface_keys)
+    item.setData(0, _TREE_NODE_ID_ROLE, node_id)
+    if surface_keys:
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+    item.setCheckState(0, _visibility_check_state(surface_keys, visibility))
+    return item
+
+
+def _visibility_check_state(
+    surface_keys: tuple[tuple[str, int | None], ...],
+    visibility: dict[tuple[str, int | None], bool],
+) -> Qt.CheckState:
+    values = [visibility.get(tuple(surface_key), True) for surface_key in surface_keys]
+    if not values or all(values):
+        return Qt.CheckState.Checked
+    if not any(values):
+        return Qt.CheckState.Unchecked
+    return Qt.CheckState.PartiallyChecked
+
+
+def _tree_items(tree: QTreeWidget) -> tuple[QTreeWidgetItem, ...]:
+    items = []
+
+    def append_item(item: QTreeWidgetItem) -> None:
+        items.append(item)
+        for child_index in range(item.childCount()):
+            append_item(item.child(child_index))
+
+    for root_index in range(tree.topLevelItemCount()):
+        append_item(tree.topLevelItem(root_index))
+    return tuple(items)
+
+
+def _visible_tree_row_count(tree: QTreeWidget) -> int:
+    def count_item(item: QTreeWidgetItem) -> int:
+        count = 1
+        if item.isExpanded():
+            for child_index in range(item.childCount()):
+                count += count_item(item.child(child_index))
+        return count
+
+    return sum(count_item(tree.topLevelItem(index)) for index in range(tree.topLevelItemCount()))
 
 
 def _surface_hover_label(mesh_name: str | None, surface_name: str, tag: int | None, element_count: int) -> str:
@@ -723,6 +1109,41 @@ def _triangle_geometry_key(
     scale = 1.0 / max(float(tolerance), 1e-12)
     coords = np.rint(np.asarray(points, dtype=float)[triangle] * scale).astype(np.int64)
     return tuple(sorted(tuple(int(value) for value in coord) for coord in coords))
+
+
+def _line_segments_with_symmetry_images(
+    segments: np.ndarray,
+    symmetry: str,
+    *,
+    tolerance: float = 1e-12,
+) -> np.ndarray:
+    source = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
+    transforms = (("base", (1.0, 1.0, 1.0)), *_symmetry_preview_transforms(symmetry))
+    unique_segments = []
+    seen = set()
+    scale = 1.0 / max(float(tolerance), 1e-15)
+    for _label, signs in transforms:
+        transformed = source * np.asarray(signs, dtype=float)
+        for segment in transformed:
+            quantized = np.rint(segment * scale).astype(np.int64)
+            key = tuple(sorted(tuple(int(value) for value in point) for point in quantized))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_segments.append(segment)
+    if not unique_segments:
+        return np.empty((0, 2, 3), dtype=float)
+    return np.asarray(unique_segments, dtype=float)
+
+
+def _line_segments_to_polydata(segments: np.ndarray):
+    values = np.asarray(segments, dtype=float).reshape((-1, 2, 3))
+    points = values.reshape((-1, 3))
+    line_indices = np.arange(len(points), dtype=np.int64).reshape((-1, 2))
+    lines = np.column_stack((np.full(len(line_indices), 2, dtype=np.int64), line_indices)).ravel()
+    polydata = pv.PolyData(points)
+    polydata.lines = lines
+    return polydata
 
 
 def _triangles_to_polydata(points: np.ndarray, triangles: np.ndarray):

@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
@@ -425,12 +426,18 @@ class BeatEngineWorkerProcess:
             text = line.strip()
             if not text:
                 continue
+            parse_started = time.perf_counter()
             try:
                 event = json.loads(text)
             except json.JSONDecodeError:
                 yield {"type": "status", "message": text}
                 continue
             if isinstance(event, dict):
+                if str(event.get("type", "")) == "result":
+                    event["_transport"] = {
+                        "julia_stdout_bytes": len(text.encode("utf-8")),
+                        "python_julia_json_parse_s": time.perf_counter() - parse_started,
+                    }
                 yield event
 
         exit_code = process.wait()

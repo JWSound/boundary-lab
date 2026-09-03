@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is the bundled geometry-generator provider.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is bundled as a geometry-generator provider with permission from Marcel Batik.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -13,7 +13,7 @@ Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeake
 - Physical-system editor for exterior BEM, interior FEM, and coupled FEM-BEM-LEM models
 - Prescribed-velocity and linear electrodynamic transducer components
 - Channel controls for level, polarity, delay, and HPF/LPF crossover shaping
-- Live horizontal/vertical directivity, on-axis response, spinorama, and radiation-impedance plots
+- Live horizontal/vertical directivity, on-axis response, spinorama, excursion, maximum-SPL, and impedance plots
 - Plot-image, polar-data, on-axis channel-data, and balloon-data export
 - 3D balloon viewer built directly from Fibonacci-sphere solve samples
 - Project save/load with readable, backward-compatible `.blab.json` files
@@ -95,13 +95,9 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-Boundary Lab captures Ath blab-mode geometry and writes managed generated
-artifacts into:
+## Boundary Lab Deploy prototype
 
-```text
-runs/generated_geometry
-```
-
+Boundary lab deploy is an interactive advanced array simulation tool that ingests .blabspeaker packages generated from the main boundary lab application. It is an experimental application early in development and currently only supports BEM/coupled solving using BEAT engine on Nvidia hardware. The application can be found inside the /deploy/ folder where a separate readme contains installation instructions.
 
 ## Boundary Lab Server
 

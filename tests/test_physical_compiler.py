@@ -8,6 +8,7 @@ import meshio
 import numpy as np
 import pytest
 
+from blab.acoustic_impedance import normalization_records
 from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.config import ChannelConfig, MeshConfig, RadiatorConfig, SimulationConfig
 from blab.interface_conform import conform_bem_interface_to_fem
@@ -59,7 +60,7 @@ from repo_paths import REPO_ROOT
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 FEM_FIXTURE = FIXTURE_ROOT / "femvolume.msh"
 BEM_FIXTURE = FIXTURE_ROOT / "exterior_conforming.msh"
-SKRAM_FIXTURE_ROOT = FIXTURE_ROOT / "SKRAM"
+SKRAM_EXAMPLE_ROOT = REPO_ROOT / "examples" / "SKRAM"
 SIMPLE_SEALED_FIXTURE_ROOT = REPO_ROOT / "examples" / "Simple_Sealed"
 
 
@@ -92,6 +93,17 @@ def test_compiler_resolves_fixture_physics_and_interface_topology() -> None:
         AssumptionStatus.EXCLUDED,
         "Region-specific acoustic material loss models",
     ) in assumptions
+
+
+def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> None:
+    compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
+
+    record = normalization_records(compiled.metadata)["component:exterior-radiator"]
+
+    assert record.component_name == "Exterior radiator"
+    assert record.area_kind == "weighted_physical_surface"
+    assert record.effective_area_m2 > 0.0
+    assert record.relative_side_mismatch is None
 
 
 def test_compiler_rejects_unassigned_physical_surface_group() -> None:
@@ -515,6 +527,144 @@ def test_coupled_backend_accepts_mmd_electrodynamic_component_and_voltage_port()
     assert "Linear single-axis rigid-body electrodynamic transducers with dry moving mass" in assumptions
 
 
+def test_coupled_backend_accepts_enabled_semi_inductance_model() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "semi_inductance": {
+                "enabled": True,
+                "re_prime_ohm": 6.2,
+                "leb_h": 0.0001,
+                "le_h": 0.001,
+                "ke_semi_h": 0.04,
+                "rss_ohm": 1000.0,
+            },
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    assert compiled.components[0].parameters["semi_inductance"]["ke_semi_h"] == pytest.approx(0.04)
+    assumptions = {(item.status, item.statement) for item in compiled.assumptions}
+    assert (
+        AssumptionStatus.INCLUDED,
+        "Thorborg-Futtrup semi-inductance voice-coil impedance",
+    ) in assumptions
+
+
+def test_coupled_backend_accepts_lumped_sealed_rear_chamber() -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "lumped_sealed_rear_chamber": {
+                "enabled": True,
+                "volume_m3": 0.005,
+                "projected_area_m2": 0.012,
+            },
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+    chamber = compiled.components[0].parameters["lumped_sealed_rear_chamber"]
+    assert chamber["volume_m3"] == pytest.approx(0.005)
+    assumptions = {(item.status, item.statement) for item in compiled.assumptions}
+    assert (
+        AssumptionStatus.INCLUDED,
+        "Ideal adiabatic lumped sealed rear-chamber compliance",
+    ) in assumptions
+
+
+@pytest.mark.parametrize(
+    ("rear_chamber", "message"),
+    (
+        ({"enabled": True, "volume_m3": 0.005}, "is missing: projected_area_m2"),
+        (
+            {"enabled": True, "volume_m3": 0.0, "projected_area_m2": 0.012},
+            "volume_m3.*greater than zero",
+        ),
+        (
+            {"enabled": "yes", "volume_m3": 0.005, "projected_area_m2": 0.012},
+            "enabled must be a boolean",
+        ),
+    ),
+)
+def test_coupled_backend_rejects_invalid_lumped_sealed_rear_chamber(
+    rear_chamber: dict[str, object],
+    message: str,
+) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={
+            **system.components[0].parameters,
+            "lumped_sealed_rear_chamber": rear_chamber,
+        },
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
+@pytest.mark.parametrize(
+    ("semi_inductance", "message"),
+    (
+        ({"enabled": True, "re_prime_ohm": 6.2}, "enabled semi_inductance is missing"),
+        (
+            {
+                "enabled": True,
+                "re_prime_ohm": 6.2,
+                "leb_h": 0.0001,
+                "le_h": 0.001,
+                "ke_semi_h": 0.04,
+                "rss_ohm": 0.0,
+            },
+            "rss_ohm.*greater than zero",
+        ),
+    ),
+)
+def test_coupled_backend_rejects_invalid_semi_inductance_model(
+    semi_inductance: dict[str, object],
+    message: str,
+) -> None:
+    system = _electrodynamic_fixture_system()
+    component = replace(
+        system.components[0],
+        parameters={**system.components[0].parameters, "semi_inductance": semi_inductance},
+    )
+    compiled = PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:radiator",),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
+
+
 def test_coupled_rejects_static_condensation_with_full_matrix_diagnostics() -> None:
     compiled = PhysicalSystemCompiler().compile(_fixture_system())
     request = SystemSolveRequest(
@@ -688,6 +838,12 @@ def test_simple_sealed_model_compiles_without_an_acoustic_interface() -> None:
         "boundary:simple-sealed-rear-diaphragm",
         "boundary:simple-sealed-front-diaphragm",
     )
+    area = normalization_records(compiled.metadata)["component:simple-sealed-driver"]
+    assert area.area_kind == "projected_rigid_translation"
+    assert area.effective_area_m2 > 0.0
+    assert area.positive_side_area_m2 > 0.0
+    assert area.negative_side_area_m2 > 0.0
+    assert area.relative_side_mismatch is not None
     assert session.request.solver_options["static_condensation"] is True
 
 
@@ -1286,12 +1442,72 @@ def test_generalized_frequency_result_preserves_complex_double_precision() -> No
         diagnostics={"coupled_residual": 1e-10},
     )
 
-    restored = system_frequency_result_from_dict(system_frequency_result_to_dict(result))
+    wire = system_frequency_result_to_dict(result)
+    values_wire = wire["quantities"][0]["values"]
+    restored = system_frequency_result_from_dict(wire)
 
+    assert wire["schema_version"] == 2
+    assert values_wire["encoding"] == "base64"
+    assert values_wire["order"] == "C"
+    assert values_wire["byte_order"] == "little"
+    assert "real" not in values_wire
+    assert "imag" not in values_wire
     assert restored.freq_hz == result.freq_hz
     assert restored.quantities[0].values.dtype == np.complex128
     assert np.array_equal(restored.quantities[0].values, result.quantities[0].values)
     assert restored.diagnostics == result.diagnostics
+
+
+def test_generalized_frequency_result_accepts_legacy_decimal_arrays() -> None:
+    restored = system_frequency_result_from_dict(
+        {
+            "schema_version": 1,
+            "freq_hz": 1000.0,
+            "excitation_port_ids": ["excitation:radiator"],
+            "quantities": [
+                {
+                    "id": "pressure:field",
+                    "quantity": "acoustic_pressure",
+                    "unit": "Pa",
+                    "axes": ["excitation", "observation"],
+                    "values": {
+                        "dtype": "complex64",
+                        "shape": [1, 2],
+                        "real": [1.0, 3.0],
+                        "imag": [2.0, -4.0],
+                    },
+                }
+            ],
+            "diagnostics": {},
+        }
+    )
+
+    assert restored.quantities[0].values.dtype == np.complex64
+    np.testing.assert_array_equal(
+        restored.quantities[0].values,
+        np.asarray([[1.0 + 2.0j, 3.0 - 4.0j]], dtype=np.complex64),
+    )
+
+
+def test_generalized_frequency_result_rejects_incomplete_binary_arrays() -> None:
+    result = SystemFrequencyResult(
+        freq_hz=1000.0,
+        quantities=(
+            QuantityResult(
+                id="pressure:field",
+                quantity="acoustic_pressure",
+                unit="Pa",
+                axes=("excitation", "observation"),
+                values=np.asarray([[1.0 + 2.0j, 3.0 - 4.0j]], dtype=np.complex64),
+            ),
+        ),
+        excitation_port_ids=("excitation:radiator",),
+    )
+    wire = system_frequency_result_to_dict(result)
+    wire["quantities"][0]["values"]["content_base64"] = "AAAA"
+
+    with pytest.raises(ValueError, match="contains 3 bytes, expected 16"):
+        system_frequency_result_from_dict(wire)
 
 
 def test_system_contract_rejects_unknown_ports_and_misaligned_excitation_axes() -> None:
@@ -1515,9 +1731,9 @@ def _simple_sealed_fixture_system() -> PhysicalSystem:
 
 
 def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
-    front_file = SKRAM_FIXTURE_ROOT / "SkramFrontChamber.msh"
-    rear_file = SKRAM_FIXTURE_ROOT / "SkramRearChamber.msh"
-    exterior_file = SKRAM_FIXTURE_ROOT / "SkramExterior.msh"
+    front_file = SKRAM_EXAMPLE_ROOT / "SkramFrontChamber.msh"
+    rear_file = SKRAM_EXAMPLE_ROOT / "SkramRearChamber.msh"
+    exterior_file = SKRAM_EXAMPLE_ROOT / "SkramExterior.msh"
     front_mesh = meshio.read(front_file)
     rear_mesh = meshio.read(rear_file)
     exterior_mesh = meshio.read(exterior_file)

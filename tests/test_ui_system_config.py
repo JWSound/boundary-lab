@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import meshio
 import numpy as np
 import pytest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
 import blab.ui.system_config as system_config_module
@@ -41,15 +42,18 @@ from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.exterior_system import exterior_bem_inputs
+from blab.ui.main_window.radiators import RadiatorsMixin
 from blab.ui.mesh_assembly import MeshAssemblyService
-from blab.ui.physical_system_migration import seed_exterior_system
-from blab.ui.project_state import ImportedMeshState
+from blab.ui.physical_system_migration import PhysicalSystemMigrationError, seed_exterior_system
+from blab.ui.project_state import ImportedMeshState, new_project_document
 from blab.ui.system_config import (
     SystemConfigDialog,
     _ComponentDraft,
     _ComponentEditorDialog,
+    _SemiInductanceDialog,
     _WallImpedanceDialog,
     infer_component_motion_axis,
+    inspect_system_mesh_variants,
     inspect_system_meshes,
     interface_bem_mesh_names_for_changes,
     rebuild_configured_interfaces,
@@ -58,6 +62,24 @@ from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
 _APP = QApplication.instance() or QApplication([])
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+
+
+def test_identical_system_mesh_variants_are_only_inspected_once(monkeypatch) -> None:
+    entries = _fixture_mesh_entries()
+    inspected = (object(),)
+    calls = []
+
+    def inspect(value):
+        calls.append(value)
+        return inspected
+
+    monkeypatch.setattr(system_config_module, "inspect_system_meshes", inspect)
+
+    canonical, symmetry = inspect_system_mesh_variants(entries, entries)
+
+    assert calls == [entries]
+    assert canonical is inspected
+    assert symmetry is inspected
 
 
 def _fixture_mesh_entries(
@@ -118,14 +140,15 @@ def _planar_surface_mesh(
     group_name: str,
     z_m: float,
     reverse: bool,
+    scale: float = 1.0,
 ) -> meshio.Mesh:
     triangle = [0, 2, 1] if reverse else [0, 1, 2]
     return meshio.Mesh(
         points=np.asarray(
             [
                 [0.0, 0.0, z_m],
-                [1.0, 0.0, z_m],
-                [0.0, 1.0, z_m],
+                [scale, 0.0, z_m],
+                [0.0, scale, z_m],
             ]
         ),
         cells=[("triangle", np.asarray([triangle], dtype=np.int32))],
@@ -251,11 +274,28 @@ def test_exterior_region_can_own_multiple_bem_mesh_resources() -> None:
     system = dialog.physical_system()
 
     assert len(system.regions) == 1
+    assert all(type(region.kind) is AcousticRegionKind for region in system.regions)
+    assert all(type(boundary.kind) is BoundaryKind for boundary in system.boundaries)
     assert len(system.regions[0].mesh_ids) == 2
     assert infer_physical_solve_kind(system) == PhysicalSolveKind.EXTERIOR_BEM
     PhysicalSystemCompiler().compile(system)
     restored = SystemConfigDialog((bem, second), system, ("main",))
     assert len(restored.physical_system().regions[0].mesh_ids) == 2
+
+
+def test_required_exterior_migration_reports_why_it_cannot_build_a_system() -> None:
+    class MigrationHost(RadiatorsMixin):
+        project = new_project_document()
+
+        @staticmethod
+        def _mesh_config_dialog_entries():
+            return ()
+
+    host = MigrationHost()
+
+    assert host.ensure_seeded_exterior_system() is False
+    with pytest.raises(PhysicalSystemMigrationError, match="No exterior surface mesh is available"):
+        host.ensure_seeded_exterior_system(required=True)
 
 
 def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
@@ -418,6 +458,10 @@ def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
     assert outputs[RADIATION_IMPEDANCE_ID].quantity == "radiation_impedance"
     assert {BEM_BOUNDARY_PRESSURE_ID, BEM_BOUNDARY_NEUMANN_ID} <= outputs.keys()
     assert {RADIATOR_DOMAIN_ID, BEM_BOUNDARY_DOMAIN_ID} <= domains.keys()
+    radiator_domain = domains[RADIATOR_DOMAIN_ID]
+    assert radiator_domain.coordinates["effective_area_m2"].shape == (1,)
+    assert radiator_domain.coordinates["effective_area_m2"][0] > 0.0
+    assert np.isnan(radiator_domain.coordinates["relative_side_mismatch"][0])
     assert system_solve_module.supports_exterior_system_protocol(
         system,
         backend_id="beat_cpu",
@@ -468,10 +512,10 @@ def test_system_worker_projects_exterior_radiation_impedance_to_live_result() ->
             QuantityResult(
                 id=RADIATION_IMPEDANCE_ID,
                 quantity="radiation_impedance",
-                unit="Pa*s/m^3",
+                unit="N*s/m",
                 target_id=RADIATOR_DOMAIN_ID,
                 axes=("radiator",),
-                values=np.asarray([2.5 - 1.25j], dtype=np.complex64),
+                values=np.asarray([2.5 + 1.25j], dtype=np.complex64),
             ),
         ),
     )
@@ -651,9 +695,11 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
     )
     updated = editor.component_draft()
 
+    assert type(updated.kind) is ComponentKind
     assert not hasattr(editor, "symmetry_combo")
     assert editor.symmetry_inference_label.text() == (
-        "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system."
+        "Moving surface(s) sliced along the y axis. Detected 2 distinct components in the fully mirrored system. "
+        "Projected diaphragm area of 100.25 cm²."
     )
     assert all(spin.decimals() == 3 for spin in editor.axis_spins)
     assert all(spin.singleStep() == pytest.approx(0.005) for spin in editor.axis_spins)
@@ -704,7 +750,48 @@ def test_component_editor_persists_per_surface_velocity_weights() -> None:
     assert updated.parameters["boundary_motion_weights"][boundary.id] == pytest.approx(10.0 ** (-12.0 / 20.0))
 
 
-def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> None:
+def test_semi_inductance_dialog_converts_display_units_and_preserves_disabled_values() -> None:
+    dialog = _SemiInductanceDialog(None)
+    dialog.enabled_check.setChecked(True)
+    for key, value in {
+        "re_prime_ohm": "5.7",
+        "leb_h": "0.12",
+        "le_h": "1.2",
+        "ke_semi_h": "0.04",
+        "rss_ohm": "1000",
+    }.items():
+        dialog.parameter_edits[key].setText(value)
+
+    enabled = dialog.model_parameters()
+    assert enabled is not None
+    assert enabled.pop("enabled") is True
+    assert enabled == pytest.approx(
+        {
+            "re_prime_ohm": 5.7,
+            "leb_h": 0.00012,
+            "le_h": 0.0012,
+            "ke_semi_h": 0.04,
+            "rss_ohm": 1000.0,
+        }
+    )
+
+    dialog.enabled_check.setChecked(False)
+    disabled = dialog.model_parameters()
+    assert disabled is not None
+    assert disabled["enabled"] is False
+    assert disabled["le_h"] == pytest.approx(0.0012)
+
+
+def test_semi_inductance_dialog_requires_a_complete_enabled_model() -> None:
+    dialog = _SemiInductanceDialog(None)
+    dialog.enabled_check.setChecked(True)
+    dialog.parameter_edits["re_prime_ohm"].setText("5.7")
+
+    with pytest.raises(ValueError, match="Leb is required"):
+        dialog.model_parameters()
+
+
+def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monkeypatch) -> None:
     resources = {
         "mesh:front": MeshResource(
             id="mesh:front",
@@ -743,7 +830,29 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
         "cms_m_per_n": 0.0005,
         "rms_n_s_per_m": 1.0,
         "motion_axis": [1.0, 0.0, 0.0],
+        "semi_inductance": {
+            "enabled": True,
+            "re_prime_ohm": 6.2,
+            "leb_h": 0.0001,
+            "le_h": 0.001,
+            "ke_semi_h": 0.04,
+            "rss_ohm": 1000.0,
+        },
+        "lumped_sealed_rear_chamber": {
+            "enabled": True,
+            "volume_m3": 0.0125,
+            "projected_area_m2": 0.5,
+        },
     }
+    projected_area_calls = 0
+    original_projected_area = system_config_module.infer_projected_diaphragm_area
+
+    def count_projected_area_calls(*args, **kwargs):
+        nonlocal projected_area_calls
+        projected_area_calls += 1
+        return original_projected_area(*args, **kwargs)
+
+    monkeypatch.setattr(system_config_module, "infer_projected_diaphragm_area", count_projected_area_calls)
     editor = _ComponentEditorDialog(
         _ComponentDraft(
             id="component:woofer",
@@ -762,13 +871,42 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
         symmetry_mode="off",
         mesh_cache={
             "mesh:front": _planar_surface_mesh(group_name="Front", z_m=0.0, reverse=False),
-            "mesh:rear": _planar_surface_mesh(group_name="Rear", z_m=0.01, reverse=True),
+            "mesh:rear": _planar_surface_mesh(
+                group_name="Rear",
+                z_m=0.01,
+                reverse=True,
+                scale=0.8,
+            ),
         },
     )
 
+    assert projected_area_calls == 1
     assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
     assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
     assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
+    assert not editor.parameter_edits["le_h"].isEnabled()
+    assert editor.semi_inductance_button.text() == "Semi-Inductance: On…"
+    assert editor.rear_chamber_check.isChecked()
+    assert editor.rear_chamber_volume_spin.isEnabled()
+    assert editor.rear_chamber_volume_spin.value() == pytest.approx(12.5)
+    debounce_spy = QSignalSpy(editor._projected_area_update_timer.timeout)
+    editor.boundary_weight_spins[0].setValue(-0.1)
+    QTest.qWait(300)
+    assert debounce_spy.count() == 0
+    editor.boundary_weight_spins[0].setValue(-0.2)
+    QTest.qWait(300)
+    assert debounce_spy.count() == 0
+    QTest.qWait(250)
+    assert debounce_spy.count() == 1
+    assert editor._projected_area_update_timer.interval() == 500
+    editor.boundary_weight_spins[0].setValue(0.0)
+    editor._update_projected_area_readout()
+    editor.rear_chamber_check.setChecked(False)
+    assert not editor.rear_chamber_volume_spin.isEnabled()
+    editor.rear_chamber_check.setChecked(True)
+    assert "Projected diaphragm area of 4100.00 cm²" in editor.symmetry_inference_label.text()
+    assert not editor.projected_area_warning_label.isHidden()
+    assert "deviate by 36.0%" in editor.projected_area_warning_label.text()
     editor.parameter_edits["le_h"].setText("0.75")
     editor.parameter_edits["mmd_kg"].setText("18")
     editor.parameter_edits["cms_m_per_n"].setText("625")
@@ -779,6 +917,12 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer() -> 
     assert updated.parameters["le_h"] == pytest.approx(0.00075)
     assert updated.parameters["mmd_kg"] == pytest.approx(0.018)
     assert updated.parameters["cms_m_per_n"] == pytest.approx(0.000625)
+    assert updated.parameters["semi_inductance"] == parameters["semi_inductance"]
+    assert updated.parameters["lumped_sealed_rear_chamber"] == {
+        "enabled": True,
+        "volume_m3": pytest.approx(0.0125),
+        "projected_area_m2": pytest.approx(0.41),
+    }
     assert updated.motion_axis_mode == "automatic"
     assert "High confidence" in editor.axis_confidence_label.text()
 

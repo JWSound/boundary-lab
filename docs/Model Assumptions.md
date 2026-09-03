@@ -59,6 +59,15 @@ apply level, polarity, delay, and idealized analog HPF/LPF transfer functions.
 Because this synthesis is linear and occurs after the physical solve, ordinary
 channel edits can reuse completed basis data without rerunning BEM or FEM.
 
+The Maximum SPL projection also reuses the linear basis, but deliberately
+operates before channel synthesis. For every voltage-only electrodynamic
+channel it scales isolated on-axis pressure until either the one-way peak Xmax
+of an assigned component or the voltage equivalent of its rated Pmax is
+reached. The rated voltage is `sqrt(Pmax * Re)` and the solver's RMS displacement
+is multiplied by `sqrt(2)` before comparison with peak Xmax. One channel-level
+rating pair is shared by every component on that channel; heterogeneous driver
+ratings require separate channels in this first implementation.
+
 When **Normalized Channel Correction** is enabled, Boundary Lab evaluates each
 channel's isolated response at the configured horizontal reference angle and
 applies a real magnitude correction before the channel controls. This makes

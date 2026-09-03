@@ -27,6 +27,7 @@ from blab.ui.main_window.helpers import (
 from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY
 from blab.ui.system_config import (
     SystemConfigDialog,
+    inspect_system_mesh_variants,
     inspect_system_meshes,
     sync_physical_system_meshes,
 )
@@ -269,8 +270,9 @@ class DialogActionsMixin:
     @Slot()
     def open_system_config(self) -> None:
         try:
-            meshes = inspect_system_meshes(self._mesh_config_dialog_entries())
-            symmetry_analysis_meshes = inspect_system_meshes(self.mesh_entries_for_symmetry(self.symmetry))
+            mesh_entries = self._mesh_config_dialog_entries()
+            symmetry_mesh_entries = self.mesh_entries_for_symmetry(self.symmetry)
+            meshes, symmetry_analysis_meshes = inspect_system_mesh_variants(mesh_entries, symmetry_mesh_entries)
         except Exception as exc:
             QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
             return

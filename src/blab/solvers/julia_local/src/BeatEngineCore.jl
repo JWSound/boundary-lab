@@ -44,8 +44,19 @@ export BoundaryMesh,
     assemble_l2_identity_matrix,
     build_cuda_regular_assembly_cache,
     build_cuda_field_evaluation_cache,
+    release_cuda_field_evaluation_cache!,
+    build_cuda_observation_points,
+    release_cuda_observation_points!,
+    build_cuda_weighted_field_sources,
+    release_cuda_weighted_field_sources!,
+    evaluate_galerkin_spl_cuda,
     build_cuda_image_singular_correction_cache,
+    build_cuda_near_correction_cache,
     build_cuda_burton_miller_identity_cache,
+    assemble_burton_miller_neumann_system_cuda,
+    assemble_burton_miller_rhs_cuda,
+    solve_burton_miller_system_cuda!,
+    release_burton_miller_system_cuda!,
     build_rocm_burton_miller_identity_cache,
     build_rocm_sparse_scatter_cache,
     build_cuda_sparse_scatter_cache,
@@ -67,6 +78,7 @@ export BoundaryMesh,
     build_field_evaluation_cache,
     build_beat_cpu_assembly_cache,
     build_singular_correction_cache,
+    build_near_correction_cache,
     assemble_regular_galerkin_operators_cpu,
     assemble_regular_galerkin_operators_cuda_regular,
     assemble_regular_galerkin_operators_rocm_regular,
@@ -99,6 +111,7 @@ export BoundaryMesh,
     reflect_normal,
     reflect_point,
     reflect_vertices,
+    rigid_ground_transform,
     p1_symmetry_orbit_weights,
     snap_symmetry_planes,
     snap_symmetry_plane_vertices,
@@ -107,6 +120,7 @@ export BoundaryMesh,
     symmetry_reduction_factor,
     symmetry_transforms,
     triangle_rule,
+    tensor_triangle_rule,
     validate_symmetry_fundamental_domain!
 
 function cuda_module()
@@ -255,6 +269,16 @@ function BoundaryMesh(vertices::Vector{SVector{3,T}}, faces::Vector{NTuple{3,Int
     return BoundaryMesh{T}(vertices, faces, physical_tags, centroids, normals, areas, face_vertices)
 end
 
+struct NearCorrectionCache{T<:AbstractFloat}
+    pairs_by_test::Vector{Vector{SingularCorrectionPair{T}}}
+    pairs::Vector{SingularCorrectionPair{T}}
+    correction_rules::Vector{TriangleRule{T}}
+    correction_orders::Vector{Int}
+    trial_transform::SymmetryTransform
+    correction_order::Int
+    pair_count::Int
+end
+
 """
 Combine disconnected boundary-mesh resources into one solver mesh.
 
@@ -316,8 +340,18 @@ build_dp0_space(mesh::BoundaryMesh) = DP0Space(collect(eachindex(mesh.faces)), l
 
 function normalized_symmetry_mode(mode)
     mode_symbol = mode isa Symbol ? mode : Symbol(lowercase(strip(String(mode))))
-    mode_symbol in (:off, :x, :xy) || error("Unsupported symmetry mode: $(mode). Expected off, x, or xy.")
+    mode_symbol in (:off, :x, :xy, :ground) || error(
+        "Unsupported image mode: $(mode). Expected off, x, xy, or ground.",
+    )
     return mode_symbol
+end
+
+rigid_ground_transform() = SymmetryTransform(:rigid_ground, SVector{3,Int}(1, -1, 1), -1)
+
+function symmetry_active_axes(mode_symbol::Symbol)
+    mode_symbol == :x && return (1,)
+    mode_symbol == :xy && return (1, 2)
+    return ()
 end
 
 function symmetry_transforms(mode; include_identity::Bool=true)
@@ -330,6 +364,8 @@ function symmetry_transforms(mode; include_identity::Bool=true)
         push!(transforms, SymmetryTransform(:x, SVector{3,Int}(-1, 1, 1), -1))
         push!(transforms, SymmetryTransform(:y, SVector{3,Int}(1, -1, 1), -1))
         push!(transforms, SymmetryTransform(:xy, SVector{3,Int}(-1, -1, 1), 1))
+    elseif mode_symbol == :ground
+        push!(transforms, rigid_ground_transform())
     end
     return tuple(transforms...)
 end
@@ -379,7 +415,7 @@ function snap_symmetry_plane_vertices(
     tolerance::T=symmetry_plane_tolerance(vertices),
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     return [
         SVector{3,T}(ntuple(
             axis -> axis in active_axes && abs(vertex[axis]) <= tolerance ? zero(T) : vertex[axis],
@@ -405,7 +441,7 @@ function validate_symmetry_fundamental_domain!(
     tolerance::T=symmetry_plane_tolerance(mesh.vertices),
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     for axis in active_axes
         for (vertex_index, vertex) in enumerate(mesh.vertices)
             if vertex[axis] < -tolerance
@@ -427,7 +463,7 @@ function p1_symmetry_orbit_weights(
 ) where {T<:AbstractFloat}
     mode_symbol = normalized_symmetry_mode(mode)
     weights = ones(T, length(mesh.vertices))
-    active_axes = mode_symbol == :off ? () : mode_symbol == :x ? (1,) : (1, 2)
+    active_axes = symmetry_active_axes(mode_symbol)
     for (vertex_index, vertex) in enumerate(mesh.vertices)
         weight = T(1)
         for axis in active_axes
@@ -548,6 +584,25 @@ function triangle_rule(::Type{T}, order::Int=2) where {T<:AbstractFloat}
     )
 end
 
+"""Conical tensor-product Gauss rule for demanding regular triangle integrals."""
+function tensor_triangle_rule(::Type{T}, order::Int) where {T<:AbstractFloat}
+    order > 0 || error("Tensor triangle quadrature order must be positive.")
+    nodes, weights = gauss_rule_1d(T, order)
+    points = SVector{2,T}[]
+    triangle_weights = T[]
+    sizehint!(points, order * order)
+    sizehint!(triangle_weights, order * order)
+    for i in eachindex(nodes)
+        u = nodes[i]
+        jacobian = one(T) - u
+        for j in eachindex(nodes)
+            push!(points, SVector{2,T}(u, jacobian * nodes[j]))
+            push!(triangle_weights, weights[i] * weights[j] * jacobian)
+        end
+    end
+    return TriangleRule(points, triangle_weights)
+end
+
 function gauss_rule_1d(::Type{T}, order::Int) where {T<:AbstractFloat}
     if order == 1
         return [T(0.5)], [T(1.0)]
@@ -565,7 +620,16 @@ function gauss_rule_1d(::Type{T}, order::Int) where {T<:AbstractFloat}
         return [T(0.5) - x2, T(0.5) - x1, T(0.5) + x1, T(0.5) + x2], [w2, w1, w1, w2]
     end
 
-    error("Duffy 1D Gauss order must be between 1 and 4 in this implementation.")
+    if order > 4
+        diagonal = zeros(Float64, order)
+        off_diagonal = [index / sqrt(4.0 * index * index - 1.0) for index in 1:(order - 1)]
+        decomposition = eigen(SymTridiagonal(diagonal, off_diagonal))
+        nodes = T.((decomposition.values .+ 1.0) ./ 2.0)
+        weights = T.(decomposition.vectors[1, :] .^ 2)
+        return collect(nodes), collect(weights)
+    end
+
+    error("Gauss order must be positive.")
 end
 
 function duffy_rule(::Type{T}, order::Int, adjacency::Symbol) where {T<:AbstractFloat}
@@ -914,6 +978,67 @@ function build_singular_correction_cache(
     )
 end
 
+function build_near_correction_cache(
+    mesh::BoundaryMesh{T},
+    face_pairs,
+    correction_order::Int;
+    trial_transform::SymmetryTransform=SymmetryTransform(:identity, SVector{3,Int}(1, 1, 1), 1),
+) where {T<:AbstractFloat}
+    correction_order > 0 || error("Near-pair correction order must be positive.")
+    pairs_by_test = [SingularCorrectionPair{T}[] for _ in eachindex(mesh.faces)]
+    pairs = SingularCorrectionPair{T}[]
+    correction_orders = sort(unique(Int[
+        length(pair) >= 3 ? Int(pair[3]) : correction_order
+        for pair in face_pairs
+    ]))
+    all(order -> order > 0, correction_orders) || error("Near-pair correction orders must be positive.")
+    rule_index_by_order = Dict(order => index for (index, order) in enumerate(correction_orders))
+    identity_transform = trial_transform.signs == SVector{3,Int}(1, 1, 1)
+    seen = Set{Tuple{Int,Int}}()
+    for raw_pair in face_pairs
+        length(raw_pair) in (2, 3) || error(
+            "Every near-pair entry must contain test and trial face indices, with an optional quadrature order.",
+        )
+        test_index = Int(raw_pair[1])
+        trial_index = Int(raw_pair[2])
+        pair_order = length(raw_pair) >= 3 ? Int(raw_pair[3]) : correction_order
+        checkbounds(Bool, mesh.faces, test_index) || error("Near-pair test face index $(test_index) is outside the mesh.")
+        checkbounds(Bool, mesh.faces, trial_index) || error("Near-pair trial face index $(trial_index) is outside the mesh.")
+        candidate = (test_index, trial_index)
+        candidate in seen && continue
+        push!(seen, candidate)
+        if identity_transform && elements_are_adjacent(mesh.faces[test_index], mesh.faces[trial_index])
+            continue
+        elseif !identity_transform
+            transformed_trial = reflect_vertices(trial_transform, mesh.face_vertices[trial_index])
+            geometric_adjacency_info(
+                mesh.face_vertices[test_index],
+                transformed_trial;
+                tolerance=T(1e-8),
+            ).kind == :regular || continue
+        end
+        trial_normal = reflect_normal(trial_transform, mesh.normals[trial_index])
+        pair = SingularCorrectionPair(
+            test_index,
+            trial_index,
+            rule_index_by_order[pair_order],
+            (T(2) * mesh.areas[test_index]) * (T(2) * mesh.areas[trial_index]),
+            dot(mesh.normals[test_index], trial_normal),
+        )
+        push!(pairs_by_test[test_index], pair)
+        push!(pairs, pair)
+    end
+    return NearCorrectionCache(
+        pairs_by_test,
+        pairs,
+        [tensor_triangle_rule(T, order) for order in correction_orders],
+        correction_orders,
+        trial_transform,
+        isempty(correction_orders) ? correction_order : maximum(correction_orders),
+        length(pairs),
+    )
+end
+
 function image_singular_candidates(mesh::BoundaryMesh{T}, element_indices, transform::SymmetryTransform; tolerance::T=T(1e-8)) where {T<:AbstractFloat}
     indices = collect(element_indices)
     index_set = Set(indices)
@@ -997,6 +1122,10 @@ function assemble_regular_galerkin_operators(
     cpu_cache=nothing,
     device_singular_cache=nothing,
     device_image_singular_cache=nothing,
+    near_correction_cache=nothing,
+    device_near_correction_cache=nothing,
+    image_near_correction_cache=nothing,
+    device_image_near_correction_cache=nothing,
     rocm_assembly_mode=nothing,
     symmetry_mode::Symbol=:off,
 ) where {T<:AbstractFloat}
@@ -1014,6 +1143,8 @@ function assemble_regular_galerkin_operators(
             timing=timing,
             singular_cache=singular_cache,
             cpu_cache=cpu_cache,
+            near_correction_cache=near_correction_cache,
+            image_near_correction_cache=image_near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1036,6 +1167,10 @@ function assemble_regular_galerkin_operators(
             singular_cache=singular_cache,
             cuda_singular_cache=device_singular_cache,
             cuda_image_singular_cache=device_image_singular_cache,
+            near_correction_cache=near_correction_cache,
+            cuda_near_correction_cache=device_near_correction_cache,
+            image_near_correction_cache=image_near_correction_cache,
+            cuda_image_near_correction_cache=device_image_near_correction_cache,
             symmetry_mode=symmetry_mode,
         )
     end
@@ -1077,8 +1212,36 @@ function build_cuda_field_evaluation_cache(args...; kwargs...)
     error("CUDA field-evaluation cache requested, but CUDA.jl is not loaded.")
 end
 
+function build_cuda_observation_points(args...; kwargs...)
+    error("CUDA observation-point generation requested, but CUDA.jl is not loaded.")
+end
+
+function build_cuda_weighted_field_sources(args...; kwargs...)
+    error("CUDA weighted field sources requested, but CUDA.jl is not loaded.")
+end
+
+function evaluate_galerkin_spl_cuda(args...; kwargs...)
+    error("CUDA SPL field evaluation requested, but CUDA.jl is not loaded.")
+end
+
 function build_cuda_burton_miller_identity_cache(args...; kwargs...)
     error("CUDA Burton-Miller identity cache requested, but CUDA.jl is not loaded.")
+end
+
+function assemble_burton_miller_neumann_system_cuda(args...; kwargs...)
+    error("Direct Burton-Miller CUDA assembly requested, but CUDA.jl is not loaded.")
+end
+
+function assemble_burton_miller_rhs_cuda(args...; kwargs...)
+    error("Burton-Miller CUDA RHS assembly requested, but CUDA.jl is not loaded.")
+end
+
+function solve_burton_miller_system_cuda!(args...; kwargs...)
+    error("Direct Burton-Miller CUDA solve requested, but CUDA.jl is not loaded.")
+end
+
+function release_burton_miller_system_cuda!(args...; kwargs...)
+    error("Direct Burton-Miller CUDA release requested, but CUDA.jl is not loaded.")
 end
 
 function build_cuda_sparse_scatter_cache(args...; kwargs...)
@@ -1102,6 +1265,10 @@ end
 function evaluate_galerkin_field_cuda(args...; kwargs...)
     error("CUDA field evaluation requested, but CUDA.jl is not loaded.")
 end
+
+release_cuda_field_evaluation_cache!(cache) = nothing
+release_cuda_observation_points!(cache) = nothing
+release_cuda_weighted_field_sources!(cache) = nothing
 
 function build_rocm_regular_assembly_cache(args...; kwargs...)
     error("ROCm regular-pair assembly cache requested, but AMDGPU.jl is not loaded.")
@@ -1185,15 +1352,22 @@ end
 
 _cuda_use_matrix_free_burton_miller_rhs(operators) = size(operators.single_layer, 1) > 768
 
-function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMillerIdentityCache, q_neumann, k::T) where {T<:AbstractFloat}
+function solve_burton_miller_neumann(
+    operators,
+    identity_cache::CudaBurtonMillerIdentityCache,
+    q_neumann,
+    k::T;
+    return_gpu::Bool=false,
+) where {T<:AbstractFloat}
     get(operators, :on_gpu, false) || error("Cached CUDA solve requires GPU-resident operators.")
     cuda = cuda_module()
     cuda.functional() || error("CUDA solve requested, but CUDA.functional() is false.")
     coupling = Complex{T}(0, 1) / k
     d_q_neumann = d_lhs = d_rhs_operator = d_rhs = d_pressure = nothing
     pressure = nothing
+    neumann_on_gpu = q_neumann isa cuda.CuArray
     try
-        d_q_neumann = cuda.CuArray(q_neumann)
+        d_q_neumann = neumann_on_gpu ? q_neumann : cuda.CuArray(q_neumann)
         d_lhs = Complex{T}(0.5) .* identity_cache.identity_p1_p1 .- operators.double_layer .+ coupling .* operators.hypersingular
         if _cuda_use_matrix_free_burton_miller_rhs(operators)
             d_rhs = _cuda_burton_miller_rhs(operators, identity_cache, d_q_neumann, coupling)
@@ -1204,9 +1378,15 @@ function solve_burton_miller_neumann(operators, identity_cache::CudaBurtonMiller
             d_rhs = d_rhs_operator * d_q_neumann
         end
         d_pressure = d_lhs \ d_rhs
-        pressure = Complex{T}.(Array(d_pressure))
+        pressure = return_gpu ? d_pressure : Complex{T}.(Array(d_pressure))
     finally
-        for item in (d_q_neumann, d_lhs, d_rhs_operator, d_rhs, d_pressure)
+        for item in (
+            neumann_on_gpu ? nothing : d_q_neumann,
+            d_lhs,
+            d_rhs_operator,
+            d_rhs,
+            return_gpu ? nothing : d_pressure,
+        )
             item === nothing && continue
             cuda.unsafe_free!(item)
         end

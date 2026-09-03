@@ -8,16 +8,26 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from blab.acoustic_impedance import normalize_generalized_impedance
 from blab.channel_synthesis import (
     channel_drive,
+    channel_voltage_gain,
     complex_reference_pressure,
     flat_target_corrections,
     pressure_to_spl,
     synthesize_channel_basis_spl,
 )
-from blab.config import ChannelConfig, SimulationConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, SimulationConfig
+from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
+from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
+from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult, SolveRequest
+from blab.system_contract import SystemFrequencyResult
+
+GROUP_DELAY_VALID_RELATIVE_DB = -40.0
+ACOUSTIC_LOAD_MAX_VELOCITY_CONDITION = 1.0e6
+ACOUSTIC_LOAD_MIN_VELOCITY_M_PER_S = 1.0e-12
 
 
 @dataclass
@@ -29,9 +39,12 @@ class LiveSolveDataset:
     flat_target_reference_angle_deg: float = 0.0
     polar_observation_distance_m: float = 0.0
     exterior_sound_speed_m_per_s: float = 343.0
+    acoustic_impedance_effective_area_m2: np.ndarray | None = None
+    acoustic_impedance_density_kg_per_m3: float = 1.21
     sphere_r_distance_m: np.ndarray | None = None
     sphere_theta_polar_rad: np.ndarray | None = None
     sphere_phi_azimuth_rad: np.ndarray | None = None
+    voltage_channel_names: frozenset[str] = frozenset()
     results: dict[float, FrequencyResult] = field(default_factory=dict)
 
     def add(self, result: FrequencyResult) -> None:
@@ -106,6 +119,59 @@ class LiveSolveDataset:
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Return frequency, channel name, SPL, and phase arrays at zero degrees."""
+        freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
+        spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
+        phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
+        return freqs, channel_names, spl_db, phase_deg
+
+    def as_raw_channel_on_axis_pressure_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the unweighted equal-voltage channel basis at zero degrees."""
+
+        if not self.results or not self.supports_channel_resynthesis:
+            raise ValueError("No solved channel-basis pressure data available.")
+        ordered = self.ordered_results()
+        first_names = ordered[0].channel_names
+        if first_names is None:
+            raise ValueError("Channel names are unavailable.")
+        channel_names = np.asarray(first_names).astype(str)
+        pressures = np.empty((channel_names.size, len(ordered)), dtype=np.complex64)
+        angles = np.asarray(self.polar_angle_deg, dtype=np.float32)
+        if not angles.size:
+            raise ValueError("On-axis pressure is unavailable for this solve.")
+        for frequency_index, result in enumerate(ordered):
+            result_names = None if result.channel_names is None else np.asarray(result.channel_names).astype(str)
+            horizontal = None if result.horizontal_pressure is None else np.asarray(result.horizontal_pressure)
+            if result_names is None or horizontal is None or not np.array_equal(result_names, channel_names):
+                raise ValueError("Solved channel-basis pressure data is inconsistent.")
+            if horizontal.shape != (channel_names.size, angles.size):
+                raise ValueError("Channel-basis pressure dimensions do not match the polar samples.")
+            for channel_index in range(channel_names.size):
+                pressures[channel_index, frequency_index] = complex_reference_pressure(
+                    horizontal[channel_index], angles, 0.0
+                )
+        return (
+            np.asarray([item.freq_hz for item in ordered], dtype=np.float32),
+            channel_names,
+            pressures,
+        )
+
+    def as_summed_on_axis_export_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return synthesized sum SPL and propagation-aligned phase on axis."""
+
+        freqs, _channel_names, pressures = self._channel_on_axis_complex_pressures()
+        summed_pressure = np.sum(pressures, axis=0)
+        return (
+            pressure_to_spl(summed_pressure).astype(np.float32, copy=False),
+            self._propagation_aligned_phase_deg(summed_pressure, freqs),
+        )
+
+    def _channel_on_axis_complex_pressures(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return raw complex on-axis pressure for each synthesized channel."""
+
         if not self.results:
             raise ValueError("No solved on-axis data available.")
         if not self.supports_channel_resynthesis:
@@ -141,9 +207,39 @@ class LiveSolveDataset:
                 )
 
         freqs = np.asarray([item.freq_hz for item in ordered], dtype=np.float32)
-        spl_db = pressure_to_spl(pressures).astype(np.float32, copy=False)
-        phase_deg = self._propagation_aligned_phase_deg(pressures, freqs)
-        return freqs, channel_names, spl_db, phase_deg
+        return freqs, channel_names, pressures
+
+    def as_group_delay_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return source-referenced group delay for the sum and each channel."""
+
+        if not self.supports_channel_resynthesis or self.solved_count < 3:
+            return None
+        try:
+            freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
+        except ValueError:
+            return None
+        aligned_pressures = solver_to_standard_phasor(self._propagation_aligned_values(pressures, freqs))
+        configs_by_name = {channel.name: channel for channel in self.channel_configs}
+        configured_delay_s = np.asarray(
+            [
+                configs_by_name.get(str(name), ChannelConfig(name=str(name))).delay_ms / 1000.0
+                for name in channel_names.tolist()
+            ],
+            dtype=np.float64,
+        )
+        channel_group_delay_ms, summed_group_delay_ms = group_delay_from_channel_pressures(
+            freqs,
+            aligned_pressures,
+            configured_delay_s=configured_delay_s,
+        )
+        labels = np.concatenate((np.asarray(["Sum"]), channel_names.astype(str)))
+        values = np.vstack((summed_group_delay_ms, channel_group_delay_ms)).astype(
+            np.float32,
+            copy=False,
+        )
+        return freqs, labels, values
 
     def as_visualization_dataset(self, cfg: PrepConfig | None = None) -> dict[str, np.ndarray] | None:
         if not self.results:
@@ -157,6 +253,13 @@ class LiveSolveDataset:
         freqs, angles, horizontal, vertical, raw_horizontal, raw_vertical = self._polar_export_arrays()
         ordered = self.ordered_results()
         impedance = np.stack([item.impedance for item in ordered], axis=1)
+        if self.acoustic_impedance_effective_area_m2 is not None:
+            impedance = normalize_generalized_impedance(
+                impedance,
+                self.acoustic_impedance_effective_area_m2,
+                self.acoustic_impedance_density_kg_per_m3,
+                self.exterior_sound_speed_m_per_s,
+            )
 
         return prepare_visualization_data_from_arrays(
             freq_hz=freqs,
@@ -221,6 +324,7 @@ class LiveSolveDataset:
                 channel_configs=self.channel_configs,
                 flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
                 flat_target_enabled=self.flat_target_normalization_enabled,
+                voltage_channel_names=self.voltage_channel_names,
             )
             return (
                 synthesized["horizontal_spl_norm_db"],
@@ -266,11 +370,23 @@ class LiveSolveDataset:
                     channel_configs_by_name.get(str(channel_name), ChannelConfig(name=str(channel_name))),
                     float(result.freq_hz),
                 )
+                * (
+                    channel_voltage_gain(
+                        channel_configs_by_name.get(str(channel_name), ChannelConfig(name=str(channel_name)))
+                    )
+                    if str(channel_name) in self.voltage_channel_names
+                    else 1.0
+                )
                 * float(corrections[index])
                 for index, channel_name in enumerate(np.asarray(result.channel_names).tolist())
             ],
             dtype=np.complex64,
         )
+
+    def channel_basis_weights(self, result: FrequencyResult) -> np.ndarray:
+        """Return the complex drive applied to each grouped channel basis."""
+
+        return self._channel_basis_weights(result)
 
     def _synthesized_sphere(self, result: FrequencyResult) -> np.ndarray | None:
         if result.has_channel_basis and result.sphere_pressure is not None:
@@ -284,6 +400,7 @@ class LiveSolveDataset:
                 channel_configs=self.channel_configs,
                 flat_target_reference_angle_deg=self.flat_target_reference_angle_deg,
                 flat_target_enabled=self.flat_target_normalization_enabled,
+                voltage_channel_names=self.voltage_channel_names,
             )
             return synthesized["sphere_spl_norm_db"]
         return result.sphere_spl_norm_db
@@ -326,6 +443,14 @@ class LiveSolveDataset:
         pressures: np.ndarray,
         freqs_hz: np.ndarray,
     ) -> np.ndarray:
+        values = self._propagation_aligned_values(pressures, freqs_hz)
+        return solver_phase_deg(values)
+
+    def _propagation_aligned_values(
+        self,
+        pressures: np.ndarray,
+        freqs_hz: np.ndarray,
+    ) -> np.ndarray:
         distance_m = float(self.polar_observation_distance_m)
         sound_speed_m_per_s = float(self.exterior_sound_speed_m_per_s)
         if not np.isfinite(distance_m) or distance_m < 0.0:
@@ -339,7 +464,457 @@ class LiveSolveDataset:
             raise ValueError("Pressure frequency axis must match freqs_hz.")
         reference_delay_s = distance_m / sound_speed_m_per_s
         reference_rotation = np.exp(-1j * 2.0 * np.pi * freqs * reference_delay_s)
-        return np.rad2deg(np.angle(values * reference_rotation)).astype(np.float32, copy=False)
+        return values * reference_rotation
+
+
+def group_delay_from_channel_pressures(
+    freqs_hz: np.ndarray,
+    channel_pressures: np.ndarray,
+    *,
+    configured_delay_s: np.ndarray | None = None,
+    valid_relative_db: float = GROUP_DELAY_VALID_RELATIVE_DB,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Derive channel and summed group delay from standard-audio responses.
+
+    Known pure channel delays are removed before phase unwrapping and added
+    back analytically. The summed derivative is assembled from the channel
+    derivatives, avoiding a second unwrap of the potentially cancelling sum.
+    """
+
+    frequencies = np.asarray(freqs_hz, dtype=np.float64)
+    pressures = np.asarray(channel_pressures, dtype=np.complex128)
+    if frequencies.ndim != 1 or frequencies.size < 3:
+        raise ValueError("Group delay requires at least three frequency samples.")
+    if not np.all(np.isfinite(frequencies)) or np.any(frequencies <= 0.0):
+        raise ValueError("Group-delay frequencies must be finite and greater than zero.")
+    if np.any(np.diff(frequencies) <= 0.0):
+        raise ValueError("Group-delay frequencies must be strictly increasing.")
+    if pressures.ndim != 2 or pressures.shape[1] != frequencies.size:
+        raise ValueError("Channel pressures must have shape (channel, frequency).")
+    delays = (
+        np.zeros(pressures.shape[0], dtype=np.float64)
+        if configured_delay_s is None
+        else np.asarray(configured_delay_s, dtype=np.float64)
+    )
+    if delays.shape != (pressures.shape[0],) or not np.all(np.isfinite(delays)):
+        raise ValueError("Configured channel delays must be finite and match the channel count.")
+
+    omega = 2.0 * np.pi * frequencies
+    channel_group_delay_s = np.full(pressures.shape, np.nan, dtype=np.float64)
+    channel_derivatives = np.zeros(pressures.shape, dtype=np.complex128)
+    for channel_index, (pressure, delay_s) in enumerate(zip(pressures, delays, strict=True)):
+        amplitude = np.abs(pressure)
+        residual = pressure * np.exp(1j * omega * delay_s)
+        residual_phase = np.unwrap(np.angle(residual))
+        full_phase = residual_phase - omega * delay_s
+        amplitude_derivative = np.gradient(amplitude, omega, edge_order=2)
+        phase_derivative = np.gradient(full_phase, omega, edge_order=2)
+        channel_derivatives[channel_index] = np.exp(1j * full_phase) * (
+            amplitude_derivative + 1j * amplitude * phase_derivative
+        )
+        channel_group_delay_s[channel_index] = -phase_derivative
+
+    summed_pressure = np.sum(pressures, axis=0)
+    summed_derivative = np.sum(channel_derivatives, axis=0)
+    summed_log_derivative = np.full(frequencies.shape, np.nan + 1j * np.nan, dtype=np.complex128)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        np.divide(
+            summed_derivative,
+            summed_pressure,
+            out=summed_log_derivative,
+            where=np.abs(summed_pressure) > np.finfo(np.float64).tiny,
+        )
+    summed_group_delay_s = -np.imag(summed_log_derivative)
+
+    for channel_index, pressure in enumerate(pressures):
+        channel_group_delay_s[channel_index, ~_group_delay_valid_mask(pressure, valid_relative_db)] = np.nan
+    summed_group_delay_s[~_group_delay_valid_mask(summed_pressure, valid_relative_db)] = np.nan
+    return channel_group_delay_s * 1000.0, summed_group_delay_s * 1000.0
+
+
+def _group_delay_valid_mask(values: np.ndarray, valid_relative_db: float) -> np.ndarray:
+    magnitude = np.abs(np.asarray(values))
+    finite = np.isfinite(magnitude)
+    maximum = float(np.max(magnitude[finite])) if np.any(finite) else 0.0
+    if maximum <= np.finfo(float).tiny:
+        return np.zeros(magnitude.shape, dtype=bool)
+    threshold = maximum * 10.0 ** (float(valid_relative_db) / 20.0)
+    return finite & (magnitude >= threshold)
+
+
+@dataclass
+class TransducerMotionDataset:
+    """Small live cache of the canonical transducer-velocity result rows."""
+
+    excitation_channel_names: np.ndarray
+    transducer_names: np.ndarray
+    transducer_channel_names: np.ndarray = field(default_factory=lambda: np.asarray([]))
+    transducer_resistance_ohm: np.ndarray = field(default_factory=lambda: np.asarray([], dtype=np.float64))
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+    reference_voltages_v: dict[float, float] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        quantity = next((item for item in result.quantities if item.id == DIAPHRAGM_VELOCITY_ID), None)
+        if quantity is None:
+            return
+        if quantity.axes != ("excitation", "transducer"):
+            raise ValueError("Diaphragm velocity must use excitation and transducer axes.")
+        values = np.asarray(quantity.values, dtype=np.complex64)
+        expected_shape = (self.excitation_channel_names.size, self.transducer_names.size)
+        if values.shape != expected_shape:
+            raise ValueError(f"Diaphragm velocity has shape {values.shape}, expected {expected_shape}.")
+        self.results[float(result.freq_hz)] = values.copy()
+        try:
+            reference_voltage_v = float(result.diagnostics["transducer_reference_voltage_v"])
+        except (KeyError, TypeError, ValueError):
+            reference_voltage_v = DEFAULT_CHANNEL_VOLTAGE_V
+        self.reference_voltages_v[float(result.freq_hz)] = reference_voltage_v
+
+    def as_excursion_arrays(
+        self,
+        acoustic: LiveSolveDataset,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return frequency, transducer names, and synthesized excursion in mm."""
+
+        frequencies = sorted(set(self.results).intersection(acoustic.results))
+        if not frequencies:
+            return None
+        rows: list[np.ndarray] = []
+        excitation_channels = [str(value) for value in self.excitation_channel_names.tolist()]
+        for frequency in frequencies:
+            live_result = acoustic.results[frequency]
+            if live_result.channel_names is None:
+                return None
+            grouped_names = [str(value) for value in np.asarray(live_result.channel_names).tolist()]
+            grouped_weights = acoustic.channel_basis_weights(live_result)
+            if grouped_weights.shape != (len(grouped_names),):
+                raise ValueError("Channel synthesis weights do not match the grouped channel names.")
+            weight_by_name = dict(zip(grouped_names, grouped_weights, strict=True))
+            try:
+                excitation_weights = np.asarray(
+                    [weight_by_name[name] for name in excitation_channels],
+                    dtype=np.complex64,
+                )
+            except KeyError as exc:
+                raise ValueError(f"No synthesized channel basis is available for {exc.args[0]!r}.") from exc
+            velocity = self.results[frequency]
+            synthesized_velocity = np.sum(velocity * excitation_weights[:, np.newaxis], axis=0)
+            excursion_mm = np.abs(synthesized_velocity / (-1j * 2.0 * np.pi * frequency)) * 1000.0
+            rows.append(excursion_mm.astype(np.float32, copy=False))
+        return (
+            np.asarray(frequencies, dtype=np.float32),
+            np.asarray(self.transducer_names).copy(),
+            np.vstack(rows).T.astype(np.float32, copy=False),
+        )
+
+    def eligible_max_spl_channel_names(
+        self,
+        voltage_channel_names: frozenset[str],
+    ) -> tuple[str, ...]:
+        """Return voltage-only channels containing electrodynamic components."""
+
+        transducer_channels = np.asarray(self.transducer_channel_names).astype(str)
+        return tuple(
+            name
+            for name in dict.fromkeys(str(value) for value in self.excitation_channel_names.tolist())
+            if name in voltage_channel_names and np.any(transducer_channels == name)
+        )
+
+    def as_max_spl_arrays(
+        self,
+        acoustic: LiveSolveDataset,
+        limits_by_channel: dict[str, MaxSplLimit],
+        voltage_channel_names: frozenset[str],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return isolated channel maximum-SPL curves from the raw solve basis."""
+
+        eligible = set(self.eligible_max_spl_channel_names(voltage_channel_names))
+        selected_limits = {
+            name: limit for name, limit in limits_by_channel.items() if name in eligible and limit.validated().enabled
+        }
+        if not selected_limits:
+            return None
+        frequencies, channel_names, pressure = acoustic.as_raw_channel_on_axis_pressure_arrays()
+        ordered_frequencies = [float(result.freq_hz) for result in acoustic.ordered_results()]
+        if any(frequency not in self.results for frequency in ordered_frequencies):
+            return None
+        velocity = np.stack([self.results[frequency] for frequency in ordered_frequencies], axis=0)
+        reference_voltage = np.asarray(
+            [self.reference_voltages_v.get(frequency, DEFAULT_CHANNEL_VOLTAGE_V) for frequency in ordered_frequencies],
+            dtype=np.float64,
+        )
+        return calculate_max_spl_curves(
+            frequencies_hz=frequencies,
+            channel_names=channel_names,
+            on_axis_pressure_pa=pressure,
+            excitation_channel_names=self.excitation_channel_names,
+            transducer_channel_names=self.transducer_channel_names,
+            transducer_resistance_ohm=self.transducer_resistance_ohm,
+            diaphragm_velocity_m_per_s=velocity,
+            limits_by_channel=selected_limits,
+            reference_voltage_v=reference_voltage,
+        )
+
+
+@dataclass
+class ElectricalImpedanceDataset:
+    """Live per-channel electrical load derived from voltage-basis currents."""
+
+    excitation_port_ids: tuple[str, ...]
+    excitation_channel_names: np.ndarray
+    excitation_component_ids: np.ndarray
+    transducer_component_ids: np.ndarray
+    physical_driver_orbit_counts: np.ndarray
+    channel_names: np.ndarray
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        quantity = next((item for item in result.quantities if item.id == VOICE_COIL_CURRENT_ID), None)
+        if quantity is None:
+            return
+        if quantity.axes != ("excitation", "transducer"):
+            raise ValueError("Voice-coil current must use excitation and transducer axes.")
+
+        result_port_ids = tuple(str(value) for value in result.excitation_port_ids)
+        if set(result_port_ids) != set(self.excitation_port_ids):
+            raise ValueError("Voice-coil current excitation ports do not match the prepared solve.")
+        row_by_port_id = {port_id: index for index, port_id in enumerate(result_port_ids)}
+        row_order = [row_by_port_id[port_id] for port_id in self.excitation_port_ids]
+
+        expected_component_ids = tuple(str(value) for value in self.transducer_component_ids.tolist())
+        result_component_ids = tuple(str(value) for value in quantity.metadata.get("component_ids", ()))
+        if not result_component_ids:
+            result_component_ids = expected_component_ids
+        if set(result_component_ids) != set(expected_component_ids):
+            raise ValueError("Voice-coil current transducers do not match the prepared solve.")
+        column_by_component_id = {component_id: index for index, component_id in enumerate(result_component_ids)}
+        column_order = [column_by_component_id[component_id] for component_id in expected_component_ids]
+
+        values = np.asarray(quantity.values, dtype=np.complex64)
+        expected_shape = (len(result_port_ids), len(result_component_ids))
+        if values.shape != expected_shape:
+            raise ValueError(f"Voice-coil current has shape {values.shape}, expected {expected_shape}.")
+        values = values[np.ix_(row_order, column_order)]
+
+        try:
+            reference_voltage_v = float(result.diagnostics["transducer_reference_voltage_v"])
+        except (KeyError, TypeError, ValueError):
+            reference_voltage_v = np.nan
+        if not np.isfinite(reference_voltage_v) or reference_voltage_v <= 0.0:
+            reference_voltage_v = np.nan
+
+        excitation_channels = np.asarray(self.excitation_channel_names).astype(str)
+        excitation_components = np.asarray(self.excitation_component_ids).astype(str)
+        transducer_components = np.asarray(self.transducer_component_ids).astype(str)
+        orbit_counts = np.asarray(self.physical_driver_orbit_counts, dtype=np.float64)
+        impedances = np.full(self.channel_names.size, np.nan + 1j * np.nan, dtype=np.complex64)
+        for channel_index, channel_name_value in enumerate(self.channel_names.tolist()):
+            channel_name = str(channel_name_value)
+            excitation_indices = np.flatnonzero(excitation_channels == channel_name)
+            driven_component_ids = set(excitation_components[excitation_indices].tolist())
+            transducer_indices = np.asarray(
+                [
+                    index
+                    for index, component_id in enumerate(transducer_components.tolist())
+                    if component_id in driven_component_ids
+                ],
+                dtype=np.int64,
+            )
+            if not excitation_indices.size or not transducer_indices.size:
+                continue
+            channel_currents = values[np.ix_(excitation_indices, transducer_indices)]
+            total_current = np.sum(
+                channel_currents * orbit_counts[transducer_indices][np.newaxis, :],
+                dtype=np.complex128,
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                impedances[channel_index] = reference_voltage_v / total_current
+        self.results[float(result.freq_hz)] = impedances
+
+    def as_impedance_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return frequency, channel, magnitude, and wrapped phase arrays."""
+
+        if not self.results or not self.channel_names.size:
+            return None
+        ordered = sorted(self.results.items())
+        frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
+        complex_impedance = np.vstack([values for _frequency, values in ordered]).T
+        magnitude_ohm = np.abs(complex_impedance).astype(np.float32, copy=False)
+        phase_deg = solver_phase_deg(complex_impedance)
+        return frequencies, np.asarray(self.channel_names).copy(), magnitude_ohm, phase_deg
+
+
+@dataclass
+class AcousticLoadImpedanceDataset:
+    """Intrinsic transducer acoustic loads recovered from a voltage-basis solve.
+
+    The coupled solve returns diaphragm velocity and voice-coil current for every
+    independent voltage excitation. Mechanical equilibrium gives the acoustic
+    load force as ``Bl * current - Zm * velocity``. Solving that force matrix
+    against the velocity matrix isolates the self impedance of each transducer
+    with all other generalized transducer velocities held at zero.
+    """
+
+    excitation_port_ids: tuple[str, ...]
+    excitation_port_kinds: np.ndarray
+    excitation_component_ids: np.ndarray
+    transducer_component_ids: np.ndarray
+    transducer_names: np.ndarray
+    bl_n_per_a: np.ndarray
+    mmd_kg: np.ndarray
+    cms_m_per_n: np.ndarray
+    rms_n_s_per_m: np.ndarray
+    effective_area_m2: np.ndarray | None = None
+    density_kg_per_m3: float = 1.21
+    sound_speed_m_per_s: float = 343.0
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+    velocity_condition_numbers: dict[float, float] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        velocity_quantity = next(
+            (item for item in result.quantities if item.id == DIAPHRAGM_VELOCITY_ID),
+            None,
+        )
+        current_quantity = next(
+            (item for item in result.quantities if item.id == VOICE_COIL_CURRENT_ID),
+            None,
+        )
+        if velocity_quantity is None or current_quantity is None:
+            return
+        expected_axes = ("excitation", "transducer")
+        if velocity_quantity.axes != expected_axes or current_quantity.axes != expected_axes:
+            raise ValueError("Coupled acoustic load recovery requires excitation and transducer axes.")
+
+        result_port_ids = tuple(str(value) for value in result.excitation_port_ids)
+        if set(result_port_ids) != set(self.excitation_port_ids):
+            raise ValueError("Coupled acoustic load excitation ports do not match the prepared solve.")
+        row_by_port_id = {port_id: index for index, port_id in enumerate(result_port_ids)}
+        row_order = [row_by_port_id[port_id] for port_id in self.excitation_port_ids]
+
+        expected_component_ids = tuple(str(value) for value in self.transducer_component_ids.tolist())
+        velocity_component_ids = (
+            tuple(str(value) for value in velocity_quantity.metadata.get("component_ids", ())) or expected_component_ids
+        )
+        current_component_ids = (
+            tuple(str(value) for value in current_quantity.metadata.get("component_ids", ())) or expected_component_ids
+        )
+        if set(velocity_component_ids) != set(expected_component_ids):
+            raise ValueError("Diaphragm-velocity transducers do not match the prepared solve.")
+        if set(current_component_ids) != set(expected_component_ids):
+            raise ValueError("Voice-coil-current transducers do not match the prepared solve.")
+
+        velocity = self._ordered_quantity_values(
+            velocity_quantity.values,
+            result_port_ids,
+            velocity_component_ids,
+            row_order,
+            expected_component_ids,
+            "Diaphragm velocity",
+        )
+        current = self._ordered_quantity_values(
+            current_quantity.values,
+            result_port_ids,
+            current_component_ids,
+            row_order,
+            expected_component_ids,
+            "Voice-coil current",
+        )
+
+        excitation_kinds = np.asarray(self.excitation_port_kinds).astype(str)
+        excitation_components = np.asarray(self.excitation_component_ids).astype(str)
+        voltage_rows: list[int] = []
+        for component_id in expected_component_ids:
+            candidates = np.flatnonzero((excitation_kinds == "voltage") & (excitation_components == component_id))
+            if candidates.size != 1:
+                self._store_unavailable(float(result.freq_hz))
+                return
+            voltage_rows.append(int(candidates[0]))
+
+        velocity_basis = velocity[voltage_rows, :].T.astype(np.complex128, copy=False)
+        current_basis = current[voltage_rows, :].T.astype(np.complex128, copy=False)
+        singular_values = np.linalg.svd(velocity_basis, compute_uv=False)
+        maximum_singular = float(singular_values[0]) if singular_values.size else 0.0
+        minimum_singular = float(singular_values[-1]) if singular_values.size else 0.0
+        condition = maximum_singular / minimum_singular if minimum_singular > 0.0 else float("inf")
+        self.velocity_condition_numbers[float(result.freq_hz)] = condition
+        if (
+            not np.isfinite(condition)
+            or condition > ACOUSTIC_LOAD_MAX_VELOCITY_CONDITION
+            or maximum_singular <= ACOUSTIC_LOAD_MIN_VELOCITY_M_PER_S
+        ):
+            self._store_unavailable(float(result.freq_hz), record_condition=False)
+            return
+
+        omega = 2.0 * np.pi * float(result.freq_hz)
+        mechanical_impedance = np.asarray(self.rms_n_s_per_m, dtype=np.float64) + 1j * (
+            1.0 / (omega * np.asarray(self.cms_m_per_n, dtype=np.float64))
+            - omega * np.asarray(self.mmd_kg, dtype=np.float64)
+        )
+        load_force = (
+            np.asarray(self.bl_n_per_a, dtype=np.float64)[:, np.newaxis] * current_basis
+            - mechanical_impedance[:, np.newaxis] * velocity_basis
+        )
+        try:
+            impedance_matrix = np.linalg.solve(velocity_basis.T, load_force.T).T
+        except np.linalg.LinAlgError:
+            self._store_unavailable(float(result.freq_hz), record_condition=False)
+            return
+        diagonal = np.diag(impedance_matrix)
+        diagonal = np.where(np.isfinite(diagonal), diagonal, np.nan + 1j * np.nan)
+        self.results[float(result.freq_hz)] = diagonal.astype(np.complex64, copy=False)
+
+    @staticmethod
+    def _ordered_quantity_values(
+        raw_values: np.ndarray,
+        result_port_ids: tuple[str, ...],
+        result_component_ids: tuple[str, ...],
+        row_order: list[int],
+        expected_component_ids: tuple[str, ...],
+        label: str,
+    ) -> np.ndarray:
+        values = np.asarray(raw_values, dtype=np.complex64)
+        expected_shape = (len(result_port_ids), len(result_component_ids))
+        if values.shape != expected_shape:
+            raise ValueError(f"{label} has shape {values.shape}, expected {expected_shape}.")
+        column_by_component_id = {component_id: index for index, component_id in enumerate(result_component_ids)}
+        column_order = [column_by_component_id[value] for value in expected_component_ids]
+        return values[np.ix_(row_order, column_order)]
+
+    def _store_unavailable(self, frequency_hz: float, *, record_condition: bool = True) -> None:
+        if record_condition:
+            self.velocity_condition_numbers[frequency_hz] = float("inf")
+        self.results[frequency_hz] = np.full(
+            self.transducer_names.size,
+            np.nan + 1j * np.nan,
+            dtype=np.complex64,
+        )
+
+    def as_impedance_arrays(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return standard-convention real and imaginary acoustic load in N*s/m."""
+
+        if not self.results or not self.transducer_names.size:
+            return None
+        ordered = sorted(self.results.items())
+        frequencies = np.asarray([frequency for frequency, _values in ordered], dtype=np.float32)
+        native_impedance = np.vstack([values for _frequency, values in ordered]).T
+        display_impedance = solver_to_standard_phasor(native_impedance)
+        if self.effective_area_m2 is not None:
+            display_impedance = normalize_generalized_impedance(
+                display_impedance,
+                self.effective_area_m2,
+                self.density_kg_per_m3,
+                self.sound_speed_m_per_s,
+            )
+        return (
+            frequencies,
+            np.asarray(self.transducer_names).copy(),
+            display_impedance.real.astype(np.float32, copy=False),
+            display_impedance.imag.astype(np.float32, copy=False),
+        )
 
 
 def build_log_frequencies(freq_min: float, freq_max: float, freq_count: int) -> np.ndarray:

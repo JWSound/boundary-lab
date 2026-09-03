@@ -21,7 +21,11 @@ export VolumeMesh,
     is_quadratic,
     ConformingInterfaceMap,
     InterfaceOperators,
+    SemiInductanceModel,
+    LumpedSealedRearChamber,
     ElectrodynamicTransducer,
+    electrical_impedance,
+    mechanical_impedance,
     load_gmsh41_volume,
     restrict_volume_mesh,
     physical_tag,
@@ -123,6 +127,19 @@ function offset_interface_map(
     )
 end
 
+struct SemiInductanceModel{T<:AbstractFloat}
+    re_prime_ohm::T
+    leb_h::T
+    le_h::T
+    ke_semi_h::T
+    rss_ohm::T
+end
+
+struct LumpedSealedRearChamber{T<:AbstractFloat}
+    volume_m3::T
+    projected_area_m2::T
+end
+
 struct ElectrodynamicTransducer{T<:AbstractFloat}
     id::String
     fem_boundary_tags::Vector{Int}
@@ -138,6 +155,112 @@ struct ElectrodynamicTransducer{T<:AbstractFloat}
     mmd_kg::T
     cms_m_per_n::T
     rms_n_s_per_m::T
+    semi_inductance::Union{Nothing,SemiInductanceModel{T}}
+    lumped_sealed_rear_chamber::Union{Nothing,LumpedSealedRearChamber{T}}
+end
+
+function ElectrodynamicTransducer{T}(
+    id,
+    fem_boundary_tags,
+    fem_motion_signs,
+    bem_boundary_tags,
+    bem_motion_signs,
+    motion_axis,
+    surface_completion_factor,
+    physical_driver_orbit_count,
+    re_ohm,
+    le_h,
+    bl_n_per_a,
+    mmd_kg,
+    cms_m_per_n,
+    rms_n_s_per_m,
+) where {T<:AbstractFloat}
+    return ElectrodynamicTransducer{T}(
+        id,
+        fem_boundary_tags,
+        fem_motion_signs,
+        bem_boundary_tags,
+        bem_motion_signs,
+        motion_axis,
+        surface_completion_factor,
+        physical_driver_orbit_count,
+        re_ohm,
+        le_h,
+        bl_n_per_a,
+        mmd_kg,
+        cms_m_per_n,
+        rms_n_s_per_m,
+        nothing,
+        nothing,
+    )
+end
+
+function ElectrodynamicTransducer{T}(
+    id,
+    fem_boundary_tags,
+    fem_motion_signs,
+    bem_boundary_tags,
+    bem_motion_signs,
+    motion_axis,
+    surface_completion_factor,
+    physical_driver_orbit_count,
+    re_ohm,
+    le_h,
+    bl_n_per_a,
+    mmd_kg,
+    cms_m_per_n,
+    rms_n_s_per_m,
+    semi_inductance,
+) where {T<:AbstractFloat}
+    return ElectrodynamicTransducer{T}(
+        id,
+        fem_boundary_tags,
+        fem_motion_signs,
+        bem_boundary_tags,
+        bem_motion_signs,
+        motion_axis,
+        surface_completion_factor,
+        physical_driver_orbit_count,
+        re_ohm,
+        le_h,
+        bl_n_per_a,
+        mmd_kg,
+        cms_m_per_n,
+        rms_n_s_per_m,
+        semi_inductance,
+        nothing,
+    )
+end
+
+function electrical_impedance(transducer::ElectrodynamicTransducer{T}, omega) where {T<:AbstractFloat}
+    angular_frequency = T(omega)
+    s = Complex{T}(zero(T), -angular_frequency)
+    model = transducer.semi_inductance
+    isnothing(model) && return Complex{T}(transducer.re_ohm) + s * transducer.le_h
+    parallel_admittance =
+        inv(Complex{T}(model.rss_ohm)) +
+        inv(s * model.le_h) +
+        inv(sqrt(s) * model.ke_semi_h)
+    return Complex{T}(model.re_prime_ohm) + s * model.leb_h + inv(parallel_admittance)
+end
+
+function mechanical_impedance(
+    transducer::ElectrodynamicTransducer{T},
+    omega,
+    density,
+    sound_speed,
+) where {T<:AbstractFloat}
+    angular_frequency = T(omega)
+    impedance = Complex{T}(
+        transducer.rms_n_s_per_m,
+        -angular_frequency * transducer.mmd_kg +
+        inv(angular_frequency * transducer.cms_m_per_n),
+    )
+    chamber = transducer.lumped_sealed_rear_chamber
+    isnothing(chamber) && return impedance
+    chamber_stiffness =
+        T(density) * T(sound_speed)^2 * chamber.projected_area_m2^2 / chamber.volume_m3
+    return impedance + Complex{T}(zero(T), chamber_stiffness / angular_frequency)
 end
 
 function restrict_volume_mesh(mesh::VolumeMesh{T}, selected_tags) where {T<:AbstractFloat}
@@ -568,7 +691,10 @@ function assemble_boundary_mass_matrix(
         local_count = length(face)
         for local_row in 1:local_count, local_col in 1:local_count
             boundary_col = get(boundary_dof, face[local_col], 0)
-            boundary_col == 0 && error("Boundary face references a vertex outside the requested boundary space.")
+            boundary_col == 0 && error(
+                "Boundary face $face_index references vertex $(face[local_col]) outside " *
+                "the requested boundary space ($(length(boundary_vertex_indices)) vertices).",
+            )
             push!(rows, face[local_row])
             push!(cols, boundary_col)
             push!(values, local_mass[local_row, local_col])
@@ -1912,14 +2038,11 @@ function build_coupled_system(
     coupled_fem_range = static_condensation ? gamma_range : fem_range
     coupled_fem_vertices = static_condensation ? retained_fem_vertices : collect(fem_range)
     mechanical_impedance = Complex{T}[
-        Complex{T}(
-            transducer.rms_n_s_per_m,
-            -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
-        )
+        BeatEngineCoupled.mechanical_impedance(transducer, omega, density, sound_speed)
         for transducer in transducers
     ]
     electrical_impedance = Complex{T}[
-        Complex{T}(transducer.re_ohm, -omega * transducer.le_h)
+        BeatEngineCoupled.electrical_impedance(transducer, omega)
         for transducer in transducers
     ]
     force_factor = T[transducer.bl_n_per_a for transducer in transducers]

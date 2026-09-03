@@ -14,9 +14,13 @@ GENERATED_GEOMETRY_ROOT = APP_ROOT / "runs" / "generated_geometry"
 
 HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
 
-SAVE_DARK_ICON = APP_ROOT / "assets" / "save_dark.ico"
+EXPORT_DARK_ICON = APP_ROOT / "assets" / "export_dark.ico"
 
-SAVE_LIGHT_ICON = APP_ROOT / "assets" / "save_light.ico"
+EXPORT_LIGHT_ICON = APP_ROOT / "assets" / "export_light.ico"
+
+SNAPSHOT_DARK_ICON = APP_ROOT / "assets" / "snapshot_dark.ico"
+
+SNAPSHOT_LIGHT_ICON = APP_ROOT / "assets" / "snapshot_light.ico"
 
 CAPTURE_CONTOURS_DARK_ICON = APP_ROOT / "assets" / "capturecontours_dark.ico"
 
@@ -41,6 +45,14 @@ SYNTAX_HIGHLIGHT_LIGHT_ICON = APP_ROOT / "assets" / "syntaxhighlight_light.ico"
 PHASE_DARK_ICON = APP_ROOT / "assets" / "phasephi_dark.ico"
 
 PHASE_LIGHT_ICON = APP_ROOT / "assets" / "phasephi_light.ico"
+
+PLOT_LIMITS_DARK_ICON = APP_ROOT / "assets" / "plotlimits_dark.ico"
+
+PLOT_LIMITS_LIGHT_ICON = APP_ROOT / "assets" / "plotlimits_light.ico"
+
+SPHERICAL_SPIN_DARK_ICON = APP_ROOT / "assets" / "spherical_spin_dark.ico"
+
+SPHERICAL_SPIN_LIGHT_ICON = APP_ROOT / "assets" / "spherical_spin_light.ico"
 
 ADD_DESIGN_TAB_LABEL = "+"
 

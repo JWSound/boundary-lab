@@ -4,10 +4,14 @@ import meshio
 import numpy as np
 import pytest
 
+import blab.component_symmetry as component_symmetry_module
 from blab.component_symmetry import (
     ComponentSymmetryInference,
     ComponentSymmetryInferenceError,
+    ProjectedAreaGeometryCache,
     infer_component_symmetry,
+    infer_projected_diaphragm_area,
+    infer_weighted_surface_area,
 )
 from blab.physical_model import (
     Boundary,
@@ -16,8 +20,10 @@ from blab.physical_model import (
     MeshResource,
     PhysicalGroupRef,
 )
+from repo_paths import REPO_ROOT
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+SKRAM_EXAMPLE_ROOT = REPO_ROOT / "examples" / "SKRAM"
 
 
 @pytest.mark.parametrize(
@@ -121,8 +127,8 @@ def test_sawmod_component_symmetry_is_inferred_from_surface_perimeter(
 
 
 def test_front_and_rear_driver_surfaces_infer_one_shared_x_cut_driver() -> None:
-    front = _resource(FIXTURE_ROOT / "SKRAM" / "SkramFrontChamber.msh", "mesh:front")
-    rear = _resource(FIXTURE_ROOT / "SKRAM" / "SkramRearChamber.msh", "mesh:rear")
+    front = _resource(SKRAM_EXAMPLE_ROOT / "SkramFrontChamber.msh", "mesh:front")
+    rear = _resource(SKRAM_EXAMPLE_ROOT / "SkramRearChamber.msh", "mesh:rear")
 
     inferred = infer_component_symmetry(
         (
@@ -137,6 +143,129 @@ def test_front_and_rear_driver_surfaces_infer_one_shared_x_cut_driver() -> None:
     assert inferred.surface_completion_factor == 2
     assert inferred.physical_driver_orbit_count == 1
     assert inferred.surface_patch_count == 2
+
+
+def test_projected_diaphragm_area_averages_opposing_sides_and_reports_mismatch() -> None:
+    front_resource = MeshResource("mesh:front", "Front", "unused-front.msh", MeshPurpose.FEM_VOLUME)
+    rear_resource = MeshResource("mesh:rear", "Rear", "unused-rear.msh", MeshPurpose.FEM_VOLUME)
+    front_mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Front": np.asarray((1, 2))},
+    )
+    rear_mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.1), (0.0, 0.8, 0.1), (0.8, 0.0, 0.1))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Rear": np.asarray((1, 2))},
+    )
+
+    inferred = infer_projected_diaphragm_area(
+        (
+            _boundary(front_resource, "Front", "boundary:front"),
+            _boundary(rear_resource, "Rear", "boundary:rear"),
+        ),
+        {front_resource.id: front_resource, rear_resource.id: rear_resource},
+        (0.0, 0.0, 1.0),
+        1,
+        mesh_cache={front_resource.id: front_mesh, rear_resource.id: rear_mesh},
+    )
+
+    assert inferred.positive_side_area_m2 == pytest.approx(0.5)
+    assert inferred.negative_side_area_m2 == pytest.approx(0.32)
+    assert inferred.projected_area_m2 == pytest.approx(0.41)
+    assert inferred.relative_side_mismatch == pytest.approx(0.36)
+
+
+def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
+    resource = MeshResource("mesh:front", "Front", "unused-front.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.0, 0.1, 0.0))),
+        cells=[("triangle", np.asarray(((0, 1, 2),), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32)]},
+        field_data={"Front": np.asarray((1, 2))},
+    )
+
+    inferred = infer_projected_diaphragm_area(
+        (_boundary(resource, "Front", "boundary:front"),),
+        {resource.id: resource},
+        (0.0, 0.0, 1.0),
+        2,
+        mesh_cache={resource.id: mesh},
+    )
+
+    assert inferred.projected_area_m2 == pytest.approx(0.01)
+    assert not inferred.has_opposing_sides
+    assert inferred.relative_side_mismatch is None
+
+
+def test_projected_diaphragm_area_reuses_tetrahedron_orientation_geometry(monkeypatch) -> None:
+    resource = MeshResource("mesh:fem", "FEM", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))),
+        cells=[
+            ("triangle", np.asarray(((0, 2, 1),), dtype=np.int64)),
+            ("tetra", np.asarray(((0, 1, 2, 3),), dtype=np.int64)),
+        ],
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32), np.asarray((2,), dtype=np.int32)]},
+        field_data={"Front": np.asarray((1, 2)), "Volume": np.asarray((2, 3))},
+    )
+    build_calls = 0
+    original = component_symmetry_module._tetrahedron_opposite_vertex_by_face
+
+    def count_builds(value):
+        nonlocal build_calls
+        build_calls += 1
+        return original(value)
+
+    monkeypatch.setattr(component_symmetry_module, "_tetrahedron_opposite_vertex_by_face", count_builds)
+    geometry_cache = ProjectedAreaGeometryCache()
+    boundary = _boundary(resource, "Front")
+    for weight in (1.0, 0.5):
+        infer_projected_diaphragm_area(
+            (boundary,),
+            {resource.id: resource},
+            (0.0, 0.0, 1.0),
+            1,
+            boundary_motion_weights={boundary.id: weight},
+            mesh_cache={resource.id: mesh},
+            projected_geometry_cache=geometry_cache,
+        )
+
+    assert build_calls == 1
+    assert len(geometry_cache.surface_geometry_by_resource_tag) == 1
+
+
+def test_weighted_surface_area_applies_motion_weights_and_symmetry_completion() -> None:
+    resource = MeshResource("mesh", "Mesh", "unused.msh", MeshPurpose.BEM_SURFACE)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            (
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (2.0, 0.0, 0.0),
+                (3.0, 0.0, 0.0),
+                (2.0, 2.0, 0.0),
+            )
+        ),
+        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5)), dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.asarray((1, 2), dtype=np.int32)]},
+        field_data={"First": np.asarray((1, 2)), "Second": np.asarray((2, 2))},
+    )
+    first = _boundary(resource, "First", "boundary:first")
+    second = _boundary(resource, "Second", "boundary:second")
+
+    area = infer_weighted_surface_area(
+        (first, second),
+        {resource.id: resource},
+        2,
+        boundary_motion_weights={first.id: 0.5, second.id: 0.25},
+        mesh_cache={resource.id: mesh},
+    )
+
+    assert area == pytest.approx(1.0)
 
 
 def test_adjacent_surface_groups_are_unioned_before_perimeter_classification() -> None:

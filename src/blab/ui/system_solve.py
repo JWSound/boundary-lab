@@ -9,6 +9,7 @@ from dataclasses import replace
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.phasor import solver_to_standard_phasor
 from blab.physical_model import PhysicalSolveKind
 from blab.solve_results import (
     HORIZONTAL_POLAR_PRESSURE_ID,
@@ -18,6 +19,7 @@ from blab.solve_results import (
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
+from blab.solvers.exterior_compatibility import ExteriorCompatibilitySession
 from blab.system_contract import SystemFrequencyResult
 from blab.system_solve import (
     SystemUiSolveRequest,
@@ -25,6 +27,7 @@ from blab.system_solve import (
     prepare_coupled_ui_solve,
     prepare_system_ui_solve,
     supports_exterior_system_protocol,
+    with_exterior_compatibility,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -50,27 +53,48 @@ class SystemSolveWorker(QObject):
     def run(self) -> None:
         try:
             request = replace(self.prepared.request, status_callback=self._log_backend_status)
-            bem_backend = self.prepared.backend_id.removeprefix("beat_")
-            backend = PhysicalSystemProductionBackend(
-                bem_backend=bem_backend,
-                julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
-            )
-            session = backend.create_system_session(request)
-            self._session = session
-            self.initialized.emit(
-                self.prepared.polar_angle_deg,
-                self.prepared.excitation_component_names,
-                self.prepared.sphere_metadata,
-            )
-            for result in session.solve_stream(stop_requested=lambda: self._stop):
-                canonical_result = self._canonical_result(result)
-                self.system_result_ready.emit(canonical_result)
-                self.result_ready.emit(self._to_live_result(canonical_result))
+            if self.prepared.compatibility is not None:
+                self._run_compatibility(request)
+            else:
+                self._run_physical_system(request)
         except Exception as exc:
             if not self._stop:
                 self.failed.emit(str(exc))
         finally:
             self.finished.emit()
+
+    def _run_physical_system(self, request) -> None:
+        bem_backend = self.prepared.backend_id.removeprefix("beat_")
+        backend = PhysicalSystemProductionBackend(
+            bem_backend=bem_backend,
+            julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
+        )
+        session = backend.create_system_session(request)
+        self._session = session
+        self.initialized.emit(
+            self.prepared.polar_angle_deg,
+            self.prepared.excitation_component_names,
+            self.prepared.sphere_metadata,
+        )
+        for result in session.solve_stream(stop_requested=lambda: self._stop):
+            canonical_result = self._canonical_result(result)
+            self.system_result_ready.emit(canonical_result)
+            self.result_ready.emit(self._to_live_result(canonical_result))
+
+    def _run_compatibility(self, request) -> None:
+        options = self.prepared.compatibility
+        assert options is not None
+        session = ExteriorCompatibilitySession(request, options)
+        self._session = session
+        metadata = session.metadata
+        self.initialized.emit(
+            metadata.polar_angle_deg,
+            metadata.radiator_names,
+            metadata.sphere_metadata,
+        )
+        for result in session.solve_stream(stop_requested=lambda: self._stop):
+            self.system_result_ready.emit(result.canonical)
+            self.result_ready.emit(result.live)
 
     @Slot()
     def stop(self) -> None:
@@ -213,7 +237,11 @@ class SystemSolveWorker(QObject):
         values = np.asarray(quantity.values, dtype=np.complex64)
         if values.shape != (self.prepared.excitation_component_names.size,):
             raise ValueError("Radiation impedance does not align with the physical components.")
-        return np.column_stack((values.real, values.imag)).astype(np.float32, copy=False)
+        display_values = solver_to_standard_phasor(values)
+        return np.column_stack((display_values.real, display_values.imag)).astype(
+            np.float32,
+            copy=False,
+        )
 
 
 __all__ = [
@@ -221,6 +249,7 @@ __all__ = [
     "SystemUiSolveRequest",
     "prepare_system_ui_solve",
     "supports_exterior_system_protocol",
+    "with_exterior_compatibility",
     "CoupledSolveWorker",
     "CoupledUiSolveRequest",
     "prepare_coupled_ui_solve",

@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
+using Base64, JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
 
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
@@ -8,11 +8,434 @@ include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 include(joinpath(@__DIR__, "src", "BeatEngineCoupledCondensed.jl"))
 using .BeatEngineCoupledCondensed
+include(joinpath(@__DIR__, "src", "BeatEngineSpeakerRom.jl"))
+using .BeatEngineSpeakerRom
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
 const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
 const MAX_BEM_FIELD_EVALUATION_CACHES = 2
+const SPEAKER_ROM_QUANTITIES = Set([
+    "speaker_rom_k",
+    "speaker_rom_c",
+    "speaker_rom_d",
+    "speaker_rom_b",
+    "speaker_rom_e",
+    "speaker_rom_velocity",
+    "speaker_rom_current",
+    "speaker_rom_velocity_drive",
+    "speaker_rom_current_drive",
+])
+
+function speaker_interior_state_layout(system)
+    gamma_count = length(system.gamma_range)
+    interface_count = length(system.flux_range)
+    transducer_count = length(system.transducers)
+    gamma_range = 1:gamma_count
+    flux_range = (gamma_count + 1):(gamma_count + interface_count)
+    mechanical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(flux_range) + 1):(last(flux_range) + transducer_count))
+    electrical_range = transducer_count == 0 ?
+                       (1:0) :
+                       ((last(mechanical_range) + 1):(last(mechanical_range) + transducer_count))
+    return (
+        gamma_range=gamma_range,
+        flux_range=flux_range,
+        mechanical_range=mechanical_range,
+        electrical_range=electrical_range,
+        state_count=gamma_count + interface_count + 2 * transducer_count,
+    )
+end
+
+function speaker_interior_state_matrix(system)
+    system.formulation == :fem_interface_condensed || error(
+        "Speaker ROM construction requires the FEM-interface-condensed formulation.",
+    )
+    condensation = system.condensation
+    schur = if hasproperty(condensation, :schur)
+        condensation.schur
+    elseif hasproperty(condensation, :device_schur)
+        Array(condensation.device_schur)
+    else
+        error("Speaker ROM construction requires a retained FEM Schur complement.")
+    end
+    T = system.scalar_type
+    layout = speaker_interior_state_layout(system)
+    retained = system.retained_fem_vertices
+    interface_operators = system.interface_operators
+    transducer_operators = system.transducer_operators
+    normal_derivative_scale = Complex{T}(0, system.density * system.omega)
+
+    k_matrix = zeros(Complex{T}, layout.state_count, layout.state_count)
+    k_matrix[layout.gamma_range, layout.gamma_range] .= Complex{T}.(schur)
+    k_matrix[layout.gamma_range, layout.flux_range] .= -Complex{T}.(
+        Matrix(interface_operators.fem_load[retained, :]),
+    )
+    k_matrix[layout.flux_range, layout.gamma_range] .= Complex{T}.(
+        Matrix(interface_operators.fem_trace[:, retained]),
+    )
+    if !isempty(system.transducers)
+        k_matrix[layout.gamma_range, layout.mechanical_range] .=
+            -normal_derivative_scale .* Complex{T}.(
+                Matrix(transducer_operators.fem_surface[retained, :]),
+            )
+        k_matrix[layout.mechanical_range, layout.gamma_range] .= -Complex{T}.(
+            transpose(Matrix(transducer_operators.fem_force[retained, :])),
+        )
+        mechanical = Complex{T}[
+            BeatEngineCoupled.mechanical_impedance(
+                transducer,
+                system.omega,
+                system.density,
+                system.wavenumber == zero(T) ? one(T) : system.omega / system.wavenumber,
+            ) for transducer in system.transducers
+        ]
+        electrical = Complex{T}[
+            BeatEngineCoupled.electrical_impedance(transducer, system.omega)
+            for transducer in system.transducers
+        ]
+        force_factor = Complex{T}[transducer.bl_n_per_a for transducer in system.transducers]
+        k_matrix[layout.mechanical_range, layout.mechanical_range] .=
+            Matrix(Diagonal(mechanical))
+        k_matrix[layout.mechanical_range, layout.electrical_range] .=
+            -Matrix(Diagonal(force_factor))
+        k_matrix[layout.electrical_range, layout.mechanical_range] .=
+            Matrix(Diagonal(force_factor))
+        k_matrix[layout.electrical_range, layout.electrical_range] .=
+            Matrix(Diagonal(electrical))
+    end
+    return k_matrix, layout
+end
+
+function _speaker_reflection_node_map(vertices, axis::Int)
+    1 <= axis <= 3 || error("Reflection axis must be 1, 2, or 3.")
+    mins = [minimum(vertex[index] for vertex in vertices) for index in 1:3]
+    maxs = [maximum(vertex[index] for vertex in vertices) for index in 1:3]
+    extent = maximum(maxs .- mins)
+    tolerance = max(extent * 2.0e-5, 1.0e-7)
+    center = (mins[axis] + maxs[axis]) / 2
+    key(vertex) = ntuple(
+        index -> round(Int, (Float64(vertex[index]) - mins[index]) / tolerance),
+        3,
+    )
+    index_by_key = Dict(key(vertex) => index for (index, vertex) in enumerate(vertices))
+    mapping = Vector{Int}(undef, length(vertices))
+    for (index, vertex) in enumerate(vertices)
+        reflected = collect(Float64.(vertex))
+        reflected[axis] = 2 * center - reflected[axis]
+        mapped = get(index_by_key, key(reflected), 0)
+        mapped > 0 || error(
+            "Could not construct speaker parity reflection map on axis $axis at node $index.",
+        )
+        maximum(abs.(Float64.(vertices[mapped]) .- reflected)) <= 2 * tolerance || error(
+            "Speaker parity reflection map exceeded tolerance on axis $axis at node $index.",
+        )
+        mapping[index] = mapped
+    end
+    all(mapping[mapping[index]] == index for index in eachindex(mapping)) || error(
+        "Speaker parity reflection map on axis $axis is not involutory.",
+    )
+    return mapping
+end
+
+function _speaker_reflection_face_map(mesh, node_map)
+    index_by_vertices = Dict{NTuple{3,Int},Int}()
+    for (index, face) in enumerate(mesh.faces)
+        index_by_vertices[Tuple(sort(collect(Int.(face))))] = index
+    end
+    mapping = Vector{Int}(undef, length(mesh.faces))
+    for (index, face) in enumerate(mesh.faces)
+        reflected = Tuple(sort([node_map[Int(vertex)] for vertex in face]))
+        mapped = get(index_by_vertices, reflected, 0)
+        mapped > 0 || error(
+            "Could not construct speaker parity reflection map at BEM face $index.",
+        )
+        mapping[index] = mapped
+    end
+    return mapping
+end
+
+function _speaker_parity_projection(values, map_x, map_y, sign_x, sign_y)
+    projected = similar(values)
+    map_xy = map_x[map_y]
+    projected .= (
+        values .+
+        sign_x .* values[map_x, :] .+
+        sign_y .* values[map_y, :] .+
+        (sign_x * sign_y) .* values[map_xy, :]
+    ) ./ 4
+    return projected
+end
+
+function _normalize_speaker_columns!(values)
+    for column in axes(values, 2)
+        column_norm = norm(view(values, :, column))
+        column_norm > eps(real(one(eltype(values)))) || error(
+            "A parity-projected speaker rank sample was numerically zero.",
+        )
+        view(values, :, column) ./= column_norm
+    end
+    return values
+end
+
+function _speaker_rank_boundary_patterns(system, count::Int, sequence_offset::Int)
+    T = system.scalar_type
+    vertices = system.bem_mesh.vertices
+    mins = T[minimum(vertex[index] for vertex in vertices) for index in 1:3]
+    maxs = T[maximum(vertex[index] for vertex in vertices) for index in 1:3]
+    center = (mins .+ maxs) ./ T(2)
+    half_extent = (maxs .- mins) ./ T(2)
+    scale = maximum(maxs .- mins)
+    golden_angle = T(pi * (3 - sqrt(5)))
+    patterns = zeros(Complex{T}, length(vertices), count)
+    for column in 1:count
+        sample_index = column + sequence_offset
+        z = T(1) - T(2) * T(mod(sample_index * 0.6180339887498949, 1.0))
+        radius_xy = sqrt(max(zero(T), one(T) - z^2))
+        phi = golden_angle * T(sample_index)
+        direction = T[radius_xy * cos(phi), radius_xy * sin(phi), z]
+        if isodd(sample_index)
+            for (row, vertex) in enumerate(vertices)
+                phase = system.wavenumber * dot(T.(vertex) .- center, direction)
+                patterns[row, column] = cis(phase)
+            end
+        else
+            exit_distance = minimum(
+                half_extent[index] / max(abs(direction[index]), T(1.0e-4))
+                for index in 1:3
+            )
+            clearance_levels = T[0.02, 0.05, 0.10, 0.20, 0.40, 0.80]
+            clearance = clearance_levels[mod1(sample_index, length(clearance_levels))] * scale
+            source = center .+ (exit_distance + clearance) .* direction
+            for (row, vertex) in enumerate(vertices)
+                distance = norm(T.(vertex) .- source)
+                patterns[row, column] = cis(system.wavenumber * distance) / distance
+            end
+        end
+    end
+    return patterns
+end
+
+function _speaker_interior_factorization(system, k_matrix)
+    if system.linear_backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        device_matrix = cuda.CuArray(k_matrix)
+        factorization = lu!(device_matrix)
+        cuda.synchronize()
+        return (backend=:cuda, factorization=factorization, storage=device_matrix)
+    end
+    return (backend=:cpu, factorization=lu!(k_matrix), storage=nothing)
+end
+
+function _release_speaker_interior_factorization!(factor)
+    factor.backend == :cuda || return nothing
+    BeatEngineCore.cuda_module().unsafe_free!(factor.storage)
+    return nothing
+end
+
+function _speaker_interior_solve(factor, rhs)
+    if factor.backend == :cuda
+        cuda = BeatEngineCore.cuda_module()
+        device_rhs = cuda.CuArray(rhs)
+        device_solution = nothing
+        try
+            device_solution = factor.factorization \ device_rhs
+            cuda.synchronize()
+            return Array(device_solution)
+        finally
+            cuda.unsafe_free!(device_rhs)
+            isnothing(device_solution) || cuda.unsafe_free!(device_solution)
+        end
+    end
+    return factor.factorization \ rhs
+end
+
+function _speaker_rank_curve(training, testing, ranks)
+    _normalize_speaker_columns!(training)
+    _normalize_speaker_columns!(testing)
+    # Accumulate the POD Gram matrices in Float64 even when the production solve is
+    # Float32. Small tail singular values otherwise make held-out projection energy
+    # round above one and hide the useful part of the rank curve.
+    training_analysis = ComplexF64.(training)
+    testing_analysis = ComplexF64.(testing)
+    gram = Hermitian(training_analysis' * training_analysis)
+    decomposition = eigen(gram)
+    order = sortperm(real.(decomposition.values); rev=true)
+    eigenvalues = max.(real.(decomposition.values[order]), 0.0)
+    eigenvectors = decomposition.vectors[:, order]
+    total_energy = sum(eigenvalues)
+    total_energy > 0 || error("Speaker rank training responses have zero energy.")
+    cross_gram = training_analysis' * testing_analysis
+    usable = findall(value -> value > total_energy * 1.0e-12, eigenvalues)
+    coefficients = isempty(usable) ?
+                   zeros(ComplexF64, 0, size(testing, 2)) :
+                   Diagonal(inv.(sqrt.(eigenvalues[usable]))) *
+                   (eigenvectors[:, usable]' * cross_gram)
+    curve = Dict{String,Any}[]
+    for requested_rank in ranks
+        rank = min(Int(requested_rank), length(usable))
+        captured = rank == 0 ? 0.0 : sum(eigenvalues[1:rank]) / total_energy
+        projected_energy = rank == 0 ?
+                           zeros(Float64, size(testing, 2)) :
+                           vec(sum(abs2, view(coefficients, 1:rank, :); dims=1))
+        errors = sqrt.(max.(0.0, 1.0 .- projected_energy))
+        push!(
+            curve,
+            Dict(
+                "rank" => rank,
+                "requested_rank" => Int(requested_rank),
+                "training_energy_residual" => sqrt(max(0.0, 1.0 - captured)),
+                "test_relative_error_median" => median(errors),
+                "test_relative_error_p95" => quantile(errors, 0.95),
+                "test_relative_error_max" => maximum(errors),
+            ),
+        )
+    end
+    singular_ratios = sqrt.(eigenvalues ./ first(eigenvalues))
+    return curve, singular_ratios, length(usable)
+end
+
+function speaker_rom_rank_experiment(system, raw_config)
+    system.formulation == :fem_interface_condensed || error(
+        "Speaker ROM rank experiment requires FEM interface condensation.",
+    )
+    system.linear_backend in (:cpu, :cuda) || error(
+        "Speaker ROM rank experiment currently supports CPU or CUDA condensation.",
+    )
+    train_count = Int(get(raw_config, "train_per_sector", 128))
+    test_count = Int(get(raw_config, "test_per_sector", 32))
+    train_count > 0 && test_count > 0 || error(
+        "Speaker ROM rank train and test sample counts must be positive.",
+    )
+    ranks = sort(unique(Int.(get(raw_config, "ranks", [8, 16, 32, 64, 96, 128]))))
+    all(rank -> rank > 0, ranks) || error("Speaker ROM experiment ranks must be positive.")
+    started = time_ns()
+    node_map_x = _speaker_reflection_node_map(system.bem_mesh.vertices, 1)
+    node_map_y = _speaker_reflection_node_map(system.bem_mesh.vertices, 2)
+    face_map_x = _speaker_reflection_face_map(system.bem_mesh, node_map_x)
+    face_map_y = _speaker_reflection_face_map(system.bem_mesh, node_map_y)
+    mapping_s = (time_ns() - started) / 1.0e9
+
+    patterns_started = time_ns()
+    base_training = _speaker_rank_boundary_patterns(system, train_count, 0)
+    base_testing = _speaker_rank_boundary_patterns(system, test_count, 100003)
+    patterns_s = (time_ns() - patterns_started) / 1.0e9
+
+    factor_started = time_ns()
+    k_matrix, layout = speaker_interior_state_matrix(system)
+    factor = _speaker_interior_factorization(system, k_matrix)
+    factor_s = (time_ns() - factor_started) / 1.0e9
+    T = system.scalar_type
+    trace_operator = system.interface_operators.bem_trace
+    bem_force = system.transducer_operators.bem_force
+    bem_flux = system.interface_operators.bem_flux
+    bem_velocity = system.transducer_operators.bem_normal_velocity
+    normal_derivative_scale = Complex{T}(0, system.density * system.omega)
+    sectors = Dict{String,Any}[]
+    solve_s = 0.0
+    analysis_s = 0.0
+    try
+        for (label, sign_x, sign_y) in (
+            ("even_even", 1, 1),
+            ("odd_even", -1, 1),
+            ("even_odd", 1, -1),
+            ("odd_odd", -1, -1),
+        )
+            pressure = hcat(
+                _speaker_parity_projection(base_training, node_map_x, node_map_y, sign_x, sign_y),
+                _speaker_parity_projection(base_testing, node_map_x, node_map_y, sign_x, sign_y),
+            )
+            _normalize_speaker_columns!(pressure)
+            rhs = zeros(Complex{T}, layout.state_count, size(pressure, 2))
+            rhs[layout.flux_range, :] .= trace_operator * pressure
+            if !isempty(layout.mechanical_range)
+                rhs[layout.mechanical_range, :] .= -transpose(bem_force) * pressure
+            end
+            sector_solve_started = time_ns()
+            state = _speaker_interior_solve(factor, rhs)
+            solve_s += (time_ns() - sector_solve_started) / 1.0e9
+            output = bem_flux * view(state, layout.flux_range, :)
+            if !isempty(layout.mechanical_range)
+                output .+= normal_derivative_scale .* (
+                    bem_velocity * view(state, layout.mechanical_range, :)
+                )
+            end
+            sector_analysis_started = time_ns()
+            projected_output = _speaker_parity_projection(
+                output,
+                face_map_x,
+                face_map_y,
+                sign_x,
+                sign_y,
+            )
+            leakage = [
+                norm(view(output, :, column) .- view(projected_output, :, column)) /
+                max(norm(view(output, :, column)), eps(T))
+                for column in axes(output, 2)
+            ]
+            training = Matrix(view(output, :, 1:train_count))
+            testing = Matrix(view(output, :, (train_count + 1):(train_count + test_count)))
+            curve, singular_ratios, numerical_rank = _speaker_rank_curve(
+                training,
+                testing,
+                ranks,
+            )
+            push!(
+                sectors,
+                Dict(
+                    "sector" => label,
+                    "sign_x" => sign_x,
+                    "sign_y" => sign_y,
+                    "numerical_rank" => numerical_rank,
+                    "parity_leakage_median" => median(leakage),
+                    "parity_leakage_max" => maximum(leakage),
+                    "singular_value_ratios" => singular_ratios[1:min(length(singular_ratios), 32)],
+                    "curve" => curve,
+                ),
+            )
+            analysis_s += (time_ns() - sector_analysis_started) / 1.0e9
+        end
+    finally
+        _release_speaker_interior_factorization!(factor)
+    end
+    complex_bytes = sizeof(Complex{T})
+    package_estimates = [
+        Dict(
+            "rank_per_sector" => rank,
+            "bytes_per_frequency" => complex_bytes * (
+                (layout.state_count + length(system.bem_mesh.vertices) + length(system.bem_mesh.faces)) * rank +
+                4 * rank^2
+            ),
+            "bytes_for_100_frequencies" => 100 * complex_bytes * (
+                (layout.state_count + length(system.bem_mesh.vertices) + length(system.bem_mesh.faces)) * rank +
+                4 * rank^2
+            ),
+        ) for rank in ranks
+    ]
+    return Dict(
+        "method" => "four-sector parity-projected output POD with held-out physical boundary fields",
+        "frequency_hz" => system.omega / (2pi),
+        "precision" => string(T),
+        "backend" => String(system.linear_backend),
+        "state_count" => layout.state_count,
+        "bem_node_count" => length(system.bem_mesh.vertices),
+        "bem_face_count" => length(system.bem_mesh.faces),
+        "train_per_sector" => train_count,
+        "test_per_sector" => test_count,
+        "pattern_family" => "50% plane waves, 50% exterior point sources at 0.02-0.80 cabinet spans clearance",
+        "sectors" => sectors,
+        "package_estimates" => package_estimates,
+        "timings" => Dict(
+            "reflection_mapping_s" => mapping_s,
+            "pattern_generation_s" => patterns_s,
+            "interior_factorization_s" => factor_s,
+            "interior_multi_rhs_solve_s" => solve_s,
+            "rank_analysis_s" => analysis_s,
+            "total_s" => (time_ns() - started) / 1.0e9,
+        ),
+    )
+end
 
 function object_by_id(items, object_id, label)
     for item in items
@@ -87,7 +510,7 @@ function aggregate_bem_region(meshes, region, boundaries, ::Type{T}) where {T<:A
 end
 
 function validate_volume_symmetry_fundamental_domain!(mesh, symmetry_mode; tolerance)
-    active_axes = symmetry_mode == :off ? () : symmetry_mode == :x ? (1,) : (1, 2)
+    active_axes = symmetry_mode == :x ? (1,) : symmetry_mode == :xy ? (1, 2) : ()
     for axis in active_axes
         minimum_coordinate, vertex_index = findmin(vertex[axis] for vertex in mesh.vertices)
         minimum_coordinate >= -tolerance || error(
@@ -131,13 +554,16 @@ end
 function complex_array_wire(values)
     scalar_type = typeof(real(zero(eltype(values))))
     scalar_type in (Float32, Float64) || error("Unsupported coupled result precision: $scalar_type")
+    Base.ENDIAN_BOM == 0x04030201 || error("Coupled binary results require a little-endian host.")
     array = Complex{scalar_type}.(values)
     flattened = row_major_values(array)
     return Dict(
+        "encoding" => "base64",
         "dtype" => scalar_type == Float32 ? "complex64" : "complex128",
         "shape" => collect(size(array)),
-        "real" => real.(flattened),
-        "imag" => imag.(flattened),
+        "order" => "C",
+        "byte_order" => "little",
+        "content_base64" => base64encode(reinterpret(UInt8, flattened)),
     )
 end
 
@@ -253,15 +679,15 @@ end
 
 function exterior_component_impedance(mesh, pressure, excitation, symmetry_mode, ::Type{T}) where {T<:AbstractFloat}
     force = zero(Complex{T})
-    selected_tags = Set(excitation.tags)
+    amplitude_by_tag = Dict(zip(excitation.tags, excitation.amplitudes))
     for face_index in eachindex(mesh.faces)
-        mesh.physical_tags[face_index] in selected_tags || continue
+        tag = mesh.physical_tags[face_index]
+        haskey(amplitude_by_tag, tag) || continue
         face = mesh.faces[face_index]
         average_pressure = (pressure[face[1]] + pressure[face[2]] + pressure[face[3]]) / T(3)
-        force += average_pressure * T(mesh.areas[face_index])
+        force += average_pressure * T(mesh.areas[face_index]) * amplitude_by_tag[tag]
     end
-    force *= T(symmetry_reduction_factor(symmetry_mode)) * T(10)
-    return Complex{T}(real(force) / T(2), -imag(force) / T(2))
+    return force * T(symmetry_reduction_factor(symmetry_mode))
 end
 
 function solve_exterior_request(request, system, unbounded_region; event_mode=false)
@@ -458,7 +884,6 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                             rows(values, FloatType),
                             "Pa",
                             ["excitation", "observation"],
-                            metadata=Dict("points_m" => raw_points),
                         ),
                     )
                     field_s += (time_ns() - field_started) / 1.0e9
@@ -509,7 +934,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                         quantity_wire(
                             output,
                             impedance_by_component,
-                            "Pa*s/m^3",
+                            "N*s/m",
                             ["radiator"],
                         ),
                     )
@@ -539,7 +964,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                 ),
             )
             result = Dict(
-                "schema_version" => 1,
+                "schema_version" => 2,
                 "freq_hz" => frequency_hz,
                 "excitation_port_ids" => excitation_port_ids,
                 "quantities" => quantities,
@@ -814,6 +1239,7 @@ function combined_interface_map_from_wire(
     for interface in interfaces
         interface_id = String(interface["id"])
         bounded_boundary_id = String(interface["bounded_boundary_id"])
+        unbounded_boundary_id = String(interface["unbounded_boundary_id"])
         domain_index = get(
             fem_domains.domain_by_boundary_id,
             bounded_boundary_id,
@@ -823,16 +1249,32 @@ function combined_interface_map_from_wire(
             "Interface $(repr(String(interface["id"]))) does not reference a bounded FEM boundary.",
         )
         domain = fem_domains.domains[domain_index]
-        local_map = interface_map_from_wire(interface["topology"], domain.selection)
+        bounded_boundary = object_by_id(
+            boundaries,
+            bounded_boundary_id,
+            "bounded boundary",
+        )
+        # Rebuild from the meshes as loaded by Julia. Gmsh writers/readers may
+        # regroup same-type element blocks, so serialized flattened face
+        # indices are useful provenance but are not a stable runtime index.
+        fem_boundary_tag = Int(bounded_boundary["group"]["tag"])
+        bem_boundary_tag = bem_domain.boundary_tag_by_id[unbounded_boundary_id]
+        scalar_type = eltype(first(domain.selection.mesh.vertices))
+        local_map = build_conforming_interface_map(
+            domain.selection.mesh,
+            bem_domain.mesh,
+            fem_boundary_tag,
+            bem_boundary_tag;
+            coordinate_tolerance=scalar_type(1e-6),
+        )
         unbounded_boundary = object_by_id(
             boundaries,
-            String(interface["unbounded_boundary_id"]),
+            unbounded_boundary_id,
             "unbounded boundary",
         )
         bem_mesh_id = String(unbounded_boundary["group"]["mesh_id"])
-        bem_vertex_offset = get(bem_domain.vertex_offset_by_mesh_id, bem_mesh_id, -1)
-        bem_face_offset = get(bem_domain.face_offset_by_mesh_id, bem_mesh_id, -1)
-        bem_vertex_offset >= 0 && bem_face_offset >= 0 || error(
+        haskey(bem_domain.vertex_offset_by_mesh_id, bem_mesh_id) &&
+            haskey(bem_domain.face_offset_by_mesh_id, bem_mesh_id) || error(
             "Interface $(repr(interface_id)) references BEM mesh " *
             "$(repr(bem_mesh_id)) outside the unbounded region.",
         )
@@ -840,8 +1282,6 @@ function combined_interface_map_from_wire(
             local_map;
             fem_vertex_offset=domain.vertex_offset,
             fem_face_offset=domain.face_offset,
-            bem_vertex_offset=bem_vertex_offset,
-            bem_face_offset=bem_face_offset,
         )
         push!(maps, mapped)
         count = length(mapped.fem_vertex_indices)
@@ -865,6 +1305,114 @@ function combined_interface_map_from_wire(
         ),
         ranges=ranges,
         maps=maps,
+    )
+end
+
+function semi_inductance_from_wire(parameters, component_id, ::Type{T}) where {T<:AbstractFloat}
+    haskey(parameters, "semi_inductance") || return nothing
+    raw_model = parameters["semi_inductance"]
+    raw_model isa AbstractDict || error(
+        "Electrodynamic component $(repr(component_id)) semi_inductance must be an object.",
+    )
+    scalar_names = ("re_prime_ohm", "leb_h", "le_h", "ke_semi_h", "rss_ohm")
+    allowed = (scalar_names..., "enabled")
+    unsupported = [String(name) for name in keys(raw_model) if !(String(name) in allowed)]
+    isempty(unsupported) || error(
+        "Electrodynamic component $(repr(component_id)) has unsupported semi_inductance " *
+        "parameters: " * join(sort(unsupported), ", "),
+    )
+    enabled = get(raw_model, "enabled", false)
+    enabled isa Bool || error(
+        "Electrodynamic component $(repr(component_id)) semi_inductance enabled must be boolean.",
+    )
+    missing = [name for name in scalar_names if !haskey(raw_model, name)]
+    enabled && !isempty(missing) && error(
+        "Electrodynamic component $(repr(component_id)) enabled semi_inductance is missing: " *
+        join(missing, ", "),
+    )
+    for name in scalar_names
+        haskey(raw_model, name) || continue
+        raw_value = raw_model[name]
+        raw_value isa Bool && error(
+            "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+            "$(repr(name)) must be a number, not a boolean.",
+        )
+        value = try
+            T(raw_value)
+        catch
+            error(
+                "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+                "$(repr(name)) must be a finite number.",
+            )
+        end
+        isfinite(value) && value > zero(T) || error(
+            "Electrodynamic component $(repr(component_id)) semi_inductance parameter " *
+            "$(repr(name)) must be finite and greater than zero.",
+        )
+    end
+    enabled || return nothing
+    values = Dict(name => T(raw_model[name]) for name in scalar_names)
+    return SemiInductanceModel{T}(
+        values["re_prime_ohm"],
+        values["leb_h"],
+        values["le_h"],
+        values["ke_semi_h"],
+        values["rss_ohm"],
+    )
+end
+
+function lumped_sealed_rear_chamber_from_wire(
+    parameters,
+    component_id,
+    ::Type{T},
+) where {T<:AbstractFloat}
+    haskey(parameters, "lumped_sealed_rear_chamber") || return nothing
+    raw_model = parameters["lumped_sealed_rear_chamber"]
+    raw_model isa AbstractDict || error(
+        "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+        "must be an object.",
+    )
+    scalar_names = ("volume_m3", "projected_area_m2")
+    allowed = (scalar_names..., "enabled")
+    unsupported = [String(name) for name in keys(raw_model) if !(String(name) in allowed)]
+    isempty(unsupported) || error(
+        "Electrodynamic component $(repr(component_id)) has unsupported " *
+        "lumped_sealed_rear_chamber parameters: " * join(sort(unsupported), ", "),
+    )
+    enabled = get(raw_model, "enabled", false)
+    enabled isa Bool || error(
+        "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+        "enabled must be boolean.",
+    )
+    missing = [name for name in scalar_names if !haskey(raw_model, name)]
+    enabled && !isempty(missing) && error(
+        "Electrodynamic component $(repr(component_id)) enabled " *
+        "lumped_sealed_rear_chamber is missing: " * join(missing, ", "),
+    )
+    for name in scalar_names
+        haskey(raw_model, name) || continue
+        raw_value = raw_model[name]
+        raw_value isa Bool && error(
+            "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+            "parameter $(repr(name)) must be a number, not a boolean.",
+        )
+        value = try
+            T(raw_value)
+        catch
+            error(
+                "Electrodynamic component $(repr(component_id)) " *
+                "lumped_sealed_rear_chamber parameter $(repr(name)) must be a finite number.",
+            )
+        end
+        isfinite(value) && value > zero(T) || error(
+            "Electrodynamic component $(repr(component_id)) lumped_sealed_rear_chamber " *
+            "parameter $(repr(name)) must be finite and greater than zero.",
+        )
+    end
+    enabled || return nothing
+    return LumpedSealedRearChamber{T}(
+        T(raw_model["volume_m3"]),
+        T(raw_model["projected_area_m2"]),
     )
 end
 
@@ -900,6 +1448,8 @@ function electrodynamic_transducers_from_wire(
             "surface_completion_factor",
             "physical_driver_orbit_count",
             "fractional_symmetry_axes",
+            "semi_inductance",
+            "lumped_sealed_rear_chamber",
         )
         missing = [name for name in required if !haskey(parameters, name)]
         isempty(missing) || error(
@@ -947,11 +1497,11 @@ function electrodynamic_transducers_from_wire(
             error("fractional_symmetry_axes must not contain duplicates.")
         all(axis -> axis in ("x", "y"), fractional_symmetry_axes) ||
             error("fractional_symmetry_axes may contain only x and y.")
-        active_symmetry_axes = symmetry_mode == :off ?
-                               String[] :
-                               symmetry_mode == :x ?
+        active_symmetry_axes = symmetry_mode == :x ?
                                ["x"] :
-                               ["x", "y"]
+                               symmetry_mode == :xy ?
+                               ["x", "y"] :
+                               String[]
         all(axis -> axis in active_symmetry_axes, fractional_symmetry_axes) ||
             error("fractional_symmetry_axes must be active in the selected symmetry mode.")
         completion_factor == 2^length(fractional_symmetry_axes) || error(
@@ -965,7 +1515,11 @@ function electrodynamic_transducers_from_wire(
             )
         end
         represented_images = completion_factor * orbit_count
-        expected_images = BeatEngineCore.symmetry_reduction_factor(symmetry_mode)
+        # Rigid-ground images alter only the exterior Green function. They do
+        # not create another physical FEM volume or transducer.
+        expected_images = symmetry_mode == :ground ?
+                          1 :
+                          BeatEngineCore.symmetry_reduction_factor(symmetry_mode)
         represented_images == expected_images || error(
             "Electrodynamic component $(repr(String(component["id"]))) represents " *
             "$represented_images symmetry images, but $(String(symmetry_mode)) symmetry " *
@@ -1044,6 +1598,16 @@ function electrodynamic_transducers_from_wire(
         values["mmd_kg"] > zero(T) || error("mmd_kg must be greater than zero.")
         values["cms_m_per_n"] > zero(T) || error("cms_m_per_n must be greater than zero.")
         values["rms_n_s_per_m"] >= zero(T) || error("rms_n_s_per_m must not be negative.")
+        semi_inductance = semi_inductance_from_wire(
+            parameters,
+            String(component["id"]),
+            T,
+        )
+        lumped_sealed_rear_chamber = lumped_sealed_rear_chamber_from_wire(
+            parameters,
+            String(component["id"]),
+            T,
+        )
         push!(
             transducers,
             ElectrodynamicTransducer{T}(
@@ -1061,6 +1625,8 @@ function electrodynamic_transducers_from_wire(
                 values["mmd_kg"],
                 values["cms_m_per_n"],
                 values["rms_n_s_per_m"],
+                semi_inductance,
+                lumped_sealed_rear_chamber,
             ),
         )
         index_by_component_id[String(component["id"])] = length(transducers)
@@ -1312,14 +1878,16 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             )
             fem_force = -Complex{FloatType}.(transpose(transducer_operators.fem_force))
             mechanical_impedance = Complex{FloatType}[
-                Complex{FloatType}(
-                    transducer.rms_n_s_per_m,
-                    -omega * transducer.mmd_kg + inv(omega * transducer.cms_m_per_n),
+                BeatEngineCoupled.mechanical_impedance(
+                    transducer,
+                    omega,
+                    density,
+                    sound_speed,
                 )
                 for transducer in transducers
             ]
             electrical_impedance = Complex{FloatType}[
-                Complex{FloatType}(transducer.re_ohm, -omega * transducer.le_h)
+                BeatEngineCoupled.electrical_impedance(transducer, omega)
                 for transducer in transducers
             ]
             force_factor = Complex{FloatType}[transducer.bl_n_per_a for transducer in transducers]
@@ -1445,7 +2013,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             ),
         )
         result = Dict(
-            "schema_version" => 1,
+            "schema_version" => 2,
             "freq_hz" => frequency_hz_value,
             "excitation_port_ids" => excitation_port_ids,
             "quantities" => quantities,
@@ -1892,6 +2460,25 @@ function solve_request(request; event_mode=false)
         ]
         field_s = 0.0
         quantities = Dict{String,Any}[]
+        rom_requested = any(
+            String(output["quantity"]) in SPEAKER_ROM_QUANTITIES for output in outputs
+        )
+        rom_options = get(solver_options, "speaker_rom", Dict{String,Any}())
+        rom_matrices = if rom_requested
+            rom_k, rom_layout = speaker_interior_state_matrix(coupled_system)
+            build_parity_petrov_galerkin_rom(
+                coupled_system,
+                rom_k,
+                rom_layout,
+                excitations;
+                rank=Int(get(rom_options, "rank_per_sector", 32)),
+                training_count=Int(get(rom_options, "training_count_per_sector", 96)),
+                validation_count=Int(get(rom_options, "validation_count_per_sector", 24)),
+                symmetry=Symbol(lowercase(String(get(rom_options, "symmetry", "xy")))),
+            )
+        else
+            nothing
+        end
         for output in outputs
             quantity = String(output["quantity"])
             if quantity == "fem_nodal_pressure"
@@ -2031,13 +2618,81 @@ function solve_request(request; event_mode=false)
                 raw_points = get(options, "points_m", Any[])
                 isempty(raw_points) && error("exterior_pressure output requires options.points_m.")
                 points = [SVector{3,FloatType}(FloatType.(point)) for point in raw_points]
-                pressures = [
-                    if bem_backend == :cuda
+                raw_weight_sweep = get(options, "excitation_weights_sweep", Any[])
+                if !isempty(raw_weight_sweep)
+                    length(raw_weight_sweep) == length(request["frequencies_hz"]) || error(
+                        "exterior_pressure excitation_weights_sweep must match the frequency count.",
+                    )
+                end
+                raw_weights = isempty(raw_weight_sweep) ?
+                              get(options, "excitation_weights", Any[]) :
+                              raw_weight_sweep[frequency_index]
+                if isempty(raw_weights)
+                    pressures = [
+                        if bem_backend == :cuda
+                            evaluate_galerkin_field_cuda(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        elseif bem_backend == :rocm
+                            evaluate_galerkin_field_rocm(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        else
+                            evaluate_galerkin_field_cpu(
+                                points,
+                                bem_mesh,
+                                solution.bem_pressure,
+                                solution.bem_neumann,
+                                coupled_system.wavenumber,
+                                coupled_system.field_cache,
+                            )
+                        end
+                        for solution in solutions
+                    ]
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            rows(pressures, FloatType),
+                            "Pa",
+                            ["excitation", "observation"],
+                        ),
+                    )
+                else
+                    length(raw_weights) == length(solutions) || error(
+                        "exterior_pressure excitation_weights must match the excitation count.",
+                    )
+                    weights = Complex{FloatType}[
+                        Complex{FloatType}(
+                            FloatType(get(raw_weight, "real", 0.0)),
+                            FloatType(get(raw_weight, "imag", 0.0)),
+                        )
+                        for raw_weight in raw_weights
+                    ]
+                    combined_pressure = similar(first(solutions).bem_pressure)
+                    combined_neumann = similar(first(solutions).bem_neumann)
+                    fill!(combined_pressure, zero(Complex{FloatType}))
+                    fill!(combined_neumann, zero(Complex{FloatType}))
+                    for (weight, solution) in zip(weights, solutions)
+                        combined_pressure .+= weight .* solution.bem_pressure
+                        combined_neumann .+= weight .* solution.bem_neumann
+                    end
+                    pressure = if bem_backend == :cuda
                         evaluate_galerkin_field_cuda(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
@@ -2045,8 +2700,8 @@ function solve_request(request; event_mode=false)
                         evaluate_galerkin_field_rocm(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
@@ -2054,37 +2709,73 @@ function solve_request(request; event_mode=false)
                         evaluate_galerkin_field_cpu(
                             points,
                             bem_mesh,
-                            solution.bem_pressure,
-                            solution.bem_neumann,
+                            combined_pressure,
+                            combined_neumann,
                             coupled_system.wavenumber,
                             coupled_system.field_cache,
                         )
                     end
-                    for solution in solutions
-                ]
+                    push!(
+                        quantities,
+                        quantity_wire(
+                            output,
+                            pressure,
+                            "Pa",
+                            ["observation"],
+                            metadata=Dict(
+                                "synthesized_excitation_count" => length(solutions),
+                            ),
+                        ),
+                    )
+                end
+                field_s += (time_ns() - field_started) / 1.0e9
+            elseif quantity in SPEAKER_ROM_QUANTITIES
+                axes = if quantity == "speaker_rom_k"
+                    ["parity_sector", "reduced_row", "reduced_column"]
+                elseif quantity == "speaker_rom_c"
+                    ["parity_sector", "reduced_row", "boundary_node_orbit"]
+                elseif quantity == "speaker_rom_d"
+                    ["parity_sector", "boundary_face_orbit", "reduced_column"]
+                elseif quantity == "speaker_rom_b"
+                    ["parity_sector", "reduced_row", "input_port"]
+                elseif quantity == "speaker_rom_e"
+                    ["parity_sector", "boundary_face_orbit", "input_port"]
+                elseif quantity == "speaker_rom_velocity"
+                    ["parity_sector", "transducer", "reduced_column"]
+                elseif quantity == "speaker_rom_current"
+                    ["parity_sector", "transducer", "reduced_column"]
+                else
+                    ["parity_sector", "transducer", "input_port"]
+                end
                 push!(
                     quantities,
                     quantity_wire(
                         output,
-                        rows(pressures, FloatType),
-                        "Pa",
-                        ["excitation", "observation"],
-                        metadata=Dict(
-                            "points_m" => raw_points,
-                            "observation_domains" => get(
-                                options,
-                                "observation_domains",
-                                Any[],
-                            ),
+                        rom_matrices[quantity],
+                        "mixed",
+                        axes,
+                        metadata=merge(
+                            copy(rom_matrices["metadata"]),
+                            Dict("matrix" => quantity),
                         ),
                     ),
                 )
-                field_s += (time_ns() - field_started) / 1.0e9
             else
                 error("Unsupported coupled output quantity: $quantity")
             end
         end
 
+        rank_experiment_config = get(
+            solver_options,
+            "speaker_rom_rank_experiment",
+            nothing,
+        )
+        rank_experiment = isnothing(rank_experiment_config) ?
+                          nothing :
+                          speaker_rom_rank_experiment(
+            coupled_system,
+            rank_experiment_config,
+        )
         diagnostics = Dict{String,Any}(
             "precision" => precision_name,
             "bem_backend" => String(bem_backend),
@@ -2213,8 +2904,10 @@ function solve_request(request; event_mode=false)
         end
         diagnostics["fem_interior_residual"] = use_condensed_solver ?
             maximum(solution.fem_interior_residual for solution in solutions) : nothing
+        isnothing(rank_experiment) ||
+            (diagnostics["speaker_rom_rank_experiment"] = rank_experiment)
         result = Dict(
-            "schema_version" => 1,
+            "schema_version" => 2,
             "freq_hz" => frequency_hz,
             "excitation_port_ids" => excitation_port_ids,
             "quantities" => quantities,
@@ -2238,7 +2931,7 @@ function solve_request(request; event_mode=false)
     return (cancelled=cancelled, solved_count=solved_count)
 end
 
-function reclaim_accelerator_memory_after_failure()
+function reclaim_accelerator_memory!()
     try
         release_all_bem_field_evaluation_caches!()
     catch
@@ -2540,13 +3233,17 @@ function run_worker()
             elseif operation == "solve"
                 release_all_bem_field_evaluation_caches!()
                 outcome = solve_request(request; event_mode=true)
+                # A Deploy worker may receive a differently sized array on its
+                # next job. Return freed solve buffers to the driver now so a
+                # previous dense BEM allocation cannot starve that request.
+                reclaim_accelerator_memory!()
                 event_type = outcome.cancelled ? "cancelled" : "completed"
                 println(JSON.json(Dict("type" => event_type, "solved_count" => outcome.solved_count)))
             else
                 error("Unsupported coupled worker operation: $operation")
             end
         catch exception
-            reclaim_accelerator_memory_after_failure()
+            reclaim_accelerator_memory!()
             error_text = sprint(showerror, exception, catch_backtrace())
             println(JSON.json(Dict("type" => "failed", "error" => error_text)))
         end
@@ -2558,7 +3255,7 @@ if "--worker" in ARGS
     try
         run_worker()
     catch exception
-        reclaim_accelerator_memory_after_failure()
+        reclaim_accelerator_memory!()
         showerror(stderr, exception, catch_backtrace())
         println(stderr)
         exit(1)

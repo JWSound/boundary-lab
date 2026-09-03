@@ -14,7 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from blab.live import LiveSolveDataset
+from blab.live import (
+    AcousticLoadImpedanceDataset,
+    ElectricalImpedanceDataset,
+    LiveSolveDataset,
+    TransducerMotionDataset,
+)
 from blab.solve_results import SolvedSystem, SolvedSystemBuilder
 from blab.ui.result_projection import VisualizationProjection
 
@@ -28,6 +33,28 @@ class SolveSession:
 
     #: Canonical raw quantities accumulated by the active solve.
     result_builder: SolvedSystemBuilder | None = None
+
+    #: Lightweight live transducer motion rows used by the excursion plot.
+    transducer_motion: TransducerMotionDataset | None = None
+
+    #: Voltage-basis currents projected into parallel per-channel loads.
+    electrical_impedance: ElectricalImpedanceDataset | None = None
+
+    #: Intrinsic coupled acoustic load recovered from the voltage basis.
+    acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None
+
+    #: Derived effective driven areas aligned with exterior solver radiator order.
+    acoustic_impedance_effective_areas_m2: tuple[float, ...] | None = None
+
+    #: Fluid properties used by the dimensionless impedance projection.
+    acoustic_impedance_density_kg_per_m3: float = 1.21
+    acoustic_impedance_sound_speed_m_per_s: float = 343.0
+
+    #: Physical-system channels whose grouped basis contains voltage ports only.
+    voltage_channel_names: frozenset[str] = frozenset()
+
+    #: Whether the user has requested a maximum-SPL projection for this solve.
+    max_spl_requested: bool = False
 
     #: Immutable canonical snapshot of the most recent complete or partial run.
     solved_system: SolvedSystem | None = None
@@ -66,6 +93,14 @@ class SolveSession:
         """
         self.live_dataset = None
         self.result_builder = None
+        self.transducer_motion = None
+        self.electrical_impedance = None
+        self.acoustic_load_impedance = None
+        self.acoustic_impedance_effective_areas_m2 = None
+        self.acoustic_impedance_density_kg_per_m3 = 1.21
+        self.acoustic_impedance_sound_speed_m_per_s = 343.0
+        self.voltage_channel_names = frozenset()
+        self.max_spl_requested = False
         self.solved_system = None
         self.use_final_isobar_resolution = False
         self.final_isobar_plots_rendered = False

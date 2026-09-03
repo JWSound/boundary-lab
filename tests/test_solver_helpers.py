@@ -42,6 +42,23 @@ def test_fibonacci_sphere_rejects_invalid_point_count() -> None:
         build_fibonacci_sphere_observation_points(0, distance_m=2.0)
 
 
+def test_legacy_acoustic_impedance_is_generalized_force_per_velocity_in_n_s_per_m() -> None:
+    solver = object.__new__(HornBEMSolver)
+    solver.radiator_geometries = [
+        SimpleNamespace(
+            p1_dofs=np.asarray([[0, 1, 2]], dtype=np.int64),
+            element_areas=np.asarray([1.0]),
+        )
+    ]
+
+    impedance = solver._calculate_impedance_from_pressure_coefficients(
+        np.asarray([4.0 + 6.0j, 4.0 + 6.0j, 4.0 + 6.0j]),
+        np.asarray([2.0 + 0.0j]),
+    )
+
+    np.testing.assert_allclose(impedance, [[2.0, -3.0]])
+
+
 def test_linkwitz_riley_response_is_complex_and_bounded() -> None:
     crossover = CrossoverConfig(
         type="lowpass",
@@ -54,6 +71,24 @@ def test_linkwitz_riley_response_is_complex_and_bounded() -> None:
 
     assert isinstance(response, complex)
     assert 0.0 < abs(response) <= 1.0
+
+
+def test_channel_dsp_uses_native_solver_phasor_convention() -> None:
+    channel = ChannelConfig(
+        name="main",
+        delay_ms=0.25,
+        lpf=CrossoverConfig(type="lowpass", filter="butterworth", order=1, frequency_hz=1000.0),
+    )
+
+    delay_only = HornBEMSolver._channel_drive(
+        SimpleNamespace(),
+        ChannelConfig(name="main", delay_ms=0.25),
+        1000.0,
+    )
+    lowpass = HornBEMSolver._crossover_response(None, channel.lpf, 1000.0)
+
+    np.testing.assert_allclose(np.angle(delay_only, deg=True), 90.0, atol=1e-8)
+    np.testing.assert_allclose(np.angle(lowpass, deg=True), 45.0, atol=1e-8)
 
 
 def test_sixth_order_crossover_responses_are_supported() -> None:

@@ -41,6 +41,7 @@ def test_channel_config_round_trips_crossover_settings() -> None:
         (
             ChannelConfig(
                 name="HF",
+                voltage_v=5.66,
                 level_db=-3.0,
                 polarity=-1,
                 delay_ms=0.25,
@@ -52,6 +53,7 @@ def test_channel_config_round_trips_crossover_settings() -> None:
     (channel,) = channel_configs(settings)
 
     assert channel.name == "HF"
+    assert channel.voltage_v == 5.66
     assert channel.level_db == -3.0
     assert channel.polarity == -1
     assert channel.delay_ms == 0.25
@@ -214,3 +216,21 @@ def test_pure_payload_helpers_do_not_require_qsettings() -> None:
 
     assert source_payload["woofer"]["driven"] is True
     assert channel_configs_from_payload(channel_payload) == channels
+
+
+def test_channel_dialog_adds_voltage_after_name_and_disables_it_for_velocity_channels(qapp) -> None:
+    del qapp
+    from blab.ui.dialogs import ChannelConfigDialog
+
+    dialog = ChannelConfigDialog(
+        (ChannelConfig(name="woofer"), ChannelConfig(name="port")),
+        prescribed_velocity_channel_names=frozenset({"port"}),
+    )
+    try:
+        headers = [dialog.table.horizontalHeaderItem(index).text() for index in range(dialog.table.columnCount())]
+        assert headers[:3] == ["Name", "Voltage", "Trim dB"]
+        assert dialog.voltage_widgets[0].isEnabled()
+        assert dialog.voltage_widgets[0].value() == 2.83
+        assert not dialog.voltage_widgets[1].isEnabled()
+    finally:
+        dialog.deleteLater()
