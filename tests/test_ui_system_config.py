@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import meshio
 import numpy as np
 import pytest
+from PySide6.QtCore import QLocale
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
@@ -711,6 +712,21 @@ def test_component_editor_infers_symmetry_and_completes_motion_axis() -> None:
     assert updated.parameters["surface_completion_factor"] == 2
     assert updated.parameters["physical_driver_orbit_count"] == 2
 
+    german_locale = QLocale("de_DE")
+    re_edit = editor.parameter_edits["re_ohm"]
+    re_edit.setLocale(german_locale)
+    re_edit.selectAll()
+    QTest.keyClicks(re_edit, "6,2")
+    assert re_edit.hasAcceptableInput()
+    assert editor.component_draft().parameters["re_ohm"] == pytest.approx(6.2)
+
+    editor.axis_mode_combo.setCurrentIndex(editor.axis_mode_combo.findData("manual"))
+    axis_spin = editor.axis_spins[0]
+    axis_spin.setLocale(german_locale)
+    axis_spin.lineEdit().selectAll()
+    QTest.keyClicks(axis_spin.lineEdit(), "0,5")
+    assert axis_spin.value() == pytest.approx(0.5)
+
 
 def test_component_editor_persists_per_surface_velocity_weights() -> None:
     resource = MeshResource(
@@ -754,13 +770,16 @@ def test_semi_inductance_dialog_converts_display_units_and_preserves_disabled_va
     dialog = _SemiInductanceDialog(None)
     dialog.enabled_check.setChecked(True)
     for key, value in {
-        "re_prime_ohm": "5.7",
+        "re_prime_ohm": "5,7",
         "leb_h": "0.12",
-        "le_h": "1.2",
+        "le_h": "1,2",
         "ke_semi_h": "0.04",
         "rss_ohm": "1000",
     }.items():
+        dialog.parameter_edits[key].setLocale(QLocale("de_DE"))
         dialog.parameter_edits[key].setText(value)
+
+    assert all(edit.hasAcceptableInput() for edit in dialog.parameter_edits.values())
 
     enabled = dialog.model_parameters()
     assert enabled is not None

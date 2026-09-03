@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
-from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -17,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab.ui.numeric_locale import FlexibleDoubleValidator, format_decimal_number, parse_decimal_number
 from blab.ui.plots import PlotAxisLimits
 
 
@@ -43,8 +41,7 @@ class PlotLimitsDialog(QDialog):
 
         self.limit_group = QGroupBox("Manual limits")
         form = QFormLayout(self.limit_group)
-        validator = QDoubleValidator(self)
-        validator.setNotation(QDoubleValidator.ScientificNotation)
+        validator = FlexibleDoubleValidator(self)
         self.x_min_edit = self._limit_edit(current_limits.x_min, validator)
         self.x_max_edit = self._limit_edit(current_limits.x_max, validator)
         self.y_min_edit = self._limit_edit(current_limits.y_min, validator)
@@ -65,8 +62,9 @@ class PlotLimitsDialog(QDialog):
         self.setMinimumWidth(280)
 
     @staticmethod
-    def _limit_edit(value: float, validator: QDoubleValidator) -> QLineEdit:
-        edit = QLineEdit(f"{float(value):.12g}")
+    def _limit_edit(value: float, validator: FlexibleDoubleValidator) -> QLineEdit:
+        edit = QLineEdit()
+        edit.setText(format_decimal_number(value, edit.locale()))
         edit.setValidator(validator)
         return edit
 
@@ -84,11 +82,9 @@ class PlotLimitsDialog(QDialog):
         if not text:
             raise ValueError("Enter all four limits or select Auto.")
         try:
-            value = float(text)
+            value = parse_decimal_number(text, edit.locale())
         except ValueError as exc:
             raise ValueError(f"'{text}' is not a valid numeric limit.") from exc
-        if not math.isfinite(value):
-            raise ValueError("Plot limits must be finite numbers.")
         return value
 
     def _accept_if_valid(self) -> None:

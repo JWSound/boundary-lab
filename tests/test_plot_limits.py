@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from PySide6.QtCore import QLocale
 
 from blab.ui.plot_limits_dialog import PlotLimitsDialog
 from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, PlotAxisLimits
@@ -37,6 +38,27 @@ def test_plot_limits_dialog_rejects_invalid_manual_ranges(qapp) -> None:
 
     with pytest.raises(ValueError, match="lower X"):
         dialog.limits()
+
+
+def test_plot_limits_dialog_accepts_comma_and_period_decimals(qapp) -> None:
+    del qapp
+    dialog = PlotLimitsDialog(
+        "Test Plot",
+        PlotAxisLimits(20.0, 20_000.0, -10.0, 10.0),
+        automatic=False,
+    )
+    for edit in (dialog.x_min_edit, dialog.x_max_edit, dialog.y_min_edit, dialog.y_max_edit):
+        edit.setLocale(QLocale("de_DE"))
+    dialog.x_min_edit.setText("20,5")
+    dialog.x_max_edit.setText("20000.5")
+    dialog.y_min_edit.setText("-10,25")
+    dialog.y_max_edit.setText("10.25")
+
+    assert all(
+        edit.hasAcceptableInput()
+        for edit in (dialog.x_min_edit, dialog.x_max_edit, dialog.y_min_edit, dialog.y_max_edit)
+    )
+    assert dialog.limits() == PlotAxisLimits(20.5, 20_000.5, -10.25, 10.25)
 
 
 def test_manual_limits_survive_plot_updates_and_auto_recalculates(qapp) -> None:

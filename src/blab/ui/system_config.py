@@ -76,6 +76,7 @@ from blab.physical_model import (
     PhysicalSystem,
 )
 from blab.ui.dialogs import MeshDialogEntry
+from blab.ui.numeric_locale import FlexibleDoubleValidator, format_decimal_number, parse_decimal_number
 
 INTERFACE_SEAM_SIMPLIFICATION_WARNING = (
     "Boundary Lab simplified a mismatched interface seam by collapsing redundant boundary edges. "
@@ -688,12 +689,14 @@ class _SemiInductanceDialog(QDialog):
         self.enabled_check = QCheckBox("Enable semi-inductance model")
         self.enabled_check.setChecked(raw.get("enabled") is True)
         self.parameter_edits: dict[str, QLineEdit] = {}
+        parameter_validator = FlexibleDoubleValidator(self)
         form = QFormLayout()
         for key, label, unit, display_per_si in _SEMI_INDUCTANCE_PARAMETER_FIELDS:
             edit = QLineEdit()
+            edit.setValidator(parameter_validator)
             value = raw.get(key)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                edit.setText(f"{float(value) * display_per_si:.12g}")
+                edit.setText(format_decimal_number(float(value) * display_per_si, edit.locale()))
             edit.setPlaceholderText(unit)
             self.parameter_edits[key] = edit
             form.addRow(f"{label} ({unit})", edit)
@@ -728,7 +731,7 @@ class _SemiInductanceDialog(QDialog):
                     raise ValueError(f"{label} is required when semi-inductance is enabled.")
                 continue
             try:
-                display_value = float(text)
+                display_value = parse_decimal_number(text, self.parameter_edits[key].locale())
             except ValueError as exc:
                 raise ValueError(f"{label} must be a finite number.") from exc
             if not np.isfinite(display_value):
@@ -893,6 +896,7 @@ class _ComponentEditorDialog(QDialog):
         axis_form.addRow("Inference", self.axis_confidence_label)
 
         self.parameter_edits: dict[str, QLineEdit] = {}
+        parameter_validator = FlexibleDoubleValidator(self)
         self.semi_inductance_button = QPushButton()
         self.rear_chamber_check = QCheckBox("Lumped sealed rear chamber")
         self.rear_chamber_check.setChecked(rear_chamber.get("enabled") is True)
@@ -912,8 +916,9 @@ class _ComponentEditorDialog(QDialog):
         transducer_form = QFormLayout()
         for key, label, unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
             edit = QLineEdit()
+            edit.setValidator(parameter_validator)
             if key in draft.parameters:
-                edit.setText(f"{float(draft.parameters[key]) * display_per_si:.12g}")
+                edit.setText(format_decimal_number(float(draft.parameters[key]) * display_per_si, edit.locale()))
             edit.setPlaceholderText(unit)
             self.parameter_edits[key] = edit
             if key == "le_h":
@@ -1009,7 +1014,7 @@ class _ComponentEditorDialog(QDialog):
             for key, label, _unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
                 text = self.parameter_edits[key].text().strip()
                 try:
-                    display_value = float(text)
+                    display_value = parse_decimal_number(text, self.parameter_edits[key].locale())
                 except ValueError as exc:
                     raise ValueError(f"{label} must be a finite number.") from exc
                 if not np.isfinite(display_value):
@@ -1115,12 +1120,14 @@ class _ComponentEditorDialog(QDialog):
             and self._semi_inductance_parameters.get("enabled") is True
         ):
             if not self.parameter_edits["re_ohm"].text().strip():
-                self.parameter_edits["re_ohm"].setText(
-                    f"{float(self._semi_inductance_parameters['re_prime_ohm']):.12g}"
+                edit = self.parameter_edits["re_ohm"]
+                edit.setText(
+                    format_decimal_number(float(self._semi_inductance_parameters["re_prime_ohm"]), edit.locale())
                 )
             if not self.parameter_edits["le_h"].text().strip():
-                self.parameter_edits["le_h"].setText(
-                    f"{float(self._semi_inductance_parameters['le_h']) * 1_000.0:.12g}"
+                edit = self.parameter_edits["le_h"]
+                edit.setText(
+                    format_decimal_number(float(self._semi_inductance_parameters["le_h"]) * 1_000.0, edit.locale())
                 )
         self._refresh_semi_inductance_controls()
 
