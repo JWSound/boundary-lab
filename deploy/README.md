@@ -67,11 +67,3 @@ For a timestamped cold/warm movement and 200 x 200 plane benchmark, run
 Julia, Python, Electron IPC, field-frame parsing, and heatmap rasterization
 timings. A reference run and interpretation are recorded in
 [`benchmarks/level2-pipeline-2026-08-26.md`](benchmarks/level2-pipeline-2026-08-26.md).
-
-## Level 3 validation history
-
-The retired full-order Level 3 baseline and the performance gate that motivated
-the parity-ROM implementation are recorded in
-[`benchmarks/level3-s218bp-2026-09-01.md`](benchmarks/level3-s218bp-2026-09-01.md).
-Exact-system execution remains available only to standalone developer validation
-scripts as a ROM accuracy oracle.

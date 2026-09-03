@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is the bundled geometry-generator provider.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is bundled as a geometry-generator provider with permission from Marcel Batik.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -97,22 +97,7 @@ blab gui
 
 ## Boundary Lab Deploy prototype
 
-The first TypeScript, Three.js, and Electron deployment prototype lives in
-[`deploy`](deploy/README.md). It starts with the S218BP subwoofer, opens
-`.blabsp` packages, evaluates the Level 1 complex pattern field on an
-interactive audience plane, and can run a single-frequency, multi-cabinet
-Level 2 fixed-source exterior solve through a persistent BEAT CUDA worker. New
-projects use two instances of the coarse
-`deploy/library/S218BP_LOD.blabsp` package with ground and surface-spacing
-constraints.
-
-Boundary Lab captures Ath blab-mode geometry and writes managed generated
-artifacts into:
-
-```text
-runs/generated_geometry
-```
-
+Boundary lab deploy is an interactive advanced array simulation tool that ingests .blabspeaker packages generated from the main boundary lab application. It is an experimental application early in development and currently only supports BEM/coupled solving using BEAT engine on Nvidia hardware. The application can be found inside the /deploy/ folder where a separate readme contains installation instructions.
 
 ## Boundary Lab Server
 
