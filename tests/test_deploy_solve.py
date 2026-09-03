@@ -137,6 +137,16 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     ]
 
 
+def test_prepare_deploy_solve_request_mutes_source_drive(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["sources"][0]["muted"] = True
+
+    _, request = prepare_deploy_solve_request(payload, tmp_path)
+
+    assert request["boundary_neumann"]["real"][:2576] == [0.0] * 2576
+    assert request["boundary_neumann"]["imag"][:2576] == [0.0] * 2576
+
+
 def test_logical_excitation_grouping_preserves_independent_and_legacy_ports() -> None:
     manifest = {
         "excitation_port_ids": ["port:a", "port:a-reflected", "port:b"],

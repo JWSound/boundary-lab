@@ -47,6 +47,7 @@ class DeploySourcePlacement:
     level_db: float
     delay_ms: float
     polarity: int
+    muted: bool
 
     @classmethod
     def from_payload(cls, raw: object) -> "DeploySourcePlacement":
@@ -66,6 +67,7 @@ class DeploySourcePlacement:
             level_db=float(raw.get("levelDb", 0.0)),
             delay_ms=float(raw.get("delayMs", 0.0)),
             polarity=polarity,
+            muted=bool(raw.get("muted", False)),
         )
         if not values.id:
             raise ValueError("Deploy source id must not be empty.")
@@ -746,7 +748,7 @@ def prepare_deploy_coupled_request(
             excitation_ids.append(str(cloned["id"]))
             for frequency_index, frequency_hz in enumerate(frequencies):
                 gain_phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-                gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * gain_phase)
+                gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * gain_phase)
                 wire_gain = {"real": float(gain.real), "imag": float(gain.imag)}
                 excitation_weights_sweep[frequency_index].append(wire_gain)
                 if frequency_index == 0:
@@ -1143,7 +1145,7 @@ def prepare_deploy_solve_request(
             yaw_deg=source.yaw_deg,
         )
         phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-        gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
         component = DeployBoundaryComponent(
             id=source.id,
             kind="speaker",
@@ -1585,7 +1587,7 @@ def prepare_deploy_rom_request(
     instances = []
     for source, component in zip(sources, source_components, strict=True):
         phase = 2.0 * math.pi * requested_frequency * source.delay_ms / 1000.0
-        gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
         drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
         instances.append(
             {
@@ -1763,7 +1765,7 @@ def prepare_deploy_rom_microphone_sweep_request(
         instances: list[dict[str, Any]] = []
         for source, base_instance in zip(sources, base_instances, strict=True):
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-            gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
             drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
             instances.append({
                 "id": base_instance["id"],
@@ -1929,7 +1931,7 @@ def prepare_deploy_microphone_sweep_request(
         )
         for source in sources:
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-            gain = source.polarity * 10.0 ** (source.level_db / 20.0) * np.exp(1j * phase)
+            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
             q_parts.append(np.asarray(logical_normal * gain, dtype=np.complex64))
             pressure_parts.append(np.asarray(logical_pressure * gain, dtype=np.complex64))
         if rigid_face_count:

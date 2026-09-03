@@ -141,7 +141,7 @@ export function computeMicrophonePatternResponses(
           const propagationImag = Math.sin(propagationPhase) * scale;
           const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
           const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
-          const driveMagnitude = Math.pow(10, config.levelDb / 20) * config.polarity;
+          const driveMagnitude = (config.muted ? 0 : Math.pow(10, config.levelDb / 20)) * config.polarity;
           const drivePhase = 2 * Math.PI * frequency * config.delayMs / 1000;
           const driveReal = driveMagnitude * Math.cos(drivePhase);
           const driveImag = driveMagnitude * Math.sin(drivePhase);
@@ -231,7 +231,7 @@ export function computeMixedMicrophonePatternResponses(
           const propagationImag = Math.sin(propagationPhase) * scale;
           const fieldReal = sampleReal * propagationReal - sampleImag * propagationImag;
           const fieldImag = sampleReal * propagationImag + sampleImag * propagationReal;
-          const driveMagnitude = Math.pow(10, sample.config.levelDb / 20) * sample.config.polarity;
+          const driveMagnitude = (sample.config.muted ? 0 : Math.pow(10, sample.config.levelDb / 20)) * sample.config.polarity;
           const drivePhase = 2 * Math.PI * frequency * sample.config.delayMs / 1000;
           const driveReal = driveMagnitude * Math.cos(drivePhase);
           const driveImag = driveMagnitude * Math.sin(drivePhase);
@@ -490,7 +490,7 @@ export function computeFieldFrame(
   }
   const sourceData = sources.map((source, index) => {
     const config = configs[index];
-    const level = Math.pow(10, config.levelDb / 20) * config.polarity;
+    const level = (config.muted ? 0 : Math.pow(10, config.levelDb / 20)) * config.polarity;
     const drivePhase = 2 * Math.PI * frequency * config.delayMs / 1000;
     return {
       source,
@@ -616,7 +616,7 @@ export function computeMixedFieldFrame(
     if (!pkg) throw new Error(`Source ${config.name} references a package that is not loaded.`);
     const lookup = lookups.get(config.packageId);
     if (!lookup) throw new Error(`Source ${config.name} has no pattern lookup for its package.`);
-    const level = Math.pow(10, config.levelDb / 20) * config.polarity;
+    const level = (config.muted ? 0 : Math.pow(10, config.levelDb / 20)) * config.polarity;
     const drivePhase = 2 * Math.PI * frequencyHz * config.delayMs / 1000;
     return {
       source,

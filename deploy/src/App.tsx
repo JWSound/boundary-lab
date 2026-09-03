@@ -28,6 +28,7 @@ import { DriverExcursionPlot, type DriverExcursionData } from "./components/Driv
 import { ElectricalPlot, type ElectricalData, type ElectricalTrace } from "./components/ElectricalPlot";
 import {
   browserFileHandler,
+  ChannelsPanel,
   MicrophoneInspector,
   PackageCard,
   planeGridShape,
@@ -54,6 +55,8 @@ import {
 import type { Fidelity, FieldFrame, LoadedSpeakerPackage, MicrophoneConfiguration, ObservationPlane, RigidMeshAsset, RigidMeshConfiguration, SourceConfiguration } from "./model/types";
 import { heatmapLegendGradient } from "./model/heatmap";
 import { cabinetClearanceViolations, constrainCabinetPoses, findClearSourcePlacement, type BoundaryMeshAsset } from "./model/cabinetPlacement";
+import { applyChannelProcessing, CHANNEL_COLORS, createDefaultChannel, DEFAULT_CHANNEL_ID } from "./model/channels";
+import type { DeployChannel } from "./model/types";
 
 function peakExcursionMillimeters(real: number, imag: number, frequencyHz: number): number {
   return Math.SQRT2 * Math.hypot(real, imag) * 1000 / (2 * Math.PI * frequencyHz);
@@ -113,9 +116,11 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
       pitchDeg: 0,
       yawDeg: 0,
       rollDeg: 0,
+      channelId: DEFAULT_CHANNEL_ID,
       levelDb: -3,
       delayMs: 0,
       polarity: 1,
+      equalizer: { filters: [] },
     },
     {
       id: "subwoofer-2",
@@ -127,9 +132,11 @@ function defaultSources(pkg: LoadedSpeakerPackage): SourceConfiguration[] {
       pitchDeg: 0,
       yawDeg: 0,
       rollDeg: 0,
+      channelId: DEFAULT_CHANNEL_ID,
       levelDb: -3,
       delayMs: 0,
       polarity: 1,
+      equalizer: { filters: [] },
     },
   ];
 }
@@ -244,6 +251,8 @@ export function App() {
   const [activePackageId, setActivePackageId] = useState(() => packages[0].id);
   const pkg = packages.find((candidate) => candidate.id === activePackageId) ?? packages[0];
   const [sourceConfigs, setSourceConfigs] = useState<SourceConfiguration[]>(() => defaultSources(pkg));
+  const [channels, setChannels] = useState<DeployChannel[]>(() => [createDefaultChannel()]);
+  const [activeChannelId, setActiveChannelId] = useState(DEFAULT_CHANNEL_ID);
   const [rigidMeshes, setRigidMeshes] = useState<RigidMeshAsset[]>([]);
   const [activeRigidMeshId, setActiveRigidMeshId] = useState<string | null>(null);
   const [rigidObjects, setRigidObjects] = useState<RigidMeshConfiguration[]>([]);
@@ -254,7 +263,8 @@ export function App() {
   const [fidelity, setFidelity] = useState<Fidelity>("pattern");
   const [selectedInstances, setSelectedInstances] = useState<string[]>(["subwoofer-1"]);
   const [error, setError] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"library" | "scene">("library");
+  const [leftTab, setLeftTab] = useState<"library" | "scene" | "channels">("library");
+  const [equalizerPopup, setEqualizerPopup] = useState<{ scope: "channel" | "speaker"; name: string } | null>(null);
   const [solvedFields, setSolvedFields] = useState<SolvedFieldCache>(emptySolvedFieldCache);
   const [boundaryGeometryKey, setBoundaryGeometryKey] = useState<string | null>(null);
   const [solveRevision, setSolveRevision] = useState(0);
@@ -412,6 +422,7 @@ export function App() {
     [packageById, pkg],
   );
   const sources = useMemo(() => sourceConfigs.map(buildSourceInstance), [sourceConfigs]);
+  const drivenSourceConfigs = useMemo(() => applyChannelProcessing(sourceConfigs, channels), [channels, sourceConfigs]);
   const sceneClearanceValid = useMemo(
     () => cabinetClearanceViolations(boundaryAssetById, [...sources, ...rigidInstances]).length === 0,
     [boundaryAssetById, rigidInstances, sources],
@@ -445,37 +456,37 @@ export function App() {
   const observationAcousticKey = JSON.stringify(observationAcousticState(observation));
   const patternField = useMemo(
     () => sourceConfigs.length > 0
-      ? computeMixedFieldFrame(packageById, patternLookups, sources, sourceConfigs, observation, selectedFrequencyHz)
+      ? computeMixedFieldFrame(packageById, patternLookups, sources, drivenSourceConfigs, observation, selectedFrequencyHz)
       : emptyFieldFrame(observation),
-    [packageById, patternLookups, sources, sourceConfigs, observationAcousticKey, selectedFrequencyHz],
+    [drivenSourceConfigs, packageById, patternLookups, sources, observationAcousticKey, selectedFrequencyHz],
   );
   const microphonePatternResponses = useMemo(
     () => sourceConfigs.length > 0
-      ? computeMixedMicrophonePatternResponses(packageById, sources, sourceConfigs, microphones)
+      ? computeMixedMicrophonePatternResponses(packageById, sources, drivenSourceConfigs, microphones)
       : { frequenciesHz: new Float64Array(), traces: [] },
-    [packageById, sources, sourceConfigs, microphones],
+    [drivenSourceConfigs, packageById, sources, microphones],
   );
   const microphoneSweepKey = useMemo(() => JSON.stringify({
     fidelity,
     packages: packages.map((item) => ({ id: item.id, sourcePath: item.sourcePath })),
-    sources: sourceConfigs,
+    sources: drivenSourceConfigs,
     rigidObjects,
     microphones,
     frequencies: Array.from(microphonePatternResponses.frequenciesHz),
-  }), [fidelity, microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects, sourceConfigs]);
+  }), [drivenSourceConfigs, fidelity, microphonePatternResponses.frequenciesHz, microphones, packages, rigidObjects]);
   const currentSolveKey = useMemo(() => JSON.stringify({
     fidelity,
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
-    sources: sourceConfigs,
+    sources: drivenSourceConfigs,
     rigidObjects,
     observation: observationAcousticKey,
-  }), [fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs, observationAcousticKey]);
+  }), [drivenSourceConfigs, fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, observationAcousticKey]);
   const currentGeometryKey = useMemo(() => JSON.stringify({
     fidelity,
     packages: sourceConfigs.map((source) => source.packageId),
     frequency: pkg.frequenciesHz[frequencyIndex],
-    sources: sourceConfigs,
+    sources: sourceConfigs.map(({ id, packageId, positionX, positionHeightM, positionZ, pitchDeg, yawDeg, rollDeg }) => ({ id, packageId, positionX, positionHeightM, positionZ, pitchDeg, yawDeg, rollDeg })),
     rigidObjects,
   }), [fidelity, pkg.id, pkg.frequenciesHz, frequencyIndex, rigidObjects, sourceConfigs]);
   const selectedSolvedField = fidelity === "pattern" ? null : solvedFields[fidelity];
@@ -530,6 +541,7 @@ export function App() {
     projectName,
     packages,
     rigidMeshes,
+    channels,
     sourceConfigs,
     rigidObjects,
     microphones,
@@ -543,6 +555,9 @@ export function App() {
     solveGeneration.current += 1;
     setPackages([next]);
     setActivePackageId(next.id);
+    const defaultChannel = createDefaultChannel();
+    setChannels([defaultChannel]);
+    setActiveChannelId(defaultChannel.id);
     setSourceConfigs(defaultSources(next));
     setRigidMeshes([]);
     setActiveRigidMeshId(null);
@@ -638,6 +653,7 @@ export function App() {
       project.name,
       nextPackages,
       nextRigidMeshes,
+      project.channels,
       nextSources,
       nextRigidObjects,
       project.microphones,
@@ -651,6 +667,8 @@ export function App() {
     setRigidObjects(nextRigidObjects);
     rigidObjectsRef.current = nextRigidObjects;
     setActivePackageId(nextPackage.id);
+    setChannels(project.channels);
+    setActiveChannelId(project.channels[0].id);
     setSourceConfigs(nextSources);
     sourceConfigsRef.current = nextSources;
     setMicrophones(project.microphones);
@@ -931,7 +949,7 @@ export function App() {
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
         fidelity: coupled ? "coupled" : "boundary",
-        sources: sourceConfigs,
+        sources: drivenSourceConfigs,
         rigidObjects: rigidObjects.map((object) => ({
           ...object,
           meshPath: rigidMeshById.get(object.assetId)?.sourcePath ?? "",
@@ -986,7 +1004,7 @@ export function App() {
       setSolveMessage(`${fidelityLabel} solve failed`);
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, fidelity, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects, sourceConfigs]);
+  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, drivenSourceConfigs, fidelity, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects]);
 
   const stopMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
@@ -1031,7 +1049,7 @@ export function App() {
         packagePath: level2Package.sourcePath,
         backend: "cuda",
         fidelity: fidelity === "coupled" ? "coupled" : "boundary",
-        sources: sourceConfigs,
+        sources: drivenSourceConfigs,
         rigidObjects: rigidObjects.map((object) => ({
           ...object,
           meshPath: rigidMeshById.get(object.assetId)?.sourcePath ?? "",
@@ -1095,7 +1113,7 @@ export function App() {
     } finally {
       stoppingMicrophoneSweep.current = false;
     }
-  }, [fidelity, level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects, sourceConfigs]);
+  }, [drivenSourceConfigs, fidelity, level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects]);
 
   const calculateOrStopMicrophoneSweep = () => {
     if (microphoneSweepState === "solving") void stopMicrophoneSweep();
@@ -1543,9 +1561,11 @@ export function App() {
       pitchDeg: 0,
       yawDeg: 0,
       rollDeg: 0,
+      channelId: channels.some((channel) => channel.id === activeChannelId) ? activeChannelId : channels[0].id,
       levelDb: -3,
       delayMs: 0,
       polarity: 1,
+      equalizer: { filters: [] },
     };
     const placed = findClearSourcePlacement(boundaryAssetById, [...sources, ...rigidInstances], buildSourceInstance(requested));
     const next = {
@@ -1676,6 +1696,46 @@ export function App() {
 
   const canRemoveSelectedSources = selectedSourceIds.length > 0;
   const canRemoveSelectedObjects = canRemoveSelectedSources || selectedRigidIds.length > 0 || selectedMicrophoneIds.length > 0;
+
+  const addChannel = () => {
+    const existingIds = new Set(channels.map((channel) => channel.id));
+    let suffix = channels.length + 1;
+    while (existingIds.has(`channel-${suffix}`)) suffix += 1;
+    const next: DeployChannel = {
+      id: `channel-${suffix}`,
+      name: `Channel ${suffix}`,
+      color: CHANNEL_COLORS[channels.length % CHANNEL_COLORS.length],
+      levelDb: 0,
+      delayMs: 0,
+      polarity: 1,
+      muted: false,
+      equalizer: { filters: [] },
+    };
+    setChannels((current) => [...current, next]);
+    setActiveChannelId(next.id);
+  };
+
+  const updateChannel = (next: DeployChannel) => {
+    setChannels((current) => current.map((channel) => channel.id === next.id ? next : channel));
+  };
+
+  const assignSourceChannel = (sourceId: string, channelId: string) => {
+    const next = sourceConfigsRef.current.map((source) => source.id === sourceId ? { ...source, channelId } : source);
+    sourceConfigsRef.current = next;
+    setSourceConfigs(next);
+  };
+
+  const removeChannel = (id: string) => {
+    if (channels.length <= 1) return;
+    const fallback = channels.find((channel) => channel.id !== id)!;
+    const nextChannels = channels.filter((channel) => channel.id !== id);
+    const nextSources = sourceConfigsRef.current.map((source) => source.channelId === id ? { ...source, channelId: fallback.id } : source);
+    sourceConfigsRef.current = nextSources;
+    setSourceConfigs(nextSources);
+    setChannels(nextChannels);
+    setActiveChannelId(fallback.id);
+  };
+
   const removeSelectedObjects = useCallback(() => {
     if (!canRemoveSelectedObjects) return;
     const removedSources = new Set(selectedSourceIds);
@@ -1868,6 +1928,7 @@ export function App() {
         <div className="panel-tabs">
           <button className={leftTab === "library" ? "active" : ""} onClick={() => setLeftTab("library")}>Library</button>
           <button className={leftTab === "scene" ? "active" : ""} onClick={() => setLeftTab("scene")}>Scene</button>
+          <button className={leftTab === "channels" ? "active" : ""} onClick={() => setLeftTab("channels")}>Channels</button>
         </div>
         {leftTab === "library" ? (
           <>
@@ -1919,7 +1980,7 @@ export function App() {
             />
             <SceneTree packages={packages} rigidMeshes={rigidMeshes} sources={sourceConfigs} rigidObjects={rigidObjects} microphones={microphones} selectedIds={selectedInstances} activeId={selectedInstance} onSelect={selectSceneObject} />
           </>
-        ) : (
+        ) : leftTab === "scene" ? (
           <>
             <SectionHeader
               icon={Speaker}
@@ -1949,6 +2010,18 @@ export function App() {
               <span>Excitation ports</span><strong>{pkg.manifest.excitation_port_ids.length}</strong>
             </div>
           </>
+        ) : (
+          <ChannelsPanel
+            channels={channels}
+            sources={sourceConfigs}
+            activeChannelId={activeChannelId}
+            onActiveChannelChange={setActiveChannelId}
+            onAdd={addChannel}
+            onRemove={removeChannel}
+            onChange={updateChannel}
+            onAssign={assignSourceChannel}
+            onOpenEqualizer={(channel) => setEqualizerPopup({ scope: "channel", name: channel.name })}
+          />
         )}
       </aside>
 
@@ -2032,7 +2105,13 @@ export function App() {
               <div><small>{selectedInstances.length > 1 ? `${selectedInstances.length} OBJECTS SELECTED` : "SELECTED OBJECT"}</small><strong>{selectedSource.name}</strong></div>
               <button className="icon-button quiet"><SlidersHorizontal size={15} /></button>
             </div>
-            <SourceInspector config={selectedSource} minimumHeightM={sourceMinimumHeightM} onChange={updateSelectedSource} />
+            <SourceInspector
+              config={selectedSource}
+              channels={channels}
+              minimumHeightM={sourceMinimumHeightM}
+              onChange={updateSelectedSource}
+              onOpenEqualizer={() => setEqualizerPopup({ scope: "speaker", name: selectedSource.name })}
+            />
           </>
         ) : selectedRigid ? (
           <>
@@ -2123,6 +2202,20 @@ export function App() {
           </div>
         </div>
       </section>
+      {equalizerPopup && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setEqualizerPopup(null)}>
+          <section className="equalizer-popup" role="dialog" aria-modal="true" aria-label={`${equalizerPopup.name} equalizer`} onMouseDown={(event) => event.stopPropagation()}>
+            <header><div><small>{equalizerPopup.scope === "channel" ? "CHANNEL PROCESSING" : "SPEAKER-OBJECT PROCESSING"}</small><strong>{equalizerPopup.name} EQ</strong></div><button className="icon-button quiet" aria-label="Close equalizer" onClick={() => setEqualizerPopup(null)}>×</button></header>
+            <div className="equalizer-placeholder">
+              <SlidersHorizontal size={34} strokeWidth={1.2} />
+              <strong>Filter bank coming next</strong>
+              <p>This window reserves the editing surface for parametric EQ, crossover and all-pass filters. No filters are applied yet.</p>
+              <div className="equalizer-placeholder-graph"><span>20 Hz</span><i /><span>20 kHz</span></div>
+            </div>
+            <footer><button className="processing-button" onClick={() => setEqualizerPopup(null)}>Close</button></footer>
+          </section>
+        </div>
+      )}
       {error && <div className="error-toast" onClick={() => setError(null)}><strong>Boundary Lab Deploy</strong><span>{error}</span></div>}
       <input
         ref={packageFileInput}

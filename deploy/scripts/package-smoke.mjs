@@ -31,6 +31,8 @@ const {
   createDeployProject,
   parseDeployProject,
   serializeDeployProject,
+  createDefaultChannel,
+  DEFAULT_CHANNEL_ID,
   loadRigidMesh,
   configureAxisOnlyRotation,
   groundParallelDelta,
@@ -123,9 +125,11 @@ const sourceConfig = {
   pitchDeg: 0,
   yawDeg: 0,
   rollDeg: 0,
+  channelId: DEFAULT_CHANNEL_ID,
   levelDb: -3,
   delayMs: 0,
   polarity: 1,
+  equalizer: { filters: [] },
 };
 const source = buildSourceInstance(sourceConfig);
 const lookup = buildPatternLookup(speaker, frequencyIndex);
@@ -271,6 +275,7 @@ const projectText = serializeDeployProject(createDeployProject(
   "Smoke Project",
   [speaker],
   [rigidMesh],
+  [createDefaultChannel()],
   [sourceConfig],
   [{ id: "rigid-1", name: "Stage 1", assetId: rigidMesh.id, positionX: 5, positionHeightM: 0.25, positionZ: 0, pitchDeg: 0, yawDeg: 0, rollDeg: 0 }],
   [{ id: "microphone-1", name: "Microphone 1", positionX: 0, positionHeightM: 1.2, positionZ: 6 }],
@@ -285,6 +290,7 @@ assert.equal(parsedProject.sources[0].packageId, speaker.id);
 assert.equal(parsedProject.packages[0].id, speaker.id);
 assert.equal(parsedProject.rigid_meshes[0].id, rigidMesh.id);
 assert.equal(parsedProject.rigid_objects[0].assetId, rigidMesh.id);
+assert.equal(parsedProject.channels[0].id, DEFAULT_CHANNEL_ID);
 assert.equal(parsedProject.microphones[0].name, "Microphone 1");
 assert.equal(parsedProject.observation_plane.columns, 24);
 assert.equal(parsedProject.observation_plane.displayMode, "real_pressure");
@@ -299,7 +305,8 @@ delete legacyProject.observation_plane.displayMode;
 delete legacyProject.observation_plane.pressureScalePa;
 delete legacyProject.observation_plane.phaseAnimationSpeedHz;
 const migratedProject = parseDeployProject(JSON.stringify(legacyProject));
-assert.equal(migratedProject.schema_version, 6);
+assert.equal(migratedProject.schema_version, 7);
+assert.equal(migratedProject.channels[0].id, DEFAULT_CHANNEL_ID);
 assert.equal(migratedProject.observation_plane.displayMode, "spl");
 assert.equal(migratedProject.observation_plane.pressureScalePa, 10);
 const emptySceneProject = JSON.parse(projectText);

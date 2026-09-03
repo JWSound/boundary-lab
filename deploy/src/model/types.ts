@@ -87,9 +87,36 @@ export interface SourceConfiguration {
   pitchDeg: number;
   yawDeg: number;
   rollDeg: number;
+  channelId: string;
   levelDb: number;
   delayMs: number;
   polarity: 1 | -1;
+  equalizer: EqualizerConfiguration;
+  muted?: boolean;
+}
+
+export interface EqualizerConfiguration {
+  filters: EqualizerFilter[];
+}
+
+export interface EqualizerFilter {
+  id: string;
+  type: "peq" | "lowpass" | "highpass" | "low-shelf" | "high-shelf" | "allpass";
+  enabled: boolean;
+  frequencyHz: number;
+  gainDb: number;
+  q: number;
+}
+
+export interface DeployChannel {
+  id: string;
+  name: string;
+  color: string;
+  levelDb: number;
+  delayMs: number;
+  polarity: 1 | -1;
+  muted: boolean;
+  equalizer: EqualizerConfiguration;
 }
 
 export interface SpeakerInstance {

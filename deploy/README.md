@@ -23,7 +23,8 @@ npm start
 - Imports multiple Boundary Lab speaker-package schema v1 `.blabsp` archives into a project library without replacing the scene.
 - Reads the package manifest, complex spherical pressure, frequency order, excitation shape, and exterior Gmsh surface.
 - Opens new desktop projects with two coarse `S218BP_LOD.blabsp` cabinets separated by a 2 m surface gap.
-- Provides source position, yaw, level, delay, and polarity controls without line-array layout concepts.
+- Provides source placement plus speaker-object level, delay, polarity, channel assignment, and placeholder EQ controls without line-array layout concepts.
+- Adds persisted output channels with level, delay, polarity, mute, speaker assignment, and a placeholder filter-bank popout; channel processing is composed ahead of speaker-object processing for every fidelity.
 - Displays eight bounding-box grab points on selected speaker and rigid objects for strictly ground-parallel dragging; only a successful snap to a corner at another height introduces vertical movement.
 - Provides W-key XYZ translation and E-key pitch/yaw/roll rotation gizmos with axis-only X/Y/Z rotation wheels and 5-degree snapping; hold Alt for unsnapped rotation. A near-gizmo overlay reports signed movement to 0.001 m or the active rotation to whole degrees while dragging.
 - Adds or duplicates package-backed speaker instances while preserving independent placement and DSP settings.
@@ -43,7 +44,7 @@ npm start
 - Retains separate current observation-plane frames for Boundary and Coupled fidelity so users can compare solver levels without repeating unchanged solves.
 - Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
 - Uses threshold-oriented triangle-BVH clearance validation with early exit and emits conservative higher-order corrections for close speaker/rigid face pairs and their ground images.
-- Saves speaker packages, rigid-mesh assets and instances, microphones, and observation-plane display settings as a schema-v6 `.blabdeploy.json` project (schema v5 remains loadable).
+- Saves channels, speaker packages, rigid-mesh assets and instances, microphones, and observation-plane display settings as a schema-v7 `.blabdeploy.json` project (schemas v5 and v6 remain loadable).
 - Includes a deterministic built-in demonstration model when no package is loaded.
 
 Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for a parity Petrov–Galerkin Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.

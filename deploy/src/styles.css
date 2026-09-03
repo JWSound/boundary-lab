@@ -148,7 +148,7 @@ button { color: inherit; }
 .left-panel { grid-column: 1; grid-row: 2 / 4; position: relative; border-right: 1px solid var(--line); }
 .right-panel { grid-column: 3; grid-row: 2 / 4; overflow-y: auto; border-left: 1px solid var(--line); }
 
-.panel-tabs { height: 43px; display: flex; align-items: end; padding: 0 14px; gap: 18px; border-bottom: 1px solid var(--line-soft); }
+.panel-tabs { height: 43px; display: flex; align-items: end; padding: 0 14px; gap: 15px; border-bottom: 1px solid var(--line-soft); }
 .panel-tabs button { height: 42px; position: relative; border: 0; background: transparent; color: var(--muted-2); font-size: 10px; font-weight: 600; cursor: pointer; }
 .panel-tabs button.active { color: #dfe5dd; }
 .panel-tabs button.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
@@ -199,6 +199,21 @@ button { color: inherit; }
 .tree-more { padding: 4px 8px 6px 29px; color: #545d56; font-size: 9px; }
 .scene-summary { display: grid; grid-template-columns: 1fr auto; gap: 10px; margin: 10px 13px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted-2); font-size: 9px; }
 .scene-summary strong { color: #b9c1b9; font: 500 9px/1 "Cascadia Mono", "Consolas", monospace; }
+.channel-list { display: grid; gap: 2px; padding: 7px 8px; max-height: 190px; overflow-y: auto; }
+.channel-row { height: 32px; display: grid; grid-template-columns: 10px minmax(0, 1fr) 22px; align-items: center; gap: 8px; padding: 0 8px; border: 1px solid transparent; color: #aeb5ae; background: transparent; text-align: left; cursor: pointer; }
+.channel-row:hover { background: #343434; }
+.channel-row.active { border-color: var(--classic-highlight) var(--classic-dark-shadow) var(--classic-dark-shadow) var(--classic-highlight); color: #fff; background: var(--classic-selection); }
+.channel-row i { width: 9px; height: 9px; border: 1px solid rgba(255,255,255,.35); }
+.channel-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.channel-row em { justify-self: end; font-size: 8px; font-style: normal; }
+.channel-controls { padding-top: 9px; }
+.channel-name-row { grid-template-columns: 74px minmax(0, 1fr); gap: 8px; }
+.channel-name-row input { width: 100%; height: 25px; padding: 0 7px; border: 1px solid #343b35; outline: none; color: #d2d8d0; background: #121613; font-size: 9px; }
+.processing-button { min-height: 27px; display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; margin-top: 6px; border: 1px solid; border-color: var(--classic-highlight) var(--classic-dark-shadow) var(--classic-dark-shadow) var(--classic-highlight); color: #e8e8e8; background: var(--classic-face); font-size: 9px; cursor: pointer; }
+.channel-assignments { display: grid; gap: 5px; padding: 8px; max-height: 230px; overflow-y: auto; }
+.channel-assignments label { min-height: 29px; display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: center; gap: 7px; padding: 0 5px; color: #bfc5bf; font-size: 9px; }
+.channel-assignments label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.channel-assignments select { height: 24px; min-width: 0; border: 1px solid #343b35; color: #d2d8d0; background: #121613; font-size: 8px; }
 .viewport { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; background: #293134; }
 .viewport canvas { display: block; }
 .viewport-toolbar { position: absolute; left: 13px; top: 13px; height: 36px; display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid #343a35; border-radius: 7px; background: rgba(19,23,20,.92); box-shadow: 0 8px 24px rgba(0,0,0,.2); }
@@ -336,6 +351,21 @@ button { color: inherit; }
 .error-toast strong { font-size: 10px; }
 .error-toast span { color: #cba49c; font-size: 8px; line-height: 1.4; }
 .hidden-file-input { display: none; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(0,0,0,.58); }
+.equalizer-popup { width: min(720px, calc(100vw - 64px)); height: min(440px, calc(100vh - 80px)); display: grid; grid-template-rows: 58px minmax(0, 1fr) 45px; border: 1px solid; border-color: var(--classic-highlight) var(--classic-dark-shadow) var(--classic-dark-shadow) var(--classic-highlight); background: var(--classic-face); box-shadow: 8px 10px 30px rgba(0,0,0,.55); }
+.equalizer-popup header { display: flex; align-items: center; justify-content: space-between; padding: 8px 11px 8px 14px; border-bottom: 1px solid var(--classic-dark-shadow); }
+.equalizer-popup header div { display: flex; flex-direction: column; gap: 3px; }
+.equalizer-popup header small { color: var(--muted-2); font-size: 8px; letter-spacing: .08em; }
+.equalizer-popup header strong { color: #fff; font-size: 13px; }
+.equalizer-popup header button { font-size: 18px; }
+.equalizer-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; color: #8d968e; text-align: center; }
+.equalizer-placeholder > svg { color: var(--accent); }
+.equalizer-placeholder > strong { margin-top: 13px; color: #e4e8e3; font-size: 13px; }
+.equalizer-placeholder p { max-width: 430px; margin: 7px 0 22px; font-size: 10px; line-height: 1.5; }
+.equalizer-placeholder-graph { width: min(520px, 90%); height: 92px; position: relative; display: flex; align-items: end; justify-content: space-between; padding: 7px; border: 1px solid #555; color: #777; background: repeating-linear-gradient(90deg, transparent 0, transparent 51px, #333 52px), repeating-linear-gradient(0deg, #171717 0, #171717 22px, #333 23px); font-size: 8px; }
+.equalizer-placeholder-graph i { position: absolute; left: 7px; right: 7px; top: 45px; border-top: 1px solid var(--accent); opacity: .75; }
+.equalizer-popup footer { display: flex; align-items: center; justify-content: flex-end; padding: 7px 11px; border-top: 1px solid var(--classic-dark-shadow); }
+.equalizer-popup footer .processing-button { width: 74px; margin: 0; }
 
 /* Boundary Lab classic dark theme: Win2000-style faces, wells, and bevels. */
 .brand span,

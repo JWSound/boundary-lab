@@ -10,6 +10,7 @@ export {
 } from "../src/model/field";
 export { heatmapColorBoundaries, heatmapLegendGradient, writeHeatmapColor } from "../src/model/heatmap";
 export { createDeployProject, parseDeployProject, serializeDeployProject } from "../src/io/deployProject";
+export { createDefaultChannel, DEFAULT_CHANNEL_ID } from "../src/model/channels";
 export { loadRigidMesh } from "../src/io/rigidMesh";
 export {
   configureAxisOnlyRotation,

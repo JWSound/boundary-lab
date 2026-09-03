@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Box, CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker } from "lucide-react";
+import { Box, CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
 import type {
   LoadedSpeakerPackage,
@@ -8,6 +8,7 @@ import type {
   RigidMeshAsset,
   RigidMeshConfiguration,
   SourceConfiguration,
+  DeployChannel,
 } from "../model/types";
 
 export function SectionHeader({ icon: Icon, title, action }: { icon: LucideIcon; title: string; action?: ReactNode }) {
@@ -245,12 +246,16 @@ export function NumberField({
 
 export function SourceInspector({
   config,
+  channels,
   minimumHeightM,
   onChange,
+  onOpenEqualizer,
 }: {
   config: SourceConfiguration;
+  channels: DeployChannel[];
   minimumHeightM: number;
   onChange: (next: SourceConfiguration) => void;
+  onOpenEqualizer: () => void;
 }) {
   const set = <K extends keyof SourceConfiguration>(key: K, value: SourceConfiguration[K]) => onChange({ ...config, [key]: value });
   return (
@@ -264,10 +269,16 @@ export function SourceInspector({
         <NumberField label="Yaw" value={config.yawDeg} unit="°" step={0.5} onChange={(value) => set("yawDeg", value)} />
         <NumberField label="Roll" value={config.rollDeg} unit="deg" step={0.5} onChange={(value) => set("rollDeg", value)} />
       </div>
-      <SectionHeader icon={Radio} title="Drive" />
+      <SectionHeader icon={Radio} title="Speaker processing" />
       <div className="inspector-section">
-        <Slider label="Level" value={config.levelDb} minimum={-24} maximum={12} step={0.5} unit=" dB" onChange={(value) => set("levelDb", value)} />
-        <Slider label="Delay" value={config.delayMs} minimum={0} maximum={20} step={0.05} unit=" ms" onChange={(value) => set("delayMs", value)} />
+        <label className="control-row select-row">
+          <span>Channel</span>
+          <select value={config.channelId} onChange={(event) => set("channelId", event.target.value)}>
+            {channels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
+          </select>
+        </label>
+        <Slider label="Object level" value={config.levelDb} minimum={-24} maximum={12} step={0.5} unit=" dB" onChange={(value) => set("levelDb", value)} />
+        <Slider label="Object delay" value={config.delayMs} minimum={0} maximum={20} step={0.05} unit=" ms" onChange={(value) => set("delayMs", value)} />
         <label className="control-row toggle-row">
           <span>Polarity</span>
           <button
@@ -275,6 +286,60 @@ export function SourceInspector({
             onClick={() => set("polarity", config.polarity === 1 ? -1 : 1)}
           >{config.polarity === 1 ? "Normal" : "Inverted"}</button>
         </label>
+        <button className="processing-button" onClick={onOpenEqualizer}><SlidersHorizontal size={13} /> Open speaker EQ...</button>
+      </div>
+    </>
+  );
+}
+
+export function ChannelsPanel({
+  channels,
+  sources,
+  activeChannelId,
+  onActiveChannelChange,
+  onAdd,
+  onRemove,
+  onChange,
+  onAssign,
+  onOpenEqualizer,
+}: {
+  channels: DeployChannel[];
+  sources: SourceConfiguration[];
+  activeChannelId: string;
+  onActiveChannelChange: (id: string) => void;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChange: (next: DeployChannel) => void;
+  onAssign: (sourceId: string, channelId: string) => void;
+  onOpenEqualizer: (channel: DeployChannel) => void;
+}) {
+  const channel = channels.find((candidate) => candidate.id === activeChannelId) ?? channels[0];
+  if (!channel) return null;
+  const set = <K extends keyof DeployChannel>(key: K, value: DeployChannel[K]) => onChange({ ...channel, [key]: value });
+  return (
+    <>
+      <SectionHeader icon={Radio} title="Output channels" action={<button className="section-action" title="Add channel" onClick={onAdd}><Plus size={14} /></button>} />
+      <div className="channel-list">
+        {channels.map((item) => (
+          <button key={item.id} className={`channel-row ${item.id === channel.id ? "active" : ""}`} onClick={() => onActiveChannelChange(item.id)}>
+            <i style={{ background: item.color }} /><span>{item.name}</span><em>{sources.filter((source) => source.channelId === item.id).length}</em>
+          </button>
+        ))}
+      </div>
+      <SectionHeader icon={SlidersHorizontal} title="Channel processing" action={channels.length > 1 ? <button className="section-action" title="Remove channel" onClick={() => onRemove(channel.id)}><Trash2 size={13} /></button> : undefined} />
+      <div className="inspector-section channel-controls">
+        <label className="control-row channel-name-row"><span>Name</span><input value={channel.name} onChange={(event) => set("name", event.target.value)} /></label>
+        <Slider label="Level" value={channel.levelDb} minimum={-24} maximum={12} step={0.5} unit=" dB" onChange={(value) => set("levelDb", value)} />
+        <Slider label="Delay" value={channel.delayMs} minimum={0} maximum={100} step={0.05} unit=" ms" onChange={(value) => set("delayMs", value)} />
+        <label className="control-row toggle-row"><span>Polarity</span><button className={channel.polarity === -1 ? "toggle active" : "toggle"} onClick={() => set("polarity", channel.polarity === 1 ? -1 : 1)}>{channel.polarity === 1 ? "Normal" : "Inverted"}</button></label>
+        <label className="control-row toggle-row"><span>Mute</span><button className={channel.muted ? "toggle active" : "toggle"} onClick={() => set("muted", !channel.muted)}>{channel.muted ? "Muted" : "Active"}</button></label>
+        <button className="processing-button" onClick={() => onOpenEqualizer(channel)}><SlidersHorizontal size={13} /> Open channel EQ...</button>
+      </div>
+      <SectionHeader icon={Speaker} title="Assignments" />
+      <div className="channel-assignments">
+        {sources.length === 0 ? <div className="library-empty">No speakers in scene</div> : sources.map((source) => (
+          <label key={source.id}><span>{source.name}</span><select value={source.channelId} onChange={(event) => onAssign(source.id, event.target.value)}>{channels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        ))}
       </div>
     </>
   );
