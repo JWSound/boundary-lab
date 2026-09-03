@@ -256,9 +256,7 @@ def test_complete_off_axis_driver_gets_independent_components_and_ports(tmp_path
 
     compiled = PhysicalSystemCompiler().compile(expanded.system, symmetry_mode="off")
     assert len(compiled.components) == 2
-    moving_tags = {
-        boundary.group.tag for boundary in compiled.boundaries if boundary.kind == BoundaryKind.MOVING
-    }
+    moving_tags = {boundary.group.tag for boundary in compiled.boundaries if boundary.kind == BoundaryKind.MOVING}
     assert len(moving_tags) == 4
 
 

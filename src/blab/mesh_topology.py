@@ -37,9 +37,7 @@ class MeshTopologyIssue:
     @property
     def problem_edge_segments_m(self) -> np.ndarray:
         parts = [
-            segments
-            for segments in (self.open_edge_segments_m, self.nonmanifold_edge_segments_m)
-            if len(segments)
+            segments for segments in (self.open_edge_segments_m, self.nonmanifold_edge_segments_m) if len(segments)
         ]
         if not parts:
             return np.empty((0, 2, 3), dtype=float)
@@ -128,11 +126,7 @@ def _analyze_mesh_config(mesh_config: MeshConfig, symmetry: str) -> MeshTopology
 
 
 def _triangle_connectivity(mesh: meshio.Mesh) -> np.ndarray:
-    blocks = [
-        np.asarray(block.data, dtype=np.int64)
-        for block in mesh.cells
-        if block.type in {"triangle", "triangle3"}
-    ]
+    blocks = [np.asarray(block.data, dtype=np.int64) for block in mesh.cells if block.type in {"triangle", "triangle3"}]
     if not blocks:
         raise ValueError("No triangle surface cells found in mesh.")
     triangles = np.vstack(blocks)

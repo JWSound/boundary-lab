@@ -120,12 +120,8 @@ def test_level_three_rom_uses_the_shared_exterior_worker() -> None:
 def test_level_three_execution_rejects_exact_and_routes_rom_packages() -> None:
     payload = {"packagePath": "speaker.blabsp", "backend": "cuda", "fidelity": "coupled"}
     with pytest.raises(ValueError, match="parity Petrov"):
-        deploy_worker._execution_worker_key(
-            payload, _CoupledPackageCache("exact_frequency_parametric_fem")
-        )
-    assert deploy_worker._execution_worker_key(
-        payload, _CoupledPackageCache("parity_petrov_galerkin_rom")
-    ) == "cuda"
+        deploy_worker._execution_worker_key(payload, _CoupledPackageCache("exact_frequency_parametric_fem"))
+    assert deploy_worker._execution_worker_key(payload, _CoupledPackageCache("parity_petrov_galerkin_rom")) == "cuda"
 
 
 def test_transducer_velocity_result_flattens_scene_instances() -> None:
@@ -178,19 +174,28 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> N
     class Worker:
         def submit(self, _request_path, **_kwargs):
             for frequency, velocity in ((20.0, 2.0), (40.0, 4.0)):
-                yield {"type": "result", "result": {
-                    "frequency_hz": frequency,
-                    "spl_db": [80.0],
-                    "field_pressure": {"real": [0.2], "imag": [0.0]},
-                    "diagnostics": {"transducer_velocity": [{"real": [velocity], "imag": [0.0]}]},
-                }}
+                yield {
+                    "type": "result",
+                    "result": {
+                        "frequency_hz": frequency,
+                        "spl_db": [80.0],
+                        "field_pressure": {"real": [0.2], "imag": [0.0]},
+                        "diagnostics": {"transducer_velocity": [{"real": [velocity], "imag": [0.0]}]},
+                    },
+                }
             yield {"type": "completed"}
 
     monkeypatch.setattr(deploy_worker, "prepare_deploy_rom_microphone_sweep_request", prepare)
     monkeypatch.setattr(deploy_worker, "_emit", lambda event_type, **values: events.append((event_type, values)) or {})
     deploy_worker._microphone_sweep(
         9,
-        {"packagePath": "speaker.blabsp", "backend": "cuda", "fidelity": "coupled", "sources": [{"id": "source"}], "microphones": []},
+        {
+            "packagePath": "speaker.blabsp",
+            "backend": "cuda",
+            "fidelity": "coupled",
+            "sources": [{"id": "source"}],
+            "microphones": [],
+        },
         {"cuda": Worker()},
         cache,
         threading.Event(),
@@ -209,13 +214,29 @@ def test_speaker_electrical_result_sums_coil_current_per_cabinet() -> None:
             {"source_id": "cabinet-a", "physical_driver_orbit_count": 1},
             {"source_id": "cabinet-a", "physical_driver_orbit_count": 2},
         ],
-        "rom_sweep": {"frequencies": [{"instances": [{
-            "input_real": [2.83, 2.83], "input_imag": [0.0, 0.0],
-        }]}]},
+        "rom_sweep": {
+            "frequencies": [
+                {
+                    "instances": [
+                        {
+                            "input_real": [2.83, 2.83],
+                            "input_imag": [0.0, 0.0],
+                        }
+                    ]
+                }
+            ]
+        },
     }
-    result = {"diagnostics": {"transducer_current": [{
-        "real": [0.1, 0.2], "imag": [-0.01, -0.02],
-    }]}}
+    result = {
+        "diagnostics": {
+            "transducer_current": [
+                {
+                    "real": [0.1, 0.2],
+                    "imag": [-0.01, -0.02],
+                }
+            ]
+        }
+    }
 
     electrical = deploy_worker._speaker_electrical_result(result, request, 0)
 

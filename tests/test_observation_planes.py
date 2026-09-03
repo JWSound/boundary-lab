@@ -426,12 +426,8 @@ def test_interior_field_results_synthesize_system_and_channel_responses() -> Non
     )
     compiled = SimpleNamespace(
         excitation_ports=(
-            SimpleNamespace(
-                id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE
-            ),
-            SimpleNamespace(
-                id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE
-            ),
+            SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
         )
     )
     solved = SolvedSystem(
@@ -639,12 +635,8 @@ def test_exterior_field_results_synthesize_retained_boundary_traces() -> None:
     compiled = SimpleNamespace(
         regions=(SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR, sound_speed_m_per_s=344.0),),
         excitation_ports=(
-            SimpleNamespace(
-                id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE
-            ),
-            SimpleNamespace(
-                id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE
-            ),
+            SimpleNamespace(id="port:woofer", component_id="component:woofer", kind=ExcitationPortKind.VOLTAGE),
+            SimpleNamespace(id="port:tweeter", component_id="component:tweeter", kind=ExcitationPortKind.VOLTAGE),
         ),
     )
     solved = SolvedSystem(

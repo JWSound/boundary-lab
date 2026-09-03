@@ -90,11 +90,7 @@ class _ViewportTreeOverlay(QFrame):
     }
 
     def __init__(self, anchor: QWidget):
-        flags = (
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.NoDropShadowWindowHint
-        )
+        flags = Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
         super().__init__(anchor, flags)
         self._anchor = anchor
         self._tracked_window: QWidget | None = None
@@ -467,9 +463,7 @@ class MeshPreview(QWidget):
         if self.viewer is None:
             return
         old_actor_ids = {id(actor) for actor in self._topology_issue_actors}
-        self._actor_records = [
-            record for record in self._actor_records if id(record.actor) not in old_actor_ids
-        ]
+        self._actor_records = [record for record in self._actor_records if id(record.actor) not in old_actor_ids]
         for actor in self._topology_issue_actors:
             self.viewer.remove_actor(actor, render=False)
         self._topology_issue_actors = []
@@ -516,8 +510,7 @@ class MeshPreview(QWidget):
         if not hasattr(self, "body_tree"):
             return
         had_hierarchy = any(
-            str(item.data(0, _TREE_NODE_ID_ROLE)) != BODY_TREE_PROJECT_NODE_ID
-            for item in _tree_items(self.body_tree)
+            str(item.data(0, _TREE_NODE_ID_ROLE)) != BODY_TREE_PROJECT_NODE_ID for item in _tree_items(self.body_tree)
         )
         expanded_ids = set()
         for item in _tree_items(self.body_tree):
@@ -543,10 +536,7 @@ class MeshPreview(QWidget):
             for region in self._hierarchy.regions:
                 region_keys = tuple(
                     dict.fromkeys(
-                        key
-                        for mesh in region.meshes
-                        for boundary in mesh.boundaries
-                        for key in boundary.surface_keys
+                        key for mesh in region.meshes for boundary in mesh.boundaries for key in boundary.surface_keys
                     )
                 )
                 region_item = _body_tree_item(region.name, region.id, region_keys, self._surface_visibility)
@@ -758,11 +748,7 @@ class MeshPreview(QWidget):
     def _apply_actor_visibility(self, *, render: bool = True) -> None:
         if self.viewer is None:
             return
-        visible_meshes = {
-            mesh_name
-            for (mesh_name, _tag), visible in self._surface_visibility.items()
-            if visible
-        }
+        visible_meshes = {mesh_name for (mesh_name, _tag), visible in self._surface_visibility.items() if visible}
         for record in self._actor_records:
             if record.diagnostic:
                 visible = record.mesh_name in visible_meshes or not self._surface_visibility

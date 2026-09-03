@@ -457,16 +457,8 @@ class IsobarCanvas(InteractivePlotCanvas):
         if left_margin is not None or right_margin is not None:
             figure_width_pt = self.figure.get_figwidth() * 72.0
             profile = PlotLayoutProfile(
-                left_pt=(
-                    profile.left_pt
-                    if left_margin is None
-                    else float(left_margin) * figure_width_pt
-                ),
-                right_pt=(
-                    profile.right_pt
-                    if right_margin is None
-                    else (1.0 - float(right_margin)) * figure_width_pt
-                ),
+                left_pt=(profile.left_pt if left_margin is None else float(left_margin) * figure_width_pt),
+                right_pt=(profile.right_pt if right_margin is None else (1.0 - float(right_margin)) * figure_width_pt),
             )
         self.colors = VisualizerConfig.custom_colors
         self._colormap = LinearSegmentedColormap.from_list("boundary_lab_isobar", list(self.colors), N=256)
@@ -1474,9 +1466,7 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
             action = self.trace_filter_menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(
-                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
-            )
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
             self._series_actions[label] = action
         self.trace_filter_action.setEnabled(bool(labels))
 

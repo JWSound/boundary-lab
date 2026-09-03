@@ -203,16 +203,12 @@ def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
 def test_projected_diaphragm_area_reuses_tetrahedron_orientation_geometry(monkeypatch) -> None:
     resource = MeshResource("mesh:fem", "FEM", "unused.msh", MeshPurpose.FEM_VOLUME)
     mesh = meshio.Mesh(
-        points=np.asarray(
-            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
-        ),
+        points=np.asarray(((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))),
         cells=[
             ("triangle", np.asarray(((0, 2, 1),), dtype=np.int64)),
             ("tetra", np.asarray(((0, 1, 2, 3),), dtype=np.int64)),
         ],
-        cell_data={
-            "gmsh:physical": [np.asarray((1,), dtype=np.int32), np.asarray((2,), dtype=np.int32)]
-        },
+        cell_data={"gmsh:physical": [np.asarray((1,), dtype=np.int32), np.asarray((2,), dtype=np.int32)]},
         field_data={"Front": np.asarray((1, 2)), "Volume": np.asarray((2, 3))},
     )
     build_calls = 0

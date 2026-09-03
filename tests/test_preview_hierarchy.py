@@ -70,4 +70,3 @@ def test_unconfigured_preview_uses_synthetic_exterior_region_and_physical_groups
     mesh = hierarchy.regions[0].meshes[0]
     assert [boundary.name for boundary in mesh.boundaries] == ["Walls", "Throat"]
     assert hierarchy.surface_keys == (("Waveguide", 1), ("Waveguide", 2))
-

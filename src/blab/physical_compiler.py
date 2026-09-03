@@ -102,8 +102,7 @@ class PhysicalSystemCompiler:
 
         metadata = dict(system.metadata)
         metadata[ACOUSTIC_IMPEDANCE_NORMALIZATION_METADATA_KEY] = {
-            component_id: record.as_metadata()
-            for component_id, record in impedance_normalization.items()
+            component_id: record.as_metadata() for component_id, record in impedance_normalization.items()
         }
         return CompiledPhysicalSystem(
             id=system.id,
@@ -148,9 +147,7 @@ class PhysicalSystemCompiler:
                             exterior_boundaries,
                             resources_by_id,
                             symmetry_factor,
-                            boundary_motion_weights=dict(
-                                component.parameters.get("boundary_motion_weights", {})
-                            ),
+                            boundary_motion_weights=dict(component.parameters.get("boundary_motion_weights", {})),
                             mesh_cache=mesh_cache,
                         )
                     except (ComponentSymmetryInferenceError, TypeError, ValueError) as exc:

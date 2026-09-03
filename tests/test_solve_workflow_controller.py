@@ -581,9 +581,7 @@ def test_completed_solve_automatically_requests_configured_max_spl(controller) -
             supports_channel_resynthesis=True,
             has_balloon_data=False,
         )
-        transducer_motion = SimpleNamespace(
-            eligible_max_spl_channel_names=lambda _channels: ("main",)
-        )
+        transducer_motion = SimpleNamespace(eligible_max_spl_channel_names=lambda _channels: ("main",))
         voltage_channel_names = frozenset({"main"})
         solved_system = SimpleNamespace(provenance=SimpleNamespace(solve_kind="exterior_bem"))
         max_spl_requested = False

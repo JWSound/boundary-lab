@@ -125,9 +125,7 @@ def _solve_exact_band(
     julia: str,
     work_root: Path,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    cache_file = work_root / (
-        f"exact-{_exact_cache_key(package, frequencies, cabinet_count, spacing_m)}.npz"
-    )
+    cache_file = work_root / (f"exact-{_exact_cache_key(package, frequencies, cabinet_count, spacing_m)}.npz")
     if cache_file.is_file():
         with np.load(cache_file, allow_pickle=False) as cached:
             if np.array_equal(cached["frequencies_hz"], frequencies):
@@ -273,15 +271,9 @@ def main() -> int:
             raw = raw_results[0]
             rom_field = _complex_payload(raw["field_pressure"])
             diagnostics = raw["diagnostics"]
-            rom_velocity = np.concatenate(
-                [_complex_payload(item) for item in diagnostics["transducer_velocity"]]
-            )
-            rom_current = np.concatenate(
-                [_complex_payload(item) for item in diagnostics["transducer_current"]]
-            )
-            exact_spl = 20.0 * np.log10(
-                np.maximum(np.abs(exact_field[index]), np.finfo(float).tiny) / 20e-6
-            )
+            rom_velocity = np.concatenate([_complex_payload(item) for item in diagnostics["transducer_velocity"]])
+            rom_current = np.concatenate([_complex_payload(item) for item in diagnostics["transducer_current"]])
+            exact_spl = 20.0 * np.log10(np.maximum(np.abs(exact_field[index]), np.finfo(float).tiny) / 20e-6)
             rom_spl = 20.0 * np.log10(np.maximum(np.abs(rom_field), np.finfo(float).tiny) / 20e-6)
             row = {
                 "frequency_hz": float(frequency),

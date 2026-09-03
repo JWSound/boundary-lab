@@ -415,9 +415,7 @@ class SolveWorkflowController(QObject):
         self._begin_run(status)
         regions = tuple(getattr(compiled_system, "regions", ()))
         reference_region = regions[0] if regions else None
-        self._session.acoustic_impedance_density_kg_per_m3 = float(
-            getattr(reference_region, "density_kg_per_m3", 1.21)
-        )
+        self._session.acoustic_impedance_density_kg_per_m3 = float(getattr(reference_region, "density_kg_per_m3", 1.21))
         self._session.acoustic_impedance_sound_speed_m_per_s = float(
             getattr(reference_region, "sound_speed_m_per_s", 343.0)
         )
@@ -429,8 +427,7 @@ class SolveWorkflowController(QObject):
             component_id in impedance_normalization for component_id in excitation_component_ids
         ):
             self._session.acoustic_impedance_effective_areas_m2 = tuple(
-                impedance_normalization[component_id].effective_area_m2
-                for component_id in excitation_component_ids
+                impedance_normalization[component_id].effective_area_m2 for component_id in excitation_component_ids
             )
         voltage_channels = {
             channel_name

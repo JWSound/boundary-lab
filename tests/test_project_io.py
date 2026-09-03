@@ -86,9 +86,7 @@ def test_project_file_round_trip(tmp_path) -> None:
     assert loaded == payload
     assert loaded["symmetry"] == "xy"
     assert loaded["component_channel_by_id"] == {"component:woofer": "tweeter"}
-    assert loaded["max_spl_limits_by_channel"] == {
-        "tweeter": {"xmax_mm": 1.2, "pmax_w": 80.0}
-    }
+    assert loaded["max_spl_limits_by_channel"] == {"tweeter": {"xmax_mm": 1.2, "pmax_w": 80.0}}
     assert loaded["observation_planes"][0]["id"] == "plane:interior"
     assert json.loads(project_path.read_text(encoding="utf-8"))["schema_version"] == PROJECT_SCHEMA_VERSION
 

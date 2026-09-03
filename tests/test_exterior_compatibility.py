@@ -77,9 +77,7 @@ def test_compatibility_plan_maps_a_channel_group_to_one_physical_port(tmp_path: 
     assert len(prepared.request.compiled_system.excitation_ports) == 2
     assert len(prepared.request.excitation_port_ids) == 1
     assert prepared.excitation_channel_names.tolist() == ["main"]
-    assert prepared.compatibility.excitation_port_id_by_channel == (
-        ("main", prepared.request.excitation_port_ids[0]),
-    )
+    assert prepared.compatibility.excitation_port_id_by_channel == (("main", prepared.request.excitation_port_ids[0]),)
     assert "secret" not in repr(prepared.compatibility)
     assert prepared.request.solver_options["compatibility_excitation_basis"] == "channel_group"
 

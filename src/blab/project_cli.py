@@ -301,7 +301,9 @@ def _compare_fem(args: argparse.Namespace) -> None:
 def _speaker_preflight(args: argparse.Namespace) -> None:
     project = load_headless_project(args.project_file)
     spec = load_headless_solve_spec(args.request)
-    frequency_count = len(spec.frequencies_hz) if spec.frequencies_hz is not None else int(project.preferences.freq_count)
+    frequency_count = (
+        len(spec.frequencies_hz) if spec.frequencies_hz is not None else int(project.preferences.freq_count)
+    )
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
     sphere_point_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
     estimate = estimate_level_three_package(
@@ -326,10 +328,7 @@ def _speaker_preflight(args: argparse.Namespace) -> None:
         f"Rank-{estimate.rom_rank}-per-sector parity ROM package estimate: "
         f"{sizes['parity_rom_package_estimate']['mib']:.1f} MiB"
     )
-    print(
-        "ROM-training current-frequency Schur working set: "
-        f"{sizes['rom_training_schur']['mib']:.1f} MiB"
-    )
+    print(f"ROM-training current-frequency Schur working set: {sizes['rom_training_schur']['mib']:.1f} MiB")
 
 
 def _export_speaker(args: argparse.Namespace) -> None:

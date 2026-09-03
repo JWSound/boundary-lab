@@ -955,7 +955,9 @@ class ChannelConfigDialog(QDialog):
         voltage_editable = channel.name not in self._prescribed_velocity_channel_names
         voltage_spin.setEnabled(voltage_editable)
         if not voltage_editable:
-            voltage_spin.setToolTip("Voltage is unavailable because this channel contains a prescribed-velocity source.")
+            voltage_spin.setToolTip(
+                "Voltage is unavailable because this channel contains a prescribed-velocity source."
+            )
         self.table.setCellWidget(row, 1, voltage_spin)
         self.voltage_widgets.append(voltage_spin)
 

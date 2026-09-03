@@ -108,9 +108,7 @@ class MeshAssemblyService:
             symmetry=symmetry,
         )
         surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
-        source_surface_tags_by_mesh = {
-            mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in candidates
-        }
+        source_surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in candidates}
         solver_surface_by_source = self.solver_surface_map(
             tuple(candidates),
             stitched=bool(stitch_imported_meshes and len(candidates) > 1),
@@ -295,9 +293,7 @@ class MeshAssemblyService:
         for mesh_config in mesh_configs:
             tags = self.used_surface_tags(mesh_config)
             if tags:
-                mapping.update(
-                    ((mesh_config.name, int(tag)), (mesh_config.name, int(tag))) for tag in tags
-                )
+                mapping.update(((mesh_config.name, int(tag)), (mesh_config.name, int(tag))) for tag in tags)
             else:
                 mapping[(mesh_config.name, None)] = (mesh_config.name, None)
         return mapping

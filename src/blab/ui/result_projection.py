@@ -177,11 +177,7 @@ class VisualizationProjection:
             impedance=self.impedance.snapshot(),
             response=self.response.snapshot(),
             excursion=None if self.excursion is None else self.excursion.snapshot(),
-            electrical_impedance=(
-                None
-                if self.electrical_impedance is None
-                else self.electrical_impedance.snapshot()
-            ),
+            electrical_impedance=(None if self.electrical_impedance is None else self.electrical_impedance.snapshot()),
             group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
             max_spl=None if self.max_spl is None else self.max_spl.snapshot(),
             spinorama_planes=_snapshot_spinorama_curves(self.spinorama_planes),
@@ -273,9 +269,7 @@ class ResultProjectionService:
         if sphere is not None:
             sphere_freqs = np.asarray(sphere.get("freq_hz"), dtype=np.float32)
             sphere_spl = np.asarray(sphere.get("spl_norm"), dtype=np.float32)
-            if sphere_freqs.shape == arrays["freq_hz"].shape and np.allclose(
-                sphere_freqs, arrays["freq_hz"]
-            ):
+            if sphere_freqs.shape == arrays["freq_hz"].shape and np.allclose(sphere_freqs, arrays["freq_hz"]):
                 spinorama_spherical = compute_spinorama_from_planes(
                     arrays["freq_hz"],
                     arrays["polar_angle_deg"],

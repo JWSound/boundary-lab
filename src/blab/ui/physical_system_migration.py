@@ -175,11 +175,7 @@ def seed_exterior_system_from_solver_inputs(
         path = Path(mesh_config.file)
         mesh = meshio.read(path)
         surface_groups = tuple(
-            sorted(
-                str(name)
-                for name, raw in mesh.field_data.items()
-                if int(np.asarray(raw).tolist()[1]) == 2
-            )
+            sorted(str(name) for name, raw in mesh.field_data.items() if int(np.asarray(raw).tolist()[1]) == 2)
         )
         has_tetrahedra = any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
         if has_tetrahedra:

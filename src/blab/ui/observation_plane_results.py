@@ -422,9 +422,7 @@ def _voltage_channel_names(
         if kind is not None:
             kinds_by_channel.setdefault(channel_name, set()).add(kind)
     return frozenset(
-        channel_name
-        for channel_name, kinds in kinds_by_channel.items()
-        if kinds == {ExcitationPortKind.VOLTAGE}
+        channel_name for channel_name, kinds in kinds_by_channel.items() if kinds == {ExcitationPortKind.VOLTAGE}
     )
 
 

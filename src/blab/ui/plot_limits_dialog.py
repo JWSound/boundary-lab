@@ -74,8 +74,7 @@ class PlotLimitsDialog(QDialog):
         if self.auto_checkbox.isChecked():
             return None
         values = tuple(
-            self._finite_value(edit)
-            for edit in (self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit)
+            self._finite_value(edit) for edit in (self.x_min_edit, self.x_max_edit, self.y_min_edit, self.y_max_edit)
         )
         return PlotAxisLimits(*values).validated()
 

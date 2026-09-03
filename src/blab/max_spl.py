@@ -114,9 +114,7 @@ def calculate_max_spl_curves(
         raise ValueError("On-axis pressure must have shape (channel, frequency).")
     expected_velocity_shape = (frequencies.size, excitation_channels.size, transducer_channels.size)
     if velocity.shape != expected_velocity_shape:
-        raise ValueError(
-            "Diaphragm velocity must have shape (frequency, excitation, transducer)."
-        )
+        raise ValueError("Diaphragm velocity must have shape (frequency, excitation, transducer).")
     if resistance.shape != (transducer_channels.size,):
         raise ValueError("Transducer resistance must align with the transducer axis.")
     if np.any(~np.isfinite(reference_voltage)) or np.any(reference_voltage <= 0.0):
@@ -139,9 +137,7 @@ def calculate_max_spl_curves(
         channel_velocity = np.sum(velocity[:, excitation_indices, :], axis=1)
         assigned_velocity = channel_velocity[:, transducer_indices]
         peak_excursion_mm = (
-            np.sqrt(2.0)
-            * np.abs(assigned_velocity / (-1j * 2.0 * np.pi * frequencies[:, np.newaxis]))
-            * 1000.0
+            np.sqrt(2.0) * np.abs(assigned_velocity / (-1j * 2.0 * np.pi * frequencies[:, np.newaxis])) * 1000.0
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             excursion_gain = np.min(limit.xmax_mm / peak_excursion_mm, axis=1)

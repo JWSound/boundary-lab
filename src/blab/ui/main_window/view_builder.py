@@ -102,9 +102,7 @@ class ViewBuilderMixin:
             data_action = QAction("Export Plot Data", self)
             data_action.setToolTip(f"Export {entry.title} data")
             data_action.setEnabled(False)
-            data_action.triggered.connect(
-                lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id)
-            )
+            data_action.triggered.connect(lambda _checked=False, plot_id=entry.plot_id: self.export_plot_data(plot_id))
             self.export_plot_data_actions[entry.plot_id] = data_action
             if entry.plot_id in {"horizontal_isobar", "vertical_isobar"}:
                 capture_action = QAction("Capture Contours", self)
@@ -123,9 +121,7 @@ class ViewBuilderMixin:
                 self.clear_contour_actions[entry.plot_id] = clear_action
             elif entry.plot_id == "spinorama":
                 self.spherical_spin_action = QAction("Spherical Spin", self)
-                self.spherical_spin_action.setToolTip(
-                    "Use full-sphere samples"
-                )
+                self.spherical_spin_action.setToolTip("Use full-sphere samples")
                 self.spherical_spin_action.setCheckable(True)
                 self.spherical_spin_action.setChecked(False)
                 self.spherical_spin_action.setEnabled(False)

@@ -785,9 +785,7 @@ class _ComponentEditorDialog(QDialog):
         self._projected_area_inference: ProjectedDiaphragmAreaInference | None = None
         self._projected_area_error: str | None = None
         raw_semi_inductance = draft.parameters.get(_SEMI_INDUCTANCE_KEY)
-        self._semi_inductance_parameters = (
-            dict(raw_semi_inductance) if isinstance(raw_semi_inductance, dict) else None
-        )
+        self._semi_inductance_parameters = dict(raw_semi_inductance) if isinstance(raw_semi_inductance, dict) else None
         raw_rear_chamber = draft.parameters.get(_LUMPED_SEALED_REAR_CHAMBER_KEY)
         self._rear_chamber_was_configured = isinstance(raw_rear_chamber, dict)
         rear_chamber = raw_rear_chamber if isinstance(raw_rear_chamber, dict) else {}
@@ -909,9 +907,7 @@ class _ComponentEditorDialog(QDialog):
             rear_volume_l = 1.0
         self.rear_chamber_volume_spin.setValue(max(0.001, rear_volume_l))
         self.rear_chamber_volume_spin.setEnabled(self.rear_chamber_check.isChecked())
-        self.rear_chamber_check.setToolTip(
-            "Add an ideal lumped compliance for an unmeshed sealed rear chamber."
-        )
+        self.rear_chamber_check.setToolTip("Add an ideal lumped compliance for an unmeshed sealed rear chamber.")
         self.rear_chamber_volume_spin.setToolTip("Net enclosed air volume in litres.")
         transducer_form = QFormLayout()
         for key, label, unit, display_per_si in _TRANSDUCER_PARAMETER_FIELDS:
@@ -1061,9 +1057,7 @@ class _ComponentEditorDialog(QDialog):
             )
             rear_chamber_enabled = self.rear_chamber_check.isChecked()
             if projected_area is None and rear_chamber_enabled:
-                raise ValueError(
-                    self._projected_area_error or "Projected diaphragm area could not be calculated."
-                )
+                raise ValueError(self._projected_area_error or "Projected diaphragm area could not be calculated.")
             rear_chamber_parameters: dict[str, float | bool] = {
                 "enabled": rear_chamber_enabled,
                 "volume_m3": float(self.rear_chamber_volume_spin.value()) / 1000.0,
@@ -1236,16 +1230,13 @@ class _ComponentEditorDialog(QDialog):
         except ComponentSymmetryInferenceError as exc:
             self._projected_area_inference = None
             self._projected_area_error = str(exc)
-            self.symmetry_inference_label.setText(
-                f"{inference.summary()} Projected diaphragm area unavailable: {exc}"
-            )
+            self.symmetry_inference_label.setText(f"{inference.summary()} Projected diaphragm area unavailable: {exc}")
             self.projected_area_warning_label.setVisible(False)
             return None
         self._projected_area_inference = area
         self._projected_area_error = None
         self.symmetry_inference_label.setText(
-            f"{inference.summary()} Projected diaphragm area of "
-            f"{area.projected_area_m2 * 10_000.0:.2f} cm²."
+            f"{inference.summary()} Projected diaphragm area of {area.projected_area_m2 * 10_000.0:.2f} cm²."
         )
         mismatch = area.relative_side_mismatch
         if mismatch is not None and mismatch > 0.10:
@@ -1597,9 +1588,7 @@ class SystemConfigDialog(QDialog):
         row.addWidget(edit_button)
         row.addWidget(remove_button)
         row.addStretch(1)
-        note = QLabel(
-            "A component may drive one or more moving surfaces."
-        )
+        note = QLabel("A component may drive one or more moving surfaces.")
         note.setWordWrap(True)
         layout = QVBoxLayout(self.components_tab)
         layout.addWidget(note)
@@ -2581,9 +2570,7 @@ class SystemConfigDialog(QDialog):
     def _region_kind(self, row: int) -> AcousticRegionKind:
         combo = self.regions_table.cellWidget(row, 1)
         return (
-            AcousticRegionKind(combo.currentData())
-            if isinstance(combo, QComboBox)
-            else AcousticRegionKind.BOUNDED_AIR
+            AcousticRegionKind(combo.currentData()) if isinstance(combo, QComboBox) else AcousticRegionKind.BOUNDED_AIR
         )
 
     def _region_drafts(self) -> tuple[dict, ...]:

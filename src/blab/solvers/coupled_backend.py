@@ -333,9 +333,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
     # fundamental domain. It therefore leaves component completion factors at 1.
     symmetry_factors = {"off": 1, "x": 2, "xy": 4, "ground": 1}
     if symmetry_mode not in symmetry_factors:
-        raise ValueError(
-            f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, xy, or ground."
-        )
+        raise ValueError(f"Unsupported coupled symmetry mode {requested_symmetry!r}; expected off, x, xy, or ground.")
     bounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.BOUNDED_AIR]
     unbounded_regions = [region for region in system.regions if region.kind == AcousticRegionKind.UNBOUNDED_AIR]
     if not bounded_regions:
@@ -419,11 +417,7 @@ def validate_coupled_capabilities(request: SystemSolveRequest) -> None:
                 component,
                 symmetry_factor=symmetry_factors[symmetry_mode],
                 active_symmetry_axes=(
-                    ()
-                    if symmetry_mode in {"off", "ground"}
-                    else ("x",)
-                    if symmetry_mode == "x"
-                    else ("x", "y")
+                    () if symmetry_mode in {"off", "ground"} else ("x",) if symmetry_mode == "x" else ("x", "y")
                 ),
             )
             continue
@@ -703,8 +697,7 @@ def _validate_semi_inductance(component_id: str, raw_model) -> None:
     missing = sorted(SEMI_INDUCTANCE_PARAMETERS - set(raw_model))
     if enabled and missing:
         raise ValueError(
-            f"Electrodynamic component '{component_id}' enabled semi_inductance is missing: "
-            + ", ".join(missing)
+            f"Electrodynamic component '{component_id}' enabled semi_inductance is missing: " + ", ".join(missing)
         )
     for name in sorted(SEMI_INDUCTANCE_PARAMETERS & set(raw_model)):
         value = raw_model[name]
@@ -724,9 +717,7 @@ def _validate_lumped_sealed_rear_chamber(component_id: str, raw_model) -> None:
     if raw_model is None:
         return
     if not isinstance(raw_model, dict):
-        raise ValueError(
-            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber must be an object."
-        )
+        raise ValueError(f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber must be an object.")
     unsupported = sorted(set(raw_model) - LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - {"enabled"})
     if unsupported:
         raise ValueError(
@@ -736,8 +727,7 @@ def _validate_lumped_sealed_rear_chamber(component_id: str, raw_model) -> None:
     enabled = raw_model.get("enabled", False)
     if not isinstance(enabled, bool):
         raise ValueError(
-            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber "
-            "enabled must be a boolean."
+            f"Electrodynamic component '{component_id}' lumped_sealed_rear_chamber enabled must be a boolean."
         )
     missing = sorted(LUMPED_SEALED_REAR_CHAMBER_PARAMETERS - set(raw_model))
     if enabled and missing:

@@ -33,16 +33,8 @@ class ExportsMixin:
     @Slot(str)
     def export_plot(self, plot_id: str) -> None:
         dataset = self.prepared_live_dataset(
-            angle_samples=(
-                FINAL_ISOBAR_ANGLE_SAMPLES
-                if plot_id in {"horizontal_isobar", "vertical_isobar"}
-                else None
-            ),
-            freq_samples=(
-                FINAL_ISOBAR_FREQ_SAMPLES
-                if plot_id in {"horizontal_isobar", "vertical_isobar"}
-                else None
-            ),
+            angle_samples=(FINAL_ISOBAR_ANGLE_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None),
+            freq_samples=(FINAL_ISOBAR_FREQ_SAMPLES if plot_id in {"horizontal_isobar", "vertical_isobar"} else None),
         )
         if dataset is None or not self.plot_data_is_available(plot_id):
             QMessageBox.warning(self, "No plot data", "Run a solve before exporting a plot.")
@@ -98,9 +90,7 @@ class ExportsMixin:
             if len(written) == 1:
                 self.status_label.setText(f"Exported {entry.title} data to {written[0]}")
             else:
-                self.status_label.setText(
-                    f"Exported {len(written)} {entry.title} data files to {output_target}"
-                )
+                self.status_label.setText(f"Exported {len(written)} {entry.title} data files to {output_target}")
         except Exception as exc:
             QMessageBox.critical(self, f"Export {entry.title} data failed", str(exc))
 

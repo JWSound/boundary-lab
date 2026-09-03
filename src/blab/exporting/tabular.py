@@ -46,9 +46,7 @@ def export_frequency_trace_table(
     for quantity in quantities:
         values = np.asarray(quantity.values, dtype=float)
         if values.shape != expected_shape:
-            raise ValueError(
-                f"{quantity.label} values have shape {values.shape}, expected {expected_shape}."
-            )
+            raise ValueError(f"{quantity.label} values have shape {values.shape}, expected {expected_shape}.")
         normalized.append((quantity, values))
 
     headers = ["Frequency (Hz)"]

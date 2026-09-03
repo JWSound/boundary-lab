@@ -341,9 +341,7 @@ def with_exterior_compatibility(
                 f"Legacy exterior channel {channel_name!r} has no physical-system excitation port."
             ) from exc
         selected_indices.append(index)
-        excitation_port_id_by_channel.append(
-            (channel_name, prepared.request.excitation_port_ids[index])
-        )
+        excitation_port_id_by_channel.append((channel_name, prepared.request.excitation_port_ids[index]))
     if not selected_indices:
         raise ValueError("Legacy exterior compatibility requires at least one active channel.")
 
@@ -366,8 +364,7 @@ def with_exterior_compatibility(
         metadata={"compatibility_adapter": "legacy_exterior_v1"},
     )
     result_domains = tuple(
-        radiator_domain if domain.id == RADIATOR_DOMAIN_ID else domain
-        for domain in prepared.result_domains
+        radiator_domain if domain.id == RADIATOR_DOMAIN_ID else domain for domain in prepared.result_domains
     )
     return replace(
         prepared,
@@ -391,12 +388,8 @@ def _impedance_area_coordinates(components, records) -> dict[str, np.ndarray]:
     selected = [records[component.id] for component in components]
     return {
         "effective_area_m2": np.asarray([record.effective_area_m2 for record in selected], dtype=np.float64),
-        "positive_side_area_m2": np.asarray(
-            [record.positive_side_area_m2 for record in selected], dtype=np.float64
-        ),
-        "negative_side_area_m2": np.asarray(
-            [record.negative_side_area_m2 for record in selected], dtype=np.float64
-        ),
+        "positive_side_area_m2": np.asarray([record.positive_side_area_m2 for record in selected], dtype=np.float64),
+        "negative_side_area_m2": np.asarray([record.negative_side_area_m2 for record in selected], dtype=np.float64),
         "relative_side_mismatch": np.asarray(
             [np.nan if record.relative_side_mismatch is None else record.relative_side_mismatch for record in selected],
             dtype=np.float64,

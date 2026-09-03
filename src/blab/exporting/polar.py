@@ -82,10 +82,7 @@ def _polar_phase_deg(
         return solver_phase_deg(pressure)
 
     reference = np.asarray(
-        [
-            complex_reference_pressure(row, angles_deg, reference_angle_deg)
-            for row in pressure
-        ],
+        [complex_reference_pressure(row, angles_deg, reference_angle_deg) for row in pressure],
         dtype=np.complex64,
     )
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -104,10 +101,7 @@ def _relative_magnitude_db(
 ) -> np.ndarray:
     values = np.asarray(values_db, dtype=np.float32)
     reference = np.asarray(
-        [
-            np.interp(float(reference_angle_deg), angles_deg.astype(float), row.astype(float))
-            for row in values
-        ],
+        [np.interp(float(reference_angle_deg), angles_deg.astype(float), row.astype(float)) for row in values],
         dtype=np.float32,
     )
     return values - reference[:, np.newaxis]

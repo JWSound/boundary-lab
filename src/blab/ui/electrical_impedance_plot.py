@@ -109,9 +109,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         magnitude_ohm: np.ndarray,
         phase_deg: np.ndarray,
     ) -> None:
-        self._set_comparison_plot_state(
-            self._normalized_plot_state(freqs_hz, channel_names, magnitude_ohm, phase_deg)
-        )
+        self._set_comparison_plot_state(self._normalized_plot_state(freqs_hz, channel_names, magnitude_ohm, phase_deg))
 
     @staticmethod
     def _normalized_plot_state(
@@ -199,9 +197,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
             action = self.trace_filter_menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(
-                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
-            )
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
             self._series_actions[label] = action
         self.trace_filter_action.setEnabled(bool(labels))
 
@@ -235,9 +231,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         if legend is not None:
             legend.remove()
         visible_lines = [
-            self._magnitude_lines[label]
-            for label in self._series_labels
-            if self._series_visibility.get(label, True)
+            self._magnitude_lines[label] for label in self._series_labels if self._series_visibility.get(label, True)
         ]
         if visible_lines:
             self.axes.legend(visible_lines, [line.get_label() for line in visible_lines], loc="best")

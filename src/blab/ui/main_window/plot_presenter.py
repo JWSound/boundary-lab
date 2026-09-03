@@ -231,9 +231,7 @@ class PlotPresenterMixin:
                 vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
             )
         else:
-            self.spinorama_plot.set_comparison_curves(
-                self._spinorama_curves_for_projection(dataset)
-            )
+            self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(dataset))
 
     def clear_comparison_history(self) -> None:
         self._solve_session().forget_comparison()
@@ -536,6 +534,4 @@ class PlotPresenterMixin:
         if comparison is None:
             self.spinorama_plot.clear_comparison_plot()
         else:
-            self.spinorama_plot.set_comparison_curves(
-                self._spinorama_curves_for_projection(comparison)
-            )
+            self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(comparison))

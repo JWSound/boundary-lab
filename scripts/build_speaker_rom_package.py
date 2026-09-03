@@ -143,17 +143,12 @@ def main() -> int:
     assert metadata is not None
     rom_bytes = _npz_bytes(
         frequencies_hz=np.asarray(frequencies, dtype=np.float64),
-        **{
-            name.removeprefix("speaker_rom_"): np.stack(values, axis=0)
-            for name, values in arrays_by_quantity.items()
-        },
+        **{name.removeprefix("speaker_rom_"): np.stack(values, axis=0) for name, values in arrays_by_quantity.items()},
     )
 
     with zipfile.ZipFile(source, "r") as archive:
         members = {
-            name: archive.read(name)
-            for name in archive.namelist()
-            if name not in {"manifest.json", "checksums.json"}
+            name: archive.read(name) for name in archive.namelist() if name not in {"manifest.json", "checksums.json"}
         }
     exact_declaration = dict(manifest["files"]["coupled_model"])
     members["data/coupled-rom.npz"] = rom_bytes
@@ -194,10 +189,7 @@ def main() -> int:
     members["manifest.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     members["checksums.json"] = (
         json.dumps(
-            {
-                name: hashlib.sha256(payload_bytes).hexdigest()
-                for name, payload_bytes in sorted(members.items())
-            },
+            {name: hashlib.sha256(payload_bytes).hexdigest() for name, payload_bytes in sorted(members.items())},
             indent=2,
             sort_keys=True,
         )

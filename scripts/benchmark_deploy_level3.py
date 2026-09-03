@@ -47,8 +47,7 @@ def main() -> int:
     cache = DeploySolveCache()
     package_data = cache.load_package(args.package.resolve())
     is_rom = isinstance(package_data.coupled_model, dict) and (
-        args.fidelity == "coupled"
-        and package_data.coupled_model.get("representation") == "parity_petrov_galerkin_rom"
+        args.fidelity == "coupled" and package_data.coupled_model.get("representation") == "parity_petrov_galerkin_rom"
     )
     use_standard_worker = args.fidelity == "boundary" or is_rom
     project = DEFAULT_BEAT_ENGINE_CUDA_PROJECT if args.backend == "cuda" else DEFAULT_COUPLED_CPU_PROJECT
@@ -145,14 +144,16 @@ def _run_once(
     started = time.perf_counter()
     package_data = cache.load_package(package.resolve())
     representation = (
-        package_data.coupled_model.get("representation")
-        if isinstance(package_data.coupled_model, dict)
-        else None
+        package_data.coupled_model.get("representation") if isinstance(package_data.coupled_model, dict) else None
     )
-    prepare = prepare_deploy_solve_request if fidelity == "boundary" else (
-        prepare_deploy_rom_request
-        if representation == "parity_petrov_galerkin_rom"
-        else prepare_deploy_coupled_request
+    prepare = (
+        prepare_deploy_solve_request
+        if fidelity == "boundary"
+        else (
+            prepare_deploy_rom_request
+            if representation == "parity_petrov_galerkin_rom"
+            else prepare_deploy_coupled_request
+        )
     )
     request_path, _ = prepare(payload, work_dir, cache=cache)
     prepared = time.perf_counter()

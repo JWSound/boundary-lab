@@ -295,11 +295,7 @@ def prepare_speaker_package_solve(
         )
         if representation == SpeakerPackageCoupledRepresentation.PARITY_ROM:
             expansion = request.compiled_system.metadata.get("speaker_export_symmetry_expansion", {})
-            source_symmetry = (
-                expansion.get("source_symmetry", "off")
-                if isinstance(expansion, dict)
-                else "off"
-            )
+            source_symmetry = expansion.get("source_symmetry", "off") if isinstance(expansion, dict) else "off"
             solver_options["speaker_rom"] = {
                 "rank_per_sector": int(speaker_rom_rank),
                 "training_count_per_sector": int(speaker_rom_training_count),
@@ -436,7 +432,9 @@ def speaker_package_issues(
     if level >= SpeakerPackageFidelity.COUPLED and representation == SpeakerPackageCoupledRepresentation.EXACT_SYSTEM:
         system = solved.compiled_system
         if system is None:
-            issues.append(SpeakerPackageIssue("missing_compiled_system", "Exact Level-3 export requires a compiled system."))
+            issues.append(
+                SpeakerPackageIssue("missing_compiled_system", "Exact Level-3 export requires a compiled system.")
+            )
         elif not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions):
             issues.append(
                 SpeakerPackageIssue("missing_bounded_region", "Exact Level-3 export requires a bounded FEM region.")

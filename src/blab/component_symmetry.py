@@ -222,9 +222,7 @@ def infer_projected_diaphragm_area(
     """Integrate the solver's projected rigid-translation area by acoustic side."""
 
     if not boundaries:
-        raise ComponentSymmetryInferenceError(
-            "Select at least one moving boundary before calculating projected area."
-        )
+        raise ComponentSymmetryInferenceError("Select at least one moving boundary before calculating projected area.")
     axis = np.asarray(motion_axis, dtype=float)
     axis_norm = float(np.linalg.norm(axis))
     if not np.isfinite(axis).all() or axis_norm <= 0.0:

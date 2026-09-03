@@ -430,9 +430,7 @@ class BalloonPlotWindow(QMainWindow):
         snapshot_icon = QIcon(str(SNAPSHOT_LIGHT_ICON if light_theme else SNAPSHOT_DARK_ICON))
         self.save_slice_action.setIcon(snapshot_icon)
         self.save_wavefront_shape_action.setIcon(snapshot_icon)
-        self.export_balloon_data_action.setIcon(
-            QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON))
-        )
+        self.export_balloon_data_action.setIcon(QIcon(str(EXPORT_LIGHT_ICON if light_theme else EXPORT_DARK_ICON)))
 
     @Slot()
     def _render_high_resolution_isobar_slice(self) -> None:

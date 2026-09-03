@@ -301,20 +301,22 @@ def test_prepare_microphone_sweep_stages_geometry_and_all_frequencies_once(tmp_p
     assert Path(repeated["mesh_file"]).is_file()
 
 
-def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(monkeypatch, tmp_path: Path) -> None:
     array_names = ("k", "c", "d", "b", "e", "velocity", "current", "velocity_drive", "current_drive")
     arrays = {name: np.asarray([[[1.0 + 0.0j]], [[2.0 + 0.0j]]], dtype=np.complex64) for name in array_names}
     arrays["frequencies_hz"] = np.asarray([20.0, 40.0])
-    package = type("Package", (), {
-        "fingerprint": ("speaker.blabsp", 1, 1),
-        "frequencies": np.asarray([10.0, 20.0, 40.0, 80.0]),
-        "coupled_model": {
-            "representation": "parity_petrov_galerkin_rom",
-            "arrays": arrays,
+    package = type(
+        "Package",
+        (),
+        {
+            "fingerprint": ("speaker.blabsp", 1, 1),
+            "frequencies": np.asarray([10.0, 20.0, 40.0, 80.0]),
+            "coupled_model": {
+                "representation": "parity_petrov_galerkin_rom",
+                "arrays": arrays,
+            },
         },
-    })()
+    )()
     cache = DeploySolveCache()
     monkeypatch.setattr(cache, "load_package", lambda _path: package)
 
@@ -404,32 +406,40 @@ def test_prepare_rom_request_retains_scene_speaker_and_transducer_identity(tmp_p
     assert request["transducers"][0]["name"] == "subwoofer-1 / 18DS115-8"
 
 
-def test_prepare_exact_coupled_request_batches_microphones_and_frequency_weights(
-    monkeypatch, tmp_path: Path
-) -> None:
-    package = type("Package", (), {
-        "coupled_model": {
-            "representation": "exact_frequency_parametric_fem",
-            "frequency_band_hz": [20.0, 80.0],
+def test_prepare_exact_coupled_request_batches_microphones_and_frequency_weights(monkeypatch, tmp_path: Path) -> None:
+    package = type(
+        "Package",
+        (),
+        {
+            "coupled_model": {
+                "representation": "exact_frequency_parametric_fem",
+                "frequency_band_hz": [20.0, 80.0],
+            },
+            "manifest": {"files": {"coupled_model": {"representation": "exact_frequency_parametric_fem"}}},
         },
-        "manifest": {"files": {"coupled_model": {"representation": "exact_frequency_parametric_fem"}}},
-    })()
-    cache = type("Cache", (), {
-        "load_package": lambda self, _path: package,
-        "load_rigid_mesh": lambda self, _path: None,
-    })()
+    )()
+    cache = type(
+        "Cache",
+        (),
+        {
+            "load_package": lambda self, _path: package,
+            "load_rigid_mesh": lambda self, _path: None,
+        },
+    )()
     compiled_system = {
         "id": "base",
         "name": "Base",
         "meshes": [{"id": "mesh:exterior", "file": str(tmp_path / "base.msh"), "scale_to_m": 1.0}],
         "regions": [{"id": "region:exterior", "kind": "unbounded_air", "mesh_ids": ["mesh:exterior"]}],
-        "boundaries": [{
-            "id": "boundary:exterior",
-            "region_id": "region:exterior",
-            "kind": "rigid",
-            "group": {"mesh_id": "mesh:exterior", "dimension": 2, "tag": 1},
-            "parameters": {},
-        }],
+        "boundaries": [
+            {
+                "id": "boundary:exterior",
+                "region_id": "region:exterior",
+                "kind": "rigid",
+                "group": {"mesh_id": "mesh:exterior", "dimension": 2, "tag": 1},
+                "parameters": {},
+            }
+        ],
         "interfaces": [],
         "components": [{"id": "component:driver", "boundary_ids": ["boundary:exterior"], "parameters": {}}],
         "excitation_ports": [{"id": "port:driver", "component_id": "component:driver"}],
@@ -485,9 +495,7 @@ def test_prepare_deploy_solve_request_reuses_package_and_ground_pair_cache(tmp_p
     assert next(iter(cache.packages.values())) is package_data
     assert cache.ground_image_pairs.keys() == ground_pairs.keys()
     assert all(cache.ground_image_pairs[key] is value for key, value in ground_pairs.items())
-    assert first["proximity"]["ground_image_close_face_pairs"] == second["proximity"][
-        "ground_image_close_face_pairs"
-    ]
+    assert first["proximity"]["ground_image_close_face_pairs"] == second["proximity"]["ground_image_close_face_pairs"]
 
 
 def test_prepare_deploy_field_request_contains_only_observation_data(tmp_path: Path) -> None:
@@ -625,12 +633,8 @@ def test_prepare_deploy_solve_request_enforces_surface_padding(tmp_path: Path) -
 
 def test_prepare_deploy_solve_request_rejects_old_two_mm_padding_target(tmp_path: Path) -> None:
     payload = _payload()
-    payload["sources"][0].update(
-        {"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
-    )
-    payload["sources"][1].update(
-        {"positionX": 1.202, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
-    )
+    payload["sources"][0].update({"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0})
+    payload["sources"][1].update({"positionX": 1.202, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0})
 
     with pytest.raises(ValueError, match="at least 10.0 mm"):
         prepare_deploy_solve_request(payload, tmp_path)
@@ -672,12 +676,8 @@ def test_bvh_close_pair_threshold_excludes_faces_just_outside() -> None:
 def test_prepare_deploy_solve_request_emits_directed_close_face_pairs(tmp_path: Path) -> None:
     payload = _payload()
     # Package X bounds are +/- 0.6 m; these centers produce a 10 mm surface gap.
-    payload["sources"][0].update(
-        {"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
-    )
-    payload["sources"][1].update(
-        {"positionX": 1.21, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0}
-    )
+    payload["sources"][0].update({"positionX": 0.0, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0})
+    payload["sources"][1].update({"positionX": 1.21, "positionHeightM": 0.4, "positionZ": 0.0, "yawDeg": 0.0})
 
     _, request = prepare_deploy_solve_request(payload, tmp_path)
 

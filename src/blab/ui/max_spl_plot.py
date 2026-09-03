@@ -122,10 +122,7 @@ class MaxSplCanvas(RawCoordinatePlotCanvas):
         if labels != self._series_labels:
             for line in self._lines.values():
                 line.remove()
-            self._lines = {
-                label: self.axes.plot([], [], linewidth=1.5, label=label)[0]
-                for label in labels
-            }
+            self._lines = {label: self.axes.plot([], [], linewidth=1.5, label=label)[0] for label in labels}
             self._series_labels = labels
             for label in labels:
                 self._series_visibility.setdefault(label, True)
@@ -147,9 +144,7 @@ class MaxSplCanvas(RawCoordinatePlotCanvas):
             action = self.trace_filter_menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(
-                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
-            )
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
             self._series_actions[label] = action
         self.trace_filter_action.setEnabled(bool(labels))
 

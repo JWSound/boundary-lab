@@ -84,9 +84,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
         trace_names: np.ndarray,
         group_delay_ms: np.ndarray,
     ) -> None:
-        self._set_comparison_plot_state(
-            self._normalized_plot_state(freqs_hz, trace_names, group_delay_ms)
-        )
+        self._set_comparison_plot_state(self._normalized_plot_state(freqs_hz, trace_names, group_delay_ms))
 
     @staticmethod
     def _normalized_plot_state(
@@ -162,9 +160,7 @@ class GroupDelayCanvas(RawCoordinatePlotCanvas):
             action = self.trace_filter_menu.addAction(label)
             action.setCheckable(True)
             action.setChecked(self._series_visibility.get(label, True))
-            action.toggled.connect(
-                lambda checked, series_label=label: self.set_series_visible(series_label, checked)
-            )
+            action.toggled.connect(lambda checked, series_label=label: self.set_series_visible(series_label, checked))
             self._series_actions[label] = action
         self.trace_filter_action.setEnabled(bool(labels))
 

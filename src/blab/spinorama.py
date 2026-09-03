@@ -194,9 +194,7 @@ def compute_spinorama_from_planes(
         estimated_in_room_db=(estimated_in_room - spl_reference).astype(np.float32, copy=False),
         early_reflections_di_db=(listening - early).astype(np.float32, copy=False),
         sound_power_di_db=(
-            (listening - sound_power)
-            if spherical_sound_power_relative is None
-            else -spherical_sound_power_relative
+            (listening - sound_power) if spherical_sound_power_relative is None else -spherical_sound_power_relative
         ).astype(np.float32, copy=False),
         sound_power_di_label="SPDI" if spherical_sound_power_relative is None else "Spherical DI",
     )

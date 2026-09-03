@@ -443,9 +443,7 @@ def test_live_electrical_impedance_aggregates_parallel_channel_current_and_symme
                     quantity="voice_coil_current",
                     unit="A",
                     axes=("excitation", "transducer"),
-                    metadata={
-                        "component_ids": ["component:b", "component:a2", "component:a1"]
-                    },
+                    metadata={"component_ids": ["component:b", "component:a2", "component:a1"]},
                     values=np.asarray(
                         [
                             [0.7 + 0.0j, 9.0 + 0.0j, 9.0 + 0.0j],
@@ -485,9 +483,7 @@ def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
     omega = 2.0 * np.pi * frequency_hz
     mechanical_impedance = rms + 1j * (1.0 / (omega * cms) - omega * mmd)
     load_force = native_acoustic_impedance @ velocity_basis
-    current_basis = (load_force + mechanical_impedance[:, np.newaxis] * velocity_basis) / bl[
-        :, np.newaxis
-    ]
+    current_basis = (load_force + mechanical_impedance[:, np.newaxis] * velocity_basis) / bl[:, np.newaxis]
     dataset = AcousticLoadImpedanceDataset(
         excitation_port_ids=("port:a", "port:b", "port:velocity"),
         excitation_port_kinds=np.asarray(["voltage", "voltage", "normal_velocity"]),

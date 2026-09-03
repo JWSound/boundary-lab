@@ -120,18 +120,21 @@ class DeployRigidPlacement:
             raise ValueError("Deploy rigid object id must not be empty.")
         if value.mesh_path.suffix.lower() != ".msh" or not value.mesh_path.is_file():
             raise ValueError(f"Deploy rigid object {value.id!r} requires an existing .msh file.")
-        if not all(
-            math.isfinite(item)
-            for item in (
-                value.scale_to_meters,
-                value.position_x_m,
-                value.position_height_m,
-                value.position_z_m,
-                value.pitch_deg,
-                value.yaw_deg,
-                value.roll_deg,
+        if (
+            not all(
+                math.isfinite(item)
+                for item in (
+                    value.scale_to_meters,
+                    value.position_x_m,
+                    value.position_height_m,
+                    value.position_z_m,
+                    value.pitch_deg,
+                    value.yaw_deg,
+                    value.roll_deg,
+                )
             )
-        ) or value.scale_to_meters <= 0.0:
+            or value.scale_to_meters <= 0.0
+        ):
             raise ValueError("Deploy rigid object values must be finite and its scale must be positive.")
         return value
 
@@ -279,9 +282,7 @@ class DeployRomSweepStage:
 class DeploySolveCache:
     packages: dict[tuple[str, int, int], DeployPackageData] = field(default_factory=dict)
     rigid_meshes: dict[tuple[str, int, int], DeployRigidMeshData] = field(default_factory=dict)
-    ground_image_pairs: dict[tuple[Any, ...], list[Any]] = field(
-        default_factory=dict
-    )
+    ground_image_pairs: dict[tuple[Any, ...], list[Any]] = field(default_factory=dict)
     sweep_geometries: dict[str, tuple[dict[str, Any], str]] = field(default_factory=dict)
     rom_sweep_stages: dict[tuple[Any, ...], DeployRomSweepStage] = field(default_factory=dict)
     _rom_sweep_temp: tempfile.TemporaryDirectory = field(
@@ -395,9 +396,7 @@ def _logical_excitation_indices(
     if not isinstance(logical_source_id, str) or not logical_source_id:
         return (selected_index,)
     grouped = tuple(
-        index
-        for index, port_id in enumerate(port_ids)
-        if source_ids.get(str(port_id)) == logical_source_id
+        index for index, port_id in enumerate(port_ids) if source_ids.get(str(port_id)) == logical_source_id
     )
     return grouped or (selected_index,)
 
@@ -583,8 +582,7 @@ def prepare_deploy_coupled_request(
         outside = next((value for value in frequencies if value < lower - tolerance or value > upper + tolerance), None)
         if outside is not None:
             raise ValueError(
-                f"Deploy Level 3 frequency {outside:g} Hz is outside the package band "
-                f"{lower:g}-{upper:g} Hz."
+                f"Deploy Level 3 frequency {outside:g} Hz is outside the package band {lower:g}-{upper:g} Hz."
             )
 
     raw_sources = payload.get("sources")
@@ -695,7 +693,9 @@ def prepare_deploy_coupled_request(
             cloned["id"] = id_maps["boundary"][boundary_id]
             cloned["name"] = f"{source.id} / {base_boundary.get('name', boundary_id)}"
             base_region_id = str(base_boundary["region_id"])
-            cloned["region_id"] = "deploy:exterior" if base_region_id == base_unbounded_id else id_maps["region"][base_region_id]
+            cloned["region_id"] = (
+                "deploy:exterior" if base_region_id == base_unbounded_id else id_maps["region"][base_region_id]
+            )
             cloned["group"]["mesh_id"] = id_maps["mesh"][str(base_boundary["group"]["mesh_id"])]
             combined_boundaries.append(cloned)
 
@@ -748,7 +748,9 @@ def prepare_deploy_coupled_request(
             excitation_ids.append(str(cloned["id"]))
             for frequency_index, frequency_hz in enumerate(frequencies):
                 gain_phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-                gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * gain_phase)
+                gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(
+                    1j * gain_phase
+                )
                 wire_gain = {"real": float(gain.real), "imag": float(gain.imag)}
                 excitation_weights_sweep[frequency_index].append(wire_gain)
                 if frequency_index == 0:
@@ -797,9 +799,12 @@ def prepare_deploy_coupled_request(
     exterior["mesh_ids"] = unbounded_mesh_ids
     combined_regions.insert(0, exterior)
     combined_system = {
-        **{key: copy.deepcopy(value) for key, value in base_system.items() if key not in {
-            "id", "name", "meshes", "regions", "boundaries", "interfaces", "components", "excitation_ports"
-        }},
+        **{
+            key: copy.deepcopy(value)
+            for key, value in base_system.items()
+            if key
+            not in {"id", "name", "meshes", "regions", "boundaries", "interfaces", "components", "excitation_ports"}
+        },
         "id": "deploy:coupled-array",
         "name": "Deploy coupled array",
         "meshes": combined_meshes,
@@ -958,7 +963,9 @@ def _load_rigid_mesh_data(
         raise ValueError(f"Rigid mesh {mesh_path.name!r} must be a closed two-manifold surface.")
     if any((end, start) not in directed_edges for start, end in directed_edges):
         raise ValueError(f"Rigid mesh {mesh_path.name!r} has inconsistent face orientation.")
-    signed_volume = float(np.sum(np.einsum("ij,ij->i", face_points[:, 0], np.cross(face_points[:, 1], face_points[:, 2]))) / 6.0)
+    signed_volume = float(
+        np.sum(np.einsum("ij,ij->i", face_points[:, 0], np.cross(face_points[:, 1], face_points[:, 2]))) / 6.0
+    )
     if abs(signed_volume) <= 1e-12:
         raise ValueError(f"Rigid mesh {mesh_path.name!r} has zero enclosed volume.")
     if signed_volume < 0.0:
@@ -1053,9 +1060,7 @@ def prepare_deploy_solve_request(
         raise ValueError("Deploy Level 2 initially requires an exact exported package frequency.")
     close_pair_quadrature_override = payload.get("closePairQuadratureOrder")
     close_pair_quadrature_order = int(
-        CLOSE_PAIR_QUADRATURE_ORDER
-        if close_pair_quadrature_override is None
-        else close_pair_quadrature_override
+        CLOSE_PAIR_QUADRATURE_ORDER if close_pair_quadrature_override is None else close_pair_quadrature_override
     )
     if not 4 <= close_pair_quadrature_order <= 16:
         raise ValueError("Deploy close-pair quadrature order must be between 4 and 16.")
@@ -1216,30 +1221,38 @@ def prepare_deploy_solve_request(
                 np.maximum(first_minimum - second_maximum, second_minimum - first_maximum),
             )
             object_distance_m = float(np.linalg.norm(object_separation))
-            violation = first_surface_pair_within(
-                first.points,
-                first.triangles,
-                second.points,
-                second.triangles,
-                max(0.0, SOURCE_SURFACE_PADDING_M - GROUND_TOLERANCE_M),
-            ) if object_distance_m < SOURCE_SURFACE_PADDING_M else None
+            violation = (
+                first_surface_pair_within(
+                    first.points,
+                    first.triangles,
+                    second.points,
+                    second.triangles,
+                    max(0.0, SOURCE_SURFACE_PADDING_M - GROUND_TOLERANCE_M),
+                )
+                if object_distance_m < SOURCE_SURFACE_PADDING_M
+                else None
+            )
             if violation is not None:
                 raise ValueError(
                     f"Deploy boundary objects {first.id!r} and {second.id!r} have "
                     f"{violation.distance_m * 1000.0:.3f} mm surface spacing; at least "
                     f"{SOURCE_SURFACE_PADDING_M * 1000.0:.1f} mm is required."
                 )
-            face_pairs = surface_face_pairs_within(
-                first.points,
-                first.triangles,
-                second.points,
-                second.triangles,
-                CLOSE_PAIR_DISTANCE_M,
-                exact=False,
-            ) if object_distance_m <= CLOSE_PAIR_DISTANCE_M else []
+            face_pairs = (
+                surface_face_pairs_within(
+                    first.points,
+                    first.triangles,
+                    second.points,
+                    second.triangles,
+                    CLOSE_PAIR_DISTANCE_M,
+                    exact=False,
+                )
+                if object_distance_m <= CLOSE_PAIR_DISTANCE_M
+                else []
+            )
             distance_m = min((item.distance_m for item in face_pairs), default=object_distance_m)
-            minimum_surface_distance_m = distance_m if minimum_surface_distance_m is None else min(
-                minimum_surface_distance_m, distance_m
+            minimum_surface_distance_m = (
+                distance_m if minimum_surface_distance_m is None else min(minimum_surface_distance_m, distance_m)
             )
             pair = {
                 "source_a": first.id,
@@ -1255,8 +1268,10 @@ def prepare_deploy_solve_request(
                 for face_pair in face_pairs:
                     first_face = first.face_offset + face_pair.face_a
                     second_face = second.face_offset + face_pair.face_b
-                    correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
-                        8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+                    correction_order = (
+                        close_pair_quadrature_order
+                        if close_pair_quadrature_override is not None
+                        else (8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4)
                     )
                     close_face_pairs.append([first_face, second_face, correction_order])
                     close_face_pairs.append([second_face, first_face, correction_order])
@@ -1299,8 +1314,7 @@ def prepare_deploy_solve_request(
             exact=False,
         ):
             vertex_deltas = (
-                test_faces[face_pair.face_a, :, np.newaxis, :]
-                - trial_faces[face_pair.face_b, np.newaxis, :, :]
+                test_faces[face_pair.face_a, :, np.newaxis, :] - trial_faces[face_pair.face_b, np.newaxis, :, :]
             )
             if np.any(np.sum(vertex_deltas * vertex_deltas, axis=2) <= singular_tolerance_squared):
                 continue
@@ -1350,8 +1364,10 @@ def prepare_deploy_solve_request(
         test_component = components[test_index]
         trial_component = components[trial_index]
         for face_pair in face_pairs:
-            correction_order = close_pair_quadrature_order if close_pair_quadrature_override is not None else (
-                8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4
+            correction_order = (
+                close_pair_quadrature_order
+                if close_pair_quadrature_override is not None
+                else (8 if face_pair.distance_m <= 0.015 else 6 if face_pair.distance_m <= 0.03 else 4)
             )
             ground_image_face_pairs.append(
                 [
@@ -1364,10 +1380,9 @@ def prepare_deploy_solve_request(
 
     q_neumann = np.concatenate([component.q_neumann for component in components])
     reference_pressure = np.concatenate([component.reference_pressure for component in components])
-    reference_pressure_mask = np.concatenate([
-        np.full(component.points.shape[0], component.kind == "speaker", dtype=np.uint8)
-        for component in components
-    ])
+    reference_pressure_mask = np.concatenate(
+        [np.full(component.points.shape[0], component.kind == "speaker", dtype=np.uint8) for component in components]
+    )
     if not np.all(np.isfinite(q_neumann)) or not np.all(np.isfinite(reference_pressure)):
         raise ValueError("Fixed-source boundary traces contain non-finite values.")
 
@@ -1376,16 +1391,18 @@ def prepare_deploy_solve_request(
     if points_m.shape[0] == 0:
         raise ValueError("Deploy solve has no sampling points on or above the ground plane.")
     medium = manifest.get("medium", {})
-    burton_miller_assembly = str(
-        payload.get(
-            "burtonMillerAssembly",
-            "direct_system" if backend == "cuda" else "operator_matrices",
+    burton_miller_assembly = (
+        str(
+            payload.get(
+                "burtonMillerAssembly",
+                "direct_system" if backend == "cuda" else "operator_matrices",
+            )
         )
-    ).strip().lower()
+        .strip()
+        .lower()
+    )
     if burton_miller_assembly not in {"direct_system", "operator_matrices"}:
-        raise ValueError(
-            "Deploy burtonMillerAssembly must be 'direct_system' or 'operator_matrices'."
-        )
+        raise ValueError("Deploy burtonMillerAssembly must be 'direct_system' or 'operator_matrices'.")
     request: dict[str, Any] = {
         "schema": DEPLOY_SOLVE_SCHEMA,
         "schema_version": DEPLOY_SOLVE_SCHEMA_VERSION,
@@ -1601,10 +1618,15 @@ def prepare_deploy_rom_request(
 
     transducer_count = int(selected["velocity"].shape[-2])
     physical_system = package.manifest.get("physical_system", {})
-    package_transducers = [
-        item for item in physical_system.get("components", [])
-        if isinstance(item, dict) and item.get("kind") == "electrodynamic_transducer"
-    ] if isinstance(physical_system, dict) else []
+    package_transducers = (
+        [
+            item
+            for item in physical_system.get("components", [])
+            if isinstance(item, dict) and item.get("kind") == "electrodynamic_transducer"
+        ]
+        if isinstance(physical_system, dict)
+        else []
+    )
     if len(package_transducers) != transducer_count:
         package_transducers = [
             {"id": f"transducer:{index}", "name": f"Transducer {index + 1}", "parameters": {}}
@@ -1725,7 +1747,15 @@ def prepare_deploy_rom_microphone_sweep_request(
         raise ValueError("Parity-ROM microphone sweep source count does not match the staged instances.")
 
     array_names = (
-        "k", "c", "d", "b", "e", "velocity", "current", "velocity_drive", "current_drive",
+        "k",
+        "c",
+        "d",
+        "b",
+        "e",
+        "velocity",
+        "current",
+        "velocity_drive",
+        "current_drive",
     )
     sweep_entries: list[dict[str, Any]] = []
     reference_voltage = float(payload.get("transducerReferenceVoltageV", 2.83))
@@ -1747,8 +1777,7 @@ def prepare_deploy_rom_microphone_sweep_request(
         binary_path = Path(work_dir).resolve() / "speaker-rom-sweep.bin"
         all_descriptors = _write_deploy_binary_arrays(binary_path, binary_values)
         frequency_descriptors = tuple(
-            {name: all_descriptors[binary_name] for name, binary_name in names.items()}
-            for names in descriptor_names
+            {name: all_descriptors[binary_name] for name, binary_name in names.items()} for names in descriptor_names
         )
         stage_cache_hit = False
         binary_bytes = binary_path.stat().st_size
@@ -1756,9 +1785,7 @@ def prepare_deploy_rom_microphone_sweep_request(
 
     if status_callback is not None:
         status_callback(
-            "Reusing staged Level 3 ROM sweep data"
-            if stage_cache_hit
-            else "Staging Level 3 ROM sweep data"
+            "Reusing staged Level 3 ROM sweep data" if stage_cache_hit else "Staging Level 3 ROM sweep data"
         )
     for sweep_index, (frequency_hz, array_index) in enumerate(frequency_pairs):
         input_count = int(np.asarray(arrays["b"][array_index]).shape[-1])
@@ -1767,17 +1794,21 @@ def prepare_deploy_rom_microphone_sweep_request(
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
             gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
             drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
-            instances.append({
-                "id": base_instance["id"],
-                "node_offset": base_instance["node_offset"],
-                "face_offset": base_instance["face_offset"],
-                "input_real": drive.real.tolist(),
-                "input_imag": drive.imag.tolist(),
-            })
-        sweep_entries.append({
-            "binary_arrays": frequency_descriptors[sweep_index],
-            "instances": instances,
-        })
+            instances.append(
+                {
+                    "id": base_instance["id"],
+                    "node_offset": base_instance["node_offset"],
+                    "face_offset": base_instance["face_offset"],
+                    "input_real": drive.real.tolist(),
+                    "input_imag": drive.imag.tolist(),
+                }
+            )
+        sweep_entries.append(
+            {
+                "binary_arrays": frequency_descriptors[sweep_index],
+                "instances": instances,
+            }
+        )
     request["schema"] = DEPLOY_MICROPHONE_SWEEP_SCHEMA
     request["schema_version"] = 2
     request["geometry_key"] = "coupled-rom-microphone-sweep"
@@ -1902,7 +1933,7 @@ def prepare_deploy_microphone_sweep_request(
     request["observation_sample_indices"] = list(range(int(points_m.shape[0])))
     source_face_count = int(package_data.triangles.shape[0])
     source_vertex_count = int(package_data.points.shape[0])
-    rigid_components = request["boundary_components"][len(sources):]
+    rigid_components = request["boundary_components"][len(sources) :]
     rigid_face_count = sum(int(component["face_count"]) for component in rigid_components)
     rigid_vertex_count = sum(int(component["vertex_count"]) for component in rigid_components)
     q_real_rows: list[list[float]] = []

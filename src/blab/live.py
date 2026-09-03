@@ -220,9 +220,7 @@ class LiveSolveDataset:
             freqs, channel_names, pressures = self._channel_on_axis_complex_pressures()
         except ValueError:
             return None
-        aligned_pressures = solver_to_standard_phasor(
-            self._propagation_aligned_values(pressures, freqs)
-        )
+        aligned_pressures = solver_to_standard_phasor(self._propagation_aligned_values(pressures, freqs))
         configs_by_name = {channel.name: channel for channel in self.channel_configs}
         configured_delay_s = np.asarray(
             [
@@ -564,9 +562,7 @@ class TransducerMotionDataset:
         values = np.asarray(quantity.values, dtype=np.complex64)
         expected_shape = (self.excitation_channel_names.size, self.transducer_names.size)
         if values.shape != expected_shape:
-            raise ValueError(
-                f"Diaphragm velocity has shape {values.shape}, expected {expected_shape}."
-            )
+            raise ValueError(f"Diaphragm velocity has shape {values.shape}, expected {expected_shape}.")
         self.results[float(result.freq_hz)] = values.copy()
         try:
             reference_voltage_v = float(result.diagnostics["transducer_reference_voltage_v"])
@@ -634,9 +630,7 @@ class TransducerMotionDataset:
 
         eligible = set(self.eligible_max_spl_channel_names(voltage_channel_names))
         selected_limits = {
-            name: limit
-            for name, limit in limits_by_channel.items()
-            if name in eligible and limit.validated().enabled
+            name: limit for name, limit in limits_by_channel.items() if name in eligible and limit.validated().enabled
         }
         if not selected_limits:
             return None
@@ -646,10 +640,7 @@ class TransducerMotionDataset:
             return None
         velocity = np.stack([self.results[frequency] for frequency in ordered_frequencies], axis=0)
         reference_voltage = np.asarray(
-            [
-                self.reference_voltages_v.get(frequency, DEFAULT_CHANNEL_VOLTAGE_V)
-                for frequency in ordered_frequencies
-            ],
+            [self.reference_voltages_v.get(frequency, DEFAULT_CHANNEL_VOLTAGE_V) for frequency in ordered_frequencies],
             dtype=np.float64,
         )
         return calculate_max_spl_curves(
@@ -696,9 +687,7 @@ class ElectricalImpedanceDataset:
             result_component_ids = expected_component_ids
         if set(result_component_ids) != set(expected_component_ids):
             raise ValueError("Voice-coil current transducers do not match the prepared solve.")
-        column_by_component_id = {
-            component_id: index for index, component_id in enumerate(result_component_ids)
-        }
+        column_by_component_id = {component_id: index for index, component_id in enumerate(result_component_ids)}
         column_order = [column_by_component_id[component_id] for component_id in expected_component_ids]
 
         values = np.asarray(quantity.values, dtype=np.complex64)
@@ -796,9 +785,7 @@ class AcousticLoadImpedanceDataset:
             return
         expected_axes = ("excitation", "transducer")
         if velocity_quantity.axes != expected_axes or current_quantity.axes != expected_axes:
-            raise ValueError(
-                "Coupled acoustic load recovery requires excitation and transducer axes."
-            )
+            raise ValueError("Coupled acoustic load recovery requires excitation and transducer axes.")
 
         result_port_ids = tuple(str(value) for value in result.excitation_port_ids)
         if set(result_port_ids) != set(self.excitation_port_ids):
@@ -807,12 +794,12 @@ class AcousticLoadImpedanceDataset:
         row_order = [row_by_port_id[port_id] for port_id in self.excitation_port_ids]
 
         expected_component_ids = tuple(str(value) for value in self.transducer_component_ids.tolist())
-        velocity_component_ids = tuple(
-            str(value) for value in velocity_quantity.metadata.get("component_ids", ())
-        ) or expected_component_ids
-        current_component_ids = tuple(
-            str(value) for value in current_quantity.metadata.get("component_ids", ())
-        ) or expected_component_ids
+        velocity_component_ids = (
+            tuple(str(value) for value in velocity_quantity.metadata.get("component_ids", ())) or expected_component_ids
+        )
+        current_component_ids = (
+            tuple(str(value) for value in current_quantity.metadata.get("component_ids", ())) or expected_component_ids
+        )
         if set(velocity_component_ids) != set(expected_component_ids):
             raise ValueError("Diaphragm-velocity transducers do not match the prepared solve.")
         if set(current_component_ids) != set(expected_component_ids):
@@ -839,9 +826,7 @@ class AcousticLoadImpedanceDataset:
         excitation_components = np.asarray(self.excitation_component_ids).astype(str)
         voltage_rows: list[int] = []
         for component_id in expected_component_ids:
-            candidates = np.flatnonzero(
-                (excitation_kinds == "voltage") & (excitation_components == component_id)
-            )
+            candidates = np.flatnonzero((excitation_kinds == "voltage") & (excitation_components == component_id))
             if candidates.size != 1:
                 self._store_unavailable(float(result.freq_hz))
                 return
@@ -852,11 +837,7 @@ class AcousticLoadImpedanceDataset:
         singular_values = np.linalg.svd(velocity_basis, compute_uv=False)
         maximum_singular = float(singular_values[0]) if singular_values.size else 0.0
         minimum_singular = float(singular_values[-1]) if singular_values.size else 0.0
-        condition = (
-            maximum_singular / minimum_singular
-            if minimum_singular > 0.0
-            else float("inf")
-        )
+        condition = maximum_singular / minimum_singular if minimum_singular > 0.0 else float("inf")
         self.velocity_condition_numbers[float(result.freq_hz)] = condition
         if (
             not np.isfinite(condition)
@@ -897,9 +878,7 @@ class AcousticLoadImpedanceDataset:
         expected_shape = (len(result_port_ids), len(result_component_ids))
         if values.shape != expected_shape:
             raise ValueError(f"{label} has shape {values.shape}, expected {expected_shape}.")
-        column_by_component_id = {
-            component_id: index for index, component_id in enumerate(result_component_ids)
-        }
+        column_by_component_id = {component_id: index for index, component_id in enumerate(result_component_ids)}
         column_order = [column_by_component_id[value] for value in expected_component_ids]
         return values[np.ix_(row_order, column_order)]
 

@@ -270,9 +270,7 @@ def _expand_reduced_mesh(mesh: meshio.Mesh, mode: str, purpose: MeshPurpose) -> 
         node_map = np.empty(len(points), dtype=np.int64)
         for source_index, point in enumerate(transformed):
             quantized = tuple(int(round(float(value) / scale)) for value in point)
-            on_symmetry_plane = any(
-                abs(float(point[_AXIS_INDEX[axis]])) <= tolerance for axis in _ACTIVE_AXES[mode]
-            )
+            on_symmetry_plane = any(abs(float(point[_AXIS_INDEX[axis]])) <= tolerance for axis in _ACTIVE_AXES[mode])
             # Plane nodes are welded geometrically, including coincident source
             # nodes that came from separate Gmsh entities. Away from a cut
             # plane, image/source identity prevents accidental welding of
@@ -598,9 +596,7 @@ def _active_boundaries_after_expansion(system, boundaries, expanded_by_resource)
             mesh = expanded_by_resource[mesh_id].mesh
             if region.kind == AcousticRegionKind.BOUNDED_AIR:
                 volume_tags = {
-                    _physical_group_tag(mesh, group)
-                    for group in region.volume_groups
-                    if group.mesh_id == mesh_id
+                    _physical_group_tag(mesh, group) for group in region.volume_groups if group.mesh_id == mesh_id
                 }
                 present = set(selected_volume_surface_tags(mesh, volume_tags))
             else:

@@ -53,11 +53,7 @@ def _worker(backend: str) -> BeatEngineWorkerProcess:
     normalized = backend.strip().lower()
     if normalized not in {"cuda", "cpu"}:
         raise ValueError("Deploy worker backend must be cuda or cpu.")
-    project = (
-        DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-        if normalized == "cuda"
-        else DEFAULT_BEAT_ENGINE_CPU_PROJECT
-    )
+    project = DEFAULT_BEAT_ENGINE_CUDA_PROJECT if normalized == "cuda" else DEFAULT_BEAT_ENGINE_CPU_PROJECT
     return BeatEngineWorkerProcess(
         julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
         solver_script=DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
@@ -118,7 +114,9 @@ def _transducer_velocity_result(result: dict[str, Any], request: dict[str, Any])
 
 
 def _speaker_electrical_result(
-    result: dict[str, Any], request: dict[str, Any], frequency_index: int,
+    result: dict[str, Any],
+    request: dict[str, Any],
+    frequency_index: int,
 ) -> dict[str, Any]:
     """Aggregate ROM coil currents and applied RMS voltage per cabinet instance."""
 
@@ -146,7 +144,9 @@ def _speaker_electrical_result(
         imag_values = raw_current.get("imag") if isinstance(raw_current, dict) else None
         input_real = drive.get("input_real") if isinstance(drive, dict) else None
         input_imag = drive.get("input_imag") if isinstance(drive, dict) else None
-        if not all(isinstance(values, list) and values for values in (real_values, imag_values, input_real, input_imag)):
+        if not all(
+            isinstance(values, list) and values for values in (real_values, imag_values, input_real, input_imag)
+        ):
             raise RuntimeError("BEAT Engine electrical current or voltage result is invalid.")
         if len(real_values) != len(imag_values):
             raise RuntimeError("BEAT Engine coil-current real and imaginary counts differ.")
@@ -185,9 +185,7 @@ def _solve(
         package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
         package = solve_cache.load_package(package_path)
         representation = (
-            package.coupled_model.get("representation")
-            if isinstance(package.coupled_model, dict)
-            else None
+            package.coupled_model.get("representation") if isinstance(package.coupled_model, dict) else None
         )
         if representation == "parity_petrov_galerkin_rom":
             # The ROM path uses the same BEAT solver process as Level 2, so it
@@ -202,8 +200,10 @@ def _solve(
         prepare_started = time.perf_counter()
         requested_solution_key = str(payload.get("solutionKey", "")) if isinstance(payload, dict) else ""
         reuse_boundary = bool(payload.get("reuseBoundary", False)) if isinstance(payload, dict) else False
-        field_only = reuse_boundary and bool(requested_solution_key) and (
-            solution_keys.get(worker_key) == requested_solution_key
+        field_only = (
+            reuse_boundary
+            and bool(requested_solution_key)
+            and (solution_keys.get(worker_key) == requested_solution_key)
         )
         if field_only:
             request_path, _request = prepare_deploy_field_request(payload, temp_dir)
@@ -287,9 +287,12 @@ def _microphone_sweep(
     frequencies = sorted({float(value) for value in package_data.frequencies})
     if representation == "parity_petrov_galerkin_rom":
         arrays = coupled_model.get("arrays")
-        rom_frequencies = np.asarray(arrays.get("frequencies_hz", ()), dtype=np.float64) if isinstance(arrays, dict) else np.empty(0)
+        rom_frequencies = (
+            np.asarray(arrays.get("frequencies_hz", ()), dtype=np.float64) if isinstance(arrays, dict) else np.empty(0)
+        )
         frequencies = [
-            value for value in frequencies
+            value
+            for value in frequencies
             if rom_frequencies.size and np.min(np.abs(rom_frequencies - value)) <= max(1e-4, abs(value) * 1e-6)
         ]
     if not frequencies:
@@ -380,13 +383,15 @@ def _microphone_sweep(
         prepare_seconds = time.perf_counter() - prepare_started
         request_bytes = request_path.stat().st_size
         provenance = _request.get("provenance", {})
-        rom_stage_metrics = {
-            "rom_sweep_stage_cache_hit": int(provenance.get("rom_sweep_stage_cache_hit", 0)),
-            "rom_sweep_stage_binary_bytes": int(provenance.get("rom_sweep_stage_binary_bytes", 0)),
-            "rom_sweep_stage_binary_bytes_written": int(
-                provenance.get("rom_sweep_stage_binary_bytes_written", 0)
-            ),
-        } if rom_coupled and isinstance(provenance, dict) else {}
+        rom_stage_metrics = (
+            {
+                "rom_sweep_stage_cache_hit": int(provenance.get("rom_sweep_stage_cache_hit", 0)),
+                "rom_sweep_stage_binary_bytes": int(provenance.get("rom_sweep_stage_binary_bytes", 0)),
+                "rom_sweep_stage_binary_bytes_written": int(provenance.get("rom_sweep_stage_binary_bytes_written", 0)),
+            }
+            if rom_coupled and isinstance(provenance, dict)
+            else {}
+        )
         julia_started = time.perf_counter()
         for event in worker.submit(
             request_path,
@@ -423,23 +428,45 @@ def _microphone_sweep(
                 pressure_imag = pressure.get("imag") if isinstance(pressure, dict) else []
                 if microphone_ids and (not isinstance(pressure_real, list) or not isinstance(pressure_imag, list)):
                     raise RuntimeError("BEAT Engine microphone pressure result is invalid.")
-                if microphone_ids and (len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids)):
+                if microphone_ids and (
+                    len(pressure_real) != len(microphone_ids) or len(pressure_imag) != len(microphone_ids)
+                ):
                     raise RuntimeError("BEAT Engine microphone pressure result does not match the microphone count.")
                 for microphone_index in range(len(microphone_ids)):
                     spl_rows[microphone_index][frequency_index] = float(spl[microphone_index])
                     pressure_real_rows[microphone_index][frequency_index] = float(pressure_real[microphone_index])
                     pressure_imag_rows[microphone_index][frequency_index] = float(pressure_imag[microphone_index])
-                transducer_velocity = _transducer_velocity_result(frequency_result, _request) if rom_coupled else {
-                    "ids": [], "names": [], "real": [], "imag": [],
-                }
+                transducer_velocity = (
+                    _transducer_velocity_result(frequency_result, _request)
+                    if rom_coupled
+                    else {
+                        "ids": [],
+                        "names": [],
+                        "real": [],
+                        "imag": [],
+                    }
+                )
                 if transducer_velocity["ids"] != transducer_ids:
                     raise RuntimeError("BEAT Engine transducer ordering changed during the frequency sweep.")
                 for transducer_index in range(len(transducer_ids)):
-                    velocity_real_rows[transducer_index][frequency_index] = transducer_velocity["real"][transducer_index]
-                    velocity_imag_rows[transducer_index][frequency_index] = transducer_velocity["imag"][transducer_index]
-                electrical = _speaker_electrical_result(frequency_result, _request, frequency_index) if rom_coupled else {
-                    "ids": [], "names": [], "voltage_real": [], "voltage_imag": [], "current_real": [], "current_imag": [],
-                }
+                    velocity_real_rows[transducer_index][frequency_index] = transducer_velocity["real"][
+                        transducer_index
+                    ]
+                    velocity_imag_rows[transducer_index][frequency_index] = transducer_velocity["imag"][
+                        transducer_index
+                    ]
+                electrical = (
+                    _speaker_electrical_result(frequency_result, _request, frequency_index)
+                    if rom_coupled
+                    else {
+                        "ids": [],
+                        "names": [],
+                        "voltage_real": [],
+                        "voltage_imag": [],
+                        "current_real": [],
+                        "current_imag": [],
+                    }
+                )
                 if electrical["ids"] != speaker_ids:
                     raise RuntimeError("BEAT Engine speaker ordering changed during the frequency sweep.")
                 for speaker_index in range(len(speaker_ids)):

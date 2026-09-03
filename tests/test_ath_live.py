@@ -903,9 +903,7 @@ def test_group_delay_combines_standard_crossover_and_configured_delay() -> None:
     assert group_delay is not None
     solved_frequencies, _names, values_ms = group_delay
     cutoff_rad_s = 2.0 * np.pi * cutoff_hz
-    crossover_delay_ms = (
-        cutoff_rad_s / (cutoff_rad_s**2 + (2.0 * np.pi * solved_frequencies) ** 2) * 1000.0
-    )
+    crossover_delay_ms = cutoff_rad_s / (cutoff_rad_s**2 + (2.0 * np.pi * solved_frequencies) ** 2) * 1000.0
     np.testing.assert_allclose(
         values_ms[:, 1:-1],
         np.broadcast_to(

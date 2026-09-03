@@ -180,7 +180,6 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
     assert "workers=1" in assembler_source
-    assert "worker_count=1" in solve_source
     assert "workers: int = 1" in config_source
 
 

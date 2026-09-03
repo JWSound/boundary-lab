@@ -67,9 +67,7 @@ class ChannelsMixin:
         if system is None:
             return ()
         electrodynamic_component_ids = {
-            component.id
-            for component in system.components
-            if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            component.id for component in system.components if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
         }
         channel_by_component = self.project.component_channel_by_id
         kinds_by_channel: dict[str, set[ExcitationPortKind]] = {}
@@ -81,16 +79,14 @@ class ChannelsMixin:
                 discovered_order.append(channel_name)
             kinds_by_channel.setdefault(channel_name, set()).add(port.kind)
             has_transducer_by_channel[channel_name] = (
-                has_transducer_by_channel.get(channel_name, False)
-                or port.component_id in electrodynamic_component_ids
+                has_transducer_by_channel.get(channel_name, False) or port.component_id in electrodynamic_component_ids
             )
         configured_order = [channel.name for channel in self.channel_configs()]
         ordered_names = tuple(dict.fromkeys((*configured_order, *discovered_order)))
         return tuple(
             name
             for name in ordered_names
-            if kinds_by_channel.get(name) == {ExcitationPortKind.VOLTAGE}
-            and has_transducer_by_channel.get(name, False)
+            if kinds_by_channel.get(name) == {ExcitationPortKind.VOLTAGE} and has_transducer_by_channel.get(name, False)
         )
 
     def discard_channel_config_dialog(self) -> None:

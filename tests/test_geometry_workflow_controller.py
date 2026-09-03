@@ -47,6 +47,7 @@ class FakeView:
     def set_plot_exports_available(self, available):
         self.plot_exports.append(available)
 
+
 class FakePlots:
     def __init__(self) -> None:
         self.calls: list[str] = []

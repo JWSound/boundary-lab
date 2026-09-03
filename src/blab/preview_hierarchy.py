@@ -171,7 +171,7 @@ def _source_surfaces_for_mesh(
                 for source_key, solver_key in solver_surface_by_source.items()
                 if source_key[0] == mesh_name
             ),
-            key=lambda item: (-1 if item[0][1] is None else int(item[0][1])),
+            key=lambda item: -1 if item[0][1] is None else int(item[0][1]),
         )
     )
 
