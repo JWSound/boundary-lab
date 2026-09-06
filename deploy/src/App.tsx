@@ -26,6 +26,8 @@ import { SceneView, type FieldTextureProfile, type ObservationResizeUpdate, type
 import { type BemResponseData, MicrophoneResponsePlot } from "./components/MicrophoneResponsePlot";
 import { DriverExcursionPlot, type DriverExcursionData } from "./components/DriverExcursionPlot";
 import { ElectricalPlot, type ElectricalData, type ElectricalTrace } from "./components/ElectricalPlot";
+import { captureAnalysis, microphoneOverlays, serializeCapture, type AnalysisCapture } from "./model/analysisCapture";
+import type { MicrophoneSweepResult } from "./model/types";
 import {
   browserFileHandler,
   ChannelsPanel,
@@ -286,6 +288,11 @@ export function App() {
   const [analysisTab, setAnalysisTab] = useState<"microphones" | "speakers">("microphones");
   const [speakerQuantity, setSpeakerQuantity] = useState<"excursion" | "impedance" | "current" | "power">("excursion");
   const [analysisSpeakerId, setAnalysisSpeakerId] = useState("all");
+  const [followSpeakerSelection, setFollowSpeakerSelection] = useState(false);
+  const [captures, setCaptures] = useState<AnalysisCapture[]>([]);
+  const [visibleCaptureIds, setVisibleCaptureIds] = useState<Set<string>>(() => new Set());
+  const [captureName, setCaptureName] = useState("");
+  const [rawSweeps, setRawSweeps] = useState<Partial<Record<"boundary" | "coupled", { key: string; result: MicrophoneSweepResult }>>>({});
   useEffect(() => {
     if (analysisSpeakerId !== "all" && !sourceConfigs.some((source) => source.id === analysisSpeakerId)) setAnalysisSpeakerId("all");
   }, [analysisSpeakerId, sourceConfigs]);
@@ -559,14 +566,30 @@ export function App() {
   const currentCoupledResponses = responseHistory.coupled?.key === analysisKeyFor("coupled") ? responseHistory.coupled : null;
   const currentDriverExcursion = retainedExcursion?.key === analysisKeyFor("coupled") ? retainedExcursion : null;
   const currentElectricalResponse = retainedElectrical?.key === analysisKeyFor("coupled") ? retainedElectrical : null;
-  const speakerExcursion = currentDriverExcursion && {
-    ...currentDriverExcursion,
-    traces: new Map([...currentDriverExcursion.traces].filter(([id]) => analysisSpeakerId === "all" || id.startsWith(`${analysisSpeakerId}:`))),
+  const visibleCaptures = captures.filter((capture) => visibleCaptureIds.has(capture.id));
+  const capturedMicrophones = microphoneOverlays(visibleCaptures);
+  const speakerMatches = (id: string, driver: boolean) => {
+    const ids = followSpeakerSelection ? selectedSourceIds : analysisSpeakerId === "all" ? null : [analysisSpeakerId];
+    return ids === null || ids.some((sourceId) => driver ? id.startsWith(`${sourceId}:`) : id === sourceId);
   };
-  const speakerElectrical = currentElectricalResponse && {
-    ...currentElectricalResponse,
-    traces: new Map([...currentElectricalResponse.traces].filter(([id]) => analysisSpeakerId === "all" || id === analysisSpeakerId)),
+  const speakerExcursion: DriverExcursionData = {
+    key: "comparison",
+    frequenciesHz: currentDriverExcursion?.frequenciesHz ?? new Float64Array(),
+    traces: new Map([...currentDriverExcursion?.traces ?? []].filter(([id]) => speakerMatches(id, true))),
   };
+  const speakerElectrical: ElectricalData = {
+    key: "comparison",
+    frequenciesHz: currentElectricalResponse?.frequenciesHz ?? new Float64Array(),
+    traces: new Map([...currentElectricalResponse?.traces ?? []].filter(([id]) => speakerMatches(id, false))),
+  };
+  for (const capture of visibleCaptures) {
+    if (capture.excursion) for (const [id, trace] of capture.excursion.traces) {
+      if (speakerMatches(id, true)) speakerExcursion.traces.set(`${capture.id}:${id}`, { ...trace, name: `${capture.name} / ${trace.name}`, frequenciesHz: capture.excursion.frequenciesHz });
+    }
+    if (capture.electrical) for (const [id, trace] of capture.electrical.traces) {
+      if (speakerMatches(id, false)) speakerElectrical.traces.set(`${capture.id}:${id}`, { ...trace, name: `${capture.name} / ${trace.name}`, frequenciesHz: capture.electrical.frequenciesHz });
+    }
+  }
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     packages,
@@ -580,6 +603,33 @@ export function App() {
     fidelity,
   ));
   const projectEdited = savedProjectSnapshot === null || savedProjectSnapshot !== currentProjectContents;
+  const captureCurrentAnalysis = () => {
+    const id = crypto.randomUUID();
+    const raw: AnalysisCapture["raw"] = {};
+    for (const method of ["boundary", "coupled"] as const) {
+      const sweep = rawSweeps[method];
+      if (sweep?.key === analysisKeyFor(method)) raw[method] = sweep.result;
+    }
+    const capture = captureAnalysis({
+      id, name: captureName.trim() || `Capture ${captures.length + 1}`, createdAt: new Date().toISOString(),
+      project: currentProjectContents, pattern: microphonePatternResponses,
+      boundary: raw.boundary ? currentBoundaryResponses : null,
+      coupled: raw.coupled ? currentCoupledResponses : null,
+      excursion: raw.coupled ? currentDriverExcursion : null,
+      electrical: raw.coupled ? currentElectricalResponse : null, raw,
+    });
+    setCaptures((previous) => [...previous, capture]);
+    setVisibleCaptureIds((previous) => new Set([...previous, id]));
+    setCaptureName("");
+  };
+  const downloadCapture = (capture: AnalysisCapture) => {
+    const url = URL.createObjectURL(new Blob([serializeCapture(capture)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${capture.name.replace(/[^a-zA-Z0-9_-]/g, "_")}.blabanalysis.json`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   const initializePackage = (next: LoadedSpeakerPackage) => {
     solveGeneration.current += 1;
@@ -1050,6 +1100,7 @@ export function App() {
   const calculateMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || !level2Package?.sourcePath || (microphones.length === 0 && fidelity !== "coupled")) return;
     const requestedKey = microphoneSweepKey;
+    setRawSweeps((previous) => ({ ...previous, [fidelity === "coupled" ? "coupled" : "boundary"]: undefined }));
     microphoneSweepKeyRef.current = requestedKey;
     stoppingMicrophoneSweep.current = false;
     setLiveSolveEnabled(false);
@@ -1092,6 +1143,10 @@ export function App() {
         return;
       }
       if (microphoneSweepKeyRef.current !== requestedKey) return;
+      if (result.completed_count === result.total_count) {
+        const method = fidelity === "coupled" ? "coupled" : "boundary";
+        setRawSweeps((previous) => ({ ...previous, [method]: { key: requestedKey, result: structuredClone(result) } }));
+      }
       if (result.pipeline) {
         window.boundaryLabDeployProfile = {
           kind: "microphone-sweep",
@@ -2186,6 +2241,26 @@ export function App() {
         />
         <div className="analysis-body">
           <div className="analysis-plot-stack">
+            <div className="response-toolbar">
+              <input aria-label="Capture name" placeholder="Name this comparison" value={captureName} onChange={(event) => setCaptureName(event.target.value)} />
+              <button disabled={microphonePatternResponses.traces.length === 0 && !currentDriverExcursion} onClick={captureCurrentAnalysis}>Capture results</button>
+              <span>Captures stay fixed as the scene changes. Download to keep a copy.</span>
+            </div>
+            {captures.length > 0 && <div className="analysis-captures" aria-label="Captured results">
+              {captures.map((capture) => <div key={capture.id}>
+                <label><input type="checkbox" checked={visibleCaptureIds.has(capture.id)} onChange={() => setVisibleCaptureIds((previous) => {
+                  const next = new Set(previous);
+                  if (next.has(capture.id)) next.delete(capture.id); else next.add(capture.id);
+                  return next;
+                })} />{capture.name}</label>
+                <span>{capture.boundary ? "Boundary · " : ""}{capture.coupled ? "Coupled · " : ""}Pattern</span>
+                <button onClick={() => downloadCapture(capture)} aria-label={`Download ${capture.name}`}>Download</button>
+                <button onClick={() => {
+                  setCaptures((previous) => previous.filter((item) => item.id !== capture.id));
+                  setVisibleCaptureIds((previous) => { const next = new Set(previous); next.delete(capture.id); return next; });
+                }} aria-label={`Remove ${capture.name}`}>Remove</button>
+              </div>)}
+            </div>}
             <div className="analysis-tabs" role="tablist" aria-label="Frequency analysis plots">
               <button role="tab" aria-selected={analysisTab === "microphones"} className={analysisTab === "microphones" ? "active" : ""} onClick={() => setAnalysisTab("microphones")}><Mic2 size={11} /> Microphones</button>
               <button role="tab" aria-selected={analysisTab === "speakers"} className={analysisTab === "speakers" ? "active" : ""} onClick={() => setAnalysisTab("speakers")}><SlidersHorizontal size={11} /> Speakers</button>
@@ -2198,15 +2273,16 @@ export function App() {
                 <option value="power">Real input power</option>
               </select>
             </label><label>Subjects
-              <select aria-label="Speaker response subjects" value={analysisSpeakerId} onChange={(event) => setAnalysisSpeakerId(event.target.value)}>
+              <select aria-label="Speaker response subjects" disabled={followSpeakerSelection} value={analysisSpeakerId} onChange={(event) => setAnalysisSpeakerId(event.target.value)}>
                 <option value="all">All speakers</option>
                 {sourceConfigs.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
               </select>
-            </label><span>Coupled results</span></div>}
+            </label><label><input type="checkbox" checked={followSpeakerSelection} onChange={(event) => setFollowSpeakerSelection(event.target.checked)} />Follow selection</label><span>{followSpeakerSelection && selectedSourceIds.length === 0 ? "Select a speaker in the scene" : "Coupled results"}</span></div>}
             {analysisTab === "microphones" ? <MicrophoneResponsePlot
               pattern={microphonePatternResponses}
               bem={currentBoundaryResponses}
               coupled={currentCoupledResponses}
+              overlays={capturedMicrophones}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}
@@ -2219,7 +2295,7 @@ export function App() {
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
             /> : speakerQuantity === "excursion" ? <DriverExcursionPlot
               data={speakerExcursion}
-              coupledSelected={fidelity === "coupled" || currentDriverExcursion !== null}
+              coupledSelected={fidelity === "coupled" || speakerExcursion.traces.size > 0}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}
@@ -2232,7 +2308,7 @@ export function App() {
             /> : <ElectricalPlot
               data={speakerElectrical}
               view={speakerQuantity}
-              coupledSelected={fidelity === "coupled" || currentElectricalResponse !== null}
+              coupledSelected={fidelity === "coupled" || speakerElectrical.traces.size > 0}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}

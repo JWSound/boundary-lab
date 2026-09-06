@@ -62,7 +62,17 @@ fidelity, provided its scene and frequency grid still match.
 Speakers provides a cabinet selector and quantities for excursion, electrical
 impedance, RMS current, and real input power. Calculated coupled responses remain
 viewable while inspecting another audience-plane fidelity. Results are currently
-session-only; named captures and acoustic-loading comparisons are future additions.
+session-only. **Capture results** freezes the current pattern and available
+completed sweeps under a name, including the project configuration and raw complex
+sweep data. Captures can be toggled as overlays after editing the scene, and keep
+their own frequency grids. **Download** exports a `.blabanalysis.json` copy (maps
+and typed arrays become JSON objects and arrays; unavailable numeric samples are
+null). Captures are not embedded in project files and importing downloads is not
+yet supported. Speaker plots offer **Follow selection** or a pinned cabinet
+selector. Acoustic-loading comparisons remain a future addition.
+
+Microphone magnitude line styles are Pattern dotted, Boundary dashed, and
+Coupled solid, including captured overlays.
 
 ```powershell
 npm run test:package

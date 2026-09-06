@@ -310,7 +310,10 @@ button { color: inherit; }
 .crosshair-labels rect { fill: #101411; stroke: #d5d2ca; stroke-width: .8; vector-effect: non-scaling-stroke; }
 .crosshair-labels text { fill: #f1efe8; font-weight: 700; }
 .pattern-trace, .bem-trace { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.pattern-trace { stroke-dasharray: 5 4; opacity: .72; }
+.pattern-trace { stroke-dasharray: 1 4; stroke-linecap: round; opacity: .85; }
+.analysis-captures { display: flex; gap: 12px; padding: 4px 10px; overflow: auto; max-height: 80px; flex-shrink: 0; }
+.analysis-captures > div { display: flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 11px; }
+.analysis-captures span { color: #aeb5ad; }
 .bem-trace { stroke-width: 2.2; }
 .axis-title { fill: #d4dad2 !important; font-weight: 700 !important; }
 .response-legend { position: absolute; left: 54px; right: 20px; top: 17px; display: flex; align-items: center; gap: 12px; pointer-events: none; color: #aeb5ad; font-size: 8px; }

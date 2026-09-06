@@ -8,6 +8,7 @@ const FREQUENCY_MINIMUM_HZ = 20;
 const MAJOR_FREQUENCIES_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 export interface ElectricalTrace {
+  frequenciesHz?: Float64Array;
   name: string;
   impedanceMagnitudeOhm: Float32Array;
   impedancePhaseDeg: Float32Array;
@@ -96,9 +97,11 @@ export function ElectricalPlot({
   const phaseY = (value: number) => padding.top + ((180 - value) / 360) * (plotBottom - padding.top);
   const path = (frequencies: Float64Array, values: Float32Array, ordinate: (value: number) => number) => {
     let result = "";
+    let connected = false;
     for (let index = 0; index < Math.min(frequencies.length, values.length); index += 1) {
-      if (!Number.isFinite(values[index]) || frequencies[index] > frequencyMaximum) continue;
-      result += `${result ? " L" : "M"}${x(frequencies[index]).toFixed(2)},${ordinate(values[index]).toFixed(2)}`;
+      if (!Number.isFinite(values[index]) || frequencies[index] > frequencyMaximum) { connected = false; continue; }
+      result += `${connected ? " L" : " M"}${x(frequencies[index]).toFixed(2)},${ordinate(values[index]).toFixed(2)}`;
+      connected = true;
     }
     return result;
   };
@@ -145,8 +148,8 @@ export function ElectricalPlot({
               {view === "impedance" && <text x={width - 12} y={(padding.top + plotBottom) / 2} transform={`rotate(90 ${width - 12} ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Phase (deg)</text>}
               <g clipPath="url(#electrical-plot-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
-                {view === "impedance" && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-phase`} d={path(data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
+                {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
+                {view === "impedance" && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-phase`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
               </g>
             </svg>
             <div className="response-legend electrical-legend">

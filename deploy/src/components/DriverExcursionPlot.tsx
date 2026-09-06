@@ -7,6 +7,7 @@ const AUDIO_FREQUENCY_MINIMUM_HZ = 20;
 const AUDIO_FREQUENCY_MAJOR_TICKS_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 
 export interface DriverExcursionTrace {
+  frequenciesHz?: Float64Array;
   name: string;
   excursionMm: Float32Array;
 }
@@ -139,7 +140,7 @@ export function DriverExcursionPlot({
               <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Peak excursion (mm)</text>
               <g clipPath="url(#driver-excursion-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {traces.flatMap(([id, trace], index) => hiddenTraceIds.has(id) ? [] : paths(data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
+                {traces.flatMap(([id, trace], index) => hiddenTraceIds.has(id) ? [] : paths(trace.frequenciesHz ?? data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
               </g>
             </svg>
             <button className="response-range-toggle" type="button" onClick={() => setFrequencyMaximum((current) => current === 2000 ? 20000 : 2000)}>20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>

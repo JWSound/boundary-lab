@@ -687,6 +687,37 @@ function createWindow() {
         throw new Error("Plot axis labels changed size or left the SVG bounds during drawer resize.");
       }
       let emptySourceInteraction = null;
+      const analysisCaptureInteraction = await window.webContents.executeJavaScript(`(async () => {
+        const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const captureButton = Array.from(document.querySelectorAll('button')).find((button) => button.textContent === 'Capture results');
+        if (!captureButton || captureButton.disabled) throw new Error('Capture control unavailable');
+        const before = document.querySelectorAll('.pattern-trace').length;
+        captureButton.click();
+        await frame();
+        const after = document.querySelectorAll('.pattern-trace').length;
+        const saved = document.querySelector('.analysis-captures input[type="checkbox"]');
+        if (!saved || after <= before) throw new Error('Captured overlay did not appear');
+        saved.click();
+        await frame();
+        if (document.querySelectorAll('.pattern-trace').length !== before) throw new Error('Captured overlay did not hide');
+        const dash = getComputedStyle(document.querySelector('.pattern-trace')).strokeDasharray;
+        if (!dash.startsWith('1')) throw new Error('Pattern trace is not dotted');
+        Array.from(document.querySelectorAll('[role="tab"]')).find((button) => button.textContent.includes('Speakers')).click();
+        await frame();
+        const quantity = document.querySelector('select[aria-label="Speaker response quantity"]');
+        if (quantity.options.length !== 4) throw new Error('Speaker quantities missing');
+        const follow = Array.from(document.querySelectorAll('label')).find((label) => label.textContent.includes('Follow selection')).querySelector('input');
+        follow.click();
+        await frame();
+        if (!document.querySelector('select[aria-label="Speaker response subjects"]').disabled) throw new Error('Follow selection did not disable pinned selection');
+        follow.click();
+        Array.from(document.querySelectorAll('[role="tab"]')).find((button) => button.textContent.includes('Microphones')).click();
+        await frame();
+        document.querySelector('button[aria-label="Remove Capture 1"]').click();
+        await frame();
+        return { before, after, dotted: true, followSelection: true };
+      })()`);
+      console.log(JSON.stringify({ analysisCaptureInteraction }));
       if (!level2Smoke) {
         emptySourceInteraction = await window.webContents.executeJavaScript(`new Promise((resolve) => {
           const sourceRows = Array.from(document.querySelectorAll('.tree-button[data-object-id^="subwoofer-"]'));
@@ -787,7 +818,7 @@ function createWindow() {
     setTimeout(() => {
       console.error("Deploy desktop smoke test timed out.");
       app.exit(1);
-    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 60000).unref();
+    }, benchmarkLevel2 ? 720000 : level2Smoke ? 130000 : 90000).unref();
   }
 
   if (app.isPackaged || process.argv.includes("--built")) {

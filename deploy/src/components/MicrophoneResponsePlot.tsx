@@ -15,6 +15,14 @@ export interface BemResponseData {
   traces: Map<string, Float32Array>;
 }
 
+export interface MicrophoneOverlay {
+  id: string;
+  name: string;
+  method: "pattern" | "boundary" | "coupled";
+  frequenciesHz: Float64Array;
+  values: Float32Array;
+}
+
 function formatFrequency(value: number): string {
   if (value < 1000) return `${Math.round(value)}`;
   const kilohertz = value / 1000;
@@ -37,6 +45,7 @@ export function MicrophoneResponsePlot({
   pattern,
   bem,
   coupled,
+  overlays = [],
   currentFrequencyHz,
   frequencyPosition,
   frequencyCount,
@@ -51,6 +60,7 @@ export function MicrophoneResponsePlot({
   pattern: MicrophoneResponseSet;
   bem: BemResponseData | null;
   coupled: BemResponseData | null;
+  overlays?: MicrophoneOverlay[];
   currentFrequencyHz: number;
   frequencyPosition: number;
   frequencyCount: number;
@@ -76,9 +86,10 @@ export function MicrophoneResponsePlot({
     if (visibleMethods.pattern) for (const trace of pattern.traces) for (const value of trace.splDb) if (Number.isFinite(value)) values.push(value);
     if (bem && visibleMethods.boundary) for (const trace of bem.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
     if (coupled && visibleMethods.coupled) for (const trace of coupled.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
+    for (const overlay of overlays) if (visibleMethods[overlay.method]) for (const value of overlay.values) if (Number.isFinite(value)) values.push(value);
     const maximum = values.length ? Math.ceil(Math.max(...values) / 5) * 5 : 145;
     return [maximum - RESPONSE_DB_SPAN, maximum] as const;
-  }, [bem, coupled, pattern, visibleMethods]);
+  }, [bem, coupled, pattern, visibleMethods, overlays]);
   const logMinimum = Math.log10(AUDIO_FREQUENCY_MINIMUM_HZ);
   const logRange = Math.max(1e-9, Math.log10(frequencyMaximum) - logMinimum);
   const plotRight = Math.max(padding.left + 1, width - padding.right);
@@ -182,7 +193,7 @@ export function MicrophoneResponsePlot({
         >{calculating ? <Square size={11} fill="currentColor" /> : <Waves size={12} />} {calculating ? `Stop ${completedCount}/${totalCount}` : calculationLabel}</button>
       </div>
       <div className="response-content">
-        {pattern.traces.length === 0 ? (
+        {pattern.traces.length === 0 && overlays.length === 0 ? (
           <div className="response-empty">Add a microphone to display its package-derived frequency response.</div>
         ) : (
           <div className="response-plot-layout">
@@ -226,16 +237,19 @@ export function MicrophoneResponsePlot({
                   if (hiddenTraceIds.has(trace.microphoneId)) return [];
                   const values = bem.traces.get(trace.microphoneId);
                   return values ? paths(bem.frequenciesHz, values).map((path, pathIndex) => (
-                    <path key={`bem-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" />
+                    <path key={`bem-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" strokeDasharray="8 4" />
                   )) : [];
                 })}
                 {visibleMethods.coupled && coupled && pattern.traces.flatMap((trace, index) => {
                   if (hiddenTraceIds.has(trace.microphoneId)) return [];
                   const values = coupled.traces.get(trace.microphoneId);
                   return values ? paths(coupled.frequenciesHz, values).map((path, pathIndex) => (
-                    <path key={`coupled-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" strokeDasharray="2 4" />
+                    <path key={`coupled-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" />
                   )) : [];
                 })}
+                {overlays.flatMap((trace, index) => !visibleMethods[trace.method] || hiddenTraceIds.has(trace.id) ? [] : paths(trace.frequenciesHz, trace.values).map((path, part) => (
+                  <path key={`${trace.id}-${part}`} d={path} stroke={TRACE_COLORS[(pattern.traces.length + index) % TRACE_COLORS.length]} className={trace.method === "pattern" ? "pattern-trace" : "bem-trace"} strokeDasharray={trace.method === "boundary" ? "8 4" : undefined} />
+                )))}
                 {crosshair && <>
                   <line x1={crosshairX} x2={crosshairX} y1={padding.top} y2={plotBottom} className="plot-crosshair" />
                   <line x1={padding.left} x2={plotRight} y1={crosshairY} y2={crosshairY} className="plot-crosshair" />
@@ -251,10 +265,10 @@ export function MicrophoneResponsePlot({
             </svg>
             <div className="response-legend">
               {(["pattern", "boundary", "coupled"] as const).map((method) => {
-                const available = method === "pattern" || (method === "boundary" ? bem : coupled) !== null;
+                const available = method === "pattern" || (method === "boundary" ? bem : coupled) !== null || overlays.some((trace) => trace.method === method);
                 return <label key={method} title={available ? `Show ${method} results` : `Calculate ${method} for the current scene to compare`}>
                   <input type="checkbox" checked={visibleMethods[method]} disabled={!available} onChange={(event) => setVisibleMethods((previous) => ({ ...previous, [method]: event.target.checked }))} />
-                  {method === "pattern" ? "Pattern – –" : method === "boundary" ? "Boundary —" : "Coupled ···"}{!available && " (not calculated)"}
+                  {method === "pattern" ? "Pattern ···" : method === "boundary" ? "Boundary – –" : "Coupled —"}{!available && " (not calculated)"}
                 </label>;
               })}
             </div>
@@ -266,7 +280,7 @@ export function MicrophoneResponsePlot({
             >20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>
             </div>
             <TraceVisibilityFilter
-              items={pattern.traces.map((trace, index) => ({ id: trace.microphoneId, name: trace.microphoneName, color: TRACE_COLORS[index % TRACE_COLORS.length] }))}
+              items={[...pattern.traces.map((trace, index) => ({ id: trace.microphoneId, name: trace.microphoneName, color: TRACE_COLORS[index % TRACE_COLORS.length] })), ...overlays.map((trace, index) => ({ id: trace.id, name: trace.name, color: TRACE_COLORS[(pattern.traces.length + index) % TRACE_COLORS.length] }))]}
               hiddenIds={hiddenTraceIds}
               onToggle={toggleTrace}
             />
