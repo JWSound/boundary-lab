@@ -36,6 +36,7 @@ function logarithmicMinorTicks(maximumHz: number): number[] {
 export function MicrophoneResponsePlot({
   pattern,
   bem,
+  coupled,
   currentFrequencyHz,
   frequencyPosition,
   frequencyCount,
@@ -49,6 +50,7 @@ export function MicrophoneResponsePlot({
 }: {
   pattern: MicrophoneResponseSet;
   bem: BemResponseData | null;
+  coupled: BemResponseData | null;
   currentFrequencyHz: number;
   frequencyPosition: number;
   frequencyCount: number;
@@ -66,15 +68,17 @@ export function MicrophoneResponsePlot({
   const [crosshair, setCrosshair] = useState<{ frequencyHz: number; splDb: number } | null>(null);
   const [crosshairDragging, setCrosshairDragging] = useState(false);
   const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
+  const [visibleMethods, setVisibleMethods] = useState({ pattern: true, boundary: true, coupled: true });
   const crosshairDraggingRef = useRef(false);
   const frequencies = pattern.frequenciesHz;
   const limits = useMemo(() => {
     const values: number[] = [];
-    for (const trace of pattern.traces) for (const value of trace.splDb) if (Number.isFinite(value)) values.push(value);
-    if (bem) for (const trace of bem.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
+    if (visibleMethods.pattern) for (const trace of pattern.traces) for (const value of trace.splDb) if (Number.isFinite(value)) values.push(value);
+    if (bem && visibleMethods.boundary) for (const trace of bem.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
+    if (coupled && visibleMethods.coupled) for (const trace of coupled.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
     const maximum = values.length ? Math.ceil(Math.max(...values) / 5) * 5 : 145;
     return [maximum - RESPONSE_DB_SPAN, maximum] as const;
-  }, [bem, pattern]);
+  }, [bem, coupled, pattern, visibleMethods]);
   const logMinimum = Math.log10(AUDIO_FREQUENCY_MINIMUM_HZ);
   const logRange = Math.max(1e-9, Math.log10(frequencyMaximum) - logMinimum);
   const plotRight = Math.max(padding.left + 1, width - padding.right);
@@ -215,14 +219,21 @@ export function MicrophoneResponsePlot({
               <text x={(padding.left + plotRight) / 2} y={height - 5} textAnchor="middle" className="axis-title">Frequency (Hz)</text>
               <g clipPath="url(#microphone-response-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {pattern.traces.flatMap((trace, index) => hiddenTraceIds.has(trace.microphoneId) ? [] : paths(pattern.frequenciesHz, trace.splDb).map((path, pathIndex) => (
+                {visibleMethods.pattern && pattern.traces.flatMap((trace, index) => hiddenTraceIds.has(trace.microphoneId) ? [] : paths(pattern.frequenciesHz, trace.splDb).map((path, pathIndex) => (
                   <path key={`pattern-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="pattern-trace" />
                 )))}
-                {bem && pattern.traces.flatMap((trace, index) => {
+                {visibleMethods.boundary && bem && pattern.traces.flatMap((trace, index) => {
                   if (hiddenTraceIds.has(trace.microphoneId)) return [];
                   const values = bem.traces.get(trace.microphoneId);
                   return values ? paths(bem.frequenciesHz, values).map((path, pathIndex) => (
                     <path key={`bem-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" />
+                  )) : [];
+                })}
+                {visibleMethods.coupled && coupled && pattern.traces.flatMap((trace, index) => {
+                  if (hiddenTraceIds.has(trace.microphoneId)) return [];
+                  const values = coupled.traces.get(trace.microphoneId);
+                  return values ? paths(coupled.frequenciesHz, values).map((path, pathIndex) => (
+                    <path key={`coupled-${trace.microphoneId}-${pathIndex}`} d={path} stroke={TRACE_COLORS[index % TRACE_COLORS.length]} className="bem-trace" strokeDasharray="2 4" />
                   )) : [];
                 })}
                 {crosshair && <>
@@ -239,8 +250,13 @@ export function MicrophoneResponsePlot({
               <text x={13} y={(padding.top + plotBottom) / 2} transform={`rotate(-90 13 ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">SPL (dB)</text>
             </svg>
             <div className="response-legend">
-              <em><b className="line-sample pattern" />Pattern</em>
-              {bem && <em><b className="line-sample bem" />BEM</em>}
+              {(["pattern", "boundary", "coupled"] as const).map((method) => {
+                const available = method === "pattern" || (method === "boundary" ? bem : coupled) !== null;
+                return <label key={method} title={available ? `Show ${method} results` : `Calculate ${method} for the current scene to compare`}>
+                  <input type="checkbox" checked={visibleMethods[method]} disabled={!available} onChange={(event) => setVisibleMethods((previous) => ({ ...previous, [method]: event.target.checked }))} />
+                  {method === "pattern" ? "Pattern – –" : method === "boundary" ? "Boundary —" : "Coupled ···"}{!available && " (not calculated)"}
+                </label>;
+              })}
             </div>
             <button
               className="response-range-toggle"

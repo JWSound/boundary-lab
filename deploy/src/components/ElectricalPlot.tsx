@@ -48,6 +48,7 @@ function minorFrequencyTicks(maximumHz: number): number[] {
 
 export function ElectricalPlot({
   data,
+  view = "impedance",
   coupledSelected,
   currentFrequencyHz,
   frequencyPosition,
@@ -60,6 +61,7 @@ export function ElectricalPlot({
   onCalculateOrStop,
 }: {
   data: ElectricalData | null;
+  view?: ElectricalView;
   coupledSelected: boolean;
   currentFrequencyHz: number;
   frequencyPosition: number;
@@ -71,7 +73,6 @@ export function ElectricalPlot({
   totalCount: number;
   onCalculateOrStop: () => void;
 }) {
-  const [view, setView] = useState<ElectricalView>("impedance");
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
   const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
   const traces = data ? Array.from(data.traces.entries()) : [];
@@ -116,10 +117,8 @@ export function ElectricalPlot({
   return <div className="microphone-response electrical-response">
     <div className="response-toolbar">
       <div className="response-title"><Gauge size={14} /><strong>Electrical</strong></div>
-      <div className="electrical-view-switcher" role="tablist" aria-label="Electrical quantity">
-        <button className={view === "impedance" ? "active" : ""} onClick={() => setView("impedance")}>Impedance</button>
-        <button className={view === "current" ? "active" : ""} onClick={() => setView("current")}>RMS current</button>
-        <button className={view === "power" ? "active" : ""} onClick={() => setView("power")}>Real power</button>
+      <div className="electrical-view-switcher">
+        <span>{view === "impedance" ? "Impedance" : view === "current" ? "RMS current" : "Real input power"}</span>
       </div>
       <label className="response-frequency">
         <span>{formatFrequency(currentFrequencyHz)} Hz</span>

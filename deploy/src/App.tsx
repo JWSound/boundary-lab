@@ -283,7 +283,27 @@ export function App() {
   const [bemMicrophoneResponses, setBemMicrophoneResponses] = useState<BemResponseData | null>(null);
   const [driverExcursion, setDriverExcursion] = useState<DriverExcursionData | null>(null);
   const [electricalResponse, setElectricalResponse] = useState<ElectricalData | null>(null);
-  const [analysisTab, setAnalysisTab] = useState<"microphones" | "excursion" | "electrical">("microphones");
+  const [analysisTab, setAnalysisTab] = useState<"microphones" | "speakers">("microphones");
+  const [speakerQuantity, setSpeakerQuantity] = useState<"excursion" | "impedance" | "current" | "power">("excursion");
+  const [analysisSpeakerId, setAnalysisSpeakerId] = useState("all");
+  useEffect(() => {
+    if (analysisSpeakerId !== "all" && !sourceConfigs.some((source) => source.id === analysisSpeakerId)) setAnalysisSpeakerId("all");
+  }, [analysisSpeakerId, sourceConfigs]);
+  const [responseHistory, setResponseHistory] = useState<Partial<Record<Fidelity, BemResponseData>>>({});
+  const [retainedExcursion, setRetainedExcursion] = useState<DriverExcursionData | null>(null);
+  const [retainedElectrical, setRetainedElectrical] = useState<ElectricalData | null>(null);
+  useEffect(() => {
+    if (bemMicrophoneResponses) {
+      const method = JSON.parse(bemMicrophoneResponses.key).fidelity as Fidelity;
+      setResponseHistory((previous) => ({ ...previous, [method]: bemMicrophoneResponses }));
+    } else setResponseHistory({});
+  }, [bemMicrophoneResponses]);
+  useEffect(() => {
+    if (!driverExcursion || driverExcursion.traces.size) setRetainedExcursion(driverExcursion);
+  }, [driverExcursion]);
+  useEffect(() => {
+    if (!electricalResponse || electricalResponse.traces.size) setRetainedElectrical(electricalResponse);
+  }, [electricalResponse]);
   const [analysisDrawerHeight, setAnalysisDrawerHeight] = useState(220);
   const [analysisDrawerResizing, setAnalysisDrawerResizing] = useState(false);
   const packageFileInput = useRef<HTMLInputElement>(null);
@@ -534,9 +554,19 @@ export function App() {
     : fidelity === "coupled"
       ? coupledAvailable
       : false;
-  const currentBemMicrophoneResponses = bemMicrophoneResponses?.key === microphoneSweepKey ? bemMicrophoneResponses : null;
-  const currentDriverExcursion = driverExcursion?.key === microphoneSweepKey ? driverExcursion : null;
-  const currentElectricalResponse = electricalResponse?.key === microphoneSweepKey ? electricalResponse : null;
+  const analysisKeyFor = (method: Fidelity) => JSON.stringify({ ...JSON.parse(microphoneSweepKey), fidelity: method });
+  const currentBoundaryResponses = responseHistory.boundary?.key === analysisKeyFor("boundary") ? responseHistory.boundary : null;
+  const currentCoupledResponses = responseHistory.coupled?.key === analysisKeyFor("coupled") ? responseHistory.coupled : null;
+  const currentDriverExcursion = retainedExcursion?.key === analysisKeyFor("coupled") ? retainedExcursion : null;
+  const currentElectricalResponse = retainedElectrical?.key === analysisKeyFor("coupled") ? retainedElectrical : null;
+  const speakerExcursion = currentDriverExcursion && {
+    ...currentDriverExcursion,
+    traces: new Map([...currentDriverExcursion.traces].filter(([id]) => analysisSpeakerId === "all" || id.startsWith(`${analysisSpeakerId}:`))),
+  };
+  const speakerElectrical = currentElectricalResponse && {
+    ...currentElectricalResponse,
+    traces: new Map([...currentElectricalResponse.traces].filter(([id]) => analysisSpeakerId === "all" || id === analysisSpeakerId)),
+  };
   const currentProjectContents = serializeDeployProject(createDeployProject(
     projectName,
     packages,
@@ -2158,12 +2188,25 @@ export function App() {
           <div className="analysis-plot-stack">
             <div className="analysis-tabs" role="tablist" aria-label="Frequency analysis plots">
               <button role="tab" aria-selected={analysisTab === "microphones"} className={analysisTab === "microphones" ? "active" : ""} onClick={() => setAnalysisTab("microphones")}><Mic2 size={11} /> Microphones</button>
-              <button role="tab" aria-selected={analysisTab === "excursion"} className={analysisTab === "excursion" ? "active" : ""} onClick={() => setAnalysisTab("excursion")}><Waves size={11} /> Driver excursion</button>
-              <button role="tab" aria-selected={analysisTab === "electrical"} className={analysisTab === "electrical" ? "active" : ""} onClick={() => setAnalysisTab("electrical")}><SlidersHorizontal size={11} /> Electrical</button>
+              <button role="tab" aria-selected={analysisTab === "speakers"} className={analysisTab === "speakers" ? "active" : ""} onClick={() => setAnalysisTab("speakers")}><SlidersHorizontal size={11} /> Speakers</button>
             </div>
+            {analysisTab === "speakers" && <div className="response-toolbar"><label>Quantity
+              <select aria-label="Speaker response quantity" value={speakerQuantity} onChange={(event) => setSpeakerQuantity(event.target.value as typeof speakerQuantity)}>
+                <option value="excursion">Driver excursion</option>
+                <option value="impedance">Electrical impedance</option>
+                <option value="current">RMS current</option>
+                <option value="power">Real input power</option>
+              </select>
+            </label><label>Subjects
+              <select aria-label="Speaker response subjects" value={analysisSpeakerId} onChange={(event) => setAnalysisSpeakerId(event.target.value)}>
+                <option value="all">All speakers</option>
+                {sourceConfigs.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}
+              </select>
+            </label><span>Coupled results</span></div>}
             {analysisTab === "microphones" ? <MicrophoneResponsePlot
               pattern={microphonePatternResponses}
-              bem={currentBemMicrophoneResponses}
+              bem={currentBoundaryResponses}
+              coupled={currentCoupledResponses}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}
@@ -2174,26 +2217,27 @@ export function App() {
               completedCount={microphoneSweepProgress.completed}
               totalCount={microphoneSweepProgress.total}
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
-            /> : analysisTab === "excursion" ? <DriverExcursionPlot
-              data={currentDriverExcursion}
-              coupledSelected={fidelity === "coupled"}
+            /> : speakerQuantity === "excursion" ? <DriverExcursionPlot
+              data={speakerExcursion}
+              coupledSelected={fidelity === "coupled" || currentDriverExcursion !== null}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}
               onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
-              canCalculate={coupledAvailable && solveState !== "solving"}
+              canCalculate={fidelity === "coupled" && coupledAvailable && solveState !== "solving"}
               calculating={microphoneSweepState === "solving"}
               completedCount={microphoneSweepProgress.completed}
               totalCount={microphoneSweepProgress.total}
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
             /> : <ElectricalPlot
-              data={currentElectricalResponse}
-              coupledSelected={fidelity === "coupled"}
+              data={speakerElectrical}
+              view={speakerQuantity}
+              coupledSelected={fidelity === "coupled" || currentElectricalResponse !== null}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}
               onFrequencyPositionChange={(position) => setFrequencyIndex(usableFrequencyIndices[position])}
-              canCalculate={coupledAvailable && solveState !== "solving"}
+              canCalculate={fidelity === "coupled" && coupledAvailable && solveState !== "solving"}
               calculating={microphoneSweepState === "solving"}
               completedCount={microphoneSweepProgress.completed}
               totalCount={microphoneSweepProgress.total}

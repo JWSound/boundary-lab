@@ -53,6 +53,17 @@ The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwi
 
 ## Verification
 
+The analysis drawer groups responses into **Microphones** and **Speakers**.
+Microphones can overlay Pattern, Boundary, and Coupled SPL with independent
+visibility controls; color identifies the microphone and line style identifies
+the method. Calculate Boundary and Coupled sweeps using the corresponding
+fidelity selection. Each method's latest sweep remains available when switching
+fidelity, provided its scene and frequency grid still match.
+Speakers provides a cabinet selector and quantities for excursion, electrical
+impedance, RMS current, and real input power. Calculated coupled responses remain
+viewable while inspecting another audience-plane fidelity. Results are currently
+session-only; named captures and acoustic-loading comparisons are future additions.
+
 ```powershell
 npm run test:package
 npm run build

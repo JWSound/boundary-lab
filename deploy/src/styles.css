@@ -315,6 +315,7 @@ button { color: inherit; }
 .axis-title { fill: #d4dad2 !important; font-weight: 700 !important; }
 .response-legend { position: absolute; left: 54px; right: 20px; top: 17px; display: flex; align-items: center; gap: 12px; pointer-events: none; color: #aeb5ad; font-size: 8px; }
 .response-legend span, .response-legend em { display: flex; align-items: center; gap: 4px; font-style: normal; }
+.response-legend label { pointer-events: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; background: #171c1e; padding: 3px 5px; }
 .response-legend i { width: 8px; height: 8px; border: 1px solid rgba(255,255,255,.35); }
 .response-legend em:first-of-type { margin-left: auto; }
 .line-sample { width: 16px; height: 0; border-top: 2px solid #c8cec7; }
