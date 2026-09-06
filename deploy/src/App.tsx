@@ -2240,8 +2240,9 @@ export function App() {
           }}
         />
         <div className="analysis-body">
-          <div className="analysis-plot-stack">
-            <div className="response-toolbar">
+          <aside className="analysis-comparisons" aria-label="Comparisons">
+            <strong>Comparisons</strong>
+            <div className="analysis-capture-controls">
               <input aria-label="Capture name" placeholder="Name this comparison" value={captureName} onChange={(event) => setCaptureName(event.target.value)} />
               <button disabled={microphonePatternResponses.traces.length === 0 && !currentDriverExcursion} onClick={captureCurrentAnalysis}>Capture results</button>
               <span>Captures stay fixed as the scene changes. Download to keep a copy.</span>
@@ -2261,6 +2262,8 @@ export function App() {
                 }} aria-label={`Remove ${capture.name}`}>Remove</button>
               </div>)}
             </div>}
+          </aside>
+          <div className="analysis-plot-stack">
             <div className="analysis-tabs" role="tablist" aria-label="Frequency analysis plots">
               <button role="tab" aria-selected={analysisTab === "microphones"} className={analysisTab === "microphones" ? "active" : ""} onClick={() => setAnalysisTab("microphones")}><Mic2 size={11} /> Microphones</button>
               <button role="tab" aria-selected={analysisTab === "speakers"} className={analysisTab === "speakers" ? "active" : ""} onClick={() => setAnalysisTab("speakers")}><SlidersHorizontal size={11} /> Speakers</button>

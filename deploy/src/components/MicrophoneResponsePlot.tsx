@@ -87,7 +87,7 @@ export function MicrophoneResponsePlot({
     if (bem && visibleMethods.boundary) for (const trace of bem.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
     if (coupled && visibleMethods.coupled) for (const trace of coupled.traces.values()) for (const value of trace) if (Number.isFinite(value)) values.push(value);
     for (const overlay of overlays) if (visibleMethods[overlay.method]) for (const value of overlay.values) if (Number.isFinite(value)) values.push(value);
-    const maximum = values.length ? Math.ceil(Math.max(...values) / 5) * 5 : 145;
+    const maximum = values.length ? Math.ceil(Math.max(...values) / 5) * 5 + 10 : 145;
     return [maximum - RESPONSE_DB_SPAN, maximum] as const;
   }, [bem, coupled, pattern, visibleMethods, overlays]);
   const logMinimum = Math.log10(AUDIO_FREQUENCY_MINIMUM_HZ);
