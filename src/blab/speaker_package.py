@@ -15,14 +15,17 @@ from typing import Any, Callable
 
 import numpy as np
 
+from blab.acoustic_impedance import normalization_records
 from blab.config import normalize_symmetry
-from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
+from blab.physical_model import AcousticRegionKind, ComponentKind, ExcitationPortKind, PhysicalSolveKind
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
     BEM_BOUNDARY_PRESSURE_ID,
+    DIAPHRAGM_VELOCITY_ID,
     SPHERE_DOMAIN_ID,
     SPHERE_PRESSURE_ID,
+    VOICE_COIL_CURRENT_ID,
     ResultDomain,
     SolvedSystem,
     SolvedSystemBuilder,
@@ -36,6 +39,8 @@ from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_res
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
+ISOLATED_IMPEDANCE_MAX_VELOCITY_CONDITION = 1.0e6
+ISOLATED_IMPEDANCE_MIN_VELOCITY_M_PER_S = 1.0e-12
 SPEAKER_ROM_QUANTITIES = (
     ("speaker:rom:k", "speaker_rom_k", "k"),
     ("speaker:rom:c", "speaker_rom_c", "c"),
@@ -720,6 +725,32 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                 },
                 "metadata": rom_metadata,
             }
+        reference = _isolated_acoustic_impedance_reference(solved)
+        if reference is not None:
+            reference_path = "data/isolated-acoustic-impedance.npz"
+            members[reference_path] = _npz_bytes(**reference["arrays"])
+            capabilities.append("isolated_free_field_acoustic_impedance")
+            files["isolated_acoustic_impedance"] = {
+                "path": reference_path,
+                "representation": "generalized_acoustic_impedance_matrix",
+                "environment": "isolated_free_field_single_cabinet",
+                "unit": "N*s/m",
+                "phasor_convention": solved.provenance.phasor_convention,
+                "matrix_equation": "F_load = Z_acoustic * v; F_load = Bl * I - Z_mechanical * v",
+                "dimensions": {
+                    "acoustic_impedance_n_s_per_m": [
+                        "frequency",
+                        "load_transducer",
+                        "velocity_transducer",
+                    ],
+                    "effective_area_m2": ["transducer"],
+                    "velocity_condition_number": ["frequency"],
+                    "available_frequency_mask": ["frequency"],
+                },
+                "transducer_ids": reference["transducer_ids"],
+                "transducer_names": reference["transducer_names"],
+                "normalization": "Z / (rho*c*Sd) may be derived where effective_area_m2 is finite",
+            }
     manifest = {
         "schema": SPEAKER_PACKAGE_SCHEMA,
         "schema_version": SPEAKER_PACKAGE_SCHEMA_VERSION,
@@ -751,6 +782,129 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
         },
     }
     return members, manifest
+
+
+def _isolated_acoustic_impedance_reference(solved: SolvedSystem) -> dict[str, Any] | None:
+    """Recover a drive-independent free-field cabinet load matrix for Level 3 packages."""
+
+    system = solved.compiled_system
+    if system is None:
+        return None
+    transducers = [
+        component
+        for component in system.components
+        if _enum_value(component.kind) == ComponentKind.ELECTRODYNAMIC_TRANSDUCER.value
+    ]
+    if not transducers:
+        return None
+    transducer_ids = [component.id for component in transducers]
+    voltage_port_rows: list[int] = []
+    ports_by_component: dict[str, list[str]] = {component_id: [] for component_id in transducer_ids}
+    for port in system.excitation_ports:
+        if _enum_value(port.kind) == ExcitationPortKind.VOLTAGE.value and port.component_id in ports_by_component:
+            ports_by_component[port.component_id].append(port.id)
+    excitation_index = {port_id: index for index, port_id in enumerate(solved.excitation_ids)}
+    for component_id in transducer_ids:
+        port_ids = ports_by_component[component_id]
+        if len(port_ids) != 1 or port_ids[0] not in excitation_index:
+            return None
+        voltage_port_rows.append(excitation_index[port_ids[0]])
+
+    velocity = solved.quantities.get(DIAPHRAGM_VELOCITY_ID)
+    current = solved.quantities.get(VOICE_COIL_CURRENT_ID)
+    if velocity is None or current is None:
+        raise ValueError("Level-3 isolated impedance export requires diaphragm velocity and voice-coil current.")
+    expected_dimensions = ("frequency", "excitation", "transducer")
+    if velocity.dimensions != expected_dimensions or current.dimensions != expected_dimensions:
+        raise ValueError("Level-3 isolated impedance velocity or current dimensions are invalid.")
+    if not np.all(np.asarray(velocity.available_frequency_mask, dtype=bool)) or not np.all(
+        np.asarray(current.available_frequency_mask, dtype=bool)
+    ):
+        raise ValueError("Level-3 isolated impedance velocity or current data is incomplete.")
+
+    velocity_values = _ordered_transducer_quantity(velocity, transducer_ids, solved)
+    current_values = _ordered_transducer_quantity(current, transducer_ids, solved)
+    parameter_names = ("bl_n_per_a", "mmd_kg", "cms_m_per_n", "rms_n_s_per_m")
+    parameters = {
+        name: np.asarray([float(component.parameters[name]) for component in transducers], dtype=np.float64)
+        for name in parameter_names
+    }
+    if any(not np.all(np.isfinite(values)) for values in parameters.values()):
+        raise ValueError("Level-3 isolated impedance transducer parameters must be finite.")
+    if np.any(parameters["bl_n_per_a"] == 0.0) or np.any(parameters["cms_m_per_n"] <= 0.0):
+        raise ValueError("Level-3 isolated impedance requires nonzero Bl and positive Cms values.")
+
+    count = len(transducers)
+    impedances = np.full(
+        (solved.frequencies_hz.size, count, count),
+        np.nan + 1j * np.nan,
+        dtype=np.complex64,
+    )
+    conditions = np.full(solved.frequencies_hz.size, np.inf, dtype=np.float64)
+    available = np.zeros(solved.frequencies_hz.size, dtype=bool)
+    for frequency_index, frequency_hz in enumerate(solved.frequencies_hz):
+        velocity_basis = velocity_values[frequency_index, voltage_port_rows, :].T.astype(np.complex128)
+        current_basis = current_values[frequency_index, voltage_port_rows, :].T.astype(np.complex128)
+        singular_values = np.linalg.svd(velocity_basis, compute_uv=False)
+        maximum = float(singular_values[0]) if singular_values.size else 0.0
+        minimum = float(singular_values[-1]) if singular_values.size else 0.0
+        condition = maximum / minimum if minimum > 0.0 else float("inf")
+        conditions[frequency_index] = condition
+        if (
+            not np.isfinite(condition)
+            or condition > ISOLATED_IMPEDANCE_MAX_VELOCITY_CONDITION
+            or maximum <= ISOLATED_IMPEDANCE_MIN_VELOCITY_M_PER_S
+        ):
+            continue
+        omega = 2.0 * np.pi * float(frequency_hz)
+        mechanical_impedance = parameters["rms_n_s_per_m"] + 1j * (
+            1.0 / (omega * parameters["cms_m_per_n"]) - omega * parameters["mmd_kg"]
+        )
+        load_force = (
+            parameters["bl_n_per_a"][:, np.newaxis] * current_basis
+            - mechanical_impedance[:, np.newaxis] * velocity_basis
+        )
+        try:
+            matrix = np.linalg.solve(velocity_basis.T, load_force.T).T
+        except np.linalg.LinAlgError:
+            continue
+        if np.all(np.isfinite(matrix)):
+            impedances[frequency_index] = matrix.astype(np.complex64)
+            available[frequency_index] = True
+
+    normalization = normalization_records(system.metadata)
+    effective_area = np.asarray(
+        [
+            normalization[component_id].effective_area_m2 if component_id in normalization else np.nan
+            for component_id in transducer_ids
+        ],
+        dtype=np.float64,
+    )
+    return {
+        "arrays": {
+            "frequencies_hz": np.asarray(solved.frequencies_hz, dtype=np.float64),
+            "acoustic_impedance_n_s_per_m": impedances,
+            "effective_area_m2": effective_area,
+            "velocity_condition_number": conditions,
+            "available_frequency_mask": available,
+        },
+        "transducer_ids": transducer_ids,
+        "transducer_names": [component.name for component in transducers],
+    }
+
+
+def _ordered_transducer_quantity(quantity: Any, transducer_ids: list[str], solved: SolvedSystem) -> np.ndarray:
+    values = np.asarray(quantity.values)
+    expected_shape = (solved.frequencies_hz.size, len(solved.excitation_ids), len(transducer_ids))
+    if values.shape != expected_shape or not np.iscomplexobj(values):
+        raise ValueError(f"Level-3 isolated impedance quantity {quantity.id!r} has an invalid shape or dtype.")
+    quantity_ids = tuple(str(value) for value in quantity.metadata.get("component_ids", ()))
+    if not quantity_ids:
+        quantity_ids = tuple(transducer_ids)
+    if set(quantity_ids) != set(transducer_ids) or len(quantity_ids) != len(transducer_ids):
+        raise ValueError(f"Level-3 isolated impedance quantity {quantity.id!r} has invalid component ids.")
+    column_by_id = {component_id: index for index, component_id in enumerate(quantity_ids)}
+    return values[:, :, [column_by_id[component_id] for component_id in transducer_ids]]
 
 
 def _exact_system_archive_members(solved: SolvedSystem) -> tuple[dict[str, bytes], dict[str, Any]]:

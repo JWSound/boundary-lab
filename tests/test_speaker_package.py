@@ -26,8 +26,10 @@ from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
     BEM_BOUNDARY_PRESSURE_ID,
+    DIAPHRAGM_VELOCITY_ID,
     SPHERE_DOMAIN_ID,
     SPHERE_PRESSURE_ID,
+    VOICE_COIL_CURRENT_ID,
     ResultDomain,
     SolvedQuantity,
     SolvedSystem,
@@ -322,6 +324,93 @@ def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -
     package = DeploySolveCache().load_package(output)
     assert package.coupled_model is not None
     assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
+
+
+def test_level_three_packages_isolated_free_field_acoustic_impedance_matrix(tmp_path: Path) -> None:
+    solved = _coupled_rom_solved_system()
+    assert solved.compiled_system is not None
+    transducers = (
+        PhysicalComponent(
+            id="component:a",
+            name="Woofer A",
+            kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=(),
+            parameters={"bl_n_per_a": 7.0, "mmd_kg": 0.015, "cms_m_per_n": 5.0e-4, "rms_n_s_per_m": 1.0},
+        ),
+        PhysicalComponent(
+            id="component:b",
+            name="Woofer B",
+            kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=(),
+            parameters={"bl_n_per_a": 5.0, "mmd_kg": 0.010, "cms_m_per_n": 8.0e-4, "rms_n_s_per_m": 0.8},
+        ),
+    )
+    ports = (
+        ExcitationPort("port:a", "Drive A", "component:a", ExcitationPortKind.VOLTAGE),
+        ExcitationPort("port:b", "Drive B", "component:b", ExcitationPortKind.VOLTAGE),
+    )
+    normalization = {
+        "acoustic_impedance_normalization": {
+            "component:a": {"component_name": "Woofer A", "effective_area_m2": 0.10},
+            "component:b": {"component_name": "Woofer B", "effective_area_m2": 0.12},
+        }
+    }
+    system = replace(solved.compiled_system, components=transducers, excitation_ports=ports, metadata=normalization)
+    velocity = np.asarray(
+        [
+            [[1.0 + 0.1j, 0.3], [0.2j, 1.2 - 0.1j]],
+            [[0.8 - 0.1j, 0.2j], [0.1, 1.1 + 0.2j]],
+        ],
+        dtype=np.complex128,
+    )
+    expected_impedance = np.asarray(
+        [
+            [[3.0 - 4.0j, 0.4 + 0.2j], [-0.1 + 0.3j, 5.0 + 6.0j]],
+            [[4.0 - 2.0j, 0.2 - 0.1j], [0.3 + 0.4j, 6.0 + 3.0j]],
+        ],
+        dtype=np.complex128,
+    )
+    bl = np.asarray([7.0, 5.0])
+    mmd = np.asarray([0.015, 0.010])
+    cms = np.asarray([5.0e-4, 8.0e-4])
+    rms = np.asarray([1.0, 0.8])
+    current = np.empty_like(velocity)
+    for frequency_index, frequency_hz in enumerate(solved.frequencies_hz):
+        omega = 2.0 * np.pi * frequency_hz
+        mechanical = rms + 1j * (1.0 / (omega * cms) - omega * mmd)
+        velocity_basis = velocity[frequency_index].T
+        load_force = expected_impedance[frequency_index] @ velocity_basis
+        current[frequency_index] = ((load_force + mechanical[:, np.newaxis] * velocity_basis) / bl[:, np.newaxis]).T
+    quantities = dict(solved.quantities)
+    for identifier, quantity_name, unit, values in (
+        (DIAPHRAGM_VELOCITY_ID, "diaphragm_velocity", "m/s", velocity),
+        (VOICE_COIL_CURRENT_ID, "voice_coil_current", "A", current),
+    ):
+        quantities[identifier] = SolvedQuantity(
+            id=identifier,
+            quantity=quantity_name,
+            unit=unit,
+            dimensions=("frequency", "excitation", "transducer"),
+            values=values.astype(np.complex64),
+            metadata={"component_ids": ["component:a", "component:b"]},
+            available_frequency_mask=np.ones(2, dtype=bool),
+        )
+    solved = replace(solved, compiled_system=system, quantities=quantities)
+    output = tmp_path / "speaker-rom-reference.blabsp"
+
+    export_speaker_package(solved, SpeakerPackageConfig(output, "Reduced speaker", SpeakerPackageFidelity.COUPLED))
+
+    manifest = validate_speaker_package(output)
+    declaration = manifest["files"]["isolated_acoustic_impedance"]
+    assert declaration["environment"] == "isolated_free_field_single_cabinet"
+    assert declaration["transducer_ids"] == ["component:a", "component:b"]
+    assert "isolated_free_field_acoustic_impedance" in manifest["capabilities"]
+    with zipfile.ZipFile(output) as archive:
+        reference = _read_npz(archive, declaration["path"])
+    np.testing.assert_allclose(reference["acoustic_impedance_n_s_per_m"], expected_impedance, rtol=2e-5)
+    np.testing.assert_allclose(reference["effective_area_m2"], [0.10, 0.12])
+    assert reference["available_frequency_mask"].tolist() == [True, True]
+    assert np.all(np.isfinite(reference["velocity_condition_number"]))
 
 
 def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(

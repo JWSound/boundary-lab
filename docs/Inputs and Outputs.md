@@ -151,7 +151,13 @@ They preserve the independent excitation-port basis and the
   rank-32-per-sector parity Petrov–Galerkin ROM at every exported frequency.
   Deploy Schur-eliminates each reduced interior response into the shared
   exterior BEM problem, retaining mutual loading and transducer feedback while
-  keeping package size and array-solve cost practical.
+  keeping package size and array-solve cost practical. For electrodynamic
+  systems with one independent voltage port per transducer, it also contains
+  the isolated free-field generalized acoustic impedance matrix recovered from
+  the package-generation solve. Its diagonal is each transducer's self load and
+  its off-diagonal terms retain mutual loading between transducers inside the
+  single cabinet. The reference is stored in N*s/m using the package phasor
+  convention; it does not include Deploy's ground plane or scene objects.
 
 Boundary Lab uses +Z as forward. Exported speaker packages use the array-tool
 frame with +Y as forward by applying the proper right-handed rotation
