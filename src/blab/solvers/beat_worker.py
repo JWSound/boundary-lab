@@ -7,6 +7,7 @@ are imported here. WorkerPool owns only workers obtained through that pool.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -41,6 +42,21 @@ class WorkerProcess:
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
         self._status_callback: Callable[[str], None] | None = None
+        self._worker_info: dict | None = None
+
+    @property
+    def worker_info(self) -> dict | None:
+        """A copy of the current process's ready announcement, if any."""
+        return copy.deepcopy(self._worker_info)
+
+    def _accept_ready(self, event: dict) -> None:
+        self._worker_info = copy.deepcopy(event)
+
+    def _prepare_submission(self, request_path: Path, operation: str) -> dict:
+        return {"request": str(request_path), "operation": str(operation)}
+
+    def _accept_event(self, event: dict) -> None:
+        """Optional protocol validation before exposing a submission event."""
 
     def submit(
         self,
@@ -53,13 +69,14 @@ class WorkerProcess:
         self._status_callback = status_callback
         try:
             self._ensure_started()
+            command = self._prepare_submission(request_path, operation)
             process = self._process
             if process is None or process.stdin is None:
                 raise RuntimeError("Warm BEAT Engine solver did not provide stdin.")
             self._emit_status("Submitting solve request" if operation == "solve" else "Submitting field request")
             process.stdin.write(
                 json.dumps(
-                    {"request": str(request_path), "operation": str(operation)},
+                    command,
                     separators=(",", ":"),
                 )
                 + "\n"
@@ -81,8 +98,17 @@ class WorkerProcess:
                 self._status_callback = previous_callback
 
     def terminate(self) -> None:
+        self._discard_process()
+        if self._lock.locked():
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass
+
+    def _discard_process(self) -> None:
         process = self._process
         self._process = None
+        self._worker_info = None
         if process is not None and process.poll() is None:
             process.terminate()
             try:
@@ -90,11 +116,6 @@ class WorkerProcess:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=2.0)
-        if self._lock.locked():
-            try:
-                self._lock.release()
-            except RuntimeError:
-                pass
 
     def _ensure_started(self) -> None:
         if self._process is not None and self._process.poll() is None:
@@ -102,6 +123,7 @@ class WorkerProcess:
             return
 
         self._stderr_lines.clear()
+        self._worker_info = None
         command = julia_worker_command(
             self.julia_executable,
             self.solver_script,
@@ -132,9 +154,15 @@ class WorkerProcess:
         for event in self._read_events():
             event_type = str(event.get("type", ""))
             if event_type == "ready":
+                try:
+                    self._accept_ready(event)
+                except Exception:
+                    self._discard_process()
+                    raise
                 self._emit_status("BEAT Engine ready")
                 return
             if event_type == "failed":
+                self._discard_process()
                 raise RuntimeError(
                     format_julia_error(
                         str(event.get("error", "BEAT Engine solver failed during startup.")),
@@ -143,16 +171,24 @@ class WorkerProcess:
                     )
                 )
 
+        self._discard_process()
         raise RuntimeError(self._process_error("Warm BEAT Engine solver ended before startup completed."))
 
     def _iter_events_for_submission(self) -> Iterator[dict]:
+        terminal = False
         try:
             for event in self._read_events():
+                self._accept_event(event)
+                terminal = str(event.get("type", "")) in {"completed", "cancelled", "failed"}
                 yield event
-                if str(event.get("type", "")) in {"completed", "cancelled", "failed"}:
+                if terminal:
                     return
             raise RuntimeError(self._process_error("Warm BEAT Engine solver ended before job completion."))
         finally:
+            if not terminal:
+                # Unread events belong to this job and cannot become the next
+                # submission's results. Restart and renegotiate after abandonment.
+                self._discard_process()
             self._status_callback = None
             if self._lock.locked():
                 self._lock.release()
@@ -182,6 +218,7 @@ class WorkerProcess:
 
         exit_code = process.wait()
         self._process = None
+        self._worker_info = None
         if exit_code != 0:
             raise RuntimeError(self._process_error(f"Warm BEAT Engine solver exited with code {exit_code}."))
 

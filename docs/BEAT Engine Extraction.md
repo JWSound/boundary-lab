@@ -55,9 +55,10 @@ unchanged by this separation.
    with one schema, independent Python/Julia validation, shared conformance cases,
    and an explicit Boundary Lab adapter. Project authoring, migration, mesh
    preparation, and compilation remain in Boundary Lab.
-3. Add worker version/capability negotiation and protocol compatibility checks
-   before a solve. Specify complex array layout, field-evaluation cache lifetime,
-   cancellation, and error semantics.
+3. **Complete:** add [worker version/capability negotiation](BEAT%20Worker%20Protocol.md)
+   before persistent physical-system submissions. Specify complex array layout,
+   field-evaluation cache lifetime, cancellation, and error semantics. Reject
+   incompatible formats/backends before submission and renegotiate after restart.
 4. Record engine revision, Julia environment, precision, actual backend/device,
    mesh hashes, and numerical options in run provenance.
 5. Preserve independent numerical comparisons and analytical/reference fixtures

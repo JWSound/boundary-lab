@@ -1,0 +1,16 @@
+{
+  "type": "ready",
+  "protocol": {"name": "beat-worker", "version": 1},
+  "engine": {"name": "BEAT Engine", "version": "0.1.0-dev"},
+  "contracts": {
+    "system_request": [1],
+    "compiled_system": [1],
+    "system_result": [2],
+    "field_array": [1]
+  },
+  "operations": ["solve", "bem_field"],
+  "precisions": ["float32", "float64"],
+  "solve_kinds": ["exterior_bem", "interior_fem", "coupled_fem_bem_lem"],
+  "cancellation": "marker_file",
+  "field_cache": {"lifetime": "worker_process", "cleared_on": ["solve", "failed", "process_exit"], "max_entries": 2}
+}

@@ -6,11 +6,13 @@ subprocess client. All application adapters share the same worker pool below.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
 from blab.rocm import discover_rocm
+from blab.solvers.beat_contract.worker import negotiate_submission, validate_worker_event, validate_worker_ready
 from blab.solvers.beat_worker import (
     WorkerPool,
     WorkerProcess,
@@ -132,6 +134,28 @@ def friendly_julia_error(
 
 class BeatEngineWorkerProcess(WorkerProcess):
     """Worker configured for Boundary Lab's bundled Julia environments."""
+
+    def _accept_ready(self, event: dict) -> None:
+        # Bare ready is retained only for the separate source/Deploy reference
+        # transports. Custom physical workers are still checked on submission.
+        if isinstance(event.get("protocol"), dict) or self.solver_script.resolve() == DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT.resolve():
+            validate_worker_ready(event)
+        super()._accept_ready(event)
+
+    def _prepare_submission(self, request_path: Path, operation: str) -> dict:
+        command = super()._prepare_submission(request_path, operation)
+        request = json.loads(request_path.read_text(encoding="utf-8"))
+        info = self._worker_info or {}
+        protocol = info.get("protocol")
+        negotiated = isinstance(protocol, dict) and protocol.get("name") == "beat-worker"
+        if operation == "bem_field" or "compiled_system" in request or negotiated:
+            command.update(negotiate_submission(self._worker_info or {}, request, operation))
+        return command
+
+    def _accept_event(self, event: dict) -> None:
+        protocol = (self._worker_info or {}).get("protocol")
+        if isinstance(protocol, dict) and protocol.get("name") == "beat-worker":
+            validate_worker_event(event)
 
     def __init__(
         self,

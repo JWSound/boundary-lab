@@ -17,7 +17,7 @@ using .BeatEngineSpeakerRom
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
 const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
-const MAX_BEM_FIELD_EVALUATION_CACHES = 2
+const MAX_BEM_FIELD_EVALUATION_CACHES = Int(BeatEngineContract.WORKER["field_cache"]["max_entries"])
 const SPEAKER_ROM_QUANTITIES = Set([
     "speaker_rom_k",
     "speaker_rom_c",
@@ -3208,13 +3208,35 @@ function evaluate_bem_field_request(request, request_path)
     )
 end
 
+function worker_backend_availability()
+    backends = Dict{String,Any}("cpu" => Dict("available" => true, "reason" => ""))
+    for (name, accelerator) in (("cuda", BeatEngineCore.CUDA_MODULE), ("rocm", BeatEngineCore.AMDGPU_MODULE))
+        available, reason = try
+            if accelerator === nothing
+                (false, "Package is not loaded in this Julia environment.")
+            else
+                functional = accelerator.functional()
+                if functional && name == "rocm"
+                    functional = accelerator.functional(:rocblas) && accelerator.functional(:rocsolver)
+                end
+                (functional, functional ? "" : "Runtime/device or required solver libraries are not functional.")
+            end
+        catch exception
+            (false, sprint(showerror, exception))
+        end
+        backends[name] = Dict("available" => available, "reason" => reason)
+    end
+    return backends
+end
+
 function run_worker()
-    println(JSON.json(Dict("type" => "ready")))
+    println(JSON.json(worker_ready(worker_backend_availability())))
     flush(stdout)
     for line in eachline(stdin)
         isempty(strip(line)) && continue
         try
             submission = JSON.parse(line)
+            validate_worker_submission(submission)
             request_path = String(submission["request"])
             request = JSON.parse(read(request_path, String))
             operation = String(get(submission, "operation", "solve"))
@@ -3248,7 +3270,7 @@ function run_worker()
         catch exception
             reclaim_accelerator_memory!()
             error_text = sprint(showerror, exception, catch_backtrace())
-            println(JSON.json(Dict("type" => "failed", "error" => error_text)))
+            println(JSON.json(Dict("type" => "failed", "error" => error_text, "code" => "worker_request_failed")))
         end
         flush(stdout)
     end

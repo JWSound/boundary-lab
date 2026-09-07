@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from dataclasses import replace
@@ -355,6 +356,9 @@ def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
 
 
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
+    contract = Path(__file__).resolve().parents[1] / "src/blab/solvers/beat_contract/worker-v1.json"
+    ready = json.loads(contract.read_text())
+    ready["backends"] = {"cpu": {"available": True}}
     starts_path = tmp_path / "coupled_cancel_starts.txt"
     fake_solver = tmp_path / "fake_coupled_cancel_worker.py"
     fake_solver.write_text(
@@ -371,7 +375,7 @@ starts_path.write_text(str(starts + 1), encoding="utf-8")
 if "--worker" not in sys.argv:
     raise SystemExit("expected --worker")
 
-print(json.dumps({{"type": "ready"}}), flush=True)
+print(json.dumps({ready!r}), flush=True)
 for line in sys.stdin:
     submission = json.loads(line)
     with open(submission["request"], "r", encoding="utf-8") as handle:
@@ -391,7 +395,7 @@ for line in sys.stdin:
     print(json.dumps({{
         "type": "result",
         "result": {{
-            "schema_version": 1,
+            "schema_version": 2,
             "freq_hz": frequency,
             "excitation_port_ids": request["excitation_port_ids"],
             "quantities": [],

@@ -2,10 +2,34 @@ module BeatEngineContract
 
 using JSON
 
-export validate_system_request
+export validate_system_request, worker_ready, validate_worker_submission
 
 # The same engine-owned schema is loaded by the standalone Python validator.
 const SCHEMA = JSON.parsefile(joinpath(@__DIR__, "..", "..", "beat_contract", "system-v1.schema.json"))
+const WORKER = JSON.parsefile(joinpath(@__DIR__, "..", "..", "beat_contract", "worker-v1.json"))
+
+function worker_ready(backends)
+    info = deepcopy(WORKER)
+    info["backends"] = backends
+    info["runtime"] = Dict("julia_version" => string(VERSION))
+    return info
+end
+
+function validate_worker_submission(submission)
+    submission isa AbstractDict || error("BEAT worker command must be an object.")
+    version = get(submission, "protocol_version", nothing)
+    version isa Integer && !(version isa Bool) && version == WORKER["protocol"]["version"] ||
+        error("Incompatible BEAT worker protocol; client must select protocol version 1.")
+    operation = get(submission, "operation", nothing)
+    operation in WORKER["operations"] || error("Unsupported BEAT worker operation: $operation")
+    request = get(submission, "request", nothing)
+    request isa AbstractString && !isempty(request) || error("BEAT worker command requires a request filename.")
+    field, contract = operation == "solve" ? ("result_schema_version", "system_result") : ("field_array_schema_version", "field_array")
+    selected = get(submission, field, nothing)
+    selected isa Integer && !(selected isa Bool) && selected in WORKER["contracts"][contract] ||
+        error("Unsupported BEAT worker $field; select an advertised version.")
+    return nothing
+end
 
 fail(path, message) = error("BEAT contract $path: $message")
 

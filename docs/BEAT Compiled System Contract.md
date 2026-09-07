@@ -131,9 +131,9 @@ does not change result encoding or create a new result archive format.
 
 The existing worker command wraps a request filename and operation. Events remain
 `ready`, `status`, `result`, `completed`, `cancelled`, and `failed`. Field-evaluation
-operations retain their existing separate binary-array protocol. Worker version
-and capability negotiation, event lifecycle tightening, and field-cache lifetime
-are the next milestone, not implicit additions to request v1.
+operations retain their separate binary-array protocol. The
+[worker protocol](BEAT%20Worker%20Protocol.md) defines version/capability negotiation,
+event lifecycle, and field-cache lifetime independently of request v1.
 
 ## Evolution and validation boundary
 
