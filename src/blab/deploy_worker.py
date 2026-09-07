@@ -482,9 +482,7 @@ def _microphone_sweep(
                 completed_count += 1
                 acoustic = None
                 if rom_coupled:
-                    # Julia serializes Float32 frequencies with rounded decimals.
-                    # Use the already-matched sweep grid for the reference lookup,
-                    # so valid isolated samples are not lost to rounding alone.
+                    # Use the matched sweep frequency for acoustic postprocessing.
                     acoustic = normalized_acoustic_loading(
                         package_data, _request, frequency_result, frequencies[frequency_index]
                     )

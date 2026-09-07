@@ -24,7 +24,7 @@ class _CoupledPackageCache:
         model = {"representation": self.representation, "frequency_band_hz": [20.0, 40.0]}
         return SimpleNamespace(
             frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]), coupled_model=model,
-            manifest={}, isolated_acoustic_impedance=None,
+            manifest={},
         )
 
 
@@ -153,12 +153,12 @@ def test_transducer_velocity_result_flattens_scene_instances() -> None:
     assert velocity["imag"] == [0.1, 0.2, 0.3, 0.4]
 
 
-@pytest.mark.parametrize("reference_available", [None, True, False])
-def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, reference_available) -> None:
+@pytest.mark.parametrize("rounded_frequencies", [False, True])
+def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, rounded_frequencies) -> None:
     events: list[tuple[str, dict]] = []
-    frequencies = [20.0, 40.0] if reference_available is None else [102.36312866210938, 231.57960510253906]
+    frequencies = [20.0, 40.0] if not rounded_frequencies else [102.36312866210938, 231.57960510253906]
     reported_frequencies = [float(str(np.float32(frequency))) for frequency in frequencies]
-    if reference_available is not None:
+    if rounded_frequencies:
         # Reproduce Float32 JSON rounding that previously dropped the reference.
         assert not np.any(np.isclose(frequencies, reported_frequencies, rtol=1e-8, atol=1e-8))
     package = SimpleNamespace(
@@ -172,20 +172,11 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, refe
                 "metadata": {"acoustic_impedance_normalization": {"driver": {"effective_area_m2": 0.01}}},
             },
         },
-        isolated_acoustic_impedance=None,
         coupled_model={
             "representation": "parity_petrov_galerkin_rom",
             "arrays": {"frequencies_hz": np.asarray(frequencies)},
         },
     )
-    if reference_available is not None:
-        package.manifest["files"] = {"isolated_acoustic_impedance": {"transducer_ids": ["driver"]}}
-        package.isolated_acoustic_impedance = {
-            "frequencies_hz": np.asarray(frequencies),
-            "available_frequency_mask": np.asarray([True, reference_available]),
-            "acoustic_impedance_n_s_per_m": np.asarray([[[2 - 3j]], [[4 - 5j]]]),
-            "effective_area_m2": np.asarray([0.01]),
-        }
     cache = SimpleNamespace(load_package=lambda _path: package)
 
     def prepare(payload, work_dir, **_kwargs):
@@ -237,11 +228,7 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, refe
     assert result["transducer_velocity"] == {"real": [[2.0, 4.0]], "imag": [[0.0, 0.0]]}
     assert result["acoustic_loading"]["resistance"] == [[1.0, 1.0]]
     assert result["frequencies_hz"] == frequencies
-    if reference_available is None:
-        assert result["acoustic_loading"]["isolated_resistance"] == [[None, None]]
-    else:
-        assert result["acoustic_loading"]["isolated_resistance"] == [[2.0, 4.0 if reference_available else None]]
-        assert result["acoustic_loading"]["isolated_reactance"] == [[3.0, 5.0 if reference_available else None]]
+    assert not any(key.startswith("isolated_") for key in result["acoustic_loading"])
     progress = [values for event_type, values in events if event_type == "microphone-progress"]
     assert [sample["frequency_hz"] for sample in progress] == reported_frequencies
     for frequency_index, sample in enumerate(progress):

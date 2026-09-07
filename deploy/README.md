@@ -77,16 +77,19 @@ as each frequency of a coupled sweep is solved, including captured overlays. Sto
 a sweep leaves its partial curves visible; captures still include only completed
 sweeps. Solid curves show
 the array's active net opposing acoustic load, `Z = Bl I/v - Zmechanical`, divided
-by `rho*c*Sd`. Dashed curves use the packaged isolated free-field cabinet matrix
-with the **same driver velocity vector** as that cabinet in the array:
-`Zreference,d = (Zisolated v)d / vd`. This includes acoustic load on both sides of
-the diaphragm; it is not an exterior-radiation-only impedance or an isolated
-equal-voltage simulation. Reactance uses the standard audio `exp(+i omega t)`
-convention (the native solver impedance is conjugated). Negative active resistance
-is allowed. Near-zero velocities and unavailable samples appear as gaps. Packages
-without the isolated matrix can still display array loading if their transducer
-parameters and effective diaphragm areas are available. Hover the reference note
-for the load definition. Use a new coupled sweep to populate older saved results.
+by `rho*c*Sd`. This includes acoustic load on both sides of the diaphragm,
+not exterior radiation alone. Reactance uses the standard audio `exp(+i omega t)`
+convention. Negative active resistance is allowed; near-zero velocities appear
+as gaps. Driver parameters and effective areas are required.
+
+For a single-cabinet comparison, set up a scene containing one cabinet, choose its
+placement and drive settings, run a coupled sweep, then **Capture results** and
+name the trace before changing the scene. Keep the capture enabled to overlay it
+on subsequent array sweeps. This comparison includes Deploy's rigid ground and
+any objects left in the scene; it is not an isolated free-field reference.
+Captures are session-only; Download exports a copy, but import is not supported.
+New packages no longer generate an isolated-reference matrix; older package
+extras are ignored without requiring regeneration.
 
 Microphone magnitude line styles are Pattern dotted, Boundary dashed, and
 Coupled solid, including captured overlays.
@@ -96,8 +99,7 @@ diagnostic: `Δp = (Bl I - Zmechanical v) / Sd`, using effective projected area.
 The plot displays magnitude in Pa or kPa, defaulting to RMS; Peak selects the
 sinusoidal amplitude `sqrt(2) |Δp|`, not a broadband or transient peak. Complex
 pressure is retained in sweep results and captures using the standard audio
-phasor convention. The isolated overlay is `(Zisolated varray) / Sd` at matched
-driver motion. Both curves stream with solved frequencies; zero-velocity samples
+phasor convention. Curves stream with solved frequencies; zero-velocity samples
 remain valid. Older results require a new sweep, not package regeneration where
 the necessary driver parameters and area are already available.
 This is force-equivalent average differential pressure, not separate front/rear

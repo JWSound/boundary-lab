@@ -30,6 +30,7 @@ assert.deepEqual(portable.pattern.frequenciesHz, [100, 200]);
 assert.equal(portable.schema, "boundary-lab-deploy-analysis");
 console.log("Analysis capture isolation, frequency grids and serialization passed.");
 const acoustic = {
+  // Older captured results may include ignored reference fields.
   frequencies_hz: [40, 80, 160], transducer_ids: ["cab:driver"], transducer_names: ["Cab / Driver"],
   acoustic_loading: {
     resistance: [[1, null, -2]], reactance: [[-3, null, 4]],
@@ -54,10 +55,9 @@ const markup = renderToStaticMarkup(createElement(ElectricalPlot, {
 }));
 assert.ok(markup.includes("R / (ρcSd)"));
 assert.ok(markup.includes('class="bem-trace"'));
-assert.ok(markup.includes('class="electrical-phase-trace"'));
-assert.ok(markup.includes("matched driver motion"));
+assert.ok(!markup.includes('class="electrical-phase-trace"'));
 assert.ok(!markup.includes("NaN"));
-console.log("Acoustic chart rendering and isolated overlay passed.");
+console.log("Acoustic chart rendering without built-in reference passed.");
 const emptyLoading = { key: "live", frequenciesHz: Float64Array.from([40, 80, 160]), traces: new Map() };
 const sample = {
   frequency_hz: 160, transducer_ids: ["cab:driver"], transducer_names: ["Cab / Driver"],
@@ -69,7 +69,6 @@ assert.deepEqual(Array.from(first.traces.get("cab:driver")!.acousticResistance!)
 const second = updateAcousticLoading(first, { ...sample, frequency_hz: 40.000001 });
 assert.deepEqual(Array.from(second.traces.get("cab:driver")!.acousticResistance!), [-2, NaN, -2]);
 assert.deepEqual(Array.from(first.traces.get("cab:driver")!.acousticResistance!), [NaN, NaN, -2]);
-assert.deepEqual(Array.from(second.traces.get("cab:driver")!.isolatedReactance!), [2, NaN, 2]);
 assert.equal(updateAcousticLoading(second, { ...sample, frequency_hz: 999 }), second);
 assert.equal(updateAcousticLoading(second, { ...sample, acoustic_loading: null }), second);
 const gap = updateAcousticLoading(second, {
@@ -90,7 +89,6 @@ const pressureOnly = updateAcousticLoading(emptyLoading, {
   },
 });
 assert.equal(pressureOnly.traces.get("cab:driver")!.differentialPressurePa![2], 500);
-assert.equal(pressureOnly.traces.get("cab:driver")!.isolatedDifferentialPressurePa![2], 200);
 const pressureResult = { ...acoustic, acoustic_loading: {
   ...acoustic.acoustic_loading!, pressure_real_pa: [[300, null, 0]], pressure_imag_pa: [[-400, null, 0]],
   isolated_pressure_real_pa: [[0, null, 0]], isolated_pressure_imag_pa: [[200, null, 0]],
@@ -108,7 +106,9 @@ const pressureMarkup = renderToStaticMarkup(createElement(ElectricalPlot, {
   calculating: false, completedCount: 3, totalCount: 3, onCalculateOrStop: () => {},
 }));
 assert.ok(pressureMarkup.includes("|Δp| RMS (Pa)"));
-assert.ok(pressureMarkup.includes('class="electrical-phase-trace"'));
+assert.ok(!pressureMarkup.includes('class="electrical-phase-trace"'));
 assert.ok(pressureMarkup.includes("not a damage limit"));
 assert.ok(!pressureMarkup.includes("NaN"));
 console.log("Pressure differential streaming, RMS/peak units, captures and chart passed.");
+assert.ok(markup.includes("single-cabinet scene"));
+assert.ok(!markup.includes("Isolated reference"));

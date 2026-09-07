@@ -229,12 +229,8 @@ export interface MicrophoneSweepResult {
   acoustic_loading?: {
     pressure_real_pa?: (number | null)[][];
     pressure_imag_pa?: (number | null)[][];
-    isolated_pressure_real_pa?: (number | null)[][];
-    isolated_pressure_imag_pa?: (number | null)[][];
     resistance: (number | null)[][];
     reactance: (number | null)[][];
-    isolated_resistance: (number | null)[][];
-    isolated_reactance: (number | null)[][];
   };
   speaker_ids: string[];
   speaker_names: string[];

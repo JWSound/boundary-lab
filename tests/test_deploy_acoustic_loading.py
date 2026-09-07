@@ -7,8 +7,6 @@ from blab.deploy_acoustic_loading import normalized_acoustic_loading
 
 
 def fixture():
-    # Deliberately reversed reference order; off-diagonal terms are essential.
-    reference = np.array([[8 - 4j, 2 - 1j], [2 - 1j, 4 - 2j]])
     package = SimpleNamespace(
         manifest={
             "medium": {"density_kg_per_m3": 2, "sound_speed_m_per_s": 100},
@@ -22,13 +20,6 @@ def fixture():
                     "a": {"effective_area_m2": 0.01}, "b": {"effective_area_m2": 0.02},
                 }},
             },
-            "files": {"isolated_acoustic_impedance": {"transducer_ids": ["b", "a"]}},
-        },
-        isolated_acoustic_impedance={
-            "frequencies_hz": np.array([100.0]),
-            "available_frequency_mask": np.array([True]),
-            "acoustic_impedance_n_s_per_m": reference[None],
-            "effective_area_m2": np.array([0.02, 0.01]),
         },
     )
     velocity = np.array([1 + 1j, 2 - 1j])
@@ -44,15 +35,11 @@ def fixture():
     return package, request, result, velocity
 
 
-def test_normalization_sign_and_matched_motion_reference():
-    package, request, result, velocity = fixture()
+def test_normalization_and_sign():
+    package, request, result, _ = fixture()
     actual = normalized_acoustic_loading(package, request, result, 100)
     assert actual["resistance"] == pytest.approx([-1, 3])
     assert actual["reactance"] == pytest.approx([2, -2])
-    isolated = (np.array([[4 - 2j, 2 - 1j], [2 - 1j, 8 - 4j]]) @ velocity) / velocity / [2, 4]
-    assert actual["isolated_resistance"] == pytest.approx(isolated.real)
-    assert actual["isolated_reactance"] == pytest.approx(-isolated.imag)
-    assert not np.allclose(actual["isolated_resistance"], [2, 2])  # not just the diagonal
 
 
 @pytest.mark.parametrize("velocity", [0.0, 1e-14, float("nan")])
@@ -60,7 +47,7 @@ def test_undefined_velocity_is_a_gap(velocity):
     package, request, result, _ = fixture()
     result["diagnostics"]["transducer_velocity"][0] = {"real": [velocity, 1], "imag": [0, 0]}
     actual = normalized_acoustic_loading(package, request, result, 100)
-    assert all(actual[key][0] is None for key in ("resistance", "reactance", "isolated_resistance", "isolated_reactance"))
+    assert all(actual[key][0] is None for key in ("resistance", "reactance"))
     assert (actual["pressure_real_pa"][0] is not None) == bool(np.isfinite(velocity))
 
 
@@ -70,9 +57,6 @@ def test_differential_pressure_is_complex_force_over_area():
     pressure = np.array([-2 - 4j, 12 + 8j]) * velocity / [0.01, 0.02]
     assert actual["pressure_real_pa"] == pytest.approx(pressure.real)
     assert actual["pressure_imag_pa"] == pytest.approx(-pressure.imag)
-    isolated = np.array([[4 - 2j, 2 - 1j], [2 - 1j, 8 - 4j]]) @ velocity / [0.01, 0.02]
-    assert actual["isolated_pressure_real_pa"] == pytest.approx(isolated.real)
-    assert actual["isolated_pressure_imag_pa"] == pytest.approx(-isolated.imag)
 
 
 def test_stationary_driver_pressure_survives_without_medium():
@@ -83,27 +67,20 @@ def test_stationary_driver_pressure_survives_without_medium():
     actual = normalized_acoustic_loading(package, request, result, 100)
     assert actual["pressure_real_pa"][0] == pytest.approx(600)
     assert actual["pressure_imag_pa"][0] == pytest.approx(-800)
-    assert actual["isolated_pressure_real_pa"][0] == pytest.approx(200)
-    assert actual["isolated_pressure_imag_pa"][0] == pytest.approx(100)
     assert actual["resistance"][0] is None
 
 
 def test_legacy_package_can_plot_array_without_reference():
     package, request, result, _ = fixture()
-    package.isolated_acoustic_impedance = None
     actual = normalized_acoustic_loading(package, request, result, 100)
     assert actual["resistance"] == pytest.approx([-1, 3])
-    assert actual["isolated_resistance"] == [None, None]
 
 
-def test_unavailable_frequency_and_missing_area():
+def test_missing_area():
     package, request, result, _ = fixture()
-    package.isolated_acoustic_impedance["available_frequency_mask"][0] = False
-    assert normalized_acoustic_loading(package, request, result, 100)["isolated_resistance"] == [None, None]
-    assert normalized_acoustic_loading(package, request, result, 200)["isolated_resistance"] == [None, None]
-    package.isolated_acoustic_impedance = None
     package.manifest["physical_system"]["metadata"] = {}
-    assert normalized_acoustic_loading(package, request, result, 100)["resistance"] == [None, None]
+    actual = normalized_acoustic_loading(package, request, result, 100)
+    assert all(values == [None, None] for values in actual.values())
 
 
 def test_multiple_cabinets_keep_scene_order():

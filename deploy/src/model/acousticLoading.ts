@@ -39,12 +39,8 @@ export function updateAcousticLoading(
     traces.set(id, {
       name: progress.transducer_names[index] ?? id,
       differentialPressurePa: insert(existing?.differentialPressurePa, pressure),
-      isolatedDifferentialPressurePa: insert(existing?.isolatedDifferentialPressurePa,
-        differentialMagnitude(loading.isolated_pressure_real_pa?.[index], loading.isolated_pressure_imag_pa?.[index])),
       acousticResistance: insert(existing?.acousticResistance, loading.resistance[index]),
       acousticReactance: insert(existing?.acousticReactance, loading.reactance[index]),
-      isolatedResistance: insert(existing?.isolatedResistance, loading.isolated_resistance[index]),
-      isolatedReactance: insert(existing?.isolatedReactance, loading.isolated_reactance[index]),
       impedanceMagnitudeOhm: new Float32Array(), impedancePhaseDeg: new Float32Array(),
       rmsCurrentA: new Float32Array(), realPowerW: new Float32Array(),
     });
@@ -69,12 +65,8 @@ export function acousticLoadingTraces(result: MicrophoneSweepResult): Map<string
     traces.set(id, {
       name: result.transducer_names[index] ?? id,
       differentialPressurePa: pressure,
-      isolatedDifferentialPressurePa: Float32Array.from(result.frequencies_hz.map((_, f) =>
-        differentialMagnitude(loading.isolated_pressure_real_pa?.[index]?.[f], loading.isolated_pressure_imag_pa?.[index]?.[f]))),
       frequenciesHz: Float64Array.from(result.frequencies_hz),
       acousticResistance: resistance, acousticReactance: reactance,
-      isolatedResistance: samples(loading.isolated_resistance[index]),
-      isolatedReactance: samples(loading.isolated_reactance[index]),
       impedanceMagnitudeOhm: new Float32Array(), impedancePhaseDeg: new Float32Array(),
       rmsCurrentA: new Float32Array(), realPowerW: new Float32Array(),
     });
