@@ -30,6 +30,7 @@ npm start
 - Adds or duplicates package-backed speaker instances while preserving independent placement and DSP settings.
 - Imports closed, consistently oriented Gmsh 2.2 ASCII triangle meshes as reusable rigid-boundary assets, using Boundary Lab's default millimetre mesh units (`0.001` mesh-to-metre scale). Rigid objects share cabinet selection, eight-corner handles, W/E movement and rotation, ground enforcement, and 10 mm surface padding, but are ignored by Level 1.
 - Complex-sums Level 1 pattern pressure from mixed package types on an editable audience plane, with complex frequency interpolation, using Boundary Lab's `exp(-i omega t)` convention.
+- Pattern microphone traces and audience-plane maps include an infinite rigid ground at scene y=0, matching the Boundary/Coupled ground assumption. Each free-field cabinet contributes direct pressure plus pressure at the mirrored receiver, with coefficient +1 and the same electrical drive. This includes reflected directivity and path interference, not ground-induced driver loading or additional cabinet/scene scattering. Existing packages need no regeneration. Near-field warnings account for both propagation paths; the pattern's existing radial approximation still applies.
 - Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
 - Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
 - Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
@@ -92,6 +93,7 @@ Coupled solid, including captured overlays.
 
 ```powershell
 npm run test:package
+npm run test:pattern
 npm run build
 npm run test:desktop
 npm run test:level2

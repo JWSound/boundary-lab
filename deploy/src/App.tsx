@@ -232,7 +232,7 @@ function FidelitySwitcher({
                   ? "Exterior BEM with fixed distributed sources"
                   : item.id === "coupled"
                     ? "Exact coupled FEM–BEM interiors and transducers"
-                    : "Live complex pattern field")
+                    : "Live complex pattern field with infinite rigid ground at y=0")
               : item.id === "boundary" && boundaryUnavailableReason
                 ? boundaryUnavailableReason
                 : item.id === "coupled" && coupledUnavailableReason
@@ -2179,7 +2179,7 @@ export function App() {
           <span className={solveState === "solving" ? "live-dot solving" : "live-dot"} />
           <div>
             <strong>{fidelity !== "pattern" ? (boundaryCurrent ? `${fidelity === "coupled" ? "Coupled" : "Boundary"} solution` : `${fidelity === "coupled" ? "Coupled" : "Boundary"} preview`) : "Pattern preview"}</strong>
-            <small>{solveState === "solving" ? solveMessage : `${liveSolveEnabled ? "Live" : boundaryCurrent ? "BEAT CUDA" : "Current"} · ${formatFrequency(pkg.frequenciesHz[frequencyIndex])}`}</small>
+            <small>{solveState === "solving" ? solveMessage : `${liveSolveEnabled ? "Live" : boundaryCurrent ? "BEAT CUDA" : "Current"} · ${formatFrequency(pkg.frequenciesHz[frequencyIndex])}${fidelity === "pattern" ? " · Rigid ground" : ""}`}</small>
           </div>
           <em>{field.columns} × {field.rows}</em>
         </div>

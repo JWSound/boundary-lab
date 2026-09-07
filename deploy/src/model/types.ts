@@ -144,6 +144,7 @@ export interface MicrophoneResponseTrace {
 }
 
 export interface MicrophoneResponseSet {
+  environment?: "free_field" | "rigid_y0_half_space";
   frequenciesHz: Float64Array;
   traces: MicrophoneResponseTrace[];
 }
