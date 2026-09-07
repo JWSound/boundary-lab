@@ -27,6 +27,7 @@ from blab.solvers.beat_worker import (
 from blab.solvers.beat_worker import (
     resolve_julia_threads as resolve_julia_threads,
 )
+from blab.solvers.engine_distribution import ENGINE_DISTRIBUTION
 
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
 DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
@@ -34,6 +35,18 @@ DEFAULT_BEAT_ENGINE_CUDA_PROJECT = Path(__file__).with_name("julia_cuda")
 DEFAULT_BEAT_ENGINE_ROCM_PROJECT = Path(__file__).with_name("julia_rocm")
 DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_CPU_PROJECT / "coupled_solver.jl"
+if ENGINE_DISTRIBUTION == "external":
+    from beat_engine import EngineWorker as WorkerProcess
+    from beat_engine import WorkerPool, engine_paths
+    from beat_engine.beat_contract.worker import negotiate_submission, validate_worker_event, validate_worker_ready
+    from beat_engine.worker import format_julia_error, resolve_julia_threads
+
+    DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = engine_paths().source_solver
+    DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = engine_paths().system_solver
+    DEFAULT_BEAT_ENGINE_CPU_PROJECT = engine_paths("cpu").project
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT = engine_paths("cuda").project
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT = engine_paths("rocm").project
+    DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 BEAT_ENGINE_CUDA_BACKEND = "cuda"
 BEAT_ENGINE_CPU_BACKEND = "cpu"
 BEAT_ENGINE_ROCM_BACKEND = "rocm"

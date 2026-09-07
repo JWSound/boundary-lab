@@ -73,6 +73,12 @@ unchanged by this separation.
 
 ## Extract and release
 
+Local extraction is now prepared in `E:\Code\BEAT_Engine`, with filtered history,
+an installable `beat-engine` candidate, independent CI, and a public worker/path
+API. Boundary Lab has an explicit pre-release dependency switch; see
+[local integration and publication steps](BEAT%20Local%20Dependency.md). Bundled
+assets remain until the first published release is qualified and pinned.
+
 Move the Julia engine, backend tests, numerical fixtures, and a small Python
 worker client into one BEAT repository. Publish a versioned release before
 changing Boundary Lab's dependency. Keep CPU, CUDA, ROCm, and future Metal

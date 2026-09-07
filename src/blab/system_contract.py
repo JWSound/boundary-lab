@@ -34,7 +34,7 @@ from blab.physical_model import (
     PhysicsAssumption,
     ResolvedPhysicalGroup,
 )
-from blab.solvers.beat_contract import (
+from blab.solvers.engine_contract import (
     SUPPORTED_SYSTEM_RESULT_VERSIONS,
     SYSTEM_RESULT_VERSION,
     SYSTEM_SOLVE_REQUEST_VERSION,

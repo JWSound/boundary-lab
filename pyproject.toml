@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+engine = ["beat-engine==0.1.0rc1"]
 dev = [
   "pytest",
   "ruff>=0.15,<0.16",
