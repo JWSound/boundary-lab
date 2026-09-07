@@ -64,7 +64,7 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
             }
             yield {"type": "completed"}
 
-    monkeypatch.setattr(field_module, "_get_julia_worker", lambda **_kwargs: Worker())
+    monkeypatch.setattr(field_module, "get_beat_engine_worker", lambda **_kwargs: Worker())
 
     values = evaluate_bem_field(_request(), backend_id="beat_cpu")
 
@@ -120,7 +120,7 @@ def test_evaluate_bem_field_routes_rocm_worker_and_payload(monkeypatch) -> None:
         worker_options.append(kwargs)
         return Worker()
 
-    monkeypatch.setattr(field_module, "_get_julia_worker", worker_factory)
+    monkeypatch.setattr(field_module, "get_beat_engine_worker", worker_factory)
 
     values = evaluate_bem_field(_request(), backend_id="beat_rocm")
 
@@ -152,7 +152,7 @@ def test_evaluate_bem_field_maps_legacy_condensed_id_to_cpu_worker(monkeypatch) 
 
     monkeypatch.setattr(
         field_module,
-        "_get_julia_worker",
+        "get_beat_engine_worker",
         lambda **kwargs: worker_options.append(kwargs) or Worker(),
     )
 

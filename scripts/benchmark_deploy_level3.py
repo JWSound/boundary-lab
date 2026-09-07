@@ -13,7 +13,7 @@ from blab.deploy_solve import (
     prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
-from blab.solvers.beat_engine_backend import (
+from blab.solvers.beat_engine_runtime import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
     BeatEngineWorkerProcess,

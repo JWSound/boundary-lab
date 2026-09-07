@@ -276,7 +276,7 @@ def test_coupled_nonpersistent_rocm_worker_uses_shared_julia_environment(monkeyp
         process_calls.append((command, kwargs))
         return Process()
 
-    monkeypatch.setattr(backend_module, "_julia_process_env", process_environment)
+    monkeypatch.setattr(backend_module, "julia_process_env", process_environment)
     monkeypatch.setattr(backend_module.subprocess, "Popen", popen)
     session = CoupledProductionBackend(bem_backend="rocm", persistent_worker=False).create_system_session(request)
 

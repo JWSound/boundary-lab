@@ -20,14 +20,36 @@ Lab. The repository move follows retirement of the application's legacy runtime.
   physical-system worker, preserving the per-excitation basis.
 
 This does not yet remove every legacy-shaped internal contract. The BEAT
-source-request adapter, shared worker infrastructure, and Julia entry points
-remain for numerical comparisons, benchmarks, and the Deploy prototype. These
-are not GUI or project-CLI execution routes. Separating them is the next step.
+source-request adapter and Julia entry points remain for numerical comparisons,
+benchmarks, and the Deploy prototype. These are not GUI or project-CLI execution
+routes. The shared worker infrastructure is now separated as described below.
+
+## Reusable worker boundary
+
+`src/blab/solvers/beat_worker.py` is a standard-library-only subprocess client.
+`WorkerProcess` receives executable/script paths and a child-process environment,
+streams opaque JSON events, and supports the existing solve and field operations.
+It has no dependency on Boundary Lab models, preferences, NumPy, Qt, or bundled
+Julia locations. `WorkerPool` owns pooled workers and shuts them down explicitly;
+directly constructed workers remain the caller's responsibility.
+
+`src/blab/solvers/beat_engine_runtime.py` supplies the application-specific Julia
+paths, ROCm discovery, process environment, and one shared pool. Physical-system,
+retained-field, headless, and Deploy callers use this module directly through
+`get_beat_engine_worker`, `BeatEngineWorkerProcess`, and `julia_process_env`.
+The old source adapter re-exports compatibility names for existing reference
+harnesses, using the same implementation and pool.
+
+Worker environments are copied at construction. Pool identity includes executable,
+script, project, sysimage, resolved thread count, and environment, so SDK or runtime
+environment changes create a separately configured worker. Shutdown clears the
+pool and terminates its processes. Request/result schemas and numerical code are
+unchanged by this separation.
 
 ## Prepare the extraction boundary
 
-1. Separate reusable worker/client infrastructure from the older
-   `BeatEngineBackend` source-request adapter. Keep it free of application models,
+1. **Complete:** separate reusable worker/client infrastructure from the older
+   `BeatEngineBackend` source-request adapter, free of application models,
    project preferences, and Qt.
 2. Define an engine-owned compiled-system wire specification from the existing
    versioned system contract. Boundary Lab keeps project authoring, migration,

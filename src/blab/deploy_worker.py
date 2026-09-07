@@ -23,7 +23,7 @@ from blab.deploy_solve import (
     prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
-from blab.solvers.beat_engine_backend import (
+from blab.solvers.beat_engine_runtime import (
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
@@ -373,10 +373,7 @@ def _microphone_sweep(
         transducer_names = [str(item["name"]) for item in raw_transducers] if isinstance(raw_transducers, list) else []
         velocity_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
         velocity_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
-        acoustic_rows = {
-            key: [[None] * len(frequencies) for _ in transducer_ids]
-            for key in ACOUSTIC_LOADING_KEYS
-        }
+        acoustic_rows = {key: [[None] * len(frequencies) for _ in transducer_ids] for key in ACOUSTIC_LOADING_KEYS}
         raw_speakers = _request.get("speakers", [])
         speaker_ids = [str(item["id"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []
         speaker_names = [str(item["name"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []

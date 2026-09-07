@@ -24,12 +24,14 @@ from blab.physical_model import (
     ComponentKind,
     ExcitationPortKind,
 )
-from blab.solvers.beat_engine_backend import (
+from blab.solvers.beat_engine_runtime import (
+    DEFAULT_BEAT_ENGINE_CPU_PROJECT,
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT,
     BeatEngineWorkerProcess,
-    _get_julia_worker,
-    _julia_process_env,
+    get_beat_engine_worker,
+    julia_process_env,
 )
 from blab.system_contract import (
     SystemFrequencyResult,
@@ -40,8 +42,8 @@ from blab.system_contract import (
     validate_system_solve_request,
 )
 
-DEFAULT_COUPLED_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "coupled_solver.jl"
-DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_COUPLED_SOLVER_SCRIPT.parent
+DEFAULT_COUPLED_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT
+DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 COUPLED_BEM_BACKENDS = {"cpu", "cuda", "rocm"}
 COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
@@ -131,7 +133,7 @@ class CoupledSession:
         if self.julia_project is not None:
             command.append(f"--project={self.julia_project}")
         command.append(str(self.solver_script))
-        environment = _julia_process_env(self.julia_threads, self.julia_project)
+        environment = julia_process_env(self.julia_threads, self.julia_project)
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
@@ -175,7 +177,7 @@ class CoupledSession:
         *,
         stop_requested: Callable[[], bool] | None,
     ) -> Iterator[SystemFrequencyResult]:
-        self._worker = _get_julia_worker(
+        self._worker = get_beat_engine_worker(
             julia_executable=self.julia_executable,
             solver_script=self.solver_script,
             julia_threads=self.julia_threads,

@@ -201,7 +201,10 @@ Symmetry can improve runtime by more than the simple physical-area reduction wou
 
 ## Important Files
 
-- `src/blab/solvers/beat_engine_backend.py`: Python adapter that stages assets and streams JSON events.
+- `src/blab/solvers/beat_worker.py`: standard-library-only Julia process, JSON event streaming, and worker pooling.
+- `src/blab/solvers/beat_engine_runtime.py`: bundled runtime paths, hardware environment configuration, and shared worker access.
+- `src/blab/solvers/coupled_backend.py`: physical-system request preparation and result decoding for production solves.
+- `src/blab/solvers/beat_engine_backend.py`: source-request adapter retained for numerical reference harnesses, with compatibility exports for worker utilities.
 - `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, backend dispatch, drive calculation.
 - `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
 - `src/blab/solvers/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.

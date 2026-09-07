@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import tempfile
 import threading
-import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
@@ -22,8 +20,78 @@ from blab.protocol import (
     ndarray_from_wire,
     solve_request_from_config_and_frequencies,
 )
-from blab.rocm import discover_rocm
 from blab.solvers.base import FrequencyResult, SolveMetadata, SolverCapabilities, SolveRequest
+from blab.solvers.beat_engine_runtime import (
+    BEAT_ENGINE_BACKENDS,
+    BEAT_ENGINE_CPU_BACKEND,
+    BEAT_ENGINE_CUDA_BACKEND,
+    BEAT_ENGINE_ROCM_BACKEND,
+    DEFAULT_BEAT_ENGINE_CPU_PROJECT,
+    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
+    DEFAULT_BEAT_ENGINE_PROJECT,
+    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
+    DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT,
+    BeatEngineWorkerProcess,
+    shutdown_beat_engine_workers,
+)
+from blab.solvers.beat_engine_runtime import (
+    default_beat_engine_project as _default_beat_engine_project,
+)
+from blab.solvers.beat_engine_runtime import (
+    friendly_julia_error as _friendly_julia_error,
+)
+from blab.solvers.beat_engine_runtime import (
+    get_beat_engine_worker as _get_julia_worker,
+)
+from blab.solvers.beat_engine_runtime import (
+    julia_command as _julia_command,
+)
+from blab.solvers.beat_engine_runtime import (
+    julia_process_env as _julia_process_env,
+)
+from blab.solvers.beat_engine_runtime import (
+    julia_worker_command as _julia_worker_command,
+)
+from blab.solvers.beat_engine_runtime import (
+    normalize_beat_engine_backend as _normalize_beat_engine_backend,
+)
+from blab.solvers.beat_engine_runtime import (
+    resolve_julia_threads as _resolve_julia_threads,
+)
+
+# Compatibility exports for existing numerical reference harnesses.
+__all__ = [
+    "BEAT_ENGINE_BACKENDS",
+    "BEAT_ENGINE_CPU_BACKEND",
+    "BEAT_ENGINE_CUDA_BACKEND",
+    "BEAT_ENGINE_ROCM_BACKEND",
+    "DEFAULT_BEAT_ENGINE_CPU_PROJECT",
+    "DEFAULT_BEAT_ENGINE_CUDA_PROJECT",
+    "DEFAULT_BEAT_ENGINE_ROCM_PROJECT",
+    "DEFAULT_BEAT_ENGINE_PROJECT",
+    "DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT",
+    "BeatEngineWorkerProcess",
+    "shutdown_beat_engine_workers",
+    "_normalize_beat_engine_backend",
+    "_default_beat_engine_project",
+    "_friendly_julia_error",
+    "_julia_process_env",
+    "_resolve_julia_threads",
+    "_julia_command",
+    "_julia_worker_command",
+    "_get_julia_worker",
+    "BeatEngineBackend",
+    "BeatEngineSession",
+    "BeatEngineCpuBackend",
+    "BeatEngineCudaBackend",
+    "BeatEngineRocmBackend",
+    "DEFAULT_JULIA_PROJECT",
+    "DEFAULT_JULIA_SOLVER_SCRIPT",
+    "JuliaLocalBackend",
+    "JuliaLocalSession",
+    "JuliaWorkerProcess",
+    "shutdown_julia_workers",
+]
 
 
 def _safe_asset_filename(filename: str, index: int) -> str:
@@ -31,24 +99,7 @@ def _safe_asset_filename(filename: str, index: int) -> str:
     return cleaned or f"asset_{index}.msh"
 
 
-DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
-DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
-DEFAULT_BEAT_ENGINE_CUDA_PROJECT = Path(__file__).with_name("julia_cuda")
-DEFAULT_BEAT_ENGINE_ROCM_PROJECT = Path(__file__).with_name("julia_rocm")
-DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 _DEFAULT_BEAT_ENGINE_PROJECT_SENTINEL = "__default__"
-_WORKERS_LOCK = threading.Lock()
-_WORKERS: dict[tuple[str, str, str, str], "BeatEngineWorkerProcess"] = {}
-
-
-BEAT_ENGINE_CUDA_BACKEND = "cuda"
-BEAT_ENGINE_CPU_BACKEND = "cpu"
-BEAT_ENGINE_ROCM_BACKEND = "rocm"
-BEAT_ENGINE_BACKENDS = {
-    BEAT_ENGINE_CUDA_BACKEND,
-    BEAT_ENGINE_CPU_BACKEND,
-    BEAT_ENGINE_ROCM_BACKEND,
-}
 
 
 class BeatEngineSession:
@@ -290,191 +341,6 @@ class BeatEngineSession:
             self.request_payload.status_callback(message)
 
 
-class BeatEngineWorkerProcess:
-    def __init__(
-        self,
-        *,
-        julia_executable: str,
-        solver_script: Path,
-        julia_threads: str | int,
-        julia_project: Path | None,
-        julia_sysimage: Path | None = None,
-    ):
-        self.julia_executable = julia_executable
-        self.solver_script = solver_script
-        self.julia_threads = julia_threads
-        self.julia_project = julia_project
-        self.julia_sysimage = julia_sysimage
-        self._lock = threading.Lock()
-        self._process: subprocess.Popen[str] | None = None
-        self._stderr_lines: list[str] = []
-        self._stderr_thread: threading.Thread | None = None
-        self._status_callback: Callable[[str], None] | None = None
-
-    def submit(
-        self,
-        request_path: Path,
-        *,
-        status_callback: Callable[[str], None] | None = None,
-        operation: str = "solve",
-    ) -> Iterator[dict]:
-        self._lock.acquire()
-        self._status_callback = status_callback
-        try:
-            self._ensure_started()
-            process = self._process
-            if process is None or process.stdin is None:
-                raise RuntimeError("Warm BEAT Engine solver did not provide stdin.")
-            self._emit_status("Submitting solve request" if operation == "solve" else "Submitting field request")
-            process.stdin.write(
-                json.dumps(
-                    {"request": str(request_path), "operation": str(operation)},
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
-            process.stdin.flush()
-            return self._iter_events_for_submission()
-        except Exception:
-            self._status_callback = None
-            self._lock.release()
-            raise
-
-    def ensure_started(self, *, status_callback: Callable[[str], None] | None = None) -> None:
-        with self._lock:
-            previous_callback = self._status_callback
-            self._status_callback = status_callback
-            try:
-                self._ensure_started()
-            finally:
-                self._status_callback = previous_callback
-
-    def terminate(self) -> None:
-        process = self._process
-        self._process = None
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=2.0)
-        if self._lock.locked():
-            try:
-                self._lock.release()
-            except RuntimeError:
-                pass
-
-    def _ensure_started(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            self._emit_status("BEAT Engine ready")
-            return
-
-        self._stderr_lines.clear()
-        command = _julia_worker_command(
-            self.julia_executable,
-            self.solver_script,
-            julia_project=self.julia_project,
-            julia_sysimage=self.julia_sysimage,
-        )
-        self._emit_status("Initializing BEAT Engine")
-        try:
-            self._process = subprocess.Popen(
-                command,
-                cwd=str(self.solver_script.parent),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=_julia_process_env(self.julia_threads, self.julia_project),
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError("Julia executable was not found. Set the Julia executable path in Preferences.") from exc
-
-        self._stderr_thread = threading.Thread(target=self._collect_stderr, daemon=True)
-        self._stderr_thread.start()
-
-        for event in self._read_events():
-            event_type = str(event.get("type", ""))
-            if event_type == "ready":
-                self._emit_status("BEAT Engine ready")
-                return
-            if event_type == "failed":
-                raise RuntimeError(
-                    _friendly_julia_error(
-                        str(event.get("error", "BEAT Engine solver failed during startup.")),
-                        julia_project=self.julia_project,
-                    )
-                )
-
-        raise RuntimeError(self._process_error("Warm BEAT Engine solver ended before startup completed."))
-
-    def _iter_events_for_submission(self) -> Iterator[dict]:
-        try:
-            for event in self._read_events():
-                yield event
-                if str(event.get("type", "")) in {"completed", "cancelled", "failed"}:
-                    return
-            raise RuntimeError(self._process_error("Warm BEAT Engine solver ended before job completion."))
-        finally:
-            self._status_callback = None
-            if self._lock.locked():
-                self._lock.release()
-
-    def _read_events(self) -> Iterator[dict]:
-        process = self._process
-        if process is None or process.stdout is None:
-            return
-
-        for line in process.stdout:
-            text = line.strip()
-            if not text:
-                continue
-            parse_started = time.perf_counter()
-            try:
-                event = json.loads(text)
-            except json.JSONDecodeError:
-                yield {"type": "status", "message": text}
-                continue
-            if isinstance(event, dict):
-                if str(event.get("type", "")) == "result":
-                    event["_transport"] = {
-                        "julia_stdout_bytes": len(text.encode("utf-8")),
-                        "python_julia_json_parse_s": time.perf_counter() - parse_started,
-                    }
-                yield event
-
-        exit_code = process.wait()
-        self._process = None
-        if exit_code != 0:
-            raise RuntimeError(self._process_error(f"Warm BEAT Engine solver exited with code {exit_code}."))
-
-    def _collect_stderr(self) -> None:
-        process = self._process
-        if process is None or process.stderr is None:
-            return
-        for line in process.stderr:
-            text = line.strip()
-            if text:
-                self._stderr_lines.append(text)
-                self._emit_status(text)
-
-    def _process_error(self, fallback: str) -> str:
-        detail = "\n".join(self._stderr_lines[-10:])
-        message = f"{fallback}\n{detail}" if detail else fallback
-        return _friendly_julia_error(
-            message,
-            julia_project=self.julia_project,
-            detection_text="\n".join(self._stderr_lines),
-        )
-
-    def _emit_status(self, message: str) -> None:
-        if self._status_callback is not None:
-            self._status_callback(message)
-
-
 class BeatEngineBackend:
     backend_id = "beat_cuda"
     label = "BEAT Engine (Nvidia CUDA)"
@@ -667,101 +533,6 @@ def _warmup_simulation_config(mesh_path: Path) -> SimulationConfig:
     )
 
 
-def _normalize_beat_engine_backend(value: object) -> str:
-    text = str(value or BEAT_ENGINE_CUDA_BACKEND).strip().lower()
-    aliases = {
-        "beat_cuda": BEAT_ENGINE_CUDA_BACKEND,
-        "cuda": BEAT_ENGINE_CUDA_BACKEND,
-        "gpu": BEAT_ENGINE_CUDA_BACKEND,
-        "julia_local": BEAT_ENGINE_CUDA_BACKEND,
-        "local_julia": BEAT_ENGINE_CUDA_BACKEND,
-        "beat_cpu": BEAT_ENGINE_CPU_BACKEND,
-        "cpu": BEAT_ENGINE_CPU_BACKEND,
-        "beat_rocm": BEAT_ENGINE_ROCM_BACKEND,
-        "rocm": BEAT_ENGINE_ROCM_BACKEND,
-        "amd": BEAT_ENGINE_ROCM_BACKEND,
-        "amdgpu": BEAT_ENGINE_ROCM_BACKEND,
-    }
-    backend = aliases.get(text, text)
-    if backend not in BEAT_ENGINE_BACKENDS:
-        raise ValueError(f"Unknown BEAT Engine backend: {value}")
-    return backend
-
-
-def _default_beat_engine_project(beat_engine_backend: str) -> Path:
-    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
-        return DEFAULT_BEAT_ENGINE_CPU_PROJECT
-    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND:
-        return DEFAULT_BEAT_ENGINE_ROCM_PROJECT
-    return DEFAULT_BEAT_ENGINE_CUDA_PROJECT
-
-
-def _friendly_julia_error(
-    message: str,
-    *,
-    julia_project: str | Path | None,
-    beat_engine_backend: str | None = None,
-    detection_text: str | None = None,
-) -> str:
-    if julia_project is None:
-        return message
-
-    text = f"{detection_text or message}\n{message}".lower()
-    missing_dependency_markers = (
-        "argumenterror: package",
-        "not found in current path",
-        "run `import pkg; pkg.add",
-        "could not load project",
-        "failed to precompile",
-    )
-    julia_load_markers = (
-        "loading.jl",
-        "require(into::module",
-        "require(uuidkey::base.pkgid",
-    )
-    cuda_load_markers = (
-        "cuda.jl could not be loaded",
-        "package cuda",
-        "using cuda",
-        "import cuda",
-    )
-    rocm_load_markers = (
-        "amdgpu.jl could not be loaded",
-        "package amdgpu",
-        "using amdgpu",
-        "import amdgpu",
-    )
-    looks_like_dependency_error = any(marker in text for marker in missing_dependency_markers)
-    looks_like_julia_load_error = any(marker in text for marker in julia_load_markers)
-    looks_like_cuda_error = any(marker in text for marker in cuda_load_markers)
-    looks_like_rocm_error = any(marker in text for marker in rocm_load_markers)
-    if not (
-        looks_like_dependency_error or looks_like_julia_load_error or looks_like_cuda_error or looks_like_rocm_error
-    ):
-        return message
-
-    project_path = Path(julia_project)
-    backend_label = _julia_project_backend_label(project_path, beat_engine_backend)
-    install_command = f'julia --project={project_path} -e "using Pkg; Pkg.instantiate()"'
-    return (
-        f"BEAT Engine could not load the Julia dependencies for {backend_label}.\n\n"
-        "This usually means the selected BEAT Engine Julia environment has not been installed yet. "
-        "From the Boundary Lab repository root, run:\n\n"
-        f"{install_command}\n\n"
-        f"Julia reported:\n{message}"
-    )
-
-
-def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | None) -> str:
-    if beat_engine_backend == BEAT_ENGINE_CUDA_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CUDA_PROJECT:
-        return "BEAT Engine (Nvidia CUDA)"
-    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
-        return "BEAT Engine (CPU)"
-    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND or project_path == DEFAULT_BEAT_ENGINE_ROCM_PROJECT:
-        return "BEAT Engine (AMD ROCm)"
-    return "the selected BEAT Engine backend"
-
-
 def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> SimulationConfig:
     assets = build_mesh_assets(config)
     if not assets:
@@ -786,127 +557,6 @@ def _stage_config_assets(config: SimulationConfig, asset_dir: Path) -> Simulatio
         mesh_file=staged_by_original_path.get(config.mesh_file, config.mesh_file),
         meshes=meshes,
     )
-
-
-def _julia_process_env(
-    julia_threads: str | int = "auto",
-    julia_project: str | Path | None = None,
-) -> dict[str, str]:
-    env = os.environ.copy()
-    env["JULIA_NUM_THREADS"] = _resolve_julia_threads(julia_threads)
-    if julia_project is not None:
-        try:
-            is_rocm_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_ROCM_PROJECT.resolve()
-        except OSError:
-            is_rocm_project = False
-        if is_rocm_project:
-            env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_ROCM_BACKEND
-            installation = discover_rocm(environ=env)
-            if installation is not None:
-                rocm_root = str(installation.root)
-                env["BLAB_ROCM_PATH"] = rocm_root
-                env["ROCM_PATH"] = rocm_root
-                env["ROCM_HOME"] = rocm_root
-                env["HIP_PATH"] = rocm_root
-                rocm_bin = str(installation.root / "bin")
-                path_entries = env.get("PATH", "").split(os.pathsep)
-                if os.path.normcase(rocm_bin) not in {os.path.normcase(entry) for entry in path_entries}:
-                    env["PATH"] = rocm_bin + os.pathsep + env.get("PATH", "")
-    if julia_project is not None:
-        try:
-            is_cuda_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
-        except OSError:
-            is_cuda_project = False
-        if is_cuda_project:
-            env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_CUDA_BACKEND
-    return env
-
-
-def _resolve_julia_threads(julia_threads: str | int = "auto") -> str:
-    if isinstance(julia_threads, int):
-        return str(max(1, julia_threads))
-
-    text = str(julia_threads or "auto").strip().lower()
-    if text == "auto":
-        return str(os.cpu_count() or 1)
-
-    try:
-        return str(max(1, int(text)))
-    except ValueError:
-        return str(os.cpu_count() or 1)
-
-
-def _julia_command(
-    julia_executable: str,
-    solver_script: Path,
-    request_path: Path,
-    *,
-    julia_project: Path | None,
-    julia_sysimage: Path | None = None,
-) -> list[str]:
-    command = [julia_executable]
-    if julia_sysimage is not None:
-        command.append(f"--sysimage={julia_sysimage}")
-    if julia_project is not None:
-        command.append(f"--project={julia_project}")
-        command.append("--startup-file=no")
-    command.extend([str(solver_script), "--request", str(request_path)])
-    return command
-
-
-def _julia_worker_command(
-    julia_executable: str,
-    solver_script: Path,
-    *,
-    julia_project: Path | None,
-    julia_sysimage: Path | None = None,
-) -> list[str]:
-    command = [julia_executable]
-    if julia_sysimage is not None:
-        command.append(f"--sysimage={julia_sysimage}")
-    if julia_project is not None:
-        command.append(f"--project={julia_project}")
-        command.append("--startup-file=no")
-    command.extend([str(solver_script), "--worker"])
-    return command
-
-
-def _get_julia_worker(
-    *,
-    julia_executable: str,
-    solver_script: Path,
-    julia_threads: str | int,
-    julia_project: Path | None,
-    julia_sysimage: Path | None = None,
-) -> BeatEngineWorkerProcess:
-    resolved_threads = _resolve_julia_threads(julia_threads)
-    key = (
-        julia_executable,
-        str(solver_script.resolve()),
-        "" if julia_project is None else str(julia_project.resolve()),
-        "" if julia_sysimage is None else str(julia_sysimage.resolve()),
-        resolved_threads,
-    )
-    with _WORKERS_LOCK:
-        worker = _WORKERS.get(key)
-        if worker is None:
-            worker = BeatEngineWorkerProcess(
-                julia_executable=julia_executable,
-                solver_script=solver_script,
-                julia_threads=resolved_threads,
-                julia_project=julia_project,
-                julia_sysimage=julia_sysimage,
-            )
-            _WORKERS[key] = worker
-        return worker
-
-
-def shutdown_beat_engine_workers() -> None:
-    with _WORKERS_LOCK:
-        workers = list(_WORKERS.values())
-        _WORKERS.clear()
-    for worker in workers:
-        worker.terminate()
 
 
 DEFAULT_JULIA_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT

@@ -10,10 +10,10 @@ from typing import BinaryIO
 
 import numpy as np
 
-from blab.solvers.beat_engine_backend import (
+from blab.solvers.beat_engine_runtime import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
-    _get_julia_worker,
+    get_beat_engine_worker,
 )
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_CPU_PROJECT, DEFAULT_COUPLED_SOLVER_SCRIPT
 from blab.solvers.registry import normalize_backend_id, supports_physical_system_solves
@@ -53,7 +53,7 @@ def evaluate_bem_field(
         "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
         "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     }[bem_backend]
-    worker = _get_julia_worker(
+    worker = get_beat_engine_worker(
         julia_executable=julia_executable,
         solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT,
         julia_threads=4 if bem_backend in {"cuda", "rocm"} else 8,
