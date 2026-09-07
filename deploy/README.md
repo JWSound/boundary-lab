@@ -91,6 +91,19 @@ for the load definition. Use a new coupled sweep to populate older saved results
 Microphone magnitude line styles are Pattern dotted, Boundary dashed, and
 Coupled solid, including captured overlays.
 
+**Diaphragm pressure differential** is a coupled-only per-transducer loading
+diagnostic: `Δp = (Bl I - Zmechanical v) / Sd`, using effective projected area.
+The plot displays magnitude in Pa or kPa, defaulting to RMS; Peak selects the
+sinusoidal amplitude `sqrt(2) |Δp|`, not a broadband or transient peak. Complex
+pressure is retained in sweep results and captures using the standard audio
+phasor convention. The isolated overlay is `(Zisolated varray) / Sd` at matched
+driver motion. Both curves stream with solved frequencies; zero-velocity samples
+remain valid. Older results require a new sweep, not package regeneration where
+the necessary driver parameters and area are already available.
+This is force-equivalent average differential pressure, not separate front/rear
+pressures, local cone stress, or a safe/unsafe damage threshold. Read it alongside
+excursion, current, and power; spatially opposing loads can cancel in the average.
+
 ```powershell
 npm run test:package
 npm run test:pattern

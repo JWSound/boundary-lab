@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from blab.deploy_acoustic_loading import normalized_acoustic_loading
+from blab.deploy_acoustic_loading import ACOUSTIC_LOADING_KEYS, normalized_acoustic_loading
 from blab.deploy_solve import (
     DeploySolveCache,
     prepare_deploy_field_request,
@@ -375,7 +375,7 @@ def _microphone_sweep(
         velocity_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
         acoustic_rows = {
             key: [[None] * len(frequencies) for _ in transducer_ids]
-            for key in ("resistance", "reactance", "isolated_resistance", "isolated_reactance")
+            for key in ACOUSTIC_LOADING_KEYS
         }
         raw_speakers = _request.get("speakers", [])
         speaker_ids = [str(item["id"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []

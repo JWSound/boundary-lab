@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { acousticLoadingTraces, updateAcousticLoading } from "../src/model/acousticLoading";
+import { acousticLoadingTraces, updateAcousticLoading, differentialMagnitude, pressureDisplayScale } from "../src/model/acousticLoading";
 import type { MicrophoneSweepResult } from "../src/model/types";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -78,3 +78,37 @@ const gap = updateAcousticLoading(second, {
 });
 assert.ok(Number.isNaN(gap.traces.get("cab:driver")!.acousticResistance![0]));
 console.log("Streaming acoustic loading, out-of-order frequencies, immutable updates and gaps passed.");
+assert.equal(differentialMagnitude(300, -400), 500);
+assert.ok(Number.isNaN(differentialMagnitude(null, 400)));
+assert.equal(pressureDisplayScale(false, true), 0.001);
+assert.equal(pressureDisplayScale(true, false), Math.SQRT2);
+assert.equal(pressureDisplayScale(true, true), Math.SQRT2 / 1000);
+const pressureOnly = updateAcousticLoading(emptyLoading, {
+  ...sample, acoustic_loading: {
+    resistance: [null], reactance: [null], isolated_resistance: [null], isolated_reactance: [null],
+    pressure_real_pa: [300], pressure_imag_pa: [-400], isolated_pressure_real_pa: [0], isolated_pressure_imag_pa: [200],
+  },
+});
+assert.equal(pressureOnly.traces.get("cab:driver")!.differentialPressurePa![2], 500);
+assert.equal(pressureOnly.traces.get("cab:driver")!.isolatedDifferentialPressurePa![2], 200);
+const pressureResult = { ...acoustic, acoustic_loading: {
+  ...acoustic.acoustic_loading!, pressure_real_pa: [[300, null, 0]], pressure_imag_pa: [[-400, null, 0]],
+  isolated_pressure_real_pa: [[0, null, 0]], isolated_pressure_imag_pa: [[200, null, 0]],
+} };
+const savedPressure = captureAnalysis({ ...original, raw: { coupled: pressureResult } });
+pressureResult.acoustic_loading.pressure_real_pa[0][0] = 999;
+const completedPressure = acousticLoadingTraces(savedPressure.raw.coupled!);
+assert.equal(completedPressure.get("cab:driver")!.differentialPressurePa![0], 500);
+assert.equal(completedPressure.get("cab:driver")!.differentialPressurePa![2], 0);
+assert.equal(JSON.parse(serializeCapture(savedPressure)).raw.coupled.acoustic_loading.pressure_imag_pa[0][0], -400);
+const pressureMarkup = renderToStaticMarkup(createElement(ElectricalPlot, {
+  data: { key: "pressure", frequenciesHz: new Float64Array(), traces: completedPressure },
+  view: "differential", coupledSelected: true, currentFrequencyHz: 80, frequencyPosition: 1,
+  frequencyCount: 3, onFrequencyPositionChange: () => {}, canCalculate: true,
+  calculating: false, completedCount: 3, totalCount: 3, onCalculateOrStop: () => {},
+}));
+assert.ok(pressureMarkup.includes("|Δp| RMS (Pa)"));
+assert.ok(pressureMarkup.includes('class="electrical-phase-trace"'));
+assert.ok(pressureMarkup.includes("not a damage limit"));
+assert.ok(!pressureMarkup.includes("NaN"));
+console.log("Pressure differential streaming, RMS/peak units, captures and chart passed.");

@@ -288,7 +288,7 @@ export function App() {
   const [electricalResponse, setElectricalResponse] = useState<ElectricalData | null>(null);
   const [acousticResponse, setAcousticResponse] = useState<ElectricalData | null>(null);
   const [analysisTab, setAnalysisTab] = useState<"microphones" | "speakers">("microphones");
-  const [speakerQuantity, setSpeakerQuantity] = useState<"excursion" | "impedance" | "current" | "power" | "acoustic">("excursion");
+  const [speakerQuantity, setSpeakerQuantity] = useState<"excursion" | "impedance" | "current" | "power" | "acoustic" | "differential">("excursion");
   const [analysisSpeakerId, setAnalysisSpeakerId] = useState("all");
   const [captures, setCaptures] = useState<AnalysisCapture[]>([]);
   const [visibleCaptureIds, setVisibleCaptureIds] = useState<Set<string>>(() => new Set());
@@ -2300,6 +2300,7 @@ export function App() {
                 <option value="current">RMS current</option>
                 <option value="power">Real input power</option>
                 <option value="acoustic">Acoustic loading</option>
+                <option value="differential">Diaphragm pressure differential</option>
               </select>
               <select aria-label="Speaker response subjects" value={analysisSpeakerId} onChange={(event) => setAnalysisSpeakerId(event.target.value)}>
                 <option value="all">All Speakers</option>
@@ -2335,9 +2336,9 @@ export function App() {
               totalCount={microphoneSweepProgress.total}
               onCalculateOrStop={calculateOrStopMicrophoneSweep}
             /> : <ElectricalPlot
-              data={speakerQuantity === "acoustic" ? speakerAcoustic : speakerElectrical}
+              data={(speakerQuantity === "acoustic" || speakerQuantity === "differential") ? speakerAcoustic : speakerElectrical}
               view={speakerQuantity}
-              coupledSelected={fidelity === "coupled" || (speakerQuantity === "acoustic" ? speakerAcoustic : speakerElectrical).traces.size > 0}
+              coupledSelected={fidelity === "coupled" || ((speakerQuantity === "acoustic" || speakerQuantity === "differential") ? speakerAcoustic : speakerElectrical).traces.size > 0}
               currentFrequencyHz={pkg.frequenciesHz[frequencyIndex]}
               frequencyPosition={sortedPosition}
               frequencyCount={usableFrequencyIndices.length}

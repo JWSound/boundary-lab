@@ -705,7 +705,7 @@ function createWindow() {
         Array.from(document.querySelectorAll('[role="tab"]')).find((button) => button.textContent.includes('Speakers')).click();
         await frame();
         const quantity = document.querySelector('select[aria-label="Speaker response quantity"]');
-        if (quantity.options.length !== 5) throw new Error('Speaker quantities missing');
+        if (quantity.options.length !== 6) throw new Error('Speaker quantities missing');
         quantity.value = 'acoustic';
         quantity.dispatchEvent(new Event('change', { bubbles: true }));
         await frame();
@@ -714,6 +714,16 @@ function createWindow() {
         reactance.click();
         await frame();
         if (!reactance.classList.contains('active')) throw new Error('Reactance view did not switch');
+        quantity.value = 'differential';
+        quantity.dispatchEvent(new Event('change', { bubbles: true }));
+        await frame();
+        const peak = document.querySelector('button[aria-label="Peak pressure differential"]');
+        const kpa = document.querySelector('button[aria-label="Pressure units kPa"]');
+        if (!peak || !kpa) throw new Error('Pressure differential controls missing');
+        peak.click();
+        kpa.click();
+        await frame();
+        if (!peak.classList.contains('active') || !kpa.classList.contains('active')) throw new Error('Pressure differential controls did not switch');
         const subjects = document.querySelector('select[aria-label="Speaker response subjects"]');
         subjects.value = 'selection';
         subjects.dispatchEvent(new Event('change', { bubbles: true }));

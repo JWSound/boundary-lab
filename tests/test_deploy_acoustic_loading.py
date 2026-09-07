@@ -60,7 +60,32 @@ def test_undefined_velocity_is_a_gap(velocity):
     package, request, result, _ = fixture()
     result["diagnostics"]["transducer_velocity"][0] = {"real": [velocity, 1], "imag": [0, 0]}
     actual = normalized_acoustic_loading(package, request, result, 100)
-    assert all(values[0] is None for values in actual.values())
+    assert all(actual[key][0] is None for key in ("resistance", "reactance", "isolated_resistance", "isolated_reactance"))
+    assert (actual["pressure_real_pa"][0] is not None) == bool(np.isfinite(velocity))
+
+
+def test_differential_pressure_is_complex_force_over_area():
+    package, request, result, velocity = fixture()
+    actual = normalized_acoustic_loading(package, request, result, 100)
+    pressure = np.array([-2 - 4j, 12 + 8j]) * velocity / [0.01, 0.02]
+    assert actual["pressure_real_pa"] == pytest.approx(pressure.real)
+    assert actual["pressure_imag_pa"] == pytest.approx(-pressure.imag)
+    isolated = np.array([[4 - 2j, 2 - 1j], [2 - 1j, 8 - 4j]]) @ velocity / [0.01, 0.02]
+    assert actual["isolated_pressure_real_pa"] == pytest.approx(isolated.real)
+    assert actual["isolated_pressure_imag_pa"] == pytest.approx(-isolated.imag)
+
+
+def test_stationary_driver_pressure_survives_without_medium():
+    package, request, result, _ = fixture()
+    package.manifest["medium"] = {}
+    result["diagnostics"]["transducer_velocity"][0] = {"real": [0, 1], "imag": [0, 0]}
+    result["diagnostics"]["transducer_current"][0] = {"real": [3, 0], "imag": [4, 0]}
+    actual = normalized_acoustic_loading(package, request, result, 100)
+    assert actual["pressure_real_pa"][0] == pytest.approx(600)
+    assert actual["pressure_imag_pa"][0] == pytest.approx(-800)
+    assert actual["isolated_pressure_real_pa"][0] == pytest.approx(200)
+    assert actual["isolated_pressure_imag_pa"][0] == pytest.approx(100)
+    assert actual["resistance"][0] is None
 
 
 def test_legacy_package_can_plot_array_without_reference():

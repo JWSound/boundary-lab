@@ -8,20 +8,25 @@ import numpy as np
 
 from blab.deploy_solve import DeployPackageData
 
+ACOUSTIC_LOADING_KEYS = (
+    "resistance", "reactance", "isolated_resistance", "isolated_reactance",
+    "pressure_real_pa", "pressure_imag_pa", "isolated_pressure_real_pa", "isolated_pressure_imag_pa",
+)
+
 
 def normalized_acoustic_loading(
     package: DeployPackageData, request: dict[str, Any], result: dict[str, Any], frequency_hz: float
 ) -> dict[str, list[float | None]]:
-    """Recover net opposing load; return standard-audio (+iwt) dimensionless R/X.
+    """Recover opposing load as dimensionless R/X and complex RMS pressure (Pa).
 
     The isolated reference uses the *same cabinet velocity vector* as the array,
     not a matrix diagonal or an independently voltage-driven isolated solve.
     Undefined active impedances are explicit nulls, never zero-valued samples.
+    Pressure is force/effective area, retains zero-velocity samples, and uses
+    the same standard-audio (+iwt) convention as the impedance output.
     """
     descriptors = request.get("transducers", [])
-    output = {key: [None] * len(descriptors) for key in (
-        "resistance", "reactance", "isolated_resistance", "isolated_reactance"
-    )}
+    output = {key: [None] * len(descriptors) for key in ACOUSTIC_LOADING_KEYS}
     if not np.isfinite(frequency_hz) or frequency_hz <= 0:
         return output
     physical = package.manifest.get("physical_system", {})
@@ -62,16 +67,30 @@ def normalized_acoustic_loading(
             if not np.isfinite(area) and reference is not None and component["id"] in reference_ids:
                 area = float(reference["effective_area_m2"][reference_ids.index(component["id"])])
             scale = rho_c * area
-            if not np.isfinite(scale) or scale <= 0 or not np.isfinite(v[index]) or abs(v[index]) <= threshold:
+            if not np.isfinite(area) or area <= 0 or not np.isfinite(v[index]):
                 continue
+            if reference_force is not None:
+                pressure = reference_force[index] / area
+                if np.isfinite(pressure):
+                    output["isolated_pressure_real_pa"][target] = float(pressure.real)
+                    output["isolated_pressure_imag_pa"][target] = float(-pressure.imag)
             parameters = component.get("parameters", {})
             try:
                 zm = float(parameters["rms_n_s_per_m"]) + 1j * (
                     1 / (omega * float(parameters["cms_m_per_n"])) - omega * float(parameters["mmd_kg"])
                 )
-                impedance = (float(parameters["bl_n_per_a"]) * current[index] / v[index] - zm) / scale
+                load_force = float(parameters["bl_n_per_a"]) * current[index] - zm * v[index]
             except (KeyError, ValueError, TypeError, ZeroDivisionError):
                 continue
+            pressure = load_force / area
+            if np.isfinite(pressure):
+                output["pressure_real_pa"][target] = float(pressure.real)
+                output["pressure_imag_pa"][target] = float(-pressure.imag)
+            # Pressure is meaningful even with a stationary diaphragm. Only
+            # impedance needs the velocity and medium-normalization guards.
+            if not np.isfinite(scale) or scale <= 0 or abs(v[index]) <= threshold:
+                continue
+            impedance = load_force / v[index] / scale
             if np.isfinite(impedance):
                 output["resistance"][target] = float(impedance.real)
                 output["reactance"][target] = float(-impedance.imag)

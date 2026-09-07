@@ -227,6 +227,10 @@ export interface MicrophoneSweepResult {
   transducer_names: string[];
   transducer_velocity: { real: number[][]; imag: number[][] };
   acoustic_loading?: {
+    pressure_real_pa?: (number | null)[][];
+    pressure_imag_pa?: (number | null)[][];
+    isolated_pressure_real_pa?: (number | null)[][];
+    isolated_pressure_imag_pa?: (number | null)[][];
     resistance: (number | null)[][];
     reactance: (number | null)[][];
     isolated_resistance: (number | null)[][];
