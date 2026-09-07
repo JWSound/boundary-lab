@@ -233,12 +233,9 @@ completed.
 
 ## Legacy Mesh Workflow
 
-The CLI workflow is:
-
-1. `blab clean`
-2. `blab solve`
-3. `blab prepare`
-4. `blab plot`
+The source-model `blab solve` command and `blab server` are retired. Use the
+headless project workflow above for new solves. Mesh cleaning and the
+`blab prepare` / `blab plot` commands remain available for historical result files.
 
 ## Clean A Mesh
 
@@ -247,56 +244,6 @@ blab clean input.msh output_clean.msh --merge-tol 1e-9
 ```
 
 This merges coincident vertices, removes degenerate or duplicate triangles, and writes Gmsh 2.2 format.
-
-## Run A Solve
-
-```bash
-blab solve output_clean.msh --output-npz pressure_data_raw.npz --freq-min 200 --freq-max 20000 --freq-count 48 --workers 4
-```
-
-Useful options include:
-
-- `--config`
-- `--output-npz`
-- `--freq-min`
-- `--freq-max`
-- `--freq-count`
-- `--step-size`
-- `--min-angle`
-- `--max-angle`
-- `--axial-offset`
-- `--workers`
-- `--gmres-tol`
-- `--spherical-sampling`
-- `--spherical-sampling-points`
-
-The legacy solve CLI accepts a TOML file for multi-mesh, multi-radiator
-exterior-BEM jobs. Paths are resolved relative to the TOML file. For example:
-
-```toml
-[[meshes]]
-name = "cabinet"
-file = "cabinet.msh"
-scale_factor = 0.001
-translation_m = [0.0, 0.0, 0.0]
-
-[[radiators]]
-name = "woofer"
-mesh = "cabinet"
-tag = 2
-channel = "main"
-velocity_offset_db = 0.0
-
-[radiators.hpf]
-filter = "butterworth"
-order = 2
-frequency_hz = 80.0
-```
-
-Each radiator requires `name` and integer physical `tag`; `mesh` is required
-when more than one configured mesh could contain that tag. Optional radiator
-fields are `channel`, `velocity_offset_db`, `level_db`, `polarity`, `delay_ms`,
-`hpf`, and `lpf`.
 
 ## Prepare Visualization Data
 

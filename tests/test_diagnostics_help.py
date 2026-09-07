@@ -86,7 +86,7 @@ def test_main_window_diagnostic_context_summarizes_current_state() -> None:
 
     context = MainWindow._diagnostic_context(window)
 
-    assert context["backend"]["id"] == "local"
+    assert context["backend"]["id"] == "beat_cpu"
     assert context["project"]["file"] == "unsaved"
     assert context["operations"]["solve"]["phase"] == "idle"
     assert context["results"]["solved frequencies"] == 0

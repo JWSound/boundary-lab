@@ -181,17 +181,10 @@ guide.
 
 ### Solver Config
 
-- **BEM Solver** selects Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT
-  Engine AMD ROCm, or Bempp OpenCL CPU. All BEAT Engine backends support exterior
-  and coupled FEM-BEM systems, including X and XY symmetry. The ROCm backend uses
-  GPU-resident operator assembly, dense solve, and exterior field evaluation.
-- **Solve Server URL** and **Check Server** configure and query a remote
-  exterior-BEM server. A successful health check also updates advertised
-  capabilities such as symmetry support.
-- **Server access token** is an optional bearer token for an authenticated
-  server. Generate or paste it, copy it into the deployment's secret store,
-  and keep it safe. Boundary Lab retains it only for the current application
-  session.
+- **BEM Solver** selects BEAT Engine CPU, Nvidia CUDA, or AMD ROCm. All solves
+  use the physical system. CPU is the default; saved Bempp and Server selections
+  migrate to CPU. Julia is required.
+
 - **Balloon Sampling** requests Fibonacci-sphere observation points during the
   solve. Without these samples, the Balloon Plot action remains unavailable.
 - **Balloon Angle Precision** controls the approximate angular spacing and,

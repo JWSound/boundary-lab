@@ -135,6 +135,7 @@ def test_effective_symmetry_for_backend_preserves_julia_modes() -> None:
 
 
 def test_effective_symmetry_for_backend_disables_unsupported_modes() -> None:
-    assert effective_symmetry_for_backend("x", "local") == "off"
-    assert effective_symmetry_for_backend("xy", "bempp_local") == "off"
-    assert effective_symmetry_for_backend("off", "local") == "off"
+    import pytest
+
+    with pytest.raises(ValueError, match="retired"):
+        effective_symmetry_for_backend("x", "local")

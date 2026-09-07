@@ -45,7 +45,6 @@ def collect_diagnostics(
         "processor": platform.processor() or "unknown",
         "system_ram": _system_ram_text(),
         "dependencies": _dependency_versions(),
-        "opencl": _opencl_devices(),
         "preferences": preference_values,
         "context": context_values,
     }
@@ -65,14 +64,6 @@ def format_diagnostics(diagnostics: dict[str, Any]) -> str:
     dependencies = diagnostics.get("dependencies", {})
     for name in DEPENDENCY_NAMES:
         lines.append(f"  {name}: {dependencies.get(name, 'not installed')}")
-
-    lines.extend(["", "OpenCL:"])
-    opencl = diagnostics.get("opencl", [])
-    if opencl:
-        for item in opencl:
-            lines.append(f"  {item}")
-    else:
-        lines.append("  unavailable")
 
     lines.extend(["", "Preferences:"])
     preferences = diagnostics.get("preferences", {})
@@ -145,19 +136,6 @@ def _dependency_versions() -> dict[str, str]:
         except importlib.metadata.PackageNotFoundError:
             versions[name] = "not installed"
     return versions
-
-
-def _opencl_devices() -> list[str]:
-    try:
-        import pyopencl as cl
-
-        devices = []
-        for platform_info in cl.get_platforms():
-            for device in platform_info.get_devices():
-                devices.append(f"{platform_info.name}: {device.name}")
-        return devices
-    except Exception:
-        return []
 
 
 def _system_ram_text() -> str:

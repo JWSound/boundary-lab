@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -20,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -32,11 +29,9 @@ from PySide6.QtWidgets import (
 
 from blab.config import ChannelConfig, CrossoverConfig
 from blab.paths import APP_ROOT
-from blab.solvers.http_server import query_server_health
-from blab.solvers.registry import backend_info, backend_label_to_id, normalize_backend_id
+from blab.solvers.registry import backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.file_dialogs import FileDialogService
-from blab.ui.server_tokens import load_server_access_token, remember_server_access_token
 from blab.ui.settings import (
     FIELD_CACHE_SIZE_MAX_MB,
     FIELD_CACHE_SIZE_MIN_MB,
@@ -194,32 +189,9 @@ class PreferencesDialog(QDialog):
         current_backend = normalize_backend_id(preferences.solve_backend)
         backend_label = next(
             (label for label, value in self.solve_backend_options.items() if value == current_backend),
-            "Bempp (OpenCL CPU)",
+            "BEAT Engine (CPU)",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
-
-        self.solve_server_url_edit = QLineEdit()
-        self.solve_server_url_edit.setText(preferences.solve_server_url)
-        self.server_health_payload: dict | None = None
-        self.server_health_url: str | None = None
-        self.server_health_access_token: str | None = None
-        self.check_server_button = QPushButton("Check Server")
-        self.check_server_button.clicked.connect(self._check_server)
-        self.server_access_token_edit = QLineEdit()
-        self.server_access_token_edit.setEchoMode(QLineEdit.Password)
-        self.server_access_token_edit.setPlaceholderText("Optional")
-        self.server_access_token_edit.setText(load_server_access_token(preferences.solve_server_url))
-        self.generate_server_access_token_button = QPushButton("Generate")
-        self.generate_server_access_token_button.clicked.connect(self._generate_server_access_token)
-        self.copy_server_access_token_button = QPushButton("Copy")
-        self.copy_server_access_token_button.clicked.connect(self._copy_server_access_token)
-        self.server_access_token_row = QWidget()
-        server_access_token_layout = QHBoxLayout(self.server_access_token_row)
-        server_access_token_layout.setContentsMargins(0, 0, 0, 0)
-        server_access_token_layout.setSpacing(6)
-        server_access_token_layout.addWidget(self.server_access_token_edit, 1)
-        server_access_token_layout.addWidget(self.generate_server_access_token_button)
-        server_access_token_layout.addWidget(self.copy_server_access_token_button)
 
         self.polar_step_spin = QDoubleSpinBox()
         self.polar_step_spin.setRange(0.5, 90.0)
@@ -237,16 +209,6 @@ class PreferencesDialog(QDialog):
 
         self.normalized_channel_correction_check = QCheckBox("Enabled")
         self.normalized_channel_correction_check.setChecked(preferences.normalized_channel_correction)
-
-        def update_backend_fields(label: str) -> None:
-            backend_id = self.solve_backend_options.get(label, "local")
-            uses_remote = backend_info(backend_id).capabilities.is_remote
-            self.solve_server_url_edit.setEnabled(uses_remote)
-            self.check_server_button.setEnabled(uses_remote)
-            self.server_access_token_row.setEnabled(uses_remote)
-
-        update_backend_fields(backend_label)
-        self.solve_backend_combo.currentTextChanged.connect(update_backend_fields)
 
         self.smoothing_combo = QComboBox()
         self.smoothing_options = {
@@ -363,17 +325,6 @@ class PreferencesDialog(QDialog):
                 "Solver Config",
                 (
                     ("BEM Solver", self.solve_backend_combo, ""),
-                    ("Solve Server URL", self.solve_server_url_edit, ""),
-                    (
-                        "",
-                        self.check_server_button,
-                        "Query the configured solve server and update advertised capabilities.",
-                    ),
-                    (
-                        "Server access token",
-                        self.server_access_token_row,
-                        "Optional bearer token for authenticated solve servers. Keep this code safe; Boundary Lab only retains it for the current application session.",
-                    ),
                     (
                         "Balloon Sampling",
                         self.spherical_sampling_check,
@@ -460,43 +411,6 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
         self.resize(900, 500)
 
-    def _check_server(self) -> None:
-        url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
-        try:
-            payload = query_server_health(
-                url,
-                access_token=self.server_access_token_edit.text().strip(),
-            )
-        except Exception as exc:
-            self.server_health_payload = None
-            self.server_health_url = None
-            self.server_health_access_token = None
-            QMessageBox.warning(self, "Check Server", f"Failed to connect to solve server:\n{exc}")
-            return
-
-        self.server_health_payload = payload
-        self.server_health_url = url.rstrip("/")
-        self.server_health_access_token = self.server_access_token_edit.text().strip()
-        capabilities = payload.get("capabilities", {}) if isinstance(payload.get("capabilities", {}), dict) else {}
-        capability_lines = [
-            f"Solver: {payload.get('solver_label') or payload.get('solver') or 'Unknown'}",
-            f"Backend: {payload.get('backend') or payload.get('solver') or 'Unknown'}",
-            f"Symmetry: {'yes' if capabilities.get('supports_symmetry') else 'no'}",
-            f"Spherical sampling: {'yes' if capabilities.get('supports_spherical_sampling') else 'no'}",
-            f"Channel resynthesis: {'yes' if capabilities.get('supports_channel_resynthesis') else 'no'}",
-        ]
-        QMessageBox.information(self, "Check Server", "Solve server is reachable.\n\n" + "\n".join(capability_lines))
-
-    def _generate_server_access_token(self) -> None:
-        self.server_access_token_edit.setText(secrets.token_urlsafe(32))
-
-    def _copy_server_access_token(self) -> None:
-        QApplication.clipboard().setText(self.server_access_token_edit.text().strip())
-
-    def remember_server_access_token(self) -> None:
-        url = self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765"
-        remember_server_access_token(url, self.server_access_token_edit.text())
-
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
         group = QGroupBox(title)
@@ -533,7 +447,6 @@ class PreferencesDialog(QDialog):
         return GuiPreferences(
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
-            solve_server_url=self.solve_server_url_edit.text().strip() or "http://127.0.0.1:8765",
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Iterable
 
 import numpy as np
 
@@ -17,12 +16,12 @@ from blab.channel_synthesis import (
     pressure_to_spl,
     synthesize_channel_basis_spl,
 )
-from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig, SimulationConfig
+from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig
 from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
 from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
-from blab.solvers.base import FrequencyResult, SolveRequest
+from blab.solvers.base import FrequencyResult
 from blab.system_contract import SystemFrequencyResult
 
 GROUP_DELAY_VALID_RELATIVE_DB = -40.0
@@ -971,63 +970,3 @@ def split_frequency_order_for_workers(frequencies: Iterable[float], worker_count
         raise ValueError("worker_count must be >= 1.")
     worker_count = min(worker_count, max(1, freqs.size))
     return [freqs[index::worker_count] for index in range(worker_count) if freqs[index::worker_count].size]
-
-
-def solve_frequency_worker_process(
-    config: SimulationConfig, frequencies, stop_event, output_queue, worker_id: int
-) -> None:
-    try:
-        t_start = time.perf_counter()
-        live_solver = LiveSolver(config)
-        output_queue.put(
-            (
-                "initialized",
-                worker_id,
-                (
-                    live_solver.polar_angle_deg,
-                    live_solver.radiator_names,
-                    live_solver.sphere_metadata,
-                    time.perf_counter() - t_start,
-                ),
-            )
-        )
-        for result in live_solver.solve_stream(
-            frequencies,
-            stop_requested=stop_event.is_set,
-        ):
-            output_queue.put(("result", worker_id, result))
-    except Exception as exc:
-        output_queue.put(("error", worker_id, str(exc)))
-    finally:
-        output_queue.put(("done", worker_id, None))
-
-
-class LiveSolver:
-    """Thin warm-solver facade for GUI code."""
-
-    def __init__(self, config: SimulationConfig):
-        from blab.solvers.bempp_local import BemppLocalBackend
-
-        self._frequencies = np.asarray([], dtype=np.float32)
-        self.session = BemppLocalBackend().create_session(SolveRequest(config, self._frequencies))
-
-    @property
-    def polar_angle_deg(self) -> np.ndarray:
-        return self.session.metadata.polar_angle_deg
-
-    @property
-    def radiator_names(self) -> np.ndarray:
-        return self.session.metadata.radiator_names
-
-    @property
-    def sphere_metadata(self) -> dict[str, np.ndarray] | None:
-        return self.session.metadata.sphere_metadata
-
-    def solve_stream(
-        self,
-        frequencies: Iterable[float],
-        *,
-        stop_requested: Callable[[], bool] | None = None,
-    ):
-        self.session.request = SolveRequest(self.session.request.config, np.asarray(frequencies, dtype=np.float32))
-        yield from self.session.solve_stream(stop_requested=stop_requested)

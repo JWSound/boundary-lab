@@ -9,12 +9,10 @@ description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "bempp-cl",
   "gmsh",
   "matplotlib",
   "meshio",
   "numpy",
-  "pyopencl",
   "scipy",
 ]
 

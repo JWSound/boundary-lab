@@ -39,8 +39,12 @@ def application_settings() -> QSettings:
 
 @dataclass
 class GuiPreferences:
+    def __post_init__(self) -> None:
+        backend = normalize_backend_id(self.solve_backend)
+        self.solve_backend = "beat_cpu" if backend in {"local", "server"} else backend
+
     theme: str = "system"
-    solve_backend: str = "local"
+    solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
     live_plot_streaming: bool = True
     live_plot_quality: str = "medium"

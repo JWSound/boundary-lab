@@ -316,7 +316,8 @@ goto OPTIONAL_SOLVERS_DONE
 set "OPTIONAL_SOLVER_WARNING=1"
 echo.
 echo WARNING: Optional Julia solver setup did not complete.
-echo The Boundary Lab application and Bempp CPU solver are installed and usable.
+echo The Boundary Lab application is installed. Solving requires a configured
+echo BEAT Engine Julia environment; no Bempp fallback is available.
 echo Run this script again when you are ready to retry the optional setup.
 echo.
 

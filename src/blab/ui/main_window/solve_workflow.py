@@ -28,7 +28,6 @@ from blab.live import (
     FrequencyResult,
     LiveSolveDataset,
     TransducerMotionDataset,
-    build_log_frequencies,
 )
 from blab.max_spl import max_spl_limits_from_payload, transducer_rated_resistance_ohm
 from blab.mesh_topology import analyze_exterior_mesh_topology
@@ -42,10 +41,7 @@ from blab.physical_model import (
 from blab.solve_results import (
     SolvedSystemBuilder,
     SolveProvenance,
-    legacy_result_domains,
-    legacy_result_to_system_result,
 )
-from blab.solvers.registry import supports_physical_system_solves
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
@@ -75,7 +71,6 @@ from blab.ui.plots import (
     FINAL_ISOBAR_FREQ_SAMPLES,
 )
 from blab.ui.project_state import ProjectDocument
-from blab.ui.server_tokens import load_server_access_token
 from blab.ui.settings import (
     GuiPreferences,
     balloon_sampling_points,
@@ -87,7 +82,6 @@ from blab.ui.system_config import (
 )
 from blab.ui.system_solve import (
     prepare_system_ui_solve,
-    with_exterior_compatibility,
 )
 
 
@@ -294,11 +288,9 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
-            compatibility_required = not supports_physical_system_solves(preferences.solve_backend)
             solver_system = system
             component_channels = project.component_channel_by_id
-            prepared_simulation = None
-            if compatibility_required or project.stitch_imported_meshes:
+            if project.stitch_imported_meshes:
                 inputs = exterior_bem_inputs(
                     system,
                     component_channel_by_id=project.component_channel_by_id,
@@ -311,17 +303,10 @@ class SolveWorkflowController(QObject):
                     stitch_tolerance_mm=preferences.stitch_tolerance_mm,
                     symmetry=symmetry,
                 )
-                prepared_simulation = self._assembler.prepare(
-                    mesh_configs=mesh_configs,
-                    radiators=radiators,
-                    channels=self._inputs.solver_channel_configs(radiators),
-                    parameters=self._simulation_parameters(self._view.frequency_range(), preferences),
+                solver_system, component_channels = seed_exterior_system_from_solver_inputs(
+                    mesh_configs,
+                    radiators,
                 )
-                if project.stitch_imported_meshes:
-                    solver_system, component_channels = seed_exterior_system_from_solver_inputs(
-                        mesh_configs,
-                        radiators,
-                    )
 
             frequencies = self._view.frequency_range()
             prepared = prepare_system_ui_solve(
@@ -336,17 +321,8 @@ class SolveWorkflowController(QObject):
                 component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
                 symmetry_mode=symmetry,
-                observation_planes=() if compatibility_required else project.observation_planes,
-                allow_exterior_compatibility=compatibility_required,
+                observation_planes=project.observation_planes,
             )
-            if compatibility_required:
-                assert prepared_simulation is not None
-                prepared = with_exterior_compatibility(
-                    prepared,
-                    config=prepared_simulation.config,
-                    server_url=preferences.solve_server_url,
-                    server_access_token=load_server_access_token(preferences.solve_server_url),
-                )
         except (ValueError, OSError, SymmetryValidationError) as exc:
             self._view.show_stitch_or_generic_error("Exterior system preparation failed", exc)
             return
@@ -637,25 +613,6 @@ class SolveWorkflowController(QObject):
             return
         live_dataset.add(result)
         self._plots.set_spherical_spin_available(live_dataset.has_balloon_data)
-        if self._session.result_builder is None:
-            canonical = legacy_result_to_system_result(result)
-            frequencies = self._view.frequency_range().normalized()
-            self._session.result_builder = SolvedSystemBuilder(
-                frequencies_hz=build_log_frequencies(
-                    float(frequencies.min_hz),
-                    float(frequencies.max_hz),
-                    int(frequencies.count),
-                ),
-                excitation_ids=canonical.excitation_port_ids,
-                provenance=SolveProvenance(
-                    backend_id=self._read_preferences().solve_backend,
-                    solve_kind="exterior_bem",
-                ),
-                domains=legacy_result_domains(live_dataset),
-            )
-            self._session.result_builder.add(canonical)
-        elif self._session.result_builder.compiled_system is None:
-            self._session.result_builder.add(legacy_result_to_system_result(result))
         self._view.show_status(
             f"Solved {live_dataset.solved_count}/{self._view.frequency_range().count} "
             f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"

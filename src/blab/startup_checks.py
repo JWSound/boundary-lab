@@ -7,12 +7,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 DEPENDENCY_NAMES = (
-    "bempp-cl",
     "gmsh",
     "matplotlib",
     "meshio",
     "numpy",
-    "pyopencl",
     "scipy",
     "PySide6",
     "pyvista",

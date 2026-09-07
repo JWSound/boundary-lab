@@ -105,17 +105,6 @@ class DialogActionsMixin:
             "supports spherical sampling": backend.capabilities.supports_spherical_sampling,
             "supports channel resynthesis": backend.capabilities.supports_channel_resynthesis,
         }
-        if backend.capabilities.is_remote:
-            backend_details["server health"] = (
-                "reachable (cached)" if self.backend_health.matches_preferences() else "not confirmed"
-            )
-            if self.backend_health.matches_preferences() and self.backend_health.payload is not None:
-                backend_details["server solver"] = (
-                    self.backend_health.payload.get("solver_label")
-                    or self.backend_health.payload.get("solver")
-                    or "unknown"
-                )
-
         geometry_state = self.geometry_controller.state
         solve_state = self.solve_controller.state
         operations: dict[str, object] = {

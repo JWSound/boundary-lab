@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -22,8 +23,13 @@ from blab.protocol import (
     solve_request_from_config_and_frequencies,
 )
 from blab.rocm import discover_rocm
-from blab.server import _safe_asset_filename
 from blab.solvers.base import FrequencyResult, SolveMetadata, SolverCapabilities, SolveRequest
+
+
+def _safe_asset_filename(filename: str, index: int) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name).strip("._")
+    return cleaned or f"asset_{index}.msh"
+
 
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
 DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent

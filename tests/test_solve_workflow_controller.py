@@ -391,7 +391,7 @@ def test_exterior_solve_dispatch_requires_a_physical_system(controller, monkeypa
     assert controller.inputs.seeded == 1
 
 
-def test_local_exterior_backend_is_attached_to_a_system_request(controller, monkeypatch) -> None:
+def test_exterior_backend_uses_physical_request_without_legacy_preparation(controller, monkeypatch) -> None:
     system = SimpleNamespace()
     controller.project.physical_system = system
     controller.project.stitch_imported_meshes = False
@@ -415,13 +415,6 @@ def test_local_exterior_backend_is_attached_to_a_system_request(controller, monk
         "prepare_system_ui_solve",
         lambda value, **kwargs: prepared_calls.append((value, kwargs)) or "canonical",
     )
-    compatibility_calls = []
-    monkeypatch.setattr(
-        solve_workflow_module,
-        "with_exterior_compatibility",
-        lambda prepared, **kwargs: compatibility_calls.append((prepared, kwargs)) or "adapted",
-    )
-    monkeypatch.setattr(solve_workflow_module, "load_server_access_token", lambda _url: "token")
     dispatched = []
     monkeypatch.setattr(
         controller,
@@ -432,11 +425,9 @@ def test_local_exterior_backend_is_attached_to_a_system_request(controller, monk
     controller._start_exterior_system_solve()
 
     assert prepared_calls[0][0] is system
-    assert prepared_calls[0][1]["backend_id"] == "local"
-    assert compatibility_calls[0][0] == "canonical"
-    assert compatibility_calls[0][1]["config"] is prepared_simulation.config
-    assert compatibility_calls[0][1]["server_access_token"] == "token"
-    assert dispatched == [("adapted", "Initializing exterior solver...")]
+    assert prepared_calls[0][1]["backend_id"] == "beat_cpu"
+    assert "allow_exterior_compatibility" not in prepared_calls[0][1]
+    assert dispatched == [("canonical", "Initializing exterior solver...")]
 
 
 def test_stitched_beat_exterior_is_represented_by_a_derived_physical_system(controller, monkeypatch) -> None:
@@ -471,11 +462,6 @@ def test_stitched_beat_exterior_is_represented_by_a_derived_physical_system(cont
         solve_workflow_module,
         "prepare_system_ui_solve",
         lambda value, **kwargs: prepared_calls.append((value, kwargs)) or "canonical",
-    )
-    monkeypatch.setattr(
-        solve_workflow_module,
-        "with_exterior_compatibility",
-        lambda *_args, **_kwargs: pytest.fail("BEAT must use the canonical physical-system backend"),
     )
     dispatched = []
     monkeypatch.setattr(

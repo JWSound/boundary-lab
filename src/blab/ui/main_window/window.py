@@ -526,7 +526,6 @@ class MainWindow(
         self._restore_window_state()
         startup("Starting new project...")
         self.new_project()
-        QTimer.singleShot(0, self.backend_health.check_on_startup)
 
     # -- solve workflow ----------------------------------------------------
     # Buttons, menu actions and the F5/Shift+F5 shortcuts are connected to the

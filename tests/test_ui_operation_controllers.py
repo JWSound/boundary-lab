@@ -5,10 +5,9 @@ import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 
 import blab.ui.operation_controllers as controller_module
-from blab.config import SimulationConfig
 from blab.ui.application_state import OperationPhase
 from blab.ui.operation_controllers import GeometryController, SolveController
-from blab.ui.solve_worker import SolveWorker
+from blab.ui.system_solve import SystemSolveWorker
 
 
 class _SolveWorkerStub(QObject):
@@ -102,19 +101,26 @@ def test_solve_worker_logs_backend_detail_without_emitting_visible_status(monkey
             pass
 
     class Backend:
-        def create_session(self, request):
+        def create_system_session(self, request):
             request.status_callback("initializing backend detail")
             return Session(request)
 
-    monkeypatch.setattr("blab.ui.solve_worker.create_backend", lambda *_args, **_kwargs: Backend())
-    worker = SolveWorker(
-        SimulationConfig(mesh_file="speaker.msh"),
-        np.array([1000.0]),
+    monkeypatch.setattr("blab.ui.system_solve.PhysicalSystemProductionBackend", lambda *_args, **_kwargs: Backend())
+    from blab.system_contract import SystemSolveRequest
+
+    worker = SystemSolveWorker(
+        SimpleNamespace(
+            request=SystemSolveRequest(compiled_system=None, frequencies_hz=(1000.0,), excitation_port_ids=()),
+            backend_id="beat_cpu",
+            polar_angle_deg=np.array([0.0]),
+            excitation_component_names=np.array(["driver"]),
+            sphere_metadata=None,
+        )
     )
     statuses = []
     worker.status.connect(statuses.append)
 
-    with caplog.at_level("INFO", logger="blab.ui.solve_worker"):
+    with caplog.at_level("INFO", logger="blab.ui.system_solve"):
         worker.run()
 
     assert statuses == []

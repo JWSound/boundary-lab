@@ -19,7 +19,6 @@ from blab.solve_results import (
 )
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
-from blab.solvers.exterior_compatibility import ExteriorCompatibilitySession
 from blab.system_contract import SystemFrequencyResult
 from blab.system_solve import (
     SystemUiSolveRequest,
@@ -27,7 +26,6 @@ from blab.system_solve import (
     prepare_coupled_ui_solve,
     prepare_system_ui_solve,
     supports_exterior_system_protocol,
-    with_exterior_compatibility,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -53,10 +51,7 @@ class SystemSolveWorker(QObject):
     def run(self) -> None:
         try:
             request = replace(self.prepared.request, status_callback=self._log_backend_status)
-            if self.prepared.compatibility is not None:
-                self._run_compatibility(request)
-            else:
-                self._run_physical_system(request)
+            self._run_physical_system(request)
         except Exception as exc:
             if not self._stop:
                 self.failed.emit(str(exc))
@@ -80,21 +75,6 @@ class SystemSolveWorker(QObject):
             canonical_result = self._canonical_result(result)
             self.system_result_ready.emit(canonical_result)
             self.result_ready.emit(self._to_live_result(canonical_result))
-
-    def _run_compatibility(self, request) -> None:
-        options = self.prepared.compatibility
-        assert options is not None
-        session = ExteriorCompatibilitySession(request, options)
-        self._session = session
-        metadata = session.metadata
-        self.initialized.emit(
-            metadata.polar_angle_deg,
-            metadata.radiator_names,
-            metadata.sphere_metadata,
-        )
-        for result in session.solve_stream(stop_requested=lambda: self._stop):
-            self.system_result_ready.emit(result.canonical)
-            self.result_ready.emit(result.live)
 
     @Slot()
     def stop(self) -> None:
@@ -249,7 +229,6 @@ __all__ = [
     "SystemUiSolveRequest",
     "prepare_system_ui_solve",
     "supports_exterior_system_protocol",
-    "with_exterior_compatibility",
     "CoupledSolveWorker",
     "CoupledUiSolveRequest",
     "prepare_coupled_ui_solve",

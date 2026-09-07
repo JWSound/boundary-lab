@@ -17,11 +17,6 @@ from blab.paths import APP_ROOT
 
 def _missing_gui_dependency_message(exc: ImportError) -> str:
     missing = getattr(exc, "name", None) or "a GUI dependency"
-    if missing == "_cl":
-        return (
-            "pyopencl is installed incorrectly or is missing its compiled _cl extension. "
-            "Reinstall it with: python -m pip install --force-reinstall --no-cache-dir pyopencl"
-        )
     return f'{missing} is required for the GUI. Reinstall the GUI extra with: python -m pip install -e ".[gui]"'
 
 

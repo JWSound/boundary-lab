@@ -33,9 +33,10 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab currently has five selectable BEM solver backends in application
-preferences: Server, BEAT Engine Nvidia CUDA, BEAT Engine CPU, BEAT Engine AMD
-ROCm, and Bempp OpenCL CPU.
+Boundary Lab uses BEAT Engine CPU, Nvidia CUDA, or AMD ROCm for all physical-system
+solves. New GUI installations and saved legacy backend preferences use BEAT CPU.
+The headless CLI defaults to functional CUDA with CPU fallback. Bempp and OpenCL
+are no longer required.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -74,13 +75,6 @@ To prepare the Julia environment, from the repository root run:
 julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
 ```
 
-### Bempp CPU Solver Requirements
-
-* Intel or AMD CPU
-* An OpenCL runtime
-
-The [Intel CPU OpenCL runtime](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html) is a practical option even on many non-Intel systems.
-
 ## Application Installation
 
 From the repository root run:
@@ -99,44 +93,14 @@ blab gui
 
 Boundary lab deploy is an interactive advanced array simulation tool that ingests .blabspeaker packages generated from the main boundary lab application. It is an experimental application early in development and currently only supports BEM/coupled solving using BEAT engine on Nvidia hardware. The application can be found inside the /deploy/ folder where a separate readme contains installation instructions.
 
-## Boundary Lab Server
-
-Boundary Lab can also run a local or LAN-accessible job server that accepts solve
-jobs and streams per-frequency results back as NDJSON events:
-
-```bash
-blab server --host 127.0.0.1 --port 8765 --solver bempp_cpu
-blab server --host 127.0.0.1 --port 8765 --solver beat_cpu --julia-threads auto
-blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
-```
-
-Supported server-side solver IDs are `bempp_cpu` for Bempp OpenCL CPU, `beat_cpu`,
-`beat_cuda`, and `beat_rocm`. ROCm supports exterior and coupled FEM-BEM solves,
-including symmetry and hybrid FEM static condensation. For BEAT Engine solvers, use
-`--julia-executable` and `--julia-threads` to point the server at the intended
-Julia installation and thread count.
-
-To use it from the GUI application, open `Edit > Preferences`, set `BEM Solver` to
-`Server`, and set `Solve Server URL` to the server address. Use `Check Server` to
-query `/health`; the app uses the advertised capabilities, such as mesh
-symmetry support for feature availability. For another machine on the LAN, bind
-the server to that machine's LAN address or `0.0.0.0` and use
-`http://<server-ip>:8765` in the client. The GUI uploads the solver mesh files
-with each server job, so the server does not need access to the client's local
-paths.
-
-For Docker image deployment with the BEAT Engine CUDA solver, see
-[Docker](docs/Docker.md).
-
 ## Documentation
 
+- [BEAT Engine extraction milestones](docs/BEAT%20Engine%20Extraction.md)
 - [Installation and Setup](docs/Installation%20and%20Setup.md)
 - [User Guide](docs/User%20Guide.md)
 - [Physical System Model](docs/Physical%20System%20Model.md)
 - [Interior FEM Solver](docs/Interior%20FEM%20Solver.md)
 - [Coupled Solver](docs/Coupled%20Solver.md)
-- [Boundary Lab Server](docs/Boundary%20Lab%20Server.md)
-- [CUDA Server Docker Image](docs/Docker.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)

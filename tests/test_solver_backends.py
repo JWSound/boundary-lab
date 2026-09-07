@@ -2,6 +2,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 from blab.config import SimulationConfig
 from blab.solvers.base import SolveRequest
@@ -10,20 +11,11 @@ from blab.solvers.beat_engine_backend import (
     DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
     DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     BeatEngineBackend,
-    BeatEngineRocmBackend,
     _friendly_julia_error,
     _julia_process_env,
     _julia_worker_command,
     _resolve_julia_threads,
     shutdown_beat_engine_workers,
-)
-from blab.solvers.bempp_server import BemppServerBackend, BemppServerSession
-from blab.solvers.http_server import (
-    HttpServerBackend,
-    HttpServerSession,
-    _authorization_headers,
-    query_server_health,
-    server_health_supports_symmetry,
 )
 from blab.solvers.julia_local_backend import JuliaLocalBackend
 from blab.solvers.registry import (
@@ -37,41 +29,15 @@ from blab.solvers.registry import (
 )
 
 
-def test_solver_backend_registry_keeps_legacy_ids_available() -> None:
-    labels = backend_label_to_id()
-
-    assert labels["Server"] == "server"
-    assert labels["BEAT Engine (Nvidia CUDA)"] == "beat_cuda"
-    assert labels["BEAT Engine (CPU)"] == "beat_cpu"
-    assert labels["BEAT Engine (AMD ROCm)"] == "beat_rocm"
-    assert "BEAT Engine (CPU Condensed)" not in labels
-    assert labels["Bempp (OpenCL CPU)"] == "local"
-    assert normalize_backend_id("bempp") == "local"
-    assert normalize_backend_id("bempp_cpu") == "local"
-    assert normalize_backend_id("bempp_local") == "local"
-    assert normalize_backend_id("bempp_server") == "server"
-    assert normalize_backend_id("http_server") == "server"
-    assert normalize_backend_id("julia_local") == "beat_cuda"
-    assert normalize_backend_id("local_julia") == "beat_cuda"
-    assert normalize_backend_id("beat") == "beat_cuda"
-    assert normalize_backend_id("beat_engine") == "beat_cuda"
-    assert normalize_backend_id("beat_cpu") == "beat_cpu"
-    assert normalize_backend_id("beat_rocm") == "beat_rocm"
-    assert normalize_backend_id("rocm") == "beat_rocm"
-    assert normalize_backend_id("amdgpu") == "beat_rocm"
+def test_solver_backend_registry_offers_only_physical_backends() -> None:
+    assert set(backend_label_to_id().values()) == {"beat_cpu", "beat_cuda", "beat_rocm"}
+    assert {info.backend_id for info in available_backend_infos()} == {"beat_cpu", "beat_cuda", "beat_rocm"}
+    assert normalize_backend_id("") == "beat_cpu"
+    for retired in ("local", "bempp", "bempp_cpu", "bempp_local", "server", "bempp_server", "http_server"):
+        assert not supports_physical_system_solves(retired)
+        with pytest.raises(ValueError, match="retired"):
+            create_backend(retired)
     assert JuliaLocalBackend is BeatEngineBackend
-    assert BeatEngineRocmBackend.beat_engine_backend == "rocm"
-    assert BemppServerBackend is HttpServerBackend
-    assert BemppServerSession is HttpServerSession
-    assert backend_info("server").capabilities.is_remote is True
-    assert backend_info("server").capabilities.supports_symmetry is False
-    assert backend_info("local").capabilities.supports_symmetry is False
-    assert backend_info("beat_cuda").capabilities.supports_symmetry is True
-    assert backend_info("beat_cpu").capabilities.supports_symmetry is True
-    assert backend_info("beat_rocm").capabilities.supports_symmetry is True
-    assert "beat_cuda" in {info.backend_id for info in available_backend_infos()}
-    assert "beat_cpu" in {info.backend_id for info in available_backend_infos()}
-    assert "beat_rocm" in {info.backend_id for info in available_backend_infos()}
 
 
 def test_condensed_cpu_backend_id_is_a_compatibility_alias() -> None:
@@ -94,31 +60,7 @@ def test_condensed_cpu_backend_id_is_a_compatibility_alias() -> None:
     assert supports_physical_system_solves("local") is False
 
 
-def test_local_backend_factory_exposes_contract_metadata() -> None:
-    backend = create_backend("local", server_url="http://ignored.example")
-    request = SolveRequest(
-        config=SimulationConfig(mesh_file="mesh.msh"),
-        frequencies_hz=np.array([1000.0], dtype=np.float32),
-    )
-
-    assert backend.backend_id == "local"
-    assert backend.capabilities.supports_streaming is True
-    assert backend.capabilities.is_remote is False
-    assert backend.create_session.__name__ == "create_session"
-    assert request.frequencies_hz.tolist() == [1000.0]
-
-
-def test_server_and_julia_backend_factories_expose_contract() -> None:
-    server_backend = create_backend(
-        "server",
-        server_url="http://example.test",
-        server_access_token="test-token",
-        julia_executable="ignored",
-    )
-    assert server_backend.backend_id == "server"
-    assert server_backend.capabilities.is_remote is True
-    assert server_backend.access_token == "test-token"
-
+def test_julia_backend_factories_expose_contract() -> None:
     julia_backend = create_backend("julia_local")
     assert julia_backend.backend_id == "beat_cuda"
     assert julia_backend.julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
@@ -144,50 +86,6 @@ def test_server_and_julia_backend_factories_expose_contract() -> None:
     assert BeatEngineBackend().julia_project == DEFAULT_BEAT_ENGINE_CUDA_PROJECT
     assert BeatEngineBackend(beat_engine_backend="cpu").julia_project == DEFAULT_BEAT_ENGINE_CPU_PROJECT
     assert BeatEngineBackend(beat_engine_backend="rocm").julia_project == DEFAULT_BEAT_ENGINE_ROCM_PROJECT
-
-
-def test_server_health_supports_symmetry_reads_capability_payload() -> None:
-    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": True}}) is True
-    assert server_health_supports_symmetry({"capabilities": {"supports_symmetry": False}}) is False
-    assert server_health_supports_symmetry({}) is False
-
-
-def test_server_token_is_not_sent_over_remote_plain_http() -> None:
-    try:
-        query_server_health("http://solver.example", access_token="secret")
-    except RuntimeError as exc:
-        assert "Refusing to send" in str(exc)
-    else:
-        raise AssertionError("client should reject bearer tokens over remote plain HTTP")
-
-
-def test_server_requests_use_application_user_agent() -> None:
-    headers = _authorization_headers("secret")
-
-    assert headers["User-Agent"].startswith("BoundaryLab/")
-    assert headers["Authorization"] == "Bearer secret"
-
-
-def test_server_requests_use_application_user_agent_without_authentication() -> None:
-    headers = _authorization_headers("")
-
-    assert headers["User-Agent"].startswith("BoundaryLab/")
-    assert "Authorization" not in headers
-
-
-def test_bempp_backend_rejects_symmetry() -> None:
-    backend = create_backend("local")
-    request = SolveRequest(
-        config=SimulationConfig(mesh_file="mesh.msh", symmetry="x"),
-        frequencies_hz=np.array([1000.0], dtype=np.float32),
-    )
-
-    try:
-        backend.create_session(request)
-    except RuntimeError as exc:
-        assert "does not support symmetry" in str(exc)
-    else:
-        raise AssertionError("Bempp backend accepted a symmetry solve request.")
 
 
 def test_julia_backend_consumes_ndjson_solver_contract(tmp_path) -> None:

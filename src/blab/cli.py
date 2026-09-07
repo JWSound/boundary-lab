@@ -21,6 +21,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="blab",
         description="Run Boundary Lab mesh preparation, solving, postprocessing, and plotting commands.",
+        epilog="Use 'blab project validate' and 'blab project solve' for physical-system solves. The old solve and server commands are retired.",
     )
     parser.add_argument("command", choices=tuple(COMMAND_MODULES), help="Workflow command to run")
     parser.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded to the command")

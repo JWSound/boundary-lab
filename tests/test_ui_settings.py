@@ -247,7 +247,7 @@ def test_applying_project_preferences_preserves_solver_and_application_choices()
     assert applied.polar_angle_step_deg == 5.0
     assert applied.normalized_channel_correction is False
     assert applied.spherical_sampling_enabled is True
-    assert applied.solve_backend == "server"
+    assert applied.solve_backend == "beat_cpu"
     assert applied.solve_server_url == "http://solver.example:8765"
     assert applied.gmres_tolerance == 1e-7
     assert applied.use_burton_miller is False

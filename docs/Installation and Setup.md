@@ -141,18 +141,17 @@ process, and no intermediate raw mesh is written or reloaded.
 
 ## Solver setup
 
-Boundary Lab offers four local backends. All BEAT Engine backends support exterior
+Boundary Lab offers three local BEAT Engine backends. All support exterior
 BEM and coupled FEM-BEM systems, including X and XY symmetry.
 
 | Backend | Hardware/runtime | Exterior BEM | Coupled FEM-BEM |
 |---|---|:---:|:---:|
-| Bempp OpenCL CPU | CPU OpenCL runtime | Yes | No |
 | BEAT Engine CPU | Julia and CPU BLAS/LAPACK | Yes | Yes |
 | BEAT Engine Nvidia CUDA | Julia and supported NVIDIA GPU | Yes | Yes |
 | BEAT Engine AMD ROCm | Julia, AMDGPU.jl, and a functional ROCm SDK | Yes | Yes |
 
-The server backend can submit exterior or coupled jobs to another Boundary Lab
-installation. The ROCm path uses GPU-resident regular and Duffy singular operator
+Bempp and the legacy HTTP solve server are retired. Saved backend selections
+for either migrate to BEAT CPU. The ROCm path uses GPU-resident regular and Duffy singular operator
 assembly, rocBLAS/rocSOLVER dense solves, and GPU exterior field evaluation.
 See [BEAT Engine AMD ROCm](advanced/beat-engine-rocm.md) for setup and
 validation details.
@@ -181,67 +180,6 @@ blab rocm detect --json
 This stores a per-user path under `%LOCALAPPDATA%\Boundary Lab`, avoiding a
 checkout-specific drive or directory. Use `blab rocm clear` to remove the saved
 override.
-
-### Bempp OpenCL CPU
-
-Bempp-cl and PyOpenCL are installed with Boundary Lab. The operating system
-must additionally provide an OpenCL installable client driver (ICD) exposing a
-CPU device.
-
-#### Windows on an Intel CPU
-
-Download and run the current Intel 64-bit Windows installer from
-[Intel CPU Runtime for OpenCL Applications](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-with-sycl-support.html),
-then restart Boundary Lab. Open **About > Diagnostic Info** and run diagnostics
-to confirm that an Intel CPU OpenCL device is listed.
-
-Intel does not officially support this CPU runtime on AMD processors. On an AMD
-Windows system, use BEAT Engine CPU, a Boundary Lab server, or another OpenCL
-CPU runtime known to support that processor.
-
-#### Linux with PoCL
-
-For a portable CPU runtime on Ubuntu, including AMD CPUs and distributions not
-listed by Intel's runtime support matrix, install PoCL:
-
-```bash
-sudo apt install pocl-opencl-icd clinfo
-```
-
-#### Linux on an Intel CPU
-
-For a supported Intel Core or Xeon processor, Intel distributes its CPU runtime
-through the oneAPI APT repository. Configure the repository and install only
-the runtime package:
-
-```bash
-sudo apt install wget gpg
-
-wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-  | gpg --dearmor \
-  | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg >/dev/null
-
-echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
-  | sudo tee /etc/apt/sources.list.d/oneAPI.list
-
-sudo apt update
-sudo apt install intel-oneapi-runtime-opencl clinfo
-```
-
-Intel documents the supported processor families and Linux releases in the
-[Intel CPU Runtime for OpenCL Applications Guide](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-cpu-runtime-for-opencl-applications-guide.html).
-Ubuntu's similarly named `intel-opencl-icd` package is the Intel **GPU** compute
-runtime, not this CPU runtime.
-
-Verify that at least one CPU OpenCL device is available:
-
-```bash
-clinfo -l
-python -c 'import pyopencl as cl; print([(p.name, [d.name for d in p.get_devices()]) for p in cl.get_platforms()])'
-```
-
-If PyOpenCL reports `PLATFORM_NOT_FOUND_KHR`, the generic OpenCL loader is
-present but no usable vendor runtime is registered.
 
 ### BEAT Engine CPU
 
@@ -299,21 +237,6 @@ python -m pip install -e ".[gui]"
 Rerun the applicable Julia `Pkg.instantiate()` command after solver dependency
 changes.
 
-## Boundary Lab server
-
-The installed command can also run a local or LAN server:
-
-```bash
-blab server --host 127.0.0.1 --port 8765 --solver bempp_cpu
-blab server --host 127.0.0.1 --port 8765 --solver beat_cpu --julia-threads auto
-blab server --host 127.0.0.1 --port 8765 --solver beat_cuda
-```
-
-Configure the GUI through **Edit > Preferences > BEM Solver > Server** and set
-the server URL. See [Boundary Lab Server](Boundary%20Lab%20Server.md) for
-capabilities, authentication, and LAN setup, or [Docker](Docker.md) for an
-authenticated CUDA deployment.
-
 ## Installation diagnostics
 
 Useful checks from an activated environment are:
@@ -322,13 +245,6 @@ Useful checks from an activated environment are:
 python --version
 python -m pip check
 blab --help
-```
-
-If the GUI reports that PyOpenCL's compiled `_cl` extension is missing, repair
-the wheel with:
-
-```bash
-python -m pip install --force-reinstall --no-cache-dir pyopencl
 ```
 
 If Ath reports that Wine is required, confirm that `wine` is available on the

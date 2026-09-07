@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from repo_paths import MAIN_WINDOW_PKG, source_text
 
 
@@ -153,26 +151,12 @@ def test_channel_config_changes_apply_only_on_apply_button() -> None:
     assert "dialog.channelsApplied.connect(self._apply_channel_config)" in main_source
 
 
-def test_server_health_worker_runs_query_with_timeout() -> None:
-    worker_source = (Path(__file__).resolve().parents[1] / "src" / "blab" / "ui" / "server_health_worker.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "class ServerHealthCheckWorker(QObject)" in worker_source
-    assert "succeeded = Signal(str, object)" in worker_source
-    assert "failed = Signal(str)" in worker_source
-    assert "access_token=self.access_token" in worker_source
-    assert "timeout_s=self.timeout_s" in worker_source
-    assert "self.finished.emit()" in worker_source
-
-
 def test_preferences_no_longer_expose_worker_count() -> None:
     dialog_source = source_text("ui", "dialogs.py")
     settings_source = source_text("ui", "settings.py")
     main_source = main_window_source()
     config_source = source_text("config.py")
     assembler_source = source_text("ui", "simulation_assembler.py")
-    solve_source = main_window_source("solve_workflow")
 
     assert "worker_count_spin" not in dialog_source
     assert '"Worker Count"' not in dialog_source
@@ -213,23 +197,15 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     ]
     assert '"BEM Solver", self.solve_backend_combo' in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
-    assert '"Solve Server URL", self.solve_server_url_edit' in solver_config_block
-    assert 'self.check_server_button = QPushButton("Check Server")' in dialog_source
-    assert 'self.generate_server_access_token_button = QPushButton("Generate")' in dialog_source
-    assert 'self.copy_server_access_token_button = QPushButton("Copy")' in dialog_source
-    assert '"Server access token",' in solver_config_block
-    assert "Keep this code safe" in solver_config_block
+    assert "Solve Server URL" not in solver_config_block
+    assert "Server access token" not in solver_config_block
     assert "operating system credential vault" not in dialog_source
-    assert "self.server_access_token_row.setEnabled(uses_remote)" in dialog_source
-    assert '"", self.check_server_button' in solver_config_block or "self.check_server_button," in solver_config_block
-    assert "self.check_server_button.setEnabled(uses_remote)" in dialog_source
     assert '"BEM Solver", self.solve_backend_combo' not in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert 'uses_bempp = backend_id in {"local", "server"}' not in dialog_source
-    # Server health probing moved to BackendHealthController and is covered
-    # behaviourally by tests/test_backend_health.py.
-    assert "QTimer.singleShot(0, self.backend_health.check_on_startup)" in main_source
+    # Retired server probing must not run when the application starts.
+    assert "self.backend_health.check_on_startup" not in main_source
     assert "GMRES Tolerance" not in dialog_source
     assert "Burton Miller Formulation" not in dialog_source
     assert "self.gmres_spin" not in dialog_source

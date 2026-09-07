@@ -184,18 +184,10 @@ class PreferencesMixin:
         if dialog.exec() != QDialog.Accepted:
             return
         preferences = dialog.preferences()
-        checked_server_health = None
-        if (
-            dialog.server_health_payload is not None
-            and dialog.server_health_url == preferences.solve_server_url.rstrip("/")
-            and dialog.server_health_access_token == dialog.server_access_token_edit.text().strip()
-        ):
-            checked_server_health = dialog.server_health_payload
         symmetry_will_be_disabled = (
             self.backend_health.effective_symmetry(
                 self.symmetry,
                 preferences,
-                server_health_payload=checked_server_health,
             )
             != self.symmetry
         )
@@ -206,17 +198,9 @@ class PreferencesMixin:
             dialog.deleteLater()
             return
 
-        dialog.remember_server_access_token()
         dialog.deleteLater()
         self.preferences = preferences
         self._apply_field_preferences()
-        if checked_server_health is not None and preferences.solve_backend == "server":
-            self.backend_health.cache(checked_server_health, preferences.solve_server_url)
-        elif (
-            preferences.solve_backend != previous_preferences.solve_backend
-            or preferences.solve_server_url != previous_preferences.solve_server_url
-        ):
-            self.backend_health.clear()
         self._save_preferences()
         self.project.project_preferences = self._current_project_preferences()
         symmetry_disabled = self.reconcile_symmetry_with_backend()

@@ -36,62 +36,14 @@ def test_cli_exposes_rocm_configuration() -> None:
     assert cli.COMMAND_MODULES["rocm"] == "blab.rocm"
 
 
-def test_solver_accepts_short_public_option_names() -> None:
-    args = solver._build_arg_parser().parse_args(
-        [
-            "mesh.msh",
-            "--output-npz",
-            "out.npz",
-            "--step-size",
-            "5",
-            "--min-angle",
-            "-90",
-            "--max-angle",
-            "90",
-            "--axial-offset",
-            "0.2",
-            "--gmres-tol",
-            "1e-4",
-        ]
-    )
+def test_retired_solve_commands_explain_physical_project_workflow() -> None:
+    import pytest
 
-    assert args.output_npz == "out.npz"
-    assert args.step_size == 5
-    assert args.min_angle == -90
-    assert args.max_angle == 90
-    assert args.axial_offset == 0.2
-    assert args.gmres_tol == 1e-4
+    from blab import server
 
-
-def test_solver_rejects_removed_legacy_option_names() -> None:
-    parser = solver._build_arg_parser()
-
-    for option in (
-        "--output-npz-base-path",
-        "--polar-angle-step-deg",
-        "--polar-angle-min-deg",
-        "--polar-angle-max-deg",
-        "--observation-axial-offset-m",
-    ):
-        try:
-            parser.parse_args(["mesh.msh", option, "1"])
-        except SystemExit:
-            continue
-        raise AssertionError(f"{option} should not be accepted")
-
-
-def test_solver_help_uses_short_public_option_names() -> None:
-    help_text = solver._build_arg_parser().format_help()
-
-    assert "--output-npz" in help_text
-    assert "--step-size" in help_text
-    assert "--min-angle" in help_text
-    assert "--max-angle" in help_text
-    assert "--axial-offset" in help_text
-    assert "--gmres-tol" in help_text
-    assert "--output-npz-base-path" not in help_text
-    assert "--polar-angle-step-deg" not in help_text
-    assert "--observation-axial-offset-m" not in help_text
+    for module in (solver, server):
+        with pytest.raises(SystemExit, match="retired.*blab project validate.*blab project solve"):
+            module.main([])
 
 
 def test_postprocess_public_options_are_trimmed() -> None:
