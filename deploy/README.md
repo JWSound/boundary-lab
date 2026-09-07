@@ -1,123 +1,59 @@
-# Boundary Lab Deploy prototype
+# Boundary Lab Deploy
 
-Boundary Lab Deploy is a desktop prototype for interactive subwoofer placement and analysis. It uses Electron for the desktop shell and a React, TypeScript, and Three.js renderer.
+Boundary Lab Deploy is a desktop prototype for loudspeaker-array placement,
+coverage prediction, and comparative loading analysis using Boundary Lab speaker
+packages. It offers immediate Pattern predictions and higher-detail Boundary and
+reduced-order Coupled calculations, all with an infinite rigid ground plane.
 
-## Run it
+## Requirements
 
-From this directory:
+- A checkout of the Boundary Lab repository and Node.js with npm (the current
+  Vite toolchain accepts Node 18.x or 20+). Electron is installed by npm.
+- A graphics environment capable of running Electron/Three.js with WebGL.
+- For Boundary/Coupled: Python 3.11+ with Boundary Lab's dependencies installed,
+  Julia with the BEAT Engine CUDA environment prepared, and a compatible NVIDIA
+  GPU/driver. Follow [Boundary Lab setup](../docs/Installation%20and%20Setup.md)
+  and [BEAT Engine CUDA](../docs/advanced/beat-engine-CUDA.md).
+- A suitable disk-backed `.blabsp` package for numerical solves. A bundled coarse
+  S218BP example is provided for exploring the workflow.
+
+Pattern evaluation does not require the Python/Julia solver runtime. The desktop
+currently requests CUDA for Boundary/Coupled; it does not automatically fall back
+to CPU. Opening only the browser renderer provides Pattern preview, not desktop
+file/solver integration.
+
+## Install and run
+
+From the repository root:
 
 ```powershell
+cd deploy
 npm install
-npm run dev
-```
-
-To run the built desktop renderer:
-
-```powershell
 npm run build
 npm start
 ```
 
-## Current vertical slice
+For development, use `npm run dev` instead of build/start; it launches the web
+development server and Electron together.
 
-- Imports multiple Boundary Lab speaker-package schema v1 `.blabsp` archives into a project library without replacing the scene.
-- Reads the package manifest, complex spherical pressure, frequency order, excitation shape, and exterior Gmsh surface.
-- Opens new desktop projects with two coarse `S218BP_LOD.blabsp` cabinets separated by a 2 m surface gap.
-- Provides source placement plus speaker-object level, delay, polarity, channel assignment, and placeholder EQ controls without line-array layout concepts.
-- Adds persisted output channels with level, delay, polarity, mute, speaker assignment, and a placeholder filter-bank popout; channel processing is composed ahead of speaker-object processing for every fidelity.
-- Displays eight bounding-box grab points on selected speaker and rigid objects for strictly ground-parallel dragging; only a successful snap to a corner at another height introduces vertical movement.
-- Provides W-key XYZ translation and E-key pitch/yaw/roll rotation gizmos with axis-only X/Y/Z rotation wheels and 5-degree snapping; hold Alt for unsnapped rotation. A near-gizmo overlay reports signed movement to 0.001 m or the active rotation to whole degrees while dragging.
-- Adds or duplicates package-backed speaker instances while preserving independent placement and DSP settings.
-- Imports closed, consistently oriented Gmsh 2.2 ASCII triangle meshes as reusable rigid-boundary assets, using Boundary Lab's default millimetre mesh units (`0.001` mesh-to-metre scale). Rigid objects share cabinet selection, eight-corner handles, W/E movement and rotation, ground enforcement, and 10 mm surface padding, but are ignored by Level 1.
-- Complex-sums Level 1 pattern pressure from mixed package types on an editable audience plane, with complex frequency interpolation, using Boundary Lab's `exp(-i omega t)` convention.
-- Pattern microphone traces and audience-plane maps include an infinite rigid ground at scene y=0, matching the Boundary/Coupled ground assumption. Each free-field cabinet contributes direct pressure plus pressure at the mirrored receiver, with coefficient +1 and the same electrical drive. This includes reflected directivity and path interference, not ground-induced driver loading or additional cabinet/scene scattering. Existing packages need no regeneration. Near-field warnings account for both propagation paths; the pattern's existing radial approximation still applies.
-- Renders the speaker meshes and SPL surface in an orbitable Three.js scene.
-- Treats the audience plane as a scene-list-selectable object with unrestricted position and pitch/yaw/roll, W/E transform gizmos, asymmetrical R-key corner resizing, and sparse above-ground sampling.
-- Adds translation-only microphone point probes with one direct-drag handle and a W-key XYZ gizmo.
-- Plots every microphone's package-derived SPL response across the exact exported frequency grid.
-- Calculates explicit complex microphone pressure across the package grid for both Level 2 exterior BEM and Level 3 parity-ROM coupled solves. ROM sweeps retain exterior geometry while selecting each frequency's reduced operators. Both paths stream progress and turn the Calculate button into a Stop control while active.
-- Reuses the Level 3 sweep to plot peak diaphragm excursion (`sqrt(2) |v| / 2πf`) from RMS velocity as one progressively updated line per scene transducer; the excursion sweep does not require a microphone probe.
-- Adds a cabinet-level Electrical tab with switchable impedance magnitude/phase, RMS current, and real input-power plots derived from each speaker object's applied complex RMS voltage and summed complex coil current.
-- Runs an explicit single-frequency, multi-cabinet Level 2 exterior solve with prescribed speaker Neumann traces, zero-Neumann rigid objects, and an always-on rigid Y=0 half-space Green's function through a persistent BEAT CUDA worker.
-- Schur-eliminates Level 3 parity-sector ROMs into the shared exterior BEM solve so cabinet loading and transducer feedback respond to the complete array.
-- Provides a play/pause live-solve mode that debounces scene edits and follows an in-flight solve with the newest scene revision.
-- Streams solve status back to the renderer and only displays a boundary result while it matches the current scene revision.
-- Retains separate current observation-plane frames for Boundary and Coupled fidelity so users can compare solver levels without repeating unchanged solves.
-- Keeps speaker and rigid geometry above the ground plane, omits below-ground audience samples, and reserves 10 mm between all boundary-object surfaces for stable close-pair quadrature.
-- Uses threshold-oriented triangle-BVH clearance validation with early exit and emits conservative higher-order corrections for close speaker/rigid face pairs and their ground images.
-- Saves channels, speaker packages, rigid-mesh assets and instances, microphones, and observation-plane display settings as a schema-v7 `.blabdeploy.json` project (schemas v5 and v6 remain loadable).
-- Includes a deterministic built-in demonstration model when no package is loaded.
-
-Boundary fidelity is available in the desktop app when every active source uses the same Level 2 package loaded from disk and the selected frequency was exported by that package. Coupled fidelity is enabled for a parity Petrov–Galerkin Level 3 package under the same homogeneous-scene constraints. Mixed-package scenes and browser-only sessions currently use the Level 1 preview.
-
-The Level 2 worker uses `BLAB_PYTHON_EXE` and `BLAB_JULIA_EXE` when set; otherwise it resolves `python` and `julia` from `PATH`. The current slice uses a globally reflective rigid ground plane, supports multiple instances of one fixed-source package, and requires an exact exported frequency.
-
-## Verification
-
-The analysis drawer groups responses into **Microphones** and **Speakers**.
-Microphones can overlay Pattern, Boundary, and Coupled SPL with independent
-visibility controls; color identifies the microphone and line style identifies
-the method. Calculate Boundary and Coupled sweeps using the corresponding
-fidelity selection. Each method's latest sweep remains available when switching
-fidelity, provided its scene and frequency grid still match.
-Speakers provides a cabinet selector and quantities for excursion, electrical
-impedance, RMS current, real input power, and acoustic loading. Calculated coupled responses remain
-viewable while inspecting another audience-plane fidelity. Results are currently
-session-only. **Capture results** freezes the current pattern and available
-completed sweeps under a name, including the project configuration and raw complex
-sweep data. Captures can be toggled as overlays after editing the scene, and keep
-their own frequency grids. **Download** exports a `.blabanalysis.json` copy (maps
-and typed arrays become JSON objects and arrays; unavailable numeric samples are
-null). Captures are not embedded in project files and importing downloads is not
-yet supported. The speaker subjects dropdown offers **All Speakers**, **Selection**
-(following the scene selection), or an individual cabinet.
-
-**Acoustic loading** displays normalized resistance or reactance per transducer
-as each frequency of a coupled sweep is solved, including captured overlays. Stopping
-a sweep leaves its partial curves visible; captures still include only completed
-sweeps. Solid curves show
-the array's active net opposing acoustic load, `Z = Bl I/v - Zmechanical`, divided
-by `rho*c*Sd`. This includes acoustic load on both sides of the diaphragm,
-not exterior radiation alone. Reactance uses the standard audio `exp(+i omega t)`
-convention. Negative active resistance is allowed; near-zero velocities appear
-as gaps. Driver parameters and effective areas are required.
-
-For a single-cabinet comparison, set up a scene containing one cabinet, choose its
-placement and drive settings, run a coupled sweep, then **Capture results** and
-name the trace before changing the scene. Keep the capture enabled to overlay it
-on subsequent array sweeps. This comparison includes Deploy's rigid ground and
-any objects left in the scene; it is not an isolated free-field reference.
-Captures are session-only; Download exports a copy, but import is not supported.
-New packages no longer generate an isolated-reference matrix; older package
-extras are ignored without requiring regeneration.
-
-Microphone magnitude line styles are Pattern dotted, Boundary dashed, and
-Coupled solid, including captured overlays.
-
-**Diaphragm pressure differential** is a coupled-only per-transducer loading
-diagnostic: `Δp = (Bl I - Zmechanical v) / Sd`, using effective projected area.
-The plot displays magnitude in Pa or kPa, defaulting to RMS; Peak selects the
-sinusoidal amplitude `sqrt(2) |Δp|`, not a broadband or transient peak. Complex
-pressure is retained in sweep results and captures using the standard audio
-phasor convention. Curves stream with solved frequencies; zero-velocity samples
-remain valid. Older results require a new sweep, not package regeneration where
-the necessary driver parameters and area are already available.
-This is force-equivalent average differential pressure, not separate front/rear
-pressures, local cone stress, or a safe/unsafe damage threshold. Read it alongside
-excursion, current, and power; spatially opposing loads can cancel in the average.
+For numerical solves, make the installed Python and Julia executables available
+on PATH, or set explicit executable paths before launching Deploy. For example,
+from `deploy/` in PowerShell after preparing the repository's Python environment:
 
 ```powershell
-npm run test:package
-npm run test:pattern
-npm run build
-npm run test:desktop
-npm run test:level2
+$env:BLAB_PYTHON_EXE = (Resolve-Path ..\.venv\Scripts\python.exe).Path
+$env:BLAB_JULIA_EXE = "C:\path\to\julia.exe"
+npm start
 ```
 
-`test:package` loads the repository's S218BP LOD package and rigid-stage fixture, verifies their mesh/project contracts, and computes a finite observation-plane preview. `test:desktop` loads the production renderer in a hidden Electron window and checks the application shell, WebGL canvas, rigid-mesh import and manipulation, microphone workflow, and project loading without runtime console errors. `test:level2` is the slower NVIDIA/CUDA integration smoke test; it crosses the Electron IPC, Python combined-boundary preparation, persistent Julia worker, BEAT CUDA solve, and renderer result path with a rigid stage present, then moves the cabinet and verifies that live solving refreshes the result.
+Replace the Julia placeholder with the installed executable. The Python process
+runs from the repository root with `src` on its module path; it still needs the
+installed dependencies. If unset, the executable defaults are `python` and
+`julia`.
 
-For a timestamped cold/warm movement and 200 x 200 plane benchmark, run
-`npm run benchmark:level2`. The harness prints one JSON record containing
-Julia, Python, Electron IPC, field-frame parsing, and heatmap rasterization
-timings. A reference run and interpretation are recorded in
-[`benchmarks/level2-pipeline-2026-08-26.md`](benchmarks/level2-pipeline-2026-08-26.md).
+## Documentation
+
+- [User Guide](docs/user-guide.md) — scene setup, drive controls, maps, plots,
+  comparisons, saving, and practical limitations.
+- [System Model](docs/system-model.md) — numerical paths, conventions, derived
+  quantities, approximation limits, implementation references, and verification.

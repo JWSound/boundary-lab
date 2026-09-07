@@ -231,7 +231,7 @@ function FidelitySwitcher({
               ? (item.id === "boundary"
                   ? "Exterior BEM with fixed distributed sources"
                   : item.id === "coupled"
-                    ? "Exact coupled FEM–BEM interiors and transducers"
+                    ? "Reduced-order coupled FEM–BEM interiors and transducers"
                     : "Live complex pattern field with infinite rigid ground at y=0")
               : item.id === "boundary" && boundaryUnavailableReason
                 ? boundaryUnavailableReason
