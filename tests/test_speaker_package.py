@@ -474,6 +474,17 @@ def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path
     np.testing.assert_allclose(target_normal, [0.0, 1.0, 0.0])
 
 
+def test_export_preserves_engine_execution_provenance(tmp_path: Path) -> None:
+    solved = _solved_system()
+    engine_run = {"schema_version": 1, "engine": {"repository_revision": None, "source_sha256": "source"},
+                  "runtime": {"julia_version": "test"}, "execution": {"backend": "cpu"}}
+    solved = replace(solved, provenance=replace(solved.provenance, engine_runs=(engine_run,)))
+    output = tmp_path / "provenance.blabsp"
+    export_speaker_package(solved, SpeakerPackageConfig(output, "Test", SpeakerPackageFidelity.PATTERN))
+    manifest = validate_speaker_package(output)
+    assert manifest["provenance"]["engine_runs"] == [engine_run]
+
+
 def test_readiness_is_progressive_and_level_two_accepts_reduced_symmetry() -> None:
     level_one = _solved_system(include_bem=False)
     assert speaker_package_issues(level_one, SpeakerPackageFidelity.PATTERN) == ()

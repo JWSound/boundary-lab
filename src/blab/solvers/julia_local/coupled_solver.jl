@@ -15,6 +15,27 @@ include(joinpath(@__DIR__, "src", "BeatEngineSpeakerRom.jl"))
 using .BeatEngineSpeakerRom
 
 const DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V = 2.83
+const RUN_MESH_PROVENANCE = Ref{Any}([])
+
+function record_result_provenance!(result, request)
+    diagnostics = result["diagnostics"]
+    backend = get(diagnostics, "bem_backend", get(diagnostics, "linear_backend", nothing))
+    device, device_error = try
+        accelerator = backend == "cuda" ? BeatEngineCore.CUDA_MODULE : backend == "rocm" ? BeatEngineCore.AMDGPU_MODULE : nothing
+        (backend == "cpu" ? Sys.CPU_NAME : accelerator === nothing ? nothing : string(accelerator.device()), nothing)
+    catch exception
+        (nothing, sprint(showerror, exception))
+    end
+    diagnostics["engine_provenance"] = Dict(
+        "schema_version" => 1,
+        "engine" => merge(deepcopy(BeatEngineContract.WORKER["engine"]), BeatEngineContract.BeatEngineProvenance.engine_identity()),
+        "runtime" => BeatEngineContract.BeatEngineProvenance.runtime_identity(),
+        "execution" => Dict("backend" => backend, "device" => device, "device_query_error" => device_error,
+            "precision" => get(diagnostics, "precision", nothing), "solver_options" => deepcopy(request["solver_options"])),
+        "meshes" => deepcopy(RUN_MESH_PROVENANCE[]),
+    )
+    return result
+end
 const BEM_FIELD_EVALUATION_CACHES = Dict{String,Any}()
 const BEM_FIELD_EVALUATION_CACHE_ORDER = String[]
 const MAX_BEM_FIELD_EVALUATION_CACHES = Int(BeatEngineContract.WORKER["field_cache"]["max_entries"])
@@ -973,6 +994,7 @@ function solve_exterior_request(request, system, unbounded_region; event_mode=fa
                 "quantities" => quantities,
                 "diagnostics" => diagnostics,
             )
+            record_result_provenance!(result, request)
             println(JSON.json(event_mode ? Dict("type" => "result", "result" => result) : result))
             flush(stdout)
             release_operator_storage!(operators)
@@ -2022,6 +2044,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
             "quantities" => quantities,
             "diagnostics" => diagnostics,
         )
+        record_result_provenance!(result, request)
         if event_mode
             println(JSON.json(Dict("type" => "result", "result" => result)))
         else
@@ -2035,6 +2058,10 @@ end
 
 function solve_request(request; event_mode=false)
     validate_system_request(request)
+    BeatEngineContract.BeatEngineProvenance.engine_identity()
+    BeatEngineContract.BeatEngineProvenance.runtime_identity()
+    RUN_MESH_PROVENANCE[] = [Dict("id" => mesh["id"], "file" => mesh["file"],
+        "sha256" => BeatEngineContract.BeatEngineProvenance.file_hash(mesh["file"])) for mesh in request["compiled_system"]["meshes"]]
     cancel_path = get(request, "cancel_path", nothing)
     cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
     cancel_requested() && return (cancelled=true, solved_count=0)
@@ -2916,6 +2943,7 @@ function solve_request(request; event_mode=false)
             "quantities" => quantities,
             "diagnostics" => diagnostics,
         )
+        record_result_provenance!(result, request)
         if event_mode
             println(JSON.json(Dict("type" => "result", "result" => result)))
         else

@@ -103,6 +103,7 @@ class CoupledSession:
         self.persistent_worker = persistent_worker
         self._process: subprocess.Popen[str] | None = None
         self._worker: BeatEngineWorkerProcess | None = None
+        self.worker_provenance: dict | None = None
         self._stop = False
         self._cancel_path: Path | None = None
         self._stderr_lines: list[str] = []
@@ -215,6 +216,7 @@ class CoupledSession:
                 if not self._stop:
                     raise
             finally:
+                self.worker_provenance = getattr(self._worker, "worker_info", None)
                 self._cancel_path = None
 
     def stop(self) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Iterable
 
@@ -76,6 +76,7 @@ class SolveProvenance:
     solver_options: dict[str, Any] = field(default_factory=dict)
     phasor_convention: str = PHASOR_CONVENTION
     started_at_utc: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    engine_runs: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,9 @@ class SolvedSystemBuilder:
             if quantity_id not in seen_ids:
                 buffer.available_frequency_mask[frequency_index] = False
         self.diagnostics_by_frequency[frequency_index] = copy.deepcopy(result.diagnostics)
+        engine_run = result.diagnostics.get("engine_provenance")
+        if isinstance(engine_run, dict) and engine_run not in self.provenance.engine_runs:
+            self.provenance = replace(self.provenance, engine_runs=(*self.provenance.engine_runs, copy.deepcopy(engine_run)))
         self.completion_mask[frequency_index] = True
         return frequency_index
 
@@ -250,7 +254,7 @@ class SolvedSystemBuilder:
             )
         return SolvedSystem(
             run_id=self.run_id,
-            provenance=self.provenance,
+            provenance=copy.deepcopy(self.provenance),
             frequencies_hz=_readonly_array(self.frequencies_hz, copy_values=copy_values),
             excitation_ids=self.excitation_ids,
             domains=dict(self.domains),

@@ -362,6 +362,7 @@ class HeadlessResultWriter:
             "frequencies_hz": self.frequencies.tolist(),
             "excitation_port_ids": list(prepared.request.excitation_port_ids),
             "solver_options": _json_safe(prepared.request.solver_options),
+            "engine_runs": [],
             "meshes": _mesh_manifest_entries(prepared.request.compiled_system),
             "completion_mask": self.completion.tolist(),
             "results": self.results,
@@ -369,6 +370,9 @@ class HeadlessResultWriter:
         self._flush_manifest()
 
     def write_result(self, result: SystemFrequencyResult) -> int:
+        provenance = result.diagnostics.get("engine_provenance")
+        if isinstance(provenance, dict) and provenance not in self.manifest["engine_runs"]:
+            self.manifest["engine_runs"].append(_json_safe(provenance))
         distances = np.abs(self.frequencies - float(result.freq_hz))
         index = int(np.argmin(distances))
         tolerance = max(1e-5, abs(float(result.freq_hz)) * 2e-6)
@@ -511,17 +515,20 @@ def run_headless_solve(
                 }
             )
     except KeyboardInterrupt:
+        writer.manifest["worker"] = getattr(session, "worker_provenance", None)
         if session is not None:
             session.stop()
         writer.finish(status="interrupted")
         emit({"event": "interrupted", "solved_count": solved_count})
         raise
     except Exception as exc:
+        writer.manifest["worker"] = getattr(session, "worker_provenance", None)
         if session is not None:
             session.stop()
         writer.finish(status="failed", error=str(exc))
         emit({"event": "failed", "message": str(exc), "solved_count": solved_count})
         raise
+    writer.manifest["worker"] = getattr(session, "worker_provenance", None)
     writer.finish(status="complete")
     summary = {
         "event": "completed",

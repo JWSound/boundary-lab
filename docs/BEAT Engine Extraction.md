@@ -59,8 +59,11 @@ unchanged by this separation.
    before persistent physical-system submissions. Specify complex array layout,
    field-evaluation cache lifetime, cancellation, and error semantics. Reject
    incompatible formats/backends before submission and renegotiate after restart.
-4. Record engine revision, Julia environment, precision, actual backend/device,
-   mesh hashes, and numerical options in run provenance.
+4. **Complete:** record [engine and runtime provenance](BEAT%20Run%20Provenance.md):
+   revision/dirty status and source digest, Julia environment/sysimage hashes,
+   threads, precision, actual backend/device, mesh hashes, and numerical options.
+   Preserve these records in frequency results, headless manifests, canonical
+   solved systems, and speaker packages.
 5. Preserve independent numerical comparisons and analytical/reference fixtures
    before removing the remaining source-request harness. Cover exterior BEM,
    interior FEM, coupled FEM-BEM-LEM, multiple excitations, symmetry, retained

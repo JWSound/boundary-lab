@@ -747,6 +747,7 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
             "solve_kind": solved.provenance.solve_kind,
             "solver_options": _portable_solver_options(solved.provenance.solver_options),
             "started_at_utc": solved.provenance.started_at_utc,
+            "engine_runs": list(solved.provenance.engine_runs),
             "finished_at_utc": solved.finished_at_utc,
         },
     }

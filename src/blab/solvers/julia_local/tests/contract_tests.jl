@@ -36,6 +36,31 @@ const CONTRACT_CORPUS = JSON.parsefile(joinpath(@__DIR__, "..", "..", "beat_cont
     end
 end
 
+@testset "BEAT identity without Git" begin
+    mktempdir() do directory
+        source = joinpath(@__DIR__, "..", "src", "BeatEngineProvenance.jl")
+        # Keep the copied engine and contract together in this isolated fixture.
+        fixture_root = joinpath(directory, "engine")
+        mkpath(joinpath(fixture_root, "src"))
+        cp(source, joinpath(fixture_root, "src", "BeatEngineProvenance.jl"))
+        mkpath(joinpath(directory, "beat_contract"))
+        first_module = Module(:FirstProvenanceFixture)
+        Base.include(first_module, joinpath(fixture_root, "src", "BeatEngineProvenance.jl"))
+        first = withenv("PATH" => "") do
+            Base.invokelatest(() -> first_module.BeatEngineProvenance.engine_identity())
+        end
+        @test first["repository_revision"] === nothing
+        @test first["repository_dirty"] === nothing
+        @test length(first["source_sha256"]) == 64
+        write(joinpath(fixture_root, "solver.jl"), "# changed engine source\n")
+        @test Base.invokelatest(() -> first_module.BeatEngineProvenance.engine_identity())["source_sha256"] == first["source_sha256"]
+        second_module = Module(:SecondProvenanceFixture)
+        Base.include(second_module, joinpath(fixture_root, "src", "BeatEngineProvenance.jl"))
+        second = Base.invokelatest(() -> second_module.BeatEngineProvenance.engine_identity())
+        @test second["source_sha256"] != first["source_sha256"]
+    end
+end
+
 @testset "BEAT worker negotiation" begin
     info = worker_ready(Dict("cpu" => Dict("available" => true, "reason" => "")))
     @test info["protocol"]["version"] == 1
@@ -43,6 +68,15 @@ end
     @test info["contracts"]["compiled_system"] == [1]
     @test info["contracts"]["system_result"] == [2]
     @test info["runtime"]["julia_version"] == string(VERSION)
+    @test length(info["engine"]["source_sha256"]) == 64
+    @test haskey(info["engine"]["source_files_sha256"], "julia_local/coupled_solver.jl")
+    @test haskey(info["engine"], "repository_revision")
+    @test haskey(info["engine"], "repository_dirty")
+    @test length(info["runtime"]["project_sha256"]) == 64
+    @test info["runtime"]["julia_threads"] >= 1
+    @test info["runtime"]["blas_threads"] >= 1
+    empty!(info["engine"]["source_files_sha256"])
+    @test !isempty(worker_ready(Dict())["engine"]["source_files_sha256"])
     command = Dict{String,Any}("protocol_version" => 1, "operation" => "solve",
         "request" => "does-not-exist.json", "result_schema_version" => 2)
     @test validate_worker_submission(command) === nothing

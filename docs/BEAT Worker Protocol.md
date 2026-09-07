@@ -27,8 +27,8 @@ then emits the resulting object as a single JSON line on stdout, with `type: rea
 The development engine version identifies this engine interface baseline; it is
 independent of Boundary Lab's application version and is not a Git revision or
 reproducible-build identifier. Compatibility uses protocol and contract versions,
-not comparisons of engine version strings. Engine release/revision provenance is
-the next extraction milestone.
+not comparisons of engine version strings. The announcement also carries
+[engine revision, source hashes, and runtime provenance](BEAT%20Run%20Provenance.md).
 
 CPU is available in the bundled worker. CUDA is advertised available only when
 its loaded module reports a functional runtime/device. ROCm additionally requires

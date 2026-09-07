@@ -1,6 +1,8 @@
 module BeatEngineContract
 
 using JSON
+include(joinpath(@__DIR__, "BeatEngineProvenance.jl"))
+using .BeatEngineProvenance
 
 export validate_system_request, worker_ready, validate_worker_submission
 
@@ -11,7 +13,8 @@ const WORKER = JSON.parsefile(joinpath(@__DIR__, "..", "..", "beat_contract", "w
 function worker_ready(backends)
     info = deepcopy(WORKER)
     info["backends"] = backends
-    info["runtime"] = Dict("julia_version" => string(VERSION))
+    merge!(info["engine"], engine_identity())
+    info["runtime"] = runtime_identity()
     return info
 end
 

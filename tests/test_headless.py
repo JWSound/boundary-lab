@@ -130,7 +130,7 @@ def test_result_writer_persists_partial_complex_frequency_result(tmp_path: Path)
                     axes=("excitation", "observation"),
                 ),
             ),
-            diagnostics={"relative_residual": 1e-5},
+            diagnostics={"relative_residual": 1e-5, "engine_provenance": {"engine": {"source_sha256": "test-digest"}}},
         ),
     )
 
@@ -145,6 +145,7 @@ def test_result_writer_persists_partial_complex_frequency_result(tmp_path: Path)
     assert len(manifest["meshes"]) == 1
     assert manifest["meshes"][0]["id"] == "mesh:exterior"
     assert manifest["completion_mask"] == [True]
+    assert manifest["engine_runs"] == [metadata["diagnostics"]["engine_provenance"]]
     assert metadata["quantities"][0]["id"] == "acoustic:pressure:probe:test"
     assert arrays["q0000"].dtype == np.complex64
     np.testing.assert_array_equal(arrays["q0000"], np.asarray([[1 + 2j, 3 + 4j]], dtype=np.complex64))
