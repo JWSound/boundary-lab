@@ -64,10 +64,12 @@ unchanged by this separation.
    threads, precision, actual backend/device, mesh hashes, and numerical options.
    Preserve these records in frequency results, headless manifests, canonical
    solved systems, and speaker packages.
-5. Preserve independent numerical comparisons and analytical/reference fixtures
-   before removing the remaining source-request harness. Cover exterior BEM,
-   interior FEM, coupled FEM-BEM-LEM, multiple excitations, symmetry, retained
-   fields, and complex-pressure probes.
+5. **Complete:** preserve a [standalone CPU numerical reference gate](../src/blab/solvers/julia_local/tests/README.md)
+   with frozen, hash-checked coupled meshes and analytical/generated fixtures.
+   Cover exterior BEM, interior FEM, coupled FEM-BEM-LEM, independent excitations,
+   symmetry, retained fields, and complex-pressure probes. CI runs the required
+   dense references from an isolated engine copy. Keep the remaining source-request
+   harness and separate hardware qualification until their coverage is replaced.
 
 ## Extract and release
 

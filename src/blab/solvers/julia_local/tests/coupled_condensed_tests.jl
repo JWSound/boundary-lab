@@ -3,7 +3,7 @@ using .BeatEngineCoupled
 using .BeatEngineCoupledCondensed
 using LinearAlgebra, Random, SparseArrays, StaticArrays
 
-const CONDENSED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "..", "tests", "fixtures"))
+const CONDENSED_FIXTURE_ROOT = joinpath(@__DIR__, "fixtures")
 const CONDENSED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const CONDENSED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 

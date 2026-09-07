@@ -2,7 +2,7 @@ include(joinpath(@__DIR__, "..", "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 using LinearAlgebra, SparseArrays, StaticArrays
 
-const COUPLED_FIXTURE_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", "..", "..", "tests", "fixtures"))
+const COUPLED_FIXTURE_ROOT = joinpath(@__DIR__, "fixtures")
 const COUPLED_QUADRATURE_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_QUADRATURE_ORDER", "1"))
 const COUPLED_SINGULAR_ORDER = parse(Int, get(ENV, "BLAB_COUPLED_SINGULAR_ORDER", "1"))
 

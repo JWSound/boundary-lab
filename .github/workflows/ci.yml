@@ -55,3 +55,14 @@ jobs:
       - name: Run Julia tests
         shell: pwsh
         run: julia --project=src/blab/solvers/julia_local src/blab/solvers/julia_local/tests/runtests.jl
+
+      - name: Run standalone numerical extraction gate
+        shell: pwsh
+        run: |
+          $beatFixtureRoot = Join-Path $env:RUNNER_TEMP "beat-engine-reference"
+          New-Item -ItemType Directory -Path $beatFixtureRoot -Force | Out-Null
+          Copy-Item -LiteralPath src/blab/solvers/julia_local -Destination $beatFixtureRoot -Recurse
+          Copy-Item -LiteralPath src/blab/solvers/beat_contract -Destination $beatFixtureRoot -Recurse
+          Copy-Item -LiteralPath LICENSE -Destination $beatFixtureRoot
+          $beatProject = Join-Path $beatFixtureRoot "julia_local"
+          julia --threads=2 --startup-file=no --project=$beatProject (Join-Path $beatProject "tests/reference_tests.jl")
