@@ -308,16 +308,16 @@ button { color: inherit; }
 .trace-filter-row.hidden i { opacity: .35; }
 .trace-filter-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .response-empty { height: 100%; display: grid; place-items: center; color: #717971; font-size: 10px; }
-.response-chart { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; user-select: none; }
-.response-chart text { fill: #aeb5ad; font: 10px Arial, sans-serif; }
-.plot-well { fill: #101411; stroke: #4a504b; vector-effect: non-scaling-stroke; }
+.response-chart { background: #fff; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; user-select: none; }
+.response-chart text { fill: #222; font: 10px Arial, sans-serif; }
+.plot-well { fill: #fff; stroke: #808080; vector-effect: non-scaling-stroke; }
 .plot-grid { vector-effect: non-scaling-stroke; }
-.plot-grid.major { stroke: #505751; stroke-width: .8; opacity: .72; }
-.plot-grid.minor { stroke: #343a35; stroke-width: .5; opacity: .62; }
-.frequency-cursor { stroke: #d4d0c8; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
-.plot-crosshair { stroke: #f1efe8; stroke-width: .9; opacity: .92; vector-effect: non-scaling-stroke; }
-.crosshair-labels rect { fill: #101411; stroke: #d5d2ca; stroke-width: .8; vector-effect: non-scaling-stroke; }
-.crosshair-labels text { fill: #f1efe8; font-weight: 700; }
+.plot-grid.major { stroke: #808080; stroke-width: .8; opacity: .6; }
+.plot-grid.minor { stroke: #808080; stroke-width: .5; opacity: .3; }
+.frequency-cursor { stroke: #555; stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.plot-crosshair { stroke: #222; stroke-width: .9; opacity: .92; vector-effect: non-scaling-stroke; }
+.crosshair-labels rect { fill: #fff; stroke: #555; stroke-width: .8; vector-effect: non-scaling-stroke; }
+.crosshair-labels text { fill: #111; font-weight: 700; }
 .pattern-trace, .bem-trace { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .pattern-trace { stroke-dasharray: 1 4; stroke-linecap: round; opacity: .85; }
 .analysis-captures { display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
@@ -325,13 +325,13 @@ button { color: inherit; }
 .analysis-captures label, .analysis-captures span { flex-basis: 100%; overflow-wrap: anywhere; }
 .analysis-captures span { color: #aeb5ad; }
 .bem-trace { stroke-width: 2.2; }
-.axis-title { fill: #d4dad2 !important; font-weight: 700 !important; }
-.response-legend { position: absolute; left: 54px; right: 20px; top: 17px; display: flex; align-items: center; gap: 12px; pointer-events: none; color: #aeb5ad; font-size: 8px; }
+.axis-title { fill: #222 !important; font-weight: 700 !important; }
+.response-legend { position: absolute; left: 54px; right: 20px; top: 17px; display: flex; align-items: center; gap: 12px; pointer-events: none; color: #333; font-size: 8px; }
 .response-legend span, .response-legend em { display: flex; align-items: center; gap: 4px; font-style: normal; }
-.response-legend label { pointer-events: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; background: #171c1e; padding: 3px 5px; }
+.response-legend label { pointer-events: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; background: #fff; padding: 3px 5px; }
 .response-legend i { width: 8px; height: 8px; border: 1px solid rgba(255,255,255,.35); }
 .response-legend em:first-of-type { margin-left: auto; }
-.line-sample { width: 16px; height: 0; border-top: 2px solid #c8cec7; }
+.line-sample { width: 16px; height: 0; border-top: 2px solid #333; }
 .line-sample.pattern { border-top-style: dashed; opacity: .7; }
 .response-range-toggle { position: absolute; right: 8px; bottom: 5px; z-index: 4; height: 20px; padding: 0 7px; border: 2px outset var(--classic-highlight); color: #e2e2e2; background: var(--classic-face); font: 700 8px/1 Arial, sans-serif; cursor: pointer; }
 .response-range-toggle:active { border-style: inset; }

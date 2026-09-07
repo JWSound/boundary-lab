@@ -4,6 +4,7 @@ import type { MicrophoneSweepResult } from "../src/model/types";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ElectricalPlot } from "../src/components/ElectricalPlot";
+import { crosshairCoordinates } from "../src/components/PlotCrosshair";
 import { captureAnalysis, microphoneOverlays, serializeCapture, type AnalysisCapture } from "../src/model/analysisCapture";
 
 const original: AnalysisCapture = {
@@ -112,3 +113,7 @@ assert.ok(!pressureMarkup.includes("NaN"));
 console.log("Pressure differential streaming, RMS/peak units, captures and chart passed.");
 assert.ok(markup.includes("single-cabinet scene"));
 assert.ok(!markup.includes("Isolated reference"));
+const cursorAxes = { width: 600, height: 400, left: 50, right: 550, top: 20, bottom: 320, minimum: -10, maximum: 10, frequencyMaximum: 2000, identity: "test" };
+assert.deepEqual(crosshairCoordinates(cursorAxes, 300, 170), { frequency: 200, value: 0 });
+assert.deepEqual(crosshairCoordinates(cursorAxes, -100, -100), { frequency: 20, value: 10 });
+assert.deepEqual(crosshairCoordinates(cursorAxes, 900, 900), { frequency: 2000, value: -10 });

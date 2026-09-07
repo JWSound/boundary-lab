@@ -4,7 +4,7 @@ import type { MicrophoneResponseSet } from "../model/types";
 import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
 
-const TRACE_COLORS = ["#ffdf00", "#00dfff", "#ff6f00", "#7fe35b", "#e08cff", "#ff748c"];
+const TRACE_COLORS = ["#1756a9", "#a63b00", "#217535", "#8534a3", "#a52348", "#006b78"];
 const AUDIO_FREQUENCY_MINIMUM_HZ = 20;
 const AUDIO_FREQUENCY_MAJOR_TICKS_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const RESPONSE_DB_SPAN = 50;

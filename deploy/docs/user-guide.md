@@ -122,6 +122,10 @@ are spatial sample statistics, not audience-weighted or broadband measures.
 
 The analysis drawer has **Microphones** and **Speakers** sections. The comparison
 panel on the left holds named captures; trace controls toggle individual lines.
+All response plots use a white background and grey grids. Click and drag inside
+a plot to read frequency and vertical-axis coordinates; release to keep the
+crosshair and double-click to clear it. This reads axis coordinates, not a snapped
+trace value. Electrical impedance also shows the right-axis phase coordinate.
 
 ### Microphones
 

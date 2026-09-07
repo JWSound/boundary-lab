@@ -2,6 +2,7 @@ import { Activity, Square } from "lucide-react";
 import { useMemo, useState } from "react";
 import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
+import { PlotCrosshair, usePlotCrosshair } from "./PlotCrosshair";
 
 const AUDIO_FREQUENCY_MINIMUM_HZ = 20;
 const AUDIO_FREQUENCY_MAJOR_TICKS_HZ = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
@@ -19,7 +20,7 @@ export interface DriverExcursionData {
 }
 
 export function driverTraceColor(index: number): string {
-  return `hsl(${(52 + index * 137.508) % 360} 82% 61%)`;
+  return `hsl(${(215 + index * 137.508) % 360} 75% 32%)`;
 }
 
 function formatFrequency(value: number): string {
@@ -89,6 +90,9 @@ export function DriverExcursionPlot({
   const plotBottom = Math.max(padding.top + 1, height - padding.bottom);
   const x = (frequency: number) => padding.left + ((Math.log10(frequency) - logMinimum) / logRange) * (plotRight - padding.left);
   const y = (value: number) => padding.top + (1 - value / maximumExcursion) * (plotBottom - padding.top);
+  const axes = { width, height, left: padding.left, right: plotRight, top: padding.top, bottom: plotBottom,
+    minimum: 0, maximum: maximumExcursion, frequencyMaximum, identity: "excursion" };
+  const crosshair = usePlotCrosshair(axes);
   const paths = (frequencies: Float64Array, values: Float32Array) => {
     const result: string[] = [];
     let current = "";
@@ -130,7 +134,7 @@ export function DriverExcursionPlot({
         : traces.length === 0 ? <div className="response-empty">Run the coupled frequency sweep to display every transducer in the scene.</div>
           : <div className="response-plot-layout">
             <div className="response-plot-area">
-            <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Per-transducer peak driver excursion over frequency">
+            <svg ref={chartRef} {...crosshair.handlers} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Per-transducer peak driver excursion over frequency. Drag for frequency and mm coordinates; double-click to clear.">
               <defs><clipPath id="driver-excursion-clip"><rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} /></clipPath></defs>
               <rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} className="plot-well" />
               {xMinorTicks.map((tick) => <line key={`xm-${tick}`} x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid minor" />)}
@@ -142,6 +146,7 @@ export function DriverExcursionPlot({
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
                 {traces.flatMap(([id, trace], index) => hiddenTraceIds.has(id) ? [] : paths(trace.frequenciesHz ?? data!.frequenciesHz, trace.excursionMm).map((path, pathIndex) => <path key={`${id}-${pathIndex}`} d={path} stroke={driverTraceColor(index)} className="bem-trace" />))}
               </g>
+              <PlotCrosshair point={crosshair.point} axes={axes} />
             </svg>
             <button className="response-range-toggle" type="button" onClick={() => setFrequencyMaximum((current) => current === 2000 ? 20000 : 2000)}>20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>
             </div>

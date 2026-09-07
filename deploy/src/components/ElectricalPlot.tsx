@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { driverTraceColor } from "./DriverExcursionPlot";
 import { TraceVisibilityFilter } from "./TraceVisibilityFilter";
 import { usePlotDimensions } from "./usePlotDimensions";
+import { PlotCrosshair, usePlotCrosshair } from "./PlotCrosshair";
 import { pressureDisplayScale } from "../model/acousticLoading";
 
 const FREQUENCY_MINIMUM_HZ = 20;
@@ -107,6 +108,9 @@ export function ElectricalPlot({
   }, [data, view, acousticPart, pressurePeak, pressureKpa]);
   const y = (value: number) => padding.top + ((limits[1] - value) / (limits[1] - limits[0])) * (plotBottom - padding.top);
   const phaseY = (value: number) => padding.top + ((180 - value) / 360) * (plotBottom - padding.top);
+  const axes = { width, height, left: padding.left, right: plotRight, top: padding.top, bottom: plotBottom,
+    minimum: limits[0], maximum: limits[1], frequencyMaximum, identity: `${view}:${acousticPart}:${pressurePeak}:${pressureKpa}` };
+  const crosshair = usePlotCrosshair(axes);
   const path = (frequencies: Float64Array, values: Float32Array, ordinate: (value: number) => number) => {
     let result = "";
     let connected = false;
@@ -156,7 +160,7 @@ export function ElectricalPlot({
         : traces.length === 0 ? <div className="response-empty">{view === "differential" ? "Run a new coupled sweep to display force-equivalent diaphragm pressure differential. Valid transducer parameters and effective area are required. Select a speaker if the selection is empty." : view === "acoustic" ? "Run a coupled sweep to display normalized driver loading as frequencies are solved. A valid effective diaphragm area is required; select a speaker if the current selection is empty." : "Run the coupled frequency sweep to display each speaker object."}</div>
           : <div className="response-plot-layout">
             <div className="response-plot-area">
-            <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${unit} per speaker over frequency`}>
+            <svg ref={chartRef} {...crosshair.handlers} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${unit} per speaker over frequency. Drag for axis coordinates; double-click to clear.`}>
               <defs><clipPath id="electrical-plot-clip"><rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} /></clipPath></defs>
               <rect x={padding.left} y={padding.top} width={plotRight - padding.left} height={plotBottom - padding.top} className="plot-well" />
               {minorFrequencyTicks(frequencyMaximum).map((tick) => <line key={`xm-${tick}`} x1={x(tick)} x2={x(tick)} y1={padding.top} y2={plotBottom} className="plot-grid minor" />)}
@@ -171,6 +175,7 @@ export function ElectricalPlot({
                 {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, valuesFor(trace), y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
                 {view === "impedance" && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-phase`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
               </g>
+              <PlotCrosshair point={crosshair.point} axes={axes} secondary={view === "impedance"} />
             </svg>
             <div className="response-legend electrical-legend">
               {view === "impedance" && <em><b className="line-sample" />Magnitude <b className="line-sample phase" />Phase</em>}
