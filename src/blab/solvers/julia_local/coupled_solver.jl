@@ -2,6 +2,9 @@
 
 using Base64, JSON, LinearAlgebra, SparseArrays, StaticArrays, Statistics
 
+include(joinpath(@__DIR__, "src", "BeatEngineContract.jl"))
+using .BeatEngineContract
+
 include(joinpath(@__DIR__, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
 include(joinpath(@__DIR__, "src", "BeatEngineCoupled.jl"))
@@ -2031,7 +2034,7 @@ function solve_interior_request(request, system, bounded_regions; event_mode=fal
 end
 
 function solve_request(request; event_mode=false)
-    Int(get(request, "schema_version", 0)) == 1 || error("Unsupported system solve request schema.")
+    validate_system_request(request)
     cancel_path = get(request, "cancel_path", nothing)
     cancel_requested() = cancel_path !== nothing && isfile(String(cancel_path))
     cancel_requested() && return (cancelled=true, solved_count=0)

@@ -1,8 +1,7 @@
-"""Versioned wire contract for compiled multiphysics system solves.
+"""Boundary Lab adapters for the BEAT-owned compiled-system wire contract.
 
-This contract intentionally lives beside the legacy BEM protocol. Numerical
-backends can adopt it incrementally without changing existing Boundary Lab
-projects or solver sessions.
+Application dataclasses remain here. Only explicitly mapped, engine-defined
+fields cross the solver boundary; project model growth cannot silently extend it.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Iterator, Protocol
 
@@ -35,10 +34,13 @@ from blab.physical_model import (
     PhysicsAssumption,
     ResolvedPhysicalGroup,
 )
-
-SYSTEM_SOLVE_REQUEST_VERSION = 1
-SYSTEM_RESULT_VERSION = 2
-SUPPORTED_SYSTEM_RESULT_VERSIONS = {1, SYSTEM_RESULT_VERSION}
+from blab.solvers.beat_contract import (
+    SUPPORTED_SYSTEM_RESULT_VERSIONS,
+    SYSTEM_RESULT_VERSION,
+    SYSTEM_SOLVE_REQUEST_VERSION,
+    validate_compiled_system,
+    validate_solve_request,
+)
 
 
 @dataclass(frozen=True)
@@ -158,11 +160,51 @@ def validate_system_frequency_result(result: SystemFrequencyResult) -> None:
     _validate_json_value(result.diagnostics, label="result diagnostics")
 
 
+def _record_fields(record, names: str) -> dict[str, Any]:
+    return {name: _to_wire_value(getattr(record, name)) for name in names.split()}
+
+
 def compiled_system_to_dict(system: CompiledPhysicalSystem) -> dict[str, Any]:
-    return _to_wire_value(asdict(system))
+    """Explicit application-to-engine projection; never dump arbitrary dataclasses."""
+
+    def group(value):
+        return _record_fields(value, "mesh_id dimension tag name")
+
+    raw = _record_fields(system, "id name contract_version source_model_version metadata")
+    raw.update(
+        meshes=[_record_fields(mesh, "id name file purpose scale_to_m translation_m") for mesh in system.meshes],
+        regions=[
+            _record_fields(region, "id name kind mesh_ids sound_speed_m_per_s density_kg_per_m3 loss_model")
+            | {"volume_groups": [group(value) for value in region.volume_groups]}
+            for region in system.regions
+        ],
+        boundaries=[
+            _record_fields(boundary, "id name region_id kind parameters") | {"group": group(boundary.group)}
+            for boundary in system.boundaries
+        ],
+        interfaces=[
+            _record_fields(interface, "id name bounded_boundary_id unbounded_boundary_id")
+            | {
+                "topology": _record_fields(
+                    interface.topology,
+                    "fem_vertex_indices fem_to_bem_vertex_indices fem_face_indices bem_face_indices normal_sign "
+                    "max_coordinate_error fem_facets_on_tetra_boundary bem_boundary_edges",
+                )
+            }
+            for interface in system.interfaces
+        ],
+        components=[
+            _record_fields(component, "id name kind boundary_ids parameters") for component in system.components
+        ],
+        excitation_ports=[_record_fields(port, "id name component_id kind") for port in system.excitation_ports],
+        assumptions=[_record_fields(assumption, "status statement") for assumption in system.assumptions],
+    )
+    validate_compiled_system(raw)
+    return raw
 
 
 def compiled_system_from_dict(raw: dict[str, Any]) -> CompiledPhysicalSystem:
+    validate_compiled_system(raw)
     contract_version = int(raw.get("contract_version", 0))
     if contract_version != COMPILED_SYSTEM_VERSION:
         raise ValueError(f"Unsupported compiled system contract_version {contract_version}.")
@@ -184,7 +226,7 @@ def compiled_system_from_dict(raw: dict[str, Any]) -> CompiledPhysicalSystem:
 
 def system_solve_request_to_dict(request: SystemSolveRequest) -> dict[str, Any]:
     validate_system_solve_request(request)
-    return {
+    raw = {
         "schema_version": SYSTEM_SOLVE_REQUEST_VERSION,
         "compiled_system": compiled_system_to_dict(request.compiled_system),
         "frequencies_hz": [float(value) for value in request.frequencies_hz],
@@ -200,9 +242,12 @@ def system_solve_request_to_dict(request: SystemSolveRequest) -> dict[str, Any]:
         ],
         "solver_options": _to_wire_value(request.solver_options),
     }
+    validate_solve_request(raw)
+    return raw
 
 
 def system_solve_request_from_dict(raw: dict[str, Any]) -> SystemSolveRequest:
+    validate_solve_request(raw)
     version = int(raw.get("schema_version", 0))
     if version != SYSTEM_SOLVE_REQUEST_VERSION:
         raise ValueError(f"Unsupported system solve request schema_version {version}.")

@@ -51,9 +51,10 @@ unchanged by this separation.
 1. **Complete:** separate reusable worker/client infrastructure from the older
    `BeatEngineBackend` source-request adapter, free of application models,
    project preferences, and Qt.
-2. Define an engine-owned compiled-system wire specification from the existing
-   versioned system contract. Boundary Lab keeps project authoring, migration,
-   mesh preparation, and compilation into that specification.
+2. **Complete:** define the [engine-owned compiled-system wire specification](BEAT%20Compiled%20System%20Contract.md),
+   with one schema, independent Python/Julia validation, shared conformance cases,
+   and an explicit Boundary Lab adapter. Project authoring, migration, mesh
+   preparation, and compilation remain in Boundary Lab.
 3. Add worker version/capability negotiation and protocol compatibility checks
    before a solve. Specify complex array layout, field-evaluation cache lifetime,
    cancellation, and error semantics.

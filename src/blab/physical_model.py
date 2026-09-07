@@ -13,9 +13,10 @@ from enum import Enum, StrEnum
 from typing import Any
 
 from blab.interface_conform import InterfaceTopologyMap
+from blab.solvers.beat_contract import COMPILED_SYSTEM_VERSION as COMPILED_SYSTEM_VERSION
 
 PHYSICAL_MODEL_VERSION = 1
-COMPILED_SYSTEM_VERSION = 1
+
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 

@@ -1,6 +1,8 @@
 using Test
 using StaticArrays
 
+include(joinpath(@__DIR__, "contract_tests.jl"))
+
 include(joinpath(@__DIR__, "..", "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
 

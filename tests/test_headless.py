@@ -16,7 +16,6 @@ from blab.headless import (
     resolve_headless_backend,
 )
 from blab.physical_model import (
-    CompiledPhysicalSystem,
     ExcitationPort,
     ExcitationPortKind,
     PhysicalSolveKind,
@@ -143,7 +142,8 @@ def test_result_writer_persists_partial_complex_frequency_result(tmp_path: Path)
     arrays = np.load(tmp_path / "run" / "frequencies" / "000000.npz")
     assert manifest["status"] == "complete"
     assert manifest["schema_version"] == 2
-    assert manifest["meshes"] == []
+    assert len(manifest["meshes"]) == 1
+    assert manifest["meshes"][0]["id"] == "mesh:exterior"
     assert manifest["completion_mask"] == [True]
     assert metadata["quantities"][0]["id"] == "acoustic:pressure:probe:test"
     assert arrays["q0000"].dtype == np.complex64
@@ -288,17 +288,14 @@ def _prepared_request() -> SystemUiSolveRequest:
         component_id="component:source",
         kind=ExcitationPortKind.NORMAL_VELOCITY,
     )
-    compiled = CompiledPhysicalSystem(
-        id="system:test",
-        name="Test",
-        meshes=(),
-        regions=(),
-        boundaries=(),
-        interfaces=(),
-        components=(),
-        excitation_ports=(port,),
-        assumptions=(),
-    )
+    import json
+
+    from blab.system_contract import compiled_system_from_dict
+
+    fixture = Path(__file__).resolve().parents[1] / "src/blab/solvers/beat_contract/example-exterior-request.json"
+    compiled_payload = json.loads(fixture.read_text())["compiled_system"]
+    compiled_payload["meshes"][0]["file"] = str(Path(__file__).parent / "fixtures/exterior.msh")
+    compiled = compiled_system_from_dict(compiled_payload)
     request = SystemSolveRequest(
         compiled_system=compiled,
         frequencies_hz=(100.0,),

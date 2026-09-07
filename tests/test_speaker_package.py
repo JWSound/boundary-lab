@@ -403,8 +403,14 @@ def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(t
     )
     compiled = replace(
         solved.compiled_system,
-        meshes=(CompiledMesh("mesh:interior", "Interior", str(mesh_path), MeshPurpose.FEM_VOLUME, 1.0, (0, 0, 0)),),
-        regions=(*solved.compiled_system.regions, bounded),
+        meshes=(
+            CompiledMesh("mesh:interior", "Interior", str(mesh_path), MeshPurpose.FEM_VOLUME, 1.0, (0, 0, 0)),
+            CompiledMesh(
+                "mesh:exterior", "Exterior", str(Path(__file__).parent / "fixtures/exterior.msh"),
+                MeshPurpose.BEM_SURFACE, 1.0, (0, 0, 0),
+            ),
+        ),
+        regions=(replace(solved.compiled_system.regions[0], mesh_ids=("mesh:exterior",)), bounded),
     )
     solved = replace(
         solved,

@@ -1,0 +1,540 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beat-engine:system-solve:1",
+  "title": "BEAT Engine compiled-system solve request v1",
+  "$ref": "#/$defs/solve_request",
+  "$defs": {
+    "group": {
+      "type": "object",
+      "properties": {
+        "mesh_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dimension": {
+          "type": "integer",
+          "enum": [
+            2,
+            3
+          ]
+        },
+        "tag": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mesh_id",
+        "dimension",
+        "tag"
+      ],
+      "additionalProperties": false
+    },
+    "mesh": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "enum": [
+            "fem_volume",
+            "bem_surface"
+          ]
+        },
+        "scale_to_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "translation_m": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "file",
+        "purpose",
+        "scale_to_m",
+        "translation_m"
+      ],
+      "additionalProperties": false
+    },
+    "region": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "bounded_air",
+            "unbounded_air"
+          ]
+        },
+        "mesh_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "volume_groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/group"
+          },
+          "minItems": 0
+        },
+        "sound_speed_m_per_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "density_kg_per_m3": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "loss_model": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "mesh_ids",
+        "volume_groups",
+        "sound_speed_m_per_s",
+        "density_kg_per_m3",
+        "loss_model"
+      ],
+      "additionalProperties": false
+    },
+    "boundary": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "region_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "rigid",
+            "moving",
+            "interface",
+            "plane_wave_tube_termination",
+            "impedance",
+            "unused"
+          ]
+        },
+        "group": {
+          "$ref": "#/$defs/group"
+        },
+        "parameters": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "region_id",
+        "kind",
+        "group",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "topology": {
+      "type": "object",
+      "properties": {
+        "fem_vertex_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 0
+        },
+        "fem_to_bem_vertex_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 0
+        },
+        "fem_face_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 0
+        },
+        "bem_face_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minItems": 0
+        },
+        "normal_sign": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "enum": [
+              -1,
+              1
+            ]
+          },
+          "minItems": 0
+        },
+        "max_coordinate_error": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fem_facets_on_tetra_boundary": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bem_boundary_edges": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "fem_vertex_indices",
+        "fem_to_bem_vertex_indices",
+        "fem_face_indices",
+        "bem_face_indices",
+        "normal_sign",
+        "max_coordinate_error",
+        "fem_facets_on_tetra_boundary",
+        "bem_boundary_edges"
+      ],
+      "additionalProperties": false
+    },
+    "interface": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "bounded_boundary_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unbounded_boundary_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "topology": {
+          "$ref": "#/$defs/topology"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "bounded_boundary_id",
+        "unbounded_boundary_id",
+        "topology"
+      ],
+      "additionalProperties": false
+    },
+    "component": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "ideal_velocity_source",
+            "electrodynamic_transducer",
+            "passive_radiator"
+          ]
+        },
+        "boundary_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "parameters": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "boundary_ids",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "excitation_port": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "component_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "normal_velocity",
+            "voltage"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "component_id",
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "assumption": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "included",
+            "excluded"
+          ]
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "status",
+        "statement"
+      ],
+      "additionalProperties": false
+    },
+    "compiled_system": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "contract_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "meshes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mesh"
+          },
+          "minItems": 1
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/region"
+          },
+          "minItems": 1
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/boundary"
+          },
+          "minItems": 0
+        },
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/interface"
+          },
+          "minItems": 0
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/component"
+          },
+          "minItems": 0
+        },
+        "excitation_ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/excitation_port"
+          },
+          "minItems": 0
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assumption"
+          },
+          "minItems": 0
+        },
+        "source_model_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "contract_version",
+        "meshes",
+        "regions",
+        "boundaries",
+        "interfaces",
+        "components",
+        "excitation_ports"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quantity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 0
+        },
+        "options": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "quantity",
+        "target_ids",
+        "options"
+      ],
+      "additionalProperties": false
+    },
+    "solve_request": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "compiled_system": {
+          "$ref": "#/$defs/compiled_system"
+        },
+        "frequencies_hz": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "minItems": 1
+        },
+        "excitation_port_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/output"
+          },
+          "minItems": 0
+        },
+        "solver_options": {
+          "type": "object"
+        },
+        "cancel_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "compiled_system",
+        "frequencies_hz",
+        "excitation_port_ids",
+        "outputs",
+        "solver_options"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

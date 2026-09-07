@@ -129,6 +129,7 @@ class CoupledSession:
             yield from self._solve_stream_persistent(stop_requested=stop_requested)
             return
 
+        payload = system_solve_request_to_dict(self.request)
         command = [self.julia_executable]
         if self.julia_project is not None:
             command.append(f"--project={self.julia_project}")
@@ -153,7 +154,7 @@ class CoupledSession:
         )
         self._stderr_thread.start()
         try:
-            self._process.stdin.write(json.dumps(system_solve_request_to_dict(self.request)))
+            self._process.stdin.write(json.dumps(payload))
             self._process.stdin.close()
             for line in self._process.stdout:
                 if self._stop or (stop_requested is not None and stop_requested()):
