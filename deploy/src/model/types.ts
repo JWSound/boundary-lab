@@ -225,6 +225,12 @@ export interface MicrophoneSweepResult {
   transducer_ids: string[];
   transducer_names: string[];
   transducer_velocity: { real: number[][]; imag: number[][] };
+  acoustic_loading?: {
+    resistance: (number | null)[][];
+    reactance: (number | null)[][];
+    isolated_resistance: (number | null)[][];
+    isolated_reactance: (number | null)[][];
+  };
   speaker_ids: string[];
   speaker_names: string[];
   speaker_voltage: { real: number[][]; imag: number[][] };

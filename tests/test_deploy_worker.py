@@ -22,7 +22,10 @@ class _CoupledPackageCache:
 
     def load_package(self, _path: Path):
         model = {"representation": self.representation, "frequency_band_hz": [20.0, 40.0]}
-        return SimpleNamespace(frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]), coupled_model=model)
+        return SimpleNamespace(
+            frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]), coupled_model=model,
+            manifest={}, isolated_acoustic_impedance=None,
+        )
 
 
 class _SweepWorker:
@@ -150,22 +153,46 @@ def test_transducer_velocity_result_flattens_scene_instances() -> None:
     assert velocity["imag"] == [0.1, 0.2, 0.3, 0.4]
 
 
-def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> None:
+@pytest.mark.parametrize("reference_available", [None, True, False])
+def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, reference_available) -> None:
     events: list[tuple[str, dict]] = []
+    frequencies = [20.0, 40.0] if reference_available is None else [102.36312866210938, 231.57960510253906]
+    reported_frequencies = [float(str(np.float32(frequency))) for frequency in frequencies]
+    if reference_available is not None:
+        # Reproduce Float32 JSON rounding that previously dropped the reference.
+        assert not np.any(np.isclose(frequencies, reported_frequencies, rtol=1e-8, atol=1e-8))
     package = SimpleNamespace(
-        frequencies=np.asarray([20.0, 40.0]),
+        frequencies=np.asarray(frequencies),
+        manifest={
+            "medium": {"density_kg_per_m3": 1, "sound_speed_m_per_s": 100},
+            "physical_system": {
+                "components": [{"id": "driver", "kind": "electrodynamic_transducer", "parameters": {
+                    "bl_n_per_a": 2, "rms_n_s_per_m": 1, "cms_m_per_n": 0.001, "mmd_kg": 0.1,
+                }}],
+                "metadata": {"acoustic_impedance_normalization": {"driver": {"effective_area_m2": 0.01}}},
+            },
+        },
+        isolated_acoustic_impedance=None,
         coupled_model={
             "representation": "parity_petrov_galerkin_rom",
-            "arrays": {"frequencies_hz": np.asarray([20.0, 40.0])},
+            "arrays": {"frequencies_hz": np.asarray(frequencies)},
         },
     )
+    if reference_available is not None:
+        package.manifest["files"] = {"isolated_acoustic_impedance": {"transducer_ids": ["driver"]}}
+        package.isolated_acoustic_impedance = {
+            "frequencies_hz": np.asarray(frequencies),
+            "available_frequency_mask": np.asarray([True, reference_available]),
+            "acoustic_impedance_n_s_per_m": np.asarray([[[2 - 3j]], [[4 - 5j]]]),
+            "effective_area_m2": np.asarray([0.01]),
+        }
     cache = SimpleNamespace(load_package=lambda _path: package)
 
     def prepare(payload, work_dir, **_kwargs):
         assert payload["observationPointsM"] == [[0.0, 1.0, 1.0]]
         path = Path(work_dir) / "request.json"
         request = {
-            "frequencies_hz": [20.0, 40.0],
+            "frequencies_hz": frequencies,
             "transducers": [{"id": "source:transducer:0", "name": "Source / Transducer 1"}],
         }
         path.write_text(json.dumps(request), encoding="utf-8")
@@ -173,14 +200,17 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> N
 
     class Worker:
         def submit(self, _request_path, **_kwargs):
-            for frequency, velocity in ((20.0, 2.0), (40.0, 4.0)):
+            for frequency, velocity in zip(reported_frequencies, (2.0, 4.0), strict=True):
                 yield {
                     "type": "result",
                     "result": {
                         "frequency_hz": frequency,
                         "spl_db": [80.0],
                         "field_pressure": {"real": [0.2], "imag": [0.0]},
-                        "diagnostics": {"transducer_velocity": [{"real": [velocity], "imag": [0.0]}]},
+                        "diagnostics": {
+                            "transducer_velocity": [{"real": [velocity], "imag": [0.0]}],
+                            "transducer_current": [{"real": [velocity], "imag": [0.0]}],
+                        },
                     },
                 }
             yield {"type": "completed"}
@@ -205,6 +235,18 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch) -> N
     assert result["microphone_ids"] == []
     assert result["transducer_ids"] == ["source:transducer:0"]
     assert result["transducer_velocity"] == {"real": [[2.0, 4.0]], "imag": [[0.0, 0.0]]}
+    assert result["acoustic_loading"]["resistance"] == [[1.0, 1.0]]
+    assert result["frequencies_hz"] == frequencies
+    if reference_available is None:
+        assert result["acoustic_loading"]["isolated_resistance"] == [[None, None]]
+    else:
+        assert result["acoustic_loading"]["isolated_resistance"] == [[2.0, 4.0 if reference_available else None]]
+        assert result["acoustic_loading"]["isolated_reactance"] == [[3.0, 5.0 if reference_available else None]]
+    progress = [values for event_type, values in events if event_type == "microphone-progress"]
+    assert [sample["frequency_hz"] for sample in progress] == reported_frequencies
+    for frequency_index, sample in enumerate(progress):
+        for key, rows in result["acoustic_loading"].items():
+            assert sample["acoustic_loading"][key] == [row[frequency_index] for row in rows]
 
 
 def test_speaker_electrical_result_sums_coil_current_per_cabinet() -> None:

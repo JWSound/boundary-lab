@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from blab.deploy_acoustic_loading import normalized_acoustic_loading
 from blab.deploy_solve import (
     DeploySolveCache,
     prepare_deploy_field_request,
@@ -372,6 +373,10 @@ def _microphone_sweep(
         transducer_names = [str(item["name"]) for item in raw_transducers] if isinstance(raw_transducers, list) else []
         velocity_real_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
         velocity_imag_rows: list[list[float]] = [[math.nan] * len(frequencies) for _ in transducer_ids]
+        acoustic_rows = {
+            key: [[None] * len(frequencies) for _ in transducer_ids]
+            for key in ("resistance", "reactance", "isolated_resistance", "isolated_reactance")
+        }
         raw_speakers = _request.get("speakers", [])
         speaker_ids = [str(item["id"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []
         speaker_names = [str(item["name"]) for item in raw_speakers] if isinstance(raw_speakers, list) else []
@@ -475,6 +480,17 @@ def _microphone_sweep(
                     current_real_rows[speaker_index][frequency_index] = electrical["current_real"][speaker_index]
                     current_imag_rows[speaker_index][frequency_index] = electrical["current_imag"][speaker_index]
                 completed_count += 1
+                acoustic = None
+                if rom_coupled:
+                    # Julia serializes Float32 frequencies with rounded decimals.
+                    # Use the already-matched sweep grid for the reference lookup,
+                    # so valid isolated samples are not lost to rounding alone.
+                    acoustic = normalized_acoustic_loading(
+                        package_data, _request, frequency_result, frequencies[frequency_index]
+                    )
+                    for key, values in acoustic.items():
+                        for index, value in enumerate(values):
+                            acoustic_rows[key][index][frequency_index] = value
                 _emit(
                     "microphone-progress",
                     request_id=request_id,
@@ -485,6 +501,7 @@ def _microphone_sweep(
                     spl_db=spl,
                     transducer_ids=transducer_ids,
                     transducer_names=transducer_names,
+                    acoustic_loading=acoustic,
                     transducer_velocity={
                         "real": transducer_velocity["real"],
                         "imag": transducer_velocity["imag"],
@@ -514,6 +531,7 @@ def _microphone_sweep(
             "transducer_ids": transducer_ids,
             "transducer_names": transducer_names,
             "transducer_velocity": {"real": velocity_real_rows, "imag": velocity_imag_rows},
+            "acoustic_loading": acoustic_rows,
             "speaker_ids": speaker_ids,
             "speaker_names": speaker_names,
             "speaker_voltage": {"real": voltage_real_rows, "imag": voltage_imag_rows},

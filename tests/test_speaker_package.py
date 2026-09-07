@@ -411,6 +411,9 @@ def test_level_three_packages_isolated_free_field_acoustic_impedance_matrix(tmp_
     np.testing.assert_allclose(reference["effective_area_m2"], [0.10, 0.12])
     assert reference["available_frequency_mask"].tolist() == [True, True]
     assert np.all(np.isfinite(reference["velocity_condition_number"]))
+    loaded_reference = DeploySolveCache().load_package(output).isolated_acoustic_impedance
+    assert loaded_reference is not None
+    np.testing.assert_allclose(loaded_reference["acoustic_impedance_n_s_per_m"], expected_impedance, rtol=2e-5)
 
 
 def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(

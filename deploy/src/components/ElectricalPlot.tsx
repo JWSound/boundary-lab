@@ -14,6 +14,10 @@ export interface ElectricalTrace {
   impedancePhaseDeg: Float32Array;
   rmsCurrentA: Float32Array;
   realPowerW: Float32Array;
+  acousticResistance?: Float32Array;
+  acousticReactance?: Float32Array;
+  isolatedResistance?: Float32Array;
+  isolatedReactance?: Float32Array;
 }
 
 export interface ElectricalData {
@@ -22,7 +26,7 @@ export interface ElectricalData {
   traces: Map<string, ElectricalTrace>;
 }
 
-type ElectricalView = "impedance" | "current" | "power";
+type ElectricalView = "impedance" | "current" | "power" | "acoustic";
 
 function formatFrequency(value: number): string {
   if (value < 1000) return `${Math.round(value)}`;
@@ -75,10 +79,16 @@ export function ElectricalPlot({
   onCalculateOrStop: () => void;
 }) {
   const [frequencyMaximum, setFrequencyMaximum] = useState<2000 | 20000>(2000);
+  const [acousticPart, setAcousticPart] = useState<"resistance" | "reactance">("resistance");
+  const [showIsolated, setShowIsolated] = useState(true);
+  const valuesFor = (trace: ElectricalTrace) => view === "acoustic"
+    ? (acousticPart === "resistance" ? trace.acousticResistance : trace.acousticReactance) ?? new Float32Array()
+    : view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW;
+  const referenceFor = (trace: ElectricalTrace) => (acousticPart === "resistance" ? trace.isolatedResistance : trace.isolatedReactance) ?? new Float32Array();
   const [hiddenTraceIds, setHiddenTraceIds] = useState<Set<string>>(() => new Set());
   const traces = data ? Array.from(data.traces.entries()) : [];
   const { ref: chartRef, width, height } = usePlotDimensions();
-  const padding = { left: 55, right: view === "impedance" ? 55 : 24, top: 13, bottom: 34 };
+  const padding = { left: 55, right: view === "impedance" ? 55 : 24, top: view === "acoustic" ? 55 : 13, bottom: 34 };
   const plotRight = Math.max(padding.left + 1, width - padding.right);
   const plotBottom = Math.max(padding.top + 1, height - padding.bottom);
   const logMinimum = Math.log10(FREQUENCY_MINIMUM_HZ);
@@ -87,19 +97,20 @@ export function ElectricalPlot({
   const limits = useMemo(() => {
     let maximum = 0;
     if (data) for (const trace of data.traces.values()) {
-      const values = view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW;
-      for (const value of values) if (Number.isFinite(value)) maximum = Math.max(maximum, view === "power" ? Math.abs(value) : value);
+      const values = valuesFor(trace);
+      for (const value of values) if (Number.isFinite(value)) maximum = Math.max(maximum, view === "power" || view === "acoustic" ? Math.abs(value) : value);
+      if (view === "acoustic" && showIsolated) for (const value of referenceFor(trace)) if (Number.isFinite(value)) maximum = Math.max(maximum, Math.abs(value));
     }
     const upper = niceMaximum(maximum * 1.08);
-    return view === "power" ? [-upper, upper] as const : [0, upper] as const;
-  }, [data, view]);
+    return view === "power" || view === "acoustic" ? [-upper, upper] as const : [0, upper] as const;
+  }, [data, view, acousticPart, showIsolated]);
   const y = (value: number) => padding.top + ((limits[1] - value) / (limits[1] - limits[0])) * (plotBottom - padding.top);
   const phaseY = (value: number) => padding.top + ((180 - value) / 360) * (plotBottom - padding.top);
   const path = (frequencies: Float64Array, values: Float32Array, ordinate: (value: number) => number) => {
     let result = "";
     let connected = false;
     for (let index = 0; index < Math.min(frequencies.length, values.length); index += 1) {
-      if (!Number.isFinite(values[index]) || frequencies[index] > frequencyMaximum) { connected = false; continue; }
+      if (!Number.isFinite(values[index]) || !Number.isFinite(frequencies[index]) || frequencies[index] < FREQUENCY_MINIMUM_HZ || frequencies[index] > frequencyMaximum) { connected = false; continue; }
       result += `${connected ? " L" : " M"}${x(frequencies[index]).toFixed(2)},${ordinate(values[index]).toFixed(2)}`;
       connected = true;
     }
@@ -109,7 +120,8 @@ export function ElectricalPlot({
   const phaseTicks = [-180, -90, 0, 90, 180];
   const majorFrequencies = MAJOR_FREQUENCIES_HZ.filter((frequency) => frequency <= frequencyMaximum);
   const cursorX = x(Math.max(FREQUENCY_MINIMUM_HZ, Math.min(frequencyMaximum, currentFrequencyHz)));
-  const unit = view === "impedance" ? "|Z| (ohm)" : view === "current" ? "RMS current (A)" : "Real input power (W)";
+  const unit = view === "acoustic" ? `${acousticPart === "resistance" ? "R" : "X"} / (ρcSd)` : view === "impedance" ? "|Z| (ohm)" : view === "current" ? "RMS current (A)" : "Real input power (W)";
+  const hasReference = traces.some(([, trace]) => referenceFor(trace).some(Number.isFinite));
   const toggleTrace = (id: string) => setHiddenTraceIds((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id);
@@ -119,9 +131,12 @@ export function ElectricalPlot({
 
   return <div className="microphone-response electrical-response">
     <div className="response-toolbar">
-      <div className="response-title"><Gauge size={14} /><strong>Electrical</strong></div>
+      <div className="response-title"><Gauge size={14} /><strong>{view === "acoustic" ? "Acoustic loading" : "Electrical"}</strong></div>
       <div className="electrical-view-switcher">
-        <span>{view === "impedance" ? "Impedance" : view === "current" ? "RMS current" : "Real input power"}</span>
+        {view === "acoustic" ? <>
+          <button className={acousticPart === "resistance" ? "active" : ""} onClick={() => setAcousticPart("resistance")}>Resistance</button>
+          <button className={acousticPart === "reactance" ? "active" : ""} onClick={() => setAcousticPart("reactance")}>Reactance</button>
+        </> : <span>{view === "impedance" ? "Impedance" : view === "current" ? "RMS current" : "Real input power"}</span>}
       </div>
       <label className="response-frequency">
         <span>{formatFrequency(currentFrequencyHz)} Hz</span>
@@ -132,8 +147,8 @@ export function ElectricalPlot({
       </button>
     </div>
     <div className="response-content">
-      {!coupledSelected ? <div className="response-empty">Select Level 3 Coupled fidelity to calculate electrical response.</div>
-        : traces.length === 0 ? <div className="response-empty">Run the coupled frequency sweep to display each speaker object.</div>
+      {!coupledSelected ? <div className="response-empty">Select Level 3 Coupled fidelity to calculate {view === "acoustic" ? "acoustic loading" : "electrical response"}.</div>
+        : traces.length === 0 ? <div className="response-empty">{view === "acoustic" ? "Run a coupled sweep to display normalized driver loading as frequencies are solved. A valid effective diaphragm area is required; select a speaker if the current selection is empty." : "Run the coupled frequency sweep to display each speaker object."}</div>
           : <div className="response-plot-layout">
             <div className="response-plot-area">
             <svg ref={chartRef} className="response-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${unit} per speaker over frequency`}>
@@ -148,12 +163,16 @@ export function ElectricalPlot({
               {view === "impedance" && <text x={width - 12} y={(padding.top + plotBottom) / 2} transform={`rotate(90 ${width - 12} ${(padding.top + plotBottom) / 2})`} textAnchor="middle" className="axis-title">Phase (deg)</text>}
               <g clipPath="url(#electrical-plot-clip)">
                 <line x1={cursorX} x2={cursorX} y1={padding.top} y2={plotBottom} className="frequency-cursor" />
-                {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, view === "impedance" ? trace.impedanceMagnitudeOhm : view === "current" ? trace.rmsCurrentA : trace.realPowerW, y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
+                {traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-${view}`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, valuesFor(trace), y)} stroke={driverTraceColor(index)} className="bem-trace" />)}
+                {view === "acoustic" && showIsolated && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-isolated`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, referenceFor(trace), y)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
                 {view === "impedance" && traces.map(([id, trace], index) => hiddenTraceIds.has(id) ? null : <path key={`${id}-phase`} d={path(trace.frequenciesHz ?? data!.frequenciesHz, trace.impedancePhaseDeg, phaseY)} stroke={driverTraceColor(index)} className="electrical-phase-trace" />)}
               </g>
             </svg>
             <div className="response-legend electrical-legend">
               {view === "impedance" && <em><b className="line-sample" />Magnitude <b className="line-sample phase" />Phase</em>}
+              {view === "acoustic" && <><em><b className="line-sample" />Array <b className="line-sample phase" />Isolated</em>
+                <label><input type="checkbox" disabled={!hasReference} checked={showIsolated} onChange={(event) => setShowIsolated(event.target.checked)} />Isolated reference</label>
+                <span style={{ pointerEvents: "auto" }} title="Net opposing acoustic load on both sides of each diaphragm, divided by ρcSd. Isolated free-field cabinet matrix evaluated with the array's driver velocities. Reactance uses exp(+iωt); negative active resistance is possible. Near-zero velocity samples are omitted.">{hasReference ? "Free field · matched driver motion · dimensionless" : "Isolated reference unavailable in this package/result"}</span></>}
             </div>
             <button className="response-range-toggle" type="button" onClick={() => setFrequencyMaximum((current) => current === 2000 ? 20000 : 2000)}>20 Hz–{frequencyMaximum === 2000 ? "2 kHz" : "20 kHz"}</button>
             </div>

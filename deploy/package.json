@@ -6,7 +6,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "test:analysis": "esbuild tests/analysisCapture.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/analysisCapture.test.mjs && node node_modules/.tmp/analysisCapture.test.mjs",
+    "test:analysis": "esbuild tests/analysisCapture.test.ts --bundle --packages=external --jsx=automatic --platform=node --format=esm --outfile=node_modules/.tmp/analysisCapture.test.mjs && node node_modules/.tmp/analysisCapture.test.mjs",
     "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:desktop\"",
     "dev:web": "vite --host 127.0.0.1",
     "dev:desktop": "wait-on http://127.0.0.1:5173 && electron .",

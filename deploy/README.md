@@ -60,7 +60,7 @@ the method. Calculate Boundary and Coupled sweeps using the corresponding
 fidelity selection. Each method's latest sweep remains available when switching
 fidelity, provided its scene and frequency grid still match.
 Speakers provides a cabinet selector and quantities for excursion, electrical
-impedance, RMS current, and real input power. Calculated coupled responses remain
+impedance, RMS current, real input power, and acoustic loading. Calculated coupled responses remain
 viewable while inspecting another audience-plane fidelity. Results are currently
 session-only. **Capture results** freezes the current pattern and available
 completed sweeps under a name, including the project configuration and raw complex
@@ -68,8 +68,24 @@ sweep data. Captures can be toggled as overlays after editing the scene, and kee
 their own frequency grids. **Download** exports a `.blabanalysis.json` copy (maps
 and typed arrays become JSON objects and arrays; unavailable numeric samples are
 null). Captures are not embedded in project files and importing downloads is not
-yet supported. Speaker plots offer **Follow selection** or a pinned cabinet
-selector. Acoustic-loading comparisons remain a future addition.
+yet supported. The speaker subjects dropdown offers **All Speakers**, **Selection**
+(following the scene selection), or an individual cabinet.
+
+**Acoustic loading** displays normalized resistance or reactance per transducer
+as each frequency of a coupled sweep is solved, including captured overlays. Stopping
+a sweep leaves its partial curves visible; captures still include only completed
+sweeps. Solid curves show
+the array's active net opposing acoustic load, `Z = Bl I/v - Zmechanical`, divided
+by `rho*c*Sd`. Dashed curves use the packaged isolated free-field cabinet matrix
+with the **same driver velocity vector** as that cabinet in the array:
+`Zreference,d = (Zisolated v)d / vd`. This includes acoustic load on both sides of
+the diaphragm; it is not an exterior-radiation-only impedance or an isolated
+equal-voltage simulation. Reactance uses the standard audio `exp(+i omega t)`
+convention (the native solver impedance is conjugated). Negative active resistance
+is allowed. Near-zero velocities and unavailable samples appear as gaps. Packages
+without the isolated matrix can still display array loading if their transducer
+parameters and effective diaphragm areas are available. Hover the reference note
+for the load definition. Use a new coupled sweep to populate older saved results.
 
 Microphone magnitude line styles are Pattern dotted, Boundary dashed, and
 Coupled solid, including captured overlays.

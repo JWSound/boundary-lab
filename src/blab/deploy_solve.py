@@ -248,6 +248,7 @@ class DeployPackageData:
     normal: np.ndarray
     geometry_bytes: bytes
     coupled_model: dict[str, Any] | None = None
+    isolated_acoustic_impedance: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -429,6 +430,11 @@ def _load_deploy_package_data(
         except KeyError as exc:
             raise ValueError(f"Speaker package is missing {exc.args[0]!r}.") from exc
         coupled_model = _read_coupled_descriptor(archive, manifest)
+        reference = None
+        reference_path = manifest.get("files", {}).get("isolated_acoustic_impedance", {}).get("path")
+        if reference_path:
+            with np.load(io.BytesIO(archive.read(reference_path)), allow_pickle=False) as data:
+                reference = {name: np.asarray(data[name]) for name in data.files}
     with np.load(io.BytesIO(fixed_bytes), allow_pickle=False) as fixed:
         triangles = np.asarray(fixed["triangles"], dtype=np.int64)
         points = np.asarray(fixed["points_m"], dtype=np.float64)
@@ -446,6 +452,7 @@ def _load_deploy_package_data(
         normal=normal,
         geometry_bytes=geometry_bytes,
         coupled_model=coupled_model,
+        isolated_acoustic_impedance=reference,
     )
 
 

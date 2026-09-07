@@ -58,6 +58,7 @@ interface DesktopMicrophoneSweepProgress {
   transducer_ids: string[];
   transducer_names: string[];
   transducer_velocity: { real: number[]; imag: number[] };
+  acoustic_loading?: import("./model/acousticLoading").AcousticLoadingSample | null;
   speaker_ids: string[];
   speaker_names: string[];
   speaker_voltage: { real: number[]; imag: number[] };
