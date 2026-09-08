@@ -1,0 +1,78 @@
+{
+  "schema_version": 9,
+  "physical_system": {
+    "id": "system:example",
+    "name": "Independent BEAT example",
+    "meshes": [
+      {
+        "id": "mesh:exterior",
+        "name": "Exterior",
+        "file": "exterior.msh",
+        "purpose": "bem_surface",
+        "scale_to_m": 0.001,
+        "translation_m": [
+          0,
+          0,
+          0
+        ]
+      }
+    ],
+    "regions": [
+      {
+        "id": "region:exterior",
+        "name": "Exterior",
+        "kind": "unbounded_air",
+        "mesh_ids": [
+          "mesh:exterior"
+        ],
+        "volume_groups": [],
+        "sound_speed_m_per_s": 343.0,
+        "density_kg_per_m3": 1.21,
+        "loss_model": {}
+      }
+    ],
+    "boundaries": [
+      {
+        "id": "boundary:rigid", "name": "Enclosure", "kind": "rigid",
+        "region_id": "region:exterior",
+        "group": {"mesh_id": "mesh:exterior", "dimension": 2, "tag": 1, "name": null},
+        "parameters": {}
+      },
+      {
+        "id": "boundary:source",
+        "name": "Source",
+        "kind": "moving",
+        "region_id": "region:exterior",
+        "group": {
+          "mesh_id": "mesh:exterior",
+          "dimension": 2,
+          "tag": 2,
+          "name": null
+        },
+        "parameters": {}
+      }
+    ],
+    "interfaces": [],
+    "components": [
+      {
+        "id": "component:source",
+        "name": "Source",
+        "kind": "ideal_velocity_source",
+        "boundary_ids": [
+          "boundary:source"
+        ],
+        "parameters": {}
+      }
+    ],
+    "excitation_ports": [
+      {
+        "id": "excitation:source",
+        "name": "Source",
+        "component_id": "component:source",
+        "kind": "normal_velocity"
+      }
+    ],
+    "model_version": 1
+  },
+  "symmetry": "off"
+}

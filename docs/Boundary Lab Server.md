@@ -1,6 +1,6 @@
 ﻿# Boundary Lab physical-system server preview
 
-`blab server` now provides an experimental **localhost-only CPU service** using
+`blab server` provides a **CPU service with optional authenticated HTTPS for LAN use**, using
 Boundary Lab's compiled physical-system contract and the installed BEAT Engine.
 The legacy source-model HTTP API and Bempp runtime remain retired.
 
@@ -34,7 +34,40 @@ sampling preferences. Explicit point probes and retained BEM/FEM quantities rema
 available subject to existing solve-kind restrictions. No remote retained-field
 resampling or observation-plane viewer integration is provided.
 
-## First milestone contract
+## Authenticated LAN access
+
+The default binds to `127.0.0.1`. A LAN binding requires a shared token and TLS.
+Every endpoint requires authentication when a token is configured. This is a
+single-operator service: token holders can read and cancel all jobs.
+
+Set `BLAB_SERVER_TOKEN` in both server and client environments to the same random
+secret of at least 32 ASCII characters without whitespace. Generate a value with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and distribute it
+through your normal secret-management channel. Tokens are read from environment
+variables, not CLI argument values, and are not saved in result artifacts.
+`--token-env` (server) and `--server-token-env` (client) select an alternate variable.
+
+Use a certificate whose Subject Alternative Name matches the server hostname/IP.
+Keep its private key on the server:
+
+```bash
+python -m blab.cli server --root runs/server-jobs --host 0.0.0.0 --port 8765 --tls-cert server-cert.pem --tls-key server-key.pem
+```
+
+After setting the token in the client environment:
+
+```bash
+python -m blab.cli project solve speaker.blab.json --backend beat_cpu --server-url https://solver.example:8765 --server-ca lab-ca.pem --output runs/server-result
+```
+
+Replace `solver.example` with the actual certificate hostname. Omit `--server-ca`
+when Python's default trust store already trusts the certificate. Trust and
+hostname verification remain enabled; redirects are rejected to prevent credential
+forwarding. Plain HTTP is supported only for localhost connections. No firewall
+changes are made automatically. Limit port access to intended LAN clients;
+Internet hosting and multi-user isolation remain outside this service's scope.
+
+## Remote job contract
 
 The upload is a ZIP archive containing `job.json` and `assets/<sha256>.msh` files.
 The envelope identifies `protocol: blab-remote`, integer `version: 1`,
@@ -71,8 +104,7 @@ complete records remain readable, and an incomplete final event is discarded.
 
 ## Preview limits and qualification
 
-The service and client restrict connections to localhost. Authentication, LAN
-exposure, GPU discovery/selection, GUI integration, automatic retention cleanup,
+GPU discovery/selection, GUI integration, automatic retention cleanup,
 and queuing are later milestones. Use one service process per dedicated job root.
 Job assets and event journals remain on disk until the operator removes them
 while the service is stopped. This is a development preview, not a public HTTP
@@ -88,5 +120,16 @@ It validates the Simple Sealed project, runs one 500 Hz coupled FEM-BEM-LEM solv
 locally and through a separate HTTP server process, and checks exact array equality,
 quantity metadata, excitation ordering, and engine/worker provenance. It writes
 `comparison.json` and both ordinary result directories; choose a new output path
-for each run. Broader exterior/interior and accelerator qualification remains
-part of subsequent milestones.
+for each run. The script uses an ephemeral authentication token. Add `--tls-cert`
+and `--tls-key` for HTTPS with a certificate valid for `127.0.0.1`; the script
+trusts that certificate only for its test client. Other solve-kind checks:
+
+```bash
+python scripts/check_remote_integration.py --project tests/fixtures/remote-exterior.blab.json --frequency 500 --output runs/remote-exterior
+python scripts/check_remote_integration.py --project examples/compression_driver/compression_driver.blab.json --frequency 1000 --output runs/remote-interior
+```
+
+The exterior fixture derives from BEAT's example request and uses the existing
+test mesh. Interior qualification retains nodal pressure without exterior probes.
+These checks establish transport parity, not a broad numerical accuracy benchmark.
+Accelerator and actual cross-machine deployment qualification remain separate.

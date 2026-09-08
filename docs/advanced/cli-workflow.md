@@ -239,7 +239,8 @@ headless project workflow above for new solves. Mesh cleaning and the
 
 An experimental physical-system CPU server is available through `blab server` and
 `blab project solve --server-url http://127.0.0.1:8765`. This first milestone is
-localhost-only and omits observation planes. See [server setup and the remote job
+CPU-only and omits observation planes. Authenticated HTTPS enables LAN use; localhost
+remains the default. See [server setup and the remote job
 contract](../Boundary%20Lab%20Server.md).
 
 ## Clean A Mesh

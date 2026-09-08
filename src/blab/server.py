@@ -1,10 +1,13 @@
-"""Experimental loopback physical-system HTTP service."""
+"""CPU physical-system HTTP service with authenticated TLS for LAN use."""
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import re
+import ssl
 import sys
 import threading
 import uuid
@@ -125,7 +128,19 @@ class SolveService:
             thread.join(timeout=5)
 
 
-def create_http_server(service: SolveService, port: int = 8765) -> ThreadingHTTPServer:
+def create_http_server(
+    service: SolveService,
+    port: int = 8765,
+    *,
+    host: str = "127.0.0.1",
+    token: str | None = None,
+    tls_context: ssl.SSLContext | None = None,
+) -> ThreadingHTTPServer:
+    if token is not None and (len(token) < 32 or not token.isascii() or any(c.isspace() for c in token)):
+        raise ValueError("Server token must contain at least 32 ASCII characters without whitespace.")
+    if host not in {"127.0.0.1", "localhost"} and (not token or tls_context is None):
+        raise ValueError("LAN binding requires both a token and a TLS certificate/key.")
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -140,6 +155,11 @@ def create_http_server(service: SolveService, port: int = 8765) -> ThreadingHTTP
 
         def handle_request(self):
             self.connection.settimeout(30)
+            if token and not hmac.compare_digest(
+                self.headers.get("Authorization", "").encode("utf-8"), f"Bearer {token}".encode("ascii")
+            ):
+                self.reply(401, {"error": "Authentication required."})
+                return
             path = urlsplit(self.path)
             try:
                 if self.command == "GET" and path.path == "/v1/capabilities":
@@ -157,6 +177,9 @@ def create_http_server(service: SolveService, port: int = 8765) -> ThreadingHTTP
                         },
                     )
                 elif self.command == "POST" and path.path == "/v1/jobs":
+                    if self.headers.get_content_type() != "application/zip":
+                        self.reply(415, {"error": "Expected application/zip."})
+                        return
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= MAX_BUNDLE_BYTES or self.headers.get("Transfer-Encoding"):
                         raise ValueError("A bounded Content-Length is required.")
@@ -188,25 +211,57 @@ def create_http_server(service: SolveService, port: int = 8765) -> ThreadingHTTP
         do_POST = handle_request
         do_DELETE = handle_request
 
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    class Server(ThreadingHTTPServer):
+        def handle_error(self, request, client_address):
+            if isinstance(sys.exception(), (ssl.SSLError, ConnectionError, TimeoutError)):
+                return
+            super().handle_error(request, client_address)
+
+        def get_request(self):
+            connection, address = super().get_request()
+            connection.settimeout(30)
+            if tls_context is not None:
+                connection = tls_context.wrap_socket(connection, server_side=True, do_handshake_on_connect=False)
+            return connection, address
+
+    server = Server((host, port), Handler)
+    return server
 
 
 def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
-    parser = argparse.ArgumentParser(prog=prog, description="Experimental CPU physical-system server (localhost only).")
+    parser = argparse.ArgumentParser(
+        prog=prog, description="CPU physical-system server (localhost by default; authenticated TLS for LAN)."
+    )
     parser.add_argument(
         "--root", type=Path, required=True, help="Dedicated directory for job assets and retained events"
     )
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--token-env", default="BLAB_SERVER_TOKEN", help="Environment variable holding the shared server token"
+    )
+    parser.add_argument("--tls-cert", type=Path, help="PEM certificate chain for HTTPS")
+    parser.add_argument("--tls-key", type=Path, help="PEM private key for HTTPS")
     parser.add_argument("--julia-executable", default="julia")
     parser.add_argument("--julia-threads", default=None)
     parser.add_argument("--shutdown-on-stdin-eof", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("--tls-cert and --tls-key must be supplied together")
+    context = None
+    if args.tls_cert:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(args.tls_cert, args.tls_key)
     backend = PhysicalSystemProductionBackend(
         bem_backend="cpu", julia_executable=args.julia_executable, julia_threads=args.julia_threads
     )
     service = SolveService(args.root, backend=backend)
-    server = create_http_server(service, args.port)
-    print(f"Physical-system server listening on http://127.0.0.1:{server.server_port}", flush=True)
+    server = create_http_server(
+        service, args.port, host=args.host, token=os.environ.get(args.token_env), tls_context=context
+    )
+    scheme = "https" if context else "http"
+    print(f"Physical-system server listening on {scheme}://{args.host}:{server.server_port}", flush=True)
     if args.shutdown_on_stdin_eof:
 
         def wait_for_parent():

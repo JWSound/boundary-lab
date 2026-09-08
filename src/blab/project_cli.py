@@ -68,9 +68,11 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     solve.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
     solve.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     solve.add_argument("--output", type=Path, help="New result directory; defaults below the project runs directory")
+    solve.add_argument("--server-url", help="CPU server base URL (LAN requires HTTPS; omits observation planes)")
     solve.add_argument(
-        "--server-url", help="Experimental CPU server base URL (localhost only; omits observation planes)"
+        "--server-token-env", default="BLAB_SERVER_TOKEN", help="Environment variable holding the server token"
     )
+    solve.add_argument("--server-ca", type=Path, help="Trusted PEM CA/certificate for server HTTPS")
     solve.add_argument(
         "--events",
         choices=("text", "ndjson"),
@@ -222,7 +224,9 @@ def _solve(args: argparse.Namespace) -> None:
 
         if args.backend not in {HEADLESS_BACKEND_AUTO, "beat_cpu"}:
             raise ValueError("The remote preview supports --backend beat_cpu only.")
-        remote_backend = RemoteBackend(args.server_url)
+        remote_backend = RemoteBackend(
+            args.server_url, token=os.environ.get(args.server_token_env), ca_file=args.server_ca
+        )
         remote_backend.check_capabilities()
         backend_id = "beat_cpu"
     else:

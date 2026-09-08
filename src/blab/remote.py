@@ -3,37 +3,52 @@
 from __future__ import annotations
 
 import json
+import ssl
 import time
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from blab.remote_contract import REMOTE_VERSION, build_job_bundle
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
 from blab.system_contract import SystemSolveMetadata, system_frequency_result_from_dict
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError("Remote server redirects are not allowed.")
+
+
 class RemoteBackend:
     backend_id = "beat_remote"
     label = "Boundary Lab Server (CPU preview)"
 
-    def __init__(self, url):
+    def __init__(self, url, *, token=None, ca_file=None):
         parsed = urlsplit(url)
         if (
-            parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "localhost"}
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
             or parsed.username
             or parsed.password
             or parsed.path not in {"", "/"}
             or parsed.query
             or parsed.fragment
         ):
-            raise ValueError("The remote preview requires an http://127.0.0.1:PORT base URL.")
+            raise ValueError("Expected an HTTP(S) server base URL without credentials, path, or query.")
+        if parsed.hostname not in {"127.0.0.1", "localhost"} and (parsed.scheme != "https" or not token):
+            raise ValueError("LAN connections require HTTPS and a server token.")
+        if token is not None and (not token.isascii() or any(c.isspace() for c in token)):
+            raise ValueError("Server token must be ASCII without whitespace.")
         self.url = url.rstrip("/")
-        self.opener = build_opener(ProxyHandler({}))
+        self.token = token
+        context = ssl.create_default_context(cafile=ca_file)
+        self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
 
     def call(self, path, *, data=None, method="GET"):
-        request = Request(self.url + path, data=data, method=method, headers={"Content-Type": "application/zip"})
+        headers = {"Content-Type": "application/zip"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        request = Request(self.url + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=30) as response:
                 return json.load(response)

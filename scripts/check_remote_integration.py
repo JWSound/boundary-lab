@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import os
+import secrets
 import subprocess
 import sys
 import time
@@ -9,28 +11,48 @@ from pathlib import Path
 
 import numpy as np
 
+from blab.headless import load_headless_project
+from blab.physical_model import PhysicalSolveKind, infer_physical_solve_kind
 from blab.remote import RemoteBackend
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("runs/remote-integration"))
+    parser.add_argument("--project", type=Path, default=Path("examples/Simple_Sealed/simple_sealed.blab.json"))
+    parser.add_argument("--frequency", type=float, default=500.0)
+    parser.add_argument("--tls-cert", type=Path)
+    parser.add_argument("--tls-key", type=Path)
     args = parser.parse_args()
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("Provide both --tls-cert and --tls-key")
+    interior = (
+        infer_physical_solve_kind(load_headless_project(args.project).physical_system) == PhysicalSolveKind.INTERIOR_FEM
+    )
+    environment = os.environ.copy()
+    environment["BLAB_REMOTE_TEST_TOKEN"] = secrets.token_urlsafe(32)
+    server_options = ["--token-env", "BLAB_REMOTE_TEST_TOKEN"]
+    client_options = ["--server-token-env", "BLAB_REMOTE_TEST_TOKEN"]
+    if args.tls_cert:
+        server_options += ["--tls-cert", str(args.tls_cert), "--tls-key", str(args.tls_key)]
+        client_options += ["--server-ca", str(args.tls_cert)]
     args.output.mkdir(parents=True, exist_ok=False)
     request = args.output / "request.json"
     request.write_text(
         json.dumps(
             {
                 "schema_version": 1,
-                "frequencies_hz": [500.0],
+                "frequencies_hz": [args.frequency],
                 "include_project_observations": False,
-                "probes": [{"id": "on_axis", "coordinate_frame": "project", "points_m": [[0, 0, 2]]}],
-                "retain": ["bem_boundary_traces"],
+                "probes": []
+                if interior
+                else [{"id": "on_axis", "coordinate_frame": "project", "points_m": [[0, 0, 2]]}],
+                "retain": ["fem_nodal_pressure"] if interior else ["bem_boundary_traces"],
             }
         )
     )
     cli = [sys.executable, "-m", "blab.cli"]
-    common = ["examples/Simple_Sealed/simple_sealed.blab.json", "--backend", "beat_cpu", "--request", str(request)]
+    common = [str(args.project), "--backend", "beat_cpu", "--request", str(request)]
     subprocess.run(cli + ["project", "validate"] + common + ["--json"], check=True)
     subprocess.run(
         cli + ["project", "solve"] + common + ["--julia-threads", "2", "--output", str(args.output / "local")],
@@ -49,7 +71,9 @@ def main():
                 "--julia-threads",
                 "2",
                 "--shutdown-on-stdin-eof",
-            ],
+            ]
+            + server_options,
+            env=environment,
             stdin=subprocess.PIPE,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -68,9 +92,14 @@ def main():
                 time.sleep(0.1)
             if url is None:
                 raise RuntimeError("Server startup timed out.")
-            RemoteBackend(url).check_capabilities()
+            RemoteBackend(url, token=environment["BLAB_REMOTE_TEST_TOKEN"], ca_file=args.tls_cert).check_capabilities()
             subprocess.run(
-                cli + ["project", "solve"] + common + ["--server-url", url, "--output", str(args.output / "remote")],
+                cli
+                + ["project", "solve"]
+                + common
+                + ["--server-url", url, "--output", str(args.output / "remote")]
+                + client_options,
+                env=environment,
                 check=True,
             )
         finally:
@@ -104,6 +133,8 @@ def main():
             assert metadata["quantities"] == local_metadata["quantities"]
     report = {
         "status": "passed",
+        "solve_kind": manifests[1]["solve_kind"],
+        "https": bool(args.tls_cert),
         "complex_arrays_equal": quantity_count,
         "remote_job_id": manifests[1]["remote_job_id"],
     }
