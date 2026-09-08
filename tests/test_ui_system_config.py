@@ -1433,7 +1433,7 @@ def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
     assert sphere is None
 
 
-def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monkeypatch, caplog) -> None:
+def test_coupled_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> None:
     system = _configured_fixture_dialog().physical_system()
     prepared = prepare_coupled_ui_solve(
         system,
@@ -1472,7 +1472,7 @@ def test_coupled_worker_logs_backend_detail_without_emitting_visible_status(monk
     with caplog.at_level("INFO", logger="blab.ui.system_solve"):
         worker.run()
 
-    assert statuses == []
+    assert statuses == ["initializing coupled backend detail", "assembling coupled backend detail"]
     assert "initializing coupled backend detail" in caplog.text
     assert "assembling coupled backend detail" in caplog.text
 

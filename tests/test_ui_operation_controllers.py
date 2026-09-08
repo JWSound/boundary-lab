@@ -81,7 +81,7 @@ def test_controllers_preserve_latest_failure_for_diagnostics() -> None:
     assert solve_controller.state.phase == OperationPhase.FAILED
 
 
-def test_solve_worker_logs_backend_detail_without_emitting_visible_status(monkeypatch, caplog) -> None:
+def test_solve_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> None:
     class Session:
         metadata = SimpleNamespace(
             polar_angle_deg=np.array([0.0]),
@@ -123,6 +123,6 @@ def test_solve_worker_logs_backend_detail_without_emitting_visible_status(monkey
     with caplog.at_level("INFO", logger="blab.ui.system_solve"):
         worker.run()
 
-    assert statuses == []
+    assert statuses == ["initializing backend detail", "assembling backend detail"]
     assert "initializing backend detail" in caplog.text
     assert "assembling backend detail" in caplog.text
