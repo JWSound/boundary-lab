@@ -1,5 +1,10 @@
 # BEAT Engine CPU
 
+> Numerical source paths and Julia research commands below refer to the
+> [BEAT Engine checkout](https://github.com/JWSound/BEAT_Engine), which is maintained
+> separately. For installed runtime paths use `python -m beat_engine paths`.
+> Historical research scripts may also need Boundary Lab fixtures.
+
 The BEAT Engine CPU backend is a hardware-agnostic Julia/OpenBLAS solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs operator assembly, dense solve, and field evaluation on the host.
 
 The application exposes this path as `BEAT Engine (CPU)` / `beat_cpu`. Coupled
@@ -22,7 +27,7 @@ For each frequency, the CPU path:
 5. Solves through Julia's dense BLAS/LAPACK path.
 6. Evaluates requested polar and spherical fields on the CPU.
 
-The CPU implementation lives under `src/blab/solvers/julia_local/src/BeatEngineCpu*.jl`.
+The CPU implementation lives under `src/beat_engine/julia_local/src/BeatEngineCpu*.jl`.
 
 ## CPU Operator Assembly
 
@@ -113,27 +118,27 @@ the policy. Explicit values are capped at the Julia thread count.
 
 Useful scripts:
 
-- `src/blab/solvers/julia_local/scripts/benchmark_cpu.jl`: CPU timing benchmark, including fixed and wavelength regular quadrature modes.
-- `src/blab/solvers/julia_local/scripts/benchmark_cpu_blas.jl`: synthetic or real-system dense LU thread-scaling benchmark.
-- `src/blab/solvers/julia_local/scripts/compare_cpu_quadrature.jl`: fixed-reference versus candidate comparison artifact generator with operator, pressure, field, and SPL error metrics.
+- `src/beat_engine/julia_local/scripts/benchmark_cpu.jl`: CPU timing benchmark, including fixed and wavelength regular quadrature modes.
+- `src/beat_engine/julia_local/scripts/benchmark_cpu_blas.jl`: synthetic or real-system dense LU thread-scaling benchmark.
+- `src/beat_engine/julia_local/scripts/compare_cpu_quadrature.jl`: fixed-reference versus candidate comparison artifact generator with operator, pressure, field, and SPL error metrics.
 
 Example comparison:
 
 ```powershell
 & 'C:\Users\John\AppData\Local\Programs\Julia-1.12.6\bin\julia.exe' `
-  src\blab\solvers\julia_local\scripts\compare_cpu_quadrature.jl `
+  src\beat_engine\julia_local\scripts\compare_cpu_quadrature.jl `
   --frequencies 20,50,100,200,500,1000,1500,2000,3000,4000,4500,5000 `
   --subset-faces 0 `
   --output-points 72 `
   --wavelength-kh-q1-max 0 `
   --wavelength-kh-q2-max 2.0 `
-  --json src\blab\solvers\julia_local\results\cpu_quadrature_compare_output_no_q1_q2_2p0_full.json
+  --json src\beat_engine\julia_local\results\cpu_quadrature_compare_output_no_q1_q2_2p0_full.json
 ```
 
 ## Important Files
 
-- `src/blab/solvers/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
-- `src/blab/solvers/julia_local/src/BeatEngineCpuAssembly.jl`: CPU Galerkin operator assembly entry point.
-- `src/blab/solvers/julia_local/src/BeatEngineCpuField.jl`: CPU field-evaluation path.
-- `src/blab/solvers/julia_local/src/BeatEngineCpuSolve.jl`: CPU Burton-Miller dense solve through Julia's LAPACK/BLAS path.
-- `src/blab/solvers/julia_local/solver.jl`: CPU backend dispatch, wavelength quadrature selection, per-order caches, and result diagnostics.
+- `src/beat_engine/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
+- `src/beat_engine/julia_local/src/BeatEngineCpuAssembly.jl`: CPU Galerkin operator assembly entry point.
+- `src/beat_engine/julia_local/src/BeatEngineCpuField.jl`: CPU field-evaluation path.
+- `src/beat_engine/julia_local/src/BeatEngineCpuSolve.jl`: CPU Burton-Miller dense solve through Julia's LAPACK/BLAS path.
+- `src/beat_engine/julia_local/solver.jl`: CPU backend dispatch, wavelength quadrature selection, per-order caches, and result diagnostics.

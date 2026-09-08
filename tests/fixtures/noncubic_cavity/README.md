@@ -57,8 +57,8 @@ Rayleigh quotients on the 20, 14, and 10 mm meshes and groups relative frequency
 error by nominal elements per wavelength:
 
 ```powershell
-julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/analyze_noncubic_ppw.jl
+julia --project=<BEAT_Engine>/src/beat_engine/julia_local `
+  <BEAT_Engine>/src/beat_engine/julia_local/scripts/analyze_noncubic_ppw.jl
 ```
 
 For these first-order tetrahedral meshes, the sampled results support

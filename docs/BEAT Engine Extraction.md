@@ -1,7 +1,7 @@
 # BEAT Engine extraction milestones
 
-BEAT will become an independently versioned numerical engine consumed by Boundary
-Lab. The repository move follows retirement of the application's legacy runtime.
+BEAT is an independently versioned numerical engine consumed by Boundary Lab.
+The repository move followed retirement of the application's legacy runtime.
 
 ## Application runtime retirement
 
@@ -26,7 +26,7 @@ routes. The shared worker infrastructure is now separated as described below.
 
 ## Reusable worker boundary
 
-`src/blab/solvers/beat_worker.py` is a standard-library-only subprocess client.
+BEAT Engine's `beat_engine.worker` is a standard-library-only subprocess client.
 `WorkerProcess` receives executable/script paths and a child-process environment,
 streams opaque JSON events, and supports the existing solve and field operations.
 It has no dependency on Boundary Lab models, preferences, NumPy, Qt, or bundled
@@ -64,27 +64,23 @@ unchanged by this separation.
    threads, precision, actual backend/device, mesh hashes, and numerical options.
    Preserve these records in frequency results, headless manifests, canonical
    solved systems, and speaker packages.
-5. **Complete:** preserve a [standalone CPU numerical reference gate](../src/blab/solvers/julia_local/tests/README.md)
+5. **Complete:** preserve a [standalone CPU numerical reference gate](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/julia_local/tests/README.md)
    with frozen, hash-checked coupled meshes and analytical/generated fixtures.
    Cover exterior BEM, interior FEM, coupled FEM-BEM-LEM, independent excitations,
-   symmetry, retained fields, and complex-pressure probes. CI runs the required
-   dense references from an isolated engine copy. Keep the remaining source-request
+   symmetry, retained fields, and complex-pressure probes. Engine CI runs the required
+   dense references independently of Boundary Lab. Keep the remaining source-request
    harness and separate hardware qualification until their coverage is replaced.
 
 ## Extract and release
 
-Local extraction is now prepared in `E:\Code\BEAT_Engine`, with filtered history,
-an installable `beat-engine` candidate, independent CI, and a public worker/path
-API. Boundary Lab has an explicit pre-release dependency switch; see
-[local integration and publication steps](BEAT%20Local%20Dependency.md). Bundled
-assets remain until the first published release is qualified and pinned.
+BEAT Engine is independently released at
+[JWSound/BEAT_Engine](https://github.com/JWSound/BEAT_Engine). Boundary Lab requires
+the hash-pinned `0.1.0rc1` wheel; the bundled numerical sources, contracts, and
+transport have been removed. See [dependency setup](BEAT%20Local%20Dependency.md).
 
-Move the Julia engine, backend tests, numerical fixtures, and a small Python
-worker client into one BEAT repository. Publish a versioned release before
-changing Boundary Lab's dependency. Keep CPU, CUDA, ROCm, and future Metal
-implementations together initially. Provide a contributor checkout override and
-an explicit Julia/runtime installation strategy; a Python package alone does not
-provision the numerical runtime.
+The release passed CPU CI on Windows, Linux, and macOS. Engine CI owns numerical
+regression gates; application CI installs the published wheel and exercises a
+headless physical-system solve. Accelerator qualification remains separate.
 
 Boundary Lab should test a pinned engine release through the headless project
 workflow and GUI integration tests. BEAT should own numerical regression tests

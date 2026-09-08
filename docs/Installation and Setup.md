@@ -187,7 +187,7 @@ Install [Julia](https://julialang.org/downloads/) and make `julia` available on
 `PATH`. Prepare the CPU project from the repository root:
 
 ```bash
-julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+python -m beat_engine instantiate --backend cpu
 ```
 
 The CPU backend supports Intel, AMD, and ARM processors. Runtime depends heavily
@@ -200,8 +200,8 @@ Install a current NVIDIA driver for a Maxwell-generation or newer NVIDIA GPU,
 then install Julia and prepare the CUDA project:
 
 ```bash
-julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
-julia --project=src/blab/solvers/julia_cuda -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
+python -m beat_engine instantiate --backend cuda
+julia --project="<CUDA project from python -m beat_engine paths --backend cuda>" -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
 ```
 
 On WSL2, use an NVIDIA Windows driver with WSL CUDA support. Do not install a

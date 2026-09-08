@@ -342,10 +342,9 @@ def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> N
     manifest["capabilities"].append("isolated_free_field_acoustic_impedance")
     members["manifest.json"] = json.dumps(manifest).encode()
     members["data/isolated-acoustic-impedance.npz"] = b"unused legacy payload"
-    members["checksums.json"] = json.dumps({
-        name: hashlib.sha256(value).hexdigest()
-        for name, value in members.items() if name != "checksums.json"
-    }).encode()
+    members["checksums.json"] = json.dumps(
+        {name: hashlib.sha256(value).hexdigest() for name, value in members.items() if name != "checksums.json"}
+    ).encode()
     legacy = tmp_path / "legacy.blabsp"
     with zipfile.ZipFile(legacy, "w") as archive:
         for name, value in members.items():
@@ -406,8 +405,12 @@ def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(t
         meshes=(
             CompiledMesh("mesh:interior", "Interior", str(mesh_path), MeshPurpose.FEM_VOLUME, 1.0, (0, 0, 0)),
             CompiledMesh(
-                "mesh:exterior", "Exterior", str(Path(__file__).parent / "fixtures/exterior.msh"),
-                MeshPurpose.BEM_SURFACE, 1.0, (0, 0, 0),
+                "mesh:exterior",
+                "Exterior",
+                str(Path(__file__).parent / "fixtures/exterior.msh"),
+                MeshPurpose.BEM_SURFACE,
+                1.0,
+                (0, 0, 0),
             ),
         ),
         regions=(replace(solved.compiled_system.regions[0], mesh_ids=("mesh:exterior",)), bounded),
@@ -476,8 +479,12 @@ def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path
 
 def test_export_preserves_engine_execution_provenance(tmp_path: Path) -> None:
     solved = _solved_system()
-    engine_run = {"schema_version": 1, "engine": {"repository_revision": None, "source_sha256": "source"},
-                  "runtime": {"julia_version": "test"}, "execution": {"backend": "cpu"}}
+    engine_run = {
+        "schema_version": 1,
+        "engine": {"repository_revision": None, "source_sha256": "source"},
+        "runtime": {"julia_version": "test"},
+        "execution": {"backend": "cpu"},
+    }
     solved = replace(solved, provenance=replace(solved.provenance, engine_runs=(engine_run,)))
     output = tmp_path / "provenance.blabsp"
     export_speaker_package(solved, SpeakerPackageConfig(output, "Test", SpeakerPackageFidelity.PATTERN))

@@ -8,6 +8,7 @@ from pathlib import Path
 import meshio
 import numpy as np
 import pytest
+from beat_engine import beat_contract
 
 from blab.acoustic_impedance import normalization_records
 from blab.acoustic_materials import miki_wall_impedance_parameters
@@ -356,7 +357,7 @@ def test_coupled_backend_accepts_mixed_fem_and_bem_prescribed_sources() -> None:
 
 
 def test_coupled_cancel_keeps_persistent_worker_warm(tmp_path: Path) -> None:
-    contract = Path(__file__).resolve().parents[1] / "src/blab/solvers/beat_contract/worker-v1.json"
+    contract = Path(beat_contract.__file__).with_name("worker-v1.json")
     ready = json.loads(contract.read_text())
     ready["backends"] = {"cpu": {"available": True}}
     starts_path = tmp_path / "coupled_cancel_starts.txt"

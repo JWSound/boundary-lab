@@ -1,5 +1,10 @@
 # Coupled Solver
 
+> Numerical source paths and Julia research commands below refer to the
+> [BEAT Engine checkout](https://github.com/JWSound/BEAT_Engine), which is maintained
+> separately. For installed runtime paths use `python -m beat_engine paths`.
+> Historical research scripts may also need Boundary Lab fixtures.
+
 Boundary Lab's coupled solver models one or more bounded air volumes and the
 surrounding unbounded air in one frequency-domain acoustic solve. Each bounded
 region is solved with tetrahedral finite elements (FEM), the exterior is solved
@@ -646,8 +651,8 @@ coupled fixture:
 
 ```powershell
 $env:BLAB_RUN_COUPLED_REFERENCE = "1"
-julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/smoke_coupled_solver.jl
+julia --project=src/beat_engine/julia_local `
+  src/beat_engine/julia_local/scripts/smoke_coupled_solver.jl
 ```
 
 The dedicated noncubic-cavity correctness test compares the sparse P1 FEM
@@ -661,16 +666,16 @@ including the solver sign convention, resonant amplitude scaling, half-power
 bandwidth, and modal Q for all three axes:
 
 ```powershell
-julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/test_noncubic_cavity_loss.jl
+julia --project=src/beat_engine/julia_local `
+  src/beat_engine/julia_local/scripts/test_noncubic_cavity_loss.jl
 ```
 
 The companion high-frequency dispersion diagnostic samples exact axial and
 oblique modes from about 2 to 10 kHz on the same three mesh densities:
 
 ```powershell
-julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/analyze_noncubic_ppw.jl
+julia --project=src/beat_engine/julia_local `
+  src/beat_engine/julia_local/scripts/analyze_noncubic_ppw.jl
 ```
 
 For these P1 tetrahedral fixtures, conservative sampled limits are about 17
@@ -685,8 +690,8 @@ meshes using overlapping block shift-invert slices, nearest-node transferred
 modal assurance, and HF, MF, interface, and wall participation:
 
 ```powershell
-julia --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/analyze_curved_fem_convergence.jl
+julia --project=src/beat_engine/julia_local `
+  src/beat_engine/julia_local/scripts/analyze_curved_fem_convergence.jl
 ```
 
 Pass `--stats-only` to validate geometry, physical groups, edge lengths, and
@@ -725,8 +730,8 @@ quadrature, excitations, and field points through `Float64/ComplexF64` and
 `Float32/ComplexF32`:
 
 ```powershell
-julia -t 4 --project=src/blab/solvers/julia_local `
-  src/blab/solvers/julia_local/scripts/compare_coupled_precision.jl
+julia -t 4 --project=src/beat_engine/julia_local `
+  src/beat_engine/julia_local/scripts/compare_coupled_precision.jl
 ```
 
 The comparison reports relative complex-vector errors plus magnitude and phase

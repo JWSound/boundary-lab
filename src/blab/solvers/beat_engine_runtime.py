@@ -1,52 +1,31 @@
-"""Boundary Lab's bundled BEAT paths and hardware-environment configuration.
+"""Boundary Lab's installed BEAT paths and hardware-environment configuration.
 
-Application policy stays here. beat_worker contains the independently reusable
+Application policy stays here. BEAT Engine supplies the independently reusable
 subprocess client. All application adapters share the same worker pool below.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from beat_engine import EngineWorker as WorkerProcess
+from beat_engine import WorkerPool
+from beat_engine.worker import format_julia_error
+from beat_engine.worker import julia_command as julia_command
+from beat_engine.worker import julia_worker_command as julia_worker_command
+from beat_engine.worker import resolve_julia_threads as resolve_julia_threads
+
 from blab.rocm import discover_rocm
-from blab.solvers.beat_contract.worker import negotiate_submission, validate_worker_event, validate_worker_ready
-from blab.solvers.beat_worker import (
-    WorkerPool,
-    WorkerProcess,
-    format_julia_error,
-)
-from blab.solvers.beat_worker import (
-    julia_command as julia_command,
-)
-from blab.solvers.beat_worker import (
-    julia_worker_command as julia_worker_command,
-)
-from blab.solvers.beat_worker import (
-    resolve_julia_threads as resolve_julia_threads,
-)
-from blab.solvers.engine_distribution import ENGINE_DISTRIBUTION
+from blab.solvers.engine_distribution import engine_paths
 
-DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = Path(__file__).with_name("julia_local") / "solver.jl"
-DEFAULT_BEAT_ENGINE_CPU_PROJECT = DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT.parent
-DEFAULT_BEAT_ENGINE_CUDA_PROJECT = Path(__file__).with_name("julia_cuda")
-DEFAULT_BEAT_ENGINE_ROCM_PROJECT = Path(__file__).with_name("julia_rocm")
+DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = engine_paths().source_solver
+DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = engine_paths().system_solver
+DEFAULT_BEAT_ENGINE_CPU_PROJECT = engine_paths("cpu").project
+DEFAULT_BEAT_ENGINE_CUDA_PROJECT = engine_paths("cuda").project
+DEFAULT_BEAT_ENGINE_ROCM_PROJECT = engine_paths("rocm").project
 DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
-DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_CPU_PROJECT / "coupled_solver.jl"
-if ENGINE_DISTRIBUTION == "external":
-    from beat_engine import EngineWorker as WorkerProcess
-    from beat_engine import WorkerPool, engine_paths
-    from beat_engine.beat_contract.worker import negotiate_submission, validate_worker_event, validate_worker_ready
-    from beat_engine.worker import format_julia_error, resolve_julia_threads
-
-    DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = engine_paths().source_solver
-    DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = engine_paths().system_solver
-    DEFAULT_BEAT_ENGINE_CPU_PROJECT = engine_paths("cpu").project
-    DEFAULT_BEAT_ENGINE_CUDA_PROJECT = engine_paths("cuda").project
-    DEFAULT_BEAT_ENGINE_ROCM_PROJECT = engine_paths("rocm").project
-    DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 BEAT_ENGINE_CUDA_BACKEND = "cuda"
 BEAT_ENGINE_CPU_BACKEND = "cpu"
 BEAT_ENGINE_ROCM_BACKEND = "rocm"
@@ -146,29 +125,7 @@ def friendly_julia_error(
 
 
 class BeatEngineWorkerProcess(WorkerProcess):
-    """Worker configured for Boundary Lab's bundled Julia environments."""
-
-    def _accept_ready(self, event: dict) -> None:
-        # Bare ready is retained only for the separate source/Deploy reference
-        # transports. Custom physical workers are still checked on submission.
-        if isinstance(event.get("protocol"), dict) or self.solver_script.resolve() == DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT.resolve():
-            validate_worker_ready(event)
-        super()._accept_ready(event)
-
-    def _prepare_submission(self, request_path: Path, operation: str) -> dict:
-        command = super()._prepare_submission(request_path, operation)
-        request = json.loads(request_path.read_text(encoding="utf-8"))
-        info = self._worker_info or {}
-        protocol = info.get("protocol")
-        negotiated = isinstance(protocol, dict) and protocol.get("name") == "beat-worker"
-        if operation == "bem_field" or "compiled_system" in request or negotiated:
-            command.update(negotiate_submission(self._worker_info or {}, request, operation))
-        return command
-
-    def _accept_event(self, event: dict) -> None:
-        protocol = (self._worker_info or {}).get("protocol")
-        if isinstance(protocol, dict) and protocol.get("name") == "beat-worker":
-            validate_worker_event(event)
+    """Worker configured for Boundary Lab's installed Julia environments."""
 
     def __init__(
         self,

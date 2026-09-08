@@ -213,7 +213,9 @@ class SolvedSystemBuilder:
         self.diagnostics_by_frequency[frequency_index] = copy.deepcopy(result.diagnostics)
         engine_run = result.diagnostics.get("engine_provenance")
         if isinstance(engine_run, dict) and engine_run not in self.provenance.engine_runs:
-            self.provenance = replace(self.provenance, engine_runs=(*self.provenance.engine_runs, copy.deepcopy(engine_run)))
+            self.provenance = replace(
+                self.provenance, engine_runs=(*self.provenance.engine_runs, copy.deepcopy(engine_run))
+            )
         self.completion_mask[frequency_index] = True
         return frequency_index
 

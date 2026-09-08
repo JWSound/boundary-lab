@@ -9,6 +9,7 @@ description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.0rc1/beat_engine-0.1.0rc1-py3-none-any.whl#sha256=10513eff64a9e19d3a5d442887afdcc66a18b621056ee6cd53ca0391493fcb00",
   "gmsh",
   "matplotlib",
   "meshio",
@@ -17,7 +18,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-engine = ["beat-engine==0.1.0rc1"]
 dev = [
   "pytest",
   "ruff>=0.15,<0.16",
@@ -30,6 +30,9 @@ gui = [
 
 [project.scripts]
 blab = "blab.cli:main"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/blab"]

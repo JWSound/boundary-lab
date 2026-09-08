@@ -47,7 +47,7 @@ are no longer required.
 To prepare the Julia environment, from the repository root run:
 
 ```bash
-julia --project=src/blab/solvers/julia_cuda -e "using Pkg; Pkg.instantiate()"
+python -m beat_engine instantiate --backend cuda
 ```
 
 
@@ -72,7 +72,7 @@ GPU solving VRAM requirements scale quadratically with mesh element count. Below
 To prepare the Julia environment, from the repository root run:
 
 ```bash
-julia --project=src/blab/solvers/julia_local -e "using Pkg; Pkg.instantiate()"
+python -m beat_engine instantiate --backend cpu
 ```
 
 ## Application Installation

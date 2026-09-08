@@ -1,5 +1,10 @@
 # BEAT Engine CUDA
 
+> Numerical source paths and Julia research commands below refer to the
+> [BEAT Engine checkout](https://github.com/JWSound/BEAT_Engine), which is maintained
+> separately. For installed runtime paths use `python -m beat_engine paths`.
+> Historical research scripts may also need Boundary Lab fixtures.
+
 The BEAT Engine CUDA backend is an NVIDIA GPU-accelerated Julia solver path. It uses the same BEAT Engine request protocol, mesh handling, Burton-Miller formulation, symmetry model, and result stream described in [BEAT Engine Core](beat-engine-core.md), but performs regular-pair assembly, singular corrections, dense solve, and field evaluation with CUDA.jl.
 
 The application exposes this path as `BEAT Engine (Nvidia CUDA)` / `beat_cuda`.
@@ -160,12 +165,12 @@ Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight
 
 ## Important Files
 
-- `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaCommon.jl`: CUDA package setup, shared cache structs, and shared device helpers.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaRegular.jl`: CUDA geometry/rule cache builders and regular-pair kernels.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaSingular.jl`: GPU Duffy corrections, singular cache mirroring, image-singular corrections, and scatter kernels.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaOperators.jl`: GPU operator storage helpers, timing helpers, and regular kernel launch helpers.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaBurtonMiller.jl`: direct final-system assembly, correction scatter, identity contribution, and destructive CUDA solve.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaAssembly.jl`: public CUDA Galerkin operator assembly entry point.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaField.jl`: GPU field-evaluation cache, source weighting, and observation kernels.
-- `src/blab/solvers/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
+- `src/beat_engine/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
+- `src/beat_engine/julia_local/src/BeatEngineCudaCommon.jl`: CUDA package setup, shared cache structs, and shared device helpers.
+- `src/beat_engine/julia_local/src/BeatEngineCudaRegular.jl`: CUDA geometry/rule cache builders and regular-pair kernels.
+- `src/beat_engine/julia_local/src/BeatEngineCudaSingular.jl`: GPU Duffy corrections, singular cache mirroring, image-singular corrections, and scatter kernels.
+- `src/beat_engine/julia_local/src/BeatEngineCudaOperators.jl`: GPU operator storage helpers, timing helpers, and regular kernel launch helpers.
+- `src/beat_engine/julia_local/src/BeatEngineCudaBurtonMiller.jl`: direct final-system assembly, correction scatter, identity contribution, and destructive CUDA solve.
+- `src/beat_engine/julia_local/src/BeatEngineCudaAssembly.jl`: public CUDA Galerkin operator assembly entry point.
+- `src/beat_engine/julia_local/src/BeatEngineCudaField.jl`: GPU field-evaluation cache, source weighting, and observation kernels.
+- `src/beat_engine/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.

@@ -3,7 +3,9 @@
 Boundary Lab is a free, open-source loudspeaker enclosure design application. It
 loads Gmsh geometry plus `.blab.json` physical-system projects and solves exterior
 BEM or coupled FEM-BEM-LEM electroacoustic models. Python application code is in
-`src/blab`; BEAT Engine numerical code is under `src/blab/solvers/julia_local`.
+`src/blab`; BEAT Engine is a pinned external dependency maintained at
+https://github.com/JWSound/BEAT_Engine. Use `python -m beat_engine paths` to find
+installed Julia assets; keep numerical implementation changes in the engine repo.
 
 Use the headless project workflow for automated diagnosis. Start with
 `blab project validate <project.blab.json> --json`, then run

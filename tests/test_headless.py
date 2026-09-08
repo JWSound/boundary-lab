@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from beat_engine import beat_contract
 
 import blab.headless as headless_module
 from blab.headless import (
@@ -293,7 +294,7 @@ def _prepared_request() -> SystemUiSolveRequest:
 
     from blab.system_contract import compiled_system_from_dict
 
-    fixture = Path(__file__).resolve().parents[1] / "src/blab/solvers/beat_contract/example-exterior-request.json"
+    fixture = Path(beat_contract.__file__).with_name("example-exterior-request.json")
     compiled_payload = json.loads(fixture.read_text())["compiled_system"]
     compiled_payload["meshes"][0]["file"] = str(Path(__file__).parent / "fixtures/exterior.msh")
     compiled = compiled_system_from_dict(compiled_payload)

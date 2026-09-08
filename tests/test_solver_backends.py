@@ -267,7 +267,7 @@ Stacktrace:
 
     assert "BEAT Engine could not load the Julia dependencies for BEAT Engine (Nvidia CUDA)." in friendly
     assert "julia --project=" in friendly
-    assert "src" in friendly
+    assert str(DEFAULT_BEAT_ENGINE_CUDA_PROJECT) in friendly
     assert "julia_cuda" in friendly
     assert "Pkg.instantiate()" in friendly
     assert "Julia reported:" in friendly

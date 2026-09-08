@@ -1,2 +1,0 @@
-# Preserve the exact bytes covered by manifest.json on every checkout platform.
-*.msh -text

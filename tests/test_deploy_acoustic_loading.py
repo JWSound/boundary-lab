@@ -12,13 +12,24 @@ def fixture():
             "medium": {"density_kg_per_m3": 2, "sound_speed_m_per_s": 100},
             "physical_system": {
                 "components": [
-                    {"id": name, "kind": "electrodynamic_transducer", "parameters": {
-                        "bl_n_per_a": 2, "rms_n_s_per_m": 3, "cms_m_per_n": 0.001, "mmd_kg": 0.1,
-                    }} for name in ("a", "b")
+                    {
+                        "id": name,
+                        "kind": "electrodynamic_transducer",
+                        "parameters": {
+                            "bl_n_per_a": 2,
+                            "rms_n_s_per_m": 3,
+                            "cms_m_per_n": 0.001,
+                            "mmd_kg": 0.1,
+                        },
+                    }
+                    for name in ("a", "b")
                 ],
-                "metadata": {"acoustic_impedance_normalization": {
-                    "a": {"effective_area_m2": 0.01}, "b": {"effective_area_m2": 0.02},
-                }},
+                "metadata": {
+                    "acoustic_impedance_normalization": {
+                        "a": {"effective_area_m2": 0.01},
+                        "b": {"effective_area_m2": 0.02},
+                    }
+                },
             },
         },
     )
@@ -27,10 +38,12 @@ def fixture():
     omega = 2 * np.pi * 100
     zm = 3 + 1j * (1 / (omega * 0.001) - omega * 0.1)
     current = (active + zm) * velocity / 2
-    result = {"diagnostics": {
-        "transducer_velocity": [{"real": velocity.real.tolist(), "imag": velocity.imag.tolist()}],
-        "transducer_current": [{"real": current.real.tolist(), "imag": current.imag.tolist()}],
-    }}
+    result = {
+        "diagnostics": {
+            "transducer_velocity": [{"real": velocity.real.tolist(), "imag": velocity.imag.tolist()}],
+            "transducer_current": [{"real": current.real.tolist(), "imag": current.imag.tolist()}],
+        }
+    }
     request = {"transducers": [{"id": "source:a"}, {"id": "source:b"}]}
     return package, request, result, velocity
 

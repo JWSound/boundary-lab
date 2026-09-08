@@ -23,7 +23,8 @@ class _CoupledPackageCache:
     def load_package(self, _path: Path):
         model = {"representation": self.representation, "frequency_band_hz": [20.0, 40.0]}
         return SimpleNamespace(
-            frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]), coupled_model=model,
+            frequencies=np.asarray([10.0, 20.0, 40.0, 80.0]),
+            coupled_model=model,
             manifest={},
         )
 
@@ -166,9 +167,18 @@ def test_coupled_excursion_sweep_does_not_require_a_microphone(monkeypatch, roun
         manifest={
             "medium": {"density_kg_per_m3": 1, "sound_speed_m_per_s": 100},
             "physical_system": {
-                "components": [{"id": "driver", "kind": "electrodynamic_transducer", "parameters": {
-                    "bl_n_per_a": 2, "rms_n_s_per_m": 1, "cms_m_per_n": 0.001, "mmd_kg": 0.1,
-                }}],
+                "components": [
+                    {
+                        "id": "driver",
+                        "kind": "electrodynamic_transducer",
+                        "parameters": {
+                            "bl_n_per_a": 2,
+                            "rms_n_s_per_m": 1,
+                            "cms_m_per_n": 0.001,
+                            "mmd_kg": 0.1,
+                        },
+                    }
+                ],
                 "metadata": {"acoustic_impedance_normalization": {"driver": {"effective_area_m2": 0.01}}},
             },
         },

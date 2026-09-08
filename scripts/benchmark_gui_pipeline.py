@@ -26,13 +26,15 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from beat_engine import engine_paths
+
 from blab.config import MeshConfig, RadiatorConfig, SimulationConfig
 from blab.live import LiveSolveDataset, build_log_frequencies
 from blab.postprocess import PrepConfig
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics, SolveRequest
 from blab.solvers.registry import create_backend
 
-DEFAULT_SAMPLE_MESH = ROOT / "src" / "blab" / "solvers" / "julia_local" / "test_meshes" / "sample.msh"
+DEFAULT_SAMPLE_MESH = engine_paths().project / "test_meshes" / "sample.msh"
 DEFAULT_JULIA_EXE = r"C:\Users\John\AppData\Local\Programs\Julia-1.12.6\bin\julia.exe"
 DEFAULT_ISOBAR_ANGLE_SAMPLES = 250
 DEFAULT_ISOBAR_FREQ_SAMPLES = 500

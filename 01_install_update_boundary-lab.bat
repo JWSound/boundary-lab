@@ -180,8 +180,26 @@ if errorlevel 2 goto RERUN_REQUIRED
 if errorlevel 1 goto OPTIONAL_SOLVER_FAILED
 
 echo.
+set "BEAT_PATH_FILE=%TEMP%\boundary_lab_beat_path_%RANDOM%_%RANDOM%.txt"
+set "BEAT_CPU_PROJECT="
+"%VENV_PY%" -c "from beat_engine import engine_paths; print(engine_paths('cpu').project)" > "%BEAT_PATH_FILE%"
+if errorlevel 1 goto OPTIONAL_SOLVER_FAILED
+set /p "BEAT_CPU_PROJECT=" < "%BEAT_PATH_FILE%"
+if not defined BEAT_CPU_PROJECT goto OPTIONAL_SOLVER_FAILED
+set "BEAT_CUDA_PROJECT="
+"%VENV_PY%" -c "from beat_engine import engine_paths; print(engine_paths('cuda').project)" > "%BEAT_PATH_FILE%"
+if errorlevel 1 goto OPTIONAL_SOLVER_FAILED
+set /p "BEAT_CUDA_PROJECT=" < "%BEAT_PATH_FILE%"
+if not defined BEAT_CUDA_PROJECT goto OPTIONAL_SOLVER_FAILED
+set "BEAT_ROCM_PROJECT="
+"%VENV_PY%" -c "from beat_engine import engine_paths; print(engine_paths('rocm').project)" > "%BEAT_PATH_FILE%"
+if errorlevel 1 goto OPTIONAL_SOLVER_FAILED
+set /p "BEAT_ROCM_PROJECT=" < "%BEAT_PATH_FILE%"
+if not defined BEAT_ROCM_PROJECT goto OPTIONAL_SOLVER_FAILED
+del /q "%BEAT_PATH_FILE%"
+
 echo Installing / updating the BEAT Engine CPU environment...
-julia --project="%PROJECT_DIR%\src\blab\solvers\julia_local" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+julia --project="%BEAT_CPU_PROJECT%" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
 if errorlevel 1 (
     echo ERROR: The BEAT Engine CPU environment could not be prepared.
     goto OPTIONAL_SOLVER_FAILED
@@ -203,7 +221,7 @@ if /i not "%ANSWER%"=="Y" goto ROCM_SETUP
 
 echo.
 echo Installing / updating the BEAT Engine CUDA environment...
-julia --project="%PROJECT_DIR%\src\blab\solvers\julia_cuda" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+julia --project="%BEAT_CUDA_PROJECT%" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
 if errorlevel 1 (
     echo ERROR: The BEAT Engine CUDA environment could not be prepared.
     set "OPTIONAL_SOLVER_WARNING=1"
@@ -215,7 +233,7 @@ if errorlevel 1 goto ROCM_SETUP
 
 echo.
 echo Verifying CUDA access from Julia...
-julia --project="%PROJECT_DIR%\src\blab\solvers\julia_cuda" -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
+julia --project="%BEAT_CUDA_PROJECT%" -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
 if not errorlevel 1 goto ROCM_SETUP
 
 echo.
@@ -285,7 +303,7 @@ if /i not "%ANSWER%"=="Y" goto OPTIONAL_SOLVERS_DONE
 set "BLAB_ROCM_PATH=%ROCM_ROOT%"
 echo.
 echo Installing / updating the BEAT Engine ROCm environment...
-julia --project="%PROJECT_DIR%\src\blab\solvers\julia_rocm" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
+julia --project="%BEAT_ROCM_PROJECT%" -e "using Pkg; Pkg.instantiate(); Pkg.precompile()"
 if errorlevel 1 (
     echo ERROR: The BEAT Engine ROCm environment could not be prepared.
     set "OPTIONAL_SOLVER_WARNING=1"
@@ -294,7 +312,7 @@ if errorlevel 1 (
 
 echo.
 echo Verifying ROCm access from Julia...
-julia --project="%PROJECT_DIR%\src\blab\solvers\julia_rocm" -e "using AMDGPU; AMDGPU.functional() || error(\"ROCm is not functional\"); AMDGPU.functional(:rocblas) || error(\"rocBLAS is not functional\"); AMDGPU.functional(:rocsolver) || error(\"rocSOLVER is not functional\"); AMDGPU.versioninfo()"
+julia --project="%BEAT_ROCM_PROJECT%" -e "using AMDGPU; AMDGPU.functional() || error(\"ROCm is not functional\"); AMDGPU.functional(:rocblas) || error(\"rocBLAS is not functional\"); AMDGPU.functional(:rocsolver) || error(\"rocSOLVER is not functional\"); AMDGPU.versioninfo()"
 if not errorlevel 1 goto OPTIONAL_SOLVERS_DONE
 
 echo.

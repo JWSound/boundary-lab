@@ -1,5 +1,10 @@
 # BEAT Engine AMD ROCm
 
+> Numerical source paths and Julia research commands below refer to the
+> [BEAT Engine checkout](https://github.com/JWSound/BEAT_Engine), which is maintained
+> separately. For installed runtime paths use `python -m beat_engine paths`.
+> Historical research scripts may also need Boundary Lab fixtures.
+
 BEAT Engine AMD ROCm is Boundary Lab's local AMD GPU backend. It uses the same
 mesh model, Burton-Miller formulation, symmetry rules, coupled-system equations,
 and result protocol as the other BEAT Engine backends while moving the dense BEM
@@ -65,7 +70,7 @@ represent the complete physical radiator set.
 ## Requirements
 
 A functional installation requires a supported AMD GPU and driver, Julia, the
-dedicated `src/blab/solvers/julia_rocm` environment, AMDGPU.jl core functionality,
+dedicated `src/beat_engine/julia_rocm` environment, AMDGPU.jl core functionality,
 rocBLAS, and rocSOLVER with its runtime dependencies.
 
 GPU support varies by SDK release. Check AMD's current
@@ -115,7 +120,7 @@ discovery.
 To prepare the Julia environment manually from the repository root:
 
 ```powershell
-julia --project=src/blab/solvers/julia_rocm -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+julia --project=src/beat_engine/julia_rocm -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
 ```
 
 For one terminal session, `BLAB_ROCM_PATH` remains available as the highest-priority
@@ -168,7 +173,7 @@ blab rocm detect --json
 Then verify the Julia runtime directly:
 
 ```powershell
-julia --project=src/blab/solvers/julia_rocm -e 'using AMDGPU; AMDGPU.functional() || error("ROCm unavailable"); AMDGPU.functional(:rocblas) || error("rocBLAS unavailable"); AMDGPU.functional(:rocsolver) || error("rocSOLVER unavailable"); AMDGPU.versioninfo()'
+julia --project=src/beat_engine/julia_rocm -e 'using AMDGPU; AMDGPU.functional() || error("ROCm unavailable"); AMDGPU.functional(:rocblas) || error("rocBLAS unavailable"); AMDGPU.functional(:rocsolver) || error("rocSOLVER unavailable"); AMDGPU.versioninfo()'
 ```
 
 The repository includes CPU-versus-ROCm validation scripts for each production
@@ -184,8 +189,8 @@ path:
 For example:
 
 ```powershell
-julia --project=src/blab/solvers/julia_rocm `
-  src/blab/solvers/julia_local/scripts/validate_rocm_exterior.jl
+julia --project=src/beat_engine/julia_rocm `
+  src/beat_engine/julia_local/scripts/validate_rocm_exterior.jl
 ```
 
 The validation scripts exit with an error when CPU-versus-ROCm differences exceed

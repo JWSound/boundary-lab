@@ -9,8 +9,10 @@ import numpy as np
 from blab.deploy_solve import DeployPackageData
 
 ACOUSTIC_LOADING_KEYS = (
-    "resistance", "reactance",
-    "pressure_real_pa", "pressure_imag_pa",
+    "resistance",
+    "reactance",
+    "pressure_real_pa",
+    "pressure_imag_pa",
 )
 
 

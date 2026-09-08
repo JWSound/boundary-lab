@@ -1,9 +1,14 @@
 # BEAT Engine Core
 
+> Numerical source paths and Julia research commands below refer to the
+> [BEAT Engine checkout](https://github.com/JWSound/BEAT_Engine), which is maintained
+> separately. For installed runtime paths use `python -m beat_engine paths`.
+> Historical research scripts may also need Boundary Lab fixtures.
+
 Boundary Lab's BEAT Engine, short for Boundary Element Acoustic Toolkit Engine,
 is the Julia solver stack used for local exterior BEM and coupled FEM-BEM-LEM
 solves. The Python side stages mesh assets and request JSON, while
-`src/blab/solvers/julia_local/solver.jl` owns the numerical solve.
+`src/beat_engine/julia_local/solver.jl` owns the numerical solve.
 `BeatEngineCore.jl` provides shared BEM mesh, quadrature, formulation,
 symmetry, Burton-Miller, and field-evaluation utilities used by BEAT Engine CPU,
 Nvidia CUDA, and AMD ROCm.
@@ -201,12 +206,12 @@ Symmetry can improve runtime by more than the simple physical-area reduction wou
 
 ## Important Files
 
-- `src/blab/solvers/beat_worker.py`: standard-library-only Julia process, JSON event streaming, and worker pooling.
+- `src/beat_engine/worker.py`: standard-library-only Julia process, JSON event streaming, and worker pooling.
 - `src/blab/solvers/beat_engine_runtime.py`: bundled runtime paths, hardware environment configuration, and shared worker access.
 - `src/blab/solvers/coupled_backend.py`: physical-system request preparation and result decoding for production solves.
 - `src/blab/solvers/beat_engine_backend.py`: source-request adapter retained for numerical reference harnesses, with compatibility exports for worker utilities.
-- `src/blab/solvers/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, backend dispatch, drive calculation.
-- `src/blab/solvers/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
-- `src/blab/solvers/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
-- `src/blab/solvers/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
-- `src/blab/solvers/julia_local/src/BeatEngineRocm.jl`: include hub for the ROCm implementation files.
+- `src/beat_engine/julia_local/solver.jl`: request handling, mesh/radiator setup, frequency loop, backend dispatch, drive calculation.
+- `src/beat_engine/julia_local/src/BeatEngineCore.jl`: mesh representation, shared quadrature/formulation code, Burton-Miller solve, field evaluation interfaces.
+- `src/beat_engine/julia_local/src/BeatEngineCpu.jl`: include hub for the CPU implementation files.
+- `src/beat_engine/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
+- `src/beat_engine/julia_local/src/BeatEngineRocm.jl`: include hub for the ROCm implementation files.

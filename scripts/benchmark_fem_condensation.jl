@@ -1,30 +1,12 @@
 using CUDA, CUDSS, LinearAlgebra, SparseArrays
 
-include(
-    joinpath(
-        @__DIR__,
-        "..",
-        "src",
-        "blab",
-        "solvers",
-        "julia_local",
-        "src",
-        "BeatEngineCore.jl",
-    ),
-)
+# Run with the installed BEAT CUDA project selected by --project.
+beat_project = dirname(Base.active_project())
+beat_project = joinpath(dirname(beat_project), "julia_local")
+
+include(joinpath(beat_project, "src", "BeatEngineCore.jl"))
 using .BeatEngineCore
-include(
-    joinpath(
-        @__DIR__,
-        "..",
-        "src",
-        "blab",
-        "solvers",
-        "julia_local",
-        "src",
-        "BeatEngineCoupled.jl",
-    ),
-)
+include(joinpath(beat_project, "src", "BeatEngineCoupled.jl"))
 using .BeatEngineCoupled
 
 function timed(action, label)
@@ -57,7 +39,7 @@ interface_tag = physical_tag(mesh, 2, "INTERFACE")
 interface_faces = findall(==(interface_tag), mesh.boundary_physical_tags)
 interface_nodes = sort(unique(vcat([collect(mesh.boundary_faces[index]) for index in interface_faces]...)))
 interface_set = Set(interface_nodes)
-interior_nodes = [index for index in eachindex(mesh.vertices) if index ∉ interface_set]
+interior_nodes = [index for index in eachindex(mesh.vertices) if index âˆ‰ interface_set]
 wavenumber = Float32(2pi) * frequency_hz / Float32(343)
 fem_system = stiffness - wavenumber^2 .* mass
 interior_system = fem_system[interior_nodes, interior_nodes]

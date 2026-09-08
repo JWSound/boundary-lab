@@ -7,8 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-
-from blab.solvers.beat_worker import WorkerPool, WorkerProcess
+from beat_engine.worker import WorkerPool, WorkerProcess
 
 
 @pytest.fixture
@@ -117,30 +116,6 @@ def test_pool_keys_include_runtime_environment_and_shutdown_releases_workers(wor
         assert pool.get_worker(**options(worker_script, environment=env)) is not first
     finally:
         pool.shutdown()
-
-
-def test_transport_loads_without_any_application_or_third_party_imports():
-    script = Path(__file__).resolve().parents[1] / "src/blab/solvers/beat_worker.py"
-    code = """
-import importlib.abc
-import importlib.util
-import sys
-
-class StandardLibraryOnly(importlib.abc.MetaPathFinder):
-    def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] not in sys.stdlib_module_names:
-            raise AssertionError(f'Non-standard-library dependency: {fullname}')
-
-sys.meta_path.insert(0, StandardLibraryOnly())
-spec = importlib.util.spec_from_file_location('standalone_worker', sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-assert module.WorkerPool
-"""
-    process = subprocess.run(
-        [sys.executable, "-I", "-c", code, str(script)], capture_output=True, text=True, timeout=30
-    )
-    assert process.returncode == 0, process.stderr
 
 
 def test_production_imports_do_not_load_source_request_adapter():
