@@ -61,7 +61,7 @@ def test_bundle_relocates_and_deduplicates_assets(prepared, tmp_path):
     [
         lambda job: job.update(version=True),
         lambda job: job.update(version=99),
-        lambda job: job.update(backend_id="beat_unknown"),
+        lambda job: job.update(backend_id="beat_cuda"),
         lambda job: job.update(observation_planes=True),
         lambda job: job["request"].update(cancel_path="C:/private/cancel"),
         lambda job: job["request"]["solver_options"].update(script="malicious.jl"),
@@ -215,7 +215,7 @@ def test_restart_preserves_complete_events_and_marks_interrupted_job(tmp_path):
 def test_gpu_selection_crosses_http_and_routes_to_selected_backend(prepared, http_service):
     service, client = http_service
     service.backends["beat_rocm"] = service.backend
-    client.selected_backend = "beat_rocm"
+    service.backend_policy = "rocm"
     session = client.create_system_session(prepared.request)
     assert len(list(session.solve_stream())) == 1
     assert service.events(session.job_id, 0)[0]["backend_id"] == "beat_rocm"
@@ -223,6 +223,7 @@ def test_gpu_selection_crosses_http_and_routes_to_selected_backend(prepared, htt
 
 def test_unavailable_backend_rejected_before_staging(prepared, http_service):
     service, client = http_service
-    with pytest.raises(RuntimeError, match="not available"):
-        client.call("/v1/jobs", method="POST", data=build_job_bundle(prepared.request, backend_id="beat_cuda"))
+    service.backend_policy = "cuda"
+    with pytest.raises(RuntimeError, match="cannot run this model"):
+        client.call("/v1/jobs", method="POST", data=build_job_bundle(prepared.request))
     assert not list(service.root.iterdir())

@@ -69,14 +69,7 @@ class SystemSolveWorker(QObject):
                 token=os.environ.get(options.get("token_env", "BLAB_SERVER_TOKEN")),
                 ca_file=options.get("ca_file") or None,
             )
-            requested = (
-                "beat_cpu"
-                if self.prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
-                else options.get("backend", "beat_auto")
-            )
-            self.status.emit("Checking server runtimes; observation planes are omitted.")
-            selected = backend.select_backend(requested, stop_requested=lambda: self._stop)
-            self.status.emit(f"Server solver: {selected}")
+            self.status.emit("Connecting to server?")
         else:
             backend = PhysicalSystemProductionBackend(
                 bem_backend=bem_backend,

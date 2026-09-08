@@ -38,7 +38,7 @@ def main():
     )
     environment = os.environ.copy()
     environment["BLAB_REMOTE_TEST_TOKEN"] = secrets.token_urlsafe(32)
-    server_options = ["--token-env", "BLAB_REMOTE_TEST_TOKEN"]
+    server_options = ["--token-env", "BLAB_REMOTE_TEST_TOKEN", "--backend", args.backend.removeprefix("beat_")]
     client_options = ["--server-token-env", "BLAB_REMOTE_TEST_TOKEN"]
     if args.tls_cert:
         server_options += ["--tls-cert", str(args.tls_cert), "--tls-key", str(args.tls_key)]
@@ -103,7 +103,7 @@ def main():
             subprocess.run(
                 cli
                 + ["project", "solve"]
-                + common
+                + [str(args.project), "--request", str(request)]
                 + ["--server-url", url, "--output", str(args.output / "remote")]
                 + client_options,
                 env=environment,

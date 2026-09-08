@@ -18,7 +18,7 @@ In another terminal, validate a physical-system project, then submit it:
 
 ```bash
 python -m blab.cli project validate examples/Simple_Sealed/simple_sealed.blab.json --backend beat_cpu --json
-python -m blab.cli project solve examples/Simple_Sealed/simple_sealed.blab.json --backend beat_cpu --server-url http://127.0.0.1:8765 --output runs/server-result
+python -m blab.cli project solve examples/Simple_Sealed/simple_sealed.blab.json --server-url http://127.0.0.1:8765 --output runs/server-result
 ```
 
 Use a request overlay with `--request request.json` to choose a small frequency
@@ -37,13 +37,13 @@ resampling or observation-plane viewer integration is provided.
 ## Application preferences
 
 In **Preferences → Application**, set **Solver** to **Boundary Lab Server**.
-The Server fields contain the address, server solver (Automatic/CPU/CUDA/ROCm),
+The Server fields contain the address,
 token environment-variable name, and optional trusted PEM certificate path.
 The actual token is never stored in preferences. Set its environment variable
 before launching Boundary Lab; restart the app after changing that environment.
 
 **Check connection** queries capabilities in the background and displays runtime
-availability or the connection error. If a runtime is still checking, check again
+readiness or the connection error. If the server is still starting, check again
 after startup completes. Changing connection fields invalidates the displayed
 status. Local solver choices disable the server fields while preserving their values.
 
@@ -75,7 +75,7 @@ python -m blab.cli server --root runs/server-jobs --host 0.0.0.0 --port 8765 --t
 After setting the token in the client environment:
 
 ```bash
-python -m blab.cli project solve speaker.blab.json --backend beat_cpu --server-url https://solver.example:8765 --server-ca lab-ca.pem --output runs/server-result
+python -m blab.cli project solve speaker.blab.json --server-url https://solver.example:8765 --server-ca lab-ca.pem --output runs/server-result
 ```
 
 Replace `solver.example` with the actual certificate hostname. Omit `--server-ca`
@@ -99,26 +99,28 @@ Prepare accelerator environments on the server with
 the required drivers/SDK. Missing runtimes remain unavailable with a reason; they
 do not prevent use of a working CPU environment.
 
-Choose `--backend beat_cpu`, `beat_cuda`, or `beat_rocm` on the remote solve command.
-Explicit accelerator selection never silently falls back. The default `beat_auto`
-prefers functional **server** CUDA, then server CPU; it does not probe the client's
-GPU. ROCm is explicitly selectable. Pure interior FEM executes on CPU regardless of
-the BEM backend preference, consistent with local execution.
+The client submits models without choosing a backend. The server's default
+`--backend auto` policy prefers available CUDA, then ROCm, then CPU. Operators may
+pin execution using `blab server --backend cpu`, `--backend cuda`, or
+`--backend rocm`; a pinned unavailable runtime fails rather than silently falling
+back. Pure interior FEM always uses the server CPU runtime.
 
-The client waits for discovery before submitting. The server independently rejects
-jobs targeting an unavailable backend before staging mesh assets. Every actual
-solve worker still negotiates compatibility: startup availability does not promise
-that a job fits GPU memory or that a device will remain functional. Result artifacts
-record selected/requested backends and retain the execution worker's provenance.
+Preferences shows only connection readiness, not hardware capabilities. The
+client waits for server startup, and the server chooses a runtime for each model
+before staging assets. Actual workers still negotiate compatibility for every
+job. Backend availability does not guarantee that a model fits device memory.
+Result artifacts retain the actual execution backend and worker provenance.
+The CLI's `--backend` option is for local solves; omit it with `--server-url`.
 
 ## Remote job contract
 
 The upload is a ZIP archive containing `job.json` and `assets/<sha256>.msh` files.
-The envelope identifies `protocol: blab-remote`, integer `version: 1`,
-an explicit `backend_id` (`beat_cpu`, `beat_cuda`, or `beat_rocm`),
+The envelope identifies `protocol: blab-remote`, integer `version: 2`,
+no client backend selector,
 `observation_planes: false`, the existing engine-defined
 solve request, and an asset manifest with sizes and SHA-256 hashes. This service
-version is independent of the engine request/result versions.
+version is independent of the engine request/result versions. Older clients
+are rejected during negotiation; update client and server together.
 
 Mesh file references in the submitted compiled system are manifest asset names.
 The server checks versions, hashes, archive membership, upload/expanded size
@@ -177,7 +179,9 @@ python scripts/check_remote_integration.py --project examples/compression_driver
 The exterior fixture derives from BEAT's example request and uses the existing
 test mesh. Interior qualification retains nodal pressure without exterior probes.
 These checks establish transport parity, not a broad numerical accuracy benchmark.
-Add `--backend beat_cuda` or `--backend beat_rocm` to qualify an available GPU.
+The qualification script accepts `--backend beat_cuda` or `--backend beat_rocm`
+to configure both its local reference and the server policy; the remote client
+still sends no backend choice.
 GPU and actual cross-machine deployment qualification require the corresponding
 hardware and network; mocked routing tests alone do not qualify numerical execution.
 

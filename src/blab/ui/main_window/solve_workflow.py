@@ -254,7 +254,6 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "backend": preferences.solve_server_backend,
                     "token_env": preferences.solve_server_token_env,
                     "ca_file": preferences.solve_server_ca,
                 },
@@ -328,7 +327,6 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "backend": preferences.solve_server_backend,
                     "token_env": preferences.solve_server_token_env,
                     "ca_file": preferences.solve_server_ca,
                 },
@@ -361,7 +359,6 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "backend": preferences.solve_server_backend,
                     "token_env": preferences.solve_server_token_env,
                     "ca_file": preferences.solve_server_ca,
                 },

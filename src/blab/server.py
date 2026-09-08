@@ -29,11 +29,12 @@ from blab.system_contract import system_frequency_result_to_dict
 class SolveService:
     """One active job, disk-backed events, and independent client connections."""
 
-    def __init__(self, root: Path, *, backend=None, backends=None, discover=False):
+    def __init__(self, root: Path, *, backend=None, backends=None, discover=False, backend_policy="auto"):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.backend = backend or PhysicalSystemProductionBackend(bem_backend="cpu")
         self.backends = backends or {"beat_cpu": self.backend}
+        self.backend_policy = backend_policy
         self.discovery = BackendDiscovery(self.backends) if discover else None
         self.busy = threading.Lock()
         self.lock = threading.RLock()
@@ -61,6 +62,37 @@ class SolveService:
             else {key: {"available": True, "state": "ready"} for key in self.backends}
         )
 
+    def readiness(self):
+        records = self.capabilities()
+        if any(item.get("state") == "checking" for item in records.values()):
+            return "starting"
+        # CPU can still serve interior FEM when the pinned BEM runtime is unavailable.
+        candidates = list(records) if self.backend_policy == "auto" else ["beat_" + self.backend_policy, "beat_cpu"]
+        return "ready" if any(records.get(key, {}).get("available") for key in candidates) else "unavailable"
+
+    def select_backend(self, request):
+        from blab.physical_model import AcousticRegionKind
+
+        interior = not any(
+            region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in request.compiled_system.regions
+        )
+        candidates = (
+            ["beat_cpu"]
+            if interior
+            else (
+                ["beat_cuda", "beat_rocm", "beat_cpu"]
+                if self.backend_policy == "auto"
+                else ["beat_" + self.backend_policy]
+            )
+        )
+        records = self.capabilities()
+        for key in candidates:
+            if records.get(key, {}).get("state") == "checking":
+                raise ValueError("Server is still starting. Try again shortly.")
+            if records.get(key, {}).get("available"):
+                return key
+        raise ValueError("The server cannot run this model with its configured solver. Contact the server operator.")
+
     def events(self, job_id, cursor, *, limit=32):
         directory = self.root / job_id
         if not re.fullmatch(r"[0-9a-f]{32}", job_id) or not directory.is_dir():
@@ -79,8 +111,7 @@ class SolveService:
             raise BlockingIOError("A solve is already active; retry after it finishes.")
         try:
             job_id = uuid.uuid4().hex
-            available = {key for key, record in self.capabilities().items() if record["available"]}
-            request, backend_id = stage_remote_job(bundle, self.root / job_id, available_backends=available)
+            request, backend_id = stage_remote_job(bundle, self.root / job_id, select_backend=self.select_backend)
             request = replace(
                 request, status_callback=lambda message: self.append(job_id, {"type": "status", "message": message})
             )
@@ -190,6 +221,7 @@ def create_http_server(
                         {
                             "protocol": "blab-remote",
                             "version": REMOTE_VERSION,
+                            "state": service.readiness(),
                             "request_schema_version": SYSTEM_SOLVE_REQUEST_VERSION,
                             "result_schema_version": SYSTEM_RESULT_VERSION,
                             "backend_ids": [
@@ -261,6 +293,12 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
         "--root", type=Path, required=True, help="Dedicated directory for job assets and retained events"
     )
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument(
+        "--backend",
+        choices=("auto", "cpu", "cuda", "rocm"),
+        default="auto",
+        help="Server execution policy; auto prefers CUDA, ROCm, then CPU",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(
         "--token-env", default="BLAB_SERVER_TOKEN", help="Environment variable holding the shared server token"
@@ -286,7 +324,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
         )
         for key in REMOTE_BACKENDS
     }
-    service = SolveService(args.root, backends=backends, discover=True)
+    service = SolveService(args.root, backends=backends, discover=True, backend_policy=args.backend)
     server = create_http_server(
         service, args.port, host=args.host, token=os.environ.get(args.token_env), tls_context=context
     )

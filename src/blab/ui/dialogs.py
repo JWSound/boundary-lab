@@ -448,7 +448,6 @@ class PreferencesDialog(QDialog):
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.server_preferences.url.text().strip(),
-            solve_server_backend=self.server_preferences.backend.currentData(),
             solve_server_token_env=self.server_preferences.token_env.text().strip(),
             solve_server_ca=self.server_preferences.ca.text().strip(),
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),

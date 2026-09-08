@@ -23,7 +23,7 @@ class RemoteBackend:
     backend_id = "beat_remote"
     label = "Boundary Lab Server"
 
-    def __init__(self, url, *, token=None, ca_file=None, backend_id="beat_cpu"):
+    def __init__(self, url, *, token=None, ca_file=None):
         parsed = urlsplit(url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -41,7 +41,6 @@ class RemoteBackend:
             raise ValueError("Server token must be ASCII without whitespace.")
         self.url = url.rstrip("/")
         self.token = token
-        self.selected_backend = backend_id
         context = ssl.create_default_context(cafile=ca_file)
         self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
 
@@ -69,34 +68,23 @@ class RemoteBackend:
             raise ValueError("Incompatible remote server contract versions.")
         return info
 
-    def select_backend(self, requested="beat_auto", *, timeout=150, stop_requested=None):
-        candidates = ["beat_cuda", "beat_cpu"] if requested == "beat_auto" else [requested]
-        if any(key not in {"beat_cpu", "beat_cuda", "beat_rocm"} for key in candidates):
-            raise ValueError("Unknown remote backend.")
+    def wait_ready(self, *, timeout=150, stop_requested=None):
         deadline = time.monotonic() + timeout
         while True:
             if stop_requested is not None and stop_requested():
-                raise InterruptedError("Remote backend selection cancelled.")
+                raise InterruptedError("Connection cancelled.")
             info = self.check_capabilities()
-            records = info.get("backends", {})
-            checking = False
-            for key in candidates:
-                record = records.get(key, {"available": key in info.get("backend_ids", [])})
-                if record.get("state") == "checking":
-                    checking = True
-                    break
-                if record.get("available") is True:
-                    self.selected_backend = key
-                    return key
-            if not checking:
-                reasons = "; ".join(f"{key}: {records.get(key, {}).get('reason', 'unavailable')}" for key in candidates)
-                raise ValueError(f"Requested remote backend unavailable: {reasons}")
+            state = info.get("state", "ready")
+            if state == "ready":
+                return
+            if state != "starting":
+                raise ValueError("The server is not ready to solve. Contact the server operator.")
             if time.monotonic() >= deadline:
-                raise TimeoutError("Server backend discovery timed out.")
+                raise TimeoutError("The server is still starting. Try again shortly.")
             time.sleep(0.25)
 
     def create_system_session(self, request):
-        self.select_backend(self.selected_backend)
+        self.check_capabilities()
         return RemoteSession(self, request)
 
 
@@ -106,6 +94,7 @@ class RemoteSession:
         self.request = request
         self.job_id = None
         self.worker_provenance = None
+        self.selected_backend = None
         self._stop = False
         self._terminal = False
         self.metadata = SystemSolveMetadata(
@@ -118,9 +107,8 @@ class RemoteSession:
     def solve_stream(self, *, stop_requested=None):
         if self._stop:
             return
-        self.job_id = self.backend.call(
-            "/v1/jobs", data=build_job_bundle(self.request, backend_id=self.backend.selected_backend), method="POST"
-        )["job_id"]
+        self.backend.wait_ready(stop_requested=lambda: self._stop or (stop_requested is not None and stop_requested()))
+        self.job_id = self.backend.call("/v1/jobs", data=build_job_bundle(self.request), method="POST")["job_id"]
         callback = self.request.status_callback or (lambda _message: None)
         callback(f"Remote job: {self.job_id}")
         cursor = 0
@@ -132,7 +120,9 @@ class RemoteSession:
             cursor = reply["next_cursor"]
             for event in reply["events"]:
                 kind = event["type"]
-                if kind == "result":
+                if kind == "accepted":
+                    self.selected_backend = event["backend_id"]
+                elif kind == "result":
                     yield system_frequency_result_from_dict(event["result"])
                 elif kind == "status":
                     callback(event["message"])

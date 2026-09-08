@@ -220,16 +220,14 @@ def _solve(args: argparse.Namespace) -> None:
     spec = load_headless_solve_spec(args.request)
     remote_backend = None
     if args.server_url:
-        from blab.physical_model import PhysicalSolveKind, infer_physical_solve_kind
         from blab.remote import RemoteBackend
 
         remote_backend = RemoteBackend(
             args.server_url, token=os.environ.get(args.server_token_env), ca_file=args.server_ca
         )
-        requested = args.backend
-        if infer_physical_solve_kind(project.physical_system) == PhysicalSolveKind.INTERIOR_FEM:
-            requested = "beat_cpu"
-        backend_id = remote_backend.select_backend(requested)
+        if args.backend != HEADLESS_BACKEND_AUTO:
+            raise ValueError("The server selects its solver. Omit --backend for remote solves.")
+        backend_id = "beat_remote"
     else:
         backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
     prepared = prepare_headless_solve(
@@ -258,7 +256,7 @@ def _solve(args: argparse.Namespace) -> None:
         emit(
             {
                 "event": "status",
-                "message": f"Remote {backend_id}: observation planes are omitted; polar and balloon settings are preserved.",
+                "message": "Connecting to server?",
             }
         )
     summary = run_headless_solve(

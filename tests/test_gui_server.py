@@ -14,18 +14,18 @@ from blab.ui.system_solve import SystemSolveWorker
 def test_preferences_server_fields_round_trip(qapp):
     preferences = GuiPreferences(
         solve_backend="beat_remote",
-        solve_server_backend="beat_rocm",
         solve_server_url="https://solver.example:8765",
         solve_server_token_env="LAB_TOKEN",
         solve_server_ca="lab.pem",
     )
     dialog = PreferencesDialog(preferences)
     assert dialog.server_preferences.isEnabled()
+    assert not hasattr(dialog.server_preferences, "backend")
+    assert not dialog.server_preferences.status.text()
     saved = dialog.preferences()
     for name in (
         "solve_backend",
         "solve_server_url",
-        "solve_server_backend",
         "solve_server_token_env",
         "solve_server_ca",
     ):
@@ -38,9 +38,9 @@ def test_preferences_server_fields_round_trip(qapp):
 
 def test_remote_settings_invalidate_only_remote_solves():
     local = GuiPreferences()
-    assert not preferences_require_solve_invalidation(local, replace(local, solve_server_backend="beat_cuda"))
+    assert not preferences_require_solve_invalidation(local, replace(local, solve_server_url="https://changed.example"))
     remote = replace(local, solve_backend="beat_remote")
-    assert preferences_require_solve_invalidation(remote, replace(remote, solve_server_backend="beat_cuda"))
+    assert preferences_require_solve_invalidation(remote, replace(remote, solve_server_url="https://changed.example"))
 
 
 def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
@@ -87,7 +87,7 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
     worker.result_ready.connect(live.append)
     worker.run()
     assert not errors
-    assert calls == ["beat_cuda"]
+    assert calls == []
     assert len(results) == len(live) == 1
     assert results[0].diagnostics["engine_provenance"]["engine"]["version"] == "test"
     np.testing.assert_array_equal(live[0].horizontal_pressure, 1 + 2j)
@@ -112,20 +112,20 @@ def test_saved_server_settings_exclude_token_value(qapp, tmp_path, monkeypatch):
     monkeypatch.setenv("LAB_TOKEN", "secret-value-not-for-settings")
     path = tmp_path / "preferences.ini"
     settings = QSettings(str(path), QSettings.IniFormat)
+    settings.setValue("preferences/solve_server_backend", "beat_rocm")
     original = GuiPreferences(
         solve_backend="beat_remote",
         solve_server_url="https://lab.example",
         solve_server_token_env="LAB_TOKEN",
         solve_server_ca="lab.pem",
-        solve_server_backend="beat_rocm",
     )
     save_gui_preferences(settings, original)
+    assert not settings.contains("preferences/solve_server_backend")
     settings.sync()
     loaded = load_gui_preferences(settings)
     for field in (
         "solve_backend",
         "solve_server_url",
-        "solve_server_backend",
         "solve_server_ca",
         "solve_server_token_env",
     ):
@@ -167,5 +167,5 @@ def test_connection_check_runs_off_ui_thread(qapp, monkeypatch):
         QTest.qWait(50)
         if widget.check.isEnabled():
             break
-    assert "CPU: available" in widget.status.text()
+    assert "Connected. Ready to solve." in widget.status.text()
     dialog.close()

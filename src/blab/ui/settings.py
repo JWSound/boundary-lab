@@ -46,7 +46,6 @@ class GuiPreferences:
     theme: str = "system"
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
-    solve_server_backend: str = "beat_auto"
     solve_server_token_env: str = "BLAB_SERVER_TOKEN"
     solve_server_ca: str = ""
     live_plot_streaming: bool = True
@@ -74,7 +73,6 @@ class GuiPreferences:
 SOLVE_AFFECTING_PREFERENCE_FIELDS = (
     "solve_backend",
     "solve_server_url",
-    "solve_server_backend",
     "solve_server_token_env",
     "solve_server_ca",
     "gmres_tolerance",
@@ -169,7 +167,6 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
         solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
-        solve_server_backend=settings_str(settings, "preferences/solve_server_backend", defaults.solve_server_backend),
         solve_server_token_env=settings_str(
             settings, "preferences/solve_server_token_env", defaults.solve_server_token_env
         ),
@@ -264,7 +261,8 @@ def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> No
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
-    settings.setValue("preferences/solve_server_backend", preferences.solve_server_backend)
+    if settings.contains("preferences/solve_server_backend"):
+        settings.remove("preferences/solve_server_backend")
     settings.setValue("preferences/solve_server_token_env", preferences.solve_server_token_env)
     settings.setValue("preferences/solve_server_ca", preferences.solve_server_ca)
     settings.setValue("preferences/live_plot_streaming", preferences.live_plot_streaming)

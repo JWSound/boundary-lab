@@ -40,34 +40,51 @@ def test_discovery_uses_worker_availability_and_preserves_failure_reason(monkeyp
 
 
 @pytest.mark.parametrize(
-    "requested,available,expected",
+    "policy,available,expected",
     [
-        ("beat_auto", ["beat_cuda", "beat_cpu"], "beat_cuda"),
-        ("beat_auto", ["beat_cpu", "beat_rocm"], "beat_cpu"),
-        ("beat_rocm", ["beat_rocm"], "beat_rocm"),
+        ("auto", ["beat_cuda", "beat_cpu"], "beat_cuda"),
+        ("auto", ["beat_cpu", "beat_rocm"], "beat_rocm"),
+        ("rocm", ["beat_rocm"], "beat_rocm"),
     ],
 )
-def test_remote_selection_uses_server_status(monkeypatch, requested, available, expected):
-    client = RemoteBackend("http://127.0.0.1:8765")
-    monkeypatch.setattr(client, "check_capabilities", lambda: {"backend_ids": available})
-    assert client.select_backend(requested) == expected
+def test_server_owns_selection(tmp_path, policy, available, expected):
+    from blab.physical_model import AcousticRegionKind
+    from blab.server import SolveService
 
-
-def test_explicit_gpu_does_not_fall_back(monkeypatch):
-    client = RemoteBackend("http://127.0.0.1:8765")
-    monkeypatch.setattr(
-        client,
-        "check_capabilities",
-        lambda: {
-            "backends": {"beat_cpu": {"available": True}, "beat_cuda": {"available": False, "reason": "No CUDA device"}}
-        },
+    service = SolveService(tmp_path, backends={key: object() for key in available}, backend_policy=policy)
+    request = SimpleNamespace(
+        compiled_system=SimpleNamespace(regions=[SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR)])
     )
-    with pytest.raises(ValueError, match="No CUDA device"):
-        client.select_backend("beat_cuda")
+    assert service.select_backend(request) == expected
 
 
-def test_pending_discovery_has_bounded_wait(monkeypatch):
+def test_server_forces_interior_fem_to_cpu(tmp_path):
+    from blab.server import SolveService
+
+    service = SolveService(tmp_path, backends={"beat_cpu": object(), "beat_cuda": object()}, backend_policy="cuda")
+    request = SimpleNamespace(compiled_system=SimpleNamespace(regions=[]))
+    assert service.select_backend(request) == "beat_cpu"
+    service.backends.pop("beat_cuda")
+    assert service.readiness() == "ready"
+    assert service.select_backend(request) == "beat_cpu"
+
+
+def test_server_pinned_gpu_does_not_fall_back(tmp_path):
+    from blab.physical_model import AcousticRegionKind
+    from blab.server import SolveService
+
+    service = SolveService(tmp_path, backend=object(), backend_policy="cuda")
+    request = SimpleNamespace(
+        compiled_system=SimpleNamespace(regions=[SimpleNamespace(kind=AcousticRegionKind.UNBOUNDED_AIR)])
+    )
+    with pytest.raises(ValueError, match="cannot run"):
+        service.select_backend(request)
+
+
+def test_client_waits_on_readiness_without_hardware_selection(monkeypatch):
     client = RemoteBackend("http://127.0.0.1:8765")
-    monkeypatch.setattr(client, "check_capabilities", lambda: {"backends": {"beat_cpu": {"state": "checking"}}})
+    monkeypatch.setattr(client, "check_capabilities", lambda: {"state": "starting"})
     with pytest.raises(TimeoutError):
-        client.select_backend("beat_cpu", timeout=0)
+        client.wait_ready(timeout=0)
+    monkeypatch.setattr(client, "check_capabilities", lambda: {"state": "ready"})
+    assert client.wait_ready() is None

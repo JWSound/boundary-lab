@@ -30,6 +30,9 @@ class MemorySettings:
     def setValue(self, key: str, value: object) -> None:
         self.values[key] = value
 
+    def remove(self, key: str) -> None:
+        self.values.pop(key, None)
+
 
 def test_live_plot_quality_sample_mapping() -> None:
     assert normalize_live_plot_quality("LOW") == "low"

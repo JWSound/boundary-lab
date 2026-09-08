@@ -538,6 +538,8 @@ def run_headless_solve(
         raise
     writer.manifest["remote_job_id"] = getattr(session, "job_id", None)
     writer.manifest["worker"] = getattr(session, "worker_provenance", None)
+    if getattr(session, "selected_backend", None):
+        writer.manifest["backend_id"] = session.selected_backend
     if not all(writer.completion):
         writer.finish(status="failed", error="Solver ended without all requested frequencies.")
         raise RuntimeError("Solver ended without all requested frequencies.")
