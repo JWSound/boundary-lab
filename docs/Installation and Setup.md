@@ -32,6 +32,19 @@ The installer creates `.venv`, installs or repairs Boundary Lab and its GUI
 dependencies, and validates the `blab` command. When run from an existing Git
 checkout, it can optionally pull a fast-forward update from `origin/main`.
 
+For a development checkout on `dev`, decline that `origin/main` update prompt
+and update `dev` separately. Installation and repair then use the current checkout.
+
+Installing Boundary Lab also downloads its pinned BEAT Engine wheel from GitHub
+and verifies the declared SHA-256. No separate BEAT checkout or manual wheel
+download is needed. The optional solver prompts prepare Julia dependencies;
+they do not control whether the BEAT Python package is installed.
+
+The installer discovers numerical asset paths inside `.venv` through BEAT's
+`engine_paths()` API. Old commands pointing into `src/blab/solvers/julia_local`,
+`julia_cuda`, or `julia_rocm` no longer apply. See
+[BEAT dependency setup](BEAT%20Local%20Dependency.md) for manual updates.
+
 The launcher remembers an NVIDIA GPU selection when more than one is
 available. To select again, run this from Command Prompt in the repository:
 
@@ -184,10 +197,12 @@ override.
 ### BEAT Engine CPU
 
 Install [Julia](https://julialang.org/downloads/) and make `julia` available on
-`PATH`. Prepare the CPU project from the repository root:
+`PATH`. After installing Boundary Lab, activate its Python environment and prepare
+the installed CPU project:
 
 ```bash
 python -m beat_engine instantiate --backend cpu
+python -m beat_engine doctor --backend cpu --threads 2
 ```
 
 The CPU backend supports Intel, AMD, and ARM processors. Runtime depends heavily
@@ -201,8 +216,12 @@ then install Julia and prepare the CUDA project:
 
 ```bash
 python -m beat_engine instantiate --backend cuda
-julia --project="<CUDA project from python -m beat_engine paths --backend cuda>" -e "using CUDA; CUDA.functional() || error(\"CUDA is not functional\"); CUDA.versioninfo()"
+python -m beat_engine doctor --backend cuda --threads 2
 ```
+
+Inspect the doctor's `backends.cuda.available` field and any reported reason.
+The doctor prints capability information; a successful process exit alone does
+not establish that CUDA is available.
 
 On WSL2, use an NVIDIA Windows driver with WSL CUDA support. Do not install a
 second Linux display driver inside WSL.

@@ -24,19 +24,16 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 1. Double-click `01_install_update_boundary-lab.bat` in the repository folder.
 2. Follow the guided prompts. The installer creates the Python environment and
-   can optionally prepare the Julia BEAT Engine CPU and NVIDIA CUDA solvers.
+   installs the BEAT Engine solver and can optionally prepare its Julia
+   CPU, NVIDIA CUDA, and AMD ROCm environments.
 3. If the installer adds Git, Python, or Julia, close it and run it again when
    instructed so Windows can refresh the available commands.
 4. Double-click `02_start_boundary_lab.bat` to launch Boundary Lab.
 
-While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://github.com/JWSound/fusiontomsh) add-in is strongly recommended for quick imports of models into Boundary Lab.
 
 ## Solver Requirements
 
-Boundary Lab uses BEAT Engine CPU, Nvidia CUDA, or AMD ROCm for all physical-system
-solves. New GUI installations and saved legacy backend preferences use BEAT CPU.
-The headless CLI defaults to functional CUDA with CPU fallback. Bempp and OpenCL
-are no longer required.
+Boundary Lab uses BEAT Engine for numerical solving of exterior, interior, or coupled systems. BEAT Engine is an open-source acoustic solver platform written in Julia that is downloaded automatically as a pinned package as part of Boundary Lab. See [BEAT dependency setup](docs/BEAT%20Local%20Dependency.md) for updates and contributor overrides.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -50,19 +47,19 @@ To prepare the Julia environment, from the repository root run:
 python -m beat_engine instantiate --backend cuda
 ```
 
+### BEAT Engine ROCm GPU Solver Requirements
 
-GPU solving VRAM requirements scale quadratically with mesh element count. Below are estimated VRAM requirements for various element counts:
+* AMD GPU supported by the installed ROCm/HIP SDK and operating system; check AMD's [Windows support matrix](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/shared/hipsdk/reference/system-requirements.html) or [Linux compatibility matrix](https://rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html)
+* Compatible AMD GPU driver and ROCm installation (HIP SDK on Windows), including rocBLAS and rocSOLVER
+* [Julia](https://julialang.org/downloads/manual-downloads/) installed and available on `PATH`
 
-| Total Elements | Estimated VRAM |
-|---:|---:|
-| 1,000 | ~50-100 MB |
-| 2,000 | ~200-300 MB |
-| 3,000 | ~400-600 MB |
-| 5,000 | ~1.0-1.5 GB |
-| 7,000 | ~2.0-3.0 GB |
-| 10,000 | ~4-6 GB |
-| 15,000 | ~8-12 GB |
-| 20,000 | ~14-20 GB |
+To prepare the Julia environment, from the repository root with Boundary Lab's Python environment activated, run:
+
+```bash
+python -m beat_engine instantiate --backend rocm
+```
+
+The Windows installer can detect an existing AMD SDK and prepare the ROCm environment. See [BEAT Engine AMD ROCm setup](docs/advanced/beat-engine-rocm.md) for SDK configuration and runtime verification.
 
 ### BEAT Engine CPU Solver Requirements
 
@@ -74,6 +71,22 @@ To prepare the Julia environment, from the repository root run:
 ```bash
 python -m beat_engine instantiate --backend cpu
 ```
+
+##
+
+GPU solving VRAM requirements scale quadratically with mesh element count for exterior BEM solving. Below are estimated VRAM requirements for various element counts:
+
+| Total BEM Elements | Estimated VRAM |
+|---:|---:|
+| 1,000 | ~50-100 MB |
+| 2,000 | ~200-300 MB |
+| 3,000 | ~400-600 MB |
+| 5,000 | ~1.0-1.5 GB |
+| 7,000 | ~2.0-3.0 GB |
+| 10,000 | ~4-6 GB |
+| 15,000 | ~8-12 GB |
+| 20,000 | ~14-20 GB |
+
 
 ## Application Installation
 
@@ -97,6 +110,7 @@ Boundary lab deploy is an interactive advanced array simulation tool that ingest
 
 - [BEAT Engine extraction milestones](docs/BEAT%20Engine%20Extraction.md)
 - [Installation and Setup](docs/Installation%20and%20Setup.md)
+- [BEAT dependency setup](docs/BEAT%20Local%20Dependency.md)
 - [User Guide](docs/User%20Guide.md)
 - [Physical System Model](docs/Physical%20System%20Model.md)
 - [Interior FEM Solver](docs/Interior%20FEM%20Solver.md)
