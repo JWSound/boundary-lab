@@ -233,9 +233,14 @@ completed.
 
 ## Legacy Mesh Workflow
 
-The source-model `blab solve` command and `blab server` are retired. Use the
+The source-model `blab solve` command and legacy server protocol are retired. Use the
 headless project workflow above for new solves. Mesh cleaning and the
 `blab prepare` / `blab plot` commands remain available for historical result files.
+
+An experimental physical-system CPU server is available through `blab server` and
+`blab project solve --server-url http://127.0.0.1:8765`. This first milestone is
+localhost-only and omits observation planes. See [server setup and the remote job
+contract](../Boundary%20Lab%20Server.md).
 
 ## Clean A Mesh
 

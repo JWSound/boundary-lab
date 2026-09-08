@@ -69,6 +69,9 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     solve.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     solve.add_argument("--output", type=Path, help="New result directory; defaults below the project runs directory")
     solve.add_argument(
+        "--server-url", help="Experimental CPU server base URL (localhost only; omits observation planes)"
+    )
+    solve.add_argument(
         "--events",
         choices=("text", "ndjson"),
         default="text",
@@ -213,8 +216,23 @@ def _validate(args: argparse.Namespace) -> None:
 def _solve(args: argparse.Namespace) -> None:
     project = load_headless_project(args.project_file)
     spec = load_headless_solve_spec(args.request)
-    backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
-    prepared = prepare_headless_solve(project, spec, backend_id=backend_id)
+    remote_backend = None
+    if args.server_url:
+        from blab.remote import RemoteBackend
+
+        if args.backend not in {HEADLESS_BACKEND_AUTO, "beat_cpu"}:
+            raise ValueError("The remote preview supports --backend beat_cpu only.")
+        remote_backend = RemoteBackend(args.server_url)
+        remote_backend.check_capabilities()
+        backend_id = "beat_cpu"
+    else:
+        backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
+    prepared = prepare_headless_solve(
+        project,
+        spec,
+        backend_id=backend_id,
+        include_observation_planes=remote_backend is None,
+    )
     output = args.output or default_result_path(project.path)
 
     def emit(event: dict[str, Any]) -> None:
@@ -231,15 +249,24 @@ def _solve(args: argparse.Namespace) -> None:
         elif event_name in {"status", "failed", "interrupted"}:
             print(str(event.get("message", event_name)), file=sys.stderr, flush=True)
 
+    if remote_backend is not None:
+        emit(
+            {
+                "event": "status",
+                "message": "Remote CPU preview: observation planes are omitted; polar and balloon settings are preserved.",
+            }
+        )
     summary = run_headless_solve(
         project,
         prepared,
         output_dir=output,
         backend_id=backend_id,
-        public_request=spec.raw or {"schema_version": 1},
+        public_request=(spec.raw or {"schema_version": 1})
+        | ({"remote": {"observation_planes": False, "backend_id": "beat_cpu"}} if remote_backend else {}),
         julia_executable=args.julia_executable,
         julia_threads=args.julia_threads,
         event_callback=emit,
+        backend=remote_backend,
     )
     if args.events == "text":
         print(json.dumps(summary, indent=2, sort_keys=True))

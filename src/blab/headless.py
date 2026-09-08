@@ -206,6 +206,7 @@ def prepare_headless_solve(
     spec: HeadlessSolveSpec,
     *,
     backend_id: str,
+    include_observation_planes: bool = True,
 ) -> SystemUiSolveRequest:
     """Build and validate a canonical system request from a project and overlay."""
 
@@ -224,7 +225,11 @@ def prepare_headless_solve(
         component_channel_by_id=project.component_channel_by_id,
         backend_id=backend_id,
         symmetry_mode=project.symmetry,
-        observation_planes=observation_planes_from_payload(project.payload.get("observation_planes")),
+        observation_planes=(
+            observation_planes_from_payload(project.payload.get("observation_planes"))
+            if include_observation_planes
+            else ()
+        ),
     )
     if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM and spec.probes:
         raise ValueError(
@@ -471,6 +476,7 @@ def run_headless_solve(
     julia_executable: str = "julia",
     julia_threads: str | int | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    backend=None,
 ) -> dict[str, Any]:
     emit = event_callback or (lambda _event: None)
     writer = HeadlessResultWriter(
@@ -491,7 +497,7 @@ def run_headless_solve(
     )
     session = None
     try:
-        backend = PhysicalSystemProductionBackend(
+        backend = backend or PhysicalSystemProductionBackend(
             bem_backend=backend_id.removeprefix("beat_"),
             julia_executable=julia_executable,
             julia_threads=julia_threads,
@@ -515,6 +521,7 @@ def run_headless_solve(
                 }
             )
     except KeyboardInterrupt:
+        writer.manifest["remote_job_id"] = getattr(session, "job_id", None)
         writer.manifest["worker"] = getattr(session, "worker_provenance", None)
         if session is not None:
             session.stop()
@@ -522,13 +529,18 @@ def run_headless_solve(
         emit({"event": "interrupted", "solved_count": solved_count})
         raise
     except Exception as exc:
+        writer.manifest["remote_job_id"] = getattr(session, "job_id", None)
         writer.manifest["worker"] = getattr(session, "worker_provenance", None)
         if session is not None:
             session.stop()
         writer.finish(status="failed", error=str(exc))
         emit({"event": "failed", "message": str(exc), "solved_count": solved_count})
         raise
+    writer.manifest["remote_job_id"] = getattr(session, "job_id", None)
     writer.manifest["worker"] = getattr(session, "worker_provenance", None)
+    if not all(writer.completion):
+        writer.finish(status="failed", error="Solver ended without all requested frequencies.")
+        raise RuntimeError("Solver ended without all requested frequencies.")
     writer.finish(status="complete")
     summary = {
         "event": "completed",

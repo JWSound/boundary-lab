@@ -36,14 +36,22 @@ def test_cli_exposes_rocm_configuration() -> None:
     assert cli.COMMAND_MODULES["rocm"] == "blab.rocm"
 
 
-def test_retired_solve_commands_explain_physical_project_workflow() -> None:
+def test_retired_solve_command_explains_physical_project_workflow() -> None:
+    import pytest
+
+    with pytest.raises(SystemExit, match="retired.*blab project validate.*blab project solve"):
+        solver.main([])
+
+
+def test_server_help_describes_physical_cpu_preview(capsys):
     import pytest
 
     from blab import server
 
-    for module in (solver, server):
-        with pytest.raises(SystemExit, match="retired.*blab project validate.*blab project solve"):
-            module.main([])
+    with pytest.raises(SystemExit) as exc:
+        server.main(["--help"])
+    assert exc.value.code == 0
+    assert "localhost only" in capsys.readouterr().out
 
 
 def test_postprocess_public_options_are_trimmed() -> None:
