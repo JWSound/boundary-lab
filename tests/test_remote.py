@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import threading
 import zipfile
 from dataclasses import replace
@@ -176,6 +177,52 @@ def test_http_complex_results_and_replay_after_service_restart(prepared, http_se
     assert replay.events(session.job_id, 0)[-1]["type"] == "completed"
 
 
+def test_connection_test_is_logged_but_readiness_polling_is_quiet(http_service, caplog):
+    _service, client = http_service
+    caplog.set_level(logging.INFO, logger="blab.server")
+    client.check_capabilities()
+    client.wait_ready()
+    client.call("/v1/capabilities")  # Container health check.
+    messages = [record.getMessage() for record in caplog.records if record.name == "blab.server"]
+    assert len(messages) == 1
+    assert "Client connection test received" in messages[0]
+
+
+def test_server_logs_lifecycle_and_client_retains_only_result_progress(prepared, http_service, caplog):
+    service, client = http_service
+    caplog.set_level(logging.INFO, logger="blab.server")
+    messages = []
+    request = replace(prepared.request, frequencies_hz=(500.0, 600.0), status_callback=messages.append)
+    timings = {"assembly_s": 1.2, "solve_s": 0.3, "field_s": 0.4}
+
+    def create_session(request):
+        def stream():
+            for frequency in request.frequencies_hz:
+                request.status_callback(f"Assembling {frequency} Hz")
+                yield replace(fake_result(request), freq_hz=frequency, diagnostics={"timings": timings})
+
+        return SimpleNamespace(request=request, solve_stream=stream, stop=lambda: None)
+
+    service.backend.create_system_session = create_session
+    session = client.create_system_session(request)
+    results = list(session.solve_stream())
+    for thread in service.threads:
+        thread.join(timeout=5)
+    assert [result.freq_hz for result in results] == [500.0, 600.0]
+    assert all(result.diagnostics["timings"] == timings for result in results)
+    assert messages == ["Uploading mesh payload…", "Remote solve started."]
+    journal = service.events(session.job_id, 0, limit=None)
+    assert len([event for event in journal if event["type"] == "status"]) == 2
+    logs = [record.getMessage() for record in caplog.records if record.name == "blab.server"]
+    assert len(logs) == 4  # Receive, stage, accept, complete; no polling/frequency chatter.
+    assert "Receiving mesh payload" in logs[0]
+    assert "validating and staging" in logs[1]
+    assert "Solve job accepted" in logs[2]
+    assert "Solve job completed" in logs[3]
+    assert session.job_id in logs[2] and session.job_id in logs[3]
+    assert "frequencies=2" in logs[3]
+
+
 def test_capability_mismatch_prevents_submission(monkeypatch, prepared):
     client = RemoteBackend("http://127.0.0.1:8765")
     monkeypatch.setattr(client, "call", lambda _path: {"protocol": "blab-remote", "version": 99})
@@ -183,8 +230,9 @@ def test_capability_mismatch_prevents_submission(monkeypatch, prepared):
         client.create_system_session(prepared.request)
 
 
-def test_worker_failure_is_terminal_and_releases_slot(prepared, http_service):
+def test_worker_failure_is_terminal_and_releases_slot(prepared, http_service, caplog):
     service, client = http_service
+    caplog.set_level(logging.INFO, logger="blab.server")
 
     def fail():
         raise RuntimeError("worker crashed")
@@ -199,10 +247,12 @@ def test_worker_failure_is_terminal_and_releases_slot(prepared, http_service):
         for thread in service.threads:
             thread.join(timeout=5)
         assert service.events(session.job_id, 0)[-1]["type"] == "failed"
+    assert sum("Solve job failed" in record.getMessage() for record in caplog.records) == 2
 
 
-def test_busy_and_cancel_preserve_partial_results(prepared, http_service):
+def test_busy_and_cancel_preserve_partial_results(prepared, http_service, caplog):
     service, client = http_service
+    caplog.set_level(logging.INFO, logger="blab.server")
     release = threading.Event()
     emitted = threading.Event()
 
@@ -224,6 +274,9 @@ def test_busy_and_cancel_preserve_partial_results(prepared, http_service):
     events = service.events(job_id, 0)
     assert any(event["type"] == "result" for event in events)
     assert events[-1]["type"] == "cancelled"
+    assert "Solve job rejected | server busy" in caplog.text
+    assert "Solve cancellation requested" in caplog.text
+    assert "Solve job cancelled" in caplog.text
 
 
 def test_plane_exclusion_does_not_disable_polar_sampling(prepared, monkeypatch):

@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import logging
 import os
 import re
 import sys
 import threading
+import time
 import uuid
 import zipfile
 from collections.abc import Sequence
@@ -23,6 +25,8 @@ from blab.solvers.beat_engine_runtime import shutdown_beat_engine_workers
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
 from blab.system_contract import system_frequency_result_to_dict
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SolveService:
@@ -49,6 +53,7 @@ class SolveService:
                 events = self.events(directory.name, 0, limit=None)
                 if not events or events[-1]["type"] not in {"completed", "failed", "cancelled"}:
                     self.append(directory.name, {"type": "failed", "error": "Service restarted before completion."})
+                    LOGGER.warning("Interrupted solve recovered as failed | job=%s", directory.name)
 
     def append(self, job_id, event):
         with self.lock, (self.root / job_id / "events.ndjson").open("a", encoding="utf-8") as stream:
@@ -107,6 +112,7 @@ class SolveService:
 
     def submit(self, bundle):
         if not self.busy.acquire(blocking=False):
+            LOGGER.info("Solve job rejected | server busy")
             raise BlockingIOError("A solve is already active; retry after it finishes.")
         try:
             job_id = uuid.uuid4().hex
@@ -127,6 +133,13 @@ class SolveService:
                     ),
                 },
             )
+            LOGGER.info(
+                "Solve job accepted | job=%s | backend=%s | frequencies=%d | meshes=%d",
+                job_id,
+                backend_id,
+                len(request.frequencies_hz),
+                len(request.compiled_system.meshes),
+            )
             thread = threading.Thread(target=self.run, args=(job_id, session), daemon=True)
             self.threads.append(thread)
             thread.start()
@@ -136,8 +149,9 @@ class SolveService:
             raise
 
     def run(self, job_id, session):
+        started = time.monotonic()
+        count = 0
         try:
-            count = 0
             for result in session.solve_stream():
                 self.append(job_id, {"type": "result", "result": system_frequency_result_to_dict(result)})
                 count += 1
@@ -152,7 +166,21 @@ class SolveService:
                         "worker": getattr(session, "worker_provenance", None),
                     },
                 )
+                LOGGER.info(
+                    "Solve job %s | job=%s | frequencies=%d | elapsed=%.2fs",
+                    "cancelled" if cancelled else "completed",
+                    job_id,
+                    count,
+                    time.monotonic() - started,
+                )
         except Exception as exc:
+            LOGGER.error(
+                "Solve job failed | job=%s | error=%s | frequencies=%d | elapsed=%.2fs",
+                job_id,
+                type(exc).__name__,
+                count,
+                time.monotonic() - started,
+            )
             self.append(
                 job_id, {"type": "failed", "error": str(exc), "worker": getattr(session, "worker_provenance", None)}
             )
@@ -167,6 +195,7 @@ class SolveService:
             session = self.sessions.get(job_id)
             if session is not None:
                 self.sessions[job_id] = None
+                LOGGER.info("Solve cancellation requested | job=%s", job_id)
                 session.stop()
 
     def close(self):
@@ -216,11 +245,18 @@ def create_http_server(
             if token and not hmac.compare_digest(
                 self.headers.get("Authorization", "").encode("utf-8"), f"Bearer {token}".encode("ascii")
             ):
+                LOGGER.info("Client authentication rejected | peer=%s", self.client_address[0])
                 self.reply(401, {"error": "Authentication required."})
                 return
             path = urlsplit(self.path)
             try:
                 if self.command == "GET" and path.path == "/v1/capabilities":
+                    if parse_qs(path.query).get("connection_test") == ["1"]:
+                        LOGGER.info(
+                            "Client connection test received | peer=%s | state=%s",
+                            self.client_address[0],
+                            service.readiness(),
+                        )
                     self.reply(
                         200,
                         {
@@ -240,14 +276,17 @@ def create_http_server(
                     )
                 elif self.command == "POST" and path.path == "/v1/jobs":
                     if self.headers.get_content_type() != "application/zip":
+                        LOGGER.info("Solve payload rejected | unsupported content type")
                         self.reply(415, {"error": "Expected application/zip."})
                         return
                     length = int(self.headers.get("Content-Length", "0"))
                     if not 0 < length <= MAX_BUNDLE_BYTES or self.headers.get("Transfer-Encoding"):
                         raise ValueError("A bounded Content-Length is required.")
+                    LOGGER.info("Receiving mesh payload | peer=%s | bytes=%d", self.client_address[0], length)
                     bundle = self.rfile.read(length)
                     if len(bundle) != length:
                         raise ValueError("Incomplete upload.")
+                    LOGGER.info("Mesh payload received; validating and staging | bytes=%d", length)
                     self.reply(202, {"job_id": service.submit(bundle)})
                 elif match := re.fullmatch(r"/v1/jobs/([0-9a-f]{32})", path.path):
                     job_id = match[1]
@@ -267,7 +306,12 @@ def create_http_server(
             except FileNotFoundError as exc:
                 self.reply(404, {"error": str(exc)})
             except (ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+                LOGGER.warning("Client request rejected | method=%s | error=%s", self.command, type(exc).__name__)
                 self.reply(400, {"error": str(exc)})
+            except (ConnectionError, TimeoutError):
+                LOGGER.warning(
+                    "Client connection interrupted | method=%s | peer=%s", self.command, self.client_address[0]
+                )
 
         do_GET = handle_request
         do_POST = handle_request
@@ -311,6 +355,7 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     parser.add_argument("--julia-threads", default=None)
     parser.add_argument("--shutdown-on-stdin-eof", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     token = os.environ.get(args.token_env) or None
     try:
         validate_server_access(args.mode, token)
@@ -339,9 +384,11 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        LOGGER.info("Server shutting down")
         server.server_close()
         service.close()
         shutdown_beat_engine_workers()
+        LOGGER.info("Server stopped")
 
 
 if __name__ == "__main__":

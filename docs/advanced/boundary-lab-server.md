@@ -156,6 +156,26 @@ comparison remains exact. The report includes per-array measured errors and the
 number of arrays that were exactly equal. Use `--compare-only --output RUN_DIR`
 to recheck existing artifacts without rerunning the solver.
 
+## Console logging and client progress
+
+The server CLI emits timestamped lifecycle messages for explicit client connection
+tests, payload receipt and staging, job acceptance, completion, cancellation,
+failures, and shutdown. Job messages include the job ID; acceptance includes the
+backend and frequency count, and terminal messages include total elapsed time.
+Console messages omit credentials, request bodies, and per-frequency worker status.
+Failure details remain in the job's retained event journal.
+
+The client marks explicit connection tests with
+`GET /v1/capabilities?connection_test=1`. Automatic readiness checks, container
+health checks, and result polling do not produce routine console messages.
+This optional query parameter does not change the remote contract version and
+is compatible with older servers.
+
+During remote solving, the client displays brief connection/upload/start messages
+followed by its normal per-frequency assembly/solve/field timing summaries. Raw
+worker status events remain in `events.ndjson` but are not forwarded to the
+client's progress display. Terminal errors still reach the client.
+
 ## Implementation entry points
 
 | File | Responsibility |

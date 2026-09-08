@@ -83,8 +83,8 @@ def test_server_pinned_gpu_does_not_fall_back(tmp_path):
 
 def test_client_waits_on_readiness_without_hardware_selection(monkeypatch):
     client = RemoteBackend("http://127.0.0.1:8765")
-    monkeypatch.setattr(client, "check_capabilities", lambda: {"state": "starting"})
+    monkeypatch.setattr(client, "check_capabilities", lambda **kwargs: {"state": "starting"})
     with pytest.raises(TimeoutError):
         client.wait_ready(timeout=0)
-    monkeypatch.setattr(client, "check_capabilities", lambda: {"state": "ready"})
+    monkeypatch.setattr(client, "check_capabilities", lambda **kwargs: {"state": "ready"})
     assert client.wait_ready() is None

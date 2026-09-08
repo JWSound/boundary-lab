@@ -68,7 +68,7 @@ class SystemSolveWorker(QObject):
                 options.get("url", "http://127.0.0.1:8765"),
                 token=options.get("access_key") or None,
             )
-            self.status.emit("Connecting to server?")
+            self.status.emit("Connecting to server…")
         else:
             backend = PhysicalSystemProductionBackend(
                 bem_backend=bem_backend,

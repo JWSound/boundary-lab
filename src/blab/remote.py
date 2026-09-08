@@ -76,8 +76,9 @@ class RemoteBackend:
             raise RuntimeError(f"Remote server HTTP {status}: expected a JSON object from Boundary Lab Server.")
         return payload
 
-    def check_capabilities(self):
-        info = self.call("/v1/capabilities")
+    def check_capabilities(self, *, connection_test=True):
+        path = "/v1/capabilities?connection_test=1" if connection_test else "/v1/capabilities"
+        info = self.call(path)
         expected = {
             "protocol": "blab-remote",
             "version": REMOTE_VERSION,
@@ -93,7 +94,7 @@ class RemoteBackend:
         while True:
             if stop_requested is not None and stop_requested():
                 raise InterruptedError("Connection cancelled.")
-            info = self.check_capabilities()
+            info = self.check_capabilities(connection_test=False)
             state = info.get("state", "ready")
             if state == "ready":
                 return
@@ -104,7 +105,7 @@ class RemoteBackend:
             time.sleep(0.25)
 
     def create_system_session(self, request):
-        self.check_capabilities()
+        self.check_capabilities(connection_test=False)
         return RemoteSession(self, request)
 
 
@@ -128,9 +129,10 @@ class RemoteSession:
         if self._stop:
             return
         self.backend.wait_ready(stop_requested=lambda: self._stop or (stop_requested is not None and stop_requested()))
-        self.job_id = self.backend.call("/v1/jobs", data=build_job_bundle(self.request), method="POST")["job_id"]
         callback = self.request.status_callback or (lambda _message: None)
-        callback(f"Remote job: {self.job_id}")
+        callback("Uploading mesh payload…")
+        self.job_id = self.backend.call("/v1/jobs", data=build_job_bundle(self.request), method="POST")["job_id"]
+        callback("Remote solve started.")
         cursor = 0
         while True:
             if self._stop or (stop_requested is not None and stop_requested()):
@@ -144,8 +146,8 @@ class RemoteSession:
                     self.selected_backend = event["backend_id"]
                 elif kind == "result":
                     yield system_frequency_result_from_dict(event["result"])
-                elif kind == "status":
-                    callback(event["message"])
+                # Detailed worker statuses remain in the server journal. Result
+                # consumers produce the normal per-frequency timing summary.
                 elif kind in {"completed", "cancelled", "failed"}:
                     self._terminal = True
                     self.worker_provenance = event.get("worker")

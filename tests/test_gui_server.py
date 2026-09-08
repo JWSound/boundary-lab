@@ -73,7 +73,10 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
                         axes=("excitation", "observation"),
                     ),
                 ),
-                diagnostics={"engine_provenance": {"engine": {"version": "test"}}},
+                diagnostics={
+                    "engine_provenance": {"engine": {"version": "test"}},
+                    "timings": {"assembly_s": 1.2, "solve_s": 0.3, "field_s": 0.4},
+                },
             )
             return SimpleNamespace(solve_stream=lambda **kwargs: iter([result]))
 
@@ -89,6 +92,9 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
     assert len(results) == len(live) == 1
     assert results[0].diagnostics["engine_provenance"]["engine"]["version"] == "test"
     np.testing.assert_array_equal(live[0].horizontal_pressure, 1 + 2j)
+    assert live[0].timings.assembly_s == 1.2
+    assert live[0].timings.solve_s == 0.3
+    assert live[0].timings.field_s == 0.4
 
 
 def test_connection_check_ignores_stale_results(qapp):
