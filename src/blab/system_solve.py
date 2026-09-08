@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -62,7 +62,7 @@ class SystemUiSolveRequest:
     vertical_count: int
     sphere_metadata: dict[str, np.ndarray] | None = None
     result_domains: tuple[ResultDomain, ...] = ()
-    remote_options: dict[str, str] | None = None
+    remote_options: dict[str, str] | None = field(default=None, repr=False)
 
 
 def prepare_system_ui_solve(

@@ -396,7 +396,7 @@ class PreferencesDialog(QDialog):
                 "Application",
                 (
                     ("Solver", self.solve_backend_combo, ""),
-                    ("Server", self.server_preferences, "HTTPS and a token are required for LAN connections."),
+                    ("Server", self.server_preferences, "Use your server address and optional access key."),
                     ("Theme", self.theme_combo, ""),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
@@ -448,8 +448,7 @@ class PreferencesDialog(QDialog):
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.server_preferences.url.text().strip(),
-            solve_server_token_env=self.server_preferences.token_env.text().strip(),
-            solve_server_ca=self.server_preferences.ca.text().strip(),
+            solve_server_access_key=self.server_preferences.access_key.text().strip(),
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),

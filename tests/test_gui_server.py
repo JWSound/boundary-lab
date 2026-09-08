@@ -15,8 +15,7 @@ def test_preferences_server_fields_round_trip(qapp):
     preferences = GuiPreferences(
         solve_backend="beat_remote",
         solve_server_url="https://solver.example:8765",
-        solve_server_token_env="LAB_TOKEN",
-        solve_server_ca="lab.pem",
+        solve_server_access_key="secret-value-not-for-settings",
     )
     dialog = PreferencesDialog(preferences)
     assert dialog.server_preferences.isEnabled()
@@ -26,8 +25,7 @@ def test_preferences_server_fields_round_trip(qapp):
     for name in (
         "solve_backend",
         "solve_server_url",
-        "solve_server_token_env",
-        "solve_server_ca",
+        "solve_server_access_key",
     ):
         assert getattr(saved, name) == getattr(preferences, name)
     dialog.solve_backend_combo.setCurrentText("BEAT Engine (CPU)")
@@ -116,8 +114,7 @@ def test_saved_server_settings_exclude_token_value(qapp, tmp_path, monkeypatch):
     original = GuiPreferences(
         solve_backend="beat_remote",
         solve_server_url="https://lab.example",
-        solve_server_token_env="LAB_TOKEN",
-        solve_server_ca="lab.pem",
+        solve_server_access_key="secret-value-not-for-settings",
     )
     save_gui_preferences(settings, original)
     assert not settings.contains("preferences/solve_server_backend")
@@ -126,11 +123,11 @@ def test_saved_server_settings_exclude_token_value(qapp, tmp_path, monkeypatch):
     for field in (
         "solve_backend",
         "solve_server_url",
-        "solve_server_ca",
-        "solve_server_token_env",
     ):
         assert getattr(loaded, field) == getattr(original, field)
+    assert loaded.solve_server_access_key == ""
     assert "secret-value-not-for-settings" not in path.read_text()
+    assert "secret-value-not-for-settings" not in repr(original)
 
 
 def test_remote_results_do_not_enable_observation_planes():
@@ -142,6 +139,37 @@ def test_remote_results_do_not_enable_observation_planes():
     solved = SimpleNamespace(provenance=SimpleNamespace(backend_id="beat_remote", solve_kind="coupled_bem_fem"))
     assert interior_field_results_from_solved_system(solved) is None
     assert exterior_field_results_from_solved_system(solved) is None
+
+
+def test_access_key_controls_and_diagnostics(qapp, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QLineEdit
+
+    from blab.ui.diagnostics import collect_diagnostics
+
+    dialog = PreferencesDialog(GuiPreferences(solve_backend="beat_remote"))
+    widget = dialog.server_preferences
+    assert not hasattr(widget, "ca") and not hasattr(widget, "token_env")
+    assert "Save this key locally" in widget.access_key.toolTip()
+    widget.generate.click()
+    key = widget.access_key.text()
+    assert len(key) >= 32 and key.isascii()
+    assert widget.access_key.echoMode() == QLineEdit.Password
+    widget.show_key.setChecked(True)
+    assert widget.access_key.echoMode() == QLineEdit.Normal
+    clipboard = []
+    monkeypatch.setattr(
+        "blab.ui.server_preferences.QApplication.clipboard", lambda: SimpleNamespace(setText=clipboard.append)
+    )
+    widget.copy.click()
+    assert clipboard == [key]
+    saved = dialog.preferences()
+    report = collect_diagnostics(saved, {"access_key": key, "operations": {"last_error": f"Rejected {key}"}})
+    assert key not in json.dumps(report)
+    assert key not in repr(saved)
+    assert saved.solve_server_access_key == key
+    dialog.close()
 
 
 def test_connection_check_runs_off_ui_thread(qapp, monkeypatch):

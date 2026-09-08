@@ -23,7 +23,7 @@ class RemoteBackend:
     backend_id = "beat_remote"
     label = "Boundary Lab Server"
 
-    def __init__(self, url, *, token=None, ca_file=None):
+    def __init__(self, url, *, token=None):
         parsed = urlsplit(url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -35,13 +35,11 @@ class RemoteBackend:
             or parsed.fragment
         ):
             raise ValueError("Expected an HTTP(S) server base URL without credentials, path, or query.")
-        if parsed.hostname not in {"127.0.0.1", "localhost"} and (parsed.scheme != "https" or not token):
-            raise ValueError("LAN connections require HTTPS and a server token.")
         if token is not None and (not token.isascii() or any(c.isspace() for c in token)):
             raise ValueError("Server token must be ASCII without whitespace.")
         self.url = url.rstrip("/")
         self.token = token
-        context = ssl.create_default_context(cafile=ca_file)
+        context = ssl.create_default_context()
         self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
 
     def call(self, path, *, data=None, method="GET"):

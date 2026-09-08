@@ -66,8 +66,7 @@ class SystemSolveWorker(QObject):
             options = self.prepared.remote_options or {}
             backend = RemoteBackend(
                 options.get("url", "http://127.0.0.1:8765"),
-                token=os.environ.get(options.get("token_env", "BLAB_SERVER_TOKEN")),
-                ca_file=options.get("ca_file") or None,
+                token=options.get("access_key") or None,
             )
             self.status.emit("Connecting to server?")
         else:

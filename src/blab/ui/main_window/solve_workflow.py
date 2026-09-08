@@ -254,8 +254,7 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "token_env": preferences.solve_server_token_env,
-                    "ca_file": preferences.solve_server_ca,
+                    "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=solve_symmetry,
                 observation_planes=(),
@@ -327,8 +326,7 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "token_env": preferences.solve_server_token_env,
-                    "ca_file": preferences.solve_server_ca,
+                    "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=symmetry,
                 observation_planes=project.observation_planes,
@@ -359,8 +357,7 @@ class SolveWorkflowController(QObject):
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
-                    "token_env": preferences.solve_server_token_env,
-                    "ca_file": preferences.solve_server_ca,
+                    "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=project.symmetry,
                 observation_planes=project.observation_planes,

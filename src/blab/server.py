@@ -1,4 +1,4 @@
-"""Physical-system HTTP service with authenticated TLS and BEAT runtime discovery."""
+"""Physical-system HTTP service with private/hosted access modes and BEAT discovery."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import hmac
 import json
 import os
 import re
-import ssl
 import sys
 import threading
 import uuid
@@ -181,18 +180,24 @@ class SolveService:
             thread.join(timeout=5)
 
 
+def validate_server_access(mode, token):
+    if mode not in {"private-network", "hosted"}:
+        raise ValueError("Unknown server deployment mode.")
+    if mode == "hosted" and not token:
+        raise ValueError("Hosted mode requires an access key in BLAB_SERVER_TOKEN (or --token-env).")
+    if token is not None and (len(token) < 32 or not token.isascii() or any(c.isspace() for c in token)):
+        raise ValueError("Access key must contain at least 32 ASCII characters without whitespace.")
+
+
 def create_http_server(
     service: SolveService,
     port: int = 8765,
     *,
     host: str = "127.0.0.1",
     token: str | None = None,
-    tls_context: ssl.SSLContext | None = None,
+    mode: str = "private-network",
 ) -> ThreadingHTTPServer:
-    if token is not None and (len(token) < 32 or not token.isascii() or any(c.isspace() for c in token)):
-        raise ValueError("Server token must contain at least 32 ASCII characters without whitespace.")
-    if host not in {"127.0.0.1", "localhost"} and (not token or tls_context is None):
-        raise ValueError("LAN binding requires both a token and a TLS certificate/key.")
+    validate_server_access(mode, token)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -270,15 +275,13 @@ def create_http_server(
 
     class Server(ThreadingHTTPServer):
         def handle_error(self, request, client_address):
-            if isinstance(sys.exception(), (ssl.SSLError, ConnectionError, TimeoutError)):
+            if isinstance(sys.exception(), (ConnectionError, TimeoutError)):
                 return
             super().handle_error(request, client_address)
 
         def get_request(self):
             connection, address = super().get_request()
             connection.settimeout(30)
-            if tls_context is not None:
-                connection = tls_context.wrap_socket(connection, server_side=True, do_handshake_on_connect=False)
             return connection, address
 
     server = Server((host, port), Handler)
@@ -287,7 +290,7 @@ def create_http_server(
 
 def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog=prog, description="Physical-system CPU/CUDA/ROCm server (localhost by default; authenticated TLS for LAN)."
+        prog=prog, description="Physical-system server for private networks or hosted deployments."
     )
     parser.add_argument(
         "--root", type=Path, required=True, help="Dedicated directory for job assets and retained events"
@@ -303,19 +306,16 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     parser.add_argument(
         "--token-env", default="BLAB_SERVER_TOKEN", help="Environment variable holding the shared server token"
     )
-    parser.add_argument("--tls-cert", type=Path, help="PEM certificate chain for HTTPS")
-    parser.add_argument("--tls-key", type=Path, help="PEM private key for HTTPS")
+    parser.add_argument("--mode", choices=("private-network", "hosted"), default="private-network")
     parser.add_argument("--julia-executable", default="julia")
     parser.add_argument("--julia-threads", default=None)
     parser.add_argument("--shutdown-on-stdin-eof", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if bool(args.tls_cert) != bool(args.tls_key):
-        parser.error("--tls-cert and --tls-key must be supplied together")
-    context = None
-    if args.tls_cert:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(args.tls_cert, args.tls_key)
+    token = os.environ.get(args.token_env) or None
+    try:
+        validate_server_access(args.mode, token)
+    except ValueError as exc:
+        parser.error(str(exc))
     backends = {
         key: PhysicalSystemProductionBackend(
             bem_backend=key.removeprefix("beat_"),
@@ -325,11 +325,8 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
         for key in REMOTE_BACKENDS
     }
     service = SolveService(args.root, backends=backends, discover=True, backend_policy=args.backend)
-    server = create_http_server(
-        service, args.port, host=args.host, token=os.environ.get(args.token_env), tls_context=context
-    )
-    scheme = "https" if context else "http"
-    print(f"Physical-system server listening on {scheme}://{args.host}:{server.server_port}", flush=True)
+    server = create_http_server(service, args.port, host=args.host, token=token, mode=args.mode)
+    print(f"Physical-system server listening on http://{args.host}:{server.server_port}", flush=True)
     if args.shutdown_on_stdin_eof:
 
         def wait_for_parent():

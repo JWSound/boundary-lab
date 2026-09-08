@@ -52,12 +52,23 @@ def certificate(tmp_path_factory):
 
 
 @pytest.fixture
-def tls_service(tmp_path, certificate):
+def tls_service(tmp_path, certificate, monkeypatch):
     cert, key = certificate
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
     service = SolveService(tmp_path / "jobs", backend=SimpleNamespace())
-    server = create_http_server(service, 0, token=TOKEN, tls_context=context)
+    # Test-only TLS front end represents provider-managed HTTPS. The application
+    # exposes no certificate configuration; clients use their normal trust store.
+    server = create_http_server(service, 0, token=TOKEN, mode="hosted")
+    get_request = server.get_request
+
+    def accept_tls():
+        connection, address = get_request()
+        return context.wrap_socket(connection, server_side=True, do_handshake_on_connect=False), address
+
+    server.get_request = accept_tls
+    server.handle_error = lambda *_args: None
+    monkeypatch.setenv("SSL_CERT_FILE", str(cert))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -71,7 +82,7 @@ def tls_service(tmp_path, certificate):
 
 def test_authenticated_tls_capabilities(tls_service):
     _service, url, cert = tls_service
-    assert RemoteBackend(url, token=TOKEN, ca_file=cert).check_capabilities()["backend_ids"] == ["beat_cpu"]
+    assert RemoteBackend(url, token=TOKEN).check_capabilities()["backend_ids"] == ["beat_cpu"]
 
 
 @pytest.mark.parametrize("token", [None, "incorrect-token"])
@@ -87,11 +98,12 @@ def test_authenticated_tls_capabilities(tls_service):
 def test_authentication_precedes_upload_and_job_access(tls_service, token, method, path, data):
     service, url, cert = tls_service
     with pytest.raises(RuntimeError, match="HTTP 401"):
-        RemoteBackend(url, token=token, ca_file=cert).call(path, method=method, data=data)
+        RemoteBackend(url, token=token).call(path, method=method, data=data)
     assert not list(service.root.iterdir())
 
 
-def test_untrusted_certificate_is_rejected(tls_service):
+def test_untrusted_certificate_is_rejected(tls_service, monkeypatch):
+    monkeypatch.delenv("SSL_CERT_FILE")
     _service, url, _cert = tls_service
     with pytest.raises(URLError, match="CERTIFICATE_VERIFY_FAILED"):
         RemoteBackend(url, token=TOKEN).check_capabilities()
@@ -106,15 +118,33 @@ def test_certificate_hostname_mismatch_is_rejected(tls_service):
             context.wrap_socket(connection, server_hostname="wrong.example")
 
 
-def test_lan_requires_token_and_tls_before_binding(tmp_path):
+def test_hosted_mode_requires_key_before_binding(tmp_path):
     service = SolveService(tmp_path)
-    for options in ({}, {"token": TOKEN}, {"tls_context": ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)}):
-        with pytest.raises(ValueError, match="LAN binding requires"):
-            create_http_server(service, 0, host="0.0.0.0", **options)
-    with pytest.raises(ValueError, match="LAN connections require"):
-        RemoteBackend("http://solver.example:8765", token=TOKEN)
-    with pytest.raises(ValueError, match="LAN connections require"):
-        RemoteBackend("https://solver.example:8765")
+    with pytest.raises(ValueError, match="Hosted mode requires"):
+        create_http_server(service, 0, host="0.0.0.0", mode="hosted")
+
+
+@pytest.mark.parametrize("mode,token", [("private-network", None), ("private-network", TOKEN), ("hosted", TOKEN)])
+def test_private_network_and_hosted_access_modes(tmp_path, mode, token):
+    service = SolveService(tmp_path)
+    server = create_http_server(service, 0, token=token, mode=mode)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert RemoteBackend(url, token=token).check_capabilities()["state"] == "ready"
+        if token:
+            with pytest.raises(RuntimeError, match="401"):
+                RemoteBackend(url).check_capabilities()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
+def test_client_accepts_private_lan_and_vpn_http():
+    assert RemoteBackend("http://192.168.1.20:8765").url == "http://192.168.1.20:8765"
+    assert RemoteBackend("http://workstation.internal:8765", token=TOKEN).token == TOKEN
 
 
 def test_redirects_cannot_forward_credentials():

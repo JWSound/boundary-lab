@@ -1,6 +1,6 @@
 ﻿# Boundary Lab physical-system server preview
 
-`blab server` provides a **CPU/CUDA/ROCm service with optional authenticated HTTPS for LAN use**, using
+`blab server` provides a **CPU/CUDA/ROCm service for private networks and hosted deployments**, using
 Boundary Lab's compiled physical-system contract and the installed BEAT Engine.
 The legacy source-model HTTP API and Bempp runtime remain retired.
 
@@ -11,7 +11,7 @@ environment prepared:
 
 ```bash
 python -m beat_engine instantiate --backend cpu
-python -m blab.cli server --root runs/server-jobs --port 8765 --julia-threads 2
+python -m blab.cli server --root runs/server-jobs --port 8765 --backend cpu --julia-threads 2
 ```
 
 In another terminal, validate a physical-system project, then submit it:
@@ -37,10 +37,12 @@ resampling or observation-plane viewer integration is provided.
 ## Application preferences
 
 In **Preferences → Application**, set **Solver** to **Boundary Lab Server**.
-The Server fields contain the address,
-token environment-variable name, and optional trusted PEM certificate path.
-The actual token is never stored in preferences. Set its environment variable
-before launching Boundary Lab; restart the app after changing that environment.
+Enter the server **Address** and optional **Access key**. Use **Generate** to create
+a random key, **Copy** to copy it, and **Show** to reveal the masked value. Save the
+key locally in a safe place so you can paste it again next time, as the tooltip
+recommends. Boundary Lab keeps it only for the current application session; it
+is not written to preferences, projects, result artifacts, diagnostics, or the OS
+credential store. The server address is saved normally.
 
 **Check connection** queries capabilities in the background and displays runtime
 readiness or the connection error. If the server is still starting, check again
@@ -52,38 +54,54 @@ per-excitation results. Server negotiation runs on the solve worker thread.
 Remote observation planes remain unavailable; polar and balloon sampling remain
 enabled according to the Observation Config preferences.
 
-## Authenticated LAN setup
+## Private LAN / VPN
 
-The default binds to `127.0.0.1`. A LAN binding requires a shared token and TLS.
-Every endpoint requires authentication when a token is configured. This is a
-single-operator service: token holders can read and cancel all jobs.
-
-Set `BLAB_SERVER_TOKEN` in both server and client environments to the same random
-secret of at least 32 ASCII characters without whitespace. Generate a value with
-`python -c "import secrets; print(secrets.token_urlsafe(32))"` and distribute it
-through your normal secret-management channel. Tokens are read from environment
-variables, not CLI argument values, and are not saved in result artifacts.
-`--token-env` (server) and `--server-token-env` (client) select an alternate variable.
-
-Use a certificate whose Subject Alternative Name matches the server hostname/IP.
-Keep its private key on the server:
+The server defaults to `private-network` mode and listens on `127.0.0.1`. To accept
+connections from your private LAN, explicitly choose the listening address:
 
 ```bash
-python -m blab.cli server --root runs/server-jobs --host 0.0.0.0 --port 8765 --tls-cert server-cert.pem --tls-key server-key.pem
+python -m blab.cli server --root runs/server-jobs --mode private-network --host 0.0.0.0 --port 8765
 ```
 
-After setting the token in the client environment:
+Clients enter an address such as `http://192.168.1.20:8765`. An access key is
+optional. Setting `BLAB_SERVER_TOKEN` on the server enables key checks on every
+endpoint; enter that same key in each client. Without a key, anyone who can reach
+the service can submit, read, and cancel jobs. HTTP does not encrypt traffic, so
+use this mode only on your trusted private network or through a VPN/SSH tunnel.
+No firewall changes are made automatically.
+
+## Hosted server / container
+
+1. In Boundary Lab Preferences, click **Generate**, then **Copy**, and save the key locally.
+2. Paste it into the container's `BLAB_SERVER_TOKEN` secret.
+3. Start the server in hosted mode behind the provider's HTTPS proxy, a VPN, or an SSH tunnel:
 
 ```bash
-python -m blab.cli project solve speaker.blab.json --server-url https://solver.example:8765 --server-ca lab-ca.pem --output runs/server-result
+python -m blab.cli server --root /data/jobs --mode hosted --host 0.0.0.0 --port 8765
 ```
 
-Replace `solver.example` with the actual certificate hostname. Omit `--server-ca`
-when Python's default trust store already trusts the certificate. Trust and
-hostname verification remain enabled; redirects are rejected to prevent credential
-forwarding. Plain HTTP is supported only for localhost connections. No firewall
-changes are made automatically. Limit port access to intended LAN clients;
-Internet hosting and multi-user isolation remain outside this service's scope.
+4. Paste the provider's HTTPS service address into Boundary Lab and click **Check connection**.
+
+Hosted mode refuses startup without a key. Use the provider's HTTP service/proxy
+option so it manages public HTTPS while forwarding HTTP to the container. Do not
+also expose the container's plain HTTP port directly to the Internet. For SSH,
+forward the port and use its localhost HTTP address; a VPN can use a private HTTP
+address. Hosted mode itself does not create encryption or verify the upstream
+network arrangement; the operator supplies that protected connection.
+
+Boundary Lab serves HTTP and has no certificate files to configure. Its client
+supports ordinary HTTPS with normal trust and hostname verification, and rejects
+redirects to prevent credential forwarding. There is no custom certificate option
+or certificate-verification bypass.
+
+All authorized clients share access to jobs; this is not an account-based service.
+Keys must be at least 32 ASCII characters without whitespace. **Generate** produces
+a suitable random key. To rotate a key, change the container secret, restart the
+server, and paste the new key into clients.
+
+The CLI can read a key from `BLAB_SERVER_TOKEN` (or another variable selected by
+`--server-token-env`). Server `--token-env` also selects an alternate variable.
+The GUI uses the access-key field directly and does not read these variables.
 
 ## Backend discovery and selection
 
@@ -167,9 +185,8 @@ It validates the Simple Sealed project, runs one 500 Hz coupled FEM-BEM-LEM solv
 locally and through a separate HTTP server process, and checks CPU array equality,
 quantity metadata, excitation ordering, and engine/worker provenance. It writes
 `comparison.json` and both ordinary result directories; choose a new output path
-for each run. The script uses an ephemeral authentication token. Add `--tls-cert`
-and `--tls-key` for HTTPS with a certificate valid for `127.0.0.1`; the script
-trusts that certificate only for its test client. Other solve-kind checks:
+for each run. The script configures hosted mode with an ephemeral authentication
+key and uses local HTTP. Other solve-kind checks:
 
 ```bash
 python scripts/check_remote_integration.py --project tests/fixtures/remote-exterior.blab.json --frequency 500 --output runs/remote-exterior

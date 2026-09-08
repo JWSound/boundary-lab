@@ -239,7 +239,7 @@ headless project workflow above for new solves. Mesh cleaning and the
 
 An experimental physical-system CPU/CUDA/ROCm server is available through `blab server` and
 `blab project solve --server-url http://127.0.0.1:8765`. This first milestone is
-able to select the server's available BEAT backend and omits observation planes. Authenticated HTTPS enables LAN use; localhost
+able to use the server's selected BEAT backend and omits observation planes. Private-network mode permits LAN HTTP; hosted mode requires an access key behind provider HTTPS, VPN, or SSH. Localhost
 remains the default. See [server setup and the remote job
 contract](../Boundary%20Lab%20Server.md).
 

@@ -25,7 +25,7 @@ from blab import __version__
 from blab.startup_checks import DEPENDENCY_NAMES
 from blab.ui.settings import GuiPreferences
 
-SENSITIVE_DIAGNOSTIC_KEYS = {"server_url", "solve_server_url"}
+SENSITIVE_DIAGNOSTIC_KEYS = {"server_url", "solve_server_url", "solve_server_access_key", "access_key"}
 
 
 def collect_diagnostics(
@@ -34,7 +34,10 @@ def collect_diagnostics(
 ) -> dict[str, Any]:
     preference_values = asdict(preferences)
     solve_server_url = str(preference_values.pop("solve_server_url", "")).strip()
+    access_key = str(preference_values.pop("solve_server_access_key", ""))
     context_values = _without_sensitive_fields(context or {})
+    if access_key:
+        context_values = _redact_sensitive_values(context_values, (access_key,))
     if solve_server_url:
         context_values = _redact_sensitive_values(context_values, (solve_server_url,))
     return {

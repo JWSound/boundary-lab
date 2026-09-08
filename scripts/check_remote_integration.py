@@ -22,27 +22,27 @@ def main():
     parser.add_argument("--project", type=Path, default=Path("examples/Simple_Sealed/simple_sealed.blab.json"))
     parser.add_argument("--frequency", type=float, default=500.0)
     parser.add_argument("--backend", choices=("beat_cpu", "beat_cuda", "beat_rocm"), default="beat_cpu")
-    parser.add_argument("--tls-cert", type=Path)
-    parser.add_argument("--tls-key", type=Path)
     parser.add_argument(
         "--compare-only", action="store_true", help="Compare existing local/remote artifacts without solving"
     )
     args = parser.parse_args()
     if args.compare_only:
-        compare_results(args.output, https=bool(args.tls_cert))
+        compare_results(args.output, https=False)
         return
-    if bool(args.tls_cert) != bool(args.tls_key):
-        parser.error("Provide both --tls-cert and --tls-key")
     interior = (
         infer_physical_solve_kind(load_headless_project(args.project).physical_system) == PhysicalSolveKind.INTERIOR_FEM
     )
     environment = os.environ.copy()
     environment["BLAB_REMOTE_TEST_TOKEN"] = secrets.token_urlsafe(32)
-    server_options = ["--token-env", "BLAB_REMOTE_TEST_TOKEN", "--backend", args.backend.removeprefix("beat_")]
+    server_options = [
+        "--mode",
+        "hosted",
+        "--token-env",
+        "BLAB_REMOTE_TEST_TOKEN",
+        "--backend",
+        args.backend.removeprefix("beat_"),
+    ]
     client_options = ["--server-token-env", "BLAB_REMOTE_TEST_TOKEN"]
-    if args.tls_cert:
-        server_options += ["--tls-cert", str(args.tls_cert), "--tls-key", str(args.tls_key)]
-        client_options += ["--server-ca", str(args.tls_cert)]
     args.output.mkdir(parents=True, exist_ok=False)
     request = args.output / "request.json"
     request.write_text(
@@ -99,7 +99,7 @@ def main():
                 time.sleep(0.1)
             if url is None:
                 raise RuntimeError("Server startup timed out.")
-            RemoteBackend(url, token=environment["BLAB_REMOTE_TEST_TOKEN"], ca_file=args.tls_cert).check_capabilities()
+            RemoteBackend(url, token=environment["BLAB_REMOTE_TEST_TOKEN"]).check_capabilities()
             subprocess.run(
                 cli
                 + ["project", "solve"]
@@ -116,7 +116,7 @@ def main():
             except subprocess.TimeoutExpired:
                 process.terminate()
                 process.wait(timeout=30)
-    compare_results(args.output, https=bool(args.tls_cert))
+    compare_results(args.output, https=False)
 
 
 def compare_results(output: Path, *, https=False):
