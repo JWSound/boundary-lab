@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
+from blab import __version__
 from blab.remote_contract import REMOTE_VERSION, build_job_bundle
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
 from blab.system_contract import SystemSolveMetadata, system_frequency_result_from_dict
@@ -43,16 +44,37 @@ class RemoteBackend:
         self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
 
     def call(self, path, *, data=None, method="GET"):
-        headers = {"Content-Type": "application/zip"}
+        # Hosted proxies may reject urllib's generic Python user agent.
+        headers = {"Content-Type": "application/zip", "User-Agent": f"BoundaryLab/{__version__}"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         request = Request(self.url + path, data=data, method=method, headers=headers)
         try:
             with self.opener.open(request, timeout=30) as response:
-                return json.load(response)
+                status = response.status
+                body = response.read()
         except HTTPError as exc:
-            detail = json.loads(exc.read()).get("error", str(exc))
+            try:
+                payload = json.loads(exc.read())
+            except (ValueError, UnicodeError):
+                payload = None
+            detail = payload.get("error") if isinstance(payload, dict) else None
+            if not isinstance(detail, str) or not detail:
+                detail = (
+                    "The server or proxy returned an unexpected response. "
+                    "Check the server address and container logs; if it is starting, try again shortly."
+                )
             raise RuntimeError(f"Remote server HTTP {exc.code}: {detail}") from exc
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeError) as exc:
+            raise RuntimeError(
+                f"Remote server HTTP {status}: expected a JSON response. "
+                "Check the server address and container logs; if it is starting, try again shortly."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Remote server HTTP {status}: expected a JSON object from Boundary Lab Server.")
+        return payload
 
     def check_capabilities(self):
         info = self.call("/v1/capabilities")

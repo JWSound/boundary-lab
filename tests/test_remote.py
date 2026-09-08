@@ -5,15 +5,54 @@ import zipfile
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import numpy as np
 import pytest
 
+from blab import __version__
 from blab.headless import HeadlessSolveSpec, load_headless_project, prepare_headless_solve
 from blab.remote import RemoteBackend
 from blab.remote_contract import build_job_bundle, stage_job_bundle
 from blab.server import SolveService, create_http_server
 from blab.system_contract import QuantityResult, SystemFrequencyResult
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+def test_remote_requests_identify_application_to_hosted_proxy(method):
+    client = RemoteBackend("https://server.example", token="test-key")
+
+    def open_response(request, **kwargs):
+        assert request.get_header("User-agent") == f"BoundaryLab/{__version__}"
+        assert request.get_header("Authorization") == "Bearer test-key"
+        response = io.BytesIO(b'{"ok": true}')
+        response.status = 200
+        return response
+
+    client.opener = SimpleNamespace(open=open_response)
+    assert client.call("/v1/jobs", method=method) == {"ok": True}
+
+
+@pytest.mark.parametrize("body", [b"", b"<html>Gateway unavailable</html>", b"[]", b"null"])
+def test_proxy_error_preserves_http_status_without_exposing_body(body):
+    client = RemoteBackend("https://server.example")
+
+    def open_response(*args, **kwargs):
+        raise HTTPError(client.url, 502, "Bad Gateway", {}, io.BytesIO(body))
+
+    client.opener = SimpleNamespace(open=open_response)
+    with pytest.raises(RuntimeError, match="HTTP 502.*server or proxy"):
+        client.check_capabilities()
+
+
+@pytest.mark.parametrize("body", [b"", b"<html>Starting</html>", b"[]", b"null"])
+def test_successful_http_response_requires_json_object(body):
+    client = RemoteBackend("https://server.example")
+    response = io.BytesIO(body)
+    response.status = 200
+    client.opener = SimpleNamespace(open=lambda *args, **kwargs: response)
+    with pytest.raises(RuntimeError, match="HTTP 200.*JSON"):
+        client.check_capabilities()
 
 
 @pytest.fixture
