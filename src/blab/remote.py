@@ -69,12 +69,14 @@ class RemoteBackend:
             raise ValueError("Incompatible remote server contract versions.")
         return info
 
-    def select_backend(self, requested="beat_auto", *, timeout=150):
+    def select_backend(self, requested="beat_auto", *, timeout=150, stop_requested=None):
         candidates = ["beat_cuda", "beat_cpu"] if requested == "beat_auto" else [requested]
         if any(key not in {"beat_cpu", "beat_cuda", "beat_rocm"} for key in candidates):
             raise ValueError("Unknown remote backend.")
         deadline = time.monotonic() + timeout
         while True:
+            if stop_requested is not None and stop_requested():
+                raise InterruptedError("Remote backend selection cancelled.")
             info = self.check_capabilities()
             records = info.get("backends", {})
             checking = False

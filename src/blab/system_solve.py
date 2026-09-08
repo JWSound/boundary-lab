@@ -62,6 +62,7 @@ class SystemUiSolveRequest:
     vertical_count: int
     sphere_metadata: dict[str, np.ndarray] | None = None
     result_domains: tuple[ResultDomain, ...] = ()
+    remote_options: dict[str, str] | None = None
 
 
 def prepare_system_ui_solve(
@@ -78,10 +79,13 @@ def prepare_system_ui_solve(
     backend_id: str = "beat_cpu",
     symmetry_mode: str = "off",
     observation_planes: tuple[ObservationPlane, ...] = (),
+    remote_options: dict[str, str] | None = None,
 ) -> SystemUiSolveRequest:
     """Compile an editable physical system and request the fields used by the UI."""
 
     symmetry = normalize_symmetry(symmetry_mode)
+    if backend_id == "beat_remote":
+        observation_planes = ()
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
@@ -297,6 +301,7 @@ def prepare_system_ui_solve(
     )
     validate_solve_plan(request)
     return SystemUiSolveRequest(
+        remote_options=remote_options,
         request=request,
         backend_id=normalized_backend_id,
         solve_kind=solve_kind,

@@ -94,7 +94,7 @@ def test_preferences_offer_only_beat_backends(qapp):
 
     dialog = PreferencesDialog(GuiPreferences(solve_backend="bempp_cpu"))
     try:
-        assert set(dialog.solve_backend_options.values()) == {"beat_cpu", "beat_cuda", "beat_rocm"}
+        assert set(dialog.solve_backend_options.values()) == {"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"}
         assert dialog.preferences().solve_backend == "beat_cpu"
         assert not hasattr(dialog, "check_server_button")
     finally:

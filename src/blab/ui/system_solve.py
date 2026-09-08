@@ -60,10 +60,30 @@ class SystemSolveWorker(QObject):
 
     def _run_physical_system(self, request) -> None:
         bem_backend = self.prepared.backend_id.removeprefix("beat_")
-        backend = PhysicalSystemProductionBackend(
-            bem_backend=bem_backend,
-            julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
-        )
+        if self.prepared.backend_id == "beat_remote":
+            from blab.remote import RemoteBackend
+
+            options = self.prepared.remote_options or {}
+            backend = RemoteBackend(
+                options.get("url", "http://127.0.0.1:8765"),
+                token=os.environ.get(options.get("token_env", "BLAB_SERVER_TOKEN")),
+                ca_file=options.get("ca_file") or None,
+            )
+            requested = (
+                "beat_cpu"
+                if self.prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
+                else options.get("backend", "beat_auto")
+            )
+            self.status.emit("Checking server runtimes; observation planes are omitted.")
+            selected = backend.select_backend(requested, stop_requested=lambda: self._stop)
+            self.status.emit(f"Server solver: {selected}")
+        else:
+            backend = PhysicalSystemProductionBackend(
+                bem_backend=bem_backend,
+                julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
+            )
+        if self._stop:
+            return
         session = backend.create_system_session(request)
         self._session = session
         self.initialized.emit(
@@ -79,11 +99,11 @@ class SystemSolveWorker(QObject):
     @Slot()
     def stop(self) -> None:
         self._stop = True
-        if self._session is not None:
+        if self._session is not None and self.prepared.backend_id != "beat_remote":
             self._session.stop()
 
-    @staticmethod
-    def _log_backend_status(message: str) -> None:
+    def _log_backend_status(self, message: str) -> None:
+        self.status.emit(message)
         LOGGER.info("Physical-system solver backend status: %s", message)
 
     def _to_live_result(self, result: SystemFrequencyResult) -> FrequencyResult:

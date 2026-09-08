@@ -30,8 +30,13 @@ from blab.solvers.registry import (
 
 
 def test_solver_backend_registry_offers_only_physical_backends() -> None:
-    assert set(backend_label_to_id().values()) == {"beat_cpu", "beat_cuda", "beat_rocm"}
-    assert {info.backend_id for info in available_backend_infos()} == {"beat_cpu", "beat_cuda", "beat_rocm"}
+    assert set(backend_label_to_id().values()) == {"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"}
+    assert {info.backend_id for info in available_backend_infos()} == {
+        "beat_cpu",
+        "beat_cuda",
+        "beat_rocm",
+        "beat_remote",
+    }
     assert normalize_backend_id("") == "beat_cpu"
     for retired in ("local", "bempp", "bempp_cpu", "bempp_local", "server", "bempp_server", "http_server"):
         assert not supports_physical_system_solves(retired)

@@ -19,6 +19,14 @@ class SolverBackendInfo:
 
 
 _BACKENDS: dict[str, SolverBackendInfo] = {
+    "beat_remote": SolverBackendInfo(
+        backend_id="beat_remote",
+        label="Boundary Lab Server",
+        capabilities=SolverCapabilities(
+            supports_remote_assets=True, supports_symmetry=True, supports_channel_resynthesis=True, is_remote=True
+        ),
+        description="Run the physical system on a Boundary Lab server.",
+    ),
     "beat_cuda": SolverBackendInfo(
         backend_id="beat_cuda",
         label="BEAT Engine (Nvidia CUDA)",
@@ -62,9 +70,9 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
 
 
 #: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
-PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
+PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"})
 #: Backends that condense the FEM interior onto the retained interface for coupled solves.
-CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm"})
+CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"})
 
 
 def supports_physical_system_solves(backend_id: str) -> bool:

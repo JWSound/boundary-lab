@@ -32,6 +32,7 @@ from blab.paths import APP_ROOT
 from blab.solvers.registry import backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
 from blab.ui.file_dialogs import FileDialogService
+from blab.ui.server_preferences import ServerPreferences
 from blab.ui.settings import (
     FIELD_CACHE_SIZE_MAX_MB,
     FIELD_CACHE_SIZE_MIN_MB,
@@ -192,6 +193,11 @@ class PreferencesDialog(QDialog):
             "BEAT Engine (CPU)",
         )
         self.solve_backend_combo.setCurrentText(backend_label)
+        self.server_preferences = ServerPreferences(preferences)
+        self.server_preferences.setEnabled(current_backend == "beat_remote")
+        self.solve_backend_combo.currentTextChanged.connect(
+            lambda label: self.server_preferences.setEnabled(self.solve_backend_options[label] == "beat_remote")
+        )
 
         self.polar_step_spin = QDoubleSpinBox()
         self.polar_step_spin.setRange(0.5, 90.0)
@@ -390,6 +396,7 @@ class PreferencesDialog(QDialog):
                 "Application",
                 (
                     ("Solver", self.solve_backend_combo, ""),
+                    ("Server", self.server_preferences, "HTTPS and a token are required for LAN connections."),
                     ("Theme", self.theme_combo, ""),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
@@ -440,6 +447,10 @@ class PreferencesDialog(QDialog):
         return GuiPreferences(
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
+            solve_server_url=self.server_preferences.url.text().strip(),
+            solve_server_backend=self.server_preferences.backend.currentData(),
+            solve_server_token_env=self.server_preferences.token_env.text().strip(),
+            solve_server_ca=self.server_preferences.ca.text().strip(),
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),

@@ -34,7 +34,25 @@ sampling preferences. Explicit point probes and retained BEM/FEM quantities rema
 available subject to existing solve-kind restrictions. No remote retained-field
 resampling or observation-plane viewer integration is provided.
 
-## Authenticated LAN access
+## Application preferences
+
+In **Preferences → Application**, set **Solver** to **Boundary Lab Server**.
+The Server fields contain the address, server solver (Automatic/CPU/CUDA/ROCm),
+token environment-variable name, and optional trusted PEM certificate path.
+The actual token is never stored in preferences. Set its environment variable
+before launching Boundary Lab; restart the app after changing that environment.
+
+**Check connection** queries capabilities in the background and displays runtime
+availability or the connection error. If a runtime is still checking, check again
+after startup completes. Changing connection fields invalidates the displayed
+status. Local solver choices disable the server fields while preserving their values.
+
+Solves use the ordinary GUI start/stop controls and live plots, preserving complex
+per-excitation results. Server negotiation runs on the solve worker thread.
+Remote observation planes remain unavailable; polar and balloon sampling remain
+enabled according to the Observation Config preferences.
+
+## Authenticated LAN setup
 
 The default binds to `127.0.0.1`. A LAN binding requires a shared token and TLS.
 Every endpoint requires authentication when a token is configured. This is a
@@ -131,7 +149,7 @@ complete records remain readable, and an incomplete final event is discarded.
 
 ## Preview limits and qualification
 
-GUI integration, automatic retention cleanup,
+Automatic retention cleanup,
 and queuing are later milestones. Use one service process per dedicated job root.
 Job assets and event journals remain on disk until the operator removes them
 while the service is stopped. This is a development preview, not a public HTTP

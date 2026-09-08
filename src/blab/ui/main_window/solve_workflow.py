@@ -252,6 +252,12 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=0,
                 component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
+                remote_options={
+                    "url": preferences.solve_server_url,
+                    "backend": preferences.solve_server_backend,
+                    "token_env": preferences.solve_server_token_env,
+                    "ca_file": preferences.solve_server_ca,
+                },
                 symmetry_mode=solve_symmetry,
                 observation_planes=(),
             )
@@ -320,6 +326,12 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
+                remote_options={
+                    "url": preferences.solve_server_url,
+                    "backend": preferences.solve_server_backend,
+                    "token_env": preferences.solve_server_token_env,
+                    "ca_file": preferences.solve_server_ca,
+                },
                 symmetry_mode=symmetry,
                 observation_planes=project.observation_planes,
             )
@@ -347,6 +359,12 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 component_channel_by_id=project.component_channel_by_id,
                 backend_id=preferences.solve_backend,
+                remote_options={
+                    "url": preferences.solve_server_url,
+                    "backend": preferences.solve_server_backend,
+                    "token_env": preferences.solve_server_token_env,
+                    "ca_file": preferences.solve_server_ca,
+                },
                 symmetry_mode=project.symmetry,
                 observation_planes=project.observation_planes,
             )
