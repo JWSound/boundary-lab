@@ -37,7 +37,7 @@ def main():
     assert all(manifest["completion_mask"]), manifest["status"]
     assert manifest["engine_runs"], "Missing engine provenance"
     for run in manifest["engine_runs"]:
-        assert run["engine"]["version"] == "0.1.0rc1", run
+        assert run["engine"]["version"] == "0.1.0", run
         assert len(run["engine"]["source_sha256"]) == 64, run
         assert Path(run["runtime"]["project_file"]).resolve() == (engine_paths().project / "Project.toml").resolve()
     with np.load(output / "frequencies/000000.npz") as result:

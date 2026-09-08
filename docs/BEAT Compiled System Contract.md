@@ -6,16 +6,16 @@ can construct JSON requests without importing Boundary Lab models, Qt, or NumPy.
 
 ## Authoritative artifacts and versions
 
-- [JSON Schema](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/beat_contract/system-v1.schema.json): request
+- [JSON Schema](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/beat_contract/system-v1.schema.json): request
   v1 at `urn:beat-engine:system-solve:1`; compiled system v1 at its
   `#/$defs/compiled_system` fragment.
-- [Independent example](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/beat_contract/example-exterior-request.json):
+- [Independent example](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/beat_contract/example-exterior-request.json):
   a prescribed-velocity exterior request. Mesh filenames are illustrative; supply
   matching Gmsh assets before solving.
-- [Conformance corpus](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/beat_contract/conformance.json): shared
+- [Conformance corpus](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/beat_contract/conformance.json): shared
   acceptance/rejection cases for Python and Julia, including a coupled interface.
-- [Python validator](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/beat_contract/__init__.py) and
-  [Julia validator](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/julia_local/src/BeatEngineContract.jl):
+- [Python validator](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/beat_contract/__init__.py) and
+  [Julia validator](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/julia_local/src/BeatEngineContract.jl):
   structural validation plus identifier/reference and topology-length checks.
 
 The schema uses the [JSON Schema 2020-12 structure and reference conventions](https://json-schema.org/understanding-json-schema/structuring).

@@ -218,7 +218,7 @@ Primary implementation anchors:
 
 - [Pattern and spatial statistics](../src/model/field.ts), [drive composition](../src/model/channels.ts).
 - [Request preparation and package cache](../../src/blab/deploy_solve.py), [streaming worker](../../src/blab/deploy_worker.py).
-- [Deploy exterior/Schur solver](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/julia_local/deploy_solver.jl), [ROM construction](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0rc1/src/beat_engine/julia_local/src/BeatEngineSpeakerROM.jl).
+- [Deploy exterior/Schur solver](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/julia_local/deploy_solver.jl), [ROM construction](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/julia_local/src/BeatEngineSpeakerROM.jl).
 - [Acoustic postprocessing](../../src/blab/deploy_acoustic_loading.py), [electrical postprocessing/UI](../src/App.tsx), [captures](../src/model/analysisCapture.ts).
 
 From `deploy/`, use `npm run test:pattern`, `npm run test:analysis`,

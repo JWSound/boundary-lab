@@ -9,7 +9,7 @@ description = "Boundary element loudspeaker radiation solver"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.0rc1/beat_engine-0.1.0rc1-py3-none-any.whl#sha256=10513eff64a9e19d3a5d442887afdcc66a18b621056ee6cd53ca0391493fcb00",
+  "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.0/beat_engine-0.1.0-py3-none-any.whl#sha256=e1a6df370e6402a018facf5ee9f9040c3d7e1d363df318a8060f01106245b67f",
   "gmsh",
   "matplotlib",
   "meshio",
