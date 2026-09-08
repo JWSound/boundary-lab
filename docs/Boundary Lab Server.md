@@ -86,6 +86,10 @@ interior FEM uses CPU. Clients still only choose the server address.
 
 ## Hosted server or container
 
+For locally built CPU/CUDA images, see [Docker setup](Docker.md).
+
+For locally built CPU/CUDA images, see [Docker setup](Docker.md).
+
 Use these settings in an environment with Boundary Lab, Julia, and the required
 solver runtime already installed:
 

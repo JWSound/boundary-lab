@@ -4,6 +4,9 @@ For server setup, access keys, and connecting from the application, see
 [Boundary Lab Server](../Boundary%20Lab%20Server.md). This reference covers the
 implementation, remote contract, job lifecycle, and qualification workflow.
 
+For image construction and offline container qualification, see
+[Container development](container-development.md).
+
 ## Application and engine boundaries
 
 Boundary Lab owns model preparation, HTTP transport, asset transfer, and job
