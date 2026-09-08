@@ -237,11 +237,13 @@ The source-model `blab solve` command and legacy server protocol are retired. Us
 headless project workflow above for new solves. Mesh cleaning and the
 `blab prepare` / `blab plot` commands remain available for historical result files.
 
-An experimental physical-system CPU/CUDA/ROCm server is available through `blab server` and
-`blab project solve --server-url http://127.0.0.1:8765`. This first milestone is
-able to use the server's selected BEAT backend and omits observation planes. Private-network mode permits LAN HTTP; hosted mode requires an access key behind provider HTTPS, VPN, or SSH. Localhost
-remains the default. See [server setup and the remote job
-contract](../Boundary%20Lab%20Server.md).
+The physical-system server is available through `blab server` and
+`blab project solve --server-url http://127.0.0.1:8765`. The server chooses its BEAT
+backend; remote observation planes remain unsupported. Private-network mode
+permits LAN HTTP, while hosted mode requires an access key behind provider HTTPS,
+a VPN, or SSH. Localhost remains the default. See the
+[server setup guide](../Boundary%20Lab%20Server.md) for connection instructions and
+the [server developer reference](boundary-lab-server.md) for the remote job contract.
 
 ## Clean A Mesh
 
