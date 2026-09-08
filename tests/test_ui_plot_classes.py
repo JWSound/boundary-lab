@@ -187,20 +187,21 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "icon_label.setToolTip(tooltip)" in dialog_source
     assert "self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)" in dialog_source
     assert "self.live_plot_streaming_check.toggled.connect(self.live_plot_quality_combo.setEnabled)" in dialog_source
-    solver_config_block = dialog_source[
-        dialog_source.index('"Solver Config"') : dialog_source.index('"Observation Config"')
+    observation_config_block = dialog_source[
+        dialog_source.index('"Observation Config"') : dialog_source.index("left_column.addStretch")
     ]
     application_block = dialog_source[
         dialog_source.index('"Application"') : dialog_source.index(
             "right_column.addStretch", dialog_source.index('"Application"')
         )
     ]
-    assert '"BEM Solver", self.solve_backend_combo' in dialog_source
-    assert '"BEM Solver", self.solve_backend_combo' in solver_config_block
-    assert "Solve Server URL" not in solver_config_block
-    assert "Server access token" not in solver_config_block
+    assert '"Solver Config"' not in dialog_source
+    assert '"BEM Solver"' not in dialog_source
+    assert "self.solve_backend_combo" not in observation_config_block
+    assert "Solve Server URL" not in observation_config_block
+    assert "Server access token" not in observation_config_block
     assert "operating system credential vault" not in dialog_source
-    assert '"BEM Solver", self.solve_backend_combo' not in application_block
+    assert '"Solver", self.solve_backend_combo' in application_block
     assert '"Solve Server URL", self.solve_server_url_edit' not in application_block
     assert '"Solve Backend", self.solve_backend_combo' not in dialog_source
     assert 'uses_bempp = backend_id in {"local", "server"}' not in dialog_source
@@ -212,6 +213,8 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     assert "self.burton_miller_check" not in dialog_source
     assert '"Balloon Sampling",\n                        self.spherical_sampling_check,' in dialog_source
     assert '"Balloon Angle Precision",\n                        self.balloon_angle_precision_spin,' in dialog_source
+    assert "self.spherical_sampling_check" in observation_config_block
+    assert "self.balloon_angle_precision_spin" in observation_config_block
     assert "Gather spherical observation data for 3d ballon viewer" in dialog_source
     assert (
         '"Normalized Channel Correction",\n                        self.normalized_channel_correction_check,'

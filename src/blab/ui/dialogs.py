@@ -322,9 +322,8 @@ class PreferencesDialog(QDialog):
 
         left_column.addWidget(
             self._section(
-                "Solver Config",
+                "Observation Config",
                 (
-                    ("BEM Solver", self.solve_backend_combo, ""),
                     (
                         "Balloon Sampling",
                         self.spherical_sampling_check,
@@ -335,13 +334,6 @@ class PreferencesDialog(QDialog):
                         self.balloon_angle_precision_spin,
                         "Resolution of spherical sampling. 2.5 degrees = ~6,000 points.",
                     ),
-                ),
-            )
-        )
-        left_column.addWidget(
-            self._section(
-                "Observation Config",
-                (
                     (
                         "Polar Angle Step",
                         self.polar_step_spin,
@@ -397,6 +389,7 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Application",
                 (
+                    ("Solver", self.solve_backend_combo, ""),
                     ("Theme", self.theme_combo, ""),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
