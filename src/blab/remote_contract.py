@@ -17,6 +17,7 @@ from blab.system_contract import (
 )
 
 REMOTE_VERSION = 1
+REMOTE_BACKENDS = ("beat_cpu", "beat_cuda", "beat_rocm")
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 MAX_ENTRIES = 1024
 
@@ -37,8 +38,8 @@ def _validate_envelope(envelope: dict) -> None:
         or envelope["version"] != REMOTE_VERSION
     ):
         raise ValueError("Unsupported remote job protocol/version.")
-    if envelope["backend_id"] != "beat_cpu" or envelope["observation_planes"] is not False:
-        raise ValueError("Remote v1 supports CPU jobs without observation planes only.")
+    if envelope["backend_id"] not in REMOTE_BACKENDS or envelope["observation_planes"] is not False:
+        raise ValueError("Remote v1 requires a supported BEAT backend without observation planes.")
     request = envelope["request"]
     if not isinstance(request, dict) or set(request) != {
         "schema_version",
@@ -69,7 +70,7 @@ def _validate_envelope(envelope: dict) -> None:
     system_solve_request_from_dict(request)
 
 
-def build_job_bundle(request: SystemSolveRequest) -> bytes:
+def build_job_bundle(request: SystemSolveRequest, *, backend_id="beat_cpu") -> bytes:
     """Snapshot required meshes, replacing their file references with content hashes."""
     raw = system_solve_request_to_dict(request)
     assets = {}
@@ -84,7 +85,7 @@ def build_job_bundle(request: SystemSolveRequest) -> bytes:
     envelope = {
         "protocol": "blab-remote",
         "version": REMOTE_VERSION,
-        "backend_id": "beat_cpu",
+        "backend_id": backend_id,
         "observation_planes": False,
         "request": raw,
         "assets": [
@@ -108,6 +109,10 @@ def build_job_bundle(request: SystemSolveRequest) -> bytes:
 
 
 def stage_job_bundle(bundle: bytes, directory: Path) -> SystemSolveRequest:
+    return stage_remote_job(bundle, directory)[0]
+
+
+def stage_remote_job(bundle: bytes, directory: Path, *, available_backends=None) -> tuple[SystemSolveRequest, str]:
     """Validate the entire archive before creating an exclusively owned job directory."""
     if len(bundle) > MAX_BUNDLE_BYTES:
         raise ValueError("Remote bundle exceeds upload limit.")
@@ -120,6 +125,9 @@ def stage_job_bundle(bundle: bytes, directory: Path) -> SystemSolveRequest:
             raise ValueError("Remote bundle exceeds expanded size limit.")
         envelope = json.loads(archive.read("job.json"))
         _validate_envelope(envelope)
+        backend_id = envelope["backend_id"]
+        if available_backends is not None and backend_id not in available_backends:
+            raise ValueError(f"Requested backend {backend_id} is not available on this server.")
         assets = envelope["assets"]
         if not isinstance(assets, list):
             raise ValueError("assets must be an array.")
@@ -156,4 +164,4 @@ def stage_job_bundle(bundle: bytes, directory: Path) -> SystemSolveRequest:
             mesh["file"] = str(directory / mesh["file"])
         request = system_solve_request_from_dict(raw)
         validate_solve_plan(request)
-        return request
+        return request, backend_id

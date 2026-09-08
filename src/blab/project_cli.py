@@ -68,7 +68,7 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     solve.add_argument("--request", type=Path, help="Optional headless solve-request JSON overlay")
     solve.add_argument("--backend", choices=HEADLESS_BACKEND_IDS, default=HEADLESS_BACKEND_AUTO)
     solve.add_argument("--output", type=Path, help="New result directory; defaults below the project runs directory")
-    solve.add_argument("--server-url", help="CPU server base URL (LAN requires HTTPS; omits observation planes)")
+    solve.add_argument("--server-url", help="BEAT server base URL (LAN requires HTTPS; omits observation planes)")
     solve.add_argument(
         "--server-token-env", default="BLAB_SERVER_TOKEN", help="Environment variable holding the server token"
     )
@@ -220,15 +220,16 @@ def _solve(args: argparse.Namespace) -> None:
     spec = load_headless_solve_spec(args.request)
     remote_backend = None
     if args.server_url:
+        from blab.physical_model import PhysicalSolveKind, infer_physical_solve_kind
         from blab.remote import RemoteBackend
 
-        if args.backend not in {HEADLESS_BACKEND_AUTO, "beat_cpu"}:
-            raise ValueError("The remote preview supports --backend beat_cpu only.")
         remote_backend = RemoteBackend(
             args.server_url, token=os.environ.get(args.server_token_env), ca_file=args.server_ca
         )
-        remote_backend.check_capabilities()
-        backend_id = "beat_cpu"
+        requested = args.backend
+        if infer_physical_solve_kind(project.physical_system) == PhysicalSolveKind.INTERIOR_FEM:
+            requested = "beat_cpu"
+        backend_id = remote_backend.select_backend(requested)
     else:
         backend_id = resolve_headless_backend(args.backend, julia_executable=args.julia_executable)
     prepared = prepare_headless_solve(
@@ -257,7 +258,7 @@ def _solve(args: argparse.Namespace) -> None:
         emit(
             {
                 "event": "status",
-                "message": "Remote CPU preview: observation planes are omitted; polar and balloon settings are preserved.",
+                "message": f"Remote {backend_id}: observation planes are omitted; polar and balloon settings are preserved.",
             }
         )
     summary = run_headless_solve(
@@ -266,7 +267,11 @@ def _solve(args: argparse.Namespace) -> None:
         output_dir=output,
         backend_id=backend_id,
         public_request=(spec.raw or {"schema_version": 1})
-        | ({"remote": {"observation_planes": False, "backend_id": "beat_cpu"}} if remote_backend else {}),
+        | (
+            {"remote": {"observation_planes": False, "backend_id": backend_id, "backend_requested": args.backend}}
+            if remote_backend
+            else {}
+        ),
         julia_executable=args.julia_executable,
         julia_threads=args.julia_threads,
         event_callback=emit,

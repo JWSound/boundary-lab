@@ -51,7 +51,7 @@ def test_server_help_describes_physical_cpu_preview(capsys):
     with pytest.raises(SystemExit) as exc:
         server.main(["--help"])
     assert exc.value.code == 0
-    assert "authenticated TLS for LAN" in capsys.readouterr().out
+    assert "authenticated TLS for LAN" in " ".join(capsys.readouterr().out.split())
 
 
 def test_postprocess_public_options_are_trimmed() -> None:

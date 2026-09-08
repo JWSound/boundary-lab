@@ -1,4 +1,4 @@
-"""CPU physical-system HTTP service with authenticated TLS for LAN use."""
+"""Physical-system HTTP service with authenticated TLS and BEAT runtime discovery."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from blab.remote_contract import MAX_BUNDLE_BYTES, REMOTE_VERSION, stage_job_bundle
+from blab.remote_contract import MAX_BUNDLE_BYTES, REMOTE_BACKENDS, REMOTE_VERSION, stage_remote_job
+from blab.server_capabilities import BackendDiscovery
 from blab.solvers.beat_engine_runtime import shutdown_beat_engine_workers
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
@@ -28,10 +29,12 @@ from blab.system_contract import system_frequency_result_to_dict
 class SolveService:
     """One active job, disk-backed events, and independent client connections."""
 
-    def __init__(self, root: Path, *, backend=None):
+    def __init__(self, root: Path, *, backend=None, backends=None, discover=False):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.backend = backend or PhysicalSystemProductionBackend(bem_backend="cpu")
+        self.backends = backends or {"beat_cpu": self.backend}
+        self.discovery = BackendDiscovery(self.backends) if discover else None
         self.busy = threading.Lock()
         self.lock = threading.RLock()
         self.sessions = {}
@@ -51,6 +54,13 @@ class SolveService:
         with self.lock, (self.root / job_id / "events.ndjson").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event, allow_nan=False) + "\n")
 
+    def capabilities(self):
+        return (
+            self.discovery.snapshot()
+            if self.discovery
+            else {key: {"available": True, "state": "ready"} for key in self.backends}
+        )
+
     def events(self, job_id, cursor, *, limit=32):
         directory = self.root / job_id
         if not re.fullmatch(r"[0-9a-f]{32}", job_id) or not directory.is_dir():
@@ -69,14 +79,24 @@ class SolveService:
             raise BlockingIOError("A solve is already active; retry after it finishes.")
         try:
             job_id = uuid.uuid4().hex
-            request = stage_job_bundle(bundle, self.root / job_id)
+            available = {key for key, record in self.capabilities().items() if record["available"]}
+            request, backend_id = stage_remote_job(bundle, self.root / job_id, available_backends=available)
             request = replace(
                 request, status_callback=lambda message: self.append(job_id, {"type": "status", "message": message})
             )
-            session = self.backend.create_system_session(request)
+            session = self.backends[backend_id].create_system_session(request)
             with self.lock:
                 self.sessions[job_id] = session
-            self.append(job_id, {"type": "accepted", "backend_id": "beat_cpu"})
+            self.append(
+                job_id,
+                {
+                    "type": "accepted",
+                    "backend_id": backend_id,
+                    "execution_backend": session.request.solver_options.get(
+                        "bem_backend", backend_id.removeprefix("beat_")
+                    ),
+                },
+            )
             thread = threading.Thread(target=self.run, args=(job_id, session), daemon=True)
             self.threads.append(thread)
             thread.start()
@@ -120,6 +140,8 @@ class SolveService:
                 session.stop()
 
     def close(self):
+        if self.discovery:
+            self.discovery.close()
         with self.lock:
             active = list(self.sessions)
         for job_id in active:
@@ -170,10 +192,13 @@ def create_http_server(
                             "version": REMOTE_VERSION,
                             "request_schema_version": SYSTEM_SOLVE_REQUEST_VERSION,
                             "result_schema_version": SYSTEM_RESULT_VERSION,
-                            "backend_ids": ["beat_cpu"],
+                            "backend_ids": [
+                                key for key, record in service.capabilities().items() if record["available"]
+                            ],
+                            "backends": service.capabilities(),
                             "observation_planes": False,
                             "max_bundle_bytes": MAX_BUNDLE_BYTES,
-                            "runtime_check": "Worker availability is checked at job execution.",
+                            "runtime_check": "Startup snapshot; the solve worker rechecks runtime compatibility for every job.",
                         },
                     )
                 elif self.command == "POST" and path.path == "/v1/jobs":
@@ -230,7 +255,7 @@ def create_http_server(
 
 def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog=prog, description="CPU physical-system server (localhost by default; authenticated TLS for LAN)."
+        prog=prog, description="Physical-system CPU/CUDA/ROCm server (localhost by default; authenticated TLS for LAN)."
     )
     parser.add_argument(
         "--root", type=Path, required=True, help="Dedicated directory for job assets and retained events"
@@ -253,10 +278,15 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(args.tls_cert, args.tls_key)
-    backend = PhysicalSystemProductionBackend(
-        bem_backend="cpu", julia_executable=args.julia_executable, julia_threads=args.julia_threads
-    )
-    service = SolveService(args.root, backend=backend)
+    backends = {
+        key: PhysicalSystemProductionBackend(
+            bem_backend=key.removeprefix("beat_"),
+            julia_executable=args.julia_executable,
+            julia_threads=args.julia_threads,
+        )
+        for key in REMOTE_BACKENDS
+    }
+    service = SolveService(args.root, backends=backends, discover=True)
     server = create_http_server(
         service, args.port, host=args.host, token=os.environ.get(args.token_env), tls_context=context
     )

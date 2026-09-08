@@ -1,6 +1,6 @@
 ﻿# Boundary Lab physical-system server preview
 
-`blab server` provides a **CPU service with optional authenticated HTTPS for LAN use**, using
+`blab server` provides a **CPU/CUDA/ROCm service with optional authenticated HTTPS for LAN use**, using
 Boundary Lab's compiled physical-system contract and the installed BEAT Engine.
 The legacy source-model HTTP API and Bempp runtime remain retired.
 
@@ -67,11 +67,38 @@ forwarding. Plain HTTP is supported only for localhost connections. No firewall
 changes are made automatically. Limit port access to intended LAN clients;
 Internet hosting and multi-user isolation remain outside this service's scope.
 
+## Backend discovery and selection
+
+The server probes its installed CPU, CUDA, and ROCm worker environments in the
+background at startup. `/v1/capabilities` reports each backend's `state` (`checking`
+or `ready`), `available` flag, and failure reason, plus engine/runtime information
+when startup succeeds. These checks perform no matrix assembly. Discovery has a
+120-second timeout per runtime; restart the server after installing or repairing
+an environment to refresh the snapshot.
+
+Prepare accelerator environments on the server with
+`python -m beat_engine instantiate --backend cuda` or `--backend rocm`, alongside
+the required drivers/SDK. Missing runtimes remain unavailable with a reason; they
+do not prevent use of a working CPU environment.
+
+Choose `--backend beat_cpu`, `beat_cuda`, or `beat_rocm` on the remote solve command.
+Explicit accelerator selection never silently falls back. The default `beat_auto`
+prefers functional **server** CUDA, then server CPU; it does not probe the client's
+GPU. ROCm is explicitly selectable. Pure interior FEM executes on CPU regardless of
+the BEM backend preference, consistent with local execution.
+
+The client waits for discovery before submitting. The server independently rejects
+jobs targeting an unavailable backend before staging mesh assets. Every actual
+solve worker still negotiates compatibility: startup availability does not promise
+that a job fits GPU memory or that a device will remain functional. Result artifacts
+record selected/requested backends and retain the execution worker's provenance.
+
 ## Remote job contract
 
 The upload is a ZIP archive containing `job.json` and `assets/<sha256>.msh` files.
 The envelope identifies `protocol: blab-remote`, integer `version: 1`,
-`backend_id: beat_cpu`, `observation_planes: false`, the existing engine-defined
+an explicit `backend_id` (`beat_cpu`, `beat_cuda`, or `beat_rocm`),
+`observation_planes: false`, the existing engine-defined
 solve request, and an asset manifest with sizes and SHA-256 hashes. This service
 version is independent of the engine request/result versions.
 
@@ -85,16 +112,16 @@ options are explicitly allowlisted for this preview.
 
 | Endpoint | Behavior |
 | --- | --- |
-| `GET /v1/capabilities` | Service and engine wire versions, CPU configuration, upload limit, and excluded planes |
+| `GET /v1/capabilities` | Wire versions, per-backend runtime status, upload limit, and excluded planes |
 | `POST /v1/jobs` | Submit ZIP bytes; returns HTTP 202 and `job_id` after staging/validation |
 | `GET /v1/jobs/<id>?cursor=0` | Read up to 32 retained events and the next cursor |
 | `DELETE /v1/jobs/<id>` | Request cooperative cancellation; completed results remain readable |
 
 Events include `accepted`, `status`, engine-contract `result` payloads, and a
 terminal `completed`, `failed`, or `cancelled` event. Completed/failed jobs retain
-worker provenance when available. Capability discovery describes service support;
-the BEAT worker performs runtime availability and compatibility checks when a job
-executes. Discovery alone does not guarantee a working Julia installation.
+worker provenance when available. Capability discovery checks runtime startup;
+the solve worker checks availability and compatibility again when a job executes.
+Discovery alone does not qualify numerical accuracy or available device memory.
 
 One job executes at a time; another submission receives HTTP 409. Jobs execute
 independently of their submitting HTTP connection. Clients can replay retained
@@ -104,7 +131,7 @@ complete records remain readable, and an incomplete final event is discarded.
 
 ## Preview limits and qualification
 
-GPU discovery/selection, GUI integration, automatic retention cleanup,
+GUI integration, automatic retention cleanup,
 and queuing are later milestones. Use one service process per dedicated job root.
 Job assets and event journals remain on disk until the operator removes them
 while the service is stopped. This is a development preview, not a public HTTP
@@ -117,7 +144,7 @@ python scripts/check_remote_integration.py --output runs/remote-integration
 ```
 
 It validates the Simple Sealed project, runs one 500 Hz coupled FEM-BEM-LEM solve
-locally and through a separate HTTP server process, and checks exact array equality,
+locally and through a separate HTTP server process, and checks CPU array equality,
 quantity metadata, excitation ordering, and engine/worker provenance. It writes
 `comparison.json` and both ordinary result directories; choose a new output path
 for each run. The script uses an ephemeral authentication token. Add `--tls-cert`
@@ -132,4 +159,12 @@ python scripts/check_remote_integration.py --project examples/compression_driver
 The exterior fixture derives from BEAT's example request and uses the existing
 test mesh. Interior qualification retains nodal pressure without exterior probes.
 These checks establish transport parity, not a broad numerical accuracy benchmark.
-Accelerator and actual cross-machine deployment qualification remain separate.
+Add `--backend beat_cuda` or `--backend beat_rocm` to qualify an available GPU.
+GPU and actual cross-machine deployment qualification require the corresponding
+hardware and network; mocked routing tests alone do not qualify numerical execution.
+
+GPU comparison allows a maximum absolute array error divided by the local array's
+maximum absolute value of `1e-5`, to accommodate FP32 execution differences. CPU
+comparison remains exact. The report includes per-array measured errors and the
+number of arrays that were exactly equal. Use `--compare-only --output RUN_DIR`
+to recheck existing artifacts without rerunning the solver.

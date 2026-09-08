@@ -21,9 +21,9 @@ class _NoRedirect(HTTPRedirectHandler):
 
 class RemoteBackend:
     backend_id = "beat_remote"
-    label = "Boundary Lab Server (CPU preview)"
+    label = "Boundary Lab Server"
 
-    def __init__(self, url, *, token=None, ca_file=None):
+    def __init__(self, url, *, token=None, ca_file=None, backend_id="beat_cpu"):
         parsed = urlsplit(url)
         if (
             parsed.scheme not in {"http", "https"}
@@ -41,6 +41,7 @@ class RemoteBackend:
             raise ValueError("Server token must be ASCII without whitespace.")
         self.url = url.rstrip("/")
         self.token = token
+        self.selected_backend = backend_id
         context = ssl.create_default_context(cafile=ca_file)
         self.opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context), _NoRedirect())
 
@@ -66,12 +67,34 @@ class RemoteBackend:
         }
         if any(type(info.get(key)) is not type(value) or info.get(key) != value for key, value in expected.items()):
             raise ValueError("Incompatible remote server contract versions.")
-        if "beat_cpu" not in info.get("backend_ids", []):
-            raise ValueError("Remote server does not support CPU jobs.")
         return info
 
+    def select_backend(self, requested="beat_auto", *, timeout=150):
+        candidates = ["beat_cuda", "beat_cpu"] if requested == "beat_auto" else [requested]
+        if any(key not in {"beat_cpu", "beat_cuda", "beat_rocm"} for key in candidates):
+            raise ValueError("Unknown remote backend.")
+        deadline = time.monotonic() + timeout
+        while True:
+            info = self.check_capabilities()
+            records = info.get("backends", {})
+            checking = False
+            for key in candidates:
+                record = records.get(key, {"available": key in info.get("backend_ids", [])})
+                if record.get("state") == "checking":
+                    checking = True
+                    break
+                if record.get("available") is True:
+                    self.selected_backend = key
+                    return key
+            if not checking:
+                reasons = "; ".join(f"{key}: {records.get(key, {}).get('reason', 'unavailable')}" for key in candidates)
+                raise ValueError(f"Requested remote backend unavailable: {reasons}")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Server backend discovery timed out.")
+            time.sleep(0.25)
+
     def create_system_session(self, request):
-        self.check_capabilities()
+        self.select_backend(self.selected_backend)
         return RemoteSession(self, request)
 
 
@@ -93,7 +116,9 @@ class RemoteSession:
     def solve_stream(self, *, stop_requested=None):
         if self._stop:
             return
-        self.job_id = self.backend.call("/v1/jobs", data=build_job_bundle(self.request), method="POST")["job_id"]
+        self.job_id = self.backend.call(
+            "/v1/jobs", data=build_job_bundle(self.request, backend_id=self.backend.selected_backend), method="POST"
+        )["job_id"]
         callback = self.request.status_callback or (lambda _message: None)
         callback(f"Remote job: {self.job_id}")
         cursor = 0

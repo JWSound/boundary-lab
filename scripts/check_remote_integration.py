@@ -1,4 +1,4 @@
-"""Compare a real local CPU solve with a separate HTTP server process."""
+"""Compare a real local BEAT solve with a separate HTTP server process."""
 
 import argparse
 import json
@@ -21,9 +21,16 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("runs/remote-integration"))
     parser.add_argument("--project", type=Path, default=Path("examples/Simple_Sealed/simple_sealed.blab.json"))
     parser.add_argument("--frequency", type=float, default=500.0)
+    parser.add_argument("--backend", choices=("beat_cpu", "beat_cuda", "beat_rocm"), default="beat_cpu")
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
+    parser.add_argument(
+        "--compare-only", action="store_true", help="Compare existing local/remote artifacts without solving"
+    )
     args = parser.parse_args()
+    if args.compare_only:
+        compare_results(args.output, https=bool(args.tls_cert))
+        return
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("Provide both --tls-cert and --tls-key")
     interior = (
@@ -52,7 +59,7 @@ def main():
         )
     )
     cli = [sys.executable, "-m", "blab.cli"]
-    common = [str(args.project), "--backend", "beat_cpu", "--request", str(request)]
+    common = [str(args.project), "--backend", args.backend, "--request", str(request)]
     subprocess.run(cli + ["project", "validate"] + common + ["--json"], check=True)
     subprocess.run(
         cli + ["project", "solve"] + common + ["--julia-threads", "2", "--output", str(args.output / "local")],
@@ -109,24 +116,40 @@ def main():
             except subprocess.TimeoutExpired:
                 process.terminate()
                 process.wait(timeout=30)
-    manifests = [json.loads((args.output / mode / "manifest.json").read_text()) for mode in ("local", "remote")]
+    compare_results(args.output, https=bool(args.tls_cert))
+
+
+def compare_results(output: Path, *, https=False):
+    manifests = [json.loads((output / mode / "manifest.json").read_text()) for mode in ("local", "remote")]
     assert all(item["status"] == "complete" and all(item["completion_mask"]) for item in manifests)
     assert manifests[1]["remote_job_id"]
     assert all(item["engine_runs"] and item["worker"] for item in manifests)
     assert manifests[0]["excitation_port_ids"] == manifests[1]["excitation_port_ids"]
     assert manifests[0]["engine_runs"][0]["engine"] == manifests[1]["engine_runs"][0]["engine"]
+    errors = {}
+    exact_count = 0
     with (
-        np.load(args.output / "local/frequencies/000000.npz") as local,
-        np.load(args.output / "remote/frequencies/000000.npz") as remote,
+        np.load(output / "local/frequencies/000000.npz") as local,
+        np.load(output / "remote/frequencies/000000.npz") as remote,
     ):
         assert local.files == remote.files
         assert any(np.iscomplexobj(local[key]) for key in local.files)
         for key in local.files:
             assert np.isfinite(remote[key]).all()
-            np.testing.assert_array_equal(local[key], remote[key])
+            reference = local[key]
+            actual = remote[key]
+            assert reference.shape == actual.shape and reference.dtype == actual.dtype
+            exact_count += int(np.array_equal(reference, actual))
+            scale = max(float(np.max(np.abs(reference))), np.finfo(float).tiny)
+            error = float(np.max(np.abs(reference - actual))) / scale
+            errors[key] = error
+            if manifests[1]["backend_id"] == "beat_cpu":
+                np.testing.assert_array_equal(reference, actual)
+            else:
+                assert error <= 1e-5, (key, error)
         quantity_count = len(local.files)
     for mode in ("local", "remote"):
-        metadata = json.loads((args.output / mode / "frequencies/000000.json").read_text())
+        metadata = json.loads((output / mode / "frequencies/000000.json").read_text())
         if mode == "local":
             local_metadata = metadata
         else:
@@ -134,11 +157,15 @@ def main():
     report = {
         "status": "passed",
         "solve_kind": manifests[1]["solve_kind"],
-        "https": bool(args.tls_cert),
-        "complex_arrays_equal": quantity_count,
+        "https": https,
+        "backend_id": manifests[1]["backend_id"],
+        "arrays_checked": quantity_count,
+        "arrays_exactly_equal": exact_count,
+        "relative_max_errors": errors,
+        "relative_max_tolerance": 0.0 if manifests[1]["backend_id"] == "beat_cpu" else 1e-5,
         "remote_job_id": manifests[1]["remote_job_id"],
     }
-    (args.output / "comparison.json").write_text(json.dumps(report, indent=2))
+    (output / "comparison.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report))
 
 
