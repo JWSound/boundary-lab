@@ -178,10 +178,10 @@ def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> Non
     ("solve_kind", "expects_electrical_impedance", "expects_acoustic_load"),
     [
         (PhysicalSolveKind.COUPLED_BEM_FEM, True, True),
-        (PhysicalSolveKind.INTERIOR_FEM, False, False),
+        (PhysicalSolveKind.INTERIOR_FEM, True, False),
     ],
 )
-def test_electrical_impedance_live_cache_remains_disabled_for_interior_fem(
+def test_transducer_live_caches_follow_solve_capabilities(
     controller,
     solve_kind,
     expects_electrical_impedance,

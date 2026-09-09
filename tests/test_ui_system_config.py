@@ -946,6 +946,48 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
     assert "High confidence" in editor.axis_confidence_label.text()
 
 
+def test_front_only_folded_surface_keeps_full_lumped_chamber_area() -> None:
+    resource = MeshResource("mesh:folded", "Folded", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            ((0, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.5, 1), (1, 0, 1)), dtype=float,
+        ),
+        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5))))],
+        cell_data={"gmsh:physical": [np.asarray((1, 2))]},
+        field_data={"Dome": np.asarray((1, 2)), "Return": np.asarray((2, 2))},
+    )
+    boundaries = tuple(
+        Boundary(
+            id=f"boundary:{name}", name=name, region_id="region:front",
+            group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name=name), kind=BoundaryKind.MOVING,
+        )
+        for name in ("Dome", "Return")
+    )
+    editor = _ComponentEditorDialog(
+        _ComponentDraft(
+            id="component:driver", name="Driver", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=tuple(boundary.id for boundary in boundaries), channel="main",
+            motion_axis_mode="manual",
+            parameters={
+                "re_ohm": 8.0, "le_h": 0.00015, "bl_n_per_a": 10.0,
+                "mmd_kg": 0.001, "cms_m_per_n": 3e-5, "rms_n_s_per_m": 1.2,
+                "motion_axis": [0.0, 0.0, 1.0],
+                "boundary_motion_weights": {"boundary:Return": 0.5},
+                "lumped_sealed_rear_chamber": {
+                    "enabled": True, "volume_m3": 0.001, "projected_area_m2": 0.5625,
+                },
+            },
+        ),
+        boundaries=boundaries, resources_by_id={resource.id: resource},
+        region_names={"region:front": "Front"}, channel_names=("main",),
+        unavailable_boundary_ids=set(), symmetry_mode="off", mesh_cache={resource.id: mesh},
+    )
+    updated = editor.component_draft()
+    # The return face subtracts volume displacement on the same acoustic side.
+    assert updated.parameters["lumped_sealed_rear_chamber"]["projected_area_m2"] == pytest.approx(0.875, rel=0.001)
+    assert editor.projected_area_warning_label.isHidden()
+
+
 def test_components_tab_round_trips_multiple_moving_boundaries() -> None:
     dialog = _configured_fixture_dialog()
     for row in range(dialog.boundaries_table.rowCount()):

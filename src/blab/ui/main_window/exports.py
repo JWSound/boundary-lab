@@ -105,13 +105,15 @@ class ExportsMixin:
                     session.electrical_impedance is not None
                     and session.electrical_impedance.as_impedance_arrays() is not None
                 )
-            if plot_id == "group_delay":
-                return dataset.as_group_delay_arrays() is not None
             if plot_id == "transducer_excursion":
                 return (
                     session.transducer_motion is not None
                     and session.transducer_motion.as_excursion_arrays(dataset) is not None
                 )
+            if dataset.polar_angle_deg.size == 0:
+                return False
+            if plot_id == "group_delay":
+                return dataset.as_group_delay_arrays() is not None
             if plot_id == "max_spl":
                 if session.transducer_motion is None or not session.max_spl_requested:
                     return False

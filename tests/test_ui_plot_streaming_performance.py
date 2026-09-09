@@ -557,6 +557,9 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         def __init__(self):
             self.calls = []
 
+        def clear_comparison_plot(self):
+            self.calls.clear()
+
         def set_comparison_plot(self, *args, **kwargs):
             self.calls.append((args, kwargs))
 
@@ -620,6 +623,13 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         "vertical_reference_angle_deg": -5.0,
     }
     assert len(plots[4].calls[0][0]) == 7
+
+    window._last_completed_visualization_dataset = VisualizationProjection(
+        None, None, None, excursion=excursion, electrical_impedance=electrical,
+    )
+    MainWindow.apply_last_completed_comparison(window)
+    assert [len(plot.calls) for plot in plots] == [0, 0, 0, 2, 0, 0, 2, 0, 0]
+
 
 
 def test_chart_panels_share_layout_profiles_by_artist_requirements() -> None:

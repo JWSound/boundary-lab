@@ -200,6 +200,21 @@ class PhysicalSystemCompiler:
                 raise PhysicalModelCompileError(
                     f"Could not infer projected diaphragm area for component '{component.name}': {exc}"
                 ) from exc
+            rear_chamber = parameters.get("lumped_sealed_rear_chamber")
+            saved_area = rear_chamber.get("projected_area_m2") if isinstance(rear_chamber, dict) else None
+            if (
+                isinstance(rear_chamber, dict)
+                and rear_chamber.get("enabled") is True
+                and isinstance(saved_area, (int, float))
+                and math.isfinite(saved_area)
+                and saved_area > 0.0
+            ):
+                # Area is derived from the current moving geometry, including
+                # motion weights and symmetry, rather than a stale editor value.
+                parameters["lumped_sealed_rear_chamber"] = {
+                    **rear_chamber,
+                    "projected_area_m2": area.projected_area_m2,
+                }
             normalization[component.id] = AcousticImpedanceNormalization(
                 component_id=component.id,
                 component_name=component.name,

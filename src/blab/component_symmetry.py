@@ -299,15 +299,22 @@ def infer_projected_diaphragm_area(
                 raise ComponentSymmetryInferenceError(
                     f"Moving boundary '{boundary.name}' has no acoustic-side assignment."
                 )
-            area_by_side[side_key] = area_by_side.get(side_key, 0.0) + float(np.sum(np.abs(projected)))
+            # A folded surface can face both axial directions while bounding
+            # just one acoustic region. Its volume displacement is the signed
+            # integral, not two separate diaphragm sides.
+            area_by_side[side_key] = area_by_side.get(side_key, 0.0) + float(np.sum(projected))
 
-    region_side_areas = [area for area in area_by_side.values() if area > np.finfo(float).eps]
+    region_side_areas = [abs(area) for area in area_by_side.values() if abs(area) > np.finfo(float).eps]
     if len(region_side_areas) > 2:
         raise ComponentSymmetryInferenceError(
             "An electrodynamic transducer may drive surfaces in no more than two acoustic regions."
         )
     if len(region_side_areas) == 2:
         positive_area, negative_area = region_side_areas
+    elif boundary_side_keys is not None:
+        signed_area = sum(area_by_side.values())
+        positive_area = max(signed_area, 0.0)
+        negative_area = max(-signed_area, 0.0)
 
     scale = max(positive_area, negative_area)
     tolerance = max(np.finfo(float).eps, scale * 1.0e-9)

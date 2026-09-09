@@ -153,29 +153,38 @@ class PlotPresenterMixin:
             "shading": FINAL_ISOBAR_SHADING,
             "contour_step_db": self.preferences.isobar_contour_step_db,
         }
-        self.horizontal_plot.set_comparison_plot(
-            isobar.freq_hz,
-            isobar.angle_deg,
-            isobar.horizontal_db,
-            isobar.clip_min_db,
-            isobar.clip_max_db,
-            **options,
-        )
-        self.vertical_plot.set_comparison_plot(
-            isobar.freq_hz,
-            isobar.angle_deg,
-            isobar.vertical_db,
-            isobar.clip_min_db,
-            isobar.clip_max_db,
-            **options,
-        )
+        if isobar is None:
+            self.horizontal_plot.clear_comparison_plot()
+            self.vertical_plot.clear_comparison_plot()
+        else:
+            self.horizontal_plot.set_comparison_plot(
+                isobar.freq_hz,
+                isobar.angle_deg,
+                isobar.horizontal_db,
+                isobar.clip_min_db,
+                isobar.clip_max_db,
+                **options,
+            )
+            self.vertical_plot.set_comparison_plot(
+                isobar.freq_hz,
+                isobar.angle_deg,
+                isobar.vertical_db,
+                isobar.clip_min_db,
+                isobar.clip_max_db,
+                **options,
+            )
+
         impedance = dataset.impedance
-        self.impedance_plot.set_comparison_plot(
-            impedance.freq_hz,
-            impedance.radiator_names,
-            impedance.real,
-            impedance.imaginary,
-        )
+        if impedance is None:
+            self.impedance_plot.clear_comparison_plot()
+        else:
+            self.impedance_plot.set_comparison_plot(
+                impedance.freq_hz,
+                impedance.radiator_names,
+                impedance.real,
+                impedance.imaginary,
+            )
+
         electrical_impedance = dataset.electrical_impedance
         if electrical_impedance is None:
             self.electrical_impedance_plot.clear_comparison_plot()
@@ -187,15 +196,19 @@ class PlotPresenterMixin:
                 electrical_impedance.phase_deg,
             )
         response = dataset.response
-        self.on_axis_plot.set_comparison_plot(
-            response.freq_hz,
-            response.angle_deg,
-            response.horizontal_spl_db,
-            response.channel_on_axis_names,
-            response.channel_on_axis_spl_db,
-            response.on_axis_phase_deg,
-            response.channel_on_axis_phase_deg,
-        )
+        if response is None:
+            self.on_axis_plot.clear_comparison_plot()
+        else:
+            self.on_axis_plot.set_comparison_plot(
+                response.freq_hz,
+                response.angle_deg,
+                response.horizontal_spl_db,
+                response.channel_on_axis_names,
+                response.channel_on_axis_spl_db,
+                response.on_axis_phase_deg,
+                response.channel_on_axis_phase_deg,
+            )
+
         group_delay = dataset.group_delay
         if group_delay is None:
             self.group_delay_plot.clear_comparison_plot()
@@ -221,17 +234,20 @@ class PlotPresenterMixin:
                 dataset.max_spl.channel_names,
                 dataset.max_spl.spl_db,
             )
-        if dataset.spinorama_planes is None:
-            self.spinorama_plot.set_comparison_plot(
-                response.freq_hz,
-                response.angle_deg,
-                response.horizontal_spl_db,
-                response.vertical_spl_db,
-                horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
-                vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
-            )
+        if response is None:
+            self.spinorama_plot.clear_comparison_plot()
         else:
-            self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(dataset))
+            if dataset.spinorama_planes is None:
+                self.spinorama_plot.set_comparison_plot(
+                    response.freq_hz,
+                    response.angle_deg,
+                    response.horizontal_spl_db,
+                    response.vertical_spl_db,
+                    horizontal_reference_angle_deg=response.spin_horizontal_reference_angle_deg,
+                    vertical_reference_angle_deg=response.spin_vertical_reference_angle_deg,
+                )
+            else:
+                self.spinorama_plot.set_comparison_curves(self._spinorama_curves_for_projection(dataset))
 
     def clear_comparison_history(self) -> None:
         self._solve_session().forget_comparison()
@@ -371,6 +387,9 @@ class PlotPresenterMixin:
         return dataset
 
     def _update_horizontal_plot(self, dataset: VisualizationProjection) -> None:
+        if dataset.isobar is None:
+            self.horizontal_plot._draw_empty()
+            return
         isobar = dataset.isobar
         self.horizontal_plot.update_plot(
             isobar.freq_hz,
@@ -383,6 +402,9 @@ class PlotPresenterMixin:
         )
 
     def _update_vertical_plot(self, dataset: VisualizationProjection) -> None:
+        if dataset.isobar is None:
+            self.vertical_plot._draw_empty()
+            return
         isobar = dataset.isobar
         self.vertical_plot.update_plot(
             isobar.freq_hz,
@@ -395,6 +417,9 @@ class PlotPresenterMixin:
         )
 
     def _update_impedance_plot(self, dataset: VisualizationProjection) -> None:
+        if dataset.impedance is None:
+            self.impedance_plot._draw_empty()
+            return
         impedance = dataset.impedance
         self.impedance_plot.update_plot(
             impedance.freq_hz,
@@ -404,6 +429,9 @@ class PlotPresenterMixin:
         )
 
     def _update_on_axis_plot(self, dataset: VisualizationProjection) -> None:
+        if dataset.response is None:
+            self.on_axis_plot._draw_empty()
+            return
         response = dataset.response
         self.on_axis_plot.update_plot(
             response.freq_hz,
@@ -502,6 +530,9 @@ class PlotPresenterMixin:
         self.show_status(f"Maximum SPL configuration updated: {enabled_count} channel(s) enabled")
 
     def _update_spinorama_plot(self, dataset: VisualizationProjection) -> None:
+        if dataset.response is None:
+            self.spinorama_plot._draw_empty()
+            return
         self.set_spherical_spin_available(dataset.spinorama_spherical is not None)
         self.spinorama_plot.update_curves(self._spinorama_curves_for_projection(dataset))
 

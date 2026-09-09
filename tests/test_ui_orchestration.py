@@ -191,3 +191,58 @@ def test_result_projection_prepares_full_sphere_spinorama_when_available() -> No
     assert projection.spinorama_spherical.sound_power_di_label == "Spherical DI"
     expected_power = 10.0 * np.log10(np.mean(10.0 ** (sphere / 10.0)))
     assert np.isclose(projection.spinorama_spherical.sound_power_db[0], expected_power)
+
+
+def test_interior_projection_retains_motion_and_electrical_data_without_polar_samples() -> None:
+    from types import SimpleNamespace
+
+    from blab.live import TransducerMotionDataset
+
+    dataset = LiveSolveDataset(
+        np.empty(0),
+        channel_configs=(ChannelConfig(name="main"),),
+        flat_target_normalization_enabled=True,
+        voltage_channel_names=frozenset({"main"}),
+    )
+    frequency = 100.0
+    dataset.add(FrequencyResult(
+        freq_hz=frequency,
+        horizontal_spl_norm_db=np.empty(0),
+        vertical_spl_norm_db=np.empty(0),
+        impedance=np.zeros((1, 2)),
+        channel_names=np.asarray(["main"]),
+        horizontal_pressure=np.empty((1, 0), dtype=np.complex64),
+        vertical_pressure=np.empty((1, 0), dtype=np.complex64),
+    ))
+    motion = TransducerMotionDataset(
+        excitation_channel_names=np.asarray(["main"]),
+        transducer_names=np.asarray(["Woofer"]),
+    )
+    motion.results[frequency] = np.asarray([[1j * 2 * np.pi * frequency * 0.001]])
+    electrical = SimpleNamespace(as_impedance_arrays=lambda: (
+        np.asarray([frequency]), np.asarray(["main"]), np.asarray([[6.0]]), np.asarray([[0.0]])
+    ))
+    projection = ResultProjectionService().prepare(
+        dataset,
+        (ChannelConfig(name="main", voltage_v=5.66),),
+        ProjectionOptions(
+            angle_samples=3, freq_samples=1, octave_smoothing=None,
+            horizontal_reference_angle_deg=0.0, vertical_reference_angle_deg=0.0,
+            spin_horizontal_reference_angle_deg=0.0, spin_vertical_reference_angle_deg=0.0,
+            min_db=-30.0, max_db=0.0,
+        ),
+        transducer_motion=motion,
+        electrical_impedance=electrical,
+    )
+    assert projection is not None
+    assert projection.isobar is None
+    assert projection.response is None
+    assert projection.impedance is None
+    assert projection.group_delay is None
+    assert projection.spinorama_planes is None
+    assert projection.max_spl is None
+    np.testing.assert_allclose(projection.excursion.excursion_mm, [[2.0]])
+    np.testing.assert_allclose(projection.electrical_impedance.magnitude_ohm, [[6.0]])
+    snapshot = projection.snapshot()
+    projection.excursion.excursion_mm[:] = 0
+    np.testing.assert_allclose(snapshot.excursion.excursion_mm, [[2.0]])

@@ -605,6 +605,9 @@ def test_coupled_backend_accepts_lumped_sealed_rear_chamber() -> None:
 
     chamber = compiled.components[0].parameters["lumped_sealed_rear_chamber"]
     assert chamber["volume_m3"] == pytest.approx(0.005)
+    area = normalization_records(compiled.metadata)[component.id].effective_area_m2
+    assert chamber["projected_area_m2"] == pytest.approx(area)
+    assert component.parameters["lumped_sealed_rear_chamber"]["projected_area_m2"] == 0.012
     assumptions = {(item.status, item.statement) for item in compiled.assumptions}
     assert (
         AssumptionStatus.INCLUDED,

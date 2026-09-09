@@ -237,6 +237,39 @@ def test_projected_diaphragm_area_reuses_tetrahedron_orientation_geometry(monkey
     assert len(geometry_cache.surface_geometry_by_resource_tag) == 1
 
 
+@pytest.mark.parametrize("axis_sign", (1.0, -1.0))
+@pytest.mark.parametrize("rear", (False, True))
+def test_projected_area_uses_net_displacement_per_region_for_folded_faces(axis_sign, rear) -> None:
+    resource = MeshResource("mesh:folded", "Folded", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            ((0, 0, 0), (2, 0, 0), (0, 1, 0),
+             (0, 0, 1), (0, 0.5, 1), (1, 0, 1),
+             (0, 0, 2), (0, 1, 2), (2, 0, 2)), dtype=float,
+        ),
+        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5), (6, 7, 8))))],
+        cell_data={"gmsh:physical": [np.asarray((1, 2, 3))]},
+        field_data={"Dome": np.asarray((1, 2)), "Return": np.asarray((2, 2)), "Rear": np.asarray((3, 2))},
+    )
+    dome = _boundary(resource, "Dome", "boundary:dome")
+    folded = _boundary(resource, "Return", "boundary:return")
+    back = _boundary(resource, "Rear", "boundary:rear")
+    boundaries = (dome, folded, back) if rear else (dome, folded)
+    inferred = infer_projected_diaphragm_area(
+        boundaries, {resource.id: resource}, (0, 0, axis_sign), 4,
+        boundary_motion_weights={folded.id: 0.5},
+        boundary_side_keys={dome.id: "front", folded.id: "front", back.id: "rear"},
+        mesh_cache={resource.id: mesh},
+    )
+    # Net front displacement: 4 * (1 - 0.5 * 0.25) = 3.5 m².
+    assert inferred.projected_area_m2 == pytest.approx(3.75 if rear else 3.5)
+    if rear:
+        assert inferred.relative_side_mismatch == pytest.approx(0.125)
+    else:
+        assert inferred.relative_side_mismatch is None
+        assert not inferred.has_opposing_sides
+
+
 def test_weighted_surface_area_applies_motion_weights_and_symmetry_completion() -> None:
     resource = MeshResource("mesh", "Mesh", "unused.msh", MeshPurpose.BEM_SURFACE)
     mesh = meshio.Mesh(

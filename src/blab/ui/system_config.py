@@ -1231,6 +1231,7 @@ class _ComponentEditorDialog(QDialog):
                 axis,
                 inference.surface_completion_factor,
                 boundary_motion_weights=self.boundary_motion_weights(),
+                boundary_side_keys={boundary.id: boundary.region_id for boundary in selected},
                 mesh_cache=self._mesh_cache,
                 projected_geometry_cache=self._projected_geometry_cache,
             )

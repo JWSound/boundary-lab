@@ -458,57 +458,56 @@ class SolveWorkflowController(QObject):
                     dtype=np.float64,
                 ),
             )
-            if prepared.solve_kind != PhysicalSolveKind.INTERIOR_FEM:
-                voltage_channel_names = np.asarray(
-                    list(dict.fromkeys(name for name in channel_names if name in self._session.voltage_channel_names))
-                )
-                self._session.electrical_impedance = ElectricalImpedanceDataset(
+            voltage_channel_names = np.asarray(
+                list(dict.fromkeys(name for name in channel_names if name in self._session.voltage_channel_names))
+            )
+            self._session.electrical_impedance = ElectricalImpedanceDataset(
+                excitation_port_ids=tuple(prepared.request.excitation_port_ids),
+                excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                excitation_component_ids=np.asarray([port.component_id for port in excitation_ports]),
+                transducer_component_ids=np.asarray([component.id for component in transducers]),
+                physical_driver_orbit_counts=np.asarray(
+                    [int(component.parameters.get("physical_driver_orbit_count", 1)) for component in transducers],
+                    dtype=np.int64,
+                ),
+                channel_names=voltage_channel_names,
+            )
+            if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM:
+                effective_areas = [
+                    impedance_normalization[component.id].effective_area_m2
+                    for component in transducers
+                    if component.id in impedance_normalization
+                ]
+                self._session.acoustic_load_impedance = AcousticLoadImpedanceDataset(
                     excitation_port_ids=tuple(prepared.request.excitation_port_ids),
-                    excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                    excitation_port_kinds=np.asarray([port.kind.value for port in excitation_ports]),
                     excitation_component_ids=np.asarray([port.component_id for port in excitation_ports]),
                     transducer_component_ids=np.asarray([component.id for component in transducers]),
-                    physical_driver_orbit_counts=np.asarray(
-                        [int(component.parameters.get("physical_driver_orbit_count", 1)) for component in transducers],
-                        dtype=np.int64,
+                    transducer_names=np.asarray([component.name for component in transducers]),
+                    bl_n_per_a=np.asarray(
+                        [component.parameters["bl_n_per_a"] for component in transducers],
+                        dtype=np.float64,
                     ),
-                    channel_names=voltage_channel_names,
+                    mmd_kg=np.asarray(
+                        [component.parameters["mmd_kg"] for component in transducers],
+                        dtype=np.float64,
+                    ),
+                    cms_m_per_n=np.asarray(
+                        [component.parameters["cms_m_per_n"] for component in transducers],
+                        dtype=np.float64,
+                    ),
+                    rms_n_s_per_m=np.asarray(
+                        [component.parameters["rms_n_s_per_m"] for component in transducers],
+                        dtype=np.float64,
+                    ),
+                    effective_area_m2=(
+                        np.asarray(effective_areas, dtype=np.float64)
+                        if len(effective_areas) == len(transducers)
+                        else None
+                    ),
+                    density_kg_per_m3=self._session.acoustic_impedance_density_kg_per_m3,
+                    sound_speed_m_per_s=self._session.acoustic_impedance_sound_speed_m_per_s,
                 )
-                if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM:
-                    effective_areas = [
-                        impedance_normalization[component.id].effective_area_m2
-                        for component in transducers
-                        if component.id in impedance_normalization
-                    ]
-                    self._session.acoustic_load_impedance = AcousticLoadImpedanceDataset(
-                        excitation_port_ids=tuple(prepared.request.excitation_port_ids),
-                        excitation_port_kinds=np.asarray([port.kind.value for port in excitation_ports]),
-                        excitation_component_ids=np.asarray([port.component_id for port in excitation_ports]),
-                        transducer_component_ids=np.asarray([component.id for component in transducers]),
-                        transducer_names=np.asarray([component.name for component in transducers]),
-                        bl_n_per_a=np.asarray(
-                            [component.parameters["bl_n_per_a"] for component in transducers],
-                            dtype=np.float64,
-                        ),
-                        mmd_kg=np.asarray(
-                            [component.parameters["mmd_kg"] for component in transducers],
-                            dtype=np.float64,
-                        ),
-                        cms_m_per_n=np.asarray(
-                            [component.parameters["cms_m_per_n"] for component in transducers],
-                            dtype=np.float64,
-                        ),
-                        rms_n_s_per_m=np.asarray(
-                            [component.parameters["rms_n_s_per_m"] for component in transducers],
-                            dtype=np.float64,
-                        ),
-                        effective_area_m2=(
-                            np.asarray(effective_areas, dtype=np.float64)
-                            if len(effective_areas) == len(transducers)
-                            else None
-                        ),
-                        density_kg_per_m3=self._session.acoustic_impedance_density_kg_per_m3,
-                        sound_speed_m_per_s=self._session.acoustic_impedance_sound_speed_m_per_s,
-                    )
         self._session.result_builder = SolvedSystemBuilder(
             frequencies_hz=prepared.request.frequencies_hz,
             excitation_ids=prepared.request.excitation_port_ids,
@@ -631,11 +630,6 @@ class SolveWorkflowController(QObject):
         )
         if not self._read_preferences().live_plot_streaming:
             return
-        if (
-            self._session.result_builder is not None
-            and self._session.result_builder.provenance.solve_kind == "interior_fem"
-        ):
-            return
         self._plots.request_live_refresh()
 
     @Slot(object)
@@ -710,9 +704,8 @@ class SolveWorkflowController(QObject):
                 self._view.show_status("Rendering final high-resolution plots...")
             refreshed_dataset = None
             if self._read_preferences().live_plot_streaming or solve_completed:
-                if not interior_fem:
-                    refreshed_dataset = self._plots.refresh_plots()
-            if solve_completed and not interior_fem:
+                refreshed_dataset = self._plots.refresh_plots()
+            if solve_completed:
                 if refreshed_dataset is None:
                     refreshed_dataset = self._plots.prepared_live_dataset(
                         angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -723,7 +716,7 @@ class SolveWorkflowController(QObject):
             session.final_isobar_plots_rendered = (
                 solve_completed and not interior_fem and bool(self._plots.visible_isobar_plots())
             )
-            self._view.set_plot_exports_available(not interior_fem)
+            self._view.set_plot_exports_available(True)
             self._view.set_balloon_plot_available(not interior_fem and session.live_dataset.has_balloon_data)
             self._view.set_max_spl_available(solve_completed and not interior_fem and bool(eligible_max_spl_channels))
             self._view.set_max_spl_export_available(

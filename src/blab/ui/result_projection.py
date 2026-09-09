@@ -161,9 +161,9 @@ class MaxSplProjection:
 
 @dataclass(frozen=True)
 class VisualizationProjection:
-    isobar: IsobarProjection
-    impedance: ImpedanceProjection
-    response: PolarResponseProjection
+    isobar: IsobarProjection | None
+    impedance: ImpedanceProjection | None
+    response: PolarResponseProjection | None
     excursion: ExcursionProjection | None = None
     electrical_impedance: ElectricalImpedanceProjection | None = None
     group_delay: GroupDelayProjection | None = None
@@ -173,9 +173,9 @@ class VisualizationProjection:
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
-            isobar=self.isobar.snapshot(),
-            impedance=self.impedance.snapshot(),
-            response=self.response.snapshot(),
+            isobar=None if self.isobar is None else self.isobar.snapshot(),
+            impedance=None if self.impedance is None else self.impedance.snapshot(),
+            response=None if self.response is None else self.response.snapshot(),
             excursion=None if self.excursion is None else self.excursion.snapshot(),
             electrical_impedance=(None if self.electrical_impedance is None else self.electrical_impedance.snapshot()),
             group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
@@ -203,6 +203,27 @@ class ResultProjectionService:
             channels,
             flat_target_reference_angle_deg=options.horizontal_reference_angle_deg,
         )
+        excursion = None
+        if transducer_motion is not None:
+            excursion_arrays = transducer_motion.as_excursion_arrays(dataset)
+            if excursion_arrays is not None:
+                excursion = ExcursionProjection(*excursion_arrays)
+        electrical_projection = None
+        if electrical_impedance is not None:
+            electrical_arrays = electrical_impedance.as_impedance_arrays()
+            if electrical_arrays is not None:
+                electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
+        # Interior solves have no polar samples, but retain electrical and motion data.
+        if dataset.polar_angle_deg.size == 0:
+            if excursion is None and electrical_projection is None:
+                return None
+            return VisualizationProjection(
+                isobar=None,
+                impedance=None,
+                response=None,
+                excursion=excursion,
+                electrical_impedance=electrical_projection,
+            )
         arrays = dataset.as_visualization_dataset(
             PrepConfig(
                 angle_samples=options.angle_samples,
@@ -220,16 +241,6 @@ class ResultProjectionService:
         )
         if arrays is None:
             return None
-        excursion = None
-        if transducer_motion is not None:
-            excursion_arrays = transducer_motion.as_excursion_arrays(dataset)
-            if excursion_arrays is not None:
-                excursion = ExcursionProjection(*excursion_arrays)
-        electrical_projection = None
-        if electrical_impedance is not None:
-            electrical_arrays = electrical_impedance.as_impedance_arrays()
-            if electrical_arrays is not None:
-                electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
         group_delay_projection = None
         group_delay_arrays = dataset.as_group_delay_arrays()
         if group_delay_arrays is not None:

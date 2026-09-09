@@ -361,7 +361,7 @@ class LiveSolveDataset:
             result.horizontal_pressure,
             angles,
             self.flat_target_reference_angle_deg,
-            enabled=self.flat_target_normalization_enabled,
+            enabled=self.flat_target_normalization_enabled and angles.size > 0,
         )
         return np.asarray(
             [
