@@ -245,7 +245,7 @@ def test_level_one_archive_is_versioned_and_preserves_complex_pattern(tmp_path: 
     assert manifest["fidelity_level"] == 1
     assert manifest["capabilities"] == ["complex_spherical_pattern"]
     assert manifest["excitation_port_ids"] == ["port:a", "port:b"]
-    assert manifest["phasor_convention"] == "exp(-i omega t)"
+    assert manifest["phasor_convention"] == "exp(+i omega t)"
     assert manifest["coordinate_system"]["forward_axis"] == "+Y"
     assert manifest["coordinate_system"]["source_forward_axis"] == "+Z"
     with zipfile.ZipFile(output) as archive:

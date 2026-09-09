@@ -517,7 +517,7 @@ def test_interior_particle_velocity_uses_exact_p1_pressure_gradient() -> None:
     results = interior_field_results_from_solved_system(solved)
 
     assert results is not None
-    expected = np.asarray([2.0, 3.0, 4.0]) / (1j * 2.0 * np.pi * 100.0 * 2.0)
+    expected = np.asarray([2.0, 3.0, 4.0]) / (-1j * 2.0 * np.pi * 100.0 * 2.0)
     np.testing.assert_allclose(results.particle_velocity(100.0, "system")[0], expected, rtol=1e-6)
 
 
@@ -1176,9 +1176,9 @@ def test_field_scalar_projection_uses_stable_ranges_and_animation_phase() -> Non
 
     assert normalized.clim == (-40.0, 0.0)
     np.testing.assert_allclose(normalized.values, [0.0, 0.0])
-    np.testing.assert_allclose(animated.values, [0.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(animated.values, [0.0, -1.0], atol=1e-12)
     assert animated.clim == (-1.0, 1.0)
-    np.testing.assert_allclose(phase.values, [0.0, -90.0], atol=1e-12)
+    np.testing.assert_allclose(phase.values, [0.0, 90.0], atol=1e-12)
 
     stronger_pressure = np.asarray([2.0 + 0.0j, 0.0 + 1.0j])
     relative_to_initial = project_field_scalars(
@@ -1302,7 +1302,7 @@ def test_animation_frame_updates_scalars_without_rebuilding_scene(association: s
     updated = ObservationPlaneViewport._update_animation_frame(editor, plane)
 
     assert updated
-    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(attributes[FIELD_SCALAR_NAME], [0.0, -1.0], atol=1e-12)
     assert viewer.render_calls == 1
 
 

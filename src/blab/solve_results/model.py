@@ -15,9 +15,14 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from blab.phasor import SOLVER_PHASOR_CONVENTION
+from blab.phasor import SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import CompiledPhysicalSystem
-from blab.system_contract import QuantityResult, SystemFrequencyResult, validate_system_frequency_result
+from blab.system_contract import (
+    QuantityResult,
+    SystemFrequencyResult,
+    canonicalize_phasor_result,
+    validate_system_frequency_result,
+)
 
 RESULT_MODEL_VERSION = 1
 PHASOR_CONVENTION = SOLVER_PHASOR_CONVENTION
@@ -166,7 +171,9 @@ class SolvedSystemBuilder:
             raise ValueError("Solved-system domain ids must be unique.")
 
         self.run_id = run_id or uuid.uuid4().hex
-        self.provenance = provenance
+        self._source_phasor = provenance.phasor_convention
+        convert_phasor(0j, self._source_phasor)
+        self.provenance = replace(provenance, phasor_convention=PHASOR_CONVENTION)
         self.frequencies_hz = frequencies
         self.excitation_ids = excitation_ids
         self.domains = domain_map
@@ -183,6 +190,9 @@ class SolvedSystemBuilder:
     def add(self, result: SystemFrequencyResult) -> int:
         """Add or replace one streamed result and return its canonical index."""
 
+        result = canonicalize_phasor_result(replace(
+            result, diagnostics={"phasor_convention": self._source_phasor, **result.diagnostics},
+        ))
         if self._finalized:
             raise RuntimeError("A finalized solved-system builder cannot accept more results.")
         validate_system_frequency_result(result)

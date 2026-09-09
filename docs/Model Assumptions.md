@@ -97,10 +97,10 @@ where:
 
 The exterior mesh is the boundary of the acoustic domain. Prescribed outward
 normal velocity is converted to Neumann data using the solver's
-`exp(-i omega t)` convention:
+`exp(+i omega t)` convention:
 
 $$
-q = \frac{\partial p}{\partial n} = i \rho \omega v_n
+q = \frac{\partial p}{\partial n} = -i \rho \omega v_n
 $$
 
 where `rho` is fluid density. Rigid surfaces use `v_n = 0`; moving surfaces use
@@ -145,7 +145,7 @@ natural boundary condition; homogeneous bulk loss and rigid-backed Miki wall
 treatments use the same formulations as a coupled solve.
 
 A plane-wave tube termination imposes the first-order outgoing condition
-$\partial p/\partial n=i k p$ for the `exp(-i omega t)` convention. It represents
+$\partial p/\partial n=-i k p$ for the `exp(+i omega t)` convention. It represents
 the characteristic impedance $\rho c$ of a locally uniform tube, not a hidden
 exterior region. Its accuracy degrades when higher-order or evanescent modes
 are significant at the cut plane. See [Interior FEM Solver](Interior%20FEM%20Solver.md).

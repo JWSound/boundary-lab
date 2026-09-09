@@ -4,20 +4,28 @@ from __future__ import annotations
 
 import numpy as np
 
-SOLVER_PHASOR_CONVENTION = "exp(-i omega t)"
+LEGACY_PHASOR_CONVENTION = "exp(-i omega t)"
+SOLVER_PHASOR_CONVENTION = "exp(+i omega t)"
 STANDARD_AUDIO_PHASOR_CONVENTION = "exp(+i omega t)"
 
 
-def solver_to_standard_phasor(values):
-    """Convert BEAT ``exp(-i omega t)`` phasors to standard audio phasors."""
+def convert_phasor(values, source: str, target: str = STANDARD_AUDIO_PHASOR_CONVENTION):
+    """Convert explicitly labelled complex data, exactly once at ingestion."""
+    supported = {LEGACY_PHASOR_CONVENTION, STANDARD_AUDIO_PHASOR_CONVENTION}
+    if source not in supported or target not in supported:
+        raise ValueError(f"Unsupported phasor conversion: {source!r} to {target!r}.")
+    return np.conjugate(values) if source != target else np.asarray(values)
 
-    return np.conjugate(values)
+
+def solver_to_standard_phasor(values):
+    """Canonical solver data already uses positive-time audio phasors."""
+    return np.asarray(values)
 
 
 def standard_to_solver_phasor(values):
-    """Convert standard audio phasors to BEAT's native solver convention."""
+    """The requested BEAT convention is the positive-time audio convention."""
 
-    return np.conjugate(values)
+    return np.asarray(values)
 
 
 def solver_phase_deg(values: np.ndarray) -> np.ndarray:
@@ -32,6 +40,8 @@ def solver_phase_deg(values: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "LEGACY_PHASOR_CONVENTION",
+    "convert_phasor",
     "SOLVER_PHASOR_CONVENTION",
     "STANDARD_AUDIO_PHASOR_CONVENTION",
     "solver_phase_deg",

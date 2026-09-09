@@ -138,7 +138,7 @@ frequency axis, excitation ids, completion mask, and run status. Each frequency
 is committed independently, so a failed or interrupted run retains completed
 complex quantities and diagnostics. The frequency JSON maps semantic quantity
 ids to arrays in the corresponding NPZ file. The result phasor convention is
-`exp(-i omega t)`.
+`exp(+i omega t)`.
 
 The current headless interface evaluates arbitrary exterior probe points declared
 before the solve. Retained BEM traces and FEM nodal fields provide the data needed

@@ -137,7 +137,7 @@ def calculate_max_spl_curves(
         channel_velocity = np.sum(velocity[:, excitation_indices, :], axis=1)
         assigned_velocity = channel_velocity[:, transducer_indices]
         peak_excursion_mm = (
-            np.sqrt(2.0) * np.abs(assigned_velocity / (-1j * 2.0 * np.pi * frequencies[:, np.newaxis])) * 1000.0
+            np.sqrt(2.0) * np.abs(assigned_velocity / (1j * 2.0 * np.pi * frequencies[:, np.newaxis])) * 1000.0
         )
         with np.errstate(divide="ignore", invalid="ignore"):
             excursion_gain = np.min(limit.xmax_mm / peak_excursion_mm, axis=1)

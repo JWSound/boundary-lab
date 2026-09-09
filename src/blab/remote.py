@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 
 from blab import __version__
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.remote_contract import REMOTE_VERSION, build_job_bundle
 from blab.solvers.engine_contract import SYSTEM_RESULT_VERSION, SYSTEM_SOLVE_REQUEST_VERSION
 from blab.system_contract import SystemSolveMetadata, system_frequency_result_from_dict
@@ -87,6 +88,8 @@ class RemoteBackend:
         }
         if any(type(info.get(key)) is not type(value) or info.get(key) != value for key, value in expected.items()):
             raise ValueError("Incompatible remote server contract versions.")
+        if SOLVER_PHASOR_CONVENTION not in info.get("phasor_conventions", []):
+            raise ValueError("Remote server does not support positive-time phasors; update the server.")
         return info
 
     def wait_ready(self, *, timeout=150, stop_requested=None):
@@ -145,7 +148,10 @@ class RemoteSession:
                 if kind == "accepted":
                     self.selected_backend = event["backend_id"]
                 elif kind == "result":
-                    yield system_frequency_result_from_dict(event["result"])
+                    raw = event["result"]
+                    if raw.get("diagnostics", {}).get("phasor_convention") != SOLVER_PHASOR_CONVENTION:
+                        raise RuntimeError("Remote solver returned an incompatible phasor convention.")
+                    yield system_frequency_result_from_dict(raw)
                 # Detailed worker statuses remain in the server journal. Result
                 # consumers produce the normal per-frequency timing summary.
                 elif kind in {"completed", "cancelled", "failed"}:

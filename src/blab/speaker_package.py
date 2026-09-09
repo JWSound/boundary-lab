@@ -16,6 +16,7 @@ from typing import Any, Callable
 import numpy as np
 
 from blab.config import normalize_symmetry
+from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import AcousticRegionKind, PhysicalSolveKind
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
@@ -563,12 +564,20 @@ def validate_speaker_package(path: str | Path) -> dict[str, Any]:
                 actual = hashlib.sha256(archive.read(member)).hexdigest()
                 if actual != expected:
                     raise ValueError(f"Speaker package member {member!r} failed its checksum.")
+            convert_phasor(0j, manifest.get("phasor_convention", LEGACY_PHASOR_CONVENTION))
             return manifest
     except zipfile.BadZipFile as exc:
         raise ValueError("File is not a valid .blabsp archive.") from exc
 
 
 def _write_archive(path: Path, solved: SolvedSystem, config: SpeakerPackageConfig) -> None:
+    source = solved.provenance.phasor_convention
+    convert_phasor(0j, source)
+    if source != SOLVER_PHASOR_CONVENTION:
+        solved = replace(solved,
+            provenance=replace(solved.provenance, phasor_convention=SOLVER_PHASOR_CONVENTION),
+            quantities={key: replace(q, values=convert_phasor(q.values, source)) for key, q in solved.quantities.items()},
+        )
     members, manifest = _archive_members(solved, config)
     manifest_bytes = _json_bytes(manifest)
     members["manifest.json"] = manifest_bytes

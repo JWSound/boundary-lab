@@ -462,7 +462,7 @@ class LiveSolveDataset:
         if values.shape[-1] != freqs.size:
             raise ValueError("Pressure frequency axis must match freqs_hz.")
         reference_delay_s = distance_m / sound_speed_m_per_s
-        reference_rotation = np.exp(-1j * 2.0 * np.pi * freqs * reference_delay_s)
+        reference_rotation = np.exp(1j * 2.0 * np.pi * freqs * reference_delay_s)
         return values * reference_rotation
 
 
@@ -598,7 +598,7 @@ class TransducerMotionDataset:
                 raise ValueError(f"No synthesized channel basis is available for {exc.args[0]!r}.") from exc
             velocity = self.results[frequency]
             synthesized_velocity = np.sum(velocity * excitation_weights[:, np.newaxis], axis=0)
-            excursion_mm = np.abs(synthesized_velocity / (-1j * 2.0 * np.pi * frequency)) * 1000.0
+            excursion_mm = np.abs(synthesized_velocity / (1j * 2.0 * np.pi * frequency)) * 1000.0
             rows.append(excursion_mm.astype(np.float32, copy=False))
         return (
             np.asarray(frequencies, dtype=np.float32),
@@ -848,8 +848,8 @@ class AcousticLoadImpedanceDataset:
 
         omega = 2.0 * np.pi * float(result.freq_hz)
         mechanical_impedance = np.asarray(self.rms_n_s_per_m, dtype=np.float64) + 1j * (
-            1.0 / (omega * np.asarray(self.cms_m_per_n, dtype=np.float64))
-            - omega * np.asarray(self.mmd_kg, dtype=np.float64)
+            omega * np.asarray(self.mmd_kg, dtype=np.float64)
+            - 1.0 / (omega * np.asarray(self.cms_m_per_n, dtype=np.float64))
         )
         load_force = (
             np.asarray(self.bl_n_per_a, dtype=np.float64)[:, np.newaxis] * current_basis

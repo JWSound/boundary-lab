@@ -53,7 +53,7 @@ export function createDemoPackage(): LoadedSpeakerPackage {
       const magnitude = response * (1 - directionality * (1 - frontWeight));
       const offset = frequencyIndex * directionCount + directionIndex;
       real[offset] = magnitude * Math.cos(phase);
-      imag[offset] = magnitude * Math.sin(phase);
+      imag[offset] = -magnitude * Math.sin(phase);
     }
   }
 
@@ -73,7 +73,7 @@ export function createDemoPackage(): LoadedSpeakerPackage {
       ],
       frequencies_hz: Array.from(frequencies),
       excitation_port_ids: ["input:full-range"],
-      phasor_convention: "exp(-i omega t)",
+      phasor_convention: "exp(+i omega t)",
       coordinate_system: { forward_axis: "+Y", unit: "m" },
       files: { patterns: { path: "data/patterns.npz" } },
       medium: { sound_speed_m_per_s: 343, density_kg_per_m3: 1.21 },

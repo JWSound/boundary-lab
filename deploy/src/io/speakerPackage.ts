@@ -72,7 +72,8 @@ export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string, sourceP
   if (manifest.schema !== "boundary-lab-speaker-package" || manifest.schema_version !== 1) {
     throw new Error("This prototype supports Boundary Lab speaker package schema version 1.");
   }
-  if (manifest.phasor_convention !== "exp(-i omega t)") {
+  const sourceConvention = manifest.phasor_convention ?? "exp(-i omega t)";
+  if (!["exp(-i omega t)", "exp(+i omega t)"].includes(sourceConvention)) {
     throw new Error(`Unsupported phasor convention ${manifest.phasor_convention}.`);
   }
   const patternPath = manifest.files.patterns?.path;
@@ -83,6 +84,10 @@ export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string, sourceP
   const radii = asFloat32(pattern.radius_m);
   const pressureArray = pattern.pressure_pa;
   const pressure = asComplexFloat32(pressureArray);
+  if (sourceConvention === "exp(-i omega t)") {
+    for (let index = 0; index < pressure.imag.length; index += 1) pressure.imag[index] *= -1;
+  }
+  manifest.phasor_convention = "exp(+i omega t)";
   if (pressureArray.shape.length !== 3) throw new Error("Pattern pressure must have frequency, excitation, and direction axes.");
 
   const geometryPath = manifest.files.fixed_sources?.geometry_mesh;

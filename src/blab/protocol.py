@@ -17,6 +17,7 @@ from blab.config import (
     RadiatorConfig,
     SimulationConfig,
 )
+from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.solvers.base import FrequencyResult, FrequencySolveTimings, SolverDiagnostics
 
 PROTOCOL_VERSION = 2
@@ -211,6 +212,7 @@ def complex_ndarray_from_wire(raw: Any) -> np.ndarray | None:
 def frequency_result_to_dict(result: FrequencyResult) -> dict[str, Any]:
     return {
         "freq_hz": float(result.freq_hz),
+        "phasor_convention": SOLVER_PHASOR_CONVENTION,
         "horizontal_spl_norm_db": ndarray_to_wire(result.horizontal_spl_norm_db),
         "vertical_spl_norm_db": ndarray_to_wire(result.vertical_spl_norm_db),
         "impedance": ndarray_to_wire(result.impedance),
@@ -270,6 +272,14 @@ def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostic
 
 
 def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
+    source = raw.get("phasor_convention", (raw.get("diagnostics") or {}).get("phasor_convention", LEGACY_PHASOR_CONVENTION))
+    convert_phasor(0j, source)
+
+    def pressure(name):
+        values = complex_ndarray_from_wire(raw.get(name))
+        return None if values is None else convert_phasor(values, source)
+
+    # Legacy impedance pairs were already serialized in standard audio convention.
     return FrequencyResult(
         freq_hz=float(raw["freq_hz"]),
         horizontal_spl_norm_db=ndarray_from_wire(raw["horizontal_spl_norm_db"]),
@@ -279,9 +289,9 @@ def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
         vertical_spl_db=ndarray_from_wire(raw.get("vertical_spl_db")),
         sphere_spl_norm_db=ndarray_from_wire(raw.get("sphere_spl_norm_db")),
         channel_names=(None if raw.get("channel_names") is None else np.asarray(raw.get("channel_names"))),
-        horizontal_pressure=complex_ndarray_from_wire(raw.get("horizontal_pressure")),
-        vertical_pressure=complex_ndarray_from_wire(raw.get("vertical_pressure")),
-        sphere_pressure=complex_ndarray_from_wire(raw.get("sphere_pressure")),
+        horizontal_pressure=pressure("horizontal_pressure"),
+        vertical_pressure=pressure("vertical_pressure"),
+        sphere_pressure=pressure("sphere_pressure"),
         timings=frequency_solve_timings_from_dict(raw.get("timings")),
         diagnostics=solver_diagnostics_from_dict(raw.get("diagnostics")),
     )
@@ -319,6 +329,7 @@ def solve_request_from_config_and_frequencies(
     payload = {
         "schema_version": PROTOCOL_VERSION,
         "config": simulation_config_to_dict(config),
+        "phasor_convention": SOLVER_PHASOR_CONVENTION,
         "frequencies_hz": ndarray_to_wire(np.asarray(frequencies_hz, dtype=np.float32)),
     }
     if include_assets:

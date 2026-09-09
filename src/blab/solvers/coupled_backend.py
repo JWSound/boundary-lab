@@ -18,6 +18,7 @@ from blab.acoustic_materials import (
     wall_impedance_parameters,
 )
 from blab.config import DEFAULT_CHANNEL_VOLTAGE_V
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.physical_model import (
     AcousticRegionKind,
     BoundaryKind,
@@ -164,7 +165,7 @@ class CoupledSession:
                 text = line.strip()
                 if not text:
                     continue
-                yield system_frequency_result_from_dict(json.loads(text))
+                yield self._parse_result(json.loads(text))
             return_code = self._process.wait()
             if self._stderr_thread is not None:
                 self._stderr_thread.join(timeout=2.0)
@@ -173,6 +174,13 @@ class CoupledSession:
                 raise RuntimeError(detail or f"Coupled Julia solver exited with status {return_code}.")
         finally:
             self._close_process()
+
+    def _parse_result(self, raw: dict) -> SystemFrequencyResult:
+        expected = self.request.solver_options.get("phasor_convention", SOLVER_PHASOR_CONVENTION)
+        actual = raw.get("diagnostics", {}).get("phasor_convention", "exp(-i omega t)")
+        if actual != expected:
+            raise RuntimeError(f"BEAT phasor convention mismatch: requested {expected}, received {actual}.")
+        return system_frequency_result_from_dict(raw)
 
     def _solve_stream_persistent(
         self,
@@ -205,7 +213,7 @@ class CoupledSession:
                     event_type = str(event.get("type", ""))
                     if event_type == "result":
                         if not self._stop:
-                            yield system_frequency_result_from_dict(event["result"])
+                            yield self._parse_result(event["result"])
                     elif event_type == "status" and callback is not None:
                         callback(str(event.get("message", "")))
                     elif event_type == "failed":
@@ -291,6 +299,7 @@ class _CoupledBackend:
 
     def create_system_session(self, request: SystemSolveRequest) -> CoupledSession:
         solver_options = dict(request.solver_options)
+        solver_options.setdefault("phasor_convention", "exp(+i omega t)")
         has_bounded = any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in request.compiled_system.regions)
         has_unbounded = any(
             region.kind == AcousticRegionKind.UNBOUNDED_AIR for region in request.compiled_system.regions

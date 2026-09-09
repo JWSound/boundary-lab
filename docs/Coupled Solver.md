@@ -192,14 +192,14 @@ consistent mass matrices once for the frequency sweep. At angular frequency
 \(\omega=2\pi f\), the FEM Helmholtz matrix is
 
 $$
-A_F = K-k^2M-i k^2M_\eta, \qquad k=\frac{\omega}{c},
+A_F = K-k^2M+i k^2M_\eta, \qquad k=\frac{\omega}{c},
 $$
 
 where \(M_\eta\) is the consistent FEM mass matrix weighted by the loss factor
 of each bounded region. **FEM Bulk Loss Factor** is configured per region in
 the System window using the presets `0`, `0.002`, `0.005`, `0.01`, `0.02`, and
 `0.05`. `0` reproduces the lossless formulation. With the solver's
-\(\exp(-i\omega t)\) convention, the negative imaginary mass term is passive.
+\(\exp(+i\omega t)\) convention, the positive imaginary mass term is passive.
 Near an isolated lightly damped cavity mode, \(Q\) is approximately
 \(1/\eta\).
 
@@ -221,11 +221,11 @@ $$
 
 forms the rigid-backed surface impedance
 \(Z_s=-iZ_c\cot(k_cd)\) in the conventional \(e^{+i\omega t}\) convention,
-and conjugates it for the solver's \(e^{-i\omega t}\) convention. Its surface
+which is also the native solver convention. Its surface
 admittance \(Y_s=1/Z_s\) contributes
 
 $$
-A_F \leftarrow A_F-i\rho\omega Y_s B_\Gamma,
+A_F \leftarrow A_F+i\rho\omega Y_s B_\Gamma,
 $$
 
 where \(B_\Gamma\) is the consistent P1 surface mass matrix. This is a
@@ -243,7 +243,7 @@ A prescribed normal velocity \(v_n\) on a moving FEM or BEM surface is
 converted to the implemented pressure normal derivative
 
 $$
-q_v=i\rho\omega v_n
+q_v=-i\rho\omega v_n
 $$
 
 and integrated against the triangular P1 boundary basis for FEM surfaces or
@@ -308,11 +308,11 @@ With the solver's time convention, the electrical and mechanical impedances
 are
 
 $$
-Z_e=R_e-i\omega L_e,
+Z_e=R_e+i\omega L_e,
 $$
 
 by default. A transducer may instead enable the optional Thorborg-Futtrup
-semi-inductance model. With (s=-i\omega), its electrical impedance is
+semi-inductance model. With (s=+i\omega), its electrical impedance is
 
 $$
 Z_e=R_e' + sL_{eb}+
@@ -330,7 +330,7 @@ top-level `Re` and `Le` model.
 
 $$
 Z_m=R_\mathrm{ms}
-+i\left(\frac{1}{\omega C_\mathrm{ms}}-\omega M_\mathrm{md}\right).
++i\left(\omega M_\mathrm{md}-\frac{1}{\omega C_\mathrm{ms}}\right).
 $$
 
 The voltage and force equations are
@@ -381,8 +381,8 @@ With \(N_T\) electrodynamic transducers, the monolithic system extends to
 
 $$
 \begin{bmatrix}
-A_F & 0 & -G_F & -i\rho\omega D_F & 0 \\
-0 & A_B & -R_BQ_B & -R_B(i\rho\omega D_B) & 0 \\
+A_F & 0 & -G_F & +i\rho\omega D_F & 0 \\
+0 & A_B & -R_BQ_B & +R_B(i\rho\omega D_B) & 0 \\
 T_F & -T_B & 0 & 0 & 0 \\
 -B_F^\mathsf{T} & B_B^\mathsf{T} & 0 & Z_m & -Bl \\
 0 & 0 & 0 & Bl & Z_e
@@ -705,10 +705,10 @@ within their shared modal subspace, so low individual MAC or participation
 agreement in a cluster must be assessed at the subspace level before declaring
 a mode unmatched.
 
-For the solver's `exp(-i omega t)` convention, this diagnostic loss uses
+For the solver's `exp(+i omega t)` convention, this diagnostic loss uses
 
 $$
-A_F(eta)=K-k^2(1+i eta)M=K-k^2M-i eta k^2M.
+A_F(eta)=K-k^2(1-i eta)M=K-k^2M+i eta k^2M.
 $$
 
 The end-to-end benchmark exercises the compiled request and streamed-result

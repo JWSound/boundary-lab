@@ -315,7 +315,7 @@ const FIELD_PLANE_FRAGMENT_SHADER = /* glsl */ `
       vec2 pressure = filteredPressure(vUv);
       float valuePa = uDisplayMode < 1.5 ? pressure.x : pressure.y;
       if (uPhaseAnimationEnabled > 0.5) {
-        valuePa = pressure.x * cos(uPhaseRad) + pressure.y * sin(uPhaseRad);
+        valuePa = pressure.x * cos(uPhaseRad) - pressure.y * sin(uPhaseRad);
       }
       float position = clamp(0.5 + valuePa / (2.0 * max(0.0001, uPressureScalePa)), 0.0, 1.0);
       color = pressurePalette(position);

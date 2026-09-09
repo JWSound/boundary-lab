@@ -36,7 +36,7 @@ def fixture():
     velocity = np.array([1 + 1j, 2 - 1j])
     active = np.array([-2 - 4j, 12 + 8j])
     omega = 2 * np.pi * 100
-    zm = 3 + 1j * (1 / (omega * 0.001) - omega * 0.1)
+    zm = 3 + 1j * (omega * 0.1 - 1 / (omega * 0.001))
     current = (active + zm) * velocity / 2
     result = {
         "diagnostics": {

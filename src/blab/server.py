@@ -19,6 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.remote_contract import MAX_BUNDLE_BYTES, REMOTE_BACKENDS, REMOTE_VERSION, stage_remote_job
 from blab.server_capabilities import BackendDiscovery
 from blab.solvers.beat_engine_runtime import shutdown_beat_engine_workers
@@ -269,6 +270,7 @@ def create_http_server(
                                 key for key, record in service.capabilities().items() if record["available"]
                             ],
                             "backends": service.capabilities(),
+                            "phasor_conventions": [SOLVER_PHASOR_CONVENTION],
                             "observation_planes": False,
                             "max_bundle_bytes": MAX_BUNDLE_BYTES,
                             "runtime_check": "Startup snapshot; the solve worker rechecks runtime compatibility for every job.",

@@ -158,7 +158,10 @@ class BeatEngineSession:
                 event_type = str(event.get("type", ""))
                 if event_type == "result":
                     if not self._stop:
-                        yield frequency_result_from_dict(event["result"])
+                        raw = event["result"]
+                        if (raw.get("diagnostics") or {}).get("phasor_convention", raw.get("phasor_convention")) != "exp(+i omega t)":
+                            raise RuntimeError("BEAT worker returned an incompatible phasor convention; update the engine.")
+                        yield frequency_result_from_dict(raw)
                 elif event_type == "status":
                     self._emit_status(str(event.get("message", "")))
                     continue

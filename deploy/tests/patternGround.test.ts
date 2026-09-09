@@ -33,7 +33,7 @@ function expected(config: SourceConfiguration, observation: ObservationPlane, im
     const value = local.reduce((sum, axis, j) => sum + axis * pkg.directionsPackage[3 * i + j], 0);
     if (value > dot) { best = i; dot = value; }
   }
-  const phase = 2 * Math.PI * 100 * ((r - 1) / pkg.manifest.medium.sound_speed_m_per_s + config.delayMs / 1000);
+  const phase = -2 * Math.PI * 100 * ((r - 1) / pkg.manifest.medium.sound_speed_m_per_s + config.delayMs / 1000);
   const gain = (config.muted ? 0 : 10 ** (config.levelDb / 20)) * config.polarity / r;
   return [gain * (pkg.pressure.real[best] * Math.cos(phase) - pkg.pressure.imag[best] * Math.sin(phase)),
     gain * (pkg.pressure.real[best] * Math.sin(phase) + pkg.pressure.imag[best] * Math.cos(phase))];

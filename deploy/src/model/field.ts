@@ -28,12 +28,12 @@ function patternRay(
   return distance;
 }
 
-/** Native exp(-iwt) propagation; image pressure is added, not conjugated. */
+/** Canonical exp(+iwt) propagation; image pressure is added, not conjugated. */
 function propagatePattern(
   real: number, imag: number, radius: number, distance: number, wavenumber: number,
 ): [number, number] {
   const scale = radius / distance;
-  const phase = wavenumber * (distance - radius);
+  const phase = -wavenumber * (distance - radius);
   const propagationReal = Math.cos(phase) * scale;
   const propagationImag = Math.sin(phase) * scale;
   return [real * propagationReal - imag * propagationImag, real * propagationImag + imag * propagationReal];
@@ -187,7 +187,7 @@ export function computeMixedMicrophonePatternResponses(
             sampleReal, sampleImag, sample.referenceRadius, sample.distance, wavenumber,
           );
           const driveMagnitude = (sample.config.muted ? 0 : Math.pow(10, sample.config.levelDb / 20)) * sample.config.polarity;
-          const drivePhase = 2 * Math.PI * frequency * sample.config.delayMs / 1000;
+          const drivePhase = -2 * Math.PI * frequency * sample.config.delayMs / 1000;
           const driveReal = driveMagnitude * Math.cos(drivePhase);
           const driveImag = driveMagnitude * Math.sin(drivePhase);
           totalReal += fieldReal * driveReal - fieldImag * driveImag;
@@ -465,7 +465,7 @@ export function computeMixedFieldFrame(
     const lookup = lookups.get(config.packageId);
     if (!lookup) throw new Error(`Source ${config.name} has no pattern lookup for its package.`);
     const level = (config.muted ? 0 : Math.pow(10, config.levelDb / 20)) * config.polarity;
-    const drivePhase = 2 * Math.PI * frequencyHz * config.delayMs / 1000;
+    const drivePhase = -2 * Math.PI * frequencyHz * config.delayMs / 1000;
     return {
       source,
       lookup,

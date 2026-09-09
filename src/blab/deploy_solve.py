@@ -21,6 +21,7 @@ from blab.deploy_geometry import (
     surface_face_pairs_within,
     transform_package_points,
 )
+from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.speaker_package import validate_speaker_package
 
 DEPLOY_SOLVE_SCHEMA = "boundary_lab_deploy_solve"
@@ -33,6 +34,14 @@ CLOSE_PAIR_DISTANCE_M = 0.05
 CLOSE_PAIR_QUADRATURE_ORDER = 8
 GROUND_TOLERANCE_M = 1e-6
 GROUND_IMAGE_SINGULAR_TOLERANCE_M = 1e-8
+
+
+def _write_deploy_request(path: Path, request: dict[str, Any]) -> None:
+    if "compiled_system" in request:
+        request.setdefault("solver_options", {})["phasor_convention"] = SOLVER_PHASOR_CONVENTION
+    else:
+        request["phasor_convention"] = SOLVER_PHASOR_CONVENTION
+    path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -417,6 +426,7 @@ def _load_deploy_package_data(
     stat = package_path.stat()
     package_fingerprint = fingerprint or (str(package_path), int(stat.st_mtime_ns), int(stat.st_size))
     manifest = validate_speaker_package(package_path)
+    source_convention = manifest.get("phasor_convention", LEGACY_PHASOR_CONVENTION)
     fixed_file = manifest.get("files", {}).get("fixed_sources", {})
     fixed_path = str(fixed_file.get("path", ""))
     geometry_path = str(fixed_file.get("geometry_mesh", ""))
@@ -434,6 +444,14 @@ def _load_deploy_package_data(
         points = np.asarray(fixed["points_m"], dtype=np.float64)
         pressure = np.asarray(fixed["pressure_pa"])
         normal = np.asarray(fixed["normal_derivative_pa_per_m"])
+    pressure = convert_phasor(pressure, source_convention)
+    normal = convert_phasor(normal, source_convention)
+    if coupled_model is not None and "arrays" in coupled_model:
+        coupled_model["arrays"] = {
+            key: convert_phasor(value, source_convention) if np.iscomplexobj(value) else value
+            for key, value in coupled_model["arrays"].items()
+        }
+    manifest = dict(manifest, phasor_convention=SOLVER_PHASOR_CONVENTION, source_phasor_convention=source_convention)
     frequencies = np.asarray(manifest.get("frequencies_hz", ()), dtype=np.float64)
     return DeployPackageData(
         path=package_path,
@@ -749,7 +767,7 @@ def prepare_deploy_coupled_request(
             for frequency_index, frequency_hz in enumerate(frequencies):
                 gain_phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
                 gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(
-                    1j * gain_phase
+                    -1j * gain_phase
                 )
                 wire_gain = {"real": float(gain.real), "imag": float(gain.imag)}
                 excitation_weights_sweep[frequency_index].append(wire_gain)
@@ -856,7 +874,7 @@ def prepare_deploy_coupled_request(
     if status_callback is not None:
         status_callback("Serializing exact Level 3 array request")
     request_path = work_path / "coupled-request.json"
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     return request_path, request
 
 
@@ -1150,7 +1168,7 @@ def prepare_deploy_solve_request(
             yaw_deg=source.yaw_deg,
         )
         phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
+        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(-1j * phase)
         component = DeployBoundaryComponent(
             id=source.id,
             kind="speaker",
@@ -1492,7 +1510,7 @@ def prepare_deploy_solve_request(
     if status_callback is not None:
         status_callback("Serializing BEAT request")
     request_path = work_path / "request.json"
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     return request_path, request
 
 
@@ -1604,7 +1622,7 @@ def prepare_deploy_rom_request(
     instances = []
     for source, component in zip(sources, source_components, strict=True):
         phase = 2.0 * math.pi * requested_frequency * source.delay_ms / 1000.0
-        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
+        gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(-1j * phase)
         drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
         instances.append(
             {
@@ -1683,7 +1701,7 @@ def prepare_deploy_rom_request(
         transducers=transducers,
         speakers=speakers,
     )
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     if status_callback is not None:
         status_callback(f"Prepared rank-{rank} parity-ROM boundary feedback")
     return request_path, request
@@ -1792,7 +1810,7 @@ def prepare_deploy_rom_microphone_sweep_request(
         instances: list[dict[str, Any]] = []
         for source, base_instance in zip(sources, base_instances, strict=True):
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
+            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(-1j * phase)
             drive = np.full(input_count, reference_voltage * gain, dtype=np.complex64)
             instances.append(
                 {
@@ -1824,7 +1842,7 @@ def prepare_deploy_rom_microphone_sweep_request(
     request["provenance"]["rom_sweep_stage_binary_bytes_written"] = binary_bytes_written
     if status_callback is not None:
         status_callback(f"Serializing {len(frequency_pairs)}-frequency Level 3 ROM sweep")
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     return request_path, request
 
 
@@ -1962,7 +1980,7 @@ def prepare_deploy_microphone_sweep_request(
         )
         for source in sources:
             phase = 2.0 * math.pi * frequency_hz * source.delay_ms / 1000.0
-            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(1j * phase)
+            gain = (0.0 if source.muted else source.polarity * 10.0 ** (source.level_db / 20.0)) * np.exp(-1j * phase)
             q_parts.append(np.asarray(logical_normal * gain, dtype=np.complex64))
             pressure_parts.append(np.asarray(logical_pressure * gain, dtype=np.complex64))
         if rigid_face_count:
@@ -1994,7 +2012,7 @@ def prepare_deploy_microphone_sweep_request(
     request["provenance"]["frequency_count"] = len(frequencies)
     if status_callback is not None:
         status_callback("Serializing multi-frequency BEAT request")
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     return request_path, request
 
 
@@ -2027,5 +2045,5 @@ def prepare_deploy_field_request(payload: object, work_dir: str | Path) -> tuple
     work_path = Path(work_dir)
     work_path.mkdir(parents=True, exist_ok=True)
     request_path = work_path / "field-request.json"
-    request_path.write_text(json.dumps(request, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+    _write_deploy_request(request_path, request)
     return request_path, request

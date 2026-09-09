@@ -285,7 +285,7 @@ def test_velocity_to_excursion_uses_the_solver_phasor_convention() -> None:
     excursion = velocity_to_excursion(velocity, np.asarray([1.0 / (2.0 * np.pi)]))
 
     assert excursion.unit == "m"
-    assert excursion.values[0, 0, 0] == pytest.approx(-1.0 + 0.0j)
+    assert excursion.values[0, 0, 0] == pytest.approx(1.0 + 0.0j)
 
 
 def test_live_transducer_excursion_uses_normalized_channel_drive_before_magnitude() -> None:
@@ -463,7 +463,7 @@ def test_live_electrical_impedance_aggregates_parallel_channel_current_and_symme
     assert frequencies.tolist() == [100.0]
     assert names.tolist() == ["A", "B"]
     np.testing.assert_allclose(magnitude[:, 0], [2.0, 4.0], atol=1e-6)
-    np.testing.assert_allclose(phase[:, 0], [90.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(phase[:, 0], [-90.0, 0.0], atol=1e-6)
 
 
 def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
@@ -481,7 +481,7 @@ def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
         dtype=np.complex128,
     )
     omega = 2.0 * np.pi * frequency_hz
-    mechanical_impedance = rms + 1j * (1.0 / (omega * cms) - omega * mmd)
+    mechanical_impedance = rms + 1j * (omega * mmd - 1.0 / (omega * cms))
     load_force = native_acoustic_impedance @ velocity_basis
     current_basis = (load_force + mechanical_impedance[:, np.newaxis] * velocity_basis) / bl[:, np.newaxis]
     dataset = AcousticLoadImpedanceDataset(
@@ -526,7 +526,7 @@ def test_coupled_acoustic_load_recovers_intrinsic_self_impedance() -> None:
     assert frequencies.tolist() == [frequency_hz]
     assert names.tolist() == ["Woofer", "Tweeter"]
     np.testing.assert_allclose(real[:, 0], [3.0, 5.0], atol=2e-5)
-    np.testing.assert_allclose(imaginary[:, 0], [4.0, -6.0], atol=2e-5)
+    np.testing.assert_allclose(imaginary[:, 0], [-4.0, 6.0], atol=2e-5)
     assert dataset.velocity_condition_numbers[frequency_hz] < 10.0
 
 
@@ -552,7 +552,7 @@ def test_coupled_acoustic_load_projection_normalizes_by_effective_area() -> None
     assert frequencies.tolist() == [100.0]
     assert names.tolist() == ["Woofer"]
     np.testing.assert_allclose(real[:, 0], [1.5])
-    np.testing.assert_allclose(imaginary[:, 0], [2.0])
+    np.testing.assert_allclose(imaginary[:, 0], [-2.0])
 
 
 def test_coupled_acoustic_load_masks_ill_conditioned_velocity_basis() -> None:

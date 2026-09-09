@@ -59,7 +59,7 @@ def normalized_acoustic_loading(
             parameters = component.get("parameters", {})
             try:
                 zm = float(parameters["rms_n_s_per_m"]) + 1j * (
-                    1 / (omega * float(parameters["cms_m_per_n"])) - omega * float(parameters["mmd_kg"])
+                    omega * float(parameters["mmd_kg"]) - 1 / (omega * float(parameters["cms_m_per_n"]))
                 )
                 load_force = float(parameters["bl_n_per_a"]) * current[index] - zm * v[index]
             except (KeyError, ValueError, TypeError, ZeroDivisionError):

@@ -37,6 +37,7 @@ from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import (
     OutputRequest,
     SystemFrequencyResult,
+    canonicalize_phasor_result,
     compiled_system_to_dict,
 )
 from blab.system_solve import (
@@ -375,6 +376,7 @@ class HeadlessResultWriter:
         self._flush_manifest()
 
     def write_result(self, result: SystemFrequencyResult) -> int:
+        result = canonicalize_phasor_result(result)
         provenance = result.diagnostics.get("engine_provenance")
         if isinstance(provenance, dict) and provenance not in self.manifest["engine_runs"]:
             self.manifest["engine_runs"].append(_json_safe(provenance))

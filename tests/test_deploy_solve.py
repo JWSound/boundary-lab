@@ -125,7 +125,7 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
                 axis=0,
             )
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
-    expected = np.asarray(source_q * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(1j * phase), dtype=np.complex64)
+    expected = np.asarray(np.conjugate(source_q) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64)
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )
@@ -367,7 +367,7 @@ def test_prepare_rom_microphone_sweep_batches_frequency_arrays_and_delay_drives(
         request["rom_sweep"]["frequencies"][1]["instances"][0]["input_real"][0],
         request["rom_sweep"]["frequencies"][1]["instances"][0]["input_imag"][0],
     )
-    assert first_drive == pytest.approx(2.83j, abs=1e-6)
+    assert first_drive == pytest.approx(-2.83j, abs=1e-6)
     assert second_drive == pytest.approx(-2.83 + 0j, abs=1e-6)
     staged_path = Path(request["rom_sweep"]["frequencies"][1]["binary_arrays"]["k"]["file"])
     assert staged_path.is_file()
@@ -471,7 +471,7 @@ def test_prepare_exact_coupled_request_batches_microphones_and_frequency_weights
     assert request["deploy"]["rows"] == 1
     assert request["deploy"]["columns"] == 2
     weights = request["outputs"][0]["options"]["excitation_weights_sweep"]
-    assert complex(weights[0][0]["real"], weights[0][0]["imag"]) == pytest.approx(1j, abs=1e-7)
+    assert complex(weights[0][0]["real"], weights[0][0]["imag"]) == pytest.approx(-1j, abs=1e-7)
     assert complex(weights[1][0]["real"], weights[1][0]["imag"]) == pytest.approx(-1 + 0j, abs=1e-7)
 
 

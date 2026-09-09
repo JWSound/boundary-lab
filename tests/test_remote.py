@@ -171,7 +171,7 @@ def test_http_complex_results_and_replay_after_service_restart(prepared, http_se
     assert len(results) == 1
     np.testing.assert_array_equal(results[0].quantities[0].values, fake_result(prepared.request).quantities[0].values)
     assert results[0].excitation_port_ids == prepared.request.excitation_port_ids
-    assert results[0].diagnostics == fake_result(prepared.request).diagnostics
+    assert results[0].diagnostics == {**fake_result(prepared.request).diagnostics, "phasor_convention": "exp(+i omega t)"}
     assert session.worker_provenance["engine"]["version"] == "test-engine"
     replay = SolveService(service.root, backend=service.backend)
     assert replay.events(session.job_id, 0)[-1]["type"] == "completed"

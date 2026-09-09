@@ -12,6 +12,7 @@ from typing import Any
 import meshio
 import numpy as np
 
+from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import AcousticRegionKind, BoundaryKind
 from blab.system_contract import compiled_system_from_dict
 
@@ -352,7 +353,10 @@ def evaluate_fem_run(
         if pressure_meta is None:
             raise ValueError(f"Frequency {metadata['freq_hz']:g} Hz does not contain {FEM_PRESSURE_QUANTITY_ID}.")
         with np.load(root / str(result_entry["arrays_file"])) as arrays:
-            pressure_by_excitation = np.asarray(arrays[pressure_meta["key"]], dtype=complex)
+            pressure_by_excitation = convert_phasor(
+                np.asarray(arrays[pressure_meta["key"]], dtype=complex),
+                manifest.get("phasor_convention", LEGACY_PHASOR_CONVENTION),
+            )
         if pressure_by_excitation.ndim == 1:
             pressure_by_excitation = pressure_by_excitation[np.newaxis, :]
         if pressure_by_excitation.shape != (len(excitation_ids), len(result_points)):
@@ -394,7 +398,8 @@ def evaluate_fem_run(
         "source_run": str(root),
         "source_manifest_sha256": _sha256(root / "manifest.json"),
         "project_sha256": manifest.get("project_sha256"),
-        "phasor_convention": manifest.get("phasor_convention"),
+        "phasor_convention": SOLVER_PHASOR_CONVENTION,
+        "source_phasor_convention": manifest.get("phasor_convention", LEGACY_PHASOR_CONVENTION),
         "surface_patterns": list(surface_patterns),
         "split_surface_entities": split_surface_entities,
         "gates": asdict(configured_gates),
@@ -546,7 +551,7 @@ def _evaluate_frequency(
             tet_pressure = pressure[adjacent_tetrahedra]
             pressure_gradient = np.einsum("ti,tij->tj", tet_pressure, gradients)
             normal_velocity = (
-                pressure_gradient @ normal / (1j * 2.0 * np.pi * frequency_hz * float(region.density_kg_per_m3))
+                pressure_gradient @ normal / (-1j * 2.0 * np.pi * frequency_hz * float(region.density_kg_per_m3))
             )
             velocity_values.append(complex(np.mean(normal_velocity)))
             if len(normal_velocity) > 1:

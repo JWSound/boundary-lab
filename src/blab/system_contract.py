@@ -9,13 +9,14 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Iterator, Protocol
 
 import numpy as np
 
 from blab.interface_conform import InterfaceTopologyMap
+from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import (
     COMPILED_SYSTEM_VERSION,
     AcousticRegionKind,
@@ -271,6 +272,7 @@ def system_solve_request_from_dict(raw: dict[str, Any]) -> SystemSolveRequest:
 
 
 def system_frequency_result_to_dict(result: SystemFrequencyResult) -> dict[str, Any]:
+    result = canonicalize_phasor_result(result)
     validate_system_frequency_result(result)
     return {
         "schema_version": SYSTEM_RESULT_VERSION,
@@ -313,8 +315,20 @@ def system_frequency_result_from_dict(raw: dict[str, Any]) -> SystemFrequencyRes
         excitation_port_ids=tuple(str(value) for value in raw.get("excitation_port_ids", ())),
         diagnostics=dict(raw.get("diagnostics", {})),
     )
+    # Unlabelled version-1/2 wire results predate convention negotiation.
+    result.diagnostics.setdefault("phasor_convention", LEGACY_PHASOR_CONVENTION)
     validate_system_frequency_result(result)
-    return result
+    return canonicalize_phasor_result(result)
+
+
+def canonicalize_phasor_result(result: SystemFrequencyResult) -> SystemFrequencyResult:
+    source = result.diagnostics.get("phasor_convention", SOLVER_PHASOR_CONVENTION)
+    convert_phasor(0j, source)  # Validate even an empty result.
+    diagnostics = dict(result.diagnostics, phasor_convention=SOLVER_PHASOR_CONVENTION)
+    if source != SOLVER_PHASOR_CONVENTION:
+        diagnostics["source_phasor_convention"] = source
+    quantities = tuple(replace(q, values=convert_phasor(q.values, source)) for q in result.quantities)
+    return replace(result, quantities=quantities, diagnostics=diagnostics)
 
 
 def _compiled_mesh_from_dict(raw: dict[str, Any]) -> CompiledMesh:

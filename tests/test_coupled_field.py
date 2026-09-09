@@ -51,7 +51,7 @@ def test_evaluate_bem_field_uses_warmed_worker_protocol(monkeypatch) -> None:
             result_path = request_path.with_name(payload["binary_result_file"])
             result.tofile(result_path)
             yield {
-                "type": "field_result",
+                "type": "field_result", "phasor_convention": "exp(+i omega t)",
                 "values_binary": {
                     "file": result_path.name,
                     "offset": 0,
@@ -106,7 +106,7 @@ def test_evaluate_bem_field_routes_rocm_worker_and_payload(monkeypatch) -> None:
             assert operation == "bem_field"
             payloads.append(json.loads(request_path.read_text(encoding="utf-8")))
             yield {
-                "type": "field_result",
+                "type": "field_result", "phasor_convention": "exp(+i omega t)",
                 "values": {
                     "dtype": "complex64",
                     "shape": [2],
@@ -141,7 +141,7 @@ def test_evaluate_bem_field_maps_legacy_condensed_id_to_cpu_worker(monkeypatch) 
             assert operation == "bem_field"
             payloads.append(json.loads(request_path.read_text(encoding="utf-8")))
             yield {
-                "type": "field_result",
+                "type": "field_result", "phasor_convention": "exp(+i omega t)",
                 "values": {
                     "dtype": "complex64",
                     "shape": [2],

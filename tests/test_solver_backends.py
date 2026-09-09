@@ -128,6 +128,7 @@ print(json.dumps({
         "sphere_spl_norm_db": None,
         "timings": {"assembly_s": 0.1, "solve_s": 0.2, "field_s": 0.3},
         "diagnostics": {
+            "phasor_convention": "exp(+i omega t)",
             "convergence_info": 0,
             "message": os.environ.get("JULIA_NUM_THREADS"),
             "backend": "cuda",
@@ -361,7 +362,7 @@ starts_path.write_text(str(starts + 1), encoding="utf-8")
 if "--worker" not in sys.argv:
     raise SystemExit("expected --worker")
 
-print(json.dumps({{"type": "ready"}}), flush=True)
+print(json.dumps({{"type": "ready", "phasor_conventions": ["exp(-i omega t)", "exp(+i omega t)"]}}), flush=True)
 for line in sys.stdin:
     message = json.loads(line)
     with open(message["request"], "r", encoding="utf-8") as handle:
@@ -383,7 +384,7 @@ for line in sys.stdin:
             "vertical_spl_db": [90.0],
             "sphere_spl_norm_db": None,
             "timings": {{"assembly_s": 0.1, "solve_s": 0.2, "field_s": 0.3}},
-            "diagnostics": None,
+            "diagnostics": {{"phasor_convention": "exp(+i omega t)"}},
         }},
     }}), flush=True)
     print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
@@ -427,7 +428,7 @@ starts_path = pathlib.Path({str(starts_path)!r})
 starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
 starts_path.write_text(str(starts + 1), encoding="utf-8")
 
-print(json.dumps({{"type": "ready"}}), flush=True)
+print(json.dumps({{"type": "ready", "phasor_conventions": ["exp(-i omega t)", "exp(+i omega t)"]}}), flush=True)
 for line in __import__("sys").stdin:
     message = json.loads(line)
     with open(message["request"], "r", encoding="utf-8") as handle:
@@ -452,7 +453,7 @@ for line in __import__("sys").stdin:
             "vertical_spl_db": [90.0],
             "sphere_spl_norm_db": None,
             "timings": {{}},
-            "diagnostics": None,
+            "diagnostics": {{"phasor_convention": "exp(+i omega t)"}},
         }},
     }}), flush=True)
     print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
@@ -508,7 +509,7 @@ starts_path = pathlib.Path({str(starts_path)!r})
 starts = int(starts_path.read_text(encoding="utf-8")) if starts_path.exists() else 0
 starts_path.write_text(str(starts + 1), encoding="utf-8")
 
-print(json.dumps({{"type": "ready"}}), flush=True)
+print(json.dumps({{"type": "ready", "phasor_conventions": ["exp(-i omega t)", "exp(+i omega t)"]}}), flush=True)
 for line in sys.stdin:
     message = json.loads(line)
     with open(message["request"], "r", encoding="utf-8") as handle:
@@ -530,7 +531,7 @@ for line in sys.stdin:
             "vertical_spl_db": [90.0],
             "sphere_spl_norm_db": None,
             "timings": {{"assembly_s": 0.1, "solve_s": 0.2, "field_s": 0.3}},
-            "diagnostics": None,
+            "diagnostics": {{"phasor_convention": "exp(+i omega t)"}},
         }},
     }}), flush=True)
     if pathlib.Path(request["cancel_path"]).exists():

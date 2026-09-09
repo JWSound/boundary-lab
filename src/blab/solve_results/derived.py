@@ -37,7 +37,7 @@ def velocity_to_excursion(
     *,
     quantity_id: str = "mechanical:diaphragm-excursion",
 ) -> SolvedQuantity:
-    """Integrate velocity phasors under Boundary Lab's exp(-i omega t) convention."""
+    """Integrate velocity phasors under Boundary Lab's exp(+i omega t) convention."""
 
     if not velocity.dimensions or velocity.dimensions[0] != "frequency":
         raise ValueError("Velocity quantity must use frequency as its first dimension.")
@@ -45,7 +45,7 @@ def velocity_to_excursion(
     if frequencies.shape != (np.asarray(velocity.values).shape[0],):
         raise ValueError("Velocity and frequency dimensions do not match.")
     denominator_shape = (frequencies.size,) + (1,) * (np.asarray(velocity.values).ndim - 1)
-    denominator = (-1j * 2.0 * np.pi * frequencies).reshape(denominator_shape)
+    denominator = (1j * 2.0 * np.pi * frequencies).reshape(denominator_shape)
     values = (np.asarray(velocity.values) / denominator).astype(np.asarray(velocity.values).dtype, copy=False)
     values.setflags(write=False)
     return SolvedQuantity(

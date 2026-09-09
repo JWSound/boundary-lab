@@ -109,8 +109,10 @@ their defined engine fields/options and satisfy backend capability checks.
   is nonnegative and measured in meters. Actual index bounds, facet geometry,
   correspondence, interface roles, and supported formulations are checked against
   the mesh and physics by the solver.
-- Solver-native complex quantities use the existing `exp(-i omega t)` convention.
-  Phase conversion for display is a client operation. Pressure, current,
+- `solver_options.phasor_convention` explicitly selects `exp(+i omega t)` or
+  legacy `exp(-i omega t)`. Omitted options retain the legacy convention.
+  Workers advertise `phasor_conventions`; clients must negotiate support and
+  verify the convention in result diagnostics. Boundary Lab requests positive time. Pressure, current,
   displacement/velocity, and impedance must retain complex values; SPL is not a
   substitute for the response basis.
 

@@ -523,7 +523,7 @@ def test_system_worker_projects_exterior_radiation_impedance_to_live_result() ->
 
     live = system_solve_module.SystemSolveWorker(prepared)._to_live_result(result)
 
-    assert live.impedance.tolist() == [[2.5, -1.25]]
+    assert live.impedance.tolist() == [[2.5, 1.25]]
 
 
 def test_saved_unused_boundary_is_presented_and_collected_as_rigid() -> None:

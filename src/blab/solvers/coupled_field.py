@@ -67,6 +67,8 @@ def evaluate_bem_field(
         for event in worker.submit(request_path, operation="bem_field"):
             event_type = str(event.get("type", ""))
             if event_type == "field_result":
+                if event.get("phasor_convention") != "exp(+i omega t)":
+                    raise RuntimeError("BEAT field worker returned an incompatible phasor convention.")
                 if "values_binary" in event:
                     values = _read_binary_array(request_dir, event["values_binary"])
                 else:
@@ -93,6 +95,7 @@ def _write_evaluation_request(
     backend_id: str,
 ) -> None:
     payload, arrays = _validated_evaluation_request(request, backend_id=backend_id)
+    payload["phasor_convention"] = "exp(+i omega t)"
     array_path = request_path.with_name(_FIELD_ARRAYS_FILENAME)
     payload["binary_array_schema_version"] = _BINARY_ARRAY_SCHEMA_VERSION
     payload["binary_arrays"] = _write_binary_arrays(array_path, arrays)

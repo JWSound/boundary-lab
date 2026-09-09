@@ -108,11 +108,12 @@ Users can export simulated polar data as individual .txt files per angle sampled
 
 Users can export each solved channel's on-axis response as a tab-separated .txt file containing frequency in Hz, SPL in dB, and phase in degrees. Single-channel solves use a save-file dialog. Multi-channel solves use a directory picker and write one file per channel; the combined system response is not exported. The files use the original solved frequency samples and can be imported into tools such as REW and VituixCAD.
 
-BEAT and canonical solved-result artifacts use the `exp(-i omega t)` phasor
-convention. Boundary Lab converts phase shown in plots, observation planes, and
-REW/VituixCAD-compatible text exports to the standard audio
-`exp(+i omega t)` convention. Channel delays and crossover filters are converted
-to BEAT's convention before they are combined with solver-native pressures.
+Boundary Lab requests native `exp(+i omega t)` phasors from BEAT and uses that
+convention throughout canonical results, phase plots, observation planes, and
+REW/VituixCAD-compatible text exports. Channel delay is `exp(-i omega tau)`;
+analog crossover responses use the standard audio convention directly.
+Legacy negative-time result and speaker-package arrays are conjugated once on
+import. Unknown conventions and incompatible workers are rejected.
 
 ## Exporting Balloon Data
 
@@ -139,7 +140,7 @@ plot-normalized result.
 
 Speaker packages use the `.blabsp` extension and are versioned ZIP64 archives.
 They preserve the independent excitation-port basis and the
-`exp(-i omega t)` phasor convention.
+`exp(+i omega t)` phasor convention. Legacy negative-time packages remain importable.
 
 - **Level 1 — Pattern superposition** contains complex pressure on a spherical
   Fibonacci sampling surface.

@@ -416,7 +416,7 @@ for line in sys.stdin:
             "freq_hz": frequency,
             "excitation_port_ids": request["excitation_port_ids"],
             "quantities": [],
-            "diagnostics": {{}},
+            "diagnostics": {{"phasor_convention": "exp(+i omega t)"}},
         }},
     }}), flush=True)
     print(json.dumps({{"type": "completed", "solved_count": 1}}), flush=True)
@@ -1538,7 +1538,7 @@ def test_generalized_frequency_result_preserves_complex_double_precision() -> No
     assert restored.freq_hz == result.freq_hz
     assert restored.quantities[0].values.dtype == np.complex128
     assert np.array_equal(restored.quantities[0].values, result.quantities[0].values)
-    assert restored.diagnostics == result.diagnostics
+    assert restored.diagnostics == {**result.diagnostics, "phasor_convention": "exp(+i omega t)"}
 
 
 def test_generalized_frequency_result_accepts_legacy_decimal_arrays() -> None:
@@ -1568,7 +1568,7 @@ def test_generalized_frequency_result_accepts_legacy_decimal_arrays() -> None:
     assert restored.quantities[0].values.dtype == np.complex64
     np.testing.assert_array_equal(
         restored.quantities[0].values,
-        np.asarray([[1.0 + 2.0j, 3.0 - 4.0j]], dtype=np.complex64),
+        np.asarray([[1.0 - 2.0j, 3.0 + 4.0j]], dtype=np.complex64),
     )
 
 

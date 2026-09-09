@@ -19,15 +19,15 @@ front/rear faces need no manual sign.
 
 Assign **Plane-wave tube termination** to the end surface of a locally uniform
 tube when only the outgoing plane mode should remain. With Boundary Lab's
-`exp(-i omega t)` convention, the boundary condition is
+`exp(+i omega t)` convention, the boundary condition is
 
 $$
-\frac{\partial p}{\partial n}=i k p,
+\frac{\partial p}{\partial n}=-i k p,
 \qquad k=\frac{\omega}{c}.
 $$
 
 Equivalently, the local normal velocity obeys the characteristic impedance
-$p/v_n=\rho c$. In the FEM weak form this contributes $-i k M_\Gamma$, where
+$p/v_n=\rho c$. In the FEM weak form this contributes $+i k M_\Gamma$, where
 $M_\Gamma$ is the P1 surface mass matrix. This is an absorbing boundary
 condition, not a connection to a hidden exterior domain.
 

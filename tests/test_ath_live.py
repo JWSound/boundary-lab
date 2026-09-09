@@ -717,8 +717,8 @@ def test_live_dataset_exposes_channel_on_axis_curves() -> None:
     assert prepared["channel_on_axis_names"].tolist() == ["LF", "HF"]
     assert prepared["channel_on_axis_spl_db"].shape == (2, 1)
     assert prepared["channel_on_axis_spl_db"][1, 0] < prepared["channel_on_axis_spl_db"][0, 0]
-    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"][:, 0], [0.0, -90.0])
-    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-26.5], atol=0.2)
+    np.testing.assert_allclose(prepared["channel_on_axis_phase_deg"][:, 0], [0.0, 90.0])
+    np.testing.assert_allclose(prepared["on_axis_phase_deg"], [26.5], atol=0.2)
 
 
 def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_delay() -> None:
@@ -730,7 +730,7 @@ def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_d
         polar_observation_distance_m=0.343,
         exterior_sound_speed_m_per_s=343.0,
     )
-    pressure = np.full((1, 3), 1.0j, dtype=np.complex64)
+    pressure = np.full((1, 3), -1.0j, dtype=np.complex64)
     dataset.add(
         FrequencyResult(
             freq_hz=250.0,
@@ -757,7 +757,7 @@ def test_on_axis_phase_removes_propagation_delay_and_tracks_post_solve_channel_d
     np.testing.assert_allclose(prepared["on_axis_phase_deg"], [-45.0], atol=1e-4)
 
 
-def test_channel_delay_is_converted_before_summing_solver_native_pressures() -> None:
+def test_channel_delay_uses_positive_time_before_summing_pressures() -> None:
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     dataset = LiveSolveDataset(
         angles,
@@ -770,7 +770,7 @@ def test_channel_delay_is_converted_before_summing_solver_native_pressures() -> 
     horizontal_pressure = np.asarray(
         [
             np.ones(angles.size, dtype=np.complex64),
-            np.full(angles.size, 0.5j, dtype=np.complex64),
+            np.full(angles.size, -0.5j, dtype=np.complex64),
         ]
     )
     dataset.add(
@@ -803,7 +803,7 @@ def test_group_delay_removes_propagation_and_tracks_configured_delay_exactly() -
         exterior_sound_speed_m_per_s=343.0,
     )
     for frequency in frequencies:
-        propagated_pressure = np.exp(1j * 2.0 * np.pi * float(frequency) * propagation_delay_s)
+        propagated_pressure = np.exp(-1j * 2.0 * np.pi * float(frequency) * propagation_delay_s)
         pressure = np.full((1, angles.size), propagated_pressure, dtype=np.complex64)
         dataset.add(
             FrequencyResult(
@@ -829,12 +829,12 @@ def test_group_delay_removes_propagation_and_tracks_configured_delay_exactly() -
     np.testing.assert_allclose(changed_ms, 7.0, atol=3e-3)
 
 
-def test_group_delay_converts_native_solver_phase_before_differentiating() -> None:
+def test_group_delay_uses_positive_time_phase() -> None:
     angles = np.asarray([-10.0, 0.0, 10.0], dtype=np.float32)
     frequencies = np.geomspace(20.0, 400.0, 101).astype(np.float32)
     omega = 2.0 * np.pi * frequencies
     cutoff_rad_s = 2.0 * np.pi * 50.0
-    native_response = 1.0 / (1.0 - 1j * omega / cutoff_rad_s)
+    native_response = 1.0 / (1.0 + 1j * omega / cutoff_rad_s)
     dataset = LiveSolveDataset(
         angles,
         channel_configs=(ChannelConfig(name="main"),),
@@ -1209,10 +1209,10 @@ def test_export_polar_text_files_writes_relative_phase_for_channel_basis(tmp_pat
         "1000.000000\t0.000\t0.000",
     ]
     assert (tmp_path / "H 90.txt").read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t0.000\t-90.000",
+        "1000.000000\t0.000\t90.000",
     ]
     assert (tmp_path / "V 90.txt").read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t0.000\t90.000",
+        "1000.000000\t0.000\t-90.000",
     ]
 
 
@@ -1272,7 +1272,7 @@ def test_export_on_axis_text_files_writes_single_channel_to_selected_file(tmp_pa
         polar_observation_distance_m=0.343,
         exterior_sound_speed_m_per_s=343.0,
     )
-    for freq_hz, pressure in ((1000.0, 1.0 + 0.0j), (200.0, 0.0 + 1.0j)):
+    for freq_hz, pressure in ((1000.0, 1.0 + 0.0j), (200.0, 0.0 - 1.0j)):
         channel_pressure = np.full((1, 3), pressure, dtype=np.complex64)
         dataset.add(
             FrequencyResult(
@@ -1329,7 +1329,7 @@ def test_export_on_axis_text_files_writes_only_individual_channels_with_safe_nam
         "1000.000000\t93.979\t0.000",
     ]
     assert written[1].read_text(encoding="utf-8").splitlines() == [
-        "1000.000000\t93.979\t90.000",
+        "1000.000000\t93.979\t-90.000",
     ]
     assert len(list((tmp_path / "channels").glob("*.txt"))) == 2
 

@@ -20,7 +20,8 @@
     "test:desktop": "electron . --built --smoke-test",
     "test:level2": "electron . --built --smoke-level2",
     "benchmark:level2": "electron . --built --benchmark-level2",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:phasor": "esbuild tests/phasor.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/phasor.test.mjs && node node_modules/.tmp/phasor.test.mjs"
   },
   "dependencies": {
     "@react-three/drei": "9.108.3",
