@@ -477,7 +477,7 @@ def _triangles_for_tags(mesh: meshio.Mesh, tags: set[int], mesh_name: str) -> np
         raise ComponentSymmetryInferenceError(f"Mesh '{mesh_name}' has no physical surface tags.")
     selected = []
     for index, block in enumerate(mesh.cells):
-        if block.type not in {"triangle", "triangle3"}:
+        if block.type not in {"triangle", "triangle3", "triangle6"}:
             continue
         triangles = np.asarray(block.data, dtype=np.int64)[:, :3]
         physical = np.asarray(physical_blocks[index], dtype=np.int64)

@@ -200,6 +200,36 @@ def test_projected_diaphragm_area_supports_a_front_only_model() -> None:
     assert inferred.relative_side_mismatch is None
 
 
+def test_quadratic_moving_surface_supports_symmetry_and_outward_projected_area() -> None:
+    resource = MeshResource("mesh:p2", "P2", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(
+            ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1),
+             (0.5, 0, 0), (0.5, 0.5, 0), (0, 0.5, 0),
+             (0, 0, 0.5), (0.5, 0, 0.5), (0, 0.5, 0.5)), dtype=float,
+        ),
+        cells=[
+            ("triangle6", np.asarray(((0, 1, 2, 4, 5, 6),))),
+            ("tetra10", np.asarray((tuple(range(10)),))),
+        ],
+        cell_data={"gmsh:physical": [np.asarray((1,)), np.asarray((2,))]},
+        field_data={"Front": np.asarray((1, 2)), "Air": np.asarray((2, 3))},
+    )
+    boundary = _boundary(resource, "Front")
+    cache = {resource.id: mesh}
+    symmetry = infer_component_symmetry((boundary,), {resource.id: resource}, "xy", mesh_cache=cache)
+    assert symmetry.surface_completion_factor == 4
+    area = infer_projected_diaphragm_area(
+        (boundary,), {resource.id: resource}, (0, 0, 1), symmetry.surface_completion_factor,
+        boundary_motion_weights={boundary.id: 0.5},
+        boundary_side_keys={boundary.id: boundary.region_id}, mesh_cache=cache,
+    )
+    assert area.projected_area_m2 == pytest.approx(1.0)
+    assert area.negative_side_area_m2 == pytest.approx(1.0)
+    assert area.positive_side_area_m2 == 0.0
+    assert area.relative_side_mismatch is None
+
+
 def test_projected_diaphragm_area_reuses_tetrahedron_orientation_geometry(monkeypatch) -> None:
     resource = MeshResource("mesh:fem", "FEM", "unused.msh", MeshPurpose.FEM_VOLUME)
     mesh = meshio.Mesh(
