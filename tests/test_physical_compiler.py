@@ -108,6 +108,22 @@ def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> No
     assert record.relative_side_mismatch is None
 
 
+@pytest.mark.parametrize("backend,expected", [("cuda", "direct_system"), ("cpu", "operator_matrices"), ("rocm", "operator_matrices")])
+def test_exterior_backend_selects_assembly_and_preserves_fallback(backend: str, expected: str) -> None:
+    compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
+    request = SystemSolveRequest(
+        compiled_system=compiled,
+        frequencies_hz=(500.0,),
+        excitation_port_ids=("excitation:exterior-radiator",),
+    )
+    solver = CoupledProductionBackend(bem_backend=backend)
+    assert solver.create_system_session(request).request.solver_options["burton_miller_assembly"] == expected
+    fallback = replace(request, solver_options={"burton_miller_assembly": "operator_matrices"})
+    assert solver.create_system_session(fallback).request.solver_options["burton_miller_assembly"] == "operator_matrices"
+    with pytest.raises(ValueError, match="burton_miller_assembly"):
+        solver.create_system_session(replace(request, solver_options={"burton_miller_assembly": "unknown"}))
+
+
 def test_compiler_rejects_unassigned_physical_surface_group() -> None:
     system = _fixture_system()
     incomplete = PhysicalSystem(
@@ -942,6 +958,68 @@ def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources()
     assert result.diagnostics["pressure_continuity_error"] < 1e-8
     assert result.diagnostics["flux_conservation_error"] < 1e-10
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
+
+
+@pytest.mark.skipif(
+    os.environ.get("BLAB_RUN_EXTERIOR_CUDA") != "1",
+    reason="Set BLAB_RUN_EXTERIOR_CUDA=1 to compare direct and operator CUDA exterior assembly.",
+)
+@pytest.mark.parametrize("excitation_count,order", [(1, 1), (1, 2), (2, 2)])
+def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excitation_count: int, order: int) -> None:
+    system = _exterior_fixture_system()
+    if excitation_count == 2:
+        second_component = PhysicalComponent(
+            id="component:wall-drive", name="Wall drive", kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+            boundary_ids=("boundary:exterior-wall",), parameters={"motion_profile": "uniform"},
+        )
+        system = replace(
+            system,
+            boundaries=tuple(replace(b, kind=BoundaryKind.MOVING) for b in system.boundaries),
+            components=(*system.components, second_component),
+            excitation_ports=(*system.excitation_ports, ExcitationPort(
+                id="excitation:wall-drive", name="Wall drive", component_id=second_component.id,
+                kind=ExcitationPortKind.NORMAL_VELOCITY,
+            )),
+        )
+    request = SystemSolveRequest(
+        compiled_system=PhysicalSystemCompiler().compile(system),
+        frequencies_hz=(80.0, 700.0, 8000.0),
+        excitation_port_ids=tuple(port.id for port in system.excitation_ports),
+        outputs=(
+            OutputRequest(id="output:p", quantity="bem_boundary_pressure"),
+            OutputRequest(id="output:q", quantity="bem_boundary_neumann"),
+            OutputRequest(id="output:field", quantity="exterior_pressure",
+                          options={"points_m": [[0.0, 0.0, 0.2], [0.4, 0.2, 0.3]]}),
+        ),
+        solver_options={"quadrature_order": order, "singular_order": 2},
+    )
+    backend_options = {"solver_script": os.environ["BLAB_BEAT_SYSTEM_SOLVER"]} if "BLAB_BEAT_SYSTEM_SOLVER" in os.environ else {}
+    backend = CoupledProductionBackend(
+        bem_backend="cuda", julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"), **backend_options,
+    )
+    fallback_request = replace(request, solver_options={**request.solver_options, "burton_miller_assembly": "operator_matrices"})
+    before = list(backend.create_system_session(fallback_request).solve_stream())
+    after = list(backend.create_system_session(request).solve_stream())
+    assert len(before) == len(after) == len(request.frequencies_hz)
+    for reference, direct in zip(before, after, strict=True):
+        assert direct.excitation_port_ids == request.excitation_port_ids
+        assert direct.diagnostics["burton_miller_assembly"] == "direct_system"
+        assert direct.diagnostics["factorization_count"] == 1
+        assert reference.diagnostics["burton_miller_assembly"] == "operator_matrices"
+        for expected, actual in zip(reference.quantities, direct.quantities, strict=True):
+            assert actual.id == expected.id
+            assert np.all(np.isfinite(actual.values))
+            if actual.quantity == "bem_boundary_neumann":
+                np.testing.assert_array_equal(actual.values, expected.values)
+            else:
+                # Compare each complex excitation independently, including phase.
+                for a, b in zip(actual.values, expected.values, strict=True):
+                    assert np.linalg.norm(a - b) / np.linalg.norm(b) < 2e-3
+    if excitation_count == 2:
+        reversed_request = replace(request, excitation_port_ids=request.excitation_port_ids[::-1], frequencies_hz=(700.0,))
+        (reversed_result,) = backend.create_system_session(reversed_request).solve_stream()
+        for actual, expected in zip(reversed_result.quantities, after[1].quantities, strict=True):
+            np.testing.assert_allclose(actual.values, expected.values[::-1], rtol=2e-3, atol=2e-4)
 
 
 @pytest.mark.skipif(

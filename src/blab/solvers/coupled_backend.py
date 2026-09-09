@@ -297,6 +297,10 @@ class _CoupledBackend:
         )
         is_coupled = has_bounded and has_unbounded
         is_interior = has_bounded and not has_unbounded
+        if has_unbounded and not has_bounded:
+            solver_options.setdefault(
+                "burton_miller_assembly", "direct_system" if self.bem_backend == "cuda" else "operator_matrices"
+            )
         solver_options.setdefault(
             "static_condensation",
             is_coupled
@@ -618,6 +622,9 @@ def validate_exterior_capabilities(request: SystemSolveRequest) -> None:
         raise ValueError("Exterior solver requires exactly one unbounded acoustic region.")
     if system.interfaces:
         raise ValueError("Exterior-only systems cannot contain FEM-BEM interfaces.")
+    assembly_mode = str(request.solver_options.get("burton_miller_assembly", "direct_system")).lower()
+    if assembly_mode not in {"direct_system", "operator_matrices"}:
+        raise ValueError("Exterior burton_miller_assembly must be 'direct_system' or 'operator_matrices'.")
     requested_symmetry = str(request.solver_options.get("symmetry", "off")).strip().lower()
     if requested_symmetry not in {"off", "x", "xy"}:
         raise ValueError(f"Unsupported exterior symmetry mode {requested_symmetry!r}; expected off, x, or xy.")
