@@ -104,8 +104,18 @@ and `factorization_count`.
 
 For numerical or performance comparisons, select the previous CUDA path in a
 request overlay with `"solver_options": {"burton_miller_assembly":
-"operator_matrices"}`. This option applies to exterior-only solving; coupled
-FEM-BEM assembly is unchanged.
+"operator_matrices"}`. This option applies to exterior-only solving.
+
+Coupled CUDA solves without full-matrix diagnostics default to combined
+Burton–Miller A/C assembly, sparse interface projection, and fused symmetry
+images. To compare with individual operators, use `"solver_options":
+{"coupled_bem_assembly": "operators"}`. `coupled_bem_image_fusion: false`
+keeps separate image launches. `coupled_bem_max_registers` defaults to `0`
+(compiler default); values from 32 through 255 cap the fused kernel. A cap of
+160 was beneficial on the RTX 2080 Ti benchmark, but is not a universal default.
+Frequency diagnostics record the effective assembly mode, fusion, and cap.
+Full-matrix diagnostics use individual operators; CPU and ROCm retain their
+existing assembly paths. See [Coupled Solver](../Coupled%20Solver.md).
 
 Interior-only projects do not accept exterior point probes or retained BEM
 traces. Their FEM nodal pressure is retained automatically and can drive

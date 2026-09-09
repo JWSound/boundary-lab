@@ -607,7 +607,18 @@ including:
 - CPU or GPU assembly support data.
 
 The frequency-dependent FEM Helmholtz matrix, BEM operators, coupled blocks, and
-factorizations are rebuilt at every frequency.
+factorizations are rebuilt at every frequency. Coupled CUDA execution without
+full-matrix diagnostics assembles the combined Burton–Miller pressure and flux
+operators A/C directly. It projects interface flux through a cached sparse GPU
+map, and fuses symmetry-image accumulation before scatter. Compact singular
+corrections are added directly to A/C. FEM symbolic-analysis reuse and the
+coupled pivoted dense LU remain unchanged.
+
+The engine option `coupled_bem_assembly="operators"` retains the individual
+operators for comparisons; full diagnostics also select that path. Image fusion
+defaults on, while a fused-kernel register cap is optional and hardware-specific.
+See [CUDA assembly](advanced/beat-engine-CUDA.md#gpu-dense-solve) for the data flow
+and [CLI controls](advanced/cli-workflow.md#headless-project-workflow).
 
 The solver is still limited by dense BEM and coupled algebra. BEM assembly grows
 approximately quadratically with boundary size. Static condensation removes FEM

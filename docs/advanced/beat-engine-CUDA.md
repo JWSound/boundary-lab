@@ -28,7 +28,7 @@ The application backend requires CUDA and moves geometry and quadrature arrays t
 
 `build_cuda_regular_assembly_cache` keeps these arrays resident across frequencies, avoiding repeated host-to-device transfers for fixed mesh geometry.
 
-For each frequency, CUDA allocates real and imaginary dense matrices for:
+The individual-operator path allocates real and imaginary dense matrices for:
 
 - SLP real/imag
 - DLP real/imag
@@ -93,7 +93,30 @@ This avoids a slow serial scatter stage and lets regular-pair assembly remain ma
 
 ## GPU Dense Solve
 
-Deploy Level 2 defaults to direct Burton-Miller system assembly. Its regular,
+Coupled CUDA solves without full-matrix diagnostics assemble the combined
+pressure matrix `A = 0.5 Mpp - D + alpha H` and flux matrix
+`C = S + alpha (adjD + 0.5 Mpq)` directly. The regular kernels accumulate 24
+real values per triangle pair, rather than 48 for four individual operators.
+Multiple symmetry images are accumulated sequentially and scattered once.
+Compact singular/image corrections scatter directly into A/C. Interleaved
+real/imaginary storage avoids another full-size complex materialization.
+
+The interface map Q remains a job-cached sparse CSC map on the GPU. A gather
+kernel forms C Q without atomics or a dense Q. Transducer motion and known-flux
+products retain independent complex excitation columns. C is released after
+these products; the existing coupled block assembly and pivoted LU consume A
+and the projected blocks. Under positive time, `alpha = -i/k` for physical k > 0.
+
+`coupled_bem_assembly` accepts `auto` (default), `combined`, or `operators`.
+Full-matrix diagnostics always retain the operator path. Image fusion defaults
+on; `coupled_bem_max_registers=0` preserves compiler defaults. Explicit register
+caps are hardware tuning choices. See the
+[engine architecture](https://github.com/JWSound/BEAT_Engine/blob/main/docs/Coupled%20CUDA%20Assembly.md)
+and [CLI controls](cli-workflow.md#headless-project-workflow).
+FP32 atomic-order differences can be amplified in weak or cancellation-sensitive
+responses; this architecture does not change precision or pivoting.
+
+Exterior-only application solves and Deploy Level 2 default to direct Burton-Miller system assembly. Their regular,
 singular, close-pair, and symmetry-image kernels scatter directly into the real
 and imaginary parts of the final matrix and right-hand side:
 

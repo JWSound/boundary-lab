@@ -78,14 +78,14 @@ GPU solving VRAM requirements scale quadratically with mesh element count for ex
 
 | Total BEM Elements | Estimated VRAM |
 |---:|---:|
-| 1,000 | ~50-100 MB |
-| 2,000 | ~200-300 MB |
-| 3,000 | ~400-600 MB |
-| 5,000 | ~1.0-1.5 GB |
-| 7,000 | ~2.0-3.0 GB |
-| 10,000 | ~4-6 GB |
-| 15,000 | ~8-12 GB |
-| 20,000 | ~14-20 GB |
+| 1,000 | ~2 MB |
+| 2,000 | ~8 MB |
+| 3,000 | ~18 MB |
+| 5,000 | ~50 MB |
+| 7,000 | ~98 MB |
+| 10,000 | ~200 MB |
+| 15,000 | ~450 MB |
+| 20,000 | ~800 MB |
 
 
 ## Application Installation
