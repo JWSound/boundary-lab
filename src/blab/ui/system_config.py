@@ -54,6 +54,7 @@ from blab.component_symmetry import (
     infer_projected_diaphragm_area,
 )
 from blab.config import normalize_symmetry
+from blab.exterior_preparation import prepare_exterior_system
 from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import (
     InterfaceConformError,
@@ -529,11 +530,25 @@ def rebuild_configured_interfaces(
     changed_mesh_names: set[str],
     interface_output_root: str | Path,
     symmetry_mode: str = "off",
+    stitch_exterior_meshes: bool = False,
+    stitch_tolerance_mm: float = 2.0,
 ) -> InterfaceRebuildResult:
     """Validate and, when needed, rebuild known FEM-BEM interface pairs."""
 
     affected_bem_names = set(interface_bem_mesh_names_for_changes(system, changed_mesh_names))
     synced_system = sync_physical_system_meshes(system, meshes)
+    if stitch_exterior_meshes:
+        prepared = prepare_exterior_system(
+            synced_system, stitch_tolerance_mm=stitch_tolerance_mm,
+            symmetry_mode=symmetry_mode, output_root=interface_output_root,
+        )
+        return InterfaceRebuildResult(
+            system=synced_system,
+            quality_warning_interface_ids=tuple(
+                pair_id for entry in prepared.metadata["exterior_preparation"]
+                for pair_id in entry["quality_warning_interface_ids"]
+            ),
+        )
     if not affected_bem_names:
         return InterfaceRebuildResult(system=synced_system)
 
@@ -1401,6 +1416,7 @@ class SystemConfigDialog(QDialog):
         parent: QWidget | None = None,
         *,
         stitch_exterior_meshes: bool = False,
+        stitch_tolerance_mm: float = 2.0,
         interface_output_root: str | Path | None = None,
         symmetry_mode: str = "off",
         symmetry_analysis_meshes: tuple[AvailableSystemMesh, ...] | None = None,
@@ -1416,6 +1432,7 @@ class SystemConfigDialog(QDialog):
         self._channel_names = channel_names or ("main",)
         self._component_channel_by_id = dict(component_channel_by_id or {})
         self._stitch_exterior_meshes = bool(stitch_exterior_meshes)
+        self._stitch_tolerance_mm = stitch_tolerance_mm
         self._collected_component_channels: dict[str, str] = {}
         self._mesh_file_overrides_by_name: dict[str, str] = {}
         self._interface_status_by_id: dict[str, str] = {}
@@ -1982,6 +1999,28 @@ class SystemConfigDialog(QDialog):
         try:
             regions, resources = self._collect_regions_and_resources()
             boundaries = self._collect_boundaries()
+            if self.stitch_exterior_meshes_check.isChecked():
+                # Authoring keeps canonical assets, but assembly must use the
+                # same symmetry variants as preview and solve preparation.
+                assembly_resources = tuple(self._symmetry_analysis_resources_by_id(resources).values())
+                prepared = prepare_exterior_system(
+                    PhysicalSystem(
+                        id="interface-build", name="Interface build", meshes=assembly_resources,
+                        regions=regions, boundaries=boundaries, interfaces=tuple(self._interfaces),
+                    ),
+                    stitch_tolerance_mm=self._stitch_tolerance_mm,
+                    symmetry_mode=self._symmetry_mode,
+                    output_root=self._interface_output_root,
+                    identify_interfaces=True,
+                )
+                if not prepared.interfaces:
+                    raise ValueError("Mark matching bounded and unbounded surface groups as Interface first.")
+                self._interfaces = list(prepared.interfaces)
+                self._interface_status_by_id.update({pair.id: "Ready" for pair in prepared.interfaces})
+                self._load_interfaces()
+                if any(entry["quality_warning_interface_ids"] for entry in prepared.metadata["exterior_preparation"]):
+                    QMessageBox.warning(self, "Inspect Simplified Interface", INTERFACE_SEAM_SIMPLIFICATION_WARNING)
+                return
             region_by_id = {region.id: region for region in regions}
             resource_by_id = {resource.id: resource for resource in resources}
             bounded = [

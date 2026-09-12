@@ -802,10 +802,26 @@ def _split_stitched_loop_edges(
                 sequence.append(vertex_id)
         if len(sequence) < 2:
             raise ValueError("Stitch boundary edge does not contain enough seam vertices.")
-        replacement = [
-            np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64) for i in range(len(sequence) - 1)
-        ]
-        replacement_by_triangle.setdefault(triangle_index, []).extend(replacement)
+        # A triangle can touch two or three seam edges. Split its current
+        # triangulation successively, rather than overlaying a separate fan for
+        # each original edge (which also left old seam vertices unwelded).
+        current = replacement_by_triangle.setdefault(
+            triangle_index,
+            [np.asarray([loop_vertex_to_seam.get(int(v), int(v)) for v in triangles[triangle_index]], dtype=np.int64)],
+        )
+        mapped_edge = tuple(sorted((loop_vertex_to_seam[start], loop_vertex_to_seam[end])))
+        for current_index, current_triangle in enumerate(current):
+            current_oriented = _oriented_edge_and_opposite(current_triangle, mapped_edge)
+            if current_oriented is not None:
+                _, _, opposite = current_oriented
+                replacement = [
+                    np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64)
+                    for i in range(len(sequence) - 1)
+                ]
+                current[current_index:current_index + 1] = replacement
+                break
+        else:
+            raise ValueError("Could not locate stitch edge after splitting an adjacent edge.")
         split_edges += 1
         split_triangles += len(replacement)
 

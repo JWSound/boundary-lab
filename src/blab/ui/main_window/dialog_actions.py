@@ -279,6 +279,7 @@ class DialogActionsMixin:
             self.project.component_channel_by_id,
             self,
             stitch_exterior_meshes=self.stitch_imported_meshes,
+            stitch_tolerance_mm=self.preferences.stitch_tolerance_mm,
             interface_output_root=self.mesh_service().output_root,
             symmetry_mode=self.symmetry,
             symmetry_analysis_meshes=symmetry_analysis_meshes,

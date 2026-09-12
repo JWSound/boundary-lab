@@ -29,7 +29,6 @@ from blab.ui.main_window.helpers import (
 )
 from blab.ui.mesh_assembly import (
     STITCH_FAILURE_MESSAGE,
-    STITCHED_MESH_NAME,
     MeshAssemblyService,
     PreparedMeshAssembly,
 )
@@ -203,6 +202,8 @@ class MeshWorkflowMixin:
                     changed_mesh_names=set(updated_names),
                     interface_output_root=self.mesh_service().output_root,
                     symmetry_mode=self.symmetry,
+                    stitch_exterior_meshes=self.stitch_imported_meshes,
+                    stitch_tolerance_mm=self.preferences.stitch_tolerance_mm,
                 )
                 reloaded_meshes = _mesh_entries_with_file_overrides(
                     reloaded_meshes,
@@ -245,28 +246,6 @@ class MeshWorkflowMixin:
 
     def _stitch_candidate_mesh_configs(self) -> tuple[MeshConfig, ...]:
         return (*self._generated_solver_mesh_configs_for_symmetry(self.symmetry), *self._imported_solver_mesh_configs())
-
-    def _should_use_stitched_mesh(self) -> bool:
-        return self.stitch_imported_meshes and len(self._stitch_candidate_mesh_configs()) > 1
-
-    def _stitched_mesh_path(self, mesh_configs: tuple[MeshConfig, ...]) -> Path:
-        return self.mesh_service().stitched_mesh_path(
-            mesh_configs,
-            self.preferences.stitch_tolerance_mm,
-            self.symmetry,
-        )
-
-    def _mesh_for_stitching(self, mesh_cfg: MeshConfig):
-        return self.mesh_service().mesh_for_stitching(mesh_cfg)
-
-    def _stitch_ignored_boundary_axes(self) -> tuple[str, ...]:
-        return self.mesh_service().ignored_boundary_axes(self.symmetry)
-
-    def _stitched_solver_mesh_config(self) -> MeshConfig | None:
-        if not self._should_use_stitched_mesh():
-            return None
-        assembly = self.prepare_mesh_assembly(())
-        return assembly.mesh_configs[0] if assembly.mesh_configs else None
 
     def _active_imported_meshes(self) -> tuple[MeshDialogEntry, ...]:
         return tuple(mesh for mesh in self.imported_meshes if mesh.enabled)
@@ -332,6 +311,7 @@ class MeshWorkflowMixin:
         radiators: tuple[RadiatorConfig, ...],
     ) -> PreparedMeshAssembly:
         assembly = self.mesh_service().prepare(
+            physical_system=self._project_document().physical_system,
             generated_mesh_configs=self._generated_solver_mesh_configs(),
             imported_meshes=self._project_document().imported_meshes,
             radiators=radiators,
@@ -341,32 +321,6 @@ class MeshWorkflowMixin:
         )
         self._project_document().imported_meshes = assembly.imported_meshes
         return assembly
-
-    def _unique_stitched_surface_name(
-        self,
-        surface_name: str,
-        used_surface_names: set[str],
-        mesh_index: int,
-    ) -> str:
-        return self.mesh_service().unique_surface_name(surface_name, used_surface_names, mesh_index)
-
-    def _used_surface_tags_for_mesh(self, mesh_cfg: MeshConfig) -> tuple[int, ...]:
-        return self.mesh_service().used_surface_tags(mesh_cfg)
-
-    def _stitched_radiator_map(self) -> dict[tuple[str | None, int], tuple[str, int]]:
-        return self.mesh_service().stitched_radiator_map(self._stitch_candidate_mesh_configs())
-
-    def _radiators_for_solver_meshes(
-        self,
-        mesh_configs: tuple[MeshConfig, ...],
-        radiators: tuple[RadiatorConfig, ...],
-    ) -> tuple[RadiatorConfig, ...]:
-        if len(mesh_configs) != 1 or mesh_configs[0].name != STITCHED_MESH_NAME:
-            return radiators
-        return self.mesh_service().radiators_for_stitched_mesh(
-            self._stitch_candidate_mesh_configs(),
-            radiators,
-        )
 
     def show_stitch_or_generic_error(self, title: str, exc: Exception) -> None:
         if str(exc) != STITCH_FAILURE_MESSAGE:
@@ -412,7 +366,7 @@ class MeshWorkflowMixin:
                 self.clear_mesh_preview()
                 return
             interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
-                self._project_document().physical_system,
+                assembly.physical_system or self._project_document().physical_system,
                 assembly.surface_tags_by_mesh,
             )
             driven_surfaces = {(radiator.mesh, radiator.tag) for radiator in assembly.radiators} | component_surfaces

@@ -7,14 +7,14 @@ before opening the request file. No matrix assembly is needed for negotiation.
 
 ## Handshake and version ownership
 
-[worker-v1.json](https://github.com/JWSound/BEAT_Engine/blob/v0.1.0/src/beat_engine/beat_contract/worker-v1.json) is the engine-owned
+[worker-v1.json](https://github.com/JWSound/BEAT_Engine/blob/v0.1.2/src/beat_engine/beat_contract/worker-v1.json) is the engine-owned
 announcement template. Julia adds `runtime.julia_version` and `backends` at startup,
 then emits the resulting object as a single JSON line on stdout, with `type: ready`.
 
 | Field | Meaning |
 |---|---|
 | `protocol` | Name `beat-worker`, integer version `1` |
-| `engine` | Name `BEAT Engine`, development version `0.1.0-dev` |
+| `engine` | Name `BEAT Engine`, release version `0.1.2` |
 | `contracts` | Supported versions for system request, compiled system, system result, and field array |
 | `operations` | `solve` and `bem_field` |
 | `precisions` | `float32` and `float64` |

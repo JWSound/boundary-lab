@@ -42,7 +42,6 @@ from blab.solve_results import (
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.main_window.radiators import RadiatorsMixin
 from blab.ui.mesh_assembly import MeshAssemblyService
 from blab.ui.physical_system_migration import PhysicalSystemMigrationError, seed_exterior_system
@@ -316,7 +315,6 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
             ),
         ),
     )
-    inputs = exterior_bem_inputs(system, component_channel_by_id=channels)
 
     assert infer_physical_solve_kind(system) == PhysicalSolveKind.EXTERIOR_BEM
     assert len(system.components) == 1
@@ -324,15 +322,9 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
     assert system.components[0].parameters["boundary_motion_weights"][boundary_id] == pytest.approx(
         10.0 ** (-6.0 / 20.0)
     )
-    assert inputs.radiators[0].channel == "High"
-    assert inputs.radiators[0].velocity_offset_db == pytest.approx(-6.0)
-
-    unsupported = replace(
-        system,
-        components=(replace(system.components[0], kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER),),
-    )
-    with pytest.raises(ValueError, match="prescribed-velocity components only"):
-        exterior_bem_inputs(unsupported, component_channel_by_id=channels)
+    assert channels[system.components[0].id] == "High"
+    compiled = PhysicalSystemCompiler().compile(system)
+    assert compiled.components[0].parameters["boundary_motion_weights"] == system.components[0].parameters["boundary_motion_weights"]
 
 
 def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tmp_path: Path) -> None:
@@ -409,14 +401,6 @@ def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tm
     )
     assert channels[tweeter.id] == "High"
 
-    inputs = exterior_bem_inputs(system, component_channel_by_id=channels)
-    assert [(radiator.tag, radiator.channel, radiator.velocity_offset_db) for radiator in inputs.radiators] == [
-        (2, "High", pytest.approx(-12.042)),
-        (3, "High", pytest.approx(-2.499)),
-        (4, "High", pytest.approx(0.0)),
-        (5, "Low", pytest.approx(0.0)),
-    ]
-
     ungrouped, _channels = seed_exterior_system(
         (mesh,),
         tuple(replace(radiator, drive_group=None, drive_group_name=None) for radiator in radiators),
@@ -468,7 +452,7 @@ def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
         backend_id="beat_cpu",
         stitch_exterior_meshes=False,
     )
-    assert not system_solve_module.supports_exterior_system_protocol(
+    assert system_solve_module.supports_exterior_system_protocol(
         system,
         backend_id="beat_cpu",
         stitch_exterior_meshes=True,

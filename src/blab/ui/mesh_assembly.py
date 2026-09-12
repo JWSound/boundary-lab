@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -12,8 +11,10 @@ import numpy as np
 
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig, RadiatorConfig
-from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file, stitch_meshes
-from blab.ui.project_state import DEFAULT_MESH_SCALE_FACTOR, ImportedMeshState
+from blab.exterior_preparation import prepare_exterior_system
+from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
+from blab.physical_model import PhysicalSystem
+from blab.ui.project_state import ImportedMeshState
 
 STITCHED_MESH_NAME = "stitched"
 STITCH_FAILURE_MESSAGE = (
@@ -31,6 +32,8 @@ class PreparedMeshAssembly:
     surface_tags_by_mesh: dict[str, dict[str, int]]
     source_surface_tags_by_mesh: dict[str, dict[str, int]]
     solver_surface_by_source: dict[tuple[str, int | None], tuple[str, int | None]]
+
+    physical_system: PhysicalSystem | None = None
 
     @property
     def surface_tags(self) -> dict[str, tuple[str, int]]:
@@ -96,24 +99,70 @@ class MeshAssemblyService:
         stitch_imported_meshes: bool,
         stitch_tolerance_mm: float,
         symmetry: str,
+        physical_system: PhysicalSystem | None = None,
     ) -> PreparedMeshAssembly:
         cleaned_imported = self.clean_imported_meshes(imported_meshes)
         imported_configs = tuple(self._imported_mesh_config(mesh) for mesh in cleaned_imported if mesh.enabled)
         candidates = (*generated_mesh_configs, *imported_configs)
-        mesh_configs, resolved_radiators = self.prepare_mesh_configs(
-            tuple(candidates),
-            radiators,
-            stitch_meshes_enabled=stitch_imported_meshes,
-            stitch_tolerance_mm=stitch_tolerance_mm,
-            symmetry=symmetry,
-        )
-        surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
+        mesh_configs = tuple(candidates)
+        resolved_radiators = radiators
         source_surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in candidates}
-        solver_surface_by_source = self.solver_surface_map(
-            tuple(candidates),
-            stitched=bool(stitch_imported_meshes and len(candidates) > 1),
-        )
+        solver_surface_by_source = self.solver_surface_map(tuple(candidates), stitched=False)
+        prepared_system = physical_system
+        if stitch_imported_meshes and physical_system is not None:
+            configs_by_name = {mesh.name: mesh for mesh in candidates}
+            synced = replace(
+                physical_system,
+                meshes=tuple(
+                    replace(
+                        resource,
+                        file=configs_by_name[resource.name].file,
+                        scale_to_m=configs_by_name[resource.name].scale_factor,
+                        translation_m=configs_by_name[resource.name].translation_m,
+                    )
+                    if resource.name in configs_by_name
+                    else resource
+                    for resource in physical_system.meshes
+                ),
+            )
+            try:
+                prepared_system = prepare_exterior_system(
+                    synced,
+                    stitch_tolerance_mm=stitch_tolerance_mm,
+                    symmetry_mode=symmetry,
+                    output_root=self.output_root,
+                )
+            except ValueError as exc:
+                raise RuntimeError(STITCH_FAILURE_MESSAGE) from exc
+            source_by_id = {mesh.id: mesh for mesh in synced.meshes}
+            prepared_by_region = {region.id: region for region in prepared_system.regions}
+            prepared_by_id = {mesh.id: mesh for mesh in prepared_system.meshes}
+            for entry in prepared_system.metadata.get("exterior_preparation", []):
+                target = prepared_by_id[prepared_by_region[entry["region_id"]].mesh_ids[0]]
+                tags = read_surface_physical_names(Path(target.file))
+                for mapping in entry["surface_map"]:
+                    source = source_by_id[mapping["mesh_id"]]
+                    source_tag = source_surface_tags_by_mesh[source.name][mapping["source_name"]]
+                    solver_surface_by_source[(source.name, source_tag)] = (target.name, tags[mapping["assembled_name"]])
+            source_names = {resource.name for resource in synced.meshes}
+            mesh_configs = tuple(
+                MeshConfig(
+                    name=resource.name,
+                    file=resource.file,
+                    scale_factor=resource.scale_to_m,
+                    translation_m=resource.translation_m,
+                )
+                for resource in prepared_system.meshes
+            ) + tuple(mesh for mesh in candidates if mesh.name not in source_names)
+            resolved_radiators = tuple(
+                replace(radiator, mesh=target[0], tag=target[1])
+                if (target := solver_surface_by_source.get((radiator.mesh, radiator.tag)))
+                else radiator
+                for radiator in radiators
+            )
+        surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
         return PreparedMeshAssembly(
+            physical_system=prepared_system,
             imported_meshes=cleaned_imported,
             source_mesh_configs=tuple(candidates),
             mesh_configs=mesh_configs,
@@ -123,55 +172,11 @@ class MeshAssemblyService:
             solver_surface_by_source=solver_surface_by_source,
         )
 
-    def prepare_mesh_configs(
-        self,
-        mesh_configs: tuple[MeshConfig, ...],
-        radiators: tuple[RadiatorConfig, ...],
-        *,
-        stitch_meshes_enabled: bool,
-        stitch_tolerance_mm: float,
-        symmetry: str,
-    ) -> tuple[tuple[MeshConfig, ...], tuple[RadiatorConfig, ...]]:
-        """Apply optional region assembly to already materialized mesh resources."""
-
-        candidates = tuple(mesh_configs)
-        if stitch_meshes_enabled and len(candidates) > 1:
-            stitched = self._stitched_mesh_config(candidates, stitch_tolerance_mm, symmetry)
-            resolved_meshes = (stitched,)
-            resolved_radiators = self.radiators_for_stitched_mesh(candidates, radiators)
-        else:
-            resolved_meshes = candidates
-            resolved_radiators = radiators
-        return resolved_meshes, resolved_radiators
-
     def cleaned_imported_mesh_path(self, mesh: ImportedMeshState) -> Path:
         source_path = Path(mesh.source_file)
         source_hash = hashlib.sha1(str(source_path.resolve()).encode("utf-8")).hexdigest()[:10]
         safe_name = "".join(char if char.isalnum() or char in ("_", "-") else "_" for char in mesh.name).strip("_")
         return self.output_root / f"{safe_name or 'mesh'}_{source_hash}_clean.msh"
-
-    def radiators_for_stitched_mesh(
-        self,
-        source_mesh_configs: tuple[MeshConfig, ...],
-        radiators: tuple[RadiatorConfig, ...],
-    ) -> tuple[RadiatorConfig, ...]:
-        stitched_map = self.stitched_radiator_map(source_mesh_configs)
-        resolved = []
-        for radiator in radiators:
-            stitched_surface = stitched_map.get((radiator.mesh, radiator.tag))
-            if stitched_surface is None:
-                resolved.append(replace(radiator, mesh=STITCHED_MESH_NAME))
-                continue
-            stitched_name, stitched_tag = stitched_surface
-            resolved.append(
-                replace(
-                    radiator,
-                    name=stitched_name,
-                    mesh=STITCHED_MESH_NAME,
-                    tag=stitched_tag,
-                )
-            )
-        return tuple(resolved)
 
     def _imported_mesh_config(self, mesh: ImportedMeshState) -> MeshConfig:
         mesh_file = mesh.cleaned_file if mesh.cleaned_file and Path(mesh.cleaned_file).exists() else mesh.source_file
@@ -182,80 +187,11 @@ class MeshAssemblyService:
             translation_m=tuple(value / 1000.0 for value in mesh.translation_mm),
         )
 
-    def _stitched_mesh_config(
-        self,
-        mesh_configs: tuple[MeshConfig, ...],
-        stitch_tolerance_mm: float,
-        symmetry: str,
-    ) -> MeshConfig:
-        stitched_path = self.stitched_mesh_path(mesh_configs, stitch_tolerance_mm, symmetry)
-        if not stitched_path.exists():
-            stitched_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                stitched_mesh, _result = stitch_meshes(
-                    tuple(self.mesh_for_stitching(mesh) for mesh in mesh_configs),
-                    stitch_tol=float(stitch_tolerance_mm),
-                    area_tol=AREA_TOL,
-                    ignored_boundary_axes=self.ignored_boundary_axes(symmetry),
-                )
-                meshio.write(stitched_path, stitched_mesh, file_format="gmsh22", binary=False)
-            except Exception as exc:
-                raise RuntimeError(STITCH_FAILURE_MESSAGE) from exc
-        return MeshConfig(name=STITCHED_MESH_NAME, file=str(stitched_path), scale_factor=DEFAULT_MESH_SCALE_FACTOR)
-
-    def stitched_mesh_path(
-        self,
-        mesh_configs: tuple[MeshConfig, ...],
-        stitch_tolerance_mm: float,
-        symmetry: str,
-    ) -> Path:
-        payload = {
-            "symmetry": symmetry,
-            "ignored_boundary_axes": self.ignored_boundary_axes(symmetry),
-            "tol_mm": round(float(stitch_tolerance_mm), 6),
-            "meshes": [
-                {
-                    "name": mesh.name,
-                    "file": str(Path(mesh.file).resolve()),
-                    "mtime_ns": Path(mesh.file).stat().st_mtime_ns,
-                    "translation_m": mesh.translation_m,
-                    "scale_factor": mesh.scale_factor,
-                }
-                for mesh in mesh_configs
-            ],
-        }
-        digest = hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-        return self.output_root / f"stitched_{digest}.msh"
-
-    @staticmethod
-    def mesh_for_stitching(mesh_config: MeshConfig) -> meshio.Mesh:
-        mesh = meshio.read(mesh_config.file)
-        scale_factor = (
-            DEFAULT_MESH_SCALE_FACTOR if mesh_config.scale_factor is None else float(mesh_config.scale_factor)
-        )
-        points_m = np.asarray(mesh.points, dtype=float) * scale_factor + np.asarray(
-            mesh_config.translation_m, dtype=float
-        )
-        return meshio.Mesh(
-            points=points_m / DEFAULT_MESH_SCALE_FACTOR,
-            cells=mesh.cells,
-            point_data=mesh.point_data,
-            cell_data=mesh.cell_data,
-            field_data=mesh.field_data,
-        )
-
-    @staticmethod
-    def ignored_boundary_axes(symmetry: str) -> tuple[str, ...]:
-        if symmetry == "x":
-            return ("x",)
-        if symmetry == "xy":
-            return ("x", "y")
-        return ()
-
     def stitched_radiator_map(
         self,
         mesh_configs: tuple[MeshConfig, ...],
     ) -> dict[tuple[str | None, int], tuple[str, int]]:
+        """Reconstruct old stitched identities only to migrate saved radiator assignments."""
         mapping: dict[tuple[str | None, int], tuple[str, int]] = {}
         used_surface_names: set[str] = set()
         used_surface_tags: set[int] = set()

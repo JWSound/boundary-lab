@@ -26,7 +26,6 @@ from blab.physical_model import (
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window import (
     STITCH_FAILURE_MESSAGE,
-    STITCHED_MESH_NAME,
     MainWindow,
     _mesh_entries_with_file_overrides,
     _physical_system_preview_metadata,
@@ -433,55 +432,6 @@ def test_preview_falls_back_to_unstitched_meshes_when_preview_stitching_fails(tm
     assert loaded["kwargs"]["symmetry"] == "xy"
     assert loaded["status"] == "Mesh preview showing unstitched meshes; stitching failed"
     assert "cleared" not in loaded
-
-
-def test_stitched_solver_radiators_reference_stitched_mesh(tmp_path: Path) -> None:
-    ath_msh = tmp_path / "ath_clean.msh"
-    imported_msh = tmp_path / "external_clean.msh"
-    _write_triangle_mesh(ath_msh, tag=2)
-    _write_triangle_mesh(imported_msh, tag=2)
-
-    document = GeneratorDocument(
-        id="design1",
-        name="waveguide",
-        provider_id="ath",
-        provider_schema_version=1,
-        source=ath_source(""),
-    )
-    result = GeneratedGeometry(
-        provider_id="ath",
-        output_dir=tmp_path,
-        mesh_path=ath_msh,
-        source_path=tmp_path / "ath_case.cfg",
-        radiators=(RadiatorConfig(name="waveguide:SD1D1001", mesh="waveguide", tag=2),),
-        cleaned_mesh_path=ath_msh,
-    )
-
-    window = MainWindow.__new__(MainWindow)
-    window.symmetry = "off"
-    window.generator_documents = (document,)
-    window.generated_geometry_by_document_id = {document.id: result}
-    window.imported_radiators = ()
-    window.imported_meshes = (
-        MeshDialogEntry(
-            name="external",
-            source_file=str(imported_msh),
-            cleaned_file=str(imported_msh),
-        ),
-    )
-
-    radiators = window._radiators_for_solver_meshes(
-        (MeshConfig(name=STITCHED_MESH_NAME, file=str(tmp_path / "stitched.msh")),),
-        (
-            *window.all_radiators(),
-            RadiatorConfig(name="external:SD1D1001", mesh="external", tag=2),
-        ),
-    )
-
-    assert [(radiator.name, radiator.mesh, radiator.tag) for radiator in radiators] == [
-        ("stitched:SD1D1001", "stitched", 2),
-        ("stitched:SD1D1001_mesh2", "stitched", 1),
-    ]
 
 
 def test_solver_channels_include_radiator_default_channel_when_missing() -> None:

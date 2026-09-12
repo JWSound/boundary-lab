@@ -46,7 +46,7 @@ from blab.system_solve import (
     prepare_system_ui_solve,
 )
 from blab.ui.project_io import PROJECT_SCHEMA_VERSION, read_project_file
-from blab.ui.project_state import ProjectPreferencesState
+from blab.ui.project_state import ProjectPreferencesState, generator_documents_from_payload, generator_mesh_name
 
 HEADLESS_REQUEST_VERSION = 1
 HEADLESS_RESULT_VERSION = 2
@@ -107,6 +107,30 @@ def load_headless_project(path: str | Path) -> HeadlessProject:
     symmetry = str(payload.get("symmetry", "off")).strip().lower()
     if symmetry not in {"off", "x", "xy"}:
         symmetry = "off"
+    # System authoring stores canonical generated assets. Resolve the same
+    # full/reduced variants selected by GUI preview and solve preparation.
+    generated = {
+        generator_mesh_name(document): document
+        for document in generator_documents_from_payload(payload.get("generator_documents"))
+        if document.mesh_enabled and document.artifact is not None
+    }
+    resources = []
+    for resource in system.meshes:
+        document = generated.get(resource.name)
+        if document is None:
+            resources.append(resource)
+            continue
+        artifact = document.artifact
+        mesh_file = (
+            artifact.cleaned_mesh_path or artifact.mesh_path
+            if symmetry == "off"
+            else artifact.reduced_cleaned_mesh_path or artifact.mesh_path
+        )
+        resources.append(replace(
+            resource, file=mesh_file, scale_to_m=document.mesh_scale_factor,
+            translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
+        ))
+    system = replace(system, meshes=tuple(resources))
     component_channels = payload.get("component_channel_by_id", {})
     if not isinstance(component_channels, dict):
         component_channels = {}
@@ -226,6 +250,8 @@ def prepare_headless_solve(
         component_channel_by_id=project.component_channel_by_id,
         backend_id=backend_id,
         symmetry_mode=project.symmetry,
+        stitch_exterior_meshes=bool(project.payload.get("stitch_exterior_meshes", False)),
+        stitch_tolerance_mm=preferences.stitch_tolerance_mm,
         observation_planes=(
             observation_planes_from_payload(project.payload.get("observation_planes"))
             if include_observation_planes

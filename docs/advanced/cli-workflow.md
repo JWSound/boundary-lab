@@ -26,6 +26,26 @@ observation-plane settings:
 blab project solve speaker.blab.json --backend beat_cpu --output runs/speaker-check
 ```
 
+When `stitch_exterior_meshes` is enabled, GUI preview, Build/Identify Interfaces,
+mesh reload, and GUI/headless solve preparation use the same exterior-region
+assembly. Assign every part to be stitched (including generated waveguides) to
+the exterior region in System. Enabled assets outside that region are not
+implicitly included, and FEM volume meshes are never stitched.
+
+Preparation transforms exterior parts to project coordinates, stitches them
+using `project_preferences.stitch_tolerance_mm`, and then conforms configured
+interfaces to the authoritative FEM facets. Closure is checked on the assembled
+exterior, allowing edges on active symmetry planes. Intentional cutouts may be
+open in source assets but must be closed by the assembly. Missing parts or
+unmatched seams still fail validation.
+
+Derived meshes and preparation manifests are written under `runs/`; source
+assets, FEM connectivity, component IDs, excitation ports, and channel assignments
+remain intact. Manifests record source hashes, transforms, stitch tolerance,
+symmetry, and physical-group mappings. The old all-enabled-mesh stitching and
+conversion through legacy radiator inputs have been retired. Saved legacy
+radiator assignments remain readable for project migration.
+
 The default `--backend beat_auto` always selects a BEAT Engine backend. It probes
 the configured Julia CUDA environment and uses `beat_cuda` when CUDA is
 functional; otherwise it falls back to `beat_cpu`. Use an explicit

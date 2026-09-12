@@ -52,7 +52,6 @@ from blab.speaker_symmetry import expand_speaker_system_for_export
 from blab.symmetry import SymmetryValidationError
 from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
-from blab.ui.exterior_system import exterior_bem_inputs
 from blab.ui.main_window.solve_session import SolveSession
 from blab.ui.main_window.workflow_view import PlotPresenter, SolveInputs, WorkflowView
 from blab.ui.main_window_widgets import (
@@ -64,7 +63,6 @@ from blab.ui.operation_controllers import (
 )
 from blab.ui.physical_system_migration import (
     PhysicalSystemMigrationError,
-    seed_exterior_system_from_solver_inputs,
 )
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
@@ -257,6 +255,8 @@ class SolveWorkflowController(QObject):
                     "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=solve_symmetry,
+                stitch_exterior_meshes=project.stitch_imported_meshes,
+                stitch_tolerance_mm=preferences.stitch_tolerance_mm,
                 observation_planes=(),
             )
             prepared = prepare_speaker_package_solve(
@@ -292,29 +292,9 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
-            solver_system = system
-            component_channels = project.component_channel_by_id
-            if project.stitch_imported_meshes:
-                inputs = exterior_bem_inputs(
-                    system,
-                    component_channel_by_id=project.component_channel_by_id,
-                    symmetry_mode=symmetry,
-                )
-                mesh_configs, radiators = self._inputs.mesh_service().prepare_mesh_configs(
-                    inputs.mesh_configs,
-                    inputs.radiators,
-                    stitch_meshes_enabled=project.stitch_imported_meshes,
-                    stitch_tolerance_mm=preferences.stitch_tolerance_mm,
-                    symmetry=symmetry,
-                )
-                solver_system, component_channels = seed_exterior_system_from_solver_inputs(
-                    mesh_configs,
-                    radiators,
-                )
-
             frequencies = self._view.frequency_range()
             prepared = prepare_system_ui_solve(
-                solver_system,
+                system,
                 freq_min_hz=float(frequencies.min_hz),
                 freq_max_hz=float(frequencies.max_hz),
                 freq_count=frequencies.count,
@@ -322,13 +302,15 @@ class SolveWorkflowController(QObject):
                 polar_angle_step_deg=preferences.polar_angle_step_deg,
                 spherical_sampling_enabled=preferences.spherical_sampling_enabled,
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
-                component_channel_by_id=component_channels,
+                component_channel_by_id=project.component_channel_by_id,
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=symmetry,
+                stitch_exterior_meshes=project.stitch_imported_meshes,
+                stitch_tolerance_mm=preferences.stitch_tolerance_mm,
                 observation_planes=project.observation_planes,
             )
         except (ValueError, OSError, SymmetryValidationError) as exc:
@@ -360,6 +342,8 @@ class SolveWorkflowController(QObject):
                     "access_key": preferences.solve_server_access_key,
                 },
                 symmetry_mode=project.symmetry,
+                stitch_exterior_meshes=project.stitch_imported_meshes,
+                stitch_tolerance_mm=preferences.stitch_tolerance_mm,
                 observation_planes=project.observation_planes,
             )
         except Exception as exc:

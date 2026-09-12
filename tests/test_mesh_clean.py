@@ -297,16 +297,19 @@ def test_stitch_meshes_remaps_colliding_physical_surface_tags() -> None:
         field_data={"surface_a": np.array([1, 2], dtype=np.int32)},
     )
     mesh_b = meshio.Mesh(
-        points=np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]),
-        cells=[("triangle", np.array([[0, 1, 2]], dtype=np.int64))],
-        cell_data={"gmsh:physical": [np.array([1], dtype=np.int32)]},
+        points=np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]),
+        cells=[("triangle", np.array([[0, 1, 3], [1, 2, 3], [2, 0, 3]], dtype=np.int64))],
+        cell_data={"gmsh:physical": [np.array([1, 1, 1], dtype=np.int32)]},
         field_data={"surface_b": np.array([1, 2], dtype=np.int32)},
     )
 
-    stitched, _result = stitch_meshes((mesh_a, mesh_b), stitch_tol=1e-9, area_tol=0.0)
+    stitched, result = stitch_meshes((mesh_a, mesh_b), stitch_tol=1e-9, area_tol=0.0)
 
     physical_tags = stitched.cell_data_dict["gmsh:physical"]["triangle"].tolist()
     assert sorted(set(physical_tags)) == [1, 2]
+    assert result.after.boundary_edges == 0
+    assert result.after.triangles == 4
+    assert result.after.vertices == 4
     assert stitched.field_data["surface_a"].tolist() == [1, 2]
     assert stitched.field_data["surface_b"].tolist() == [2, 2]
 

@@ -8,6 +8,7 @@ import numpy as np
 
 from blab.acoustic_impedance import normalization_records
 from blab.config import normalize_symmetry
+from blab.exterior_preparation import prepare_exterior_system
 from blab.live import build_log_frequencies, order_frequencies_for_live_plotting
 from blab.observation_planes import ObservationPlane, ObservationPlaneType
 from blab.physical_compiler import PhysicalSystemCompiler
@@ -80,6 +81,8 @@ def prepare_system_ui_solve(
     symmetry_mode: str = "off",
     observation_planes: tuple[ObservationPlane, ...] = (),
     remote_options: dict[str, str] | None = None,
+    stitch_exterior_meshes: bool = False,
+    stitch_tolerance_mm: float = 2.0,
 ) -> SystemUiSolveRequest:
     """Compile an editable physical system and request the fields used by the UI."""
 
@@ -88,6 +91,10 @@ def prepare_system_ui_solve(
         observation_planes = ()
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
+    if stitch_exterior_meshes:
+        system = prepare_exterior_system(
+            system, stitch_tolerance_mm=stitch_tolerance_mm, symmetry_mode=symmetry,
+        )
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
     impedance_normalization = normalization_records(compiled.metadata)
     solve_kind = infer_physical_solve_kind(system)
@@ -344,7 +351,7 @@ def supports_exterior_system_protocol(
 ) -> bool:
     """Return whether an exterior project can use the local system worker."""
 
-    if stitch_exterior_meshes or not supports_physical_system_solves(backend_id):
+    if not supports_physical_system_solves(backend_id):
         return False
     try:
         if infer_physical_solve_kind(system) != PhysicalSolveKind.EXTERIOR_BEM:
