@@ -20,6 +20,7 @@ from blab.interface_conform import (
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
+from blab.mesh_cache import read_mesh
 from blab.mesh_clean import stitch_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
@@ -37,7 +38,7 @@ from blab.symmetry import snap_points_to_symmetry_planes
 def _read(resource: MeshResource, symmetry: str = "off") -> meshio.Mesh:
     if not np.isfinite(resource.scale_to_m) or resource.scale_to_m <= 0:
         raise ValueError(f"Mesh '{resource.name}' scale must be positive and finite.")
-    mesh = meshio.read(resource.file)
+    mesh = read_mesh(resource.file)
     mesh.points = np.asarray(mesh.points, dtype=float) * resource.scale_to_m + resource.translation_m
     mesh.points = snap_points_to_symmetry_planes(mesh.points, symmetry)
     return mesh

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 
 from PySide6.QtCore import Qt, QUrl, Slot
@@ -24,10 +25,10 @@ from blab.ui.main_window.constants import (
 from blab.ui.main_window.helpers import (
     _mesh_entries_with_file_overrides,
 )
+from blab.ui.mesh_preparation import prepare_system_inventory
 from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY
 from blab.ui.system_config import (
     SystemConfigDialog,
-    inspect_system_mesh_variants,
     inspect_system_meshes,
     sync_physical_system_meshes,
 )
@@ -258,9 +259,30 @@ class DialogActionsMixin:
 
     @Slot()
     def open_system_config(self) -> None:
+        snapshot = self._mesh_preparation_snapshot()
+        document = self.project
+        work_snapshot = deepcopy(snapshot)
+
+        def complete(inventory):
+            if self.project is not document:
+                return
+            if self._mesh_preparation_snapshot() != snapshot:
+                self.open_system_config()
+                return
+            self._open_prepared_system_config(inventory)
+
+        def failed(exc):
+            if self.project is document and self._mesh_preparation_snapshot() == snapshot:
+                QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
+
+        self.preparations.submit(
+            "system", "Inspecting system meshes...", lambda: prepare_system_inventory(work_snapshot), complete, failed,
+        )
+
+    def _open_prepared_system_config(self, inventory):
         try:
             with self.activities.start("Inspecting system meshes...") as activity:
-                dialog = self._prepare_system_config_dialog(activity)
+                dialog = self._prepare_system_config_dialog(activity, inventory)
         except Exception as exc:
             QMessageBox.critical(self, "System", f"Could not open the system configuration:\n{exc}")
             return
@@ -270,10 +292,8 @@ class DialogActionsMixin:
         dialog.systemApplied.connect(self._apply_system_config)
         dialog.exec()
 
-    def _prepare_system_config_dialog(self, activity) -> SystemConfigDialog | None:
-        mesh_entries = self._mesh_config_dialog_entries()
-        symmetry_mesh_entries = self.mesh_entries_for_symmetry(self.symmetry)
-        meshes, symmetry_analysis_meshes = inspect_system_mesh_variants(mesh_entries, symmetry_mesh_entries)
+    def _prepare_system_config_dialog(self, activity, inventory) -> SystemConfigDialog | None:
+        meshes, symmetry_analysis_meshes = inventory
         if not meshes:
             return None
         activity.update("Opening system configuration...")

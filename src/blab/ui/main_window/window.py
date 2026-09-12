@@ -77,6 +77,7 @@ from blab.ui.plots import (
     SpinoramaCanvas,
     frequency_to_slider_value,
 )
+from blab.ui.preparation_worker import PreparationController
 from blab.ui.project_state import (
     ImportedMeshState,
     ProjectDocument,
@@ -301,6 +302,7 @@ class MainWindow(
         self.syntax_highlighting_enabled = load_syntax_highlighting_enabled(self.settings)
         self.project_session = ProjectSession()
         self.activities = ActivityController(self)
+        self.preparations = PreparationController(self, self.activities)
         self._operation_activities = {}
         self.simulation_assembler = SimulationAssembler()
         self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
@@ -348,6 +350,7 @@ class MainWindow(
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
             activities=self.activities,
+            preparations=self.preparations,
         )
         self.project_workflow.project_state_changed.connect(self.project_state_changed)
         self.project_workflow.solve_results_invalidated.connect(self.solve_results_invalidated)
@@ -537,10 +540,16 @@ class MainWindow(
 
     @Slot()
     def start_solve(self) -> None:
+        if self.preparations.active:
+            return
         self.solve_workflow.start_solve()
 
     @Slot()
     def cancel_current_operation(self) -> None:
+        if self.preparations.active and not self.solve_controller.active and not self.geometry_controller.active:
+            self.preparations.cancel_all()
+            self.show_status("Preparation cancelled")
+            return
         self.solve_workflow.cancel_current_operation()
 
     @Slot()
@@ -553,6 +562,8 @@ class MainWindow(
 
     @Slot()
     def generate_geometry(self) -> None:
+        if self.preparations.active:
+            return
         self.geometry_workflow.generate_geometry()
 
     # -- project workflow --------------------------------------------------
@@ -636,5 +647,6 @@ class MainWindow(
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
+        self.preparations.close()
         self.activities.clear()
         super().closeEvent(event)

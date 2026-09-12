@@ -73,7 +73,7 @@ def test_identical_system_mesh_variants_are_only_inspected_once(monkeypatch) -> 
         calls.append(value)
         return inspected
 
-    monkeypatch.setattr(system_config_module, "inspect_system_meshes", inspect)
+    monkeypatch.setattr("blab.mesh_inventory.inspect_system_meshes", inspect)
 
     canonical, symmetry = inspect_system_mesh_variants(entries, entries)
 

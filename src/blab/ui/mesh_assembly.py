@@ -6,12 +6,12 @@ import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import meshio
 import numpy as np
 
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig, RadiatorConfig
 from blab.exterior_preparation import prepare_exterior_system
+from blab.mesh_cache import read_mesh
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
 from blab.physical_model import PhysicalSystem
 from blab.ui.project_state import ImportedMeshState
@@ -87,7 +87,7 @@ class MeshAssemblyService:
 
     @staticmethod
     def is_volume_mesh(path: str | Path) -> bool:
-        mesh = meshio.read(Path(path))
+        mesh = read_mesh(Path(path))
         return any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
 
     def prepare(
@@ -236,7 +236,7 @@ class MeshAssemblyService:
 
     @staticmethod
     def used_surface_tags(mesh_config: MeshConfig) -> tuple[int, ...]:
-        mesh = meshio.read(mesh_config.file)
+        mesh = read_mesh(mesh_config.file)
         physical = mesh.cell_data_dict.get("gmsh:physical", {})
         triangle_tags = physical.get("triangle")
         if triangle_tags is None:

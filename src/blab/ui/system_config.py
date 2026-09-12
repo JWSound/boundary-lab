@@ -55,12 +55,12 @@ from blab.component_symmetry import (
 )
 from blab.config import normalize_symmetry
 from blab.exterior_preparation import prepare_exterior_system
-from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import (
     InterfaceConformError,
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
+from blab.mesh_inventory import AvailableSystemMesh, inspect_system_mesh_variants, inspect_system_meshes
 from blab.physical_model import (
     AcousticInterface,
     AcousticRegion,
@@ -76,7 +76,6 @@ from blab.physical_model import (
     PhysicalGroupRef,
     PhysicalSystem,
 )
-from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.numeric_locale import FlexibleDoubleValidator, format_decimal_number, parse_decimal_number
 
 INTERFACE_SEAM_SIMPLIFICATION_WARNING = (
@@ -85,27 +84,6 @@ INTERFACE_SEAM_SIMPLIFICATION_WARNING = (
     "Visually inspect the conformed interface and its surrounding surface in the 3D viewport before solving."
 )
 PROJECTED_AREA_DEBOUNCE_MS = 500
-
-
-@dataclass(frozen=True)
-class AvailableSystemMesh:
-    """An enabled application mesh available to the physical-system editor."""
-
-    name: str
-    source_file: str
-    file: str
-    scale_to_m: float
-    translation_m: tuple[float, float, float]
-    surface_groups: tuple[str, ...]
-    volume_groups: tuple[str, ...]
-    has_tetrahedra: bool
-    surface_groups_by_volume: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    locked: bool = False
-
-    def surface_groups_for_volume(self, volume_group: str | None) -> tuple[str, ...]:
-        if volume_group is None:
-            return self.surface_groups
-        return dict(self.surface_groups_by_volume).get(volume_group, ())
 
 
 @dataclass(frozen=True)
@@ -399,75 +377,6 @@ def _boundary_normal_tensor(mesh: meshio.Mesh, boundary: Boundary) -> tuple[np.n
     if count == 0:
         raise ValueError(f"Moving boundary '{boundary.name}' contains no non-degenerate triangles.")
     return tensor, total_area, count
-
-
-def inspect_system_meshes(meshes: tuple[MeshDialogEntry, ...]) -> tuple[AvailableSystemMesh, ...]:
-    """Read physical-group inventory without modifying imported mesh files."""
-
-    inspected = []
-    for entry in meshes:
-        if not entry.enabled:
-            continue
-        source_path = Path(entry.source_file)
-        effective_path = (
-            Path(entry.cleaned_file)
-            if entry.cleaned_file is not None and Path(entry.cleaned_file).is_file()
-            else source_path
-        )
-        mesh = meshio.read(effective_path)
-        surface_groups = []
-        volume_groups = []
-        surface_name_by_tag = {}
-        volume_tag_by_name = {}
-        for name, raw in mesh.field_data.items():
-            tag, dimension = map(int, np.asarray(raw).tolist())
-            if dimension == 2:
-                surface_groups.append(str(name))
-                surface_name_by_tag[tag] = str(name)
-            elif dimension == 3:
-                volume_groups.append(str(name))
-                volume_tag_by_name[str(name)] = tag
-        surface_groups_by_volume = ()
-        if any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells):
-            surface_groups_by_volume = tuple(
-                (
-                    volume_name,
-                    tuple(
-                        sorted(
-                            surface_name_by_tag[tag]
-                            for tag in selected_volume_surface_tags(mesh, (volume_tag,))
-                            if tag in surface_name_by_tag
-                        )
-                    ),
-                )
-                for volume_name, volume_tag in sorted(volume_tag_by_name.items())
-            )
-        inspected.append(
-            AvailableSystemMesh(
-                name=entry.name,
-                source_file=str(source_path),
-                file=str(effective_path),
-                scale_to_m=float(entry.scale_factor),
-                translation_m=tuple(float(value) / 1000.0 for value in entry.translation_mm),
-                surface_groups=tuple(sorted(surface_groups)),
-                volume_groups=tuple(sorted(volume_groups)),
-                has_tetrahedra=any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells),
-                surface_groups_by_volume=surface_groups_by_volume,
-                locked=bool(entry.locked),
-            )
-        )
-    return tuple(inspected)
-
-
-def inspect_system_mesh_variants(
-    mesh_entries: tuple[MeshDialogEntry, ...],
-    symmetry_mesh_entries: tuple[MeshDialogEntry, ...],
-) -> tuple[tuple[AvailableSystemMesh, ...], tuple[AvailableSystemMesh, ...]]:
-    """Inspect canonical and symmetry meshes without rereading identical inputs."""
-
-    meshes = inspect_system_meshes(mesh_entries)
-    symmetry_meshes = meshes if symmetry_mesh_entries == mesh_entries else inspect_system_meshes(symmetry_mesh_entries)
-    return meshes, symmetry_meshes
 
 
 def sync_physical_system_meshes(

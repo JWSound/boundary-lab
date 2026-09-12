@@ -38,16 +38,38 @@ it does not cancel workers.
 
 Geometry generation and solving are connected through their existing
 `state_changed` signals. Running and cancelling states retain their handles;
-completed, failed, and cancelled states release them. Project reading/loading
-and System preparation use scopes. Waiting for user preferences or interacting
-with the System dialog does not count as a busy task.
+completed, failed, and cancelled states release them. Project reading, generated
+geometry restoration, preview preparation, and System inventory inspection use
+`PreparationController` jobs. Waiting for user preferences or interacting with
+the System dialog does not count as a busy task.
 
 The indicator uses Qt painting and the current palette, so it needs no image
 asset or separate light/dark icon files. `BusyIndicator` and `ActivityStatusBar`
 can also be reused with another `ActivityController`.
 
-This feature does not move work off the GUI thread. Synchronous mesh processing
-still prevents timers and painting from running, and an entirely synchronous
-scope may finish before its delayed indicator can appear. Do not add
-`processEvents()` calls to force animation: migrate expensive preparation into
-workers and publish results through GUI-thread slots instead.
+The indicator itself does not move work off the GUI thread. For new expensive
+operations, submit a snapshot-based job through `window.preparations`:
+
+```python
+window.preparations.submit(
+    "my-operation", "Preparing...",
+    lambda: prepare(snapshot),  # No widgets or mutable live project state.
+    apply_result,              # GUI-thread callback.
+    show_error,                # GUI-thread callback.
+)
+```
+
+Jobs run serially. Submitting the same key supersedes its previous request.
+The GUI callback must also check that its project/snapshot is still current.
+Cancelled or superseded jobs cannot publish results or errors. Stop skips queued
+work and discards results from running work; an already-running parse is allowed
+to finish. The indicator and mutation controls remain busy until it does.
+Closing the window waits for running jobs to finish safely.
+
+Widget construction, scene painting, plot clearing, and legacy source-model
+migration still run on the GUI thread. An entirely synchronous scope may finish
+before its delayed indicator can appear. Do not add `processEvents()` calls to
+force animation inside application workflows.
+
+See [mesh preparation and caching](mesh-preparation-performance.md) for cache
+invalidation and measurement details.

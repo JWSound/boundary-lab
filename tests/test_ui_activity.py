@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QLabel, QMessageBox
 
 from blab.ui.activity import ActivityController, ActivityStatusBar
 from blab.ui.application_state import OperationPhase, OperationState
+from test_ui_preparation_worker import wait_until
 
 
 def test_overlapping_activities_finish_independently(qapp):
@@ -136,6 +137,7 @@ def test_project_failure_releases_activity_before_error_dialog(main_window, monk
     monkeypatch.setattr(workflow, "read_project_file", read)
     monkeypatch.setattr(main_window, "show_error", show_error)
     main_window.project_workflow._load_project_from_path(tmp_path / "broken.blab.json")
+    wait_until(lambda: not main_window.preparations.active)
     assert errors == ["Broken project"]
 
 
@@ -148,20 +150,21 @@ def test_system_activity_ends_before_modal_interaction(main_window, monkeypatch)
         def exec(self):
             assert not main_window.activities.active
 
-    def prepare(activity):
+    def prepare(activity, _inventory):
         assert main_window.activities.active
         activity.update("Building dialog")
         return Dialog()
 
     monkeypatch.setattr(main_window, "_prepare_system_config_dialog", prepare)
     main_window.open_system_config()
+    wait_until(lambda: not main_window.preparations.active)
     assert not main_window.activities.active
 
 
 def test_system_failure_releases_activity(main_window, monkeypatch):
     errors = []
 
-    def prepare(_activity):
+    def prepare(_activity, _inventory):
         raise ValueError("Missing mesh")
 
     def critical(*args):
@@ -171,4 +174,5 @@ def test_system_failure_releases_activity(main_window, monkeypatch):
     monkeypatch.setattr(main_window, "_prepare_system_config_dialog", prepare)
     monkeypatch.setattr(QMessageBox, "critical", critical)
     main_window.open_system_config()
+    wait_until(lambda: not main_window.preparations.active)
     assert "Missing mesh" in errors[0]

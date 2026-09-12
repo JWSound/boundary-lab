@@ -13,11 +13,13 @@ Follows the shape of :mod:`blab.ui.main_window.solve_workflow`.
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.generators.ath import ath_source_text, with_ath_source_text
+from blab.generators.registry import create_generator
 from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
     physical_system_from_dict,
@@ -93,6 +95,7 @@ class ProjectWorkflowController(QObject):
         remember_recent: Callable[[Path], None],
         forget_recent: Callable[[Path], None],
         activities: ActivityController | None = None,
+        preparations=None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -106,6 +109,7 @@ class ProjectWorkflowController(QObject):
         self._remember_recent = remember_recent
         self._forget_recent = forget_recent
         self._activities = activities if activities is not None else ActivityController(self)
+        self._preparations = preparations
 
     @property
     def _project(self) -> ProjectDocument:
@@ -233,6 +237,8 @@ class ProjectWorkflowController(QObject):
     def new_project(self) -> None:
         if not self.confirm_unsaved_project_changes("new_project"):
             return
+        if self._preparations is not None:
+            self._preparations.cancel("project")
         self._inputs.discard_channel_config_dialog()
         self._session.replace(
             new_project_document(project_preferences=self.current_project_preferences()),
@@ -293,14 +299,50 @@ class ProjectWorkflowController(QObject):
         self._load_project_from_path(path)
 
     def _load_project_from_path(self, path: Path) -> None:
+        if self._preparations is not None:
+            self._preparations.cancel("preview")
+            self._preparations.cancel("system")
+            document = self._project
+            snapshot = deepcopy(document)
+
+            def read():
+                payload = read_project_file(path)
+                generated = {}
+                for item in generator_documents_from_payload(payload.get("generator_documents")):
+                    try:
+                        generated[item.id] = create_generator(item.provider_id).restore(item)
+                    except Exception:
+                        generated[item.id] = None
+                return payload, generated
+
+            def complete(result):
+                if self._project is not document:
+                    return
+                if self._project != snapshot:
+                    self._view.show_status("Project opening discarded because the current project changed")
+                    return
+                self._finish_project_load(path, *result)
+
+            def failed(exc):
+                if self._project is document and self._project == snapshot:
+                    self._view.show_error("Open project failed", str(exc))
+
+            self._preparations.submit("project", "Reading project...", read, complete, failed)
+            return
         try:
             with self._activities.start("Reading project..."):
                 payload = read_project_file(path)
+            self._finish_project_load(path, payload)
+        except Exception as exc:
+            self._view.show_error("Open project failed", str(exc))
+
+    def _finish_project_load(self, path, payload, generated_results=None):
+        try:
             project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
             if self._confirm_apply_project_preferences(project_preferences):
                 self._apply_project_preferences(project_preferences)
             with self._activities.start("Opening project..."):
-                self._apply_project_payload(payload, project_preferences=project_preferences)
+                self._apply_project_payload(payload, project_preferences=project_preferences, generated_results=generated_results)
                 self._session.path = path
                 self._remember_recent(path)
                 self.mark_project_clean()
@@ -337,6 +379,7 @@ class ProjectWorkflowController(QObject):
         payload: dict,
         *,
         project_preferences: ProjectPreferencesState | None = None,
+        generated_results: dict | None = None,
     ) -> None:
         self._inputs.discard_channel_config_dialog()
         source_config = payload.get("source_config_by_name", {})
@@ -399,7 +442,10 @@ class ProjectWorkflowController(QObject):
         )
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:
-            result = self._inputs.result_from_generator_document(document)
+            result = (
+                self._inputs.result_from_generator_document(document)
+                if generated_results is None else generated_results.get(document.id)
+            )
             if result is not None:
                 self._geometry_store.generated_by_document_id[document.id] = (
                     self._inputs.apply_saved_source_config_to_result(
@@ -410,10 +456,11 @@ class ProjectWorkflowController(QObject):
         self._inputs.rebuild_generator_document_tabs()
         self._inputs.reconcile_symmetry_with_backend()
         self._geometry_store.clear_imported_radiators()
-        try:
-            self._inputs.apply_saved_imported_source_config(self._inputs.surface_tags_for_meshes())
-        except Exception:
-            self._geometry_store.clear_imported_radiators()
+        if physical_system is None or bool(physical_system.metadata.get(AUTO_SEEDED_EXTERIOR_KEY, False)):
+            try:
+                self._inputs.apply_saved_imported_source_config(self._inputs.surface_tags_for_meshes())
+            except Exception:
+                self._geometry_store.clear_imported_radiators()
         self._inputs.ensure_seeded_exterior_system()
 
         self.project_state_changed.emit("project_loaded")

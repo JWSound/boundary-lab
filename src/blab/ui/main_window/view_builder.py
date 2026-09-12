@@ -444,13 +444,14 @@ class ViewBuilderMixin:
             QApplication.restoreOverrideCursor()
 
     def apply_workflow_controls(self, controls: WorkflowControls) -> None:
-        self.generate_button.setEnabled(controls.generate)
-        self.solve_button.setEnabled(controls.solve)
-        self.cancel_button.setEnabled(controls.cancel)
-        self.mesh_config_button.setEnabled(controls.mesh_config)
+        preparing = self.preparations.active
+        self.generate_button.setEnabled(controls.generate and not preparing)
+        self.solve_button.setEnabled(controls.solve and not preparing)
+        self.cancel_button.setEnabled(controls.cancel or preparing)
+        self.mesh_config_button.setEnabled(controls.mesh_config and not preparing)
         self.system_config_button.setEnabled(controls.system_config)
         self.channel_config_button.setEnabled(controls.channel_config)
-        self.export_speaker_package_action.setEnabled(controls.speaker_package)
+        self.export_speaker_package_action.setEnabled(controls.speaker_package and not preparing)
 
     def set_workflow_phase(self, phase: OperationPhase, *, cancel_available: bool = True) -> None:
         """Convenience for controllers: map a phase and apply it in one step."""

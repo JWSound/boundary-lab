@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry
+from blab.mesh_cache import read_mesh
 from blab.preview_hierarchy import PreviewHierarchy, build_preview_hierarchy
 from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
@@ -333,7 +334,7 @@ class MeshPreview(QWidget):
         if self.viewer is None:
             return
         camera_position = self._camera_position()
-        mesh = meshio.read(msh_path)
+        mesh = read_mesh(msh_path)
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
         self.viewer.clear()
@@ -406,6 +407,7 @@ class MeshPreview(QWidget):
         symmetry: str = "off",
         topology_report=None,
         hierarchy: PreviewHierarchy | None = None,
+        loaded_meshes: dict[str, meshio.Mesh] | None = None,
     ) -> None:
         if self.viewer is None:
             return
@@ -427,6 +429,7 @@ class MeshPreview(QWidget):
                 surface_tags=(surface_tags_by_mesh or {}).get(mesh_cfg.name, {}),
                 mesh_region=(mesh_regions or {}).get(mesh_cfg.name),
                 symmetry=symmetry,
+                mesh=(loaded_meshes or {}).get(mesh_cfg.name),
             )
             total_elements += mesh_elements
             preview_points.append(mesh_points)
@@ -608,8 +611,9 @@ class MeshPreview(QWidget):
         surface_tags: dict[str, int],
         mesh_region: str | None,
         symmetry: str,
+        mesh: meshio.Mesh | None = None,
     ) -> tuple[int, np.ndarray]:
-        mesh = meshio.read(mesh_cfg.file)
+        mesh = read_mesh(mesh_cfg.file) if mesh is None else mesh
         points = np.asarray(mesh.points, dtype=float)
         scale_factor = 0.001 if mesh_cfg.scale_factor is None else float(mesh_cfg.scale_factor)
         points = points * scale_factor + np.asarray(mesh_cfg.translation_m, dtype=float)

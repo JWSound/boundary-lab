@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from blab.ui.application_state import solve_invalidation_policy
+from blab.ui.application_state import OperationPhase, solve_invalidation_policy
 
 
 class StateSyncMixin:
@@ -23,6 +23,7 @@ class StateSyncMixin:
         self.visualization_settings_changed.connect(self._on_visualization_settings_changed)
 
     def _connect_operation_controllers(self) -> None:
+        self.preparations.busy_changed.connect(self._on_preparation_busy_changed)
         self.geometry_controller.state_changed.connect(self._on_geometry_activity_changed)
         self.solve_controller.state_changed.connect(self._on_solve_activity_changed)
         self.geometry_controller.completed.connect(self.geometry_workflow._on_geometry_generated)
@@ -36,6 +37,14 @@ class StateSyncMixin:
         self.solve_controller.status.connect(self.show_status)
         self.solve_controller.failed.connect(self.solve_workflow._on_solve_failed)
         self.solve_controller.finished.connect(self.solve_workflow._on_solve_finished)
+
+    @Slot(bool)
+    def _on_preparation_busy_changed(self, _busy) -> None:
+        phase = next(
+            (controller.state.phase for controller in (self.solve_controller, self.geometry_controller) if controller.active),
+            OperationPhase.IDLE,
+        )
+        self.set_workflow_phase(phase)
 
     @Slot(object)
     def _on_geometry_activity_changed(self, state) -> None:
@@ -65,6 +74,8 @@ class StateSyncMixin:
 
     @Slot(str)
     def _on_project_state_changed(self, _reason: str) -> None:
+        if _reason in {"project_loaded", "new_project"}:
+            self.clear_mesh_preview()
         self._refresh_mesh_preview()
         self._record_imported_mesh_source_fingerprints()
         self.set_system_config_available(self.has_solver_meshes())

@@ -8,6 +8,7 @@ import meshio
 import numpy as np
 
 from blab.config import MeshConfig, normalize_symmetry
+from blab.mesh_cache import read_mesh
 from blab.symmetry import symmetry_plane_tolerance_m
 
 _SYMMETRY_AXES = {
@@ -101,7 +102,7 @@ def exterior_mesh_topology_warning_text(report: ExteriorMeshTopologyReport) -> s
 
 
 def _analyze_mesh_config(mesh_config: MeshConfig, symmetry: str) -> MeshTopologyIssue:
-    mesh = meshio.read(mesh_config.file)
+    mesh = read_mesh(mesh_config.file)
     triangles = _triangle_connectivity(mesh)
     scale_factor = 0.001 if mesh_config.scale_factor is None else float(mesh_config.scale_factor)
     points_m = np.asarray(mesh.points, dtype=float) * scale_factor

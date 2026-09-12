@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from blab.ath import (
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
+from blab.mesh_cache import mesh_cache
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.preview_hierarchy import build_preview_hierarchy
 from blab.ui.dialogs import (
@@ -32,6 +34,7 @@ from blab.ui.mesh_assembly import (
     MeshAssemblyService,
     PreparedMeshAssembly,
 )
+from blab.ui.mesh_preparation import MeshPreparationSnapshot, prepare_preview
 from blab.ui.project_state import (
     ImportedMeshState,
     generator_mesh_name,
@@ -182,6 +185,11 @@ class MeshWorkflowMixin:
             updated_names = self._updated_imported_mesh_names()
             if not updated_names:
                 return
+            for mesh in self.imported_meshes:
+                if mesh.name in updated_names:
+                    mesh_cache.invalidate(mesh.source_file)
+                    if mesh.cleaned_file:
+                        mesh_cache.invalidate(mesh.cleaned_file)
             QApplication.setOverrideCursor(Qt.WaitCursor)
             cursor_set = True
             self.show_status(f"Reloading updated mesh file{'s' if len(updated_names) != 1 else ''}...")
@@ -356,6 +364,56 @@ class MeshWorkflowMixin:
         return self.prepare_mesh_assembly(self.all_radiators()).surface_tags
 
     def _refresh_mesh_preview(self) -> None:
+        if not hasattr(self, "preparations"):
+            self._refresh_mesh_preview_sync()
+            return
+        self.preparations.cancel("preview")
+        self.preparations.cancel("system")
+        if not self.has_solver_meshes():
+            self.clear_mesh_preview()
+            return
+        snapshot = self._mesh_preparation_snapshot()
+        document = self.project
+        output_root = self.mesh_service().output_root
+        work_snapshot = deepcopy(snapshot)
+
+        def complete(result):
+            if self.project is not document:
+                return
+            if self._mesh_preparation_snapshot() != snapshot:
+                self._refresh_mesh_preview()
+                return
+            assembly, generated, options, warning = result
+            was_clean = not self.project_workflow.has_unsaved_project_changes()
+            self.project.imported_meshes = assembly.imported_meshes
+            self.generated_geometry_by_document_id = generated
+            for document_id, geometry in generated.items():
+                self.generator_documents = replace_generator_document(
+                    self.generator_documents, document_id, artifact=geometry.to_reference(),
+                )
+            self.show_mesh_preview(assembly.mesh_configs, **options)
+            if was_clean:
+                self.project_workflow.mark_project_clean()
+            if warning:
+                self.show_status(warning)
+
+        def failed(exc):
+            if self.project is document and self._mesh_preparation_snapshot() == snapshot:
+                self.clear_mesh_preview()
+                self.show_status(f"Mesh preview preparation failed: {exc}")
+
+        self.preparations.submit(
+            "preview", "Preparing mesh preview...", lambda: prepare_preview(work_snapshot, output_root), complete, failed,
+        )
+
+    def _mesh_preparation_snapshot(self):
+        return deepcopy(MeshPreparationSnapshot(
+            documents=self.generator_documents, generated=self.generated_geometry_by_document_id,
+            imported=self.project.imported_meshes, radiators=self.all_radiators(), system=self.project.physical_system,
+            symmetry=self.symmetry, stitch=self.stitch_imported_meshes, tolerance_mm=self.preferences.stitch_tolerance_mm,
+        ))
+
+    def _refresh_mesh_preview_sync(self) -> None:
         if not self.has_solver_meshes():
             self.clear_mesh_preview()
             return
