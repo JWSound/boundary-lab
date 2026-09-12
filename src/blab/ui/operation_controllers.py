@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
 from blab.ui.generator_worker import GeneratorWorker
+from blab.ui.solve_progress import format_frequency_completion
 from blab.ui.system_solve import SystemSolveWorker, SystemUiSolveRequest
 
 
@@ -120,6 +121,7 @@ class SolveController(QObject):
         self._started_at: float | None = None
         self._expected_count = 0
         self._solved_count = 0
+        self._streaming = False
         self._failed = False
         self._cancelled = False
         self.last_error: str | None = None
@@ -134,6 +136,7 @@ class SolveController(QObject):
             return False
         self._expected_count = len(request.request.frequencies_hz)
         self._solved_count = 0
+        self._streaming = False
         self._failed = False
         self._cancelled = False
         self.last_error = None
@@ -146,7 +149,7 @@ class SolveController(QObject):
         self._worker = worker
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.initialized.connect(self.initialized)
+        worker.initialized.connect(self._on_initialized)
         worker.result_ready.connect(self._on_result)
         worker.system_result_ready.connect(self._on_system_result)
         worker.status.connect(self._on_status)
@@ -170,6 +173,17 @@ class SolveController(QObject):
     def _on_result(self, result: object) -> None:
         self._solved_count += 1
         self.result_ready.emit(result)
+        if self.state.phase == OperationPhase.RUNNING:
+            message = format_frequency_completion(result, self._solved_count, self._expected_count)
+            self._set_state(OperationPhase.RUNNING, message)
+            self.status.emit(message)
+
+    @Slot(object, object, object)
+    def _on_initialized(self, angles, radiator_names, sphere_metadata) -> None:
+        self._streaming = True
+        if self.state.phase == OperationPhase.RUNNING:
+            self._set_state(OperationPhase.RUNNING, "Solving...")
+        self.initialized.emit(angles, radiator_names, sphere_metadata)
 
     @Slot(object)
     def _on_system_result(self, result: object) -> None:
@@ -177,6 +191,10 @@ class SolveController(QObject):
 
     @Slot(str)
     def _on_status(self, message: str) -> None:
+        # Backend detail remains in the worker's logs. Once streaming starts,
+        # retain the last completed frequency until the next result arrives.
+        if self._streaming or self.state.phase != OperationPhase.RUNNING:
+            return
         self._set_state(self.state.phase, message)
         self.status.emit(message)
 

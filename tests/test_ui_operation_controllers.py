@@ -5,12 +5,14 @@ import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 
 import blab.ui.operation_controllers as controller_module
+from blab.solvers.base import FrequencySolveTimings
 from blab.ui.application_state import OperationPhase
 from blab.ui.operation_controllers import GeometryController, SolveController
 from blab.ui.system_solve import SystemSolveWorker
 
 
 class _SolveWorkerStub(QObject):
+    result = SimpleNamespace(freq_hz=1000.0, timings=FrequencySolveTimings(assembly_s=1.2, solve_s=0.3, field_s=0.04))
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
     system_result_ready = Signal(object)
@@ -24,8 +26,9 @@ class _SolveWorkerStub(QObject):
 
     @Slot()
     def run(self) -> None:
+        self.status.emit("Preparing backend")
         self.initialized.emit(np.array([0.0]), np.array(["driver"]), None)
-        self.result_ready.emit("frequency-result")
+        self.result_ready.emit(self.result)
         self.finished.emit()
 
     @Slot()
@@ -33,10 +36,13 @@ class _SolveWorkerStub(QObject):
         self.stopped = True
 
 
-def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -> None:
+def test_solve_controller_owns_worker_thread_and_completion_state(qapp, monkeypatch) -> None:
     app = QCoreApplication.instance() or QCoreApplication([])
     monkeypatch.setattr(controller_module, "SystemSolveWorker", _SolveWorkerStub)
     controller = SolveController()
+    controller._streaming = True  # A new run must restore startup messages.
+    statuses = []
+    controller.status.connect(statuses.append)
     results = []
     completions = []
     controller.result_ready.connect(results.append)
@@ -57,7 +63,11 @@ def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -
         app.processEvents()
 
     assert started is True
-    assert results == ["frequency-result"]
+    assert results == [_SolveWorkerStub.result]
+    assert statuses == [
+        "Preparing backend",
+        "Solved 1/1 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s",
+    ]
     assert completions[0].phase == OperationPhase.COMPLETED
     assert completions[0].completed is True
     assert thread_state_at_completion == [(False, True)]
@@ -66,7 +76,51 @@ def test_solve_controller_owns_worker_thread_and_completion_state(monkeypatch) -
     assert controller.active is False
 
 
-def test_controllers_preserve_latest_failure_for_diagnostics() -> None:
+def test_streaming_status_updates_only_for_completed_frequencies(qapp):
+    controller = SolveController()
+    controller._expected_count = 2
+    controller._set_state(OperationPhase.RUNNING, "Initializing solver")
+    statuses = []
+    controller.status.connect(statuses.append)
+    controller._on_status("Loading backend")
+    controller._on_initialized(np.array([0.0]), np.array(["driver"]), None)
+    controller._on_status("Assembling first frequency")
+    assert controller.state.message == "Solving..."
+    controller._on_result(_SolveWorkerStub.result)
+    expected = "Solved 1/2 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s"
+    assert controller.state.message == expected
+    controller._on_status("Computing field for next frequency")
+    assert controller.state.message == expected
+    assert statuses == ["Loading backend", expected]
+    controller._on_result(SimpleNamespace(freq_hz=2000.0, timings=_SolveWorkerStub.result.timings))
+    assert controller.state.message.startswith("Solved 2/2 (2000.0 Hz)")
+    controller.cancel()
+    controller._on_status("Backend still stopping")
+    controller._on_result(_SolveWorkerStub.result)
+    assert controller.state.phase == OperationPhase.CANCELLING
+    assert controller.state.message == "Stopping solve"
+    controller._on_failed("Backend failed")
+    controller._on_status("Late backend detail")
+    assert controller.state.phase == OperationPhase.FAILED
+    assert controller.state.message == "Backend failed"
+
+
+def test_frequency_status_is_visible_in_activity_overlay(main_window):
+    controller = main_window.solve_controller
+    controller._expected_count = 2
+    controller._streaming = True
+    controller._set_state(OperationPhase.RUNNING, "Solving...")
+    controller._on_result(_SolveWorkerStub.result)
+    expected = "Solved 1/2 (1000.0 Hz) | Assembly 1.20s | Solve 0.30s | Field 0.04s"
+    assert main_window.activities.message == expected
+    assert main_window.activity_status.activity_label.text() == expected
+    assert main_window.status_label.text() == expected
+    controller._on_status("Assembling next frequency")
+    assert main_window.activity_status.activity_label.text() == expected
+    controller._set_state(OperationPhase.COMPLETED, "Solve finished")
+
+
+def test_controllers_preserve_latest_failure_for_diagnostics(qapp) -> None:
     app = QCoreApplication.instance() or QCoreApplication([])
     geometry_controller = GeometryController()
     solve_controller = SolveController()

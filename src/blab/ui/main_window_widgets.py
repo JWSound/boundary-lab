@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.live import FrequencyResult
 from blab.ui.result_projection import VisualizationProjection
+from blab.ui.solve_progress import format_frequency_solve_timings
 
 
 @dataclass(frozen=True)
@@ -40,11 +40,6 @@ class PlotEntry:
     widget: QWidget
     update: Callable[[VisualizationProjection], None]
     data_export: PlotDataExportSpec
-
-
-def format_frequency_solve_timings(result: FrequencyResult) -> str:
-    timings = result.timings
-    return f"Assembly {timings.assembly_s:.2f}s | Solve {timings.solve_s:.2f}s | Field {timings.field_s:.2f}s"
 
 
 def _dock_close_button_glyph() -> tuple[str, QFont | None]:

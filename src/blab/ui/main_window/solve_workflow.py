@@ -54,9 +54,6 @@ from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
 from blab.ui.main_window.solve_session import SolveSession
 from blab.ui.main_window.workflow_view import PlotPresenter, SolveInputs, WorkflowView
-from blab.ui.main_window_widgets import (
-    format_frequency_solve_timings,
-)
 from blab.ui.operation_controllers import (
     GeometryController,
     SolveController,
@@ -608,10 +605,6 @@ class SolveWorkflowController(QObject):
             return
         live_dataset.add(result)
         self._plots.set_spherical_spin_available(live_dataset.has_balloon_data)
-        self._view.show_status(
-            f"Solved {live_dataset.solved_count}/{self._view.frequency_range().count} "
-            f"({result.freq_hz:.1f} Hz) | {format_frequency_solve_timings(result)}"
-        )
         if not self._read_preferences().live_plot_streaming:
             return
         self._plots.request_live_refresh()
