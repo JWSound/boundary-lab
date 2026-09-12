@@ -243,6 +243,23 @@ def test_editor_build_uses_symmetry_variant_without_replacing_authoring_asset(
     assert len(configured.system.interfaces) == 1
     assert next(m.file for m in configured.system.meshes if m.name == reduced.name) == str(full_path)
     assert configured.mesh_file_overrides_by_name == {}
+    # Auto-reload must also validate reduced geometry while retaining canonical
+    # authoring paths. Without the variant input the deliberate full mesh fails.
+    from blab.ui.system_config import rebuild_configured_interfaces
+
+    with pytest.raises(ValueError, match="No compatible boundary loop pair"):
+        rebuild_configured_interfaces(
+            configured.system, canonical, changed_mesh_names={"fem"},
+            stitch_exterior_meshes=True, stitch_tolerance_mm=3, symmetry_mode="xy",
+            interface_output_root=tmp_path / "reload",
+        )
+    reloaded = rebuild_configured_interfaces(
+        configured.system, canonical, changed_mesh_names={"fem"},
+        stitch_exterior_meshes=True, stitch_tolerance_mm=3, symmetry_mode="xy",
+        symmetry_analysis_meshes=variants, interface_output_root=tmp_path / "reload",
+    )
+    assert reloaded.system == configured.system
+    assert reloaded.mesh_file_overrides_by_name == {}
     dialog.close()
 
 

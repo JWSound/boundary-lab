@@ -204,6 +204,12 @@ class MeshWorkflowMixin:
             if physical_system is not None and interface_bem_names:
                 generated_meshes = tuple(mesh for mesh in self.mesh_entries_for_symmetry("off") if mesh.locked)
                 available_meshes = inspect_system_meshes((*generated_meshes, *reloaded_meshes))
+                symmetry_meshes = available_meshes
+                if self.stitch_imported_meshes and self.symmetry != "off":
+                    generated_variants = tuple(
+                        mesh for mesh in self.mesh_entries_for_symmetry(self.symmetry) if mesh.locked
+                    )
+                    symmetry_meshes = inspect_system_meshes((*generated_variants, *reloaded_meshes))
                 rebuild = rebuild_configured_interfaces(
                     physical_system,
                     available_meshes,
@@ -212,6 +218,7 @@ class MeshWorkflowMixin:
                     symmetry_mode=self.symmetry,
                     stitch_exterior_meshes=self.stitch_imported_meshes,
                     stitch_tolerance_mm=self.preferences.stitch_tolerance_mm,
+                    symmetry_analysis_meshes=symmetry_meshes,
                 )
                 reloaded_meshes = _mesh_entries_with_file_overrides(
                     reloaded_meshes,

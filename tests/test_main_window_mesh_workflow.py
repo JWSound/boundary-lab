@@ -145,10 +145,12 @@ def test_failed_focus_reload_keeps_changed_fingerprint_for_retry(main_window, tm
     assert main_window._updated_imported_mesh_names() == ("Interior",)
 
 
+@pytest.mark.parametrize("stitch_enabled", [False, True])
 def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
     main_window,
     tmp_path: Path,
     monkeypatch,
+    stitch_enabled: bool,
 ) -> None:
     fem_path = tmp_path / "interior.msh"
     bem_path = tmp_path / "exterior.msh"
@@ -197,6 +199,17 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
         ),
     )
     main_window.project.physical_system = system
+    main_window.stitch_imported_meshes = stitch_enabled
+    main_window.symmetry = "xy"
+    requested_symmetries = []
+
+    def mesh_entries(symmetry):
+        requested_symmetries.append(symmetry)
+        return (MeshDialogEntry(
+            name="Waveguide", source_file=str(bem_path if symmetry == "off" else rebuilt_path), locked=True,
+        ),)
+
+    monkeypatch.setattr(main_window, "mesh_entries_for_symmetry", mesh_entries)
     main_window._record_imported_mesh_source_fingerprints()
     fem_path.write_text(fem_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     calls = []
@@ -223,6 +236,11 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
 
     assert len(calls) == 1
     assert calls[0][2]["changed_mesh_names"] == {"Interior"}
+    assert requested_symmetries == (["off", "xy"] if stitch_enabled else ["off"])
+    selected = calls[0][2]["symmetry_analysis_meshes"]
+    assert next(mesh.file for mesh in selected if mesh.name == "Waveguide") == str(
+        rebuilt_path if stitch_enabled else bem_path
+    )
     assert main_window.project.physical_system == rebuilt_system
     exterior = next(mesh for mesh in main_window.imported_meshes if mesh.name == "Exterior")
     assert exterior.cleaned_file == str(rebuilt_path)

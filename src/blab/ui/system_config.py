@@ -441,14 +441,20 @@ def rebuild_configured_interfaces(
     symmetry_mode: str = "off",
     stitch_exterior_meshes: bool = False,
     stitch_tolerance_mm: float = 2.0,
+    symmetry_analysis_meshes: tuple[AvailableSystemMesh, ...] | None = None,
 ) -> InterfaceRebuildResult:
     """Validate and, when needed, rebuild known FEM-BEM interface pairs."""
 
     affected_bem_names = set(interface_bem_mesh_names_for_changes(system, changed_mesh_names))
     synced_system = sync_physical_system_meshes(system, meshes)
     if stitch_exterior_meshes:
+        # Retain canonical authoring resources, but validate with the same
+        # generated variants that preview and solve use for active symmetry.
+        assembly_system = sync_physical_system_meshes(
+            synced_system, meshes if symmetry_analysis_meshes is None else symmetry_analysis_meshes,
+        )
         prepared = prepare_exterior_system(
-            synced_system, stitch_tolerance_mm=stitch_tolerance_mm,
+            assembly_system, stitch_tolerance_mm=stitch_tolerance_mm,
             symmetry_mode=symmetry_mode, output_root=interface_output_root,
         )
         return InterfaceRebuildResult(
