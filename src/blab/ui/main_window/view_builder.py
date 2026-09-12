@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from blab.ui.activity import ActivityStatusBar
 from blab.ui.application_state import OperationPhase
 from blab.ui.main_window.workflow_view import (
     FrequencyRange,
@@ -309,11 +310,8 @@ class ViewBuilderMixin:
         layout = QVBoxLayout(central)
         layout.addWidget(self.workspace, stretch=1)
         layout.addWidget(controls)
-        # QLabel is a QFrame, so this gives a sunken text box.
-        self.status_label.setFrameShape(QFrame.StyledPanel)
-        self.status_label.setFrameShadow(QFrame.Sunken)
-        self.status_label.setMargin(4)
-        layout.addWidget(self.status_label)
+        self.activity_status = ActivityStatusBar(self.activities, self.status_label)
+        layout.addWidget(self.activity_status)
         self.setCentralWidget(central)
         self._refresh_plot_export_icons()
 

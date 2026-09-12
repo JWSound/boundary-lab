@@ -259,20 +259,29 @@ class DialogActionsMixin:
     @Slot()
     def open_system_config(self) -> None:
         try:
-            mesh_entries = self._mesh_config_dialog_entries()
-            symmetry_mesh_entries = self.mesh_entries_for_symmetry(self.symmetry)
-            meshes, symmetry_analysis_meshes = inspect_system_mesh_variants(mesh_entries, symmetry_mesh_entries)
+            with self.activities.start("Inspecting system meshes...") as activity:
+                dialog = self._prepare_system_config_dialog(activity)
         except Exception as exc:
-            QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
+            QMessageBox.critical(self, "System", f"Could not open the system configuration:\n{exc}")
             return
-        if not meshes:
+        if dialog is None:
             QMessageBox.warning(self, "System", "Enable at least one mesh before configuring the system.")
             return
+        dialog.systemApplied.connect(self._apply_system_config)
+        dialog.exec()
+
+    def _prepare_system_config_dialog(self, activity) -> SystemConfigDialog | None:
+        mesh_entries = self._mesh_config_dialog_entries()
+        symmetry_mesh_entries = self.mesh_entries_for_symmetry(self.symmetry)
+        meshes, symmetry_analysis_meshes = inspect_system_mesh_variants(mesh_entries, symmetry_mesh_entries)
+        if not meshes:
+            return None
+        activity.update("Opening system configuration...")
         self.ensure_seeded_exterior_system()
         system = self.project.physical_system
         if system is not None:
             system = sync_physical_system_meshes(system, meshes)
-        dialog = SystemConfigDialog(
+        return SystemConfigDialog(
             meshes,
             system,
             tuple(channel.name for channel in self.channel_configs()),
@@ -284,8 +293,6 @@ class DialogActionsMixin:
             symmetry_mode=self.symmetry,
             symmetry_analysis_meshes=symmetry_analysis_meshes,
         )
-        dialog.systemApplied.connect(self._apply_system_config)
-        dialog.exec()
 
     @Slot(object)
     def _apply_system_config(self, configuration) -> None:

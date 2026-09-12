@@ -23,6 +23,7 @@ from blab.live import (
     LiveSolveDataset,
 )
 from blab.solve_results import SolvedSystem
+from blab.ui.activity import ActivityController
 from blab.ui.dialogs import (
     ChannelConfigDialog,
     MeshDialogEntry,
@@ -299,6 +300,8 @@ class MainWindow(
         # Needed before the design tabs are built.
         self.syntax_highlighting_enabled = load_syntax_highlighting_enabled(self.settings)
         self.project_session = ProjectSession()
+        self.activities = ActivityController(self)
+        self._operation_activities = {}
         self.simulation_assembler = SimulationAssembler()
         self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
         self.result_projection_service = ResultProjectionService()
@@ -344,6 +347,7 @@ class MainWindow(
             save_frequency_settings=lambda: self._save_frequency_settings(),
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
+            activities=self.activities,
         )
         self.project_workflow.project_state_changed.connect(self.project_state_changed)
         self.project_workflow.solve_results_invalidated.connect(self.solve_results_invalidated)
@@ -632,4 +636,5 @@ class MainWindow(
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
+        self.activities.clear()
         super().closeEvent(event)

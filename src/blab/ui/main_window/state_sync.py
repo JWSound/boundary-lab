@@ -23,6 +23,8 @@ class StateSyncMixin:
         self.visualization_settings_changed.connect(self._on_visualization_settings_changed)
 
     def _connect_operation_controllers(self) -> None:
+        self.geometry_controller.state_changed.connect(self._on_geometry_activity_changed)
+        self.solve_controller.state_changed.connect(self._on_solve_activity_changed)
         self.geometry_controller.completed.connect(self.geometry_workflow._on_geometry_generated)
         self.geometry_controller.status.connect(self.show_status)
         self.geometry_controller.failed.connect(self.geometry_workflow._on_geometry_generation_failed)
@@ -34,6 +36,25 @@ class StateSyncMixin:
         self.solve_controller.status.connect(self.show_status)
         self.solve_controller.failed.connect(self.solve_workflow._on_solve_failed)
         self.solve_controller.finished.connect(self.solve_workflow._on_solve_finished)
+
+    @Slot(object)
+    def _on_geometry_activity_changed(self, state) -> None:
+        self._sync_operation_activity("geometry", state)
+
+    @Slot(object)
+    def _on_solve_activity_changed(self, state) -> None:
+        self._sync_operation_activity("solve", state)
+
+    def _sync_operation_activity(self, name, state) -> None:
+        handle = self._operation_activities.get(name)
+        if state.active:
+            if handle is None:
+                self._operation_activities[name] = self.activities.start(state.message)
+            else:
+                handle.update(state.message)
+        elif handle is not None:
+            handle.finish()
+            del self._operation_activities[name]
 
     @Slot(str)
     def _on_mesh_state_changed(self, reason: str) -> None:

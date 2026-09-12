@@ -23,6 +23,7 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
+from blab.ui.activity import ActivityController
 from blab.ui.dialogs import (
     MeshDialogEntry,
 )
@@ -91,6 +92,7 @@ class ProjectWorkflowController(QObject):
         save_frequency_settings: Callable[[], None],
         remember_recent: Callable[[Path], None],
         forget_recent: Callable[[Path], None],
+        activities: ActivityController | None = None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -103,6 +105,7 @@ class ProjectWorkflowController(QObject):
         self._save_frequency_settings = save_frequency_settings
         self._remember_recent = remember_recent
         self._forget_recent = forget_recent
+        self._activities = activities if activities is not None else ActivityController(self)
 
     @property
     def _project(self) -> ProjectDocument:
@@ -291,15 +294,17 @@ class ProjectWorkflowController(QObject):
 
     def _load_project_from_path(self, path: Path) -> None:
         try:
-            payload = read_project_file(path)
+            with self._activities.start("Reading project..."):
+                payload = read_project_file(path)
             project_preferences = ProjectPreferencesState.from_payload(payload.get("project_preferences"))
             if self._confirm_apply_project_preferences(project_preferences):
                 self._apply_project_preferences(project_preferences)
-            self._apply_project_payload(payload, project_preferences=project_preferences)
-            self._session.path = path
-            self._remember_recent(path)
-            self.mark_project_clean()
-            self._view.show_status(f"Opened project {path}")
+            with self._activities.start("Opening project..."):
+                self._apply_project_payload(payload, project_preferences=project_preferences)
+                self._session.path = path
+                self._remember_recent(path)
+                self.mark_project_clean()
+                self._view.show_status(f"Opened project {path}")
         except Exception as exc:
             self._view.show_error("Open project failed", str(exc))
 
