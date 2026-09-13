@@ -10,6 +10,7 @@ from blab.config import ChannelConfig
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
+    InterfaceVelocityDataset,
     LiveSolveDataset,
     TransducerMotionDataset,
 )
@@ -116,6 +117,16 @@ class ExcursionProjection:
 
 
 @dataclass(frozen=True)
+class FrequencyTraceProjection:
+    freq_hz: np.ndarray
+    trace_names: np.ndarray
+    values: np.ndarray
+
+    def snapshot(self) -> FrequencyTraceProjection:
+        return FrequencyTraceProjection(self.freq_hz.copy(), self.trace_names.copy(), self.values.copy())
+
+
+@dataclass(frozen=True)
 class ElectricalImpedanceProjection:
     freq_hz: np.ndarray
     channel_names: np.ndarray
@@ -170,6 +181,8 @@ class VisualizationProjection:
     max_spl: MaxSplProjection | None = None
     spinorama_planes: SpinoramaCurves | None = None
     spinorama_spherical: SpinoramaCurves | None = None
+    real_input_power: FrequencyTraceProjection | None = None
+    interface_velocity: FrequencyTraceProjection | None = None
 
     def snapshot(self) -> VisualizationProjection:
         return VisualizationProjection(
@@ -178,6 +191,8 @@ class VisualizationProjection:
             response=None if self.response is None else self.response.snapshot(),
             excursion=None if self.excursion is None else self.excursion.snapshot(),
             electrical_impedance=(None if self.electrical_impedance is None else self.electrical_impedance.snapshot()),
+            real_input_power=None if self.real_input_power is None else self.real_input_power.snapshot(),
+            interface_velocity=None if self.interface_velocity is None else self.interface_velocity.snapshot(),
             group_delay=None if self.group_delay is None else self.group_delay.snapshot(),
             max_spl=None if self.max_spl is None else self.max_spl.snapshot(),
             spinorama_planes=_snapshot_spinorama_curves(self.spinorama_planes),
@@ -198,6 +213,7 @@ class ResultProjectionService:
         acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None,
         max_spl_limits: dict[str, MaxSplLimit] | None = None,
         voltage_channel_names: frozenset[str] = frozenset(),
+        interface_velocity: InterfaceVelocityDataset | None = None,
     ) -> VisualizationProjection | None:
         dataset.set_channel_synthesis(
             channels,
@@ -213,6 +229,10 @@ class ResultProjectionService:
             electrical_arrays = electrical_impedance.as_impedance_arrays()
             if electrical_arrays is not None:
                 electrical_projection = ElectricalImpedanceProjection(*electrical_arrays)
+        power_arrays = None if electrical_impedance is None else electrical_impedance.as_power_arrays(dataset)
+        power_projection = None if power_arrays is None else FrequencyTraceProjection(*power_arrays)
+        velocity_arrays = None if interface_velocity is None else interface_velocity.as_velocity_arrays(dataset)
+        velocity_projection = None if velocity_arrays is None else FrequencyTraceProjection(*velocity_arrays)
         # Interior solves have no polar samples, but retain electrical and motion data.
         if dataset.polar_angle_deg.size == 0:
             if excursion is None and electrical_projection is None:
@@ -223,6 +243,8 @@ class ResultProjectionService:
                 response=None,
                 excursion=excursion,
                 electrical_impedance=electrical_projection,
+                real_input_power=power_projection,
+                interface_velocity=velocity_projection,
             )
         arrays = dataset.as_visualization_dataset(
             PrepConfig(
@@ -314,6 +336,8 @@ class ResultProjectionService:
             ),
             excursion=excursion,
             electrical_impedance=electrical_projection,
+            real_input_power=power_projection,
+            interface_velocity=velocity_projection,
             group_delay=group_delay_projection,
             max_spl=max_spl_projection,
             spinorama_planes=spinorama_planes,

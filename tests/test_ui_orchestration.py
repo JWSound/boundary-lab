@@ -219,7 +219,7 @@ def test_interior_projection_retains_motion_and_electrical_data_without_polar_sa
         transducer_names=np.asarray(["Woofer"]),
     )
     motion.results[frequency] = np.asarray([[1j * 2 * np.pi * frequency * 0.001]])
-    electrical = SimpleNamespace(as_impedance_arrays=lambda: (
+    electrical = SimpleNamespace(as_power_arrays=lambda _dataset: None, as_impedance_arrays=lambda: (
         np.asarray([frequency]), np.asarray(["main"]), np.asarray([[6.0]]), np.asarray([[0.0]])
     ))
     projection = ResultProjectionService().prepare(

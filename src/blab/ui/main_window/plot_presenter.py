@@ -121,6 +121,8 @@ class PlotPresenterMixin:
             observation_planes.sync_view()
         for entry in self.plot_entries:
             entry.widget._draw_empty()
+            if entry.plot_id in {"real_input_power", "interface_velocity"}:
+                entry.widget.setEnabled(False)
         self.set_plot_exports_available(False)
         self.set_balloon_plot_available(False)
         self.set_max_spl_available(False)
@@ -185,6 +187,13 @@ class PlotPresenterMixin:
                 impedance.imaginary,
             )
 
+        for name in ("real_input_power", "interface_velocity"):
+            canvas = getattr(self, f"{name}_plot")
+            data = getattr(dataset, name)
+            if data is None:
+                canvas.clear_comparison_plot()
+            else:
+                canvas.set_comparison_plot(data.freq_hz, data.trace_names, data.values)
         electrical_impedance = dataset.electrical_impedance
         if electrical_impedance is None:
             self.electrical_impedance_plot.clear_comparison_plot()
@@ -339,6 +348,7 @@ class PlotPresenterMixin:
             ),
             transducer_motion=self._solve_session().transducer_motion,
             electrical_impedance=self._solve_session().electrical_impedance,
+            interface_velocity=self._solve_session().interface_velocity,
             acoustic_load_impedance=self._solve_session().acoustic_load_impedance,
             max_spl_limits=(
                 max_spl_limits_from_payload(self.project.max_spl_limits_by_channel)
@@ -442,6 +452,21 @@ class PlotPresenterMixin:
             response.on_axis_phase_deg,
             response.channel_on_axis_phase_deg,
         )
+
+    def _update_real_input_power_plot(self, dataset: VisualizationProjection) -> None:
+        self._update_frequency_trace_plot(self.real_input_power_plot, dataset.real_input_power)
+
+    def _update_interface_velocity_plot(self, dataset: VisualizationProjection) -> None:
+        self._update_frequency_trace_plot(self.interface_velocity_plot, dataset.interface_velocity)
+
+    @staticmethod
+    def _update_frequency_trace_plot(canvas, data) -> None:
+        canvas.setEnabled(data is not None)
+        if data is None:
+            if canvas._plot_state is not None:
+                canvas._draw_empty()
+        else:
+            canvas.update_plot(data.freq_hz, data.trace_names, data.values)
 
     def _update_electrical_impedance_plot(self, dataset: VisualizationProjection) -> None:
         impedance = dataset.electrical_impedance

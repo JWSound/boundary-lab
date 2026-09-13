@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import meshio
 import numpy as np
 
 from blab.config import normalize_symmetry
+from blab.mesh_cache import read_mesh
 from blab.physical_model import Boundary, MeshResource
 
 _ACTIVE_AXIS_NAMES = {
@@ -436,7 +436,7 @@ def _orient_surface_normals_outward(
 
 def _transformed_mesh(resource: MeshResource) -> meshio.Mesh:
     try:
-        mesh = meshio.read(Path(resource.file))
+        mesh = read_mesh(resource.file)
     except Exception as exc:
         raise ComponentSymmetryInferenceError(
             f"Could not read component mesh '{resource.name}' from {resource.file}: {exc}"

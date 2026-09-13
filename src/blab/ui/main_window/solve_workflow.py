@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import tempfile
 from collections.abc import Callable
+from copy import deepcopy
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
@@ -26,6 +27,7 @@ from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
     FrequencyResult,
+    InterfaceVelocityDataset,
     LiveSolveDataset,
     TransducerMotionDataset,
 )
@@ -49,7 +51,6 @@ from blab.speaker_package import (
     prepare_speaker_package_solve,
 )
 from blab.speaker_symmetry import expand_speaker_system_for_export
-from blab.symmetry import SymmetryValidationError
 from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase, SolveCompletion
 from blab.ui.main_window.solve_session import SolveSession
@@ -100,6 +101,7 @@ class SolveWorkflowController(QObject):
         assembler: SimulationAssembler,
         geometry_controller: GeometryController,
         solve_controller: SolveController,
+        preparations=None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -111,6 +113,7 @@ class SolveWorkflowController(QObject):
         self._assembler = assembler
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
+        self._preparations = preparations
         self._pending_speaker_package: SpeakerPackageConfig | None = None
         self._pending_speaker_package_temp_dir: tempfile.TemporaryDirectory[str] | None = None
 
@@ -151,7 +154,8 @@ class SolveWorkflowController(QObject):
 
     @Slot()
     def start_solve(self) -> None:
-        if self._geometry_controller.active or self._solve_controller.active:
+        if (self._geometry_controller.active or self._solve_controller.active
+                or (self._preparations is not None and self._preparations.active)):
             return
         if not self._inputs.has_solver_meshes():
             self._view.warn("No mesh", "Enable at least one generated or imported mesh before solving.")
@@ -188,7 +192,8 @@ class SolveWorkflowController(QObject):
     def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
         """Prepare the requested package outputs, run once, then export on completion."""
 
-        if self._geometry_controller.active or self._solve_controller.active:
+        if (self._geometry_controller.active or self._solve_controller.active
+                or (self._preparations is not None and self._preparations.active)):
             return False
         if not self._inputs.has_solver_meshes():
             self._view.warn(
@@ -282,14 +287,38 @@ class SolveWorkflowController(QObject):
     def _start_exterior_system_solve(self) -> None:
         if self._inputs.reconcile_symmetry_with_backend():
             self.mesh_state_changed.emit("symmetry_disabled_for_backend")
+        self._prepare_system_solve(exterior=True)
+
+    def _start_coupled_system_solve(self) -> None:
+        self._prepare_system_solve(exterior=False)
+
+    def _prepare_system_solve(self, *, exterior: bool) -> None:
+        # Capture all widget/project inputs before entering the worker. Only the
+        # completion callback may publish the synchronized system or touch UI.
+        self._view.show_status("Preparing solve...")
         project = self._project()
-        preferences = self._read_preferences()
-        symmetry = project.symmetry
+        snapshot = deepcopy(project)
+        preferences = deepcopy(self._read_preferences())
+        frequencies = self._view.frequency_range()
+        title = "Exterior system preparation failed" if exterior else "FEM system solve"
+
+        def failed(exc):
+            self._view.show_status("Solve preparation failed")
+            if exterior:
+                self._view.show_stitch_or_generic_error(title, exc)
+            else:
+                self._view.warn(title, str(exc))
+
         try:
-            meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(symmetry))
-            system = sync_physical_system_meshes(project.physical_system, meshes)
-            project.physical_system = system
-            frequencies = self._view.frequency_range()
+            entries = deepcopy(self._inputs.mesh_entries_for_symmetry(snapshot.symmetry))
+        except Exception as exc:
+            failed(exc)
+            return
+
+        def work(report):
+            report("Inspecting meshes...")
+            meshes = inspect_system_meshes(entries)
+            system = sync_physical_system_meshes(snapshot.physical_system, meshes)
             prepared = prepare_system_ui_solve(
                 system,
                 freq_min_hz=float(frequencies.min_hz),
@@ -299,60 +328,45 @@ class SolveWorkflowController(QObject):
                 polar_angle_step_deg=preferences.polar_angle_step_deg,
                 spherical_sampling_enabled=preferences.spherical_sampling_enabled,
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
-                component_channel_by_id=project.component_channel_by_id,
+                component_channel_by_id=snapshot.component_channel_by_id,
                 backend_id=preferences.solve_backend,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
                 },
-                symmetry_mode=symmetry,
-                stitch_exterior_meshes=project.stitch_imported_meshes,
+                symmetry_mode=snapshot.symmetry,
+                stitch_exterior_meshes=snapshot.stitch_imported_meshes,
                 stitch_tolerance_mm=preferences.stitch_tolerance_mm,
-                observation_planes=project.observation_planes,
+                observation_planes=snapshot.observation_planes,
+                progress=report,
             )
-        except (ValueError, OSError, SymmetryValidationError) as exc:
-            self._view.show_stitch_or_generic_error("Exterior system preparation failed", exc)
-            return
-        self._start_prepared_system_solve(prepared, "Initializing exterior solver...")
+            return system, prepared
 
-    def _start_coupled_system_solve(self) -> None:
-        project = self._project()
-        preferences = self._read_preferences()
-        try:
-            meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(project.symmetry))
-            system = sync_physical_system_meshes(project.physical_system, meshes)
+        def complete(result):
+            if (self._project() is not project or project != snapshot
+                    or self._read_preferences() != preferences
+                    or self._view.frequency_range() != frequencies):
+                self._view.show_status("Solve preparation discarded because inputs changed")
+                return
+            system, prepared = result
             project.physical_system = system
-            coupled_frequencies = self._view.frequency_range()
-            prepared = prepare_system_ui_solve(
-                system,
-                freq_min_hz=float(coupled_frequencies.min_hz),
-                freq_max_hz=float(coupled_frequencies.max_hz),
-                freq_count=coupled_frequencies.count,
-                observation_distance_m=preferences.polar_observation_distance_m,
-                polar_angle_step_deg=preferences.polar_angle_step_deg,
-                spherical_sampling_enabled=preferences.spherical_sampling_enabled,
-                spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
-                component_channel_by_id=project.component_channel_by_id,
-                backend_id=preferences.solve_backend,
-                remote_options={
-                    "url": preferences.solve_server_url,
-                    "access_key": preferences.solve_server_access_key,
-                },
-                symmetry_mode=project.symmetry,
-                stitch_exterior_meshes=project.stitch_imported_meshes,
-                stitch_tolerance_mm=preferences.stitch_tolerance_mm,
-                observation_planes=project.observation_planes,
-            )
-        except Exception as exc:
-            self._view.warn("FEM system solve", str(exc))
-            return
+            status = {
+                PhysicalSolveKind.EXTERIOR_BEM: "Initializing exterior solver...",
+                PhysicalSolveKind.INTERIOR_FEM: "Initializing interior FEM solver...",
+            }.get(prepared.solve_kind, "Initializing coupled solver...")
+            if not self._start_prepared_system_solve(prepared, status):
+                self._view.show_status("Solve cancelled")
 
-        status = (
-            "Initializing interior FEM solver..."
-            if prepared.solve_kind == PhysicalSolveKind.INTERIOR_FEM
-            else "Initializing coupled solver..."
-        )
-        self._start_prepared_system_solve(prepared, status)
+        if self._preparations is not None:
+            self._preparations.submit(
+                "solve", "Preparing solve...", work, complete, failed, report_progress=True,
+            )
+        else:
+            # Non-window hosts can still use the synchronous controller seam.
+            try:
+                complete(work(self._view.show_status))
+            except Exception as exc:
+                failed(exc)
 
     def _start_prepared_system_solve(self, prepared, status: str) -> bool:
         if prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
@@ -422,6 +436,15 @@ class SolveWorkflowController(QObject):
             for component in prepared.request.compiled_system.components
             if component.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
         ]
+        interfaces = prepared.request.compiled_system.interfaces
+        if prepared.solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM and interfaces:
+            self._session.interface_velocity = InterfaceVelocityDataset(
+                excitation_port_ids=tuple(prepared.request.excitation_port_ids),
+                excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                voltage_excitation_mask=np.asarray([port.kind == ExcitationPortKind.VOLTAGE for port in excitation_ports]),
+                interface_ids=tuple(item.id for item in interfaces),
+                interface_names=np.asarray([item.name for item in interfaces]),
+            )
         transducer_names = np.asarray([component.name for component in transducers])
         if transducer_names.size:
             channel_by_component_id = {
@@ -618,6 +641,8 @@ class SolveWorkflowController(QObject):
         motion = self._session.transducer_motion
         if motion is not None:
             motion.add(result)
+        if self._session.interface_velocity is not None:
+            self._session.interface_velocity.add(result)
         electrical_impedance = self._session.electrical_impedance
         if electrical_impedance is not None:
             electrical_impedance.add(result)

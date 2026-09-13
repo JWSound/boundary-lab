@@ -1,4 +1,4 @@
-"""Electrodynamic-transducer excursion plot canvas."""
+"""Frequency-trace canvases for drive-dependent mechanical and electrical results."""
 
 from __future__ import annotations
 
@@ -20,10 +20,13 @@ from blab.ui.plots import (
 )
 
 
-class ExcursionCanvas(RawCoordinatePlotCanvas):
-    """Plot synthesized excursion magnitude for each electrodynamic transducer."""
+class FrequencyTraceCanvas(RawCoordinatePlotCanvas):
+    """Shared streaming, comparison, and trace-filter behavior for scalar curves."""
 
-    def __init__(self) -> None:
+    def __init__(self, title: str, ylabel: str, unit: str, *, signed: bool = False) -> None:
+        self._ylabel = ylabel
+        self._unit = unit
+        self._signed = signed
         self.figure = Figure(figsize=(6.5, 3.0), dpi=100)
         self.axes = self.figure.add_subplot(111)
         self._lines: dict[str, object] = {}
@@ -31,10 +34,10 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
         self._series_visibility: dict[str, bool] = {}
         self._series_actions: dict[str, QAction] = {}
         self._plot_state = None
-        super().__init__(self.figure, "Transducer Excursion")
+        super().__init__(self.figure, title)
         self.trace_filter_menu = QMenu("Traces", self)
         self.trace_filter_action = QAction("Traces", self)
-        self.trace_filter_action.setToolTip("Choose visible transducer excursion traces")
+        self.trace_filter_action.setToolTip("Choose visible traces")
         self.trace_filter_action.setMenu(self.trace_filter_menu)
         self.set_layout_profile(SINGLE_AXIS_LAYOUT)
         self._draw_empty()
@@ -42,7 +45,7 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
     def _configure_axes(self) -> None:
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
-        self.axes.set_ylabel("Excursion (mm)")
+        self.axes.set_ylabel(self._ylabel)
         apply_audio_frequency_axis(self.axes)
         self.axes.xaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2.0, 10.0)))
         self.axes.yaxis.set_major_locator(MaxNLocator(nbins=8, min_n_ticks=4))
@@ -71,7 +74,7 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
         self.draw_idle()
 
     def _format_crosshair_y(self, value: float) -> str:
-        return f"{value:.3g} mm"
+        return f"{value:.3g} {self._unit}"
 
     def set_comparison_plot(
         self,
@@ -91,7 +94,7 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
         names = np.asarray(transducer_names).copy()
         values = np.asarray(excursion_mm, dtype=np.float32).copy()
         if values.shape != (names.size, frequencies.size):
-            raise ValueError("Excursion values must have shape (transducer, frequency).")
+            raise ValueError("Trace values must have shape (trace, frequency).")
         return frequencies, names, values
 
     def _current_plot_state(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
@@ -174,7 +177,30 @@ class ExcursionCanvas(RawCoordinatePlotCanvas):
             if finite.size:
                 finite_rows.append(finite)
         maximum = float(np.max(np.concatenate(finite_rows))) if finite_rows else 0.0
-        self.axes.set_ylim(0.0, max(1.0e-3, maximum * 1.08))
+        minimum = float(np.min(np.concatenate(finite_rows))) if finite_rows else 0.0
+        lower = min(0.0, minimum * 1.08) if self._signed else 0.0
+        self.axes.set_ylim(lower, max(1.0e-3, maximum * 1.08))
 
 
-__all__ = ["ExcursionCanvas"]
+class ExcursionCanvas(FrequencyTraceCanvas):
+    """Plot RMS displacement of each transducer."""
+
+    def __init__(self) -> None:
+        super().__init__("Transducer Excursion", "Excursion (mm)", "mm")
+
+
+class RealInputPowerCanvas(FrequencyTraceCanvas):
+    """Signed terminal input power at the current channel drives."""
+
+    def __init__(self) -> None:
+        super().__init__("Real Input Power", "Real input power (W)", "W", signed=True)
+
+
+class InterfaceVelocityCanvas(FrequencyTraceCanvas):
+    """Magnitude of complex area-averaged interface normal velocity."""
+
+    def __init__(self) -> None:
+        super().__init__("Interface Particle Velocity", "Average normal velocity, RMS (m/s)", "m/s")
+
+
+__all__ = ["ExcursionCanvas", "RealInputPowerCanvas", "InterfaceVelocityCanvas"]

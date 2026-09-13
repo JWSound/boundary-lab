@@ -376,6 +376,7 @@ class MeshWorkflowMixin:
             return
         self.preparations.cancel("preview")
         self.preparations.cancel("system")
+        self.preparations.cancel("solve")
         if not self.has_solver_meshes():
             self.clear_mesh_preview()
             return

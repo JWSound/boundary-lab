@@ -191,3 +191,35 @@ def test_opening_project_supersedes_pending_preview(main_window, monkeypatch, tm
         assert len(loaded) == 1
     finally:
         gate.set()
+
+
+def test_cancelled_worker_progress_cannot_overwrite_current_activity(qapp):
+    activities = ActivityController()
+    controller = PreparationController(None, activities)
+    gate, started, reported = Event(), Event(), Event()
+    release = Event()
+    results, errors = [], []
+
+    def work(report):
+        started.set()
+        gate.wait(3)
+        report("Obsolete progress")
+        reported.set()
+        release.wait(3)
+
+    try:
+        controller.submit("solve", "Preparing solve...", work, results.append, errors.append,
+                          report_progress=True)
+        wait_until(started.is_set)
+        controller.cancel("solve")
+        gate.set()
+        wait_until(reported.is_set)
+        QTest.qWait(20)
+        assert activities.message == "Stopping preparation..."
+        release.set()
+        wait_until(lambda: not controller.active)
+        assert not results and not errors and not activities.active
+    finally:
+        gate.set()
+        release.set()
+        controller.close()

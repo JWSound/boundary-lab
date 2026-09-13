@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import meshio
 import numpy as np
 
+from blab.mesh_cache import read_mesh
 from blab.physical_model import AcousticRegionKind, CompiledPhysicalSystem
 from blab.solve_results.model import FEM_VOLUME_DOMAIN_ID, ResultDomain
 from blab.symmetry import snap_points_to_symmetry_planes
@@ -53,7 +52,7 @@ def fem_volume_result_domain(system: CompiledPhysicalSystem, *, symmetry: str = 
         if not selected_tags:
             raise ValueError(f"Bounded region {region.id!r} does not select a physical volume group.")
 
-        mesh = meshio.read(Path(resource.file))
+        mesh = read_mesh(resource.file)
         selected_tetrahedra = _selected_tetrahedra(mesh, selected_tags)
         if not selected_tetrahedra.size:
             raise ValueError(f"Bounded region {region.id!r} contains no selected tetrahedra.")

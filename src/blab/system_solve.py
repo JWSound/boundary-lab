@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -28,6 +29,8 @@ from blab.solve_results import (
     FEM_VOLUME_DOMAIN_ID,
     HORIZONTAL_POLAR_DOMAIN_ID,
     HORIZONTAL_POLAR_PRESSURE_ID,
+    INTERFACE_DOMAIN_ID,
+    INTERFACE_VELOCITY_ID,
     RADIATION_IMPEDANCE_ID,
     RADIATOR_DOMAIN_ID,
     SPHERE_DOMAIN_ID,
@@ -83,19 +86,24 @@ def prepare_system_ui_solve(
     remote_options: dict[str, str] | None = None,
     stitch_exterior_meshes: bool = False,
     stitch_tolerance_mm: float = 2.0,
+    progress: Callable[[str], None] | None = None,
 ) -> SystemUiSolveRequest:
     """Compile an editable physical system and request the fields used by the UI."""
 
+    report = progress or (lambda _message: None)
     symmetry = normalize_symmetry(symmetry_mode)
     if backend_id == "beat_remote":
         observation_planes = ()
     if any(boundary.kind == BoundaryKind.UNUSED for boundary in system.boundaries):
         raise ValueError("The coupled solver does not yet support unused surface groups.")
     if stitch_exterior_meshes:
+        report("Preparing exterior interfaces...")
         system = prepare_exterior_system(
             system, stitch_tolerance_mm=stitch_tolerance_mm, symmetry_mode=symmetry,
         )
+    report("Compiling physical system...")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
+    report("Preparing result domains...")
     impedance_normalization = normalization_records(compiled.metadata)
     solve_kind = infer_physical_solve_kind(system)
     has_exterior = solve_kind != PhysicalSolveKind.INTERIOR_FEM
@@ -291,6 +299,21 @@ def prepare_system_ui_solve(
         )
 
     is_coupled = solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM
+    if is_coupled and compiled.interfaces:
+        result_domains.append(ResultDomain(
+            id=INTERFACE_DOMAIN_ID,
+            kind="interface_collection",
+            dimensions=("interface",),
+            coordinates={
+                "interface_id": np.asarray([item.id for item in compiled.interfaces]),
+                "name": np.asarray([item.name for item in compiled.interfaces]),
+            },
+        ))
+        outputs.append(OutputRequest(
+            id=INTERFACE_VELOCITY_ID,
+            quantity="interface_average_normal_velocity",
+            target_ids=(INTERFACE_DOMAIN_ID,),
+        ))
     has_fem = solve_kind != PhysicalSolveKind.EXTERIOR_BEM
     request = SystemSolveRequest(
         compiled_system=compiled,

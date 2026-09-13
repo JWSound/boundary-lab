@@ -209,6 +209,7 @@ def test_transducer_live_caches_follow_solve_capabilities(
         excitation_channel_names=np.asarray(["main"]),
         request=SimpleNamespace(
             compiled_system=SimpleNamespace(
+                interfaces=(),
                 excitation_ports=(port,),
                 components=(component,),
             ),
@@ -258,6 +259,7 @@ def test_solve_warns_when_opposing_diaphragm_areas_differ_by_more_than_ten_perce
         excitation_channel_names=np.asarray(["main"]),
         request=SimpleNamespace(
             compiled_system=SimpleNamespace(
+                interfaces=(),
                 excitation_ports=(port,),
                 components=(component,),
                 regions=(SimpleNamespace(density_kg_per_m3=1.2, sound_speed_m_per_s=340.0),),
@@ -408,7 +410,7 @@ def test_exterior_backend_uses_physical_request_without_legacy_preparation(contr
     monkeypatch.setattr(
         solve_workflow_module,
         "prepare_system_ui_solve",
-        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or "canonical",
+        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
     )
     dispatched = []
     monkeypatch.setattr(
@@ -419,10 +421,12 @@ def test_exterior_backend_uses_physical_request_without_legacy_preparation(contr
 
     controller._start_exterior_system_solve()
 
-    assert prepared_calls[0][0] is system
+    assert prepared_calls[0][0] == system
+    assert prepared_calls[0][0] is not system
     assert prepared_calls[0][1]["backend_id"] == "beat_cpu"
     assert "allow_exterior_compatibility" not in prepared_calls[0][1]
-    assert dispatched == [("canonical", "Initializing exterior solver...")]
+    assert dispatched == [(SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
+                           "Initializing exterior solver...")]
 
 
 def test_stitched_exterior_uses_shared_preparation_preserving_source_system(controller, monkeypatch) -> None:
@@ -442,7 +446,7 @@ def test_stitched_exterior_uses_shared_preparation_preserving_source_system(cont
     monkeypatch.setattr(
         solve_workflow_module,
         "prepare_system_ui_solve",
-        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or "canonical",
+        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
     )
     dispatched = []
     monkeypatch.setattr(
@@ -453,12 +457,14 @@ def test_stitched_exterior_uses_shared_preparation_preserving_source_system(cont
 
     controller._start_exterior_system_solve()
 
-    assert prepared_calls[0][0] is source_system
+    assert prepared_calls[0][0] == source_system
+    assert prepared_calls[0][0] is not source_system
     assert prepared_calls[0][1]["stitch_exterior_meshes"] is True
     assert prepared_calls[0][1]["stitch_tolerance_mm"] == GuiPreferences().stitch_tolerance_mm
     assert prepared_calls[0][1]["component_channel_by_id"] == controller.project.component_channel_by_id
     assert prepared_calls[0][1]["backend_id"] == "beat_cpu"
-    assert dispatched == [("canonical", "Initializing exterior solver...")]
+    assert dispatched == [(SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
+                           "Initializing exterior solver...")]
 
 
 @pytest.mark.parametrize(("confirmed", "expected"), [(False, False), (True, True)])
@@ -580,3 +586,65 @@ def test_completed_solve_automatically_requests_configured_max_spl(controller) -
 
     assert session.max_spl_requested is True
     assert controller.view.max_spl[-1] is True
+
+
+@pytest.mark.parametrize("outcome", ["success", "cancel", "edit", "failure"])
+def test_background_solve_preparation_lifecycle(controller, monkeypatch, outcome):
+    from threading import Event, get_ident
+
+    from blab.ui.activity import ActivityController
+    from blab.ui.preparation_worker import PreparationController
+    from test_ui_preparation_worker import wait_until
+
+    activities = ActivityController(delay_ms=0)
+    preparations = PreparationController(None, activities)
+    controller._preparations = preparations
+    source = SimpleNamespace(name="Original")
+    controller.project.physical_system = source
+    controller.inputs.mesh_entries_for_symmetry = lambda _symmetry: ()
+    monkeypatch.setattr(solve_workflow_module, "inspect_system_meshes", lambda _entries: ())
+    monkeypatch.setattr(solve_workflow_module, "sync_physical_system_meshes", lambda system, _meshes: system)
+    gate, started = Event(), Event()
+    threads, dispatched = [], []
+    gui_thread = get_ident()
+
+    def prepare(system, **options):
+        threads.append(get_ident())
+        assert system is not source
+        options["progress"]("Compiling physical system...")
+        started.set()
+        assert gate.wait(5)
+        if outcome == "failure":
+            raise ValueError("Invalid interface")
+        return SimpleNamespace(solve_kind=PhysicalSolveKind.INTERIOR_FEM)
+
+    monkeypatch.setattr(solve_workflow_module, "prepare_system_ui_solve", prepare)
+    monkeypatch.setattr(controller, "_start_prepared_system_solve",
+                        lambda prepared, status: dispatched.append((get_ident(), status)) or True)
+    try:
+        controller._start_coupled_system_solve()
+        assert controller.view.status[-1] == "Preparing solve..."
+        assert preparations.active
+        wait_until(started.is_set)
+        wait_until(lambda: activities.message == "Compiling physical system...")
+        assert threads == [threads[0]] and threads[0] != gui_thread
+        assert not controller.plots.calls  # Previous results survive preparation.
+        if outcome == "cancel":
+            preparations.cancel("solve")
+        elif outcome == "edit":
+            controller.project.symmetry = "quarter"
+        gate.set()
+        wait_until(lambda: not preparations.active)
+        assert not activities.active
+        if outcome == "success":
+            assert dispatched == [(gui_thread, "Initializing interior FEM solver...")]
+        else:
+            assert not dispatched
+            assert controller.project.physical_system is source
+        if outcome == "failure":
+            assert controller.view.warnings == [("FEM system solve", "Invalid interface")]
+        elif outcome == "edit":
+            assert "discarded" in controller.view.status[-1]
+    finally:
+        gate.set()
+        preparations.close()

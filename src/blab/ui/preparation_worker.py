@@ -9,21 +9,26 @@ from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 
 class _Signals(QObject):
     completed = Signal(object, object, object)
+    progress = Signal(object, str)
 
 
 class _Job(QRunnable):
-    def __init__(self, token, work, cancelled):
+    def __init__(self, token, work, cancelled, report_progress=False):
         super().__init__()
         self.token = token
         self.work = work
         self.cancelled = cancelled
+        self.report_progress = report_progress
         self.signals = _Signals()
 
     def run(self):
         result, error = None, None
         try:
             if not self.cancelled.is_set():
-                result = self.work()
+                if self.report_progress:
+                    result = self.work(lambda message: self.signals.progress.emit(self.token, message))
+                else:
+                    result = self.work()
         except Exception as exc:
             error = exc
         self.signals.completed.emit(self.token, result, error)
@@ -51,18 +56,25 @@ class PreparationController(QObject):
     def active(self):
         return bool(self._jobs)
 
-    def submit(self, key, message, work, complete, failed):
+    def submit(self, key, message, work, complete, failed, *, report_progress=False):
         self.cancel(key)
         self._next += 1
         token = (key, self._next)
         cancelled = Event()
-        job = _Job(token, work, cancelled)
+        job = _Job(token, work, cancelled, report_progress)
         activity = self._activities.start(message)
         self._requests[key] = (token, cancelled, activity, complete, failed, job)
         self._jobs[token] = (job, activity)
+        job.signals.progress.connect(self._progress, Qt.QueuedConnection)
         job.signals.completed.connect(self._complete, Qt.QueuedConnection)
         self._pool.start(job)
         self.busy_changed.emit(True)
+
+    @Slot(object, str)
+    def _progress(self, token, message):
+        request = self._requests.get(token[0])
+        if request is not None and request[0] == token:
+            request[2].update(message)
 
     def cancel(self, key):
         request = self._requests.pop(key, None)

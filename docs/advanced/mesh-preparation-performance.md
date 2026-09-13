@@ -80,3 +80,35 @@ SAWMAX headless validation passed after the changes. Its prepared exterior mesh
 retained SHA-256 `799d8cdcee863ebf4c9562a547c3928f564048327f2e8b5a175175d35d53ca2f`,
 matching the earlier investigation. No acoustic solve was run. Local diagnostic
 scripts and raw timings are retained in ignored `runs/performance_investigation`.
+
+## Solve preparation
+
+Normal exterior and coupled/FEM Solve actions snapshot the project, preferences,
+frequency range and mesh entries, then inspect inventories and construct the
+request in the shared preparation worker. Completion publishes on the GUI thread
+only if those inputs are still current. Mesh/project refresh cancels pending solve
+preparation. Stop suppresses completion and keeps controls locked until running
+preparation returns. Previous results survive until the new run begins.
+
+The activity indicator starts with “Preparing solve…” and reports mesh inspection,
+exterior interface preparation, compilation, and result-domain construction.
+Queued signals deliver progress; stale progress is ignored. Core preparation
+accepts an optional plain callback and remains independent of Qt. Per-frequency
+completion/timing status is unchanged.
+
+Physical compilation, component geometry and FEM result-domain construction now
+use the shared mesh reader. Entries remain fingerprinted, bounded and protected
+against caller mutation. Interface validation is retained. Speaker-package export
+uses these cached reads but retains its separate synchronous preparation workflow.
+
+For the larger SAWMAX project with its saved 3 mm stitch tolerance, the former
+warm click-to-worker-handoff delay was 10.34 s, including about 8.05 s of repeated
+mesh parsing. Two background runs reached handoff in 2.50 s and 3.09 s; click
+dispatch returned in approximately 1 ms. The first run parsed only the prepared
+exterior (8 ms), and the repeated run performed no mesh parses. The GUI continued
+processing a 20 ms timer in both runs. Compiled systems matched across runs.
+
+These are individual measurements using the normal Qt event loop, a stub preview,
+and no previous solved dataset. Plot clearing still runs on the GUI thread; this
+is not a full rendering benchmark. No acoustic solve was launched. Raw results
+are in ignored `runs/performance_investigation/solve_background_results.json`.

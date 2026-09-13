@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
+    InterfaceVelocityDataset,
     LiveSolveDataset,
     TransducerMotionDataset,
 )
@@ -39,6 +40,7 @@ class SolveSession:
 
     #: Voltage-basis currents projected into parallel per-channel loads.
     electrical_impedance: ElectricalImpedanceDataset | None = None
+    interface_velocity: InterfaceVelocityDataset | None = None
 
     #: Intrinsic coupled acoustic load recovered from the voltage basis.
     acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None
@@ -95,6 +97,7 @@ class SolveSession:
         self.result_builder = None
         self.transducer_motion = None
         self.electrical_impedance = None
+        self.interface_velocity = None
         self.acoustic_load_impedance = None
         self.acoustic_impedance_effective_areas_m2 = None
         self.acoustic_impedance_density_kg_per_m3 = 1.21

@@ -32,6 +32,7 @@ from blab.component_symmetry import (
 from blab.config import normalize_symmetry
 from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
+from blab.mesh_cache import read_mesh
 from blab.physical_model import (
     PHYSICAL_MODEL_VERSION,
     AcousticRegion,
@@ -711,7 +712,7 @@ class PhysicalSystemCompiler:
         mesh = self._mesh_cache.get(resolved)
         if mesh is None:
             try:
-                mesh = meshio.read(resolved)
+                mesh = read_mesh(resolved)
             except Exception as exc:
                 raise PhysicalModelCompileError(
                     f"Could not read mesh '{resource.id}' from {resource.file}: {exc}"

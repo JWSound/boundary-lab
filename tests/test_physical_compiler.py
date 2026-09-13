@@ -2244,3 +2244,23 @@ def _exterior_fixture_system() -> PhysicalSystem:
             ),
         ),
     )
+
+
+def test_repeated_compilation_reuses_shared_meshes_without_changing_contract(monkeypatch):
+    from blab.mesh_cache import mesh_cache
+
+    mesh_cache.invalidate()
+    reads = []
+    original = meshio.read
+
+    def counted(path, *args, **kwargs):
+        reads.append(str(Path(path).resolve()))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(meshio, "read", counted)
+    first = PhysicalSystemCompiler().compile(_fixture_system())
+    assert reads and len(reads) == len(set(reads))
+    reads.clear()
+    second = PhysicalSystemCompiler().compile(_fixture_system())
+    assert reads == []
+    assert compiled_system_to_dict(first) == compiled_system_to_dict(second)

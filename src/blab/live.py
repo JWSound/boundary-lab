@@ -20,7 +20,7 @@ from blab.config import DEFAULT_CHANNEL_VOLTAGE_V, ChannelConfig
 from blab.max_spl import MaxSplLimit, calculate_max_spl_curves
 from blab.phasor import solver_phase_deg, solver_to_standard_phasor
 from blab.postprocess import PrepConfig, prepare_visualization_data_from_arrays
-from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, VOICE_COIL_CURRENT_ID
+from blab.solve_results.model import DIAPHRAGM_VELOCITY_ID, INTERFACE_VELOCITY_ID, VOICE_COIL_CURRENT_ID
 from blab.solvers.base import FrequencyResult
 from blab.system_contract import SystemFrequencyResult
 
@@ -667,6 +667,9 @@ class ElectricalImpedanceDataset:
     channel_names: np.ndarray
     results: dict[float, np.ndarray] = field(default_factory=dict)
 
+    current_results: dict[float, np.ndarray] = field(default_factory=dict)
+    reference_voltages_v: dict[float, float] = field(default_factory=dict)
+
     def add(self, result: SystemFrequencyResult) -> None:
         quantity = next((item for item in result.quantities if item.id == VOICE_COIL_CURRENT_ID), None)
         if quantity is None:
@@ -702,6 +705,9 @@ class ElectricalImpedanceDataset:
         if not np.isfinite(reference_voltage_v) or reference_voltage_v <= 0.0:
             reference_voltage_v = np.nan
 
+        self.current_results[float(result.freq_hz)] = values.copy()
+        self.reference_voltages_v[float(result.freq_hz)] = reference_voltage_v
+
         excitation_channels = np.asarray(self.excitation_channel_names).astype(str)
         excitation_components = np.asarray(self.excitation_component_ids).astype(str)
         transducer_components = np.asarray(self.transducer_component_ids).astype(str)
@@ -729,6 +735,40 @@ class ElectricalImpedanceDataset:
             with np.errstate(divide="ignore", invalid="ignore"):
                 impedances[channel_index] = reference_voltage_v / total_current
         self.results[float(result.freq_hz)] = impedances
+
+    def as_power_arrays(self, acoustic: LiveSolveDataset) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Synthesize all current contributions before evaluating RMS terminal power."""
+        frequencies = sorted(set(self.current_results).intersection(acoustic.results))
+        if not frequencies or not self.channel_names.size:
+            return None
+        rows = []
+        excitation_channels = np.asarray(self.excitation_channel_names).astype(str)
+        components = np.asarray(self.excitation_component_ids).astype(str)
+        transducers = np.asarray(self.transducer_component_ids).astype(str)
+        for frequency in frequencies:
+            weights = excitation_basis_weights(acoustic, frequency, excitation_channels)
+            reference = self.reference_voltages_v[frequency]
+            if not np.isfinite(reference) or reference <= 0:
+                rows.append(np.full(self.channel_names.size + 1, np.nan))
+                continue
+            # GUI weights use the standard 2.83 V basis; raw quantities retain
+            # the actual engine reference voltage, which may differ.
+            voltage_rows = np.isin(excitation_channels, self.channel_names)
+            weights[voltage_rows] *= DEFAULT_CHANNEL_VOLTAGE_V / reference
+            currents = weights @ self.current_results[frequency]
+            powers = []
+            for channel in self.channel_names:
+                port_indices = np.flatnonzero(excitation_channels == channel)
+                driven = np.isin(transducers, components[port_indices])
+                # Every voltage port in a channel receives the same drive.
+                voltage = reference * weights[port_indices[0]]
+                current = np.sum(currents[driven] * self.physical_driver_orbit_counts[driven])
+                powers.append(float(np.real(voltage * np.conj(current))))
+            rows.append([*powers, sum(powers)])
+        total_name = "Total input power"
+        while total_name in self.channel_names:
+            total_name += " (sum)"
+        return (np.asarray(frequencies), np.append(self.channel_names, total_name), np.asarray(rows).T)
 
     def as_impedance_arrays(
         self,
@@ -970,3 +1010,69 @@ def split_frequency_order_for_workers(frequencies: Iterable[float], worker_count
         raise ValueError("worker_count must be >= 1.")
     worker_count = min(worker_count, max(1, freqs.size))
     return [freqs[index::worker_count] for index in range(worker_count) if freqs[index::worker_count].size]
+
+
+def excitation_basis_weights(acoustic: LiveSolveDataset, frequency: float, channel_names: np.ndarray) -> np.ndarray:
+    """Map grouped channel processing back onto independent excitation rows."""
+    result = acoustic.results[frequency]
+    if result.channel_names is None:
+        raise ValueError("Channel basis is unavailable.")
+    weights = acoustic.channel_basis_weights(result)
+    by_name = dict(zip(map(str, result.channel_names), weights, strict=True))
+    return np.asarray([by_name[str(name)] for name in channel_names], dtype=np.complex128)
+
+
+@dataclass
+class InterfaceVelocityDataset:
+    """Complex area-averaged normal velocities, before channel processing."""
+
+    excitation_port_ids: tuple[str, ...]
+    excitation_channel_names: np.ndarray
+    voltage_excitation_mask: np.ndarray
+    interface_ids: tuple[str, ...]
+    interface_names: np.ndarray
+    results: dict[float, np.ndarray] = field(default_factory=dict)
+    reference_voltages_v: dict[float, float] = field(default_factory=dict)
+
+    def add(self, result: SystemFrequencyResult) -> None:
+        quantity = next((item for item in result.quantities if item.id == INTERFACE_VELOCITY_ID), None)
+        if quantity is None:
+            return
+        if quantity.axes != ("excitation", "interface") or quantity.unit != "m/s":
+            raise ValueError("Interface velocity requires excitation/interface axes and m/s units.")
+        ports = tuple(result.excitation_port_ids)
+        interfaces = tuple(quantity.metadata.get("interface_ids", ()))
+        if (len(set(ports)) != len(ports) or set(ports) != set(self.excitation_port_ids)
+                or len(set(interfaces)) != len(interfaces) or set(interfaces) != set(self.interface_ids)):
+            raise ValueError("Interface velocity IDs do not match the prepared solve.")
+        values = np.asarray(quantity.values, dtype=np.complex128)
+        if values.shape != (len(ports), len(interfaces)):
+            raise ValueError("Interface velocity shape does not match its IDs.")
+        self.results[float(result.freq_hz)] = values[np.ix_(
+            [ports.index(port) for port in self.excitation_port_ids],
+            [interfaces.index(interface) for interface in self.interface_ids],
+        )].copy()
+        self.reference_voltages_v[float(result.freq_hz)] = float(
+            result.diagnostics.get("transducer_reference_voltage_v", np.nan)
+        )
+
+    def as_velocity_arrays(self, acoustic: LiveSolveDataset) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        frequencies = sorted(set(self.results).intersection(acoustic.results))
+        if not frequencies or not self.interface_ids:
+            return None
+        rows = []
+        for frequency in frequencies:
+            weights = excitation_basis_weights(acoustic, frequency, self.excitation_channel_names)
+            if np.any(self.voltage_excitation_mask):
+                reference = self.reference_voltages_v[frequency]
+                if not np.isfinite(reference) or reference <= 0:
+                    rows.append(np.full(len(self.interface_ids), np.nan))
+                    continue
+                weights[self.voltage_excitation_mask] *= DEFAULT_CHANNEL_VOLTAGE_V / reference
+            rows.append(np.abs(weights @ self.results[frequency]))
+        names = self.interface_names.astype(str)
+        labels = np.asarray([
+            f"{name} [{interface_id}]" if np.count_nonzero(names == name) > 1 else name
+            for name, interface_id in zip(names, self.interface_ids, strict=True)
+        ])
+        return np.asarray(frequencies), labels, np.asarray(rows).T

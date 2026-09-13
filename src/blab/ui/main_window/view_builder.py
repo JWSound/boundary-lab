@@ -244,7 +244,7 @@ class ViewBuilderMixin:
             )
             if entry.plot_id in {"electrical_impedance", "on_axis_frequency_response"}:
                 tool_actions.extend((entry.widget.trace_filter_action, entry.widget.show_phase_action))
-            elif entry.plot_id in {"acoustic_impedance", "group_delay", "transducer_excursion"}:
+            elif entry.plot_id in {"acoustic_impedance", "group_delay", "transducer_excursion", "real_input_power", "interface_velocity"}:
                 tool_actions.append(entry.widget.trace_filter_action)
             elif entry.plot_id == "max_spl":
                 tool_actions.extend((entry.widget.calculate_action, entry.widget.trace_filter_action))

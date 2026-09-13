@@ -1,5 +1,29 @@
 # Advanced CLI Workflow
 
+### Drive-dependent desktop plots
+
+Real Input Power shows signed RMS terminal power per voltage-only channel and
+its total, in watts. It combines the complex current response to all excitations
+before computing `Re(V * conj(I))`, including physical driver multiplicities.
+Negative channel power is retained. This is electrical input power, not solely
+voice-coil heating. Channel voltage and DSP changes update it without a new solve.
+
+Coupled projects with FEM-BEM interfaces request `interface_average_normal_velocity`.
+The canonical complex output has axes `(frequency, excitation, interface)` and
+units m/s. Metadata identifies each interface, its represented mesh area, and
+the bounded-region outward normal. The Interface Particle Velocity plot shows
+the magnitude of area-weighted complex normal velocity after channel synthesis,
+in RMS m/s. This is net average flow, not maximum local velocity or a port-noise
+limit. Area metadata refers to the symmetry-reduced mesh patch; averaging is
+unchanged by identical symmetry replication.
+
+Both plots support trace filtering, previous-solve comparisons, image export,
+and tabular export. Older results without the new quantity leave interface
+velocity unavailable. This output requires a BEAT worker advertising
+`interface_average_normal_velocity` in `optional_output_quantities`; use the
+updated engine checkout until a release containing this capability is pinned.
+Headless artifacts retain independent complex bases without GUI processing.
+
 Boundary Lab still includes command-line tools for mesh cleaning, solving, data preparation, and static plot generation. The GUI is the recommended entry point for normal use.
 
 ## Headless Project Workflow

@@ -29,7 +29,7 @@ from blab.ui.dialogs import (
     MeshDialogEntry,
 )
 from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
-from blab.ui.excursion_plot import ExcursionCanvas
+from blab.ui.excursion_plot import ExcursionCanvas, InterfaceVelocityCanvas, RealInputPowerCanvas
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window.backend_health import BackendHealthController
@@ -325,6 +325,7 @@ class MainWindow(
             assembler=self.simulation_assembler,
             geometry_controller=self.geometry_controller,
             solve_controller=self.solve_controller,
+            preparations=self.preparations,
         )
         self.solve_workflow.mesh_state_changed.connect(self.mesh_state_changed)
         self.geometry_workflow = GeometryWorkflowController(
@@ -435,6 +436,10 @@ class MainWindow(
         self.on_axis_plot = OnAxisResponseCanvas()
         self.group_delay_plot = GroupDelayCanvas()
         self.excursion_plot = ExcursionCanvas()
+        self.real_input_power_plot = RealInputPowerCanvas()
+        self.real_input_power_plot.setEnabled(False)
+        self.interface_velocity_plot = InterfaceVelocityCanvas()
+        self.interface_velocity_plot.setEnabled(False)
         self.max_spl_plot = MaxSplCanvas()
         self.max_spl_plot.calculate_action.triggered.connect(self.calculate_max_spl)
         self.spinorama_plot = SpinoramaCanvas()
@@ -486,6 +491,16 @@ class MainWindow(
                 self.group_delay_plot,
                 self._update_group_delay_plot,
                 PlotDataExportSpec("group_delay.txt"),
+            ),
+            PlotEntry(
+                "real_input_power", "Real Input Power", "real_input_power.png",
+                self.real_input_power_plot, self._update_real_input_power_plot,
+                PlotDataExportSpec("real_input_power.txt"),
+            ),
+            PlotEntry(
+                "interface_velocity", "Interface Particle Velocity", "interface_velocity.png",
+                self.interface_velocity_plot, self._update_interface_velocity_plot,
+                PlotDataExportSpec("interface_velocity.txt"),
             ),
             PlotEntry(
                 "transducer_excursion",

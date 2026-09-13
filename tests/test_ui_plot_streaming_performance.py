@@ -612,6 +612,8 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         excursion_plot=plots[6],
         max_spl_plot=plots[7],
         spinorama_plot=plots[8],
+        real_input_power_plot=PlotRecorder(),
+        interface_velocity_plot=PlotRecorder(),
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 
