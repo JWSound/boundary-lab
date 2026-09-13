@@ -8,6 +8,7 @@ from pathlib import Path
 import meshio
 import numpy as np
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -131,6 +132,7 @@ class MeshPreview(QWidget):
 
     def __init__(self):
         super().__init__()
+        self._axis_label_actor = None
         self._hover_picker = None
         self._hover_observer = None
         self._actor_surface_labels: dict[str, str] = {}
@@ -176,27 +178,6 @@ class MeshPreview(QWidget):
         self.body_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.body_tree.setAlternatingRowColors(False)
         self.body_tree.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.body_tree.setStyleSheet(
-            """
-            QTreeWidget#mesh_body_tree {
-                background: transparent;
-                border: none;
-                color: #f0f2f5;
-                outline: none;
-            }
-            QTreeWidget#mesh_body_tree::item {
-                background: transparent;
-                min-height: 22px;
-            }
-            QTreeWidget#mesh_body_tree::item:hover {
-                background: rgba(255, 255, 255, 24);
-            }
-            QTreeWidget#mesh_body_tree::item:selected {
-                background: rgba(92, 132, 181, 145);
-                color: white;
-            }
-            """
-        )
         self.body_tree.viewport().setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.body_tree.viewport().setAutoFillBackground(False)
         self.body_tree.viewport().setStyleSheet("background: transparent;")
@@ -253,9 +234,41 @@ class MeshPreview(QWidget):
         viewer = getattr(self, "viewer", None)
         if viewer is not None:
             viewer.set_background(themed_content_background(self.palette()))
+        text_color = "white" if self.palette().color(QPalette.Window).lightness() < 128 else "black"
+        if getattr(self, "body_tree", None) is not None:
+            self._refresh_body_tree_theme(text_color)
+        axis_label_actor = getattr(self, "_axis_label_actor", None)
+        if axis_label_actor is not None:
+            value = 1.0 if text_color == "white" else 0.0
+            axis_label_actor.GetMapper().GetInputAlgorithm().GetTextProperty().SetColor(value, value, value)
+        if viewer is not None:
+            viewer.setPalette(self.palette())
         observation_editor = getattr(self, "_observation_editor", None)
         if observation_editor is not None:
             observation_editor.refresh_theme()
+
+    def _refresh_body_tree_theme(self, text_color: str) -> None:
+        self.body_tree.setStyleSheet(
+            """
+            QTreeWidget#mesh_body_tree {
+                background: transparent;
+                border: none;
+                color: TEXT_COLOR;
+                outline: none;
+            }
+            QTreeWidget#mesh_body_tree::item {
+                background: transparent;
+                min-height: 22px;
+            }
+            QTreeWidget#mesh_body_tree::item:hover {
+                background: rgba(255, 255, 255, 24);
+            }
+            QTreeWidget#mesh_body_tree::item:selected {
+                background: rgba(92, 132, 181, 145);
+                color: TEXT_COLOR;
+            }
+            """.replace("TEXT_COLOR", text_color)
+        )
 
     def clear(self) -> None:
         self._actor_records = []
@@ -267,6 +280,7 @@ class MeshPreview(QWidget):
             self._rebuild_body_tree()
         if self.viewer is None:
             return
+        self._axis_label_actor = None
         self.viewer.clear()
         self._actor_surface_labels = {}
         self.hover_label.setText("")
@@ -337,6 +351,7 @@ class MeshPreview(QWidget):
         mesh = read_mesh(msh_path)
         triangles = _extract_triangles_for_preview(mesh)
         physical_tags = _extract_triangle_physical_tags_for_preview(mesh)
+        self._axis_label_actor = None
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._actor_records = []
@@ -412,6 +427,7 @@ class MeshPreview(QWidget):
         if self.viewer is None:
             return
         camera_position = self._camera_position()
+        self._axis_label_actor = None
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._actor_records = []
@@ -834,11 +850,11 @@ class MeshPreview(QWidget):
                 pickable=False,
             )
 
-        self.viewer.add_point_labels(
+        self._axis_label_actor = self.viewer.add_point_labels(
             _preview_axis_label_points(length),
             list(AXIS_LABELS),
             font_size=14,
-            text_color="white",
+            text_color="white" if self.palette().color(QPalette.Window).lightness() < 128 else "black",
             point_color="white",
             point_size=0,
             shape_opacity=0.35,
