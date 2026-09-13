@@ -30,6 +30,10 @@ import meshio
 import numpy as np
 from scipy.spatial import cKDTree
 
+# Application callers transform mesh coordinates to metres before conforming.
+# Standalone mesh-file callers retain their explicit/input-unit tolerance.
+APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M = 0.00075
+
 
 class InterfaceConformError(ValueError):
     """Raised when an interface cannot be conformed without unsafe guessing."""

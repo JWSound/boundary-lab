@@ -56,6 +56,7 @@ from blab.component_symmetry import (
 from blab.config import normalize_symmetry
 from blab.exterior_preparation import prepare_exterior_system
 from blab.interface_conform import (
+    APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
     InterfaceConformError,
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
@@ -552,6 +553,7 @@ def rebuild_configured_interfaces(
                     fem_mesh,
                     bem_mesh,
                     fem_interface_name=fem_name,
+                    geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                     bem_interface_name=interface_bem_name,
                     merge_tolerance=1e-8,
                     symmetry_mode=normalized_symmetry,
@@ -2075,6 +2077,7 @@ class SystemConfigDialog(QDialog):
                 fem_mesh,
                 bem_mesh,
                 fem_interface_name=str(fem_boundary.group.name),
+                geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                 bem_interface_name=str(bem_boundary.group.name),
                 merge_tolerance=1e-8,
                 symmetry_mode=self._symmetry_mode,

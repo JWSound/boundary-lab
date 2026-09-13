@@ -16,6 +16,7 @@ import numpy as np
 
 from blab.config import MeshConfig, normalize_symmetry
 from blab.interface_conform import (
+    APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
     InterfaceConformError,
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
@@ -152,6 +153,7 @@ def prepare_exterior_system(
                             fem,
                             assembled,
                             fem_interface_name=_surface_name(fem, fem_boundary.group),
+                            geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                             bem_interface_name=bem_boundary.group.name,
                             symmetry_mode=symmetry_mode,
                             protected_bem_interface_names=tuple(
@@ -196,6 +198,7 @@ def prepare_exterior_system(
                     fem,
                     assembled,
                     **options,
+                    geometry_tolerance=APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                     protected_bem_interface_names=tuple(b.group.name for b in exterior if b.id != bem_boundary.id),
                 )
                 if report.seam_simplification_used:
@@ -250,6 +253,7 @@ def prepare_exterior_system(
             {
                 "region_id": region.id,
                 "stitch_tolerance_mm": stitch_tolerance_mm,
+                "interface_geometry_tolerance_m": APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                 "symmetry": symmetry_mode,
                 "assembled_file": str(path.resolve()),
                 "interfaces": [asdict(pair) for pair in pairs],

@@ -58,7 +58,10 @@ implicitly included, and FEM volume meshes are never stitched.
 
 Preparation transforms exterior parts to project coordinates, stitches them
 using `project_preferences.stitch_tolerance_mm`, and then conforms configured
-interfaces to the authoritative FEM facets. Closure is checked on the assembled
+interfaces to the authoritative FEM facets. Application interface construction
+allows up to 0.55 mm of geometry deviation when rebuilding an interface. This
+allowance is separate from exterior stitching tolerance and does not relax the
+final FEM-to-BEM coordinate/connectivity checks. Closure is checked on the assembled
 exterior, allowing edges on active symmetry planes. Intentional cutouts may be
 open in source assets but must be closed by the assembly. Missing parts or
 unmatched seams still fail validation.
