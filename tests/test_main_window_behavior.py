@@ -861,3 +861,19 @@ def test_the_window_still_satisfies_the_project_seam(main_window) -> None:
     from blab.ui.main_window.workflow_view import ProjectInputs
 
     assert isinstance(main_window, ProjectInputs)
+
+
+def test_reset_layout_docks_floating_panels_and_hides_plots(main_window) -> None:
+    main_window.preview_dock.setFloating(True)
+    main_window.editor_dock.hide()
+    for dock in main_window.plot_docks.values():
+        dock.show()
+
+    main_window.reset_window_layout()
+
+    assert not main_window.preview_dock.isFloating()
+    assert not main_window.editor_dock.isHidden()
+    assert main_window.panel_view_actions["editor"].isChecked()
+    for plot_id, dock in main_window.plot_docks.items():
+        assert dock.isHidden(), plot_id
+        assert not main_window.plot_view_actions[plot_id].isChecked(), plot_id
