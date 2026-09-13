@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import subprocess
 import tempfile
 import threading
@@ -31,10 +32,12 @@ from blab.solvers.beat_engine_runtime import (
     DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT,
     BeatEngineWorkerProcess,
+    cuda_sweep_devices,
     get_beat_engine_worker,
     julia_process_env,
 )
 from blab.system_contract import (
+    OutputRequest,
     SystemFrequencyResult,
     SystemSolveMetadata,
     SystemSolveRequest,
@@ -104,6 +107,7 @@ class CoupledSession:
         self.persistent_worker = persistent_worker
         self._process: subprocess.Popen[str] | None = None
         self._worker: BeatEngineWorkerProcess | None = None
+        self._sweep_workers: list[tuple[BeatEngineWorkerProcess, Path]] = []
         self.worker_provenance: dict | None = None
         self._stop = False
         self._cancel_path: Path | None = None
@@ -187,6 +191,10 @@ class CoupledSession:
         *,
         stop_requested: Callable[[], bool] | None,
     ) -> Iterator[SystemFrequencyResult]:
+        devices = self._sweep_devices()
+        if len(devices) > 1:
+            yield from self._solve_stream_split(devices, stop_requested=stop_requested)
+            return
         self._worker = get_beat_engine_worker(
             julia_executable=self.julia_executable,
             solver_script=self.solver_script,
@@ -227,8 +235,96 @@ class CoupledSession:
                 self.worker_provenance = getattr(self._worker, "worker_info", None)
                 self._cancel_path = None
 
+    def _sweep_devices(self) -> tuple[str, ...]:
+        if self.request.solver_options.get("bem_backend") != "cuda":
+            return ()
+        return cuda_sweep_devices()[: len(self.request.frequencies_hz)]
+
+    def _solve_stream_split(
+        self,
+        devices: tuple[str, ...],
+        *,
+        stop_requested: Callable[[], bool] | None,
+    ) -> Iterator[SystemFrequencyResult]:
+        """Round-robin the sweep across one persistent worker per CUDA device.
+
+        Frequencies are solved independently, so results match a single-worker
+        sweep; they stream in completion order rather than request order.
+        """
+
+        callback = self.request.status_callback
+        events: queue.Queue = queue.Queue()
+        with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
+            jobs = []
+            for index, device in enumerate(devices):
+                request_path = Path(temp_dir) / f"request-{index}.json"
+                cancel_path = Path(temp_dir) / f"cancel-{index}"
+                payload = system_solve_request_to_dict(
+                    _sweep_subset(self.request, range(index, len(self.request.frequencies_hz), len(devices)))
+                )
+                payload["cancel_path"] = str(cancel_path)
+                request_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+                worker = get_beat_engine_worker(
+                    julia_executable=self.julia_executable,
+                    solver_script=self.solver_script,
+                    julia_threads=self.julia_threads,
+                    julia_project=self.julia_project,
+                    cuda_visible_devices=device,
+                )
+                jobs.append((worker, request_path, cancel_path, f"GPU {index + 1}/{len(devices)}"))
+            self._sweep_workers = [(worker, cancel_path) for worker, _, cancel_path, _ in jobs]
+            threads = [
+                threading.Thread(target=_pump_sweep_worker, args=(worker, request_path, label, events), daemon=True)
+                for worker, request_path, _, label in jobs
+            ]
+            if self._stop:
+                return
+            for thread in threads:
+                thread.start()
+            running = len(threads)
+            failure: Exception | None = None
+            try:
+                while running:
+                    if not self._stop and stop_requested is not None and stop_requested():
+                        self.stop()
+                    try:
+                        kind, value = events.get(timeout=0.25)
+                    except queue.Empty:
+                        continue
+                    if kind == "result":
+                        if not self._stop and failure is None:
+                            yield self._parse_result(value)
+                    elif kind == "status":
+                        if callback is not None:
+                            callback(value)
+                    else:
+                        running -= 1
+                        if kind == "error" and failure is None:
+                            failure = value
+                            self._cancel_sweep_workers()
+            finally:
+                if running:
+                    self._cancel_sweep_workers()
+                for thread in threads:
+                    thread.join()
+                self.worker_provenance = {
+                    **(jobs[0][0].worker_info or {}),
+                    "cuda_visible_devices": list(devices),
+                }
+                self._sweep_workers = []
+            if failure is not None and not self._stop:
+                raise failure
+
+    def _cancel_sweep_workers(self) -> None:
+        for worker, cancel_path in self._sweep_workers:
+            try:
+                cancel_path.write_text("cancel", encoding="utf-8")
+            except OSError:
+                worker.terminate()
+
     def stop(self) -> None:
         self._stop = True
+        self._cancel_sweep_workers()
         worker = self._worker
         if worker is not None:
             cancel_path = self._cancel_path
@@ -267,6 +363,49 @@ class CoupledSession:
             process.stdout.close()
         if process.stderr is not None:
             process.stderr.close()
+
+
+def _sweep_subset(request: SystemSolveRequest, indices: range) -> SystemSolveRequest:
+    frequency_count = len(request.frequencies_hz)
+    outputs = []
+    for output in request.outputs:
+        weights = output.options.get("excitation_weights_sweep")
+        if isinstance(weights, (list, tuple)) and len(weights) == frequency_count:
+            output = OutputRequest(
+                id=output.id,
+                quantity=output.quantity,
+                target_ids=output.target_ids,
+                options={**output.options, "excitation_weights_sweep": [weights[i] for i in indices]},
+            )
+        outputs.append(output)
+    return replace(
+        request,
+        frequencies_hz=tuple(request.frequencies_hz[i] for i in indices),
+        outputs=tuple(outputs),
+    )
+
+
+def _pump_sweep_worker(
+    worker: BeatEngineWorkerProcess,
+    request_path: Path,
+    label: str,
+    events: queue.Queue,
+) -> None:
+    def status(message: str) -> None:
+        events.put(("status", f"{label}: {message}"))
+
+    try:
+        for event in worker.submit(request_path, status_callback=status):
+            event_type = str(event.get("type", ""))
+            if event_type == "result":
+                events.put(("result", event["result"]))
+            elif event_type == "status":
+                status(str(event.get("message", "")))
+            elif event_type == "failed":
+                raise RuntimeError(f"{label}: " + str(event.get("error", "Coupled Julia solver failed.")))
+        events.put(("done", None))
+    except Exception as exc:
+        events.put(("error", exc))
 
 
 class _CoupledBackend:

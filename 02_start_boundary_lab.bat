@@ -65,14 +65,14 @@ echo ------------------------------------------------------------
 nvidia-smi --query-gpu=index,name,uuid --format=csv,noheader
 echo ------------------------------------------------------------
 echo.
-echo Enter a GPU index from the list, or press Enter for automatic selection.
+echo Enter a GPU index from the list, or press Enter to split sweeps across all GPUs.
 set "GPU_CHOICE="
 set /p "GPU_CHOICE=GPU index: "
 
 if defined GPU_CHOICE goto RESOLVE_GPU
 > "%CONFIG_FILE%" echo auto
 echo.
-echo GPU selection: automatic
+echo GPU selection: all GPUs
 echo Saved choice for the next launch.
 echo.
 goto START_BLAB
@@ -114,7 +114,7 @@ set "SAVED_GPU="
 set /p "SAVED_GPU=" < "%CONFIG_FILE%"
 setlocal EnableDelayedExpansion
 if /i "!SAVED_GPU!"=="auto" (
-    echo GPU selection: automatic, saved
+    echo GPU selection: all GPUs, saved
     echo.
     endlocal
     exit /b 1

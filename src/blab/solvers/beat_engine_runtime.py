@@ -6,7 +6,9 @@ subprocess client. All application adapters share the same worker pool below.
 
 from __future__ import annotations
 
+import functools
 import os
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -109,6 +111,37 @@ def julia_process_env(
     return env
 
 
+def cuda_sweep_devices(environ: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """CUDA devices a frequency sweep is split across, one worker per device.
+
+    CUDA_VISIBLE_DEVICES, when set, limits the selection; otherwise every GPU
+    nvidia-smi reports is used. BLAB_MULTI_GPU=0 keeps sweeps on one worker.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("BLAB_MULTI_GPU", "").strip().lower() in {"0", "off", "false", "no"}:
+        return ()
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None:
+        return tuple(item.strip() for item in visible.split(",") if item.strip() and item.strip() != "-1")
+    return _nvidia_smi_gpu_uuids()
+
+
+@functools.lru_cache(maxsize=1)
+def _nvidia_smi_gpu_uuids() -> tuple[str, ...]:
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=uuid", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return tuple(line.strip() for line in completed.stdout.splitlines() if line.strip())
+
+
 def friendly_julia_error(
     message: str,
     *,
@@ -164,14 +197,18 @@ def get_beat_engine_worker(
     julia_threads: str | int,
     julia_project: Path | None,
     julia_sysimage: Path | None = None,
+    cuda_visible_devices: str | None = None,
 ) -> WorkerProcess:
+    environment = julia_process_env(julia_threads, julia_project)
+    if cuda_visible_devices is not None:
+        environment["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
     return _WORKER_POOL.get_worker(
         julia_executable=julia_executable,
         solver_script=solver_script,
         julia_threads=julia_threads,
         julia_project=julia_project,
         julia_sysimage=julia_sysimage,
-        environment=julia_process_env(julia_threads, julia_project),
+        environment=environment,
         backend_label=_julia_project_backend_label(julia_project, None)
         if julia_project is not None
         else "the selected BEAT Engine backend",

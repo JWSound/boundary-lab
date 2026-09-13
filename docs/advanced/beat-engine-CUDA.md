@@ -186,6 +186,18 @@ julia scripts\benchmark_cuda.jl --skip-solve --skip-field --warmups 3 --repetiti
 
 Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight Compute can profile the measured regular kernels with a kernel filter such as `regex:.*regular_quadrature.*`; on Windows, detailed counters require NVIDIA performance-counter permission to avoid `ERR_NVGPUCTRPERM`.
 
+## Multiple GPUs
+
+With more than one visible NVIDIA GPU, Boundary Lab splits a frequency sweep
+round-robin across one persistent BEAT worker per GPU, each pinned with its own
+`CUDA_VISIBLE_DEVICES`. Frequencies are solved independently, so results match a
+single-GPU sweep; they arrive in completion order. Each worker holds the full
+mesh and operator caches, so every GPU must fit the problem on its own, and a
+slower card finishes its share last.
+
+`CUDA_VISIBLE_DEVICES` limits which GPUs are used; otherwise all GPUs reported by
+`nvidia-smi` are used. Set `BLAB_MULTI_GPU=0` to keep sweeps on one GPU.
+
 ## Important Files
 
 - `src/beat_engine/julia_local/src/BeatEngineCuda.jl`: include hub for the CUDA implementation files.
