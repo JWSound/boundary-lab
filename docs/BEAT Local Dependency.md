@@ -1,7 +1,7 @@
 # BEAT Engine dependency
 
 Boundary Lab requires the independently released `beat-engine` package. Its
-`pyproject.toml` pins the `v0.1.2` wheel URL and SHA-256, so ordinary installation
+`pyproject.toml` pins the `v0.1.3` wheel URL and SHA-256, so ordinary installation
 downloads and verifies that exact artifact without a sibling engine checkout:
 
 ```text
@@ -19,6 +19,20 @@ Run these commands with Boundary Lab's Python environment activated. On Windows,
 you can instead use `.\.venv\Scripts\python.exe` in place of `python`. Installing
 BEAT into another Python environment does not configure Boundary Lab's environment.
 
+## Solver choices
+
+The Preferences solver list comes from the installed engine's `backend_catalog()`
+API, with Boundary Lab Server added by the application. Listing and selecting a
+backend does not launch Julia, test hardware, install packages or contact GitHub.
+There are no availability indicators in Preferences. A selected backend that
+cannot run reports its name and the runtime error after Solve is clicked.
+
+The same catalog supplies local backend IDs and Julia project paths to source
+solves, physical-system solves, retained-field evaluation, and explicit CLI
+backend choices. Legacy settings aliases are preserved. Unknown IDs fail instead
+of selecting a different backend. Headless automatic selection retains its
+CUDA-then-CPU policy.
+
 ## Updating an existing installation
 
 Update the Boundary Lab checkout, then rerun its installer or the normal
@@ -33,7 +47,7 @@ packages. Previous Julia package downloads may be reused from the local depot;
 the installed release's own project still needs to be instantiated. Restart
 Boundary Lab after updating so existing workers do not retain the old engine.
 
-The release is [v0.1.2](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.1.2).
+The release is [v0.1.3](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.1.3).
 It contains wheel and source distributions. No PyPI publication is configured.
 The compiled-system contract, worker negotiation, transport, numerical sources,
 and fixtures belong to BEAT Engine. Boundary Lab owns project compilation,
@@ -58,7 +72,7 @@ Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
 environment for engine development. To restore the release explicitly:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.2/beat_engine-0.1.2-py3-none-any.whl#sha256=033a303bdf9deb3db758cb5fabffac74e8289607010530184b28b97a9868afb8"
+python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.3/beat_engine-0.1.3-py3-none-any.whl#sha256=1a2d69b59d973a3ffe6013cd8f0b57fdf2c83ceda572b1a283345ee102470e6f"
 ```
 
 ## Updating the engine

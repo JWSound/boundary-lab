@@ -33,6 +33,7 @@ from blab.solve_results import (
 )
 from blab.solvers.beat_engine_runtime import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
+from blab.solvers.engine_distribution import backend_catalog
 from blab.solvers.registry import normalize_backend_id
 from blab.system_contract import (
     OutputRequest,
@@ -57,12 +58,7 @@ SUPPORTED_RETAIN_VALUES = {
     "fem_nodal_pressure",
 }
 HEADLESS_BACKEND_AUTO = "beat_auto"
-HEADLESS_BACKEND_IDS = (
-    HEADLESS_BACKEND_AUTO,
-    "beat_cpu",
-    "beat_cuda",
-    "beat_rocm",
-)
+HEADLESS_BACKEND_IDS = (HEADLESS_BACKEND_AUTO, *(f"beat_{info.backend_id}" for info in backend_catalog()))
 
 
 @dataclass(frozen=True)

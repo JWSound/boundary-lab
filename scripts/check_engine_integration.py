@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from beat_engine import engine_paths
+from beat_engine import __version__, engine_paths
 
 
 def main():
@@ -37,7 +37,7 @@ def main():
     assert all(manifest["completion_mask"]), manifest["status"]
     assert manifest["engine_runs"], "Missing engine provenance"
     for run in manifest["engine_runs"]:
-        assert run["engine"]["version"] == "0.1.2", run
+        assert run["engine"]["version"] == __version__, run
         assert len(run["engine"]["source_sha256"]) == 64, run
         assert Path(run["runtime"]["project_file"]).resolve() == (engine_paths().project / "Project.toml").resolve()
     with np.load(output / "frequencies/000000.npz") as result:

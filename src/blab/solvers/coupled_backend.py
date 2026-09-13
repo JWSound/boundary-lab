@@ -26,13 +26,15 @@ from blab.physical_model import (
     ExcitationPortKind,
 )
 from blab.solvers.beat_engine_runtime import (
+    BEAT_ENGINE_BACKENDS,
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
-    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT,
     BeatEngineWorkerProcess,
+    default_beat_engine_project,
+    friendly_julia_error,
     get_beat_engine_worker,
     julia_process_env,
+    normalize_beat_engine_backend,
 )
 from blab.system_contract import (
     SystemFrequencyResult,
@@ -45,7 +47,7 @@ from blab.system_contract import (
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
-COUPLED_BEM_BACKENDS = {"cpu", "cuda", "rocm"}
+COUPLED_BEM_BACKENDS = BEAT_ENGINE_BACKENDS
 COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
     BoundaryKind.MOVING,
@@ -121,6 +123,27 @@ class CoupledSession:
         return self._metadata
 
     def solve_stream(
+        self,
+        *,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> Iterator[SystemFrequencyResult]:
+        try:
+            yield from self._solve_stream(stop_requested=stop_requested)
+        except (OSError, RuntimeError) as exc:
+            if self._stop:
+                return
+            from blab.solvers.engine_distribution import engine_backend_info
+
+            backend = str(self.request.solver_options.get("bem_backend", "cpu"))
+            label = engine_backend_info(backend).label
+            detail = friendly_julia_error(
+                str(exc), julia_project=self.julia_project, beat_engine_backend=backend
+            )
+            if isinstance(exc, FileNotFoundError):
+                detail = f"Could not start Julia at {self.julia_executable!r} or find its runtime files. {detail}"
+            raise RuntimeError(f"{label} could not run the solve. {detail}") from exc
+
+    def _solve_stream(
         self,
         *,
         stop_requested: Callable[[], bool] | None = None,
@@ -286,9 +309,9 @@ class _CoupledBackend:
         normalized_precision = str(precision).strip().lower()
         if normalized_precision not in {"float32", "float64"}:
             raise ValueError("Coupled precision must be float32 or float64.")
-        normalized_bem_backend = str(bem_backend).strip().lower()
+        normalized_bem_backend = normalize_beat_engine_backend(bem_backend)
         if normalized_bem_backend not in COUPLED_BEM_BACKENDS:
-            raise ValueError("Coupled BEM backend must be cpu, cuda, or rocm.")
+            raise ValueError(f"Unsupported coupled BEM backend: {bem_backend}")
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_project = None if julia_project is None else Path(julia_project)
@@ -946,14 +969,10 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         julia_threads: str | int | None = None,
         persistent_worker: bool = True,
     ):
-        normalized_bem_backend = str(bem_backend).strip().lower()
+        normalized_bem_backend = normalize_beat_engine_backend(bem_backend)
         default_threads = 4 if normalized_bem_backend == "cuda" else 8
         resolved_threads = default_threads if julia_threads is None else julia_threads
-        julia_project = {
-            "cpu": DEFAULT_COUPLED_CPU_PROJECT,
-            "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-            "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
-        }.get(normalized_bem_backend, DEFAULT_COUPLED_CPU_PROJECT)
+        julia_project = default_beat_engine_project(normalized_bem_backend)
         super().__init__(
             julia_executable=julia_executable,
             solver_script=solver_script,

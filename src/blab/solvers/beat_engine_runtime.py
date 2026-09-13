@@ -18,7 +18,7 @@ from beat_engine.worker import julia_worker_command as julia_worker_command
 from beat_engine.worker import resolve_julia_threads as resolve_julia_threads
 
 from blab.rocm import discover_rocm
-from blab.solvers.engine_distribution import engine_paths
+from blab.solvers.engine_distribution import backend_catalog, engine_backend_info, engine_paths
 
 DEFAULT_BEAT_ENGINE_SOLVER_SCRIPT = engine_paths().source_solver
 DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT = engine_paths().system_solver
@@ -29,11 +29,7 @@ DEFAULT_BEAT_ENGINE_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
 BEAT_ENGINE_CUDA_BACKEND = "cuda"
 BEAT_ENGINE_CPU_BACKEND = "cpu"
 BEAT_ENGINE_ROCM_BACKEND = "rocm"
-BEAT_ENGINE_BACKENDS = {
-    BEAT_ENGINE_CUDA_BACKEND,
-    BEAT_ENGINE_CPU_BACKEND,
-    BEAT_ENGINE_ROCM_BACKEND,
-}
+BEAT_ENGINE_BACKENDS = frozenset(info.backend_id for info in backend_catalog())
 
 
 def normalize_beat_engine_backend(value: object) -> str:
@@ -51,6 +47,7 @@ def normalize_beat_engine_backend(value: object) -> str:
         "amd": BEAT_ENGINE_ROCM_BACKEND,
         "amdgpu": BEAT_ENGINE_ROCM_BACKEND,
     }
+    aliases.update({f"beat_{info.backend_id}": info.backend_id for info in backend_catalog()})
     backend = aliases.get(text, text)
     if backend not in BEAT_ENGINE_BACKENDS:
         raise ValueError(f"Unknown BEAT Engine backend: {value}")
@@ -58,20 +55,15 @@ def normalize_beat_engine_backend(value: object) -> str:
 
 
 def default_beat_engine_project(beat_engine_backend: str) -> Path:
-    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND:
-        return DEFAULT_BEAT_ENGINE_CPU_PROJECT
-    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND:
-        return DEFAULT_BEAT_ENGINE_ROCM_PROJECT
-    return DEFAULT_BEAT_ENGINE_CUDA_PROJECT
+    return engine_paths(normalize_beat_engine_backend(beat_engine_backend)).project
 
 
 def _julia_project_backend_label(project_path: Path, beat_engine_backend: str | None) -> str:
-    if beat_engine_backend == BEAT_ENGINE_CUDA_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CUDA_PROJECT:
-        return "BEAT Engine (Nvidia CUDA)"
-    if beat_engine_backend == BEAT_ENGINE_CPU_BACKEND or project_path == DEFAULT_BEAT_ENGINE_CPU_PROJECT:
-        return "BEAT Engine (CPU)"
-    if beat_engine_backend == BEAT_ENGINE_ROCM_BACKEND or project_path == DEFAULT_BEAT_ENGINE_ROCM_PROJECT:
-        return "BEAT Engine (AMD ROCm)"
+    if beat_engine_backend is not None:
+        return engine_backend_info(normalize_beat_engine_backend(beat_engine_backend)).label
+    for info in backend_catalog():
+        if project_path == engine_paths(info.backend_id).project:
+            return info.label
     return "the selected BEAT Engine backend"
 
 
@@ -100,12 +92,14 @@ def julia_process_env(
                 if os.path.normcase(rocm_bin) not in {os.path.normcase(entry) for entry in path_entries}:
                     env["PATH"] = rocm_bin + os.pathsep + env.get("PATH", "")
     if julia_project is not None:
-        try:
-            is_cuda_project = Path(julia_project).resolve() == DEFAULT_BEAT_ENGINE_CUDA_PROJECT.resolve()
-        except OSError:
-            is_cuda_project = False
-        if is_cuda_project:
-            env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = BEAT_ENGINE_CUDA_BACKEND
+        for info in backend_catalog():
+            try:
+                matches = Path(julia_project).resolve() == engine_paths(info.backend_id).project.resolve()
+            except OSError:
+                matches = False
+            if matches:
+                env["BLAB_BEAT_ENGINE_GPU_BACKEND"] = info.backend_id
+                break
     return env
 
 

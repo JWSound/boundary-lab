@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from blab.solvers.coupled_backend import validate_solve_plan
+from blab.solvers.engine_distribution import backend_catalog
 from blab.system_contract import (
     SystemSolveRequest,
     system_solve_request_from_dict,
@@ -17,7 +18,7 @@ from blab.system_contract import (
 )
 
 REMOTE_VERSION = 2
-REMOTE_BACKENDS = ("beat_cpu", "beat_cuda", "beat_rocm")
+REMOTE_BACKENDS = tuple(f"beat_{info.backend_id}" for info in backend_catalog())
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 MAX_ENTRIES = 1024
 
