@@ -8,7 +8,7 @@ import zipfile
 import numpy as np
 import pytest
 
-from blab.deploy_solve import _load_deploy_package_data
+from blab.deploy.assets import _load_deploy_package_data
 from blab.phasor import LEGACY_PHASOR_CONVENTION as MINUS
 from blab.phasor import SOLVER_PHASOR_CONVENTION as PLUS
 from blab.phasor import convert_phasor

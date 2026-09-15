@@ -145,7 +145,7 @@ class PlotPresenterMixin:
         canvas.set_axis_limits(dialog.limits())
 
     def apply_last_completed_comparison(self) -> None:
-        dataset = self._last_completed_visualization_dataset
+        dataset = self.solve_session.last_completed_visualization
         if dataset is None:
             for entry in self.plot_entries:
                 entry.widget.clear_comparison_plot()
@@ -281,8 +281,8 @@ class PlotPresenterMixin:
             dock = self.plot_docks.get(plot_id)
             controls = contour_controls(
                 has_live_data=self.live_dataset is not None,
-                final_resolution_active=self._use_final_isobar_resolution,
-                final_plots_rendered=self._final_isobar_plots_rendered,
+                final_resolution_active=self.solve_session.use_final_isobar_resolution,
+                final_plots_rendered=self.solve_session.final_isobar_plots_rendered,
                 plot_visible=dock is not None and not dock.isHidden(),
                 has_captured_contours=plot.has_captured_contours,
             )
@@ -383,10 +383,10 @@ class PlotPresenterMixin:
 
         dataset = self.prepared_live_dataset(
             angle_samples=FINAL_ISOBAR_ANGLE_SAMPLES
-            if self._use_final_isobar_resolution
+            if self.solve_session.use_final_isobar_resolution
             else live_plot_angle_samples(self.preferences.live_plot_quality),
             freq_samples=FINAL_ISOBAR_FREQ_SAMPLES
-            if self._use_final_isobar_resolution
+            if self.solve_session.use_final_isobar_resolution
             else live_plot_freq_samples(self.preferences.live_plot_quality),
         )
         if dataset is None:
@@ -407,7 +407,7 @@ class PlotPresenterMixin:
             isobar.horizontal_db,
             isobar.clip_min_db,
             isobar.clip_max_db,
-            shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            shading=FINAL_ISOBAR_SHADING if self.solve_session.use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
             contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
@@ -422,7 +422,7 @@ class PlotPresenterMixin:
             isobar.vertical_db,
             isobar.clip_min_db,
             isobar.clip_max_db,
-            shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
+            shading=FINAL_ISOBAR_SHADING if self.solve_session.use_final_isobar_resolution else LIVE_ISOBAR_SHADING,
             contour_step_db=self.preferences.isobar_contour_step_db,
         )
 
@@ -586,7 +586,7 @@ class PlotPresenterMixin:
         dataset = self.prepared_live_dataset()
         if dataset is not None:
             self._update_spinorama_plot(dataset)
-        comparison = self._last_completed_visualization_dataset
+        comparison = self.solve_session.last_completed_visualization
         if comparison is None:
             self.spinorama_plot.clear_comparison_plot()
         else:

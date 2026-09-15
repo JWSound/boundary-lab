@@ -10,16 +10,14 @@ from blab.ath import (
 )
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
-from blab.ui.mesh_assembly import (
-    STITCHED_MESH_NAME,
-)
-from blab.ui.physical_system_migration import (
+from blab.mesh_inventory import inspect_system_meshes
+from blab.project.migration import (
     AUTO_SEEDED_EXTERIOR_KEY,
     PhysicalSystemMigrationError,
     seed_exterior_system,
 )
-from blab.ui.system_config import (
-    inspect_system_meshes,
+from blab.ui.mesh_assembly import (
+    STITCHED_MESH_NAME,
 )
 
 

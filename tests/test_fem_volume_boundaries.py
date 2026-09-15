@@ -12,10 +12,11 @@ import pytest
 from PySide6.QtWidgets import QApplication, QComboBox
 
 from blab.fem_topology import selected_volume_surface_tags
+from blab.mesh_inventory import inspect_system_meshes
 from blab.physical_compiler import PhysicalModelCompileError, PhysicalSystemCompiler
 from blab.physical_model import Boundary, BoundaryKind, PhysicalGroupRef
 from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.system_config import SystemConfigDialog, inspect_system_meshes
+from blab.ui.system_config import SystemConfigDialog
 
 _APP = QApplication.instance() or QApplication([])
 

@@ -1,4 +1,4 @@
-"""Readable project-file helpers for the Boundary Lab GUI.
+"""Readable project-file persistence and migrations for GUI and headless workflows.
 
 Project files capture application workflow state: editor text, mesh choices,
 and GUI source assignments. Solver-domain settings stay in ``blab.config`` and
@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.observation_planes import observation_planes_from_payload
-from blab.ui.project_state import ProjectPreferencesState
+from blab.project.model import ProjectPreferencesState
 
 PROJECT_SCHEMA_VERSION = 9
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"

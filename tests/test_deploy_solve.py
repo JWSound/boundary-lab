@@ -8,16 +8,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import blab.deploy_solve as deploy_solve_module
-from blab.deploy_geometry import minimum_surface_distance, surface_face_pairs_within
-from blab.deploy_solve import (
+import blab.deploy.solve as deploy_solve_module
+from blab.deploy.assets import DeploySolveCache
+from blab.deploy.geometry import minimum_surface_distance, surface_face_pairs_within
+from blab.deploy.solve import (
     CLOSE_PAIR_DISTANCE_M,
     CLOSE_PAIR_QUADRATURE_ORDER,
     DEPLOY_FIELD_SCHEMA,
     DEPLOY_MICROPHONE_SWEEP_SCHEMA,
     DEPLOY_SOLVE_SCHEMA,
     SOURCE_SURFACE_PADDING_M,
-    DeploySolveCache,
     _combined_excitation_trace,
     _logical_excitation_indices,
     prepare_deploy_coupled_request,
@@ -125,7 +125,9 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
                 axis=0,
             )
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
-    expected = np.asarray(np.conjugate(source_q) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64)
+    expected = np.asarray(
+        np.conjugate(source_q) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64
+    )
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32
     )

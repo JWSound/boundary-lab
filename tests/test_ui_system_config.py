@@ -11,12 +11,14 @@ from PySide6.QtCore import QLocale
 from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 
+import blab.ui.component_editor as component_editor_module
 import blab.ui.system_config as system_config_module
 import blab.ui.system_solve as system_solve_module
 from blab.acoustic_materials import miki_wall_impedance_parameters
 from blab.ath import read_surface_physical_names
 from blab.config import RadiatorConfig
 from blab.interface_conform import InterfaceConformError, validate_conforming_interfaces
+from blab.mesh_inventory import inspect_system_mesh_variants, inspect_system_meshes
 from blab.observation_planes import ObservationPlaneType, new_observation_plane
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.physical_model import (
@@ -30,6 +32,8 @@ from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.project.migration import PhysicalSystemMigrationError, seed_exterior_system
+from blab.project.model import ImportedMeshState, new_project_document
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -39,25 +43,21 @@ from blab.solve_results import (
     RADIATION_IMPEDANCE_ID,
     RADIATOR_DOMAIN_ID,
 )
+from blab.solve_results.live_projection import LiveResultProjector
 from blab.solvers.coupled_backend import CoupledProductionBackend
 from blab.system_contract import QuantityResult, SystemFrequencyResult
-from blab.ui.dialogs import MeshDialogEntry
-from blab.ui.main_window.radiators import RadiatorsMixin
-from blab.ui.mesh_assembly import MeshAssemblyService
-from blab.ui.physical_system_migration import PhysicalSystemMigrationError, seed_exterior_system
-from blab.ui.project_state import ImportedMeshState, new_project_document
-from blab.ui.system_config import (
-    SystemConfigDialog,
-    _ComponentDraft,
-    _ComponentEditorDialog,
-    _SemiInductanceDialog,
-    _WallImpedanceDialog,
+from blab.system_editing import (
     infer_component_motion_axis,
-    inspect_system_mesh_variants,
-    inspect_system_meshes,
     interface_bem_mesh_names_for_changes,
     rebuild_configured_interfaces,
 )
+from blab.system_solve import canonicalize_observation_result
+from blab.ui.boundary_editor import _WallImpedanceDialog
+from blab.ui.component_editor import _ComponentDraft, _ComponentEditorDialog, _SemiInductanceDialog
+from blab.ui.dialogs import MeshDialogEntry
+from blab.ui.main_window.radiators import RadiatorsMixin
+from blab.ui.mesh_assembly import MeshAssemblyService
+from blab.ui.system_config import SystemConfigDialog
 from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
 _APP = QApplication.instance() or QApplication([])
@@ -324,7 +324,10 @@ def test_seeded_exterior_system_preserves_ath_style_velocity_offset() -> None:
     )
     assert channels[system.components[0].id] == "High"
     compiled = PhysicalSystemCompiler().compile(system)
-    assert compiled.components[0].parameters["boundary_motion_weights"] == system.components[0].parameters["boundary_motion_weights"]
+    assert (
+        compiled.components[0].parameters["boundary_motion_weights"]
+        == system.components[0].parameters["boundary_motion_weights"]
+    )
 
 
 def test_seeded_exterior_system_groups_ath_driver_surfaces_into_one_component(tmp_path: Path) -> None:
@@ -421,7 +424,7 @@ def test_exterior_system_ui_request_uses_canonical_bem_outputs() -> None:
         plane_type=ObservationPlaneType.EXTERIOR,
     )
 
-    prepared = system_solve_module.prepare_system_ui_solve(
+    prepared = system_solve_module.prepare_system_solve(
         system,
         freq_min_hz=500.0,
         freq_max_hz=1000.0,
@@ -472,7 +475,7 @@ def test_system_worker_projects_exterior_radiation_impedance_to_live_result() ->
         (bem,),
         (RadiatorConfig(name=f"{bem.name}:{group_name}", mesh=bem.name, tag=tag, channel="main"),),
     )
-    prepared = system_solve_module.prepare_system_ui_solve(
+    prepared = system_solve_module.prepare_system_solve(
         system,
         freq_min_hz=500.0,
         freq_max_hz=500.0,
@@ -505,7 +508,7 @@ def test_system_worker_projects_exterior_radiation_impedance_to_live_result() ->
         ),
     )
 
-    live = system_solve_module.SystemSolveWorker(prepared)._to_live_result(result)
+    live = LiveResultProjector(prepared).project(result)
 
     assert live.impedance.tolist() == [[2.5, 1.25]]
 
@@ -848,14 +851,14 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
         },
     }
     projected_area_calls = 0
-    original_projected_area = system_config_module.infer_projected_diaphragm_area
+    original_projected_area = component_editor_module.infer_projected_diaphragm_area
 
     def count_projected_area_calls(*args, **kwargs):
         nonlocal projected_area_calls
         projected_area_calls += 1
         return original_projected_area(*args, **kwargs)
 
-    monkeypatch.setattr(system_config_module, "infer_projected_diaphragm_area", count_projected_area_calls)
+    monkeypatch.setattr(component_editor_module, "infer_projected_diaphragm_area", count_projected_area_calls)
     editor = _ComponentEditorDialog(
         _ComponentDraft(
             id="component:woofer",
@@ -934,7 +937,8 @@ def test_front_only_folded_surface_keeps_full_lumped_chamber_area() -> None:
     resource = MeshResource("mesh:folded", "Folded", "unused.msh", MeshPurpose.FEM_VOLUME)
     mesh = meshio.Mesh(
         points=np.asarray(
-            ((0, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.5, 1), (1, 0, 1)), dtype=float,
+            ((0, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.5, 1), (1, 0, 1)),
+            dtype=float,
         ),
         cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5))))],
         cell_data={"gmsh:physical": [np.asarray((1, 2))]},
@@ -942,29 +946,45 @@ def test_front_only_folded_surface_keeps_full_lumped_chamber_area() -> None:
     )
     boundaries = tuple(
         Boundary(
-            id=f"boundary:{name}", name=name, region_id="region:front",
-            group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name=name), kind=BoundaryKind.MOVING,
+            id=f"boundary:{name}",
+            name=name,
+            region_id="region:front",
+            group=PhysicalGroupRef(mesh_id=resource.id, dimension=2, name=name),
+            kind=BoundaryKind.MOVING,
         )
         for name in ("Dome", "Return")
     )
     editor = _ComponentEditorDialog(
         _ComponentDraft(
-            id="component:driver", name="Driver", kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
-            boundary_ids=tuple(boundary.id for boundary in boundaries), channel="main",
+            id="component:driver",
+            name="Driver",
+            kind=ComponentKind.ELECTRODYNAMIC_TRANSDUCER,
+            boundary_ids=tuple(boundary.id for boundary in boundaries),
+            channel="main",
             motion_axis_mode="manual",
             parameters={
-                "re_ohm": 8.0, "le_h": 0.00015, "bl_n_per_a": 10.0,
-                "mmd_kg": 0.001, "cms_m_per_n": 3e-5, "rms_n_s_per_m": 1.2,
+                "re_ohm": 8.0,
+                "le_h": 0.00015,
+                "bl_n_per_a": 10.0,
+                "mmd_kg": 0.001,
+                "cms_m_per_n": 3e-5,
+                "rms_n_s_per_m": 1.2,
                 "motion_axis": [0.0, 0.0, 1.0],
                 "boundary_motion_weights": {"boundary:Return": 0.5},
                 "lumped_sealed_rear_chamber": {
-                    "enabled": True, "volume_m3": 0.001, "projected_area_m2": 0.5625,
+                    "enabled": True,
+                    "volume_m3": 0.001,
+                    "projected_area_m2": 0.5625,
                 },
             },
         ),
-        boundaries=boundaries, resources_by_id={resource.id: resource},
-        region_names={"region:front": "Front"}, channel_names=("main",),
-        unavailable_boundary_ids=set(), symmetry_mode="off", mesh_cache={resource.id: mesh},
+        boundaries=boundaries,
+        resources_by_id={resource.id: resource},
+        region_names={"region:front": "Front"},
+        channel_names=("main",),
+        unavailable_boundary_ids=set(),
+        symmetry_mode="off",
+        mesh_cache={resource.id: mesh},
     )
     updated = editor.component_draft()
     # The return face subtracts volume displacement on the same acoustic side.
@@ -1303,14 +1323,13 @@ def test_coupled_ui_request_uses_excitation_basis_and_polar_field_points() -> No
             ),
         ),
     )
-    worker = CoupledSolveWorker(prepared)
-    canonical = worker._canonical_result(raw_result)
+    canonical = canonicalize_observation_result(prepared, raw_result)
     canonical_by_id = {quantity.id: quantity for quantity in canonical.quantities}
 
     assert canonical_by_id["acoustic:pressure:horizontal-polar"].target_id == ("observation:horizontal-polar")
     assert canonical_by_id["acoustic:pressure:horizontal-polar"].values.tolist() == [[0.0, 1.0, 2.0, 3.0, 4.0]]
     assert canonical_by_id["acoustic:pressure:vertical-polar"].values.tolist() == [[5.0, 6.0, 7.0, 8.0, 9.0]]
-    assert worker._to_live_result(raw_result).horizontal_pressure.shape == (1, 5)
+    assert LiveResultProjector(prepared).project(raw_result).horizontal_pressure.shape == (1, 5)
 
 
 def test_coupled_ui_request_retains_bem_traces_for_exterior_analysis() -> None:
@@ -1445,11 +1464,10 @@ def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
         prepared,
         excitation_channel_names=np.asarray(["main", "main"]),
     )
-    worker = CoupledSolveWorker(prepared)
     horizontal = np.asarray([[1.0 + 0.0j], [2.0 + 0.0j]])
     vertical = np.asarray([[3.0 + 0.0j], [4.0 + 0.0j]])
 
-    names, grouped_horizontal, grouped_vertical, sphere = worker._combine_channel_rows(
+    names, grouped_horizontal, grouped_vertical, sphere = LiveResultProjector(prepared)._combine_channel_rows(
         horizontal,
         vertical,
         None,
@@ -1493,8 +1511,8 @@ def test_coupled_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> No
             return Session(request)
 
     monkeypatch.setattr(system_solve_module, "PhysicalSystemProductionBackend", Backend)
-    worker = CoupledSolveWorker(prepared)
     statuses = []
+    worker = system_solve_module.SystemSolveWorker(prepared)
     worker.status.connect(statuses.append)
 
     with caplog.at_level("INFO", logger="blab.ui.system_solve"):
@@ -1570,7 +1588,7 @@ def test_coupled_ui_request_returns_live_plot_pressure_basis() -> None:
     )
 
     (system_result,) = tuple(backend.create_system_session(prepared.request).solve_stream())
-    live_result = CoupledSolveWorker(prepared)._to_live_result(system_result)
+    live_result = LiveResultProjector(prepared).project(system_result)
 
     assert live_result.has_channel_basis
     assert live_result.horizontal_pressure.shape == (1, 5)

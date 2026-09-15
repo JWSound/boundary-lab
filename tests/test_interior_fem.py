@@ -22,14 +22,14 @@ from blab.solvers.coupled_backend import (
     PhysicalSystemProductionBackend,
     validate_system_capabilities,
 )
-from blab.system_solve import prepare_system_ui_solve
+from blab.system_solve import prepare_system_solve
 
 FIXTURE = Path(__file__).parents[1] / "examples" / "compression_driver" / "compression_driver.blab.json"
 
 
 def _prepared():
     project = load_headless_project(FIXTURE)
-    return project, prepare_system_ui_solve(
+    return project, prepare_system_solve(
         project.physical_system,
         freq_min_hz=1000.0,
         freq_max_hz=1000.0,

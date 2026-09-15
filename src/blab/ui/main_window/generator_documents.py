@@ -15,17 +15,17 @@ from PySide6.QtWidgets import (
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.registry import create_generator
-from blab.ui.ath_editor import AthScriptEditor
-from blab.ui.main_window.constants import (
-    ADD_DESIGN_TAB_LABEL,
-)
-from blab.ui.main_window_widgets import TabCloseButton
-from blab.ui.project_state import (
+from blab.project.model import (
     generator_mesh_name,
     new_generator_document,
     replace_generator_document,
     unique_generator_name,
 )
+from blab.ui.ath_editor import AthScriptEditor
+from blab.ui.main_window.constants import (
+    ADD_DESIGN_TAB_LABEL,
+)
+from blab.ui.main_window_widgets import TabCloseButton
 from blab.ui.settings import save_syntax_highlighting_enabled
 
 

@@ -13,7 +13,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
+from blab.mesh_inventory import inspect_system_meshes
+from blab.project.migration import AUTO_SEEDED_EXTERIOR_KEY
 from blab.solvers.registry import backend_info
+from blab.system_editing import sync_physical_system_meshes
 from blab.ui.diagnostics import DiagnosticsDialog
 from blab.ui.dialogs import (
     DonateDialog,
@@ -26,12 +29,7 @@ from blab.ui.main_window.helpers import (
     _mesh_entries_with_file_overrides,
 )
 from blab.ui.mesh_preparation import prepare_system_inventory
-from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY
-from blab.ui.system_config import (
-    SystemConfigDialog,
-    inspect_system_meshes,
-    sync_physical_system_meshes,
-)
+from blab.ui.system_config import SystemConfigDialog
 
 
 class DialogActionsMixin:
@@ -276,7 +274,11 @@ class DialogActionsMixin:
                 QMessageBox.critical(self, "System", f"Could not inspect the enabled meshes:\n{exc}")
 
         self.preparations.submit(
-            "system", "Inspecting system meshes...", lambda: prepare_system_inventory(work_snapshot), complete, failed,
+            "system",
+            "Inspecting system meshes...",
+            lambda: prepare_system_inventory(work_snapshot),
+            complete,
+            failed,
         )
 
     def _open_prepared_system_config(self, inventory):

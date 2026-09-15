@@ -18,6 +18,8 @@ from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
 from blab.phasor import SOLVER_PHASOR_CONVENTION
 from blab.physical_model import PhysicalSolveKind, PhysicalSystem, physical_system_from_dict
+from blab.project.io import PROJECT_SCHEMA_VERSION, read_project_file
+from blab.project.model import ProjectPreferencesState, generator_documents_from_payload, generator_mesh_name
 from blab.solve_results import (
     BEM_BOUNDARY_DOMAIN_ID,
     BEM_BOUNDARY_NEUMANN_ID,
@@ -42,12 +44,10 @@ from blab.system_contract import (
     compiled_system_to_dict,
 )
 from blab.system_solve import (
-    SystemUiSolveRequest,
+    PreparedSystemSolve,
     canonicalize_observation_result,
-    prepare_system_ui_solve,
+    prepare_system_solve,
 )
-from blab.ui.project_io import PROJECT_SCHEMA_VERSION, read_project_file
-from blab.ui.project_state import ProjectPreferencesState, generator_documents_from_payload, generator_mesh_name
 
 HEADLESS_REQUEST_VERSION = 1
 HEADLESS_RESULT_VERSION = 2
@@ -122,10 +122,14 @@ def load_headless_project(path: str | Path) -> HeadlessProject:
             if symmetry == "off"
             else artifact.reduced_cleaned_mesh_path or artifact.mesh_path
         )
-        resources.append(replace(
-            resource, file=mesh_file, scale_to_m=document.mesh_scale_factor,
-            translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
-        ))
+        resources.append(
+            replace(
+                resource,
+                file=mesh_file,
+                scale_to_m=document.mesh_scale_factor,
+                translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
+            )
+        )
     system = replace(system, meshes=tuple(resources))
     component_channels = payload.get("component_channel_by_id", {})
     if not isinstance(component_channels, dict):
@@ -228,13 +232,13 @@ def prepare_headless_solve(
     *,
     backend_id: str,
     include_observation_planes: bool = True,
-) -> SystemUiSolveRequest:
+) -> PreparedSystemSolve:
     """Build and validate a canonical system request from a project and overlay."""
 
     preferences = project.preferences
     sphere_angle_deg = min(max(float(preferences.balloon_angle_precision_deg), 0.5), 15.0)
     spherical_count = max(int(round(41253.0 / sphere_angle_deg**2)), 1)
-    prepared = prepare_system_ui_solve(
+    prepared = prepare_system_solve(
         project.physical_system,
         freq_min_hz=preferences.freq_min_hz,
         freq_max_hz=preferences.freq_max_hz,
@@ -311,7 +315,7 @@ def prepare_headless_solve(
 
 def validation_summary(
     project: HeadlessProject,
-    prepared: SystemUiSolveRequest,
+    prepared: PreparedSystemSolve,
     *,
     backend_id: str,
 ) -> dict[str, Any]:
@@ -353,7 +357,7 @@ class HeadlessResultWriter:
         output_dir: str | Path,
         *,
         project: HeadlessProject,
-        prepared: SystemUiSolveRequest,
+        prepared: PreparedSystemSolve,
         backend_id: str,
         public_request: dict[str, Any],
     ) -> None:
@@ -492,7 +496,7 @@ class HeadlessResultWriter:
 
 def run_headless_solve(
     project: HeadlessProject,
-    prepared: SystemUiSolveRequest,
+    prepared: PreparedSystemSolve,
     *,
     output_dir: str | Path,
     backend_id: str,

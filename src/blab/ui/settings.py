@@ -7,8 +7,8 @@ from dataclasses import dataclass, field, replace
 
 from PySide6.QtCore import QSettings
 
+from blab.project.model import ProjectPreferencesState
 from blab.solvers.registry import normalize_backend_id
-from blab.ui.project_state import ProjectPreferencesState
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"

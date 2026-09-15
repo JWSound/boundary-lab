@@ -1,4 +1,4 @@
-"""Lightweight GUI project-state helpers."""
+"""Shared project document and preference models."""
 
 from __future__ import annotations
 

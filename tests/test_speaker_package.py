@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 import blab.speaker_package as speaker_package_module
-from blab.deploy_solve import DeploySolveCache, stage_exact_coupled_system
+from blab.deploy.assets import DeploySolveCache
+from blab.deploy.solve import stage_exact_coupled_system
 from blab.physical_model import (
     AcousticRegionKind,
     CompiledMesh,
@@ -48,7 +49,7 @@ from blab.speaker_package import (
     validate_speaker_package,
 )
 from blab.system_contract import OutputRequest, SystemSolveRequest
-from blab.system_solve import SystemUiSolveRequest
+from blab.system_solve import PreparedSystemSolve
 
 
 def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> SolvedSystem:
@@ -682,7 +683,7 @@ def test_export_solve_preparation_forces_sphere_and_level_two_traces() -> None:
         ),
         solver_options={"symmetry": "x"},
     )
-    prepared = SystemUiSolveRequest(
+    prepared = PreparedSystemSolve(
         request=request,
         backend_id="beat_cpu",
         solve_kind=PhysicalSolveKind.EXTERIOR_BEM,
@@ -735,7 +736,7 @@ def test_parity_rom_preparation_preserves_source_x_symmetry(monkeypatch) -> None
         outputs=(),
         solver_options={"symmetry": "off"},
     )
-    prepared = SystemUiSolveRequest(
+    prepared = PreparedSystemSolve(
         request=request,
         backend_id="beat_cpu",
         solve_kind=PhysicalSolveKind.COUPLED_BEM_FEM,

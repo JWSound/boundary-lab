@@ -7,11 +7,11 @@ from PySide6.QtCore import Slot
 from blab.config import ChannelConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
 from blab.physical_model import ComponentKind, ExcitationPortKind
+from blab.project.model import (
+    generator_mesh_name,
+)
 from blab.ui.dialogs import (
     ChannelConfigDialog,
-)
-from blab.ui.project_state import (
-    generator_mesh_name,
 )
 from blab.ui.source_channel_config import (
     apply_saved_imported_source_config,

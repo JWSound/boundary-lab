@@ -23,6 +23,8 @@ from blab.physical_model import (
     PhysicalGroupRef,
     PhysicalSystem,
 )
+from blab.project.model import ProjectPreferencesState, new_project_document
+from blab.system_editing import InterfaceRebuildResult
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window import (
     STITCH_FAILURE_MESSAGE,
@@ -32,8 +34,6 @@ from blab.ui.main_window import (
 )
 from blab.ui.main_window.project_session import ProjectSession
 from blab.ui.main_window.project_workflow import ProjectWorkflowController
-from blab.ui.project_state import ProjectPreferencesState, new_project_document
-from blab.ui.system_config import InterfaceRebuildResult
 from repo_paths import MAIN_WINDOW_PKG
 
 
@@ -205,9 +205,13 @@ def test_focus_reload_rebuilds_configured_interface_for_changed_fem_mesh(
 
     def mesh_entries(symmetry):
         requested_symmetries.append(symmetry)
-        return (MeshDialogEntry(
-            name="Waveguide", source_file=str(bem_path if symmetry == "off" else rebuilt_path), locked=True,
-        ),)
+        return (
+            MeshDialogEntry(
+                name="Waveguide",
+                source_file=str(bem_path if symmetry == "off" else rebuilt_path),
+                locked=True,
+            ),
+        )
 
     monkeypatch.setattr(main_window, "mesh_entries_for_symmetry", mesh_entries)
     main_window._record_imported_mesh_source_fingerprints()

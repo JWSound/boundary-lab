@@ -25,6 +25,26 @@ from blab.physical_model import (
     physical_system_from_dict,
     physical_system_to_dict,
 )
+from blab.project.io import (
+    PROJECT_DEFAULT_NAME,
+    PROJECT_FILE_FILTER,
+    build_project_payload,
+    normalize_project_path,
+    read_project_file,
+    write_project_file,
+)
+from blab.project.migration import AUTO_SEEDED_EXTERIOR_KEY
+from blab.project.model import (
+    ImportedMeshState,
+    ProjectDocument,
+    ProjectPreferencesState,
+    generator_document_to_payload,
+    generator_documents_from_payload,
+    generator_mesh_name,
+    new_generator_document,
+    new_project_document,
+    unique_generator_name,
+)
 from blab.ui.activity import ActivityController
 from blab.ui.dialogs import (
     MeshDialogEntry,
@@ -39,26 +59,6 @@ from blab.ui.main_window.workflow_view import (
     ProjectInputs,
     UnsavedChoice,
     WorkflowView,
-)
-from blab.ui.physical_system_migration import AUTO_SEEDED_EXTERIOR_KEY
-from blab.ui.project_io import (
-    PROJECT_DEFAULT_NAME,
-    PROJECT_FILE_FILTER,
-    build_project_payload,
-    normalize_project_path,
-    read_project_file,
-    write_project_file,
-)
-from blab.ui.project_state import (
-    ImportedMeshState,
-    ProjectDocument,
-    ProjectPreferencesState,
-    generator_document_to_payload,
-    generator_documents_from_payload,
-    generator_mesh_name,
-    new_generator_document,
-    new_project_document,
-    unique_generator_name,
 )
 from blab.ui.settings import (
     GuiPreferences,
@@ -342,7 +342,9 @@ class ProjectWorkflowController(QObject):
             if self._confirm_apply_project_preferences(project_preferences):
                 self._apply_project_preferences(project_preferences)
             with self._activities.start("Opening project..."):
-                self._apply_project_payload(payload, project_preferences=project_preferences, generated_results=generated_results)
+                self._apply_project_payload(
+                    payload, project_preferences=project_preferences, generated_results=generated_results
+                )
                 self._session.path = path
                 self._remember_recent(path)
                 self.mark_project_clean()
@@ -444,7 +446,8 @@ class ProjectWorkflowController(QObject):
         for document in self._project.generator_documents:
             result = (
                 self._inputs.result_from_generator_document(document)
-                if generated_results is None else generated_results.get(document.id)
+                if generated_results is None
+                else generated_results.get(document.id)
             )
             if result is not None:
                 self._geometry_store.generated_by_document_id[document.id] = (

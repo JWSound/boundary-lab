@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from blab.deploy_acoustic_loading import normalized_acoustic_loading
+from blab.deploy.acoustic_loading import normalized_acoustic_loading
 
 
 def fixture():

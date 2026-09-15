@@ -1,7 +1,7 @@
 """Domain configuration used by the solver and protocol layers.
 
 GUI-only workflow state, such as saved project editor text and imported mesh
-choices, belongs in ``blab.ui.project_io`` until it becomes solver input.
+choices, belongs in ``blab.project.io`` until it becomes solver input.
 """
 
 from __future__ import annotations

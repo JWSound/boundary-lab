@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
-from blab.ui.project_state import generator_mesh_name
+from blab.project.model import generator_mesh_name
 
 
 @dataclass

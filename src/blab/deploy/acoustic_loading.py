@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from blab.deploy_solve import DeployPackageData
+from blab.deploy.assets import DeployPackageData
 
 ACOUSTIC_LOADING_KEYS = (
     "resistance",

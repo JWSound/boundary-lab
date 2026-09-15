@@ -112,7 +112,7 @@ def test_final_plot_refresh_skips_tab_covered_canvases() -> None:
         plot_entries=(active, covered),
         plot_docks={"active": dock, "covered": dock},
         _plot_entry_is_actively_visible=lambda entry: entry.plot_id == "active",
-        _use_final_isobar_resolution=True,
+        solve_session=SimpleNamespace(use_final_isobar_resolution=True),
         prepared_live_dataset=lambda **_options: dataset,
     )
 
@@ -135,8 +135,7 @@ def test_activated_plot_refresh_uses_cached_solve_after_geometry_is_visible() ->
         preferences=SimpleNamespace(live_plot_streaming=True),
         refresh_plots=lambda **options: refresh_calls.append(options),
         request_live_refresh=lambda: None,
-        _use_final_isobar_resolution=True,
-        _final_isobar_plots_rendered=False,
+        solve_session=SimpleNamespace(use_final_isobar_resolution=True, final_isobar_plots_rendered=False),
         refresh_contour_controls=lambda: contour_calls.append(True),
     )
 
@@ -144,7 +143,7 @@ def test_activated_plot_refresh_uses_cached_solve_after_geometry_is_visible() ->
 
     assert window._plot_activation_refresh_pending is False
     assert refresh_calls == [{"active_only": True}]
-    assert window._final_isobar_plots_rendered is False
+    assert window.solve_session.final_isobar_plots_rendered is False
     assert contour_calls == [True]
 
 
@@ -594,14 +593,16 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
     maximum = MaxSplProjection(freqs, np.asarray(["main"]), np.full((1, 2), 110.0))
     plots = [PlotRecorder() for _index in range(9)]
     window = SimpleNamespace(
-        _last_completed_visualization_dataset=VisualizationProjection(
-            isobar,
-            impedance,
-            response,
-            excursion,
-            electrical,
-            group_delay,
-            maximum,
+        solve_session=SimpleNamespace(
+            last_completed_visualization=VisualizationProjection(
+                isobar,
+                impedance,
+                response,
+                excursion,
+                electrical,
+                group_delay,
+                maximum,
+            )
         ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
@@ -626,12 +627,15 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
     }
     assert len(plots[4].calls[0][0]) == 7
 
-    window._last_completed_visualization_dataset = VisualizationProjection(
-        None, None, None, excursion=excursion, electrical_impedance=electrical,
+    window.solve_session.last_completed_visualization = VisualizationProjection(
+        None,
+        None,
+        None,
+        excursion=excursion,
+        electrical_impedance=electrical,
     )
     MainWindow.apply_last_completed_comparison(window)
     assert [len(plot.calls) for plot in plots] == [0, 0, 0, 2, 0, 0, 2, 0, 0]
-
 
 
 def test_chart_panels_share_layout_profiles_by_artist_requirements() -> None:

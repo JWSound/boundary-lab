@@ -5,17 +5,21 @@ import numpy as np
 from PySide6.QtCore import QCoreApplication, QObject, Signal, Slot
 
 import blab.ui.operation_controllers as controller_module
-from blab.solvers.base import FrequencySolveTimings
+from blab.system_contract import SystemFrequencyResult
 from blab.ui.application_state import OperationPhase
 from blab.ui.operation_controllers import GeometryController, SolveController
 from blab.ui.system_solve import SystemSolveWorker
 
 
 class _SolveWorkerStub(QObject):
-    result = SimpleNamespace(freq_hz=1000.0, timings=FrequencySolveTimings(assembly_s=1.2, solve_s=0.3, field_s=0.04))
+    result = SystemFrequencyResult(
+        freq_hz=1000.0,
+        quantities=(),
+        excitation_port_ids=(),
+        diagnostics={"timings": {"assembly_s": 1.2, "solve_s": 0.3, "field_s": 0.04}},
+    )
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
-    system_result_ready = Signal(object)
     status = Signal(str)
     failed = Signal(str)
     finished = Signal()
@@ -34,6 +38,27 @@ class _SolveWorkerStub(QObject):
     @Slot()
     def stop(self) -> None:
         self.stopped = True
+
+
+def test_rejected_projection_stops_worker_and_cannot_complete_successfully(qapp) -> None:
+    controller = SolveController()
+    worker = _SolveWorkerStub()
+    controller._worker = worker
+    controller._expected_count = 1
+    controller._set_state(OperationPhase.RUNNING, "Solving")
+    stopped_at_notification = []
+    controller.failed.connect(lambda _message: stopped_at_notification.append(worker.stopped))
+    controller.result_ready.connect(lambda _result: controller.reject_result("Invalid pressure shape"))
+
+    controller._on_result(_SolveWorkerStub.result)
+    controller._on_finished()
+
+    assert worker.stopped
+    assert stopped_at_notification == [True]
+    assert controller.last_error == "Invalid pressure shape"
+    assert controller.last_completion.phase == OperationPhase.FAILED
+    assert controller.last_completion.solved_count == 0
+    assert not controller.last_completion.completed
 
 
 def test_solve_controller_owns_worker_thread_and_completion_state(qapp, monkeypatch) -> None:
@@ -92,7 +117,11 @@ def test_streaming_status_updates_only_for_completed_frequencies(qapp):
     controller._on_status("Computing field for next frequency")
     assert controller.state.message == expected
     assert statuses == ["Loading backend", expected]
-    controller._on_result(SimpleNamespace(freq_hz=2000.0, timings=_SolveWorkerStub.result.timings))
+    controller._on_result(
+        SystemFrequencyResult(
+            freq_hz=2000.0, quantities=(), excitation_port_ids=(), diagnostics=_SolveWorkerStub.result.diagnostics
+        )
+    )
     assert controller.state.message.startswith("Solved 2/2 (2000.0 Hz)")
     controller.cancel()
     controller._on_status("Backend still stopping")

@@ -14,7 +14,7 @@ from blab.exterior_preparation import prepare_exterior_system
 from blab.mesh_cache import read_mesh
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
 from blab.physical_model import PhysicalSystem
-from blab.ui.project_state import ImportedMeshState
+from blab.project.model import ImportedMeshState
 
 STITCHED_MESH_NAME = "stitched"
 STITCH_FAILURE_MESSAGE = (

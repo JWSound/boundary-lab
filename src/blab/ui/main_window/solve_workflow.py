@@ -26,12 +26,12 @@ from blab.config import MeshConfig
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
-    FrequencyResult,
     InterfaceVelocityDataset,
     LiveSolveDataset,
     TransducerMotionDataset,
 )
 from blab.max_spl import max_spl_limits_from_payload, transducer_rated_resistance_ohm
+from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
     AcousticRegionKind,
@@ -40,10 +40,15 @@ from blab.physical_model import (
     PhysicalSolveKind,
     infer_physical_solve_kind,
 )
+from blab.project.migration import (
+    PhysicalSystemMigrationError,
+)
+from blab.project.model import ProjectDocument
 from blab.solve_results import (
     SolvedSystemBuilder,
     SolveProvenance,
 )
+from blab.solve_results.live_projection import LiveResultProjector
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
@@ -52,6 +57,10 @@ from blab.speaker_package import (
 )
 from blab.speaker_symmetry import expand_speaker_system_for_export
 from blab.system_contract import SystemFrequencyResult
+from blab.system_editing import sync_physical_system_meshes
+from blab.system_solve import (
+    prepare_system_solve,
+)
 from blab.ui.application_state import OperationPhase, SolveCompletion
 from blab.ui.main_window.solve_session import SolveSession
 from blab.ui.main_window.workflow_view import PlotPresenter, SolveInputs, WorkflowView
@@ -59,25 +68,13 @@ from blab.ui.operation_controllers import (
     GeometryController,
     SolveController,
 )
-from blab.ui.physical_system_migration import (
-    PhysicalSystemMigrationError,
-)
 from blab.ui.plots import (
     FINAL_ISOBAR_ANGLE_SAMPLES,
     FINAL_ISOBAR_FREQ_SAMPLES,
 )
-from blab.ui.project_state import ProjectDocument
 from blab.ui.settings import (
     GuiPreferences,
     balloon_sampling_points,
-)
-from blab.ui.simulation_assembler import SimulationAssembler, SimulationParameters
-from blab.ui.system_config import (
-    inspect_system_meshes,
-    sync_physical_system_meshes,
-)
-from blab.ui.system_solve import (
-    prepare_system_ui_solve,
 )
 
 
@@ -98,7 +95,6 @@ class SolveWorkflowController(QObject):
         session: SolveSession,
         project: Callable[[], ProjectDocument],
         preferences: Callable[[], GuiPreferences],
-        assembler: SimulationAssembler,
         geometry_controller: GeometryController,
         solve_controller: SolveController,
         preparations=None,
@@ -110,7 +106,6 @@ class SolveWorkflowController(QObject):
         self._session = session
         self._project = project
         self._read_preferences = preferences
-        self._assembler = assembler
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
         self._preparations = preparations
@@ -136,26 +131,13 @@ class SolveWorkflowController(QObject):
         self._plots.refresh_contour_controls()
         self._view.show_status(status)
 
-    def _simulation_parameters(self, frequencies, preferences: GuiPreferences) -> SimulationParameters:
-        return SimulationParameters(
-            freq_min_hz=float(frequencies.min_hz),
-            freq_max_hz=float(frequencies.max_hz),
-            freq_count=frequencies.count,
-            observation_distance_m=preferences.polar_observation_distance_m,
-            polar_angle_step_deg=preferences.polar_angle_step_deg,
-            use_burton_miller=preferences.use_burton_miller,
-            gmres_tolerance=preferences.gmres_tolerance,
-            normalized_channel_correction=preferences.normalized_channel_correction,
-            horizontal_normalization_angle_deg=preferences.horizontal_normalization_angle,
-            spherical_sampling_enabled=preferences.spherical_sampling_enabled,
-            spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
-            symmetry=self._project().symmetry,
-        )
-
     @Slot()
     def start_solve(self) -> None:
-        if (self._geometry_controller.active or self._solve_controller.active
-                or (self._preparations is not None and self._preparations.active)):
+        if (
+            self._geometry_controller.active
+            or self._solve_controller.active
+            or (self._preparations is not None and self._preparations.active)
+        ):
             return
         if not self._inputs.has_solver_meshes():
             self._view.warn("No mesh", "Enable at least one generated or imported mesh before solving.")
@@ -192,8 +174,11 @@ class SolveWorkflowController(QObject):
     def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
         """Prepare the requested package outputs, run once, then export on completion."""
 
-        if (self._geometry_controller.active or self._solve_controller.active
-                or (self._preparations is not None and self._preparations.active)):
+        if (
+            self._geometry_controller.active
+            or self._solve_controller.active
+            or (self._preparations is not None and self._preparations.active)
+        ):
             return False
         if not self._inputs.has_solver_meshes():
             self._view.warn(
@@ -241,7 +226,7 @@ class SolveWorkflowController(QObject):
                     for component_id, source_id in expanded.component_source_ids.items()
                 }
             frequencies = self._view.frequency_range()
-            prepared = prepare_system_ui_solve(
+            prepared = prepare_system_solve(
                 system,
                 freq_min_hz=float(frequencies.min_hz),
                 freq_max_hz=float(frequencies.max_hz),
@@ -319,7 +304,7 @@ class SolveWorkflowController(QObject):
             report("Inspecting meshes...")
             meshes = inspect_system_meshes(entries)
             system = sync_physical_system_meshes(snapshot.physical_system, meshes)
-            prepared = prepare_system_ui_solve(
+            prepared = prepare_system_solve(
                 system,
                 freq_min_hz=float(frequencies.min_hz),
                 freq_max_hz=float(frequencies.max_hz),
@@ -343,9 +328,12 @@ class SolveWorkflowController(QObject):
             return system, prepared
 
         def complete(result):
-            if (self._project() is not project or project != snapshot
-                    or self._read_preferences() != preferences
-                    or self._view.frequency_range() != frequencies):
+            if (
+                self._project() is not project
+                or project != snapshot
+                or self._read_preferences() != preferences
+                or self._view.frequency_range() != frequencies
+            ):
                 self._view.show_status("Solve preparation discarded because inputs changed")
                 return
             system, prepared = result
@@ -359,7 +347,12 @@ class SolveWorkflowController(QObject):
 
         if self._preparations is not None:
             self._preparations.submit(
-                "solve", "Preparing solve...", work, complete, failed, report_progress=True,
+                "solve",
+                "Preparing solve...",
+                work,
+                complete,
+                failed,
+                report_progress=True,
             )
         else:
             # Non-window hosts can still use the synchronous controller seam.
@@ -441,7 +434,9 @@ class SolveWorkflowController(QObject):
             self._session.interface_velocity = InterfaceVelocityDataset(
                 excitation_port_ids=tuple(prepared.request.excitation_port_ids),
                 excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
-                voltage_excitation_mask=np.asarray([port.kind == ExcitationPortKind.VOLTAGE for port in excitation_ports]),
+                voltage_excitation_mask=np.asarray(
+                    [port.kind == ExcitationPortKind.VOLTAGE for port in excitation_ports]
+                ),
                 interface_ids=tuple(item.id for item in interfaces),
                 interface_names=np.asarray([item.name for item in interfaces]),
             )
@@ -523,6 +518,7 @@ class SolveWorkflowController(QObject):
             domains=prepared.result_domains,
             compiled_system=prepared.request.compiled_system,
         )
+        self._session.live_projector = LiveResultProjector(prepared)
         self._solve_controller.start(prepared)
         return True
 
@@ -622,33 +618,19 @@ class SolveWorkflowController(QObject):
         self._view.show_status("Solving...")
 
     @Slot(object)
-    def _on_frequency_result(self, result: FrequencyResult) -> None:
+    def _on_frequency_result(self, result: SystemFrequencyResult) -> None:
         live_dataset = self._session.live_dataset
         if live_dataset is None:
             return
-        live_dataset.add(result)
+        try:
+            self._session.add_result(result)
+        except Exception as exc:
+            self._solve_controller.reject_result(str(exc))
+            return
         self._plots.set_spherical_spin_available(live_dataset.has_balloon_data)
         if not self._read_preferences().live_plot_streaming:
             return
         self._plots.request_live_refresh()
-
-    @Slot(object)
-    def _on_system_frequency_result(self, result: SystemFrequencyResult) -> None:
-        builder = self._session.result_builder
-        if builder is None:
-            raise RuntimeError("Received a physical-system result before its result builder was initialized.")
-        builder.add(result)
-        motion = self._session.transducer_motion
-        if motion is not None:
-            motion.add(result)
-        if self._session.interface_velocity is not None:
-            self._session.interface_velocity.add(result)
-        electrical_impedance = self._session.electrical_impedance
-        if electrical_impedance is not None:
-            electrical_impedance.add(result)
-        acoustic_load_impedance = self._session.acoustic_load_impedance
-        if acoustic_load_impedance is not None:
-            acoustic_load_impedance.add(result)
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:

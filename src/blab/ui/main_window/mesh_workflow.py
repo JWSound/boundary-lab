@@ -20,8 +20,15 @@ from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
 from blab.mesh_cache import mesh_cache
+from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.preview_hierarchy import build_preview_hierarchy
+from blab.project.model import (
+    ImportedMeshState,
+    generator_mesh_name,
+    replace_generator_document,
+)
+from blab.system_editing import interface_bem_mesh_names_for_changes, rebuild_configured_interfaces
 from blab.ui.dialogs import (
     MeshDialogEntry,
 )
@@ -35,17 +42,7 @@ from blab.ui.mesh_assembly import (
     PreparedMeshAssembly,
 )
 from blab.ui.mesh_preparation import MeshPreparationSnapshot, prepare_preview
-from blab.ui.project_state import (
-    ImportedMeshState,
-    generator_mesh_name,
-    replace_generator_document,
-)
-from blab.ui.system_config import (
-    INTERFACE_SEAM_SIMPLIFICATION_WARNING,
-    inspect_system_meshes,
-    interface_bem_mesh_names_for_changes,
-    rebuild_configured_interfaces,
-)
+from blab.ui.system_config import INTERFACE_SEAM_SIMPLIFICATION_WARNING
 
 
 class MeshWorkflowMixin:
@@ -397,7 +394,9 @@ class MeshWorkflowMixin:
             self.generated_geometry_by_document_id = generated
             for document_id, geometry in generated.items():
                 self.generator_documents = replace_generator_document(
-                    self.generator_documents, document_id, artifact=geometry.to_reference(),
+                    self.generator_documents,
+                    document_id,
+                    artifact=geometry.to_reference(),
                 )
             self.show_mesh_preview(assembly.mesh_configs, **options)
             if was_clean:
@@ -411,15 +410,26 @@ class MeshWorkflowMixin:
                 self.show_status(f"Mesh preview preparation failed: {exc}")
 
         self.preparations.submit(
-            "preview", "Preparing mesh preview...", lambda: prepare_preview(work_snapshot, output_root), complete, failed,
+            "preview",
+            "Preparing mesh preview...",
+            lambda: prepare_preview(work_snapshot, output_root),
+            complete,
+            failed,
         )
 
     def _mesh_preparation_snapshot(self):
-        return deepcopy(MeshPreparationSnapshot(
-            documents=self.generator_documents, generated=self.generated_geometry_by_document_id,
-            imported=self.project.imported_meshes, radiators=self.all_radiators(), system=self.project.physical_system,
-            symmetry=self.symmetry, stitch=self.stitch_imported_meshes, tolerance_mm=self.preferences.stitch_tolerance_mm,
-        ))
+        return deepcopy(
+            MeshPreparationSnapshot(
+                documents=self.generator_documents,
+                generated=self.generated_geometry_by_document_id,
+                imported=self.project.imported_meshes,
+                radiators=self.all_radiators(),
+                system=self.project.physical_system,
+                symmetry=self.symmetry,
+                stitch=self.stitch_imported_meshes,
+                tolerance_mm=self.preferences.stitch_tolerance_mm,
+            )
+        )
 
     def _refresh_mesh_preview_sync(self) -> None:
         if not self.has_solver_meshes():

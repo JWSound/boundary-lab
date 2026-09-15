@@ -12,8 +12,8 @@ from blab.mesh_inventory import InventoryEntry, inspect_system_mesh_variants
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import PhysicalSystem
 from blab.preview_hierarchy import build_preview_hierarchy, physical_system_preview_metadata
+from blab.project.model import ImportedMeshState, generator_mesh_name
 from blab.ui.mesh_assembly import STITCH_FAILURE_MESSAGE, MeshAssemblyService
-from blab.ui.project_state import ImportedMeshState, generator_mesh_name
 
 
 @dataclass

@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from blab.ui.project_state import ProjectDocument, new_project_document
+from blab.project.model import ProjectDocument, new_project_document
 
 
 def canonical_payload(payload: dict) -> dict:

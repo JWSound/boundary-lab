@@ -27,7 +27,7 @@ from blab.solvers.coupled_backend import (
     CoupledProductionBackend,
     CoupledReferenceBackend,
 )
-from blab.ui.project_io import read_project_file
+from blab.project.io import read_project_file
 from blab.ui.system_solve import prepare_coupled_ui_solve
 
 ROOT = Path(__file__).resolve().parents[1]

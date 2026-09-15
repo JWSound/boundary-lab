@@ -65,10 +65,15 @@ import sys
 
 class RejectLegacyAndQt(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'bempp_cl', 'pyopencl', 'PySide6'}:
+        if fullname.startswith('blab.ui') or fullname.split('.')[0] in {'bempp_cl', 'pyopencl', 'PySide6'}:
             raise AssertionError(f'Unexpected runtime dependency: {fullname}')
 
 sys.meta_path.insert(0, RejectLegacyAndQt())
+import blab.project.model
+import blab.project.io
+import blab.project.migration
+import blab.system_editing
+import blab.solve_results.live_projection
 import blab.headless
 import blab.project_cli
 import blab.system_solve
@@ -94,7 +99,13 @@ def test_preferences_offer_only_beat_backends(qapp):
 
     dialog = PreferencesDialog(GuiPreferences(solve_backend="bempp_cpu"))
     try:
-        assert set(dialog.solve_backend_options.values()) == {"beat_cpu", "beat_cuda", "beat_rocm", "beat_metal", "beat_remote"}
+        assert set(dialog.solve_backend_options.values()) == {
+            "beat_cpu",
+            "beat_cuda",
+            "beat_rocm",
+            "beat_metal",
+            "beat_remote",
+        }
         assert dialog.preferences().solve_backend == "beat_cpu"
         assert not hasattr(dialog, "check_server_button")
     finally:

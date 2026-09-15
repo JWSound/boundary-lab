@@ -217,7 +217,7 @@ packages/meshes and their versions as well as configuration and downloaded data.
 Primary implementation anchors:
 
 - [Pattern and spatial statistics](../src/model/field.ts), [drive composition](../src/model/channels.ts).
-- [Request preparation and package cache](../../src/blab/deploy_solve.py), [streaming worker](../../src/blab/deploy_worker.py).
+- [Request preparation](../../src/blab/deploy/solve.py), [package cache](../../src/blab/deploy/assets.py), [streaming worker](../../src/blab/deploy/worker.py).
 - [Deploy exterior/Schur solver](https://github.com/JWSound/BEAT_Engine/blob/v0.1.2/src/beat_engine/julia_local/deploy_solver.jl), [ROM construction](https://github.com/JWSound/BEAT_Engine/blob/v0.1.2/src/beat_engine/julia_local/src/BeatEngineSpeakerROM.jl).
 - [Acoustic postprocessing](../../src/blab/deploy_acoustic_loading.py), [electrical postprocessing/UI](../src/App.tsx), [captures](../src/model/analysisCapture.ts).
 

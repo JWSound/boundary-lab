@@ -22,6 +22,10 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.live import (
     LiveSolveDataset,
 )
+from blab.project.model import (
+    ImportedMeshState,
+    ProjectDocument,
+)
 from blab.solve_results import SolvedSystem
 from blab.ui.activity import ActivityController
 from blab.ui.dialogs import (
@@ -78,20 +82,14 @@ from blab.ui.plots import (
     frequency_to_slider_value,
 )
 from blab.ui.preparation_worker import PreparationController
-from blab.ui.project_state import (
-    ImportedMeshState,
-    ProjectDocument,
-)
 from blab.ui.result_projection import (
     ResultProjectionService,
-    VisualizationProjection,
 )
 from blab.ui.settings import (
     application_settings,
     load_syntax_highlighting_enabled,
     settings_int,
 )
-from blab.ui.simulation_assembler import SimulationAssembler
 
 
 class MainWindow(
@@ -184,30 +182,6 @@ class MainWindow(
         """Canonical raw result snapshot for the most recent solve."""
 
         return self._solve_session().solved_system
-
-    @property
-    def _use_final_isobar_resolution(self) -> bool:
-        return self._solve_session().use_final_isobar_resolution
-
-    @_use_final_isobar_resolution.setter
-    def _use_final_isobar_resolution(self, value: bool) -> None:
-        self._solve_session().use_final_isobar_resolution = bool(value)
-
-    @property
-    def _final_isobar_plots_rendered(self) -> bool:
-        return self._solve_session().final_isobar_plots_rendered
-
-    @_final_isobar_plots_rendered.setter
-    def _final_isobar_plots_rendered(self, value: bool) -> None:
-        self._solve_session().final_isobar_plots_rendered = bool(value)
-
-    @property
-    def _last_completed_visualization_dataset(self) -> VisualizationProjection | None:
-        return self._solve_session().last_completed_visualization
-
-    @_last_completed_visualization_dataset.setter
-    def _last_completed_visualization_dataset(self, value: VisualizationProjection | None) -> None:
-        self._solve_session().last_completed_visualization = value
 
     @property
     def generated_geometry_by_document_id(self) -> dict[str, GeneratedGeometry]:
@@ -304,7 +278,6 @@ class MainWindow(
         self.activities = ActivityController(self)
         self.preparations = PreparationController(self, self.activities)
         self._operation_activities = {}
-        self.simulation_assembler = SimulationAssembler()
         self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
         self.result_projection_service = ResultProjectionService()
         self.geometry_controller = GeometryController(self)
@@ -322,7 +295,6 @@ class MainWindow(
             session=self.solve_session,
             project=self._project_document,
             preferences=lambda: self.preferences,
-            assembler=self.simulation_assembler,
             geometry_controller=self.geometry_controller,
             solve_controller=self.solve_controller,
             preparations=self.preparations,
@@ -493,13 +465,19 @@ class MainWindow(
                 PlotDataExportSpec("group_delay.txt"),
             ),
             PlotEntry(
-                "real_input_power", "Real Input Power", "real_input_power.png",
-                self.real_input_power_plot, self._update_real_input_power_plot,
+                "real_input_power",
+                "Real Input Power",
+                "real_input_power.png",
+                self.real_input_power_plot,
+                self._update_real_input_power_plot,
                 PlotDataExportSpec("real_input_power.txt"),
             ),
             PlotEntry(
-                "interface_velocity", "Interface Particle Velocity", "interface_velocity.png",
-                self.interface_velocity_plot, self._update_interface_velocity_plot,
+                "interface_velocity",
+                "Interface Particle Velocity",
+                "interface_velocity.png",
+                self.interface_velocity_plot,
+                self._update_interface_velocity_plot,
                 PlotDataExportSpec("interface_velocity.txt"),
             ),
             PlotEntry(

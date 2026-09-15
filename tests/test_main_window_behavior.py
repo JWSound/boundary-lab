@@ -94,6 +94,8 @@ PLOT_IDS = {
     "on_axis_frequency_response",
     "group_delay",
     "transducer_excursion",
+    "real_input_power",
+    "interface_velocity",
     "max_spl",
     "spinorama",
 }
@@ -644,16 +646,16 @@ def test_close_proceeds_and_persists_state_when_confirmed(main_window, monkeypat
 
 def test_contour_capture_is_gated_on_a_rendered_final_solve(main_window) -> None:
     main_window.live_dataset = None
-    main_window._use_final_isobar_resolution = False
-    main_window._final_isobar_plots_rendered = False
+    main_window.solve_session.use_final_isobar_resolution = False
+    main_window.solve_session.final_isobar_plots_rendered = False
     main_window.refresh_contour_controls()
     for plot_id in ISOBAR_IDS:
         assert not main_window.capture_contour_actions[plot_id].isEnabled()
 
     # A live solve that has not yet rendered at final resolution stays gated.
     main_window.live_dataset = object()
-    main_window._use_final_isobar_resolution = False
-    main_window._final_isobar_plots_rendered = True
+    main_window.solve_session.use_final_isobar_resolution = False
+    main_window.solve_session.final_isobar_plots_rendered = True
     main_window.refresh_contour_controls()
     for plot_id in ISOBAR_IDS:
         assert not main_window.capture_contour_actions[plot_id].isEnabled()
@@ -661,8 +663,8 @@ def test_contour_capture_is_gated_on_a_rendered_final_solve(main_window) -> None
 
 def test_contour_capture_is_gated_on_dock_visibility(main_window) -> None:
     main_window.live_dataset = object()
-    main_window._use_final_isobar_resolution = True
-    main_window._final_isobar_plots_rendered = True
+    main_window.solve_session.use_final_isobar_resolution = True
+    main_window.solve_session.final_isobar_plots_rendered = True
 
     main_window.plot_docks["horizontal_isobar"].hide()
     main_window.refresh_contour_controls()

@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from blab.generators.ath import ATH_PROVIDER_ID
 from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.generators.registry import generator_info
+from blab.project.model import generator_mesh_name
 from blab.ui.application_state import OperationPhase
 from blab.ui.main_window.constants import (
     ATH_BUNDLE_DIR,
@@ -24,7 +25,6 @@ from blab.ui.main_window.constants import (
 )
 from blab.ui.main_window.workflow_view import GeometryInputs, PlotPresenter, WorkflowView
 from blab.ui.operation_controllers import GeometryController, SolveController
-from blab.ui.project_state import generator_mesh_name
 
 #: Stop stays hidden this long, so a short generation cannot be interrupted
 #: part-way through writing its output.

@@ -156,14 +156,12 @@ def test_preferences_no_longer_expose_worker_count() -> None:
     settings_source = source_text("ui", "settings.py")
     main_source = main_window_source()
     config_source = source_text("config.py")
-    assembler_source = source_text("ui", "simulation_assembler.py")
 
     assert "worker_count_spin" not in dialog_source
     assert '"Worker Count"' not in dialog_source
     assert "worker_count:" not in settings_source
     assert '"preferences/worker_count"' not in settings_source
     assert "preferences.worker_count" not in main_source
-    assert "workers=1" in assembler_source
     assert "workers: int = 1" in config_source
 
 
@@ -256,7 +254,10 @@ def test_completed_solves_use_final_isobar_resolution() -> None:
     exports_source = main_window_source("exports")
     assert "FINAL_ISOBAR_ANGLE_SAMPLES" in exports_source
     assert "FINAL_ISOBAR_FREQ_SAMPLES" in exports_source
-    assert "shading=FINAL_ISOBAR_SHADING if self._use_final_isobar_resolution else LIVE_ISOBAR_SHADING" in main_source
+    assert (
+        "shading=FINAL_ISOBAR_SHADING if self.solve_session.use_final_isobar_resolution else LIVE_ISOBAR_SHADING"
+        in main_source
+    )
     assert "contour_step_db=self.preferences.isobar_contour_step_db" in main_source
 
 
@@ -385,7 +386,7 @@ def test_isobar_canvas_has_hold_right_button_previous_solve_comparison() -> None
     assert "self._apply_plot_state(restore_plot)" in interaction_block
     assert "self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)" in interaction_block
     assert 'self.mpl_connect("figure_leave_event", self._on_figure_leave)' in interaction_block
-    assert "self._last_completed_visualization_dataset" in main_source
+    assert "self.solve_session.last_completed_visualization" in main_source
     assert "refreshed_dataset.snapshot()" in main_source
     assert "self._plots.apply_last_completed_comparison()" in main_source
     assert "self.impedance_plot.set_comparison_plot(" in main_source

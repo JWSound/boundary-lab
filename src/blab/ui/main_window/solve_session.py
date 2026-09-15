@@ -22,6 +22,8 @@ from blab.live import (
     TransducerMotionDataset,
 )
 from blab.solve_results import SolvedSystem, SolvedSystemBuilder
+from blab.solve_results.live_projection import LiveResultProjector
+from blab.system_contract import SystemFrequencyResult
 from blab.ui.result_projection import VisualizationProjection
 
 
@@ -34,6 +36,7 @@ class SolveSession:
 
     #: Canonical raw quantities accumulated by the active solve.
     result_builder: SolvedSystemBuilder | None = None
+    live_projector: LiveResultProjector | None = None
 
     #: Lightweight live transducer motion rows used by the excursion plot.
     transducer_motion: TransducerMotionDataset | None = None
@@ -79,6 +82,8 @@ class SolveSession:
     @property
     def solved_count(self) -> int:
         """How many frequencies have results, zero when nothing has run."""
+        if self.result_builder is not None:
+            return self.result_builder.solved_count
         return 0 if self.live_dataset is None else self.live_dataset.solved_count
 
     def has_solved_data(self) -> bool:
@@ -86,6 +91,22 @@ class SolveSession:
         return self.solved_count > 0
 
     # -- mutation ----------------------------------------------------------
+
+    def add_result(self, result: SystemFrequencyResult) -> None:
+        """Accumulate one canonical frequency and derive each live cache from it."""
+        if self.result_builder is None or self.live_projector is None or self.live_dataset is None:
+            raise RuntimeError("Received a physical-system result before its session was initialized.")
+        projected = self.live_projector.project(result)
+        self.result_builder.add(result)
+        for dataset in (
+            self.transducer_motion,
+            self.interface_velocity,
+            self.electrical_impedance,
+            self.acoustic_load_impedance,
+        ):
+            if dataset is not None:
+                dataset.add(result)
+        self.live_dataset.add(projected)
 
     def begin(self) -> None:
         """Discard the previous run's results and drop back to live resolution.
@@ -95,6 +116,7 @@ class SolveSession:
         """
         self.live_dataset = None
         self.result_builder = None
+        self.live_projector = None
         self.transducer_motion = None
         self.electrical_impedance = None
         self.interface_velocity = None
@@ -119,4 +141,5 @@ class SolveSession:
             return None
         self.solved_system = builder.finalize(status=status)
         self.result_builder = None
+        self.live_projector = None
         return self.solved_system

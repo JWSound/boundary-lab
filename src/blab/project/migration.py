@@ -10,6 +10,7 @@ import meshio
 import numpy as np
 
 from blab.config import RadiatorConfig
+from blab.mesh_inventory import AvailableSystemMesh
 from blab.physical_model import (
     AcousticRegion,
     AcousticRegionKind,
@@ -24,7 +25,6 @@ from blab.physical_model import (
     PhysicalGroupRef,
     PhysicalSystem,
 )
-from blab.ui.system_config import AvailableSystemMesh
 
 AUTO_SEEDED_EXTERIOR_KEY = "auto_seeded_exterior"
 

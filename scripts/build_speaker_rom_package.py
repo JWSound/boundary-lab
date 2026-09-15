@@ -12,7 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-from blab.deploy_solve import DeploySolveCache, prepare_deploy_coupled_request
+from blab.deploy.assets import DeploySolveCache
+from blab.deploy.solve import prepare_deploy_coupled_request
 from blab.solvers.beat_engine_runtime import DEFAULT_BEAT_ENGINE_CUDA_PROJECT, BeatEngineWorkerProcess
 from blab.solvers.coupled_backend import DEFAULT_COUPLED_SOLVER_SCRIPT
 from blab.system_contract import system_frequency_result_from_dict

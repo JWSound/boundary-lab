@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from blab import deploy_worker
+from blab.deploy import worker as deploy_worker
 
 
 class _PackageCache:

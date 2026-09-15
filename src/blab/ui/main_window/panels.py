@@ -74,8 +74,8 @@ class PanelVisibilityMixin:
                 self.request_live_refresh()
         else:
             self.refresh_plots(active_only=True)
-        if self._use_final_isobar_resolution and any(
+        if self.solve_session.use_final_isobar_resolution and any(
             entry.plot_id in {"horizontal_isobar", "vertical_isobar"} for entry in active_entries
         ):
-            self._final_isobar_plots_rendered = True
+            self.solve_session.final_isobar_plots_rendered = True
         self.refresh_contour_controls()

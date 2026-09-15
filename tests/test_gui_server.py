@@ -82,14 +82,16 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
 
     monkeypatch.setattr("blab.remote.RemoteBackend", Backend)
     worker = SystemSolveWorker(prepared)
-    errors, results, live = [], [], []
+    errors, results = [], []
     worker.failed.connect(errors.append)
-    worker.system_result_ready.connect(results.append)
-    worker.result_ready.connect(live.append)
+    worker.result_ready.connect(results.append)
     worker.run()
     assert not errors
     assert calls == []
-    assert len(results) == len(live) == 1
+    assert len(results) == 1
+    from blab.solve_results.live_projection import LiveResultProjector
+
+    live = [LiveResultProjector(prepared).project(results[0])]
     assert results[0].diagnostics["engine_provenance"]["engine"]["version"] == "test"
     np.testing.assert_array_equal(live[0].horizontal_pressure, 1 + 2j)
     assert live[0].timings.assembly_s == 1.2

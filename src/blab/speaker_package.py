@@ -33,7 +33,7 @@ from blab.solve_results import (
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.symmetry import snap_points_to_symmetry_planes
 from blab.system_contract import OutputRequest, compiled_system_to_dict
-from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
+from blab.system_solve import PreparedSystemSolve, canonicalize_observation_result
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
@@ -184,7 +184,7 @@ def rotate_source_points(points: np.ndarray) -> np.ndarray:
 
 
 def prepare_speaker_package_solve(
-    prepared: SystemUiSolveRequest,
+    prepared: PreparedSystemSolve,
     *,
     fidelity: int | str | SpeakerPackageFidelity,
     coupled_representation: str | SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM,
@@ -193,7 +193,7 @@ def prepare_speaker_package_solve(
     speaker_rom_rank: int = 32,
     speaker_rom_training_count: int = 96,
     speaker_rom_validation_count: int = 24,
-) -> SystemUiSolveRequest:
+) -> PreparedSystemSolve:
     """Add the physical outputs required by a speaker package solve."""
 
     level = SpeakerPackageFidelity.parse(fidelity)
@@ -314,7 +314,7 @@ def prepare_speaker_package_solve(
 
 
 def solve_speaker_package_system(
-    prepared: SystemUiSolveRequest,
+    prepared: PreparedSystemSolve,
     *,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
     julia_executable: str = "julia",
@@ -574,9 +574,12 @@ def _write_archive(path: Path, solved: SolvedSystem, config: SpeakerPackageConfi
     source = solved.provenance.phasor_convention
     convert_phasor(0j, source)
     if source != SOLVER_PHASOR_CONVENTION:
-        solved = replace(solved,
+        solved = replace(
+            solved,
             provenance=replace(solved.provenance, phasor_convention=SOLVER_PHASOR_CONVENTION),
-            quantities={key: replace(q, values=convert_phasor(q.values, source)) for key, q in solved.quantities.items()},
+            quantities={
+                key: replace(q, values=convert_phasor(q.values, source)) for key, q in solved.quantities.items()
+            },
         )
     members, manifest = _archive_members(solved, config)
     manifest_bytes = _json_bytes(manifest)
