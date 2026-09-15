@@ -133,4 +133,3 @@ export function observationAcousticState(value: ObservationPlane) {
 export function formatFrequency(value: number): string {
   return value >= 1000 ? `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)} kHz` : `${Math.round(value)} Hz`;
 }
-
