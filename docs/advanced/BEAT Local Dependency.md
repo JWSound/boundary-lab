@@ -72,7 +72,7 @@ Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
 environment for engine development. To restore the release explicitly:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.4/beat_engine-0.1.4-py3-none-any.whl#sha256=6675b8d9fb6dc0022dbbbf7a4e5cb871311a276addafc6fe8e69fa9299ea3bbc"
+python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.4/beat_engine-0.1.4-py3-none-any.whl#sha256=6117543b226a28e808caad45efdebb11e3b61ed5f5c0ab1d495fe72de1135e0c"
 ```
 
 ## Updating the engine
