@@ -43,7 +43,7 @@ they do not control whether the BEAT Python package is installed.
 The installer discovers numerical asset paths inside `.venv` through BEAT's
 `engine_paths()` API. Old commands pointing into `src/blab/solvers/julia_local`,
 `julia_cuda`, or `julia_rocm` no longer apply. See
-[BEAT dependency setup](BEAT%20Local%20Dependency.md) for manual updates.
+[BEAT dependency setup](advanced/BEAT%20Local%20Dependency.md) for manual updates.
 
 The launcher remembers an NVIDIA GPU selection when more than one is
 available. To select again, run this from Command Prompt in the repository:

@@ -1,6 +1,6 @@
 # BEAT engine and runtime provenance
 
-Physical-system results now include `diagnostics.engine_provenance` with
+Physical-system results include `diagnostics.engine_provenance` with
 `schema_version: 1`. This additive diagnostics field does not change the compiled
 request, worker protocol, or result-array versions. Julia produces the record,
 including in the direct one-shot solve path; the application does not infer the

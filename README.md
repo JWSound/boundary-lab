@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from the configured physical system, and presents acoustic and electroacoustic results in the desktop application. Ath is bundled as a geometry-generator provider with permission from Marcel Batik.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from a configured physical system, and presents acoustic and electroacoustic results in a desktop application. Ath is bundled as a geometry-generator provider with permission from Marcel Batik.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -33,7 +33,7 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Solver Requirements
 
-Boundary Lab uses BEAT Engine for numerical solving of exterior, interior, or coupled systems. BEAT Engine is an open-source acoustic solver platform written in Julia that is downloaded automatically as a pinned package as part of Boundary Lab. See [BEAT dependency setup](docs/BEAT%20Local%20Dependency.md) for updates and contributor overrides.
+Boundary Lab uses BEAT Engine for numerical solving of exterior, interior, or coupled systems. BEAT Engine is an open-source acoustic solver platform written in Julia that is downloaded automatically as a pinned package as part of Boundary Lab. See [BEAT dependency setup](docs/advanced/BEAT%20Local%20Dependency.md) for updates and contributor overrides.
 
 ### BEAT Engine CUDA GPU Solver Requirements
 
@@ -108,18 +108,17 @@ Boundary lab deploy is an interactive advanced array simulation tool that ingest
 
 ## Documentation
 
-- [BEAT Engine extraction milestones](docs/BEAT%20Engine%20Extraction.md)
 - [Installation and Setup](docs/Installation%20and%20Setup.md)
-- [BEAT dependency setup](docs/BEAT%20Local%20Dependency.md)
+- [BEAT dependency setup](docs/advanced/BEAT%20Local%20Dependency.md)
 - [User Guide](docs/User%20Guide.md)
 - [Boundary Lab Server setup](docs/Boundary%20Lab%20Server.md)
 - [Physical System Model](docs/Physical%20System%20Model.md)
-- [Interior FEM Solver](docs/Interior%20FEM%20Solver.md)
+- [Interior FEM Solver](docs/advanced/Interior%20FEM%20Solver.md)
 - [Coupled Solver](docs/Coupled%20Solver.md)
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
-- [Server developer reference](docs/advanced/boundary-lab-server.md)
+- [Server developer reference](docs/advanced/boundary-lab-server_advanced.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)
 - [BEAT Engine AMD ROCm](docs/advanced/beat-engine-rocm.md)

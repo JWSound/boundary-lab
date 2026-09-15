@@ -150,7 +150,7 @@ current numerical backend can solve it.
 
 A plane-wave tube termination is intentionally not an interface to a dummy or
 non-existent exterior region. It closes the FEM weak form directly with the
-Robin condition described in [Interior FEM Solver](Interior%20FEM%20Solver.md).
+Robin condition described in [Interior FEM Solver](advanced/Interior%20FEM%20Solver.md).
 
 The coupled backend additionally supports a locally reacting porous lining on
 a bounded region's `rigid` boundary. It remains a rigid boundary assignment and

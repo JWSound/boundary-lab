@@ -143,7 +143,7 @@ Final per-transducer complex velocity/current come from the reduced output maps
 at the converged exterior pressure. This includes mutual loading and ground/scene
 feedback within the packaged linear model. It does not rerun the full interior
 FEM model or include thermal/nonlinear/structural-damage physics. See
-[Interior FEM Solver](../../docs/Interior%20FEM%20Solver.md) and
+[Interior FEM Solver](../../docs/advanced/Interior%20FEM%20Solver.md) and
 [Coupled Solver](../../docs/Coupled%20Solver.md) for model construction.
 
 The Deploy exterior path uses Float32/ComplexF32. Package frequency identifiers

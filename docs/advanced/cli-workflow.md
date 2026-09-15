@@ -312,7 +312,7 @@ backend; remote observation planes remain unsupported. Private-network mode
 permits LAN HTTP, while hosted mode requires an access key behind provider HTTPS,
 a VPN, or SSH. Localhost remains the default. See the
 [server setup guide](../Boundary%20Lab%20Server.md) for connection instructions and
-the [server developer reference](boundary-lab-server.md) for the remote job contract.
+the [server developer reference](boundary-lab-server_advanced.md) for the remote job contract.
 
 ## Clean A Mesh
 
