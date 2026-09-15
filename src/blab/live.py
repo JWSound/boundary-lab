@@ -1042,16 +1042,22 @@ class InterfaceVelocityDataset:
             raise ValueError("Interface velocity requires excitation/interface axes and m/s units.")
         ports = tuple(result.excitation_port_ids)
         interfaces = tuple(quantity.metadata.get("interface_ids", ()))
-        if (len(set(ports)) != len(ports) or set(ports) != set(self.excitation_port_ids)
-                or len(set(interfaces)) != len(interfaces) or set(interfaces) != set(self.interface_ids)):
+        if (
+            len(set(ports)) != len(ports)
+            or set(ports) != set(self.excitation_port_ids)
+            or len(set(interfaces)) != len(interfaces)
+            or set(interfaces) != set(self.interface_ids)
+        ):
             raise ValueError("Interface velocity IDs do not match the prepared solve.")
         values = np.asarray(quantity.values, dtype=np.complex128)
         if values.shape != (len(ports), len(interfaces)):
             raise ValueError("Interface velocity shape does not match its IDs.")
-        self.results[float(result.freq_hz)] = values[np.ix_(
-            [ports.index(port) for port in self.excitation_port_ids],
-            [interfaces.index(interface) for interface in self.interface_ids],
-        )].copy()
+        self.results[float(result.freq_hz)] = values[
+            np.ix_(
+                [ports.index(port) for port in self.excitation_port_ids],
+                [interfaces.index(interface) for interface in self.interface_ids],
+            )
+        ].copy()
         self.reference_voltages_v[float(result.freq_hz)] = float(
             result.diagnostics.get("transducer_reference_voltage_v", np.nan)
         )
@@ -1071,8 +1077,10 @@ class InterfaceVelocityDataset:
                 weights[self.voltage_excitation_mask] *= DEFAULT_CHANNEL_VOLTAGE_V / reference
             rows.append(np.abs(weights @ self.results[frequency]))
         names = self.interface_names.astype(str)
-        labels = np.asarray([
-            f"{name} [{interface_id}]" if np.count_nonzero(names == name) > 1 else name
-            for name, interface_id in zip(names, self.interface_ids, strict=True)
-        ])
+        labels = np.asarray(
+            [
+                f"{name} [{interface_id}]" if np.count_nonzero(names == name) > 1 else name
+                for name, interface_id in zip(names, self.interface_ids, strict=True)
+            ]
+        )
         return np.asarray(frequencies), labels, np.asarray(rows).T

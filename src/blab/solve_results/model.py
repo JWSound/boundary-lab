@@ -192,9 +192,12 @@ class SolvedSystemBuilder:
     def add(self, result: SystemFrequencyResult) -> int:
         """Add or replace one streamed result and return its canonical index."""
 
-        result = canonicalize_phasor_result(replace(
-            result, diagnostics={"phasor_convention": self._source_phasor, **result.diagnostics},
-        ))
+        result = canonicalize_phasor_result(
+            replace(
+                result,
+                diagnostics={"phasor_convention": self._source_phasor, **result.diagnostics},
+            )
+        )
         if self._finalized:
             raise RuntimeError("A finalized solved-system builder cannot accept more results.")
         validate_system_frequency_result(result)

@@ -272,7 +272,9 @@ def solver_diagnostics_from_dict(raw: dict[str, Any] | None) -> SolverDiagnostic
 
 
 def frequency_result_from_dict(raw: dict[str, Any]) -> FrequencyResult:
-    source = raw.get("phasor_convention", (raw.get("diagnostics") or {}).get("phasor_convention", LEGACY_PHASOR_CONVENTION))
+    source = raw.get(
+        "phasor_convention", (raw.get("diagnostics") or {}).get("phasor_convention", LEGACY_PHASOR_CONVENTION)
+    )
     convert_phasor(0j, source)
 
     def pressure(name):

@@ -31,7 +31,9 @@ from blab.solvers.registry import (
 
 
 def test_solver_backend_registry_offers_only_physical_backends() -> None:
-    assert set(backend_label_to_id().values()) == {f"beat_{info.backend_id}" for info in backend_catalog()} | {"beat_remote"}
+    assert set(backend_label_to_id().values()) == {f"beat_{info.backend_id}" for info in backend_catalog()} | {
+        "beat_remote"
+    }
     assert {info.backend_id for info in available_backend_infos()} == {
         "beat_cpu",
         "beat_cuda",

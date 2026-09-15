@@ -108,7 +108,9 @@ def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> No
     assert record.relative_side_mismatch is None
 
 
-@pytest.mark.parametrize("backend,expected", [("cuda", "direct_system"), ("cpu", "operator_matrices"), ("rocm", "operator_matrices")])
+@pytest.mark.parametrize(
+    "backend,expected", [("cuda", "direct_system"), ("cpu", "operator_matrices"), ("rocm", "operator_matrices")]
+)
 def test_exterior_backend_selects_assembly_and_preserves_fallback(backend: str, expected: str) -> None:
     compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
     request = SystemSolveRequest(
@@ -119,7 +121,9 @@ def test_exterior_backend_selects_assembly_and_preserves_fallback(backend: str, 
     solver = CoupledProductionBackend(bem_backend=backend)
     assert solver.create_system_session(request).request.solver_options["burton_miller_assembly"] == expected
     fallback = replace(request, solver_options={"burton_miller_assembly": "operator_matrices"})
-    assert solver.create_system_session(fallback).request.solver_options["burton_miller_assembly"] == "operator_matrices"
+    assert (
+        solver.create_system_session(fallback).request.solver_options["burton_miller_assembly"] == "operator_matrices"
+    )
     with pytest.raises(ValueError, match="burton_miller_assembly"):
         solver.create_system_session(replace(request, solver_options={"burton_miller_assembly": "unknown"}))
 
@@ -972,17 +976,25 @@ def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excita
     system = _exterior_fixture_system()
     if excitation_count == 2:
         second_component = PhysicalComponent(
-            id="component:wall-drive", name="Wall drive", kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
-            boundary_ids=("boundary:exterior-wall",), parameters={"motion_profile": "uniform"},
+            id="component:wall-drive",
+            name="Wall drive",
+            kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
+            boundary_ids=("boundary:exterior-wall",),
+            parameters={"motion_profile": "uniform"},
         )
         system = replace(
             system,
             boundaries=tuple(replace(b, kind=BoundaryKind.MOVING) for b in system.boundaries),
             components=(*system.components, second_component),
-            excitation_ports=(*system.excitation_ports, ExcitationPort(
-                id="excitation:wall-drive", name="Wall drive", component_id=second_component.id,
-                kind=ExcitationPortKind.NORMAL_VELOCITY,
-            )),
+            excitation_ports=(
+                *system.excitation_ports,
+                ExcitationPort(
+                    id="excitation:wall-drive",
+                    name="Wall drive",
+                    component_id=second_component.id,
+                    kind=ExcitationPortKind.NORMAL_VELOCITY,
+                ),
+            ),
         )
     request = SystemSolveRequest(
         compiled_system=PhysicalSystemCompiler().compile(system),
@@ -991,16 +1003,25 @@ def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excita
         outputs=(
             OutputRequest(id="output:p", quantity="bem_boundary_pressure"),
             OutputRequest(id="output:q", quantity="bem_boundary_neumann"),
-            OutputRequest(id="output:field", quantity="exterior_pressure",
-                          options={"points_m": [[0.0, 0.0, 0.2], [0.4, 0.2, 0.3]]}),
+            OutputRequest(
+                id="output:field",
+                quantity="exterior_pressure",
+                options={"points_m": [[0.0, 0.0, 0.2], [0.4, 0.2, 0.3]]},
+            ),
         ),
         solver_options={"quadrature_order": order, "singular_order": 2},
     )
-    backend_options = {"solver_script": os.environ["BLAB_BEAT_SYSTEM_SOLVER"]} if "BLAB_BEAT_SYSTEM_SOLVER" in os.environ else {}
-    backend = CoupledProductionBackend(
-        bem_backend="cuda", julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"), **backend_options,
+    backend_options = (
+        {"solver_script": os.environ["BLAB_BEAT_SYSTEM_SOLVER"]} if "BLAB_BEAT_SYSTEM_SOLVER" in os.environ else {}
     )
-    fallback_request = replace(request, solver_options={**request.solver_options, "burton_miller_assembly": "operator_matrices"})
+    backend = CoupledProductionBackend(
+        bem_backend="cuda",
+        julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
+        **backend_options,
+    )
+    fallback_request = replace(
+        request, solver_options={**request.solver_options, "burton_miller_assembly": "operator_matrices"}
+    )
     before = list(backend.create_system_session(fallback_request).solve_stream())
     after = list(backend.create_system_session(request).solve_stream())
     assert len(before) == len(after) == len(request.frequencies_hz)
@@ -1019,7 +1040,9 @@ def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excita
                 for a, b in zip(actual.values, expected.values, strict=True):
                     assert np.linalg.norm(a - b) / np.linalg.norm(b) < 2e-3
     if excitation_count == 2:
-        reversed_request = replace(request, excitation_port_ids=request.excitation_port_ids[::-1], frequencies_hz=(700.0,))
+        reversed_request = replace(
+            request, excitation_port_ids=request.excitation_port_ids[::-1], frequencies_hz=(700.0,)
+        )
         (reversed_result,) = backend.create_system_session(reversed_request).solve_stream()
         for actual, expected in zip(reversed_result.quantities, after[1].quantities, strict=True):
             np.testing.assert_allclose(actual.values, expected.values[::-1], rtol=2e-3, atol=2e-4)

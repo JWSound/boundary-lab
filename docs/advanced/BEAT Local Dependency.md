@@ -1,7 +1,7 @@
 # BEAT Engine dependency
 
 Boundary Lab requires the independently released `beat-engine` package. Its
-`pyproject.toml` pins the `v0.1.3` wheel URL and SHA-256, so ordinary installation
+`pyproject.toml` pins the `v0.1.4` wheel URL and SHA-256, so ordinary installation
 downloads and verifies that exact artifact without a sibling engine checkout:
 
 ```text
@@ -47,7 +47,7 @@ packages. Previous Julia package downloads may be reused from the local depot;
 the installed release's own project still needs to be instantiated. Restart
 Boundary Lab after updating so existing workers do not retain the old engine.
 
-The release is [v0.1.3](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.1.3).
+The release is [v0.1.4](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.1.4).
 It contains wheel and source distributions. No PyPI publication is configured.
 The compiled-system contract, worker negotiation, transport, numerical sources,
 and fixtures belong to BEAT Engine. Boundary Lab owns project compilation,
@@ -72,7 +72,7 @@ Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
 environment for engine development. To restore the release explicitly:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.3/beat_engine-0.1.3-py3-none-any.whl#sha256=1a2d69b59d973a3ffe6013cd8f0b57fdf2c83ceda572b1a283345ee102470e6f"
+python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.4/beat_engine-0.1.4-py3-none-any.whl#sha256=6675b8d9fb6dc0022dbbbf7a4e5cb871311a276addafc6fe8e69fa9299ea3bbc"
 ```
 
 ## Updating the engine

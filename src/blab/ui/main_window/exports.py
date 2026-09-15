@@ -101,9 +101,15 @@ class ExportsMixin:
         session = self._solve_session()
         try:
             if plot_id == "real_input_power":
-                return session.electrical_impedance is not None and session.electrical_impedance.as_power_arrays(dataset) is not None
+                return (
+                    session.electrical_impedance is not None
+                    and session.electrical_impedance.as_power_arrays(dataset) is not None
+                )
             if plot_id == "interface_velocity":
-                return session.interface_velocity is not None and session.interface_velocity.as_velocity_arrays(dataset) is not None
+                return (
+                    session.interface_velocity is not None
+                    and session.interface_velocity.as_velocity_arrays(dataset) is not None
+                )
             if plot_id == "electrical_impedance":
                 return (
                     session.electrical_impedance is not None
@@ -205,13 +211,19 @@ class ExportsMixin:
             data = getattr(projection, plot_id)
             if data is not None:
                 title, quantity, unit = (
-                    ("Real Input Power", "Real power", "W") if plot_id == "real_input_power"
+                    ("Real Input Power", "Real power", "W")
+                    if plot_id == "real_input_power"
                     else ("Interface Particle Velocity", "Average normal velocity RMS", "m/s")
                 )
-                return [export_frequency_trace_table(
-                    target, title=title, frequency_hz=data.freq_hz, trace_names=data.trace_names,
-                    quantities=(TraceQuantity(quantity, unit, data.values),),
-                )]
+                return [
+                    export_frequency_trace_table(
+                        target,
+                        title=title,
+                        frequency_hz=data.freq_hz,
+                        trace_names=data.trace_names,
+                        quantities=(TraceQuantity(quantity, unit, data.values),),
+                    )
+                ]
         if plot_id == "electrical_impedance" and projection.electrical_impedance is not None:
             data = projection.electrical_impedance
             return [

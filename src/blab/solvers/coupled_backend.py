@@ -136,9 +136,7 @@ class CoupledSession:
 
             backend = str(self.request.solver_options.get("bem_backend", "cpu"))
             label = engine_backend_info(backend).label
-            detail = friendly_julia_error(
-                str(exc), julia_project=self.julia_project, beat_engine_backend=backend
-            )
+            detail = friendly_julia_error(str(exc), julia_project=self.julia_project, beat_engine_backend=backend)
             if isinstance(exc, FileNotFoundError):
                 detail = f"Could not start Julia at {self.julia_executable!r} or find its runtime files. {detail}"
             raise RuntimeError(f"{label} could not run the solve. {detail}") from exc

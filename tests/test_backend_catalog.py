@@ -69,8 +69,9 @@ def test_backend_failure_is_emitted_only_when_solve_runs(qapp, monkeypatch):
         attempts.append(True)
         raise RuntimeError("Runtime/device or required solver libraries are not functional.")
 
-    monkeypatch.setattr(coupled_backend, "get_beat_engine_worker",
-                        lambda **kwargs: SimpleNamespace(submit=submit, worker_info={}))
+    monkeypatch.setattr(
+        coupled_backend, "get_beat_engine_worker", lambda **kwargs: SimpleNamespace(submit=submit, worker_info={})
+    )
     project = load_headless_project(Path(__file__).parent / "fixtures/remote-exterior.blab.json")
     prepared = prepare_headless_solve(project, HeadlessSolveSpec(frequencies_hz=(500.0,)), backend_id="beat_metal")
     worker = SystemSolveWorker(prepared)
