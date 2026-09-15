@@ -131,7 +131,11 @@ class BeatEngineWorkerProcess(WorkerProcess):
         julia_sysimage: Path | None = None,
         environment: Mapping[str, str] | None = None,
         backend_label: str | None = None,
+        startup_timeout_s: float | None = None,
     ):
+        # Older engine releases have no timeout option; retain their defaults
+        # when the pool does not supply one.
+        worker_options = {} if startup_timeout_s is None else {"startup_timeout_s": startup_timeout_s}
         super().__init__(
             julia_executable=julia_executable,
             solver_script=solver_script,
@@ -145,6 +149,7 @@ class BeatEngineWorkerProcess(WorkerProcess):
                 if julia_project is not None
                 else "the selected BEAT Engine backend"
             ),
+            **worker_options,
         )
 
 
