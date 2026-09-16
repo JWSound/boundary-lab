@@ -51,7 +51,7 @@ def evaluate_bem_field(
     worker = get_beat_engine_worker(
         julia_executable=julia_executable,
         solver_script=DEFAULT_COUPLED_SOLVER_SCRIPT,
-        julia_threads=4 if bem_backend in {"cuda", "rocm"} else 8,
+        julia_threads=4 if bem_backend in {"cuda", "rocm", "metal"} else 8,
         julia_project=julia_project,
     )
     with tempfile.TemporaryDirectory(prefix="blab-bem-field-") as temp_dir:
