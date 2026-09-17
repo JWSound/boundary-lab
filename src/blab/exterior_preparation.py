@@ -21,8 +21,8 @@ from blab.interface_conform import (
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
-from blab.mesh_cache import read_mesh
 from blab.mesh_clean import stitch_meshes
+from blab.mesh_data import MeshData, read_resource_mesh
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
     AcousticInterface,
@@ -39,7 +39,7 @@ from blab.symmetry import snap_points_to_symmetry_planes
 def _read(resource: MeshResource, symmetry: str = "off") -> meshio.Mesh:
     if not np.isfinite(resource.scale_to_m) or resource.scale_to_m <= 0:
         raise ValueError(f"Mesh '{resource.name}' scale must be positive and finite.")
-    mesh = read_mesh(resource.file)
+    mesh = read_resource_mesh(resource)
     mesh.points = np.asarray(mesh.points, dtype=float) * resource.scale_to_m + resource.translation_m
     mesh.points = snap_points_to_symmetry_planes(mesh.points, symmetry)
     return mesh
@@ -72,6 +72,7 @@ def prepare_exterior_system(
     if not np.isfinite(stitch_tolerance_mm) or stitch_tolerance_mm <= 0:
         raise ValueError("Exterior stitch tolerance must be positive.")
     root = Path(output_root) if output_root is not None else Path.cwd() / "runs" / "exterior_meshes"
+    in_memory = any(mesh.mesh_data is not None for mesh in system.meshes)
     resources = {mesh.id: mesh for mesh in system.meshes}
     boundaries = list(system.boundaries)
     regions = list(system.regions)
@@ -216,23 +217,27 @@ def prepare_exterior_system(
                 coordinate_tolerance=pair.coordinate_tolerance_m,
                 symmetry_mode=symmetry_mode,
             )
-        root.mkdir(parents=True, exist_ok=True)
-        # Content addressing avoids stale artifacts when settings or source files change.
-        digest = hashlib.sha256(assembled.points.tobytes())
-        for cell in assembled.cells:
-            digest.update(cell.data.tobytes())
-        for name, values in sorted(assembled.field_data.items()):
-            digest.update(name.encode())
-            digest.update(np.asarray(values).tobytes())
-        for name, blocks in sorted(assembled.cell_data.items()):
-            digest.update(name.encode())
-            for block in blocks:
-                digest.update(np.asarray(block).tobytes())
-        path = root / f"exterior_{digest.hexdigest()[:20]}.msh"
-        if not path.exists():
-            meshio.write(path, assembled, file_format="gmsh22", binary=False)
+        data = MeshData.from_meshio(assembled) if in_memory else None
+        path = None
+        if not in_memory:
+            root.mkdir(parents=True, exist_ok=True)
+            # Content addressing avoids stale artifacts when settings or source files change.
+            digest = hashlib.sha256(assembled.points.tobytes())
+            for cell in assembled.cells:
+                digest.update(cell.data.tobytes())
+            for name, values in sorted(assembled.field_data.items()):
+                digest.update(name.encode())
+                digest.update(np.asarray(values).tobytes())
+            for name, blocks in sorted(assembled.cell_data.items()):
+                digest.update(name.encode())
+                for block in blocks:
+                    digest.update(np.asarray(block).tobytes())
+            path = root / f"exterior_{digest.hexdigest()[:20]}.msh"
+            if not path.exists():
+                meshio.write(path, assembled, file_format="gmsh22", binary=False)
+        mesh_file = "" if path is None else str(path.resolve())
         topology = analyze_exterior_mesh_topology(
-            (MeshConfig(name=region.name, file=str(path), scale_factor=1.0),),
+            (MeshConfig(name=region.name, file=mesh_file, scale_factor=1.0, mesh_data=data),),
             symmetry=symmetry_mode,
         )
         if topology.has_warnings:
@@ -245,7 +250,8 @@ def prepare_exterior_system(
         resources[derived_id] = MeshResource(
             id=derived_id,
             name=f"{region.name} assembled",
-            file=str(path.resolve()),
+            file=mesh_file,
+            mesh_data=data,
             purpose=MeshPurpose.BEM_SURFACE,
         )
         regions[region_index] = replace(region, mesh_ids=(derived_id,))
@@ -255,17 +261,18 @@ def prepare_exterior_system(
                 "stitch_tolerance_mm": stitch_tolerance_mm,
                 "interface_geometry_tolerance_m": APPLICATION_INTERFACE_GEOMETRY_TOLERANCE_M,
                 "symmetry": symmetry_mode,
-                "assembled_file": str(path.resolve()),
+                "assembled_file": mesh_file,
+                "assembled_sha256": data.digest if data is not None else digest.hexdigest(),
                 "interfaces": [asdict(pair) for pair in pairs],
                 "quality_warning_interface_ids": [
                     pair.id for pair in pairs if pair.unbounded_boundary_id in simplified_boundary_ids
                 ],
                 "sources": [
-                    asdict(source) | {"sha256": hashlib.sha256(Path(source.file).read_bytes()).hexdigest()}
+                    _source_provenance(source)
                     for source in sources
                 ],
                 "fem_sources": [
-                    asdict(source) | {"sha256": hashlib.sha256(Path(source.file).read_bytes()).hexdigest()}
+                    _source_provenance(source)
                     for source in system.meshes
                     if source.id in {by_id[pair.bounded_boundary_id].group.mesh_id for pair in pairs}
                 ],
@@ -276,7 +283,7 @@ def prepare_exterior_system(
                 ],
             }
         )
-    if provenance:
+    if provenance and not in_memory:
         manifest = json.dumps(provenance, indent=2)
         manifest_path = root / f"preparation_{hashlib.sha256(manifest.encode()).hexdigest()[:20]}.json"
         manifest_path.write_text(manifest, encoding="utf-8")
@@ -288,3 +295,14 @@ def prepare_exterior_system(
         interfaces=tuple(interfaces),
         metadata=system.metadata | {"exterior_preparation": provenance},
     )
+
+
+def _source_provenance(source: MeshResource) -> dict:
+    record = asdict(source)
+    record.pop("mesh_data", None)
+    record["sha256"] = (
+        source.mesh_data.digest if source.mesh_data is not None
+        else hashlib.sha256(Path(source.file).read_bytes()).hexdigest()
+    )
+    record["source"] = "memory" if source.mesh_data is not None else "file"
+    return record

@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 
+from blab.generators.registry import restore_generator_document
 from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
 from blab.phasor import SOLVER_PHASOR_CONVENTION
@@ -122,10 +123,13 @@ def load_headless_project(path: str | Path) -> HeadlessProject:
             if symmetry == "off"
             else artifact.reduced_cleaned_mesh_path or artifact.mesh_path
         )
+        memory_data = (restore_generator_document(document).solver_mesh_data_for_symmetry(symmetry)
+                       if artifact.mesh_data is not None else None)
         resources.append(
             replace(
                 resource,
-                file=mesh_file,
+                file="" if artifact.mesh_data is not None else mesh_file,
+                mesh_data=memory_data,
                 scale_to_m=document.mesh_scale_factor,
                 translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
             )
@@ -756,6 +760,10 @@ def _sha256(path: Path) -> str:
 def _mesh_manifest_entries(system) -> list[dict[str, Any]]:
     entries = []
     for mesh in system.meshes:
+        if mesh.mesh_data is not None:
+            entries.append({"id": mesh.id, "name": mesh.name, "purpose": mesh.purpose.value,
+                            "source": "memory", "file": None, "sha256": mesh.mesh_data.digest})
+            continue
         path = Path(mesh.file).resolve()
         entries.append(
             {

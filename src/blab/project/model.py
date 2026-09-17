@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+from blab.mesh_data import MeshData
 from blab.observation_planes import ObservationPlane
 from blab.physical_model import PhysicalSystem
 
@@ -272,13 +273,19 @@ def _artifact_to_payload(
 ) -> dict[str, Any] | None:
     if artifact is None:
         return None
-    return {
+    payload = {
         "output_dir": _path_payload(artifact.output_dir, absolute_paths),
         "mesh_path": _path_payload(artifact.mesh_path, absolute_paths),
         "cleaned_mesh_path": _path_payload(artifact.cleaned_mesh_path, absolute_paths),
         "reduced_cleaned_mesh_path": _path_payload(artifact.reduced_cleaned_mesh_path, absolute_paths),
         "source_path": _path_payload(artifact.source_path, absolute_paths),
     }
+    if artifact.mesh_data is not None:
+        payload["mesh_data"] = artifact.mesh_data.to_payload()
+        payload["mirror_axes"] = list(artifact.mirror_axes)
+    if artifact.reduced_mesh_data is not None:
+        payload["reduced_mesh_data"] = artifact.reduced_mesh_data.to_payload()
+    return payload
 
 
 def _artifact_from_payload(payload: object) -> GeneratedGeometryReference | None:
@@ -286,14 +293,23 @@ def _artifact_from_payload(payload: object) -> GeneratedGeometryReference | None
         return None
     output_dir = _optional_path_text(payload.get("output_dir"))
     mesh_path = _optional_path_text(payload.get("mesh_path"))
-    if output_dir is None or mesh_path is None:
+    mesh_data = MeshData.from_payload(payload["mesh_data"]) if payload.get("mesh_data") is not None else None
+    if mesh_data is not None and mesh_path is not None:
+        raise ValueError("A generated artifact cannot supply both mesh_path and mesh_data.")
+    if output_dir is None or (mesh_path is None and mesh_data is None):
         return None
     return GeneratedGeometryReference(
         output_dir=output_dir,
-        mesh_path=mesh_path,
+        mesh_path=mesh_path or "",
         cleaned_mesh_path=_optional_path_text(payload.get("cleaned_mesh_path")),
         reduced_cleaned_mesh_path=_optional_path_text(payload.get("reduced_cleaned_mesh_path")),
         source_path=_optional_path_text(payload.get("source_path")),
+        mesh_data=mesh_data,
+        mirror_axes=tuple(payload.get("mirror_axes", ())),
+        reduced_mesh_data=(
+            MeshData.from_payload(payload["reduced_mesh_data"])
+            if payload.get("reduced_mesh_data") is not None else None
+        ),
     )
 
 

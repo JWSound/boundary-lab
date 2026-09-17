@@ -32,7 +32,7 @@ from blab.component_symmetry import (
 from blab.config import normalize_symmetry
 from blab.fem_topology import selected_volume_surface_tags
 from blab.interface_conform import InterfaceConformError, build_conforming_interface_map
-from blab.mesh_cache import read_mesh
+from blab.mesh_data import read_resource_mesh
 from blab.physical_model import (
     PHYSICAL_MODEL_VERSION,
     AcousticRegion,
@@ -250,7 +250,9 @@ class PhysicalSystemCompiler:
                 issues.append(f"Mesh '{mesh.id}' scale_to_m must be finite and greater than zero.")
             if len(mesh.translation_m) != 3 or not all(math.isfinite(value) for value in mesh.translation_m):
                 issues.append(f"Mesh '{mesh.id}' translation_m must contain three finite values.")
-            if not Path(mesh.file).is_file():
+            if mesh.mesh_data is not None and mesh.file:
+                issues.append(f"Mesh '{mesh.id}' must specify file or mesh_data, not both.")
+            if mesh.mesh_data is None and not Path(mesh.file).is_file():
                 issues.append(f"Mesh '{mesh.id}' file does not exist: {mesh.file}")
 
         for region in system.regions:
@@ -527,10 +529,11 @@ class PhysicalSystemCompiler:
         return CompiledMesh(
             id=mesh_resource.id,
             name=mesh_resource.name,
-            file=str(Path(mesh_resource.file).resolve()),
+            file="" if mesh_resource.mesh_data is not None else str(Path(mesh_resource.file).resolve()),
             purpose=mesh_resource.purpose,
             scale_to_m=float(mesh_resource.scale_to_m),
             translation_m=tuple(float(value) for value in mesh_resource.translation_m),
+            mesh_data=mesh_resource.mesh_data,
         )
 
     def _compile_region(
@@ -708,11 +711,11 @@ class PhysicalSystemCompiler:
             raise PhysicalModelCompileError(issues)
 
     def _read_mesh(self, resource: MeshResource) -> meshio.Mesh:
-        resolved = str(Path(resource.file).resolve())
+        resolved = resource.mesh_data.digest if resource.mesh_data is not None else str(Path(resource.file).resolve())
         mesh = self._mesh_cache.get(resolved)
         if mesh is None:
             try:
-                mesh = read_mesh(resolved)
+                mesh = read_resource_mesh(resource)
             except Exception as exc:
                 raise PhysicalModelCompileError(
                     f"Could not read mesh '{resource.id}' from {resource.file}: {exc}"

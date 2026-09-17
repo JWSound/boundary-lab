@@ -335,3 +335,22 @@ def test_registry_allows_explicit_registration_but_never_replaces_builtins(monke
     assert registry.create_generator("test") is provider
     with pytest.raises(ValueError, match="already registered"):
         registry.register_generator(replace(info, provider_id="ath"))
+
+
+def test_versioned_memory_generation_preserves_configuration(project, tmp_path, monkeypatch):
+    from blab.mesh_data import MeshData
+
+    data = MeshData(points=[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
+                    cells=[("triangle", [[0, 1, 2]])], physical_tags=[[2]],
+                    physical_names={"throat": [2, 2]})
+    generated = GeneratedGeometry("test", tmp_path, None, (), mesh_data=data)
+    pending = request(project, tmp_path)
+    completed = complete_generation(pending, GenerationResponse(pending.request_id, generated))
+    monkeypatch.setattr(meshio, "read", lambda *a, **kw: pytest.fail("Memory generation read a file"))
+    candidate = stage_generation(project, {}, completed)
+    assert candidate.physical_system.meshes[0].mesh_data is data
+    assert candidate.physical_system.meshes[0].file == ""
+    assert candidate.physical_system.components == project.physical_system.components
+    assert candidate.channel_config_by_name == project.channel_config_by_name
+    assert candidate.project_preferences == project.project_preferences
+    assert project.physical_system.meshes[0].mesh_data is None

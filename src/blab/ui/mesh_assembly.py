@@ -8,11 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig, RadiatorConfig
 from blab.exterior_preparation import prepare_exterior_system
 from blab.mesh_cache import read_mesh
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
+from blab.mesh_data import read_resource_mesh, surface_names
 from blab.physical_model import PhysicalSystem
 from blab.project.model import ImportedMeshState
 
@@ -106,7 +106,7 @@ class MeshAssemblyService:
         candidates = (*generated_mesh_configs, *imported_configs)
         mesh_configs = tuple(candidates)
         resolved_radiators = radiators
-        source_surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in candidates}
+        source_surface_tags_by_mesh = {mesh.name: surface_names(mesh) for mesh in candidates}
         solver_surface_by_source = self.solver_surface_map(tuple(candidates), stitched=False)
         prepared_system = physical_system
         if stitch_imported_meshes and physical_system is not None:
@@ -119,6 +119,7 @@ class MeshAssemblyService:
                         file=configs_by_name[resource.name].file,
                         scale_to_m=configs_by_name[resource.name].scale_factor,
                         translation_m=configs_by_name[resource.name].translation_m,
+                        mesh_data=configs_by_name[resource.name].mesh_data,
                     )
                     if resource.name in configs_by_name
                     else resource
@@ -139,7 +140,7 @@ class MeshAssemblyService:
             prepared_by_id = {mesh.id: mesh for mesh in prepared_system.meshes}
             for entry in prepared_system.metadata.get("exterior_preparation", []):
                 target = prepared_by_id[prepared_by_region[entry["region_id"]].mesh_ids[0]]
-                tags = read_surface_physical_names(Path(target.file))
+                tags = surface_names(target)
                 for mapping in entry["surface_map"]:
                     source = source_by_id[mapping["mesh_id"]]
                     source_tag = source_surface_tags_by_mesh[source.name][mapping["source_name"]]
@@ -151,6 +152,7 @@ class MeshAssemblyService:
                     file=resource.file,
                     scale_factor=resource.scale_to_m,
                     translation_m=resource.translation_m,
+                    mesh_data=resource.mesh_data,
                 )
                 for resource in prepared_system.meshes
             ) + tuple(mesh for mesh in candidates if mesh.name not in source_names)
@@ -160,7 +162,7 @@ class MeshAssemblyService:
                 else radiator
                 for radiator in radiators
             )
-        surface_tags_by_mesh = {mesh.name: read_surface_physical_names(Path(mesh.file)) for mesh in mesh_configs}
+        surface_tags_by_mesh = {mesh.name: surface_names(mesh) for mesh in mesh_configs}
         return PreparedMeshAssembly(
             physical_system=prepared_system,
             imported_meshes=cleaned_imported,
@@ -197,7 +199,7 @@ class MeshAssemblyService:
         used_surface_tags: set[int] = set()
         next_surface_tag = 1
         for mesh_index, mesh_config in enumerate(mesh_configs):
-            names_by_tag = {tag: name for name, tag in read_surface_physical_names(Path(mesh_config.file)).items()}
+            names_by_tag = {tag: name for name, tag in surface_names(mesh_config).items()}
             for old_tag in self.used_surface_tags(mesh_config):
                 surface_name = names_by_tag.get(old_tag, f"mesh{mesh_index + 1}_surface_{old_tag}")
                 stitched_name = self.unique_surface_name(surface_name, used_surface_names, mesh_index)
@@ -236,7 +238,7 @@ class MeshAssemblyService:
 
     @staticmethod
     def used_surface_tags(mesh_config: MeshConfig) -> tuple[int, ...]:
-        mesh = read_mesh(mesh_config.file)
+        mesh = read_resource_mesh(mesh_config)
         physical = mesh.cell_data_dict.get("gmsh:physical", {})
         triangle_tags = physical.get("triangle")
         if triangle_tags is None:

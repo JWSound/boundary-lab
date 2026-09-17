@@ -13,8 +13,10 @@ from blab.generators.base import (
     GeneratorDocument,
     GeneratorSession,
 )
+from blab.mesh_data import MeshData
 
 __all__ = [
+    "MeshData",
     "PROVIDER_API_VERSION",
     "GeneratedGeometry",
     "GeneratedGeometryReference",

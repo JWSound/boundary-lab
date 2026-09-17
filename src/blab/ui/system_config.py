@@ -1057,7 +1057,7 @@ class SystemConfigDialog(QDialog):
         resource: MeshResource,
     ) -> tuple[str, float, tuple[float, float, float]]:
         return (
-            str(Path(resource.file).resolve()),
+            resource.mesh_data.digest if resource.mesh_data is not None else str(Path(resource.file).resolve()),
             float(resource.scale_to_m),
             tuple(float(value) for value in resource.translation_m),
         )
@@ -1305,6 +1305,7 @@ class SystemConfigDialog(QDialog):
             resolved[resource.id] = replace(
                 resource,
                 file=analysis_mesh.file,
+                mesh_data=analysis_mesh.mesh_data,
                 scale_to_m=analysis_mesh.scale_to_m,
                 translation_m=analysis_mesh.translation_m,
             )
@@ -1511,6 +1512,7 @@ class SystemConfigDialog(QDialog):
                         id=resource_id,
                         name=mesh.name,
                         file=mesh.file,
+                        mesh_data=mesh.mesh_data,
                         purpose=purpose,
                         scale_to_m=mesh.scale_to_m,
                         translation_m=mesh.translation_m,

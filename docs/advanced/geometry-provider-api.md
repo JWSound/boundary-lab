@@ -28,12 +28,13 @@ is complete.
 
 ### Current scope
 
-- Geometry transport is still `GeneratedGeometry`: one mesh file per design,
-  with optional cleaned and reduced variants. No array-to-temporary-file adapter
-  has been introduced. Providers must write distinct output artifacts and never
-  overwrite a file belonging to an accepted revision.
+- `GeneratedGeometry` accepts one immutable `MeshData` snapshot or one mesh file
+  per design, with optional symmetry variants. Memory snapshots pass through
+  preview, compilation, exterior stitching and the local BEAT worker without
+  mesh/request-file round trips. File providers must write distinct artifacts
+  and never overwrite a file belonging to an accepted revision.
 - Physical edits use the existing physical model. Mesh resources are supplied
-  by the host's artifact path, not by configuration patches.
+  by the host's accepted artifact, not by configuration patches.
 - A first exterior generation can seed the standard exterior model from mesh
   groups and legacy radiator hints. Existing FEM/coupled models can be edited
   within the provider's ownership scope. Creating a new multi-mesh FEM/coupled
@@ -189,7 +190,7 @@ per-pair stitching policies are not implemented.
 
 ## Regeneration and persistence
 
-For versioned responses, the host stages the new file reference and merges the
+For versioned responses, the host stages the new mesh source and merges the
 patch into a detached project. It checks that preserved physical-group
 references still exist on the generated mesh. When both name and tag are
 specified, both must match, as required by the physical compiler. Use name-only
@@ -202,9 +203,10 @@ defaults. Headless consumers can call `complete_generation()` and
 `stage_generation()` directly; they must commit the candidate and its geometry
 together and enforce request ordering themselves.
 
-GUI restoration of provider-specific artifacts still uses `backend.restore()`.
-Provider-independent restoration and normalized multi-mesh artifact persistence
-remain part of the next transport/persistence increment.
+In-memory artifacts are embedded in `.blab.json` on explicit project save and can
+be restored without importing the provider. File artifacts still use
+`backend.restore()`. A provider is required to generate again. Multi-mesh provider
+contributions remain a separate increment.
 
 ## Explicit registration during development
 
@@ -239,4 +241,75 @@ ownership, and rejection without partial mutation:
 ```sh
 python -m pytest tests/test_provider_api.py tests/test_geometry_workflow_controller.py tests/test_generator_backends.py
 python -m ruff check src tests
+```
+
+## In-memory geometry
+
+```python
+from blab.generators import GeneratedGeometry, GenerationResponse, MeshData
+
+mesh = MeshData(
+    points=vertices,                         # (N, 3), finite coordinates
+    cells=[("triangle", triangles)],         # (M, 3), zero-based integer indices
+    physical_tags=[surface_tags],            # (M,), positive integer tag per cell
+    physical_names={"wall": [1, 2], "throat": [2, 2]},  # name: [tag, dimension]
+)
+return GenerationResponse(
+    request_id=request.request_id,
+    geometry=GeneratedGeometry(
+        provider_id=request.provider_id,
+        output_dir=request.run_root,        # retained for compatibility; no mkdir needed
+        mesh_path=None,
+        radiators=(),
+        mesh_data=mesh,
+    ),
+    configuration_patch=configuration_patch,
+)
+```
+
+`MeshData.from_meshio(mesh)` is also available. Construction detaches input
+arrays; published arrays are read-only. Preview/preparation obtains mutable
+working copies, so providers can reuse their original arrays for another
+generation. Physical groups must name every used cell tag. Cell blocks retain
+their order. Supported types are `triangle`, `triangle6`, `tetra`, and `tetra10`,
+in meshio/VTK ordering. BEM requires linear triangles; quadratic FEM requires
+matching quadratic volume and surface elements. CAD entity tags and other
+meshio metadata are outside this acoustic contract; preparation synthesizes
+entity labels from physical groups for its legacy conformer.
+
+Coordinates use the document's `mesh_scale_factor` and `mesh_translation_mm`;
+set scale to `1.0` for meters (the existing default is `0.001`). Winding and
+physical-group identity have the same meaning as file meshes. Omitted physics
+continues to preserve host configuration. Frequencies remain host-owned.
+
+Set `mesh_path=None` for memory geometry. Resources and compiled meshes use
+`file=""` plus `mesh_data`; supplying both is rejected. If full geometry declares
+`mirror_axes`, supply `reduced_mesh_data` before enabling native symmetry. The
+host does not silently cut an in-memory mesh to a symmetry domain.
+
+### Worker transport and limits
+
+The local worker advertises `contracts.mesh_data: [1]` and
+`request_transports: ["file", "inline_json"]`. The application sends the solve
+request as one JSON command containing packed little-endian float64 coordinates
+and int64 connectivity/tags, base64 encoded. Older workers reject this path
+before accepting the job. This requires the updated BEAT runtime; existing file
+projects continue using their established transport.
+
+This avoids mesh and request files, but still incurs buffer copies, base64 and
+JSON encoding. It is not shared memory and makes no latency guarantee. Cancelling
+an inline solve currently terminates that worker; the next solve starts another.
+Remote asset transport and legacy simulation transport reject memory meshes.
+Exact Level-3 package export still requires file assets. Explicit project/result
+saving can write to disk as usual.
+
+Solve and preview can consume the same immutable snapshot independently. This
+change does not add automatic slider-triggered solving, concurrent GUI scheduling,
+provider `solve/query/subscribe` services, custom docks, or folder discovery.
+Those remain separate host API/lifecycle work.
+
+```sh
+python -m pytest tests/test_memory_mesh.py tests/test_exterior_preparation.py
+# Optional real CPU + CUDA parity: set BLAB_TEST_MEMORY_SOLVE=1,
+# then run tests/test_memory_mesh.py -k real
 ```

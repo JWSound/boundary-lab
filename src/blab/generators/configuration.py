@@ -16,6 +16,7 @@ from hashlib import sha256
 from typing import Any
 
 from blab.config import ChannelConfig, CrossoverConfig, normalize_symmetry
+from blab.mesh_data import MeshData
 from blab.physical_model import (
     AcousticInterface,
     AcousticRegion,
@@ -61,7 +62,12 @@ def project_revision(project: ProjectDocument) -> str:
     """Content revision includes artifacts and input source, not active-tab state."""
     payload = asdict(project)
     payload.pop("active_generator_document_id", None)
-    return sha256(json.dumps(payload, sort_keys=True, allow_nan=False).encode()).hexdigest()
+    def encode(value):
+        if isinstance(value, MeshData):
+            return {"mesh_data_sha256": value.digest}
+        raise TypeError(f"Unsupported project revision value: {type(value)}")
+
+    return sha256(json.dumps(payload, sort_keys=True, allow_nan=False, default=encode).encode()).hexdigest()
 
 
 def _object(value: Any, label: str) -> dict:

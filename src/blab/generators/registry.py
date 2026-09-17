@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
-from blab.generators.base import GeneratorBackend, GeneratorCapabilities
+from blab.generators.base import GeneratedGeometry, GeneratorBackend, GeneratorCapabilities, GeneratorDocument
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,21 @@ def create_generator(provider_id: str, **kwargs: Any) -> GeneratorBackend:
     if info.factory is None:
         raise ValueError(f"Geometry generator {info.label!r} is not available.")
     return info.factory(**kwargs)
+
+
+def restore_generator_document(document: GeneratorDocument) -> GeneratedGeometry | None:
+    artifact = document.artifact
+    if artifact is not None and artifact.mesh_data is not None:
+        return GeneratedGeometry(
+            provider_id=document.provider_id,
+            output_dir=Path(artifact.output_dir),
+            mesh_path=None,
+            radiators=(),
+            mirror_axes=artifact.mirror_axes,
+            mesh_data=artifact.mesh_data,
+            reduced_mesh_data=artifact.reduced_mesh_data,
+        )
+    return create_generator(document.provider_id).restore(document)
 
 
 def normalize_generator_id(provider_id: str) -> str:

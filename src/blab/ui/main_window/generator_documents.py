@@ -18,7 +18,7 @@ from blab.generators.application import stage_generation
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, GeneratorDocument
 from blab.generators.configuration import configuration_snapshot, project_revision
-from blab.generators.registry import create_generator
+from blab.generators.registry import restore_generator_document
 from blab.project.model import (
     generator_mesh_name,
     new_generator_document,
@@ -224,6 +224,6 @@ class GeneratorDocumentsMixin:
 
     def result_from_generator_document(self, document: GeneratorDocument) -> GeneratedGeometry | None:
         try:
-            return create_generator(document.provider_id).restore(document)
+            return restore_generator_document(document)
         except Exception:
             return None

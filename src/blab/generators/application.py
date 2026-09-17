@@ -9,7 +9,7 @@ from dataclasses import replace
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GenerationCompleted
 from blab.generators.configuration import apply_configuration_patch, project_revision
-from blab.mesh_cache import read_mesh
+from blab.mesh_data import read_resource_mesh
 from blab.mesh_inventory import InventoryEntry, inspect_system_meshes
 from blab.project.migration import seed_exterior_system
 from blab.project.model import ProjectDocument, generator_mesh_name, replace_generator_document
@@ -47,8 +47,10 @@ def stage_generation(
                 continue
             name = generator_mesh_name(item)
             entries.append(InventoryEntry(
-                name=name, source_file=str(result.solver_mesh_path), scale_factor=item.mesh_scale_factor,
+                name=name, source_file="" if result.mesh_data is not None else str(result.solver_mesh_path),
+                scale_factor=item.mesh_scale_factor,
                 translation_mm=item.mesh_translation_mm, locked=True,
+                mesh_data=result.mesh_data,
             ))
             radiators.extend(replace(radiator, mesh=name) for radiator in result.radiators)
         entries.extend(InventoryEntry(
@@ -64,7 +66,8 @@ def stage_generation(
         raise ValueError("Generated mesh is not assigned to the physical system; configure its mesh resource first.")
     candidate.physical_system = replace(candidate.physical_system, meshes=tuple(
         replace(
-            item, file=str(geometry.solver_mesh_path), scale_to_m=document.mesh_scale_factor,
+            item, file="" if geometry.mesh_data is not None else str(geometry.solver_mesh_path),
+            mesh_data=geometry.mesh_data, scale_to_m=document.mesh_scale_factor,
             translation_m=tuple(value / 1000 for value in document.mesh_translation_mm),
         ) if item.id in mesh_ids else item
         for item in candidate.physical_system.meshes
@@ -73,7 +76,8 @@ def stage_generation(
         candidate, completed.configuration_patch, document_id=document.id, mesh_ids=mesh_ids,
     )
     # Regeneration must not silently redirect an old assignment to another tag.
-    mesh = read_mesh(geometry.solver_mesh_path)
+    resource = next(item for item in candidate.physical_system.meshes if item.id in mesh_ids)
+    mesh = read_resource_mesh(resource)
     groups = {(str(group_name), int(value[0]), int(value[1])) for group_name, value in mesh.field_data.items()}
     refs = [boundary.group for boundary in candidate.physical_system.boundaries]
     refs.extend(group for region in candidate.physical_system.regions for group in region.volume_groups)

@@ -13,13 +13,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from blab.ath import (
-    read_surface_physical_names,
-)
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
 from blab.mesh_cache import mesh_cache
+from blab.mesh_data import surface_names
 from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.preview_hierarchy import build_preview_hierarchy
@@ -69,11 +67,12 @@ class MeshWorkflowMixin:
             entries.append(
                 MeshDialogEntry(
                     name=generator_mesh_name(document),
-                    source_file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    source_file="" if solver_result.mesh_data is not None else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,
                     locked=True,
+                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
                 )
             )
         entries.extend(self.imported_meshes)
@@ -286,9 +285,10 @@ class MeshWorkflowMixin:
             configs.append(
                 MeshConfig(
                     name=generator_mesh_name(document),
-                    file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    file="" if solver_result.mesh_data is not None else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
+                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
                 )
             )
         return tuple(configs)
@@ -480,7 +480,7 @@ class MeshWorkflowMixin:
                 self.clear_mesh_preview()
                 return
             surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
+                mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs
             }
             interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
                 self._project_document().physical_system,
@@ -493,7 +493,7 @@ class MeshWorkflowMixin:
                 has_interior=has_interior,
             )
             source_surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
+                mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs
             }
             hierarchy = build_preview_hierarchy(
                 self._project_document().physical_system,

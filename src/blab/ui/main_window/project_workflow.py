@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.generators.ath import ath_source_text, with_ath_source_text
-from blab.generators.registry import create_generator
+from blab.generators.registry import restore_generator_document
 from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
     physical_system_from_dict,
@@ -310,7 +310,7 @@ class ProjectWorkflowController(QObject):
                 generated = {}
                 for item in generator_documents_from_payload(payload.get("generator_documents")):
                     try:
-                        generated[item.id] = create_generator(item.provider_id).restore(item)
+                        generated[item.id] = restore_generator_document(item)
                     except Exception:
                         generated[item.id] = None
                 return payload, generated

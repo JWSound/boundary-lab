@@ -578,6 +578,7 @@ class SolveWorkflowController(QObject):
                 file=meshes_by_id[mesh_id].file,
                 scale_factor=meshes_by_id[mesh_id].scale_to_m,
                 translation_m=meshes_by_id[mesh_id].translation_m,
+                mesh_data=meshes_by_id[mesh_id].mesh_data,
             )
             for mesh_id in exterior.mesh_ids
         )

@@ -8,6 +8,7 @@ import math
 import subprocess
 import tempfile
 import threading
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
@@ -112,6 +113,7 @@ class CoupledSession:
         self.cuda_worker_reuse = False
         self._stop = False
         self._cancel_path: Path | None = None
+        self._inline_submission = False
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
         self._metadata = SystemSolveMetadata(
@@ -243,19 +245,22 @@ class CoupledSession:
                 logging.getLogger(__name__).info(
                     "BEAT runtime has no idle cleanup support; retaining aggressive cleanup"
                 )
-        with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
-            request_path = Path(temp_dir) / "request.json"
-            self._cancel_path = Path(temp_dir) / "cancel"
+        inline = any(mesh.mesh_data is not None for mesh in request.compiled_system.meshes)
+        context = nullcontext(None) if inline else tempfile.TemporaryDirectory(prefix="blab-coupled-")
+        with context as temp_dir:
             payload = system_solve_request_to_dict(request)
-            payload["cancel_path"] = str(self._cancel_path)
-            request_path.write_text(
-                json.dumps(payload, separators=(",", ":")),
-                encoding="utf-8",
-            )
+            self._inline_submission = inline
+            if inline:
+                submission = payload
+            else:
+                submission = Path(temp_dir) / "request.json"
+                self._cancel_path = Path(temp_dir) / "cancel"
+                payload["cancel_path"] = str(self._cancel_path)
+                submission.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             try:
                 if self._stop:
                     return
-                events = self._worker.submit(request_path, status_callback=callback)
+                events = self._worker.submit(submission, status_callback=callback)
                 for event in events:
                     if not self._stop and stop_requested is not None and stop_requested():
                         self.stop()
@@ -278,11 +283,18 @@ class CoupledSession:
             finally:
                 self.worker_provenance = getattr(self._worker, "worker_info", None)
                 self._cancel_path = None
+                self._inline_submission = False
 
     def stop(self) -> None:
         self._stop = True
         worker = self._worker
         if worker is not None:
+            if self._inline_submission:
+                # No marker-file fallback on the memory path. Cancellation retires
+                # this worker; the next solve starts a fresh process.
+                worker.terminate()
+                self._worker = None
+                return
             cancel_path = self._cancel_path
             if cancel_path is not None:
                 try:

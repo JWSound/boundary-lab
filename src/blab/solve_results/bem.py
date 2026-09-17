@@ -152,7 +152,15 @@ def bem_boundary_result_domain(
         if resource.purpose != MeshPurpose.BEM_SURFACE:
             raise ValueError(f"Unbounded region mesh {mesh_id!r} is not a BEM surface mesh.")
 
-        points, faces, physical_tags = _read_gmsh22_boundary_geometry(Path(resource.file))
+        if resource.mesh_data is None:
+            points, faces, physical_tags = _read_gmsh22_boundary_geometry(Path(resource.file))
+        else:
+            data = resource.mesh_data
+            if any(kind != "triangle" for kind, _ in data.cells):
+                raise ValueError("BEM mesh_data requires linear triangles.")
+            points = data.points
+            faces = np.vstack([values for _, values in data.cells])
+            physical_tags = np.concatenate(data.physical_tags)
         points = points * float(resource.scale_to_m) + np.asarray(resource.translation_m, dtype=float)
         points = snap_points_to_symmetry_planes(points, symmetry)
         points_by_mesh.append(points)

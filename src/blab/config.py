@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from blab.defaults import SOLVER_OUTPUT_NPZ
+from blab.mesh_data import MeshData
 
 SYMMETRY_OPTIONS = {"off", "x", "xy"}
 DEFAULT_CHANNEL_VOLTAGE_V = 2.83
@@ -64,6 +65,7 @@ class MeshConfig:
     file: str
     scale_factor: float | None = None
     translation_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mesh_data: MeshData | None = None
 
 
 @dataclass

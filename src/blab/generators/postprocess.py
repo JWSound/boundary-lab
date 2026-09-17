@@ -17,6 +17,9 @@ def ensure_reduced_geometry(
     area_tol: float = AREA_TOL,
 ) -> GeneratedGeometry:
     """Materialize a cleaned, unmirrored mesh for native-symmetry solvers."""
+    if result.mesh_data is not None:
+        result.solver_mesh_data_for_symmetry("x")
+        return result
     if result.reduced_cleaned_mesh_path is not None and result.reduced_cleaned_mesh_path.exists():
         return result
     reduced_path = output_path or result.mesh_path.with_name(

@@ -13,6 +13,7 @@ from enum import Enum, StrEnum
 from typing import Any
 
 from blab.interface_conform import InterfaceTopologyMap
+from blab.mesh_data import MeshData
 from blab.solvers.engine_contract import COMPILED_SYSTEM_VERSION as COMPILED_SYSTEM_VERSION
 
 PHYSICAL_MODEL_VERSION = 1
@@ -82,6 +83,7 @@ class MeshResource:
     purpose: MeshPurpose
     scale_to_m: float = 1.0
     translation_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mesh_data: MeshData | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +188,7 @@ class CompiledMesh:
     purpose: MeshPurpose
     scale_to_m: float
     translation_m: tuple[float, float, float]
+    mesh_data: MeshData | None = None
 
 
 @dataclass(frozen=True)
@@ -244,7 +247,11 @@ class CompiledPhysicalSystem:
 def physical_system_to_dict(system: PhysicalSystem) -> dict[str, Any]:
     """Serialize the editable physical model for project persistence."""
 
-    return _to_json_value(asdict(system))
+    raw = _to_json_value(asdict(system))
+    for mesh in raw["meshes"]:
+        if mesh.get("mesh_data") is None:
+            mesh.pop("mesh_data", None)
+    return raw
 
 
 def physical_system_from_dict(raw: dict[str, Any]) -> PhysicalSystem:
@@ -264,6 +271,7 @@ def physical_system_from_dict(raw: dict[str, Any]) -> PhysicalSystem:
                 purpose=MeshPurpose(str(item["purpose"])),
                 scale_to_m=float(item.get("scale_to_m", 1.0)),
                 translation_m=tuple(float(value) for value in item.get("translation_m", (0.0, 0.0, 0.0))),
+                mesh_data=MeshData.from_payload(item["mesh_data"]) if item.get("mesh_data") is not None else None,
             )
             for item in raw.get("meshes", ())
         ),
@@ -340,6 +348,8 @@ def _boundary_kind_from_value(value: object) -> BoundaryKind:
 
 
 def _to_json_value(value: Any) -> Any:
+    if isinstance(value, MeshData):
+        return value.to_payload()
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):

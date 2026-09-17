@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig
+from blab.mesh_data import MeshData
 from blab.paths import APP_ROOT
 from blab.solvers.registry import backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
@@ -72,6 +73,7 @@ class MeshDialogEntry:
     translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     enabled: bool = True
     locked: bool = False
+    mesh_data: MeshData | None = None
 
 
 class DonateDialog(QDialog):
@@ -633,6 +635,7 @@ class MeshConfigDialog(QDialog):
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
         file_item.setData(Qt.ItemDataRole.UserRole, mesh.cleaned_file)
         file_item.setData(int(Qt.ItemDataRole.UserRole) + 1, False)
+        file_item.setData(int(Qt.ItemDataRole.UserRole) + 2, mesh.mesh_data)
         self.table.setItem(row, 2, file_item)
         self.file_items.append(file_item)
 
@@ -769,6 +772,7 @@ class MeshConfigDialog(QDialog):
                     ),
                     enabled=bool(self.enabled_widgets[row].isChecked()),
                     locked=is_generated_row,
+                    mesh_data=self.file_items[row].data(int(Qt.ItemDataRole.UserRole) + 2),
                 )
             )
         return tuple(meshes)

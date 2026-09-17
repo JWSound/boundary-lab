@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -11,6 +12,7 @@ import numpy as np
 
 from blab.component_symmetry import ComponentSymmetryInferenceError, infer_component_symmetry
 from blab.config import normalize_symmetry
+from blab.mesh_data import read_resource_mesh
 from blab.physical_model import BoundaryKind, ComponentKind, MeshPurpose, PhysicalSystem
 from blab.symmetry import snap_points_to_symmetry_planes, symmetry_plane_tolerance_m
 
@@ -94,8 +96,9 @@ def estimate_level_three_package(
     source_mesh_bytes = 0
     for resource in system.meshes:
         path = Path(resource.file)
-        source_mesh_bytes += path.stat().st_size
-        mesh = meshio.read(path)
+        source_mesh_bytes += (path.stat().st_size if resource.mesh_data is None else
+                              len(json.dumps(resource.mesh_data.to_payload())))
+        mesh = read_resource_mesh(resource)
         points = np.asarray(mesh.points, dtype=np.float64) * float(resource.scale_to_m)
         points += np.asarray(resource.translation_m, dtype=np.float64)
         all_triangles, triangle_tags = _triangles_and_tags(mesh)

@@ -105,6 +105,19 @@ class MeshCache:
                 entry[2] = MeshInventory(surfaces, volumes, has_tetrahedra, ownership)
             return entry[2]
 
+    def inventory_data(self, data) -> MeshInventory:
+        """Inspect a snapshot without entering the filesystem cache."""
+        mesh = data.to_meshio(copy=False)
+        surfaces = tuple(sorted((name, tag) for name, (tag, dim) in data.physical_names.items() if dim == 2))
+        volumes = tuple(sorted((name, tag) for name, (tag, dim) in data.physical_names.items() if dim == 3))
+        has_tetrahedra = any(kind.startswith("tetra") for kind, _ in data.cells)
+        names = {tag: name for name, tag in surfaces}
+        ownership = tuple(
+            (name, tuple(sorted(names[tag] for tag in selected_volume_surface_tags(mesh, (volume_tag,)) if tag in names)))
+            for name, volume_tag in volumes
+        ) if has_tetrahedra else ()
+        return MeshInventory(surfaces, volumes, has_tetrahedra, ownership)
+
 
 mesh_cache = MeshCache()
 read_mesh = mesh_cache.read
