@@ -154,6 +154,12 @@ class GeometryInputs(Protocol):
     def active_generator_document(self):
         """The design document currently selected for editing, if any."""
 
+    def generation_context(self) -> tuple[str, dict]:
+        """Return the project revision and detached provider configuration."""
+
+    def accept_generation(self, completed):
+        """Validate and atomically accept provider configuration and geometry."""
+
     def apply_saved_source_config_to_result(self, result, mesh_name: str):
         """Re-apply the project's stored source settings to fresh geometry."""
 

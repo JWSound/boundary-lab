@@ -118,6 +118,7 @@ Boundary lab deploy is an interactive advanced array simulation tool that ingest
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
+- [Geometry provider API](docs/advanced/geometry-provider-api.md)
 - [Server developer reference](docs/advanced/boundary-lab-server_advanced.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)

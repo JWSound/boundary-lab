@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Slot
@@ -12,8 +14,10 @@ from PySide6.QtWidgets import (
     QTabBar,
 )
 
+from blab.generators.application import stage_generation
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
-from blab.generators.base import GeneratedGeometry, GeneratorDocument
+from blab.generators.base import GeneratedGeometry, GenerationCompleted, GeneratorDocument
+from blab.generators.configuration import configuration_snapshot, project_revision
 from blab.generators.registry import create_generator
 from blab.project.model import (
     generator_mesh_name,
@@ -34,6 +38,44 @@ class GeneratorDocumentsMixin:
 
     Mixed into :class:`~blab.ui.main_window.window.MainWindow`.
     """
+
+    def _generation_project_snapshot(self):
+        project = deepcopy(self.project)
+        project.project_preferences = self.project_workflow.current_project_preferences()
+        return project
+
+    def generation_context(self) -> tuple[str, dict]:
+        project = self._generation_project_snapshot()
+        return project_revision(project), configuration_snapshot(project)
+
+    def accept_generation(self, completed: GenerationCompleted) -> GeneratedGeometry:
+        """Commit provider settings and artifact only after the candidate validates."""
+        snapshot = self._generation_project_snapshot()
+        request = completed.request
+        if request.project_revision != project_revision(snapshot):
+            raise ValueError("Generation discarded because project inputs changed.")
+        document = next((item for item in snapshot.generator_documents if item.id == request.document_id), None)
+        if document is None or document.source != request.source or document.provider_id != request.provider_id:
+            raise ValueError("Generation discarded because the provider source changed.")
+        result = self.apply_saved_source_config_to_result(completed.result, request.mesh_name)
+        completed = replace(completed, result=result)
+        # Legacy providers retain their existing exterior migration behavior.
+        # A configuration response is staged independently before any live mutation.
+        if not completed.legacy_response:
+            candidate = stage_generation(
+                snapshot, self.generated_geometry_by_document_id, completed,
+                imported_radiators=self.imported_radiators,
+            )
+            self.project = candidate
+            self.generated_geometry_by_document_id[request.document_id] = result
+            stitching = completed.configuration_patch.get("stitching_config", {})
+            if "tolerance_mm" in stitching:
+                self.preferences.stitch_tolerance_mm = candidate.project_preferences.stitch_tolerance_mm
+            self.discard_channel_config_dialog()
+        else:
+            self.record_generated_geometry(request.document_id, result)
+            self.ensure_seeded_exterior_system()
+        return result
 
     def rebuild_generator_document_tabs(self) -> None:
         self.editor_tabs.blockSignals(True)
