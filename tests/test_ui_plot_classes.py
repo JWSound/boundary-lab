@@ -309,7 +309,7 @@ def test_isobar_canvas_captures_and_redraws_persistent_contours() -> None:
     source = source_text("ui", "plots.py")
     isobar_block = source[source.index("class IsobarCanvas") : source.index("class ImpedanceCanvas")]
     draw_empty_block = isobar_block[
-        isobar_block.index("    def _draw_empty") : isobar_block.index("    def _remove_artist")
+        isobar_block.index("    def _reset_plot_data") : isobar_block.index("    def _remove_artist")
     ]
     remove_contour_block = isobar_block[
         isobar_block.index("    def _remove_contour_artist") : isobar_block.index("    @property")

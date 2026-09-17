@@ -222,19 +222,77 @@ class InteractivePlotCanvas(FigureCanvas):
         self._crosshair_visible = False
         self._crosshair_dragging = False
         self._crosshair_background = None
+        self._empty_plot_pending = False
+        self._redraw_on_show = False
         super().__init__(figure)
         self._connect_interaction_events()
+
+    def clear_for_solve(self) -> None:
+        """Discard current data now, rebuilding hidden axes only when needed."""
+        self._crosshair_visible = False
+        self._crosshair_dragging = False
+        if self._is_render_visible():
+            self._draw_empty()
+        else:
+            self._reset_plot_data()
+            self._empty_plot_pending = True
+            self._redraw_on_show = True
+
+    def _reset_plot_data(self) -> None:
+        """Clear subclass data and interactions without rebuilding its axes."""
+        raise NotImplementedError
+
+    def _is_render_visible(self) -> bool:
+        return self.isVisible() and not self.visibleRegion().isEmpty()
+
+    def _ensure_empty_plot(self) -> None:
+        if self._empty_plot_pending:
+            self._draw_empty()
+
+    def draw_idle(self) -> None:
+        if not self._is_render_visible():
+            self._redraw_on_show = True
+            return
+        super().draw_idle()
+
+    def _draw_idle(self) -> None:
+        # A canvas can be hidden after its zero-delay draw was already queued.
+        if not self._is_render_visible():
+            self._draw_pending = False
+            self._redraw_on_show = True
+            return
+        if self._redraw_on_show:
+            self._draw_pending = True
+        super()._draw_idle()
+
+    def draw(self, *args, **kwargs):
+        self._ensure_empty_plot()
+        self._redraw_on_show = False
+        return super().draw(*args, **kwargs)
+
+    def print_figure(self, *args, **kwargs):
+        # Figure.savefig routes through this method, even for hidden canvases.
+        self._ensure_empty_plot()
+        return super().print_figure(*args, **kwargs)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt override
+        self._ensure_empty_plot()
+        super().showEvent(event)
+        if self._redraw_on_show:
+            self.draw_idle()
 
     @property
     def automatic_axis_limits(self) -> bool:
         return self._manual_axis_limits is None
 
     def displayed_axis_limits(self) -> PlotAxisLimits:
+        self._ensure_empty_plot()
         x_min, x_max = self._x_limits_to_user_domain(self.axes.get_xlim())
         y_min, y_max = self.axes.get_ylim()
         return PlotAxisLimits(float(x_min), float(x_max), float(y_min), float(y_max))
 
     def set_axis_limits(self, limits: PlotAxisLimits | None) -> None:
+        self._ensure_empty_plot()
         if limits is None:
             automatic_limits = self._automatic_axis_limits_snapshot
             self._manual_axis_limits = None
@@ -325,6 +383,7 @@ class InteractivePlotCanvas(FigureCanvas):
         self.setToolTip("")
 
     def _defer_current_plot_state(self, state: Any) -> bool:
+        self._ensure_empty_plot()
         if not self._comparison_active:
             return False
         self._comparison_restore_plot = state
@@ -524,8 +583,7 @@ class IsobarCanvas(InteractivePlotCanvas):
             return float(np.log10(limits[0])), float(np.log10(limits[1]))
         return super()._x_limits_from_user_domain(limits)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _reset_plot_data(self) -> None:
         self._mesh_artist = None
         self._image_artist = None
         self._line_artist = None
@@ -537,7 +595,6 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._crosshair_db_label = None
         self._crosshair_background = None
         self._reset_comparison_interaction()
-        self._remove_colorbar()
         self._mesh_freqs_hz = None
         self._mesh_angles_deg = None
         self._mesh_values_db = None
@@ -545,6 +602,12 @@ class IsobarCanvas(InteractivePlotCanvas):
         self._mesh_shading = None
         self._mesh_render_mode = None
         self._x_axis_mode = "frequency"
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        self._reset_plot_data()
+        self._remove_colorbar()
         self._configure_axes()
         self._apply_manual_axis_limits()
         self._redraw_captured_contours()
@@ -1375,15 +1438,19 @@ class ImpedanceCanvas(RawCoordinatePlotCanvas):
         self.axes.grid(which="major", color="#808080", linewidth=0.8, alpha=GRID_LINE_ALPHA)
         apply_compact_plot_text(self.axes)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _reset_plot_data(self) -> None:
         self._lines = []
         self._series_labels = ()
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
-        self._configure_axes()
         self._sync_trace_filter_actions(())
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        self._reset_plot_data()
+        self._configure_axes()
         self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
@@ -1582,9 +1649,7 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         apply_compact_plot_text(self.phase_axes)
         self.phase_axes.set_visible(False)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
-        clear_plot_axes(self.phase_axes)
+    def _reset_plot_data(self) -> None:
         self._lines = []
         self._magnitude_lines = {}
         self._phase_lines = {}
@@ -1593,9 +1658,15 @@ class OnAxisResponseCanvas(RawCoordinatePlotCanvas):
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
-        self._configure_axes()
         self._sync_trace_filter_actions(())
         self.show_phase_action.setEnabled(False)
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        clear_plot_axes(self.phase_axes)
+        self._reset_plot_data()
+        self._configure_axes()
         self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()
@@ -1928,15 +1999,19 @@ class SpinoramaCanvas(RawCoordinatePlotCanvas):
         self.di_axes.yaxis.set_label_position("right")
         self.di_axes.yaxis.tick_right()
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
-        clear_plot_axes(self.di_axes)
+    def _reset_plot_data(self) -> None:
         self._spl_lines = {}
         self._di_lines = {}
         self._series_labels = ((), ())
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        clear_plot_axes(self.di_axes)
+        self._reset_plot_data()
         self._apply_layout()
         self.axes.set_title(self.title, pad=PLOT_TITLE_PAD)
         self.axes.set_xlabel("Frequency (Hz)")
