@@ -177,5 +177,11 @@ def get_beat_engine_worker(
     )
 
 
+def hold_beat_engine_idle_cleanup():
+    """Reserve upcoming GUI work without waiting for a busy worker."""
+    hold = getattr(_WORKER_POOL, "hold_idle_cleanup", None)
+    return hold() if hold is not None else lambda: None
+
+
 def shutdown_beat_engine_workers() -> None:
     _WORKER_POOL.shutdown()

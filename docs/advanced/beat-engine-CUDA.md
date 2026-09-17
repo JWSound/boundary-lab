@@ -197,3 +197,26 @@ Use `sample_detailed.msh` with multiple warmups for hardware comparisons. Nsight
 - `src/beat_engine/julia_local/src/BeatEngineCudaAssembly.jl`: public CUDA Galerkin operator assembly entry point.
 - `src/beat_engine/julia_local/src/BeatEngineCudaField.jl`: GPU field-evaluation cache, source weighting, and observation kernels.
 - `src/beat_engine/julia_local/src/BeatEngineCudaProfiling.jl`: optional CUDA regular-kernel probe and profiling launches used by benchmark scripts.
+## Reusing CUDA worker memory between solves
+
+Enable **Preferences → Reuse CUDA Worker Memory** to reduce completion latency
+for consecutive local CUDA solves. This option is off by default and requires
+a BEAT Engine runtime and compiled-system worker that advertise idle reclamation.
+Older engines retain the existing cleanup behavior.
+
+With this option enabled, successful solves may retain CUDA allocator and library
+caches. Full reclamation runs after **5,000 ms without worker activity**, every
+eighth opted-in request, or when device-wide free memory is at or below 20% (or
+cannot be determined). Cancellation and errors retain the engine's full cleanup
+path. The idle timer is not rearmed after a full cleanup until another reuse solve.
+
+Clicking Solve cancels pending idle reclamation during preparation. Solves and
+field evaluations queue behind reclamation that has already started; the GUI
+remains responsive. Reclamation resets the periodic counter and preserves the
+completed result arrays. It does not shut down the worker process.
+
+This preference applies only to supported local compiled-system CUDA solves.
+CPU solves, pure-interior CPU fallback, source-request workers, and remote-server
+policy are unchanged. Cleanup reason, duration, and request counter are logged.
+The installed engine must include the `reclaim` extension; a release pinned before
+that extension will safely fall back until the engine dependency is updated.

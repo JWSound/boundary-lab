@@ -179,6 +179,8 @@ class PreferencesDialog(QDialog):
         )
         self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
 
+        self.cuda_worker_reuse_check = QCheckBox("Enabled")
+        self.cuda_worker_reuse_check.setChecked(preferences.cuda_worker_reuse)
         self.live_plot_streaming_check = QCheckBox("Enabled")
         self.live_plot_streaming_check.setChecked(preferences.live_plot_streaming)
         self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)
@@ -398,6 +400,11 @@ class PreferencesDialog(QDialog):
                     ("Solver", self.solve_backend_combo, ""),
                     ("Server", self.server_preferences, "Use your server address and optional access key."),
                     ("Theme", self.theme_combo, ""),
+                    (
+                        "Reuse CUDA Worker Memory",
+                        self.cuda_worker_reuse_check,
+                        "Speeds up consecutive local CUDA solves. Releases cached memory after 5 seconds idle, every 8 solves, or when device memory is low. Requires a compatible BEAT worker.",
+                    ),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
                 ),
@@ -449,6 +456,7 @@ class PreferencesDialog(QDialog):
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.server_preferences.url.text().strip(),
             solve_server_access_key=self.server_preferences.access_key.text().strip(),
+            cuda_worker_reuse=bool(self.cuda_worker_reuse_check.isChecked()),
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),

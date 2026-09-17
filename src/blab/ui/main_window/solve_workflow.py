@@ -49,6 +49,7 @@ from blab.solve_results import (
     SolveProvenance,
 )
 from blab.solve_results.live_projection import LiveResultProjector
+from blab.solvers.beat_engine_runtime import hold_beat_engine_idle_cleanup
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
@@ -133,6 +134,13 @@ class SolveWorkflowController(QObject):
 
     @Slot()
     def start_solve(self) -> None:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            self._start_solve_reserved()
+        finally:
+            release_idle()
+
+    def _start_solve_reserved(self) -> None:
         if (
             self._geometry_controller.active
             or self._solve_controller.active
@@ -172,6 +180,13 @@ class SolveWorkflowController(QObject):
             self._start_coupled_system_solve()
 
     def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            return self._start_speaker_package_solve_reserved(config)
+        finally:
+            release_idle()
+
+    def _start_speaker_package_solve_reserved(self, config: SpeakerPackageConfig) -> bool:
         """Prepare the requested package outputs, run once, then export on completion."""
 
         if (
@@ -237,6 +252,7 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=0,
                 component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
+                cuda_worker_reuse=preferences.cuda_worker_reuse,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
@@ -278,6 +294,14 @@ class SolveWorkflowController(QObject):
         self._prepare_system_solve(exterior=False)
 
     def _prepare_system_solve(self, *, exterior: bool) -> None:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            self._prepare_system_solve_reserved(exterior=exterior, release_idle=release_idle)
+        except BaseException:
+            release_idle()
+            raise
+
+    def _prepare_system_solve_reserved(self, *, exterior: bool, release_idle) -> None:
         # Capture all widget/project inputs before entering the worker. Only the
         # completion callback may publish the synchronized system or touch UI.
         self._view.show_status("Preparing solve...")
@@ -288,6 +312,7 @@ class SolveWorkflowController(QObject):
         title = "Exterior system preparation failed" if exterior else "FEM system solve"
 
         def failed(exc):
+            release_idle()
             self._view.show_status("Solve preparation failed")
             if exterior:
                 self._view.show_stitch_or_generic_error(title, exc)
@@ -315,6 +340,7 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 component_channel_by_id=snapshot.component_channel_by_id,
                 backend_id=preferences.solve_backend,
+                cuda_worker_reuse=preferences.cuda_worker_reuse,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
@@ -353,6 +379,7 @@ class SolveWorkflowController(QObject):
                 complete,
                 failed,
                 report_progress=True,
+                settled=release_idle,
             )
         else:
             # Non-window hosts can still use the synchronous controller seam.
@@ -360,6 +387,8 @@ class SolveWorkflowController(QObject):
                 complete(work(self._view.show_status))
             except Exception as exc:
                 failed(exc)
+            finally:
+                release_idle()
 
     def _start_prepared_system_solve(self, prepared, status: str) -> bool:
         if prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM:

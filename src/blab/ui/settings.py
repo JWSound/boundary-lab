@@ -47,6 +47,7 @@ class GuiPreferences:
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
     solve_server_access_key: str = field(default="", repr=False)
+    cuda_worker_reuse: bool = False
     live_plot_streaming: bool = True
     live_plot_quality: str = "medium"
     gmres_tolerance: float = 1e-3
@@ -165,6 +166,7 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
         solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
+        cuda_worker_reuse=settings_bool(settings, "preferences/cuda_worker_reuse", defaults.cuda_worker_reuse),
         live_plot_streaming=settings_bool(
             settings,
             "preferences/live_plot_streaming",
@@ -254,6 +256,7 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
 def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
+    settings.setValue("preferences/cuda_worker_reuse", preferences.cuda_worker_reuse)
     settings.setValue("preferences/solve_server_url", preferences.solve_server_url)
     if settings.contains("preferences/solve_server_backend"):
         settings.remove("preferences/solve_server_backend")

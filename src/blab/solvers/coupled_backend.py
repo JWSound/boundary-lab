@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 import tempfile
@@ -107,6 +108,8 @@ class CoupledSession:
         self._process: subprocess.Popen[str] | None = None
         self._worker: BeatEngineWorkerProcess | None = None
         self.worker_provenance: dict | None = None
+        self.worker_cleanup: dict | None = None
+        self.cuda_worker_reuse = False
         self._stop = False
         self._cancel_path: Path | None = None
         self._stderr_lines: list[str] = []
@@ -215,10 +218,35 @@ class CoupledSession:
             julia_project=self.julia_project,
         )
         callback = self.request.status_callback
+        request = self.request
+        if self.cuda_worker_reuse and request.solver_options.get("bem_backend") == "cuda":
+            configure_idle = getattr(self._worker, "configure_idle_cleanup", None)
+            if configure_idle is not None:
+                self._worker.ensure_started(status_callback=callback)
+                info = self._worker.worker_info or {}
+                if "cuda_reuse" in info.get("worker_cleanup_policies", []) and "reclaim" in info.get("operations", []):
+                    configure_idle(5000)
+                    request = replace(
+                        request,
+                        solver_options=dict(
+                            request.solver_options,
+                            worker_cleanup={
+                                "policy": "cuda_reuse",
+                                "max_requests": 8,
+                                "min_free_fraction": 0.2,
+                            },
+                        ),
+                    )
+                else:
+                    logging.getLogger(__name__).info("CUDA memory reuse unavailable; retaining aggressive cleanup")
+            else:
+                logging.getLogger(__name__).info(
+                    "BEAT runtime has no idle cleanup support; retaining aggressive cleanup"
+                )
         with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
             request_path = Path(temp_dir) / "request.json"
             self._cancel_path = Path(temp_dir) / "cancel"
-            payload = system_solve_request_to_dict(self.request)
+            payload = system_solve_request_to_dict(request)
             payload["cancel_path"] = str(self._cancel_path)
             request_path.write_text(
                 json.dumps(payload, separators=(",", ":")),
@@ -240,6 +268,9 @@ class CoupledSession:
                     elif event_type == "failed":
                         raise RuntimeError(str(event.get("error", "Coupled Julia solver failed.")))
                     elif event_type in {"completed", "cancelled"}:
+                        self.worker_cleanup = event.get("worker_cleanup")
+                        if self.worker_cleanup is not None:
+                            logging.getLogger(__name__).info("Solve worker cleanup: %s", self.worker_cleanup)
                         return
             except RuntimeError:
                 if not self._stop:

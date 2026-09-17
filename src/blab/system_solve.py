@@ -67,6 +67,7 @@ class PreparedSystemSolve:
     sphere_metadata: dict[str, np.ndarray] | None = None
     result_domains: tuple[ResultDomain, ...] = ()
     remote_options: dict[str, str] | None = field(default=None, repr=False)
+    cuda_worker_reuse: bool = False
 
 
 def prepare_system_solve(
@@ -87,6 +88,7 @@ def prepare_system_solve(
     stitch_exterior_meshes: bool = False,
     stitch_tolerance_mm: float = 2.0,
     progress: Callable[[str], None] | None = None,
+    cuda_worker_reuse: bool = False,
 ) -> PreparedSystemSolve:
     """Compile an editable physical system and request application observation fields."""
 
@@ -337,6 +339,7 @@ def prepare_system_solve(
     )
     validate_solve_plan(request)
     return PreparedSystemSolve(
+        cuda_worker_reuse=cuda_worker_reuse,
         remote_options=remote_options,
         request=request,
         backend_id=normalized_backend_id,
