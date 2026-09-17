@@ -329,7 +329,8 @@ class _CoupledBackend:
         is_interior = has_bounded and not has_unbounded
         if has_unbounded and not has_bounded:
             solver_options.setdefault(
-                "burton_miller_assembly", "direct_system" if self.bem_backend == "cuda" else "operator_matrices"
+                "burton_miller_assembly",
+                "direct_system" if self.bem_backend in {"cuda", "metal"} else "operator_matrices",
             )
         solver_options.setdefault(
             "static_condensation",
