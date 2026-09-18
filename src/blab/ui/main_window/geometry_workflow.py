@@ -39,6 +39,7 @@ class GeometryWorkflowController(QObject):
 
     #: Emitted when starting a generation invalidates existing solve results.
     solve_results_invalidated = Signal(str)
+    generation_accepted = Signal(object)
 
     def __init__(
         self,
@@ -137,6 +138,7 @@ class GeometryWorkflowController(QObject):
             self._on_geometry_generation_failed(str(exc))
             return
         self.mesh_state_changed.emit("geometry_generated")
+        self.generation_accepted.emit(completed)
         self._view.show_status(f"Generated and cleaned {result.output_dir}")
         self._view.show_mesh_quality_warning(result)
 

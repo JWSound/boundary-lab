@@ -15,9 +15,10 @@ class GeneratorWorker(QObject):
     cancelled = Signal()
     finished = Signal()
 
-    def __init__(self, request: GenerationRequest):
+    def __init__(self, request: GenerationRequest, *, host=None):
         super().__init__()
         self.request = request
+        self.host = host
         self._session: GeneratorSession | None = None
         self._stop = False
 
@@ -25,6 +26,8 @@ class GeneratorWorker(QObject):
     def run(self) -> None:
         try:
             backend = create_generator(self.request.provider_id, **dict(self.request.provider_options))
+            if self.host is not None and callable(getattr(backend, "bind_host", None)):
+                backend.bind_host(self.host)
             self._session = backend.create_session(self.request)
             if self._stop:
                 self._session.stop()

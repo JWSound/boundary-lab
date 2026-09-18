@@ -414,7 +414,7 @@ class ProjectWorkflowController(QObject):
         component_channels = payload.get("component_channel_by_id", {})
         if not isinstance(component_channels, dict):
             component_channels = {}
-        self._session.document = ProjectDocument(
+        loaded_document = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
             imported_meshes=tuple(
@@ -442,6 +442,7 @@ class ProjectWorkflowController(QObject):
             },
             observation_planes=observation_planes_from_payload(payload.get("observation_planes")),
         )
+        self._session.replace(loaded_document, path=self._session.path)
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:
             result = (

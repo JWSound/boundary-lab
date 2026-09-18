@@ -82,6 +82,7 @@ from blab.ui.plots import (
     frequency_to_slider_value,
 )
 from blab.ui.preparation_worker import PreparationController
+from blab.ui.provider_host import DesktopProviderHost
 from blab.ui.result_projection import (
     ResultProjectionService,
 )
@@ -522,6 +523,8 @@ class MainWindow(
         self._build_layout()
         self._connect_state_events()
         self._connect_operation_controllers()
+        self.provider_host = DesktopProviderHost(self)
+        self.geometry_controller.host_factory = self.provider_host.bind
         startup("Restoring window layout...")
         self._restore_window_state()
         startup("Starting new project...")
@@ -640,6 +643,7 @@ class MainWindow(
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
+        self.provider_host.close()
         self.preparations.close()
         self.activities.clear()
         super().closeEvent(event)

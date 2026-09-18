@@ -1,8 +1,8 @@
 # Geometry provider API: generation and configuration
 
-This is the first implemented increment of the provider API (exchange schema
-version `1`). It connects a versioned response to the existing Generate workflow
-and project configuration. It is not yet the complete plugin SDK.
+This guide covers the implemented provider API (exchange schema version `1`):
+generation, configuration, in-memory geometry, and host solve/result services.
+It is not yet the complete plugin SDK.
 
 ## Implemented boundary
 
@@ -41,11 +41,12 @@ is complete.
   contribution is not implemented in this increment.
 - Registration is explicit Python registration; folder discovery, manifests,
   installation preferences and provider editor widgets remain future work.
-- Provider solve submission, solve status subscriptions, and solved-system
-  queries are not implemented yet. The host continues to own the frequency
-  range and count; this configuration API cannot change them.
-- Concurrent preview/solve scheduling and binary in-memory engine transport
-  remain future work. This increment does not claim reduced solve latency.
+- Providers can submit asynchronous solves, subscribe to status, cancel their
+  own jobs, and query canonical solved data through the host services below.
+  The host owns the frequency range and count; provider commands cannot change them.
+- Preview/solve preparation remains serialized. Memory transport uses packed
+  buffers inside JSON; shared memory and concurrent preview/solve preparation
+  remain future work. No reduced solve latency is claimed.
 
 ## Request contract
 
@@ -303,13 +304,155 @@ Remote asset transport and legacy simulation transport reject memory meshes.
 Exact Level-3 package export still requires file assets. Explicit project/result
 saving can write to disk as usual.
 
-Solve and preview can consume the same immutable snapshot independently. This
-change does not add automatic slider-triggered solving, concurrent GUI scheduling,
-provider `solve/query/subscribe` services, custom docks, or folder discovery.
-Those remain separate host API/lifecycle work.
+Solve and preview can consume the same immutable snapshot independently. Host
+services below support solve requests after generation, but automatic slider
+widgets, concurrent preparation, custom docks, and folder discovery remain
+separate work.
 
 ```sh
 python -m pytest tests/test_memory_mesh.py tests/test_exterior_preparation.py
 # Optional real CPU + CUDA parity: set BLAB_TEST_MEMORY_SOLVE=1,
 # then run tests/test_memory_mesh.py -k real
+```
+
+## Host services: solve, status, and results
+
+The desktop injects a document-scoped `ProviderHost` into backends implementing
+the optional `bind_host(host)` method, before `create_session(request)`. Ath and
+backends without this method keep their existing behavior. Services are not
+serialized into project files or passed as generation configuration.
+
+Every method returns a `concurrent.futures.Future`. Calls can originate on worker
+threads; the desktop dispatches application access onto its GUI thread. A solve
+Future acknowledges a **queued job**, not completion. Event and Future callbacks
+run on the dispatch thread: keep them short, move expensive optimization to a
+worker, and never block there waiting for another unfinished host Future.
+Subscriber exceptions are logged without stopping the host.
+
+| Method | Future result | Meaning |
+| --- | --- | --- |
+| `context()` | `ProviderContext` | Document/provider IDs, revision, host frequency minimum/maximum/count |
+| `solve(SolveCommand(...))` | `SolveJob` | Queue a solve for that exact revision |
+| `status(job_id)` | `SolveJob` | State, progress counts, request ID, revision, result run ID |
+| `cancel(job_id)` | `SolveJob` | Cancel this document's pending/preparing/running job |
+| `result(job_id)` | `SolvedSystem` | Detached complete or partial snapshot after the job settles |
+| `current_result()` | `SolvedSystem` | Host's latest finalized snapshot, including manual solves |
+| `subscribe(callback)` | Subscription ID | Receive this document's generation acceptance and solve status events |
+| `unsubscribe(subscription_id)` | `None` | Release a callback when its consumer is disposed |
+
+### Requests and scheduling
+
+```python
+from blab.generators import SolveCommand
+
+# On a provider worker thread; never block a GUI/event callback this way:
+context = host.context().result(timeout=5)
+job = host.solve(SolveCommand(
+    expected_revision=context.project_revision,
+    replace_pending=True,
+)).result(timeout=5)
+```
+
+`SolveCommand` contains only `schema_version=1`, `request_id` (a generated UUID by
+default), `expected_revision`, and `replace_pending=False`. It cannot override
+frequencies, backends, outputs, or physics. Solving uses the same preparation,
+streaming result builder, and plots as the application's Solve button. An accepted,
+solve-ready physical system is required. Exterior topology warnings fail the
+provider job instead of opening an automated confirmation dialog.
+
+The solve revision includes project content, current frequency settings, and
+application solver preferences. Obtain it through `host.context()` or a
+`geometry_accepted` event; the generation request's revision is a different token.
+Changed inputs reject submission (`stale_revision`) or discard queued work
+(`stale`). Changes during preparation discard that preparation and fail the job.
+External file-content edits are not tracked by this token: use immutable memory
+snapshots or distinct file artifacts for each accepted generation.
+
+One provider request can wait alongside active host work. `replace_pending=True`
+supersedes only a pending request from the same provider document; it never
+interrupts an active solve. Another document cannot replace or cancel that job.
+Pending requests wait for generation, preview preparation, or an existing solve
+to settle, then recheck their revision. This bounds the queue; it does not add
+parallel preparation or remove cold worker startup costs.
+
+States are `queued`, `preparing`, `running`, `cancelling`, then one of `completed`,
+`failed`, `cancelled`, `superseded`, or `stale`. Completion requires a full
+frequency result set. Cancellation during preparation suppresses publication;
+the calculation may finish in the background. Numerical cancellation uses the
+backend's existing behavior (inline BEAT currently retires its worker).
+
+Identical retries return the same job while its history is retained. Reusing an
+ID with different contents gives `request_conflict`; use a fresh ID for a new
+solve. The host retains four result snapshots and up to 32 job records. Lookup
+after eviction gives `result_unavailable`, or `unknown_job` when the job record
+has expired. These are in-session handles, not durable project identifiers.
+
+### Solve after generation is accepted
+
+The host publishes `ProviderEvent(kind="geometry_accepted", context=...,
+generation_request_id=...)` only after committing geometry and configuration.
+The context contains the new revision. For example, a retained provider consumer
+can react without blocking the GUI:
+
+```python
+def on_host_event(event):
+    if event.kind == "geometry_accepted":
+        command = SolveCommand(expected_revision=event.context.project_revision,
+                               replace_pending=True)
+        host.solve(command).add_done_callback(on_submission)
+    elif event.kind == "solve_status":
+        job = event.job
+        print(job.request_id, job.state, job.solved_count, job.expected_count)
+        if job.state == "completed":
+            host.result(job.job_id).add_done_callback(on_result)
+
+def on_submission(future):
+    job = future.result()  # already done in this callback; handle errors here
+    print("Queued", job.job_id)
+
+def on_result(future):
+    solved = future.result()  # already done; send heavy processing to a worker
+    print(solved.run_id, solved.complete, tuple(solved.quantities))
+
+# Set up on a worker thread; keep and eventually release the subscription ID.
+subscription_id = host.subscribe(on_host_event).result(timeout=5)
+# On consumer disposal: host.unsubscribe(subscription_id)
+```
+
+Register once per retained consumer. A generation backend that subscribes in
+`bind_host` must unsubscribe when its consumer/session is disposed, including
+failed or cancelled generation. Filter `generation_request_id` and
+`job.request_id` when multiple consumers share a document; events cover that
+whole document. There is a limit of 64 live subscriptions per document binding.
+
+New/open project and document removal revoke old handles, drop their
+subscriptions/results, and cancel their work. Accepted regeneration within the
+same project keeps handles valid. Providers are trusted local Python code;
+document scoping is an API ownership rule, not a process sandbox.
+
+### Result queries and errors
+
+`SolvedSystem` is the same canonical model the host uses: complex values per
+frequency/excitation, units/dimensions, domain coordinates/topology, availability
+masks, diagnostics, compiled system, and provenance. Enumerate `solved.quantities`
+or use `solved.quantity(quantity_id)`. Returned copies cannot mutate host results.
+Derived helpers in `blab.solve_results` cover SPL, phase, electrical impedance,
+and velocity-to-excursion conversion. Channel mixing and presentation remain
+distinct from the raw excitation basis.
+
+`current_result()` returns the latest finalized complete or partial host run;
+it does not assert those results match newly edited geometry. Use `result(job_id)`
+to correlate an optimizer evaluation with its request. This API does not expose
+live numerical arrays, pressure probes requiring additional engine work,
+host-driven generation, or custom provider widgets yet.
+
+`ProviderHostError.code` includes `busy`, `stale_revision`, `request_conflict`,
+`invalid_context`, `unknown_job`, `not_ready`, `result_unavailable`,
+`subscription_limit`, and `closed`. Command/status/event schemas are version 1.
+Failures after acceptance appear as terminal job events with a message, not as
+exceptions on the already acknowledged solve Future.
+
+```sh
+python -m pytest tests/test_provider_host.py tests/test_ui_provider_host.py tests/test_solve_workflow_controller.py
+python -m ruff check src tests
 ```
