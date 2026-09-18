@@ -7,7 +7,7 @@
       "level_db": 0.0,
       "lpf": {},
       "polarity": 1,
-      "voltage_v": 100.0
+      "voltage_v": 28.3
     }
   },
   "component_channel_by_id": {
@@ -47,7 +47,7 @@
       ]
     },
     {
-      "cleaned_file": "SkramExterior_interface_conformed.msh",
+      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\skramexterior_ae57a62bcb_interface_conformed.msh",
       "enabled": true,
       "name": "SkramExterior",
       "scale_factor": 0.001,
@@ -71,6 +71,12 @@
       ]
     }
   ],
+  "max_spl_limits_by_channel": {
+    "main": {
+      "pmax_w": 4000.0,
+      "xmax_mm": 15.0
+    }
+  },
   "observation_planes": [],
   "physical_system": {
     "boundaries": [
@@ -156,19 +162,6 @@
         "group": {
           "dimension": 2,
           "mesh_id": "mesh:skramrearchamber",
-          "name": "Diaphragm",
-          "tag": null
-        },
-        "id": "boundary:region-rear-chamber:diaphragm",
-        "kind": "moving",
-        "name": "Diaphragm",
-        "parameters": {},
-        "region_id": "region:rear-chamber"
-      },
-      {
-        "group": {
-          "dimension": 2,
-          "mesh_id": "mesh:skramrearchamber",
           "name": "Interface",
           "tag": null
         },
@@ -176,6 +169,25 @@
         "kind": "interface",
         "name": "Interface",
         "parameters": {},
+        "region_id": "region:rear-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramrearchamber",
+          "name": "Lining",
+          "tag": null
+        },
+        "id": "boundary:region-rear-chamber:lining",
+        "kind": "rigid",
+        "name": "Lining",
+        "parameters": {
+          "wall_impedance": {
+            "flow_resistivity_pa_s_per_m2": 1000.0,
+            "model": "miki",
+            "thickness_m": 0.025
+          }
+        },
         "region_id": "region:rear-chamber"
       },
       {
@@ -190,13 +202,26 @@
         "name": "RearChamber_boundary",
         "parameters": {},
         "region_id": "region:rear-chamber"
+      },
+      {
+        "group": {
+          "dimension": 2,
+          "mesh_id": "mesh:skramrearchamber",
+          "name": "cone",
+          "tag": null
+        },
+        "id": "boundary:region-rear-chamber:cone",
+        "kind": "moving",
+        "name": "cone",
+        "parameters": {},
+        "region_id": "region:rear-chamber"
       }
     ],
     "components": [
       {
         "boundary_ids": [
           "boundary:region-front-chamber:diaphragm",
-          "boundary:region-rear-chamber:diaphragm"
+          "boundary:region-rear-chamber:cone"
         ],
         "id": "component:21sw152-4",
         "kind": "electrodynamic_transducer",
@@ -205,7 +230,7 @@
           "bl_n_per_a": 32.5,
           "boundary_motion_weights": {
             "boundary:region-front-chamber:diaphragm": 1.0,
-            "boundary:region-rear-chamber:diaphragm": 1.0
+            "boundary:region-rear-chamber:cone": 1.0
           },
           "cms_m_per_n": 5e-05,
           "fractional_symmetry_axes": [
@@ -215,8 +240,8 @@
           "mmd_kg": 0.412,
           "motion_axis": [
             0.0,
-            1.8857402735766402e-06,
-            0.9999999999982221
+            3.936591800432725e-06,
+            0.9999999999922518
           ],
           "motion_profile": "rigid_translation",
           "physical_driver_orbit_count": 1,
@@ -262,7 +287,7 @@
     ],
     "meshes": [
       {
-        "file": "SkramExterior_interface_conformed.msh",
+        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\skramexterior_ae57a62bcb_interface_conformed.msh",
         "id": "mesh:skramexterior",
         "name": "SkramExterior",
         "purpose": "bem_surface",
@@ -325,7 +350,7 @@
         "id": "region:front-chamber",
         "kind": "bounded_air",
         "loss_model": {
-          "bulk_loss_factor": 0.05
+          "bulk_loss_factor": 0.02
         },
         "mesh_ids": [
           "mesh:skramfrontchamber"
@@ -346,7 +371,7 @@
         "id": "region:rear-chamber",
         "kind": "bounded_air",
         "loss_model": {
-          "bulk_loss_factor": 0.05
+          "bulk_loss_factor": 0.02
         },
         "mesh_ids": [
           "mesh:skramrearchamber"
@@ -366,14 +391,14 @@
   },
   "project_preferences": {
     "balloon_angle_precision_deg": 2.5,
-    "freq_count": 100,
+    "freq_count": 200,
     "freq_max_hz": 500,
     "freq_min_hz": 20,
     "horizontal_normalization_angle": 0.0,
     "isobar_contour_step_db": 3.0,
     "normalized_channel_correction": false,
-    "polar_angle_step_deg": 1.0,
-    "polar_observation_distance_m": 10.0,
+    "polar_angle_step_deg": 5.0,
+    "polar_observation_distance_m": 1.0,
     "polar_smoothing": null,
     "spherical_sampling_enabled": true,
     "spin_horizontal_reference_angle": 0.0,
