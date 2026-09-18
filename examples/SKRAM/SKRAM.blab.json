@@ -47,7 +47,7 @@
       ]
     },
     {
-      "cleaned_file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\skramexterior_ae57a62bcb_interface_conformed.msh",
+      "cleaned_file": "SkramExterior_interface_conformed.msh",
       "enabled": true,
       "name": "SkramExterior",
       "scale_factor": 0.001,
@@ -287,7 +287,7 @@
     ],
     "meshes": [
       {
-        "file": "E:\\AthGUI\\boundary-lab\\runs\\imported_meshes\\skramexterior_ae57a62bcb_interface_conformed.msh",
+        "file": "SkramExterior_interface_conformed.msh",
         "id": "mesh:skramexterior",
         "name": "SkramExterior",
         "purpose": "bem_surface",
