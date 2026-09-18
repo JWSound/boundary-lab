@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import numpy as np
@@ -53,6 +54,31 @@ def test_normalization_and_sign():
     actual = normalized_acoustic_loading(package, request, result, 100)
     assert actual["resistance"] == pytest.approx([-1, 3])
     assert actual["reactance"] == pytest.approx([2, -2])
+
+
+def test_mixed_loading_uses_each_speakers_parameters_and_driver_count():
+    a, _, result, _ = fixture()
+    b = deepcopy(a)
+    b.manifest["physical_system"]["components"] = b.manifest["physical_system"]["components"][:1]
+    b.manifest["physical_system"]["metadata"]["acoustic_impedance_normalization"]["a"]["effective_area_m2"] = .04
+    b.manifest["physical_system"]["components"][0]["parameters"]["bl_n_per_a"] = 3
+    single_result = {"diagnostics": {key: [{part: values[:1] for part, values in rows[0].items()}]
+                                     for key, rows in result["diagnostics"].items()}}
+    expected_b = normalized_acoustic_loading(b, {"transducers": [{"id": "b:a"}]}, single_result, 100)
+    expected_a = normalized_acoustic_loading(a, {"transducers": [{"id": "a:a"}, {"id": "a:b"}]}, result, 100)
+    combined = {"diagnostics": {key: single_result["diagnostics"][key] + rows
+                                for key, rows in result["diagnostics"].items()}}
+    request = {
+        "speakers": [{"id": "b"}, {"id": "a"}],
+        "transducers": [
+            {"id": "b:a", "source_id": "b", "package_id": "b"},
+            {"id": "a:a", "source_id": "a", "package_id": "a"},
+            {"id": "a:b", "source_id": "a", "package_id": "a"},
+        ],
+    }
+    actual = normalized_acoustic_loading({"a": a, "b": b}, request, combined, 100)
+    for key in actual:
+        assert actual[key] == pytest.approx(expected_b[key] + expected_a[key])
 
 
 @pytest.mark.parametrize("velocity", [0.0, 1e-14, float("nan")])

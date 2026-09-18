@@ -27,6 +27,7 @@ from blab.deploy.solve import (
     prepare_deploy_rom_request,
     prepare_deploy_solve_request,
 )
+from blab.phasor import LEGACY_PHASOR_CONVENTION, convert_phasor
 
 PACKAGE_PATH = Path(__file__).parents[1] / "deploy" / "library" / "S218BP_LOD.blabsp"
 RIGID_MESH_PATH = Path(__file__).parents[1] / "deploy" / "library" / "RigidStage_LOD.msh"
@@ -119,6 +120,7 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
     assert request["provenance"]["exterior_domain"] == "rigid_y0_half_space"
 
     with zipfile.ZipFile(PACKAGE_PATH, "r") as archive:
+        source_convention = json.loads(archive.read("manifest.json")).get("phasor_convention", LEGACY_PHASOR_CONVENTION)
         with np.load(io.BytesIO(archive.read("data/fixed-sources.npz")), allow_pickle=False) as fixed:
             source_q = np.sum(
                 np.asarray(fixed["normal_derivative_pa_per_m"])[TEST_FREQUENCY_INDEX, [0, 1]],
@@ -126,7 +128,7 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
             )
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
     expected = np.asarray(
-        np.conjugate(source_q) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64
+        convert_phasor(source_q, source_convention) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64
     )
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32

@@ -119,11 +119,14 @@ class DeploySolveCache:
         if cached is not None:
             return cached
         package = _load_deploy_package_data(package_path, fingerprint)
-        self.packages.clear()
+        stale = [key for key in self.packages if key[0] == fingerprint[0]]
+        for key in stale:
+            del self.packages[key]
         self.packages[fingerprint] = package
-        self.ground_image_pairs.clear()
-        self.sweep_geometries.clear()
-        self._reset_rom_sweep_stages()
+        if stale:
+            self.ground_image_pairs.clear()
+            self.sweep_geometries.clear()
+            self._reset_rom_sweep_stages()
         return package
 
     def load_rigid_mesh(self, mesh_path: Path) -> DeployRigidMeshData:
