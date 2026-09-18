@@ -247,6 +247,11 @@ button { color: inherit; }
 .slider-row { grid-template-columns: 74px minmax(65px, 1fr) 55px; gap: 8px; }
 .slider-row input[type="range"] { width: 100%; height: 2px; accent-color: var(--accent); cursor: ew-resize; }
 .slider-row output { justify-self: end; color: #cbd2c9; font: 500 9px/1 "Cascadia Mono", "Consolas", monospace; }
+.slider-row.slider-row-editable { grid-template-columns: 74px minmax(40px, 1fr) 76px; }
+.slider-value { display: flex; align-items: center; height: 25px; border: 1px solid #343b35; border-radius: 5px; background: #121613; }
+.slider-value:focus-within { border-color: var(--accent); }
+.slider-value input { width: 55px; min-width: 0; padding: 0 4px; border: 0; outline: none; color: #d2d8d0; background: transparent; font: 500 9px/1 "Cascadia Mono", "Consolas", monospace; }
+.slider-value > span { color: #8d968e; font-size: 8px; }
 .plane-resolution-row { grid-template-columns: 74px minmax(65px, 1fr) 62px; gap: 8px; }
 .plane-resolution-row input { width: 100%; height: 2px; accent-color: var(--accent); cursor: ew-resize; }
 .plane-resolution-row output { justify-self: end; color: #cbd2c9; font: 500 9px/1 "Cascadia Mono", "Consolas", monospace; }

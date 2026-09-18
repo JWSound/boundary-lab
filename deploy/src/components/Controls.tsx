@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { Box, CircleDot, Grid3X3, Mic2, Palette, Plus, Radio, Speaker, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { ChangeEvent, MouseEvent, ReactNode } from "react";
+import { useState } from "react";
 import type {
   LoadedSpeakerPackage,
   MicrophoneConfiguration,
@@ -197,12 +198,15 @@ interface SliderProps {
   maximum: number;
   step: number;
   unit?: string;
+  editable?: boolean;
   onChange: (value: number) => void;
 }
 
-export function Slider({ label, value, minimum, maximum, step, unit = "", onChange }: SliderProps) {
+export function Slider({ label, value, minimum, maximum, step, unit = "", editable = false, onChange }: SliderProps) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const formattedValue = value.toFixed(step < 0.1 ? 2 : step < 1 ? 1 : 0);
   return (
-    <label className="control-row slider-row">
+    <div className={`control-row slider-row${editable ? " slider-row-editable" : ""}`}>
       <span>{label}</span>
       <input
         aria-label={label}
@@ -213,8 +217,31 @@ export function Slider({ label, value, minimum, maximum, step, unit = "", onChan
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-      <output>{value.toFixed(step < 0.1 ? 2 : step < 1 ? 1 : 0)}{unit}</output>
-    </label>
+      {editable ? (
+        <span className="slider-value">
+          <input
+            aria-label={`${label} value${unit ? ` (${unit.trim()})` : ""}`}
+            type="number"
+            min={minimum}
+            max={maximum}
+            step={step}
+            value={draft ?? formattedValue}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={() => {
+              if (draft !== null && draft.trim() !== "" && Number.isFinite(Number(draft))) {
+                onChange(Math.min(maximum, Math.max(minimum, Number(draft))));
+              }
+              setDraft(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") setDraft(null);
+            }}
+          />
+          <span>{unit.trim()}</span>
+        </span>
+      ) : <output>{formattedValue}{unit}</output>}
+    </div>
   );
 }
 
@@ -278,7 +305,7 @@ export function SourceInspector({
           </select>
         </label>
         <Slider label="Object level" value={config.levelDb} minimum={-24} maximum={12} step={0.5} unit=" dB" onChange={(value) => set("levelDb", value)} />
-        <Slider label="Object delay" value={config.delayMs} minimum={0} maximum={20} step={0.05} unit=" ms" onChange={(value) => set("delayMs", value)} />
+        <Slider label="Object delay" value={config.delayMs} minimum={0} maximum={25} step={0.05} unit=" ms" editable onChange={(value) => set("delayMs", value)} />
         <label className="control-row toggle-row">
           <span>Polarity</span>
           <button
@@ -330,7 +357,7 @@ export function ChannelsPanel({
       <div className="inspector-section channel-controls">
         <label className="control-row channel-name-row"><span>Name</span><input value={channel.name} onChange={(event) => set("name", event.target.value)} /></label>
         <Slider label="Level" value={channel.levelDb} minimum={-24} maximum={12} step={0.5} unit=" dB" onChange={(value) => set("levelDb", value)} />
-        <Slider label="Delay" value={channel.delayMs} minimum={0} maximum={100} step={0.05} unit=" ms" onChange={(value) => set("delayMs", value)} />
+        <Slider label="Delay" value={channel.delayMs} minimum={0} maximum={25} step={0.05} unit=" ms" editable onChange={(value) => set("delayMs", value)} />
         <label className="control-row toggle-row"><span>Polarity</span><button className={channel.polarity === -1 ? "toggle active" : "toggle"} onClick={() => set("polarity", channel.polarity === 1 ? -1 : 1)}>{channel.polarity === 1 ? "Normal" : "Inverted"}</button></label>
         <label className="control-row toggle-row"><span>Mute</span><button className={channel.muted ? "toggle active" : "toggle"} onClick={() => set("muted", !channel.muted)}>{channel.muted ? "Muted" : "Active"}</button></label>
         <button className="processing-button" onClick={() => onOpenEqualizer(channel)}><SlidersHorizontal size={13} /> Open channel EQ...</button>
