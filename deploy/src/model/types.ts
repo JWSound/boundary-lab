@@ -39,6 +39,7 @@ export interface SpeakerPackageManifest {
 }
 
 export interface LoadedSpeakerPackage {
+  viewportModel?: import("../io/viewportModel").ViewportModel;
   id: string;
   fileName: string;
   sourcePath: string | null;

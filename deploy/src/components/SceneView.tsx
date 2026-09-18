@@ -10,6 +10,8 @@ import {
   Euler,
   FloatType,
   Group,
+  Mesh,
+  MeshPhongMaterial,
   NearestFilter,
   MathUtils,
   Plane,
@@ -722,8 +724,30 @@ function SpeakerGeometry({
       window.removeEventListener("blur", finish);
     };
   }, [onManipulationEnd, orbitControls]);
+  const viewport = "viewportModel" in pkg ? pkg.viewportModel : undefined;
+  const visualObject = useMemo(() => {
+    if (!viewport) return null;
+    const object = viewport.object.clone(true);
+    object.traverse((child) => {
+      if (!(child instanceof Mesh)) return;
+      const highlight = (material: MeshPhongMaterial) => {
+        const copy = material.clone();
+        if (selected && copy.emissive) copy.emissive.set("#2a3218");
+        return copy;
+      };
+      child.material = Array.isArray(child.material) ? child.material.map(highlight) : highlight(child.material);
+    });
+    return object;
+  }, [viewport, selected]);
+  useEffect(() => () => {
+    visualObject?.traverse((child) => {
+      if (child instanceof Mesh) {
+        for (const material of Array.isArray(child.material) ? child.material : [child.material]) material.dispose();
+      }
+    });
+  }, [visualObject]);
   const geometry = useMemo(() => {
-    if (!pkg.mesh) return null;
+    if (viewport || !pkg.mesh) return null;
     const converted = new Float32Array(pkg.mesh.positions.length);
     for (let index = 0; index < pkg.mesh.positions.length; index += 3) {
       converted[index] = pkg.mesh.positions[index];
@@ -735,7 +759,8 @@ function SpeakerGeometry({
     result.setIndex(new BufferAttribute(pkg.mesh.indices, 1));
     result.computeVertexNormals();
     return result;
-  }, [pkg]);
+  }, [pkg, viewport]);
+  useEffect(() => () => geometry?.dispose(), [geometry]);
   const quaternion = useMemo(
     () => new Quaternion().setFromEuler(
       new Euler(
@@ -930,7 +955,7 @@ function SpeakerGeometry({
           onSelect(event.nativeEvent.ctrlKey || event.nativeEvent.metaKey);
         }}
       >
-        {geometry ? (
+        {visualObject ? <primitive object={visualObject} dispose={null} /> : geometry ? (
           <mesh geometry={geometry} castShadow receiveShadow>
             <meshStandardMaterial
               color={selected ? "#e0d5bd" : rigidBoundary ? "#7b7162" : "#667176"}

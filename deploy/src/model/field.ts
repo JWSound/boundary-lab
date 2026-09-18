@@ -284,6 +284,12 @@ export function buildSourceInstance(config: SourceConfiguration): SpeakerInstanc
 export const SOURCE_GROUND_CLEARANCE_M = 0;
 
 export function minimumSourceHeightM(pkg: LoadedSpeakerPackage | RigidMeshAsset, pitchDeg = 0, rollDeg = 0): number {
+  if ("viewportModel" in pkg && pkg.viewportModel) {
+    const { viewportModel, ...acoustic } = pkg;
+    const visual = { ...acoustic, mesh: viewportModel.mesh };
+    if (!acoustic.mesh) return minimumSourceHeightM(visual, pitchDeg, rollDeg);
+    return Math.max(minimumSourceHeightM(acoustic, pitchDeg, rollDeg), minimumSourceHeightM(visual, pitchDeg, rollDeg));
+  }
   const rotation = new Quaternion().setFromEuler(new Euler(
     MathUtils.degToRad(pitchDeg),
     0,

@@ -1,6 +1,7 @@
 import { strFromU8, unzipSync } from "fflate";
 import { asComplexFloat32, asFloat32, asFloat64, parseNpy, type NpyArray } from "./npy";
 import type { LoadedSpeakerPackage, SpeakerMesh, SpeakerPackageManifest } from "../model/types";
+import { parseViewportModel } from "./viewportModel";
 
 function npzEntries(bytes: Uint8Array): Record<string, NpyArray> {
   const files = unzipSync(bytes);
@@ -95,6 +96,17 @@ export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string, sourceP
     ? parseGmshSurface(strFromU8(files[geometryPath]))
     : null;
 
+  const visual = manifest.files.viewport_model;
+  let viewportModel;
+  if (visual) {
+    if (!files[visual.path]) throw new Error("Speaker package is missing its viewport OBJ.");
+    if (visual.coordinate_frame !== "package" || visual.unit !== "m") {
+      throw new Error("Unsupported viewport model coordinates.");
+    }
+    const materialPath = visual.material_path;
+    viewportModel = parseViewportModel(strFromU8(files[visual.path]),
+      typeof materialPath === "string" && files[materialPath] ? strFromU8(files[materialPath]) : undefined);
+  }
   return {
     id: stableId(fileName, manifest),
     fileName,
@@ -106,7 +118,8 @@ export function loadSpeakerPackage(bytes: ArrayBuffer, fileName: string, sourceP
     pressure,
     pressureShape: pressureArray.shape as [number, number, number],
     mesh,
-    boundsM: boundsFromMesh(mesh),
+    viewportModel,
+    boundsM: boundsFromMesh(viewportModel?.mesh ?? mesh),
     isDemo: false,
   };
 }

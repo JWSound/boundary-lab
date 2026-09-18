@@ -133,6 +133,14 @@ plots.
 
 ## Exporting Speaker Packages
 
+The export dialog accepts an optional **Viewport model** (`.obj`). Choose its
+units and check the displayed dimensions. The model must be fully expanded,
+use +Z forward, and share the acoustic model's origin. It is embedded in the
+package and displayed by Deploy without changing the acoustic solve geometry.
+Associated `.mtl` files in the OBJ directory are detected automatically (including
+a same-name fallback). Material colors are supported; texture maps are omitted
+with a message in the dialog. For the S218BP example OBJ, select **Centimeters**.
+
 Use **File > Export Speaker Package...** to configure a package and select
 **Solve and Export**. Boundary Lab starts a new physical-system solve with the
 raw complex quantities required by the selected fidelity; it does not reuse a
