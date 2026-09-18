@@ -44,6 +44,8 @@ class GuiPreferences:
         self.solve_backend = "beat_cpu" if backend in {"local", "server"} else backend
 
     theme: str = "system"
+    default_geometry_provider: str = "ath"
+    enabled_geometry_providers: tuple[str, ...] = ()
     solve_backend: str = "beat_cpu"
     solve_server_url: str = "http://127.0.0.1:8765"
     solve_server_access_key: str = field(default="", repr=False)
@@ -162,7 +164,14 @@ def gui_preferences_with_project_preferences(
 
 def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
+    enabled = settings.value("providers/enabled", [])
+    if isinstance(enabled, str):
+        enabled = [enabled] if enabled else []
+    if not isinstance(enabled, (list, tuple)):
+        enabled = []
     return GuiPreferences(
+        default_geometry_provider=settings_str(settings, "providers/default", "ath"),
+        enabled_geometry_providers=tuple(item for item in enabled if isinstance(item, str) and item),
         theme=normalize_theme(settings_str(settings, "preferences/theme", defaults.theme)),
         solve_backend=normalize_backend_id(settings_str(settings, "preferences/solve_backend", defaults.solve_backend)),
         solve_server_url=settings_str(settings, "preferences/solve_server_url", defaults.solve_server_url),
@@ -254,6 +263,8 @@ def load_gui_preferences(settings: QSettings) -> GuiPreferences:
 
 
 def save_gui_preferences(settings: QSettings, preferences: GuiPreferences) -> None:
+    settings.setValue("providers/default", preferences.default_geometry_provider)
+    settings.setValue("providers/enabled", list(preferences.enabled_geometry_providers))
     settings.setValue("preferences/theme", preferences.theme)
     settings.setValue("preferences/solve_backend", preferences.solve_backend)
     settings.setValue("preferences/cuda_worker_reuse", preferences.cuda_worker_reuse)

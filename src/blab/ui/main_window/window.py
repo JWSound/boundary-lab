@@ -273,6 +273,10 @@ class MainWindow(
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.preferences = self._load_preferences()
+        from blab.generators.catalog import provider_catalog
+
+        provider_catalog().enabled = set(self.preferences.enabled_geometry_providers)
+        provider_catalog().scan()
         # Needed before the design tabs are built.
         self.syntax_highlighting_enabled = load_syntax_highlighting_enabled(self.settings)
         self.project_session = ProjectSession()
@@ -323,6 +327,7 @@ class MainWindow(
             save_frequency_settings=lambda: self._save_frequency_settings(),
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
+            default_document_factory=self.new_default_generator_document,
             activities=self.activities,
             preparations=self.preparations,
         )
@@ -348,7 +353,6 @@ class MainWindow(
         self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
         self.editor_tabs.tabCloseRequested.connect(self._remove_generator_document_at)
         self.editor_tabs.tabBar().installEventFilter(self)
-        self.rebuild_generator_document_tabs()
 
         startup("Creating mesh preview...")
         from blab.ui.mesh_preview import MeshPreview
@@ -525,6 +529,8 @@ class MainWindow(
         self._connect_operation_controllers()
         self.provider_host = DesktopProviderHost(self)
         self.geometry_controller.host_factory = self.provider_host.bind
+        self.geometry_controller.state_changed.connect(self.update_provider_editor_states)
+        self.solve_controller.state_changed.connect(self.update_provider_editor_states)
         startup("Restoring window layout...")
         self._restore_window_state()
         startup("Starting new project...")
@@ -643,6 +649,7 @@ class MainWindow(
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
+        self.dispose_provider_editors()
         self.provider_host.close()
         self.preparations.close()
         self.activities.clear()

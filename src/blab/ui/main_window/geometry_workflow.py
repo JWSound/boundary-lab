@@ -73,6 +73,10 @@ class GeometryWorkflowController(QObject):
 
     # -- generation ---------------------------------------------------------
 
+    @property
+    def pending_request_id(self) -> str | None:
+        return self._pending_request_id
+
     @Slot()
     def generate_geometry(self) -> None:
         if self._geometry_controller.active or self._solve_controller.active:
@@ -87,6 +91,10 @@ class GeometryWorkflowController(QObject):
         provider_options = {}
         try:
             provider = generator_info(document.provider_id)
+            if not provider.available:
+                raise ValueError(f"Provider {provider.label} is unavailable.")
+            if document.provider_schema_version != provider.source_schema_version:
+                raise ValueError("Provider source schema is incompatible; automatic source migration is not supported.")
             if document.provider_id == ATH_PROVIDER_ID:
                 provider_options["ath_exe"] = str(self._find_ath_exe())
         except Exception as exc:

@@ -1,8 +1,8 @@
 # Geometry provider API: generation and configuration
 
 This guide covers the implemented provider API (exchange schema version `1`):
-generation, configuration, in-memory geometry, and host solve/result services.
-It is not yet the complete plugin SDK.
+generation, configuration, in-memory geometry, host solve/result services,
+local package discovery, and custom document editors.
 
 ## Implemented boundary
 
@@ -39,8 +39,9 @@ is complete.
   groups and legacy radiator hints. Existing FEM/coupled models can be edited
   within the provider's ownership scope. Creating a new multi-mesh FEM/coupled
   contribution is not implemented in this increment.
-- Registration is explicit Python registration; folder discovery, manifests,
-  installation preferences and provider editor widgets remain future work.
+- Local folders with a `provider.json` manifest appear in Preferences → Geometry
+  providers → Manage packages. Enable a package before its code can be loaded.
+  Custom widgets live inside the host's design dock; Ath remains the default.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
   The host owns the frequency range and count; provider commands cannot change them.
@@ -209,6 +210,142 @@ be restored without importing the provider. File artifacts still use
 `backend.restore()`. A provider is required to generate again. Multi-mesh provider
 contributions remain a separate increment.
 
+## Installing and developing provider packages
+
+Copy a package folder into `<Boundary Lab>/geometry_providers/`, the application's
+only provider location. Preferences → Geometry providers → Manage packages offers
+an **Open install folder** shortcut and **Rescan**. Enable the
+package, accept Preferences, then choose it as the **default geometry provider**
+for new designs. Existing designs keep their own provider ID. Newly discovered
+packages are disabled until enabled; opening a project never enables a package.
+
+The runnable [Example Box package](../../examples/geometry_providers/example_box/)
+contains a custom Qt editor and a backend producing a closed mesh in memory.
+Copy its `example_box` folder, enable **Example Box**, select it as the default,
+and add a design. Edit the dimensions and click the host's **Generate** button.
+Its twelve triangles demonstrate the integration rather than acoustic accuracy.
+
+```text
+example_box/
+  provider.json
+  box/
+    __init__.py
+    backend.py
+    editor.py
+```
+
+```json
+{
+  "manifest_version": 1,
+  "id": "example.box",
+  "name": "Example Box",
+  "version": "0.1.0",
+  "provider_api": 1,
+  "source_schema_version": 1,
+  "backend": "box.backend:create_backend",
+  "editor": "box.editor:create_editor",
+  "default_source": {"width_m": 0.1, "height_m": 0.1, "depth_m": 0.1},
+  "mesh_scale_factor": 1.0
+}
+```
+
+| Manifest field | Contract |
+| --- | --- |
+| `manifest_version`, `provider_api` | Required integer `1`; incompatible versions cannot load |
+| `id` | Stable lowercase ID; duplicate IDs, including `ath`, are conflicts |
+| `name`, `version` | Required display strings |
+| `source_schema_version` | Required positive integer; must equal the saved design schema |
+| `backend` | Required `module:factory`; factory accepts host runtime keyword options and returns a backend |
+| `editor` | Optional `module:factory`; called on the GUI thread as `factory(parent, document_host)` |
+| `default_source` | Optional JSON object, defaults to `{}`; copied into new designs |
+| `mesh_scale_factor` | Optional positive units-to-metres conversion, defaults to `1.0` |
+
+Discovery reads manifests and fingerprints Python sources without importing
+them. Only enabled packages load code, lazily. Backend factories run in generation
+workers; editor factories run on the GUI thread. Do not import Qt from your backend
+or access widgets during generation. Use relative imports for private modules:
+packages receive a private module namespace, without additions to `sys.path`.
+
+Providers are trusted in-process Python code, with the application's filesystem
+and process access. This is not a sandbox. Use host dependencies or package-private
+Python modules; the host does not run pip, create environments, or install native
+dependencies. Binary extensions must match the host's Python and platform.
+Loaded Python code is retained for the process lifetime. After modifying or
+replacing a loaded package, restart Boundary Lab; rescan is not hot reload.
+
+### Editor and document contract
+
+Return an adapter implementing `blab.ui.provider_editor.ProviderEditor`:
+
+```python
+class WaveguideEditor:
+    widget: QWidget  # your own widget, not a QDockWidget
+
+    def apply_source(self, source: dict, revision: str) -> None:
+        # Populate controls without emitting edits back to the host.
+        ...
+
+    def set_operation_state(self, state) -> None:
+        # state.active, state.phase, state.message; keep this callback short.
+        ...
+
+    def dispose(self) -> None:
+        # Disconnect your signals; stop your timers and private workers.
+        ...
+```
+
+Boundary Lab owns dock placement, tabs, Generate/Stop, project persistence, and
+widget deletion. Its dock retains the existing `ath_editor_dock` layout identity.
+Ath uses this same adapter lifecycle. Each rebuild disposes old editors and
+creates new ones; keep persistent parameters in source, not just in widget state.
+
+The supplied `DocumentHost` exposes:
+
+| Method/property | Meaning |
+| --- | --- |
+| `document_id`, `provider_id` | This editor's document identity |
+| `snapshot()` | Detached `SourceSnapshot(source, revision, schema_version)` |
+| `update_source(source, expected_revision=...)` | Replace the whole source JSON object; return a fresh snapshot |
+| `generate(expected_revision=...)` | Select this document, start normal generation, return the request ID |
+| `services` | Scoped `ProviderHost`: context, solve, status, cancel, result, current_result, subscribe, unsubscribe |
+
+Source methods and `generate` are synchronous and GUI-thread only. Source updates
+are persisted immediately in the project model and participate in unsaved-change
+tracking, before generation. Retain unknown source fields when updating controls.
+Revisions are opaque content tokens: stale updates and commands raise
+`ProviderHostError`; read a fresh snapshot and reconcile controls. This source
+revision is distinct from the project revision required by `SolveCommand`.
+
+```python
+snapshot = document_host.snapshot()
+source = snapshot.source | {"width_m": width_spin.value()}
+snapshot = document_host.update_source(source, expected_revision=snapshot.revision)
+request_id = document_host.generate(expected_revision=snapshot.revision)
+```
+
+`generate` rejects busy hosts; it does not queue interactive mesh requests. Coalesce
+slider edits until release. Source edits made during generation invalidate its
+captured revision, so the host rejects stale geometry on return. Normal editors
+disable controls while `state.active` is true.
+
+`services` retains the asynchronous Future contract described below. Its event
+callbacks execute on the host GUI thread. An editor can subscribe to
+`geometry_accepted`, then submit `SolveCommand(event.context.project_revision)`
+through `document_host.services.solve(...)`. Match the generation request ID if
+only a particular generation should trigger a solve. Wait for acceptance, not
+just completion of `generate()`, which only starts the worker. Never block the
+GUI thread waiting on a host Future.
+
+Editor subscriptions are automatically removed on disposal, including pending
+subscription acknowledgements; late events cannot call the disposed editor.
+Disposed document handles reject new calls. New/open project operations invalidate
+old handles even when document IDs happen to match.
+
+Missing/disabled/incompatible providers and editor construction failures show a
+read-only placeholder with the original source. Saved memory artifacts restore
+without provider code. No automatic source-schema migration is performed; an
+incompatible schema disables generation until a compatible provider is installed.
+
 ## Explicit registration during development
 
 ```python
@@ -229,9 +366,9 @@ provider, including Ath. Development code must explicitly register the backend
 before loading/generating its documents. Project loading does not import code
 from paths supplied by a project.
 
-The current UI displays non-Ath source as read-only JSON. Use a programmatically
-created `GeneratorDocument` or project file to exercise a registered backend
-until custom editor adapters are available.
+Explicit registration remains useful for tests and embedded hosts. Distributable
+providers should use the manifest contract below. Providers without an editor
+display preserved source as read-only JSON and can still generate.
 
 ## Validation
 
@@ -305,9 +442,9 @@ Exact Level-3 package export still requires file assets. Explicit project/result
 saving can write to disk as usual.
 
 Solve and preview can consume the same immutable snapshot independently. Host
-services below support solve requests after generation, but automatic slider
-widgets, concurrent preparation, custom docks, and folder discovery remain
-separate work.
+services below support solve requests after generation. Provider widgets can
+commit a slider value and request generation on release. Concurrent preview and
+solve preparation remains separate work.
 
 ```sh
 python -m pytest tests/test_memory_mesh.py tests/test_exterior_preparation.py

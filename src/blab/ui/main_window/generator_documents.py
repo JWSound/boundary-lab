@@ -3,22 +3,27 @@
 from __future__ import annotations
 
 import json
+import logging
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Slot
 from PySide6.QtWidgets import (
+    QDockWidget,
     QInputDialog,
     QPlainTextEdit,
     QTabBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from blab.generators.application import stage_generation
-from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
+from blab.generators.ath import ATH_PROVIDER_ID, with_ath_source_text
 from blab.generators.base import GeneratedGeometry, GenerationCompleted, GeneratorDocument
+from blab.generators.catalog import provider_catalog
 from blab.generators.configuration import configuration_snapshot, project_revision
-from blab.generators.registry import restore_generator_document
+from blab.generators.registry import generator_info, restore_generator_document
 from blab.project.model import (
     generator_mesh_name,
     new_generator_document,
@@ -30,6 +35,7 @@ from blab.ui.main_window.constants import (
     ADD_DESIGN_TAB_LABEL,
 )
 from blab.ui.main_window_widgets import TabCloseButton
+from blab.ui.provider_editor import AthProviderEditor, DocumentHost
 from blab.ui.settings import save_syntax_highlighting_enabled
 
 
@@ -77,26 +83,82 @@ class GeneratorDocumentsMixin:
             self.ensure_seeded_exterior_system()
         return result
 
+    def dispose_provider_editors(self) -> None:
+        for editor, host in getattr(self, "_provider_editors", {}).values():
+            host.dispose()
+            try:
+                editor.dispose()
+            except Exception:
+                logging.getLogger(__name__).exception("Provider editor disposal failed")
+        self._provider_editors = {}
+
+    def update_provider_editor_states(self, _state=None) -> None:
+        state = (self.geometry_controller.state if self.geometry_controller.active
+                 else self.solve_controller.state)
+        for editor, _host in getattr(self, "_provider_editors", {}).values():
+            try:
+                editor.set_operation_state(state)
+            except Exception:
+                logging.getLogger(__name__).exception("Provider editor state update failed")
+
     def rebuild_generator_document_tabs(self) -> None:
+        self.dispose_provider_editors()
         self.editor_tabs.blockSignals(True)
-        self.editor_tabs.clear()
+        while self.editor_tabs.count():
+            widget = self.editor_tabs.widget(0)
+            self.editor_tabs.removeTab(0)
+            widget.deleteLater()
         for document in self.generator_documents:
-            # Another provider's tab shows JSON, which the Ath rules misread.
-            is_ath = document.provider_id == ATH_PROVIDER_ID
-            editor = AthScriptEditor(highlight_syntax=is_ath and self.syntax_highlighting_enabled)
-            if is_ath:
-                editor.setPlainText(ath_source_text(document))
-                editor.textChanged.connect(
-                    lambda document_id=document.id, editor=editor: self._update_generator_source_text(
-                        document_id, editor
+            host = DocumentHost(self, document)
+            adapter = None
+            container = None
+            try:
+                info = generator_info(document.provider_id)
+                if document.provider_schema_version != info.source_schema_version:
+                    raise ValueError("Incompatible provider source schema; source has been preserved.")
+                if document.provider_id == ATH_PROVIDER_ID:
+                    adapter = AthProviderEditor(self.editor_tabs, host,
+                                                highlight_syntax=self.syntax_highlighting_enabled)
+                    adapter.widget.configDropped.connect(
+                        lambda path, document_id=document.id: self.import_config_path(Path(path), document_id=document_id)
                     )
-                )
-                editor.configDropped.connect(
-                    lambda path, document_id=document.id: self.import_config_path(Path(path), document_id=document_id)
-                )
-            else:
-                editor.setPlainText(json.dumps(document.source, indent=2, sort_keys=True))
+                else:
+                    factory = provider_catalog().factory(document.provider_id, "editor")
+                    if factory is None:
+                        raise ValueError("This provider does not supply a custom editor.")
+                    # Own even partially constructed child widgets if a factory raises.
+                    container = QWidget(self.editor_tabs)
+                    container.hide()
+                    layout = QVBoxLayout(container)
+                    layout.setContentsMargins(0, 0, 0, 0)
+                    adapter = factory(container, host)
+                if (not isinstance(adapter.widget, QWidget) or isinstance(adapter.widget, QDockWidget)
+                        or adapter.widget is self.editor_tabs or adapter.widget is container):
+                    raise TypeError("Provider must supply its own widget.")
+                for method in ("apply_source", "set_operation_state", "dispose"):
+                    if not callable(getattr(adapter, method, None)):
+                        raise TypeError(f"Provider editor is missing {method}().")
+                snapshot = host.snapshot()
+                adapter.apply_source(snapshot.source, snapshot.revision)
+                editor = adapter.widget
+                if container is not None:
+                    layout.addWidget(editor)
+                    editor = container
+                self._provider_editors[document.id] = (adapter, host)
+            except Exception as exc:
+                host.dispose()
+                if container is not None:
+                    container.deleteLater()
+                if adapter is not None:
+                    try:
+                        adapter.dispose()
+                        adapter.widget.deleteLater()
+                    except Exception:
+                        logging.getLogger(__name__).exception("Failed editor cleanup")
+                editor = QPlainTextEdit()
                 editor.setReadOnly(True)
+                editor.setPlainText(f"{document.provider_id}: {exc}\n\n" +
+                                    json.dumps(document.source, indent=2, sort_keys=True))
             self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
         add_tab = AthScriptEditor(highlight_syntax=False)
         add_tab.setReadOnly(True)
@@ -108,6 +170,8 @@ class GeneratorDocumentsMixin:
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
         self.editor_tabs.blockSignals(False)
+        self.update_provider_editor_states()
+        self._refresh_generate_availability()
 
     def _install_tab_close_button(self, index: int, name: str) -> None:
         button = TabCloseButton(f"Close {name}")
@@ -164,11 +228,40 @@ class GeneratorDocumentsMixin:
             return
         if 0 <= index < len(self.generator_documents):
             self.active_generator_document_id = self.generator_documents[index].id
+            self._refresh_generate_availability()
+
+    def _refresh_generate_availability(self):
+        if not hasattr(self, "generate_button"):
+            return
+        document = self.active_generator_document()
+        try:
+            info = generator_info(document.provider_id) if document else None
+            available = bool(info and info.available and info.source_schema_version == document.provider_schema_version)
+        except ValueError:
+            available = False
+        self.generate_button.setEnabled(available and not self.geometry_controller.active
+                                        and not self.solve_controller.active and not self.preparations.active)
+
+    def new_default_generator_document(self, name):
+        provider_id = self.preferences.default_geometry_provider
+        if provider_id == ATH_PROVIDER_ID:
+            return new_generator_document(name, "")
+        # Defaults are declarative: creating a design never instantiates a backend.
+        manifest = provider_catalog().package(provider_id).manifest
+        return replace(new_generator_document(
+            name, provider_id=provider_id, provider_schema_version=manifest.source_schema_version,
+            source=deepcopy(manifest.default_source),
+        ), mesh_scale_factor=manifest.mesh_scale_factor)
 
     @Slot()
     def add_generator_document(self) -> None:
         name = unique_generator_name("waveguide", self.generator_documents)
-        document = new_generator_document(name, "")
+        try:
+            document = self.new_default_generator_document(name)
+        except ValueError as exc:
+            self.show_error("Geometry provider unavailable", str(exc))
+            self.editor_tabs.setCurrentIndex(self.active_generator_document_index())
+            return
         self.generator_documents = (*self.generator_documents, document)
         self.active_generator_document_id = document.id
         self.rebuild_generator_document_tabs()
