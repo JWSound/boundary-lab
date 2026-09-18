@@ -121,15 +121,25 @@ class PreferencesMixin:
             self.restoreGeometry(geometry)
 
         dock_state = self.settings.value("window/dock_state")
-        first_run = dock_state is None
-        if first_run:
-            dock_state = QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii"))
-        if dock_state is not None:
-            self.workspace.restoreState(dock_state)
-        if first_run:
-            self.preview_dock.show()
-            for dock in self.plot_docks.values():
-                dock.hide()
+        if dock_state is None:
+            self.reset_window_layout()
+            return
+        self.workspace.restoreState(dock_state)
+        self._sync_dock_view_actions()
+
+    @Slot()
+    def reset_window_layout(self) -> None:
+        """Put every dock back where a first run would, hiding the plots."""
+        for dock in (self.editor_dock, self.preview_dock, *self.plot_docks.values()):
+            dock.setFloating(False)
+        self.workspace.restoreState(QByteArray.fromBase64(DEFAULT_DOCK_STATE_B64.encode("ascii")))
+        self.editor_dock.show()
+        self.preview_dock.show()
+        for dock in self.plot_docks.values():
+            dock.hide()
+        self._sync_dock_view_actions()
+
+    def _sync_dock_view_actions(self) -> None:
         for dock_id in ("editor", "preview"):
             self._sync_panel_view_action(dock_id)
         for entry in self.plot_entries:

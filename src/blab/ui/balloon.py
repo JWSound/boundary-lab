@@ -290,6 +290,10 @@ class BalloonPlotWindow(QMainWindow):
         view_menu.addAction(self.wavefront_shape_dock.toggleViewAction())
         view_menu.addAction(self.isobar_dock.toggleViewAction())
         self.wavefront_shape_dock.hide()
+        view_menu.addSeparator()
+        reset_layout_action = QAction("Reset Layout to Default", self)
+        reset_layout_action.triggered.connect(self.reset_window_layout)
+        view_menu.addAction(reset_layout_action)
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -298,6 +302,7 @@ class BalloonPlotWindow(QMainWindow):
         layout.addWidget(self.hover_label)
         self.setCentralWidget(central)
 
+        self._default_dock_state = self.workspace.saveState()
         self._restore_window_state()
         QTimer.singleShot(0, self._prepare_and_render_initial)
 
@@ -835,6 +840,12 @@ class BalloonPlotWindow(QMainWindow):
         dock_state = self.settings.value("balloon_window/dock_state")
         if dock_state is not None:
             self.workspace.restoreState(dock_state)
+
+    def reset_window_layout(self) -> None:
+        """Put every dock back where it was when the window was first built."""
+        for dock in self.workspace.findChildren(QDockWidget):
+            dock.setFloating(False)
+        self.workspace.restoreState(self._default_dock_state)
 
     def _save_window_state(self) -> None:
         self.settings.setValue("balloon_window/geometry", self.saveGeometry())
