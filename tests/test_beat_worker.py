@@ -132,7 +132,6 @@ sys.meta_path.insert(0, RejectSourceAdapter())
 import blab.headless
 import blab.solvers.coupled_backend
 import blab.solvers.coupled_field
-import blab.deploy.worker
 """
     root = Path(__file__).resolve().parents[1]
     process = subprocess.run(

@@ -72,5 +72,7 @@ python -m pytest
 Use a uniquely versioned BEAT prerelease for cross-repository feature work, then
 restore the released wheel/hash pin before merging the application change.
 Development main uses a `.dev0` Python version until a release PR selects a unique
-stable or `rcN` version. The legacy `deploy/` directory is a historical snapshot;
-new Deploy contributions belong in JWSound/boundary_lab_deploy.
+stable or `rcN` version. Deploy application code, package-consumer tests and
+benchmark/ROM developer scripts live in JWSound/boundary_lab_deploy. Boundary Lab
+retains speaker-package export and archive-contract tests. The former embedded
+Deploy implementation remains available in Git history.
