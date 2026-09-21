@@ -1,0 +1,49 @@
+name: Release candidate
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag on a tested main commit (vX.Y.Z or vX.Y.ZrcN)
+        required: true
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate release metadata and exact commit CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python scripts/release_tools.py check "$RELEASE_TAG"
+          python scripts/release_tools.py require-ci ci.yml
+      - run: python -m pip install build
+      - run: python -m build
+      - name: Verify the built wheel installs outside the checkout
+        run: |
+          python -m venv /tmp/release-smoke
+          /tmp/release-smoke/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/release-smoke/bin/python -c "import importlib.metadata; print(importlib.metadata.version('boundary-lab'))"
+      - run: cp 01_install_update_boundary-lab.bat dist/
+      - run: python scripts/release_tools.py checksums dist
+      - name: Create draft with complete assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *rc* ]]; then prerelease=(--prerelease); fi
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --draft "${prerelease[@]}" --title "$RELEASE_TAG" --notes-file "docs/releases/${RELEASE_TAG#v}.md"

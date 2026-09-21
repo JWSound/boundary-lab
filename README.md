@@ -22,7 +22,8 @@ While not required, if modeling in Autodesk Fusion, the [Fusion2Msh](https://git
 
 ## Windows quick start
 
-1. Double-click `01_install_update_boundary-lab.bat` in the repository folder.
+1. Download a stable source archive from [Releases](https://github.com/JWSound/boundary-lab/releases/latest), extract it, and double-click `01_install_update_boundary-lab.bat`.
+   For an older Git installation, first replace the updater with the `.bat` asset from the latest release; older copies still pull `main`.
 2. Follow the guided prompts. The installer creates the Python environment and
    installs the BEAT Engine solver and can optionally prepare its Julia
    CPU, NVIDIA CUDA, and AMD ROCm environments.
