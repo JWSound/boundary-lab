@@ -57,3 +57,20 @@ in a virtual environment. Do not use the stable updater to manage a feature bran
 
 The 0.4.4 maintenance release contains the updater migration only. Development
 changes are reconciled afterward and do not enter stable until a later release.
+
+## Local contribution checks
+
+Use Python 3.11+ in a virtual environment:
+
+```sh
+python -m pip install -e ".[gui,dev]"
+python -m ruff check src tests
+python -m ruff format --check pyproject.toml scripts src tests
+python -m pytest
+```
+
+Use a uniquely versioned BEAT prerelease for cross-repository feature work, then
+restore the released wheel/hash pin before merging the application change.
+Development main uses a `.dev0` Python version until a release PR selects a unique
+stable or `rcN` version. The legacy `deploy/` directory is a historical snapshot;
+new Deploy contributions belong in JWSound/boundary_lab_deploy.

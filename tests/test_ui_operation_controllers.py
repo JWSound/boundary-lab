@@ -195,6 +195,7 @@ def test_solve_worker_logs_and_emits_backend_status(monkeypatch, caplog) -> None
         SimpleNamespace(
             request=SystemSolveRequest(compiled_system=None, frequencies_hz=(1000.0,), excitation_port_ids=()),
             backend_id="beat_cpu",
+            cuda_worker_reuse=False,
             polar_angle_deg=np.array([0.0]),
             excitation_component_names=np.array(["driver"]),
             sphere_metadata=None,

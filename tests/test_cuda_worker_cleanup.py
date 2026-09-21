@@ -41,7 +41,7 @@ def test_cleanup_requires_opt_in_actual_cuda_and_both_capabilities(
     monkeypatch.setattr(
         backend, "system_solve_request_to_dict", lambda request: {"solver_options": request.solver_options}
     )
-    request = SystemSolveRequest(None, (1000,), (), solver_options={"bem_backend": selected})
+    request = SystemSolveRequest(SimpleNamespace(meshes=()), (1000,), (), solver_options={"bem_backend": selected})
     session = backend.CoupledSession.__new__(backend.CoupledSession)
     session.request = request
     session.cuda_worker_reuse = enabled

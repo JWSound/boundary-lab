@@ -1984,7 +1984,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-rear",
                 dimension=2,
-                name="Diaphragm",
+                name="cone",
             ),
             kind=BoundaryKind.MOVING,
         ),
@@ -2008,6 +2008,13 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
                 dimension=2,
                 name="RearChamber_boundary",
             ),
+            kind=BoundaryKind.RIGID,
+        ),
+        Boundary(
+            id="boundary:rear-lining",
+            name="Rear chamber lining",
+            region_id="region:skram-rear",
+            group=PhysicalGroupRef(mesh_id="mesh:skram-rear", dimension=2, name="Lining"),
             kind=BoundaryKind.RIGID,
         ),
         Boundary(
