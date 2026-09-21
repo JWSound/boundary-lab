@@ -1,7 +1,7 @@
 # BEAT Engine dependency
 
 Boundary Lab requires the independently released `beat-engine` package. Its
-`pyproject.toml` pins the `v0.1.4` wheel URL and SHA-256, so ordinary installation
+`pyproject.toml` pins the `v0.2.0` wheel URL and SHA-256, so ordinary installation
 downloads and verifies that exact artifact without a sibling engine checkout:
 
 ```text
@@ -47,7 +47,7 @@ packages. Previous Julia package downloads may be reused from the local depot;
 the installed release's own project still needs to be instantiated. Restart
 Boundary Lab after updating so existing workers do not retain the old engine.
 
-The release is [v0.1.4](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.1.4).
+The release is [v0.2.0](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.2.0).
 It contains wheel and source distributions. No PyPI publication is configured.
 The compiled-system contract, worker negotiation, transport, numerical sources,
 and fixtures belong to BEAT Engine. Boundary Lab owns project compilation,
@@ -67,12 +67,15 @@ python -m pip install --no-deps -e <path-to-BEAT_Engine>
 python -m beat_engine paths
 ```
 
-The candidate checkout must retain the supported package version and contracts.
+Use a unique candidate version and preserve supported contracts. On the application
+feature branch, update the dependency pin, supported-version check and associated
+test expectations to that candidate version. Never relabel candidate code as an
+existing stable version.
 Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
 environment for engine development. To restore the release explicitly:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.1.4/beat_engine-0.1.4-py3-none-any.whl#sha256=6117543b226a28e808caad45efdebb11e3b61ed5f5c0ab1d495fe72de1135e0c"
+python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.2.0/beat_engine-0.2.0-py3-none-any.whl#sha256=bccad47b9647e5f4f7bc1ca6ac9d22e2e7751f1f39046fadc1e5e9782a282ad1"
 ```
 
 ## Updating the engine
