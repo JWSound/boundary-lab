@@ -108,8 +108,8 @@ blab gui
 [Boundary Lab Deploy](https://github.com/JWSound/boundary_lab_deploy) is the
 standalone deployment application. It consumes `.blabsp` speaker packages exported
 by Boundary Lab and depends directly on BEAT Engine. New Deploy development and
-installer releases belong in that repository. The `deploy/` tree here is a legacy
-snapshot retained for compatibility during extraction.
+installer releases belong in that repository. Speaker-package export remains in
+Boundary Lab; neither application requires the other to be installed.
 
 ## Development
 

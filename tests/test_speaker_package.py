@@ -10,8 +10,6 @@ import numpy as np
 import pytest
 
 import blab.speaker_package as speaker_package_module
-from blab.deploy.assets import DeploySolveCache
-from blab.deploy.solve import stage_exact_coupled_system
 from blab.physical_model import (
     AcousticRegionKind,
     CompiledMesh,
@@ -317,7 +315,7 @@ def test_level_two_manifest_accepts_legacy_string_model_kinds(tmp_path: Path) ->
     assert manifest["physical_system"]["regions"][0]["kind"] == "unbounded_air"
 
 
-def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -> None:
+def test_level_three_parity_rom_archives_compact_arrays(tmp_path: Path) -> None:
     solved = _coupled_rom_solved_system()
     output = tmp_path / "speaker-rom.blabsp"
 
@@ -341,12 +339,10 @@ def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -
         model = _read_npz(archive, declaration["path"])
     assert model["k"].shape == (2, 4, 2, 2)
     assert model["d"].shape == (2, 4, 2, 2)
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
+    assert model["velocity"].shape == (2, 4, 2, 2)
 
 
-def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> None:
+def test_level_three_omits_reference_and_validates_legacy_extra(tmp_path: Path) -> None:
     output = tmp_path / "speaker-rom.blabsp"
     export_speaker_package(
         _coupled_rom_solved_system(),
@@ -358,7 +354,7 @@ def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> N
     with zipfile.ZipFile(output) as archive:
         assert "data/isolated-acoustic-impedance.npz" not in archive.namelist()
         members = {name: archive.read(name) for name in archive.namelist()}
-    # Legacy extra data remains legal but is no longer interpreted by Deploy.
+    # The archive validator accepts checksummed legacy extra data.
     manifest["files"]["isolated_acoustic_impedance"] = {"path": "data/isolated-acoustic-impedance.npz"}
     manifest["capabilities"].append("isolated_free_field_acoustic_impedance")
     members["manifest.json"] = json.dumps(manifest).encode()
@@ -370,12 +366,10 @@ def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> N
     with zipfile.ZipFile(legacy, "w") as archive:
         for name, value in members.items():
             archive.writestr(name, value)
-    package = DeploySolveCache().load_package(legacy)
-    assert package.coupled_model is not None
-    assert not hasattr(package, "isolated_acoustic_impedance")
+    assert validate_speaker_package(legacy)["files"]["coupled_model"] == manifest["files"]["coupled_model"]
 
 
-def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
+def test_level_three_x_symmetry_rom_archives_two_sectors(
     tmp_path: Path,
 ) -> None:
     solved = _coupled_rom_solved_system("x")
@@ -400,10 +394,7 @@ def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
         model = _read_npz(archive, declaration["path"])
     assert model["k"].shape == (2, 2, 2, 2)
     assert model["d"].shape == (2, 2, 2, 2)
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    assert package.coupled_model["symmetry_mode"] == "x"
-    assert package.coupled_model["arrays"]["velocity"].shape == (2, 2, 2, 2)
+    assert model["velocity"].shape == (2, 2, 2, 2)
 
 
 def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:
@@ -464,13 +455,6 @@ def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(t
         member = descriptor["mesh_members"]["mesh:interior"]
         assert descriptor["compiled_system"]["meshes"][0]["file"] == member
         assert archive.read(member) == mesh_path.read_bytes()
-
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    staged = stage_exact_coupled_system(package, tmp_path / "deploy-worker")
-    staged_mesh = Path(staged["compiled_system"]["meshes"][0]["file"])
-    assert staged["mesh_path_kind"] == "local_file"
-    assert staged_mesh.read_bytes() == mesh_path.read_bytes()
 
 
 def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path) -> None:
