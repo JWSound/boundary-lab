@@ -142,7 +142,9 @@ def test_custom_editor_generates_through_worker_and_accepts_memory_mesh(main_win
     assert any(event.kind == "geometry_accepted" and event.generation_request_id == request_id for event in events)
 
 
-def test_failed_editor_factory_preserves_document_and_releases_subscription(main_window, box_catalog, qapp, monkeypatch):
+def test_failed_editor_factory_preserves_document_and_releases_subscription(
+    main_window, box_catalog, qapp, monkeypatch
+):
     def factory(parent, host):
         host.services.subscribe(lambda event: None)
         raise RuntimeError("Broken editor")

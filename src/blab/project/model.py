@@ -308,7 +308,8 @@ def _artifact_from_payload(payload: object) -> GeneratedGeometryReference | None
         mirror_axes=tuple(payload.get("mirror_axes", ())),
         reduced_mesh_data=(
             MeshData.from_payload(payload["reduced_mesh_data"])
-            if payload.get("reduced_mesh_data") is not None else None
+            if payload.get("reduced_mesh_data") is not None
+            else None
         ),
     )
 

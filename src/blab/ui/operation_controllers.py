@@ -46,8 +46,9 @@ class GeometryController(QObject):
         self._set_state(OperationPhase.RUNNING, "Generating geometry")
         thread = QThread(self)
         worker = (
-            GeneratorWorker(request) if self.host_factory is None else
-            GeneratorWorker(request, host=self.host_factory(request.document_id, request.provider_id))
+            GeneratorWorker(request)
+            if self.host_factory is None
+            else GeneratorWorker(request, host=self.host_factory(request.document_id, request.provider_id))
         )
         self._thread = thread
         self._worker = worker

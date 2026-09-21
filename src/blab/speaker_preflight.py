@@ -96,8 +96,9 @@ def estimate_level_three_package(
     source_mesh_bytes = 0
     for resource in system.meshes:
         path = Path(resource.file)
-        source_mesh_bytes += (path.stat().st_size if resource.mesh_data is None else
-                              len(json.dumps(resource.mesh_data.to_payload())))
+        source_mesh_bytes += (
+            path.stat().st_size if resource.mesh_data is None else len(json.dumps(resource.mesh_data.to_payload()))
+        )
         mesh = read_resource_mesh(resource)
         points = np.asarray(mesh.points, dtype=np.float64) * float(resource.scale_to_m)
         points += np.asarray(resource.translation_m, dtype=np.float64)

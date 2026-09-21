@@ -7,8 +7,9 @@ from blab.viewport_model import viewport_model_members
 
 def test_viewport_rotation_units_materials_and_negative_indices(tmp_path: Path):
     obj = tmp_path / "cabinet.obj"
-    obj.write_text("mtllib cabinet finish.mtl\nv 100 200 300\nv 0 0 0\nv 100 0 0\n"
-                   "vn 0 0 1\nusemtl wood\nf -3//1 -2//1 -1//1\n")
+    obj.write_text(
+        "mtllib cabinet finish.mtl\nv 100 200 300\nv 0 0 0\nv 100 0 0\nvn 0 0 1\nusemtl wood\nf -3//1 -2//1 -1//1\n"
+    )
     (tmp_path / "cabinet finish.mtl").write_text("newmtl wood\nKd 0.5 0.2 0.1\nmap_Kd texture.png\n")
     members, descriptor = viewport_model_members(obj, 0.01)
     text = members["viewport/model.obj"].decode()

@@ -69,7 +69,9 @@ class GeneratorDocumentsMixin:
         # A configuration response is staged independently before any live mutation.
         if not completed.legacy_response:
             candidate = stage_generation(
-                snapshot, self.generated_geometry_by_document_id, completed,
+                snapshot,
+                self.generated_geometry_by_document_id,
+                completed,
                 imported_radiators=self.imported_radiators,
             )
             self.project = candidate
@@ -93,8 +95,7 @@ class GeneratorDocumentsMixin:
         self._provider_editors = {}
 
     def update_provider_editor_states(self, _state=None) -> None:
-        state = (self.geometry_controller.state if self.geometry_controller.active
-                 else self.solve_controller.state)
+        state = self.geometry_controller.state if self.geometry_controller.active else self.solve_controller.state
         for editor, _host in getattr(self, "_provider_editors", {}).values():
             try:
                 editor.set_operation_state(state)
@@ -117,10 +118,13 @@ class GeneratorDocumentsMixin:
                 if document.provider_schema_version != info.source_schema_version:
                     raise ValueError("Incompatible provider source schema; source has been preserved.")
                 if document.provider_id == ATH_PROVIDER_ID:
-                    adapter = AthProviderEditor(self.editor_tabs, host,
-                                                highlight_syntax=self.syntax_highlighting_enabled)
+                    adapter = AthProviderEditor(
+                        self.editor_tabs, host, highlight_syntax=self.syntax_highlighting_enabled
+                    )
                     adapter.widget.configDropped.connect(
-                        lambda path, document_id=document.id: self.import_config_path(Path(path), document_id=document_id)
+                        lambda path, document_id=document.id: self.import_config_path(
+                            Path(path), document_id=document_id
+                        )
                     )
                 else:
                     factory = provider_catalog().factory(document.provider_id, "editor")
@@ -132,8 +136,12 @@ class GeneratorDocumentsMixin:
                     layout = QVBoxLayout(container)
                     layout.setContentsMargins(0, 0, 0, 0)
                     adapter = factory(container, host)
-                if (not isinstance(adapter.widget, QWidget) or isinstance(adapter.widget, QDockWidget)
-                        or adapter.widget is self.editor_tabs or adapter.widget is container):
+                if (
+                    not isinstance(adapter.widget, QWidget)
+                    or isinstance(adapter.widget, QDockWidget)
+                    or adapter.widget is self.editor_tabs
+                    or adapter.widget is container
+                ):
                     raise TypeError("Provider must supply its own widget.")
                 for method in ("apply_source", "set_operation_state", "dispose"):
                     if not callable(getattr(adapter, method, None)):
@@ -157,8 +165,9 @@ class GeneratorDocumentsMixin:
                         logging.getLogger(__name__).exception("Failed editor cleanup")
                 editor = QPlainTextEdit()
                 editor.setReadOnly(True)
-                editor.setPlainText(f"{document.provider_id}: {exc}\n\n" +
-                                    json.dumps(document.source, indent=2, sort_keys=True))
+                editor.setPlainText(
+                    f"{document.provider_id}: {exc}\n\n" + json.dumps(document.source, indent=2, sort_keys=True)
+                )
             self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
         add_tab = AthScriptEditor(highlight_syntax=False)
         add_tab.setReadOnly(True)
@@ -239,8 +248,12 @@ class GeneratorDocumentsMixin:
             available = bool(info and info.available and info.source_schema_version == document.provider_schema_version)
         except ValueError:
             available = False
-        self.generate_button.setEnabled(available and not self.geometry_controller.active
-                                        and not self.solve_controller.active and not self.preparations.active)
+        self.generate_button.setEnabled(
+            available
+            and not self.geometry_controller.active
+            and not self.solve_controller.active
+            and not self.preparations.active
+        )
 
     def new_default_generator_document(self, name):
         provider_id = self.preferences.default_geometry_provider
@@ -248,10 +261,15 @@ class GeneratorDocumentsMixin:
             return new_generator_document(name, "")
         # Defaults are declarative: creating a design never instantiates a backend.
         manifest = provider_catalog().package(provider_id).manifest
-        return replace(new_generator_document(
-            name, provider_id=provider_id, provider_schema_version=manifest.source_schema_version,
-            source=deepcopy(manifest.default_source),
-        ), mesh_scale_factor=manifest.mesh_scale_factor)
+        return replace(
+            new_generator_document(
+                name,
+                provider_id=provider_id,
+                provider_schema_version=manifest.source_schema_version,
+                source=deepcopy(manifest.default_source),
+            ),
+            mesh_scale_factor=manifest.mesh_scale_factor,
+        )
 
     @Slot()
     def add_generator_document(self) -> None:

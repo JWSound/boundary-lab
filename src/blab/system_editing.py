@@ -394,7 +394,9 @@ def rebuild_configured_interfaces(
             )
         if bem_resource.mesh_data is not None:
             resources_by_id[bem_resource.id] = replace(
-                bem_resource, file="", mesh_data=MeshData.from_meshio(_mesh_in_resource_coordinates(bem_mesh, bem_resource))
+                bem_resource,
+                file="",
+                mesh_data=MeshData.from_meshio(_mesh_in_resource_coordinates(bem_mesh, bem_resource)),
             )
             continue
         output_path = _conformed_mesh_path(

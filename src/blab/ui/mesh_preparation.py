@@ -39,7 +39,9 @@ class MeshPreparationSnapshot:
             entries.append(
                 InventoryEntry(
                     name=generator_mesh_name(document),
-                    source_file="" if result.mesh_data is not None else str(result.solver_mesh_path_for_symmetry(symmetry)),
+                    source_file=""
+                    if result.mesh_data is not None
+                    else str(result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,

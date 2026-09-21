@@ -267,10 +267,7 @@ def prepare_exterior_system(
                 "quality_warning_interface_ids": [
                     pair.id for pair in pairs if pair.unbounded_boundary_id in simplified_boundary_ids
                 ],
-                "sources": [
-                    _source_provenance(source)
-                    for source in sources
-                ],
+                "sources": [_source_provenance(source) for source in sources],
                 "fem_sources": [
                     _source_provenance(source)
                     for source in system.meshes
@@ -301,7 +298,8 @@ def _source_provenance(source: MeshResource) -> dict:
     record = asdict(source)
     record.pop("mesh_data", None)
     record["sha256"] = (
-        source.mesh_data.digest if source.mesh_data is not None
+        source.mesh_data.digest
+        if source.mesh_data is not None
         else hashlib.sha256(Path(source.file).read_bytes()).hexdigest()
     )
     record["source"] = "memory" if source.mesh_data is not None else "file"

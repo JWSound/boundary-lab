@@ -34,9 +34,11 @@ _BACKENDS: dict[str, GeneratorBackendInfo] = {
 
 def available_generator_infos() -> tuple[GeneratorBackendInfo, ...]:
     catalog = provider_catalog()
-    external = tuple(generator_info(p.manifest.id) for p in catalog.packages
-                     if p.manifest and not p.error and p.manifest.id in catalog.enabled
-                     and p.manifest.id not in _BACKENDS)
+    external = tuple(
+        generator_info(p.manifest.id)
+        for p in catalog.packages
+        if p.manifest and not p.error and p.manifest.id in catalog.enabled and p.manifest.id not in _BACKENDS
+    )
     return tuple(info for info in _BACKENDS.values() if info.available) + external
 
 
@@ -64,7 +66,9 @@ def generator_info(provider_id: str) -> GeneratorBackendInfo:
     catalog = provider_catalog()
     manifest = catalog.package(normalized_id).manifest
     return GeneratorBackendInfo(
-        manifest.id, manifest.name, GeneratorCapabilities(source_formats=("structured",), editor_kind="custom"),
+        manifest.id,
+        manifest.name,
+        GeneratorCapabilities(source_formats=("structured",), editor_kind="custom"),
         factory=lambda **kwargs: catalog.factory(normalized_id, "backend")(**kwargs),
         source_schema_version=manifest.source_schema_version,
     )

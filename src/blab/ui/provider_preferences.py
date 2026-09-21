@@ -25,8 +25,10 @@ class ProviderPackagesDialog(QDialog):
         self.enabled = set(enabled)
         self.catalog = provider_catalog()
         layout = QVBoxLayout(self)
-        label = QLabel("Enable packages you trust: providers execute Python inside Boundary Lab.\n"
-                       "Ath is built in. Changes to loaded package code require an application restart.")
+        label = QLabel(
+            "Enable packages you trust: providers execute Python inside Boundary Lab.\n"
+            "Ath is built in. Changes to loaded package code require an application restart."
+        )
         label.setWordWrap(True)
         layout.addWidget(label)
         self.table = QTableWidget(0, 5)
@@ -68,11 +70,15 @@ class ProviderPackagesDialog(QDialog):
             if manifest:
                 check.toggled.connect(lambda checked, key=manifest.id: self._toggle(key, checked))
             self.table.setCellWidget(row, 0, check)
-            for column, text in enumerate((
-                f"{manifest.name} ({manifest.id})" if manifest else package.path.name,
-                manifest.version if manifest else "", self.catalog.status(package, enabled=self.enabled),
-                str(package.path),
-            ), 1):
+            for column, text in enumerate(
+                (
+                    f"{manifest.name} ({manifest.id})" if manifest else package.path.name,
+                    manifest.version if manifest else "",
+                    self.catalog.status(package, enabled=self.enabled),
+                    str(package.path),
+                ),
+                1,
+            ):
                 item = QTableWidgetItem(text)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 item.setToolTip(text)

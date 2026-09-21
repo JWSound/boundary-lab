@@ -36,7 +36,9 @@ def stage_generation(
         raise ValueError("Generation discarded because the design changed or was removed.")
     candidate = deepcopy(project)
     candidate.generator_documents = replace_generator_document(
-        candidate.generator_documents, document.id, artifact=geometry.to_reference(),
+        candidate.generator_documents,
+        document.id,
+        artifact=geometry.to_reference(),
     )
     all_geometry = dict(generated) | {document.id: geometry}
     if candidate.physical_system is None:
@@ -46,34 +48,56 @@ def stage_generation(
             if result is None or not item.mesh_enabled:
                 continue
             name = generator_mesh_name(item)
-            entries.append(InventoryEntry(
-                name=name, source_file="" if result.mesh_data is not None else str(result.solver_mesh_path),
-                scale_factor=item.mesh_scale_factor,
-                translation_mm=item.mesh_translation_mm, locked=True,
-                mesh_data=result.mesh_data,
-            ))
+            entries.append(
+                InventoryEntry(
+                    name=name,
+                    source_file="" if result.mesh_data is not None else str(result.solver_mesh_path),
+                    scale_factor=item.mesh_scale_factor,
+                    translation_mm=item.mesh_translation_mm,
+                    locked=True,
+                    mesh_data=result.mesh_data,
+                )
+            )
             radiators.extend(replace(radiator, mesh=name) for radiator in result.radiators)
-        entries.extend(InventoryEntry(
-            name=item.name, source_file=item.source_file, cleaned_file=item.cleaned_file,
-            scale_factor=item.scale_factor, translation_mm=item.translation_mm, enabled=item.enabled,
-        ) for item in candidate.imported_meshes)
+        entries.extend(
+            InventoryEntry(
+                name=item.name,
+                source_file=item.source_file,
+                cleaned_file=item.cleaned_file,
+                scale_factor=item.scale_factor,
+                translation_mm=item.translation_mm,
+                enabled=item.enabled,
+            )
+            for item in candidate.imported_meshes
+        )
         candidate.physical_system, candidate.component_channel_by_id = seed_exterior_system(
-            inspect_system_meshes(tuple(entries)), tuple(radiators),
+            inspect_system_meshes(tuple(entries)),
+            tuple(radiators),
         )
     name = generator_mesh_name(document)
     mesh_ids = {item.id for item in candidate.physical_system.meshes if item.name == name}
     if not mesh_ids:
         raise ValueError("Generated mesh is not assigned to the physical system; configure its mesh resource first.")
-    candidate.physical_system = replace(candidate.physical_system, meshes=tuple(
-        replace(
-            item, file="" if geometry.mesh_data is not None else str(geometry.solver_mesh_path),
-            mesh_data=geometry.mesh_data, scale_to_m=document.mesh_scale_factor,
-            translation_m=tuple(value / 1000 for value in document.mesh_translation_mm),
-        ) if item.id in mesh_ids else item
-        for item in candidate.physical_system.meshes
-    ))
+    candidate.physical_system = replace(
+        candidate.physical_system,
+        meshes=tuple(
+            replace(
+                item,
+                file="" if geometry.mesh_data is not None else str(geometry.solver_mesh_path),
+                mesh_data=geometry.mesh_data,
+                scale_to_m=document.mesh_scale_factor,
+                translation_m=tuple(value / 1000 for value in document.mesh_translation_mm),
+            )
+            if item.id in mesh_ids
+            else item
+            for item in candidate.physical_system.meshes
+        ),
+    )
     candidate = apply_configuration_patch(
-        candidate, completed.configuration_patch, document_id=document.id, mesh_ids=mesh_ids,
+        candidate,
+        completed.configuration_patch,
+        document_id=document.id,
+        mesh_ids=mesh_ids,
     )
     # Regeneration must not silently redirect an old assignment to another tag.
     resource = next(item for item in candidate.physical_system.meshes if item.id in mesh_ids)

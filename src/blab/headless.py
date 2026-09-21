@@ -123,8 +123,11 @@ def load_headless_project(path: str | Path) -> HeadlessProject:
             if symmetry == "off"
             else artifact.reduced_cleaned_mesh_path or artifact.mesh_path
         )
-        memory_data = (restore_generator_document(document).solver_mesh_data_for_symmetry(symmetry)
-                       if artifact.mesh_data is not None else None)
+        memory_data = (
+            restore_generator_document(document).solver_mesh_data_for_symmetry(symmetry)
+            if artifact.mesh_data is not None
+            else None
+        )
         resources.append(
             replace(
                 resource,
@@ -761,8 +764,16 @@ def _mesh_manifest_entries(system) -> list[dict[str, Any]]:
     entries = []
     for mesh in system.meshes:
         if mesh.mesh_data is not None:
-            entries.append({"id": mesh.id, "name": mesh.name, "purpose": mesh.purpose.value,
-                            "source": "memory", "file": None, "sha256": mesh.mesh_data.digest})
+            entries.append(
+                {
+                    "id": mesh.id,
+                    "name": mesh.name,
+                    "purpose": mesh.purpose.value,
+                    "source": "memory",
+                    "file": None,
+                    "sha256": mesh.mesh_data.digest,
+                }
+            )
             continue
         path = Path(mesh.file).resolve()
         entries.append(

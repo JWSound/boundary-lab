@@ -128,7 +128,8 @@ def test_prepare_deploy_solve_request_stages_lod_trace_and_grid(tmp_path: Path) 
             )
     phase = 2.0 * np.pi * request["frequency_hz"] * 1.5 / 1000.0
     expected = np.asarray(
-        convert_phasor(source_q, source_convention) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase), dtype=np.complex64
+        convert_phasor(source_q, source_convention) * (-1.0) * 10.0 ** (-6.0 / 20.0) * np.exp(-1j * phase),
+        dtype=np.complex64,
     )
     actual = np.asarray(request["boundary_neumann"]["real"][:2576], dtype=np.float32) + 1j * np.asarray(
         request["boundary_neumann"]["imag"][:2576], dtype=np.float32

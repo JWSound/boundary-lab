@@ -43,16 +43,25 @@ from blab.project.model import ProjectDocument, ProjectPreferencesState, new_gen
 def project(tmp_path):
     document = replace(new_generator_document("horn", provider_id="test"), id="design")
     return ProjectDocument(
-        generator_documents=(document,), active_generator_document_id="design",
+        generator_documents=(document,),
+        active_generator_document_id="design",
         physical_system=PhysicalSystem(
-            id="system", name="System",
+            id="system",
+            name="System",
             meshes=(MeshResource("mesh", "horn", str(tmp_path / "old.msh"), MeshPurpose.BEM_SURFACE),),
             regions=(AcousticRegion("air", "Air", AcousticRegionKind.UNBOUNDED_AIR, ("mesh",)),),
-            boundaries=(Boundary("throat", "Throat", "air", PhysicalGroupRef("mesh", 2, "throat"), BoundaryKind.MOVING),),
-            components=(PhysicalComponent(
-                "driver", "Driver", ComponentKind.IDEAL_VELOCITY_SOURCE, ("throat",),
-                {"motion_profile": "uniform", "custom": {"preserved": 7, "changed": 1}},
-            ),),
+            boundaries=(
+                Boundary("throat", "Throat", "air", PhysicalGroupRef("mesh", 2, "throat"), BoundaryKind.MOVING),
+            ),
+            components=(
+                PhysicalComponent(
+                    "driver",
+                    "Driver",
+                    ComponentKind.IDEAL_VELOCITY_SOURCE,
+                    ("throat",),
+                    {"motion_profile": "uniform", "custom": {"preserved": 7, "changed": 1}},
+                ),
+            ),
             excitation_ports=(ExcitationPort("drive", "Drive", "driver", ExcitationPortKind.NORMAL_VELOCITY),),
         ),
         channel_config_by_name={"main": {"voltage_v": 2.0, "level_db": -3.0, "hpf": {"type": "none"}}},
@@ -67,30 +76,43 @@ def apply(project, patch):
 
 def request(project, tmp_path):
     return GenerationRequest(
-        provider_id="test", document_id="design", mesh_name="horn",
-        source=project.generator_documents[0].source, run_root=tmp_path, case_name="test",
-        project_revision=project_revision(project), configuration=configuration_snapshot(project),
+        provider_id="test",
+        document_id="design",
+        mesh_name="horn",
+        source=project.generator_documents[0].source,
+        run_root=tmp_path,
+        case_name="test",
+        project_revision=project_revision(project),
+        configuration=configuration_snapshot(project),
     )
 
 
 def geometry(tmp_path, *, group="throat"):
     path = tmp_path / "new.msh"
-    meshio.write(path, meshio.Mesh(
-        points=np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]),
-        cells=[("triangle", np.array([[0, 1, 2]]))],
-        cell_data={"gmsh:physical": [np.array([2])], "gmsh:geometrical": [np.array([1])]},
-        field_data={group: np.array([2, 2])},
-    ), file_format="gmsh22", binary=False)
+    meshio.write(
+        path,
+        meshio.Mesh(
+            points=np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            cells=[("triangle", np.array([[0, 1, 2]]))],
+            cell_data={"gmsh:physical": [np.array([2])], "gmsh:geometrical": [np.array([1])]},
+            field_data={group: np.array([2, 2])},
+        ),
+        file_format="gmsh22",
+        binary=False,
+    )
     return GeneratedGeometry("test", tmp_path, path, ())
 
 
 def test_partial_updates_preserve_nested_parameters_and_host_frequency_settings(project):
     before = deepcopy(project)
-    candidate = apply(project, {
-        "component_parameters": {"driver": {"custom": {"changed": 2}}},
-        "channel_config": {"upsert": [{"name": "main", "level_db": -6.0}]},
-        "stitching_config": {"tolerance_mm": 0.25},
-    })
+    candidate = apply(
+        project,
+        {
+            "component_parameters": {"driver": {"custom": {"changed": 2}}},
+            "channel_config": {"upsert": [{"name": "main", "level_db": -6.0}]},
+            "stitching_config": {"tolerance_mm": 0.25},
+        },
+    )
     assert candidate.physical_system.components[0].parameters["custom"] == {"preserved": 7, "changed": 2}
     assert candidate.channel_config_by_name["main"] == {"voltage_v": 2.0, "level_db": -6.0, "hpf": {"type": "none"}}
     assert candidate.project_preferences == replace(before.project_preferences, stitch_tolerance_mm=0.25)
@@ -109,10 +131,13 @@ def test_provider_channel_routing_survives_legacy_seed_guard(project):
     from blab.project.migration import AUTO_SEEDED_EXTERIOR_KEY
 
     project.physical_system = replace(project.physical_system, metadata={AUTO_SEEDED_EXTERIOR_KEY: True})
-    candidate = apply(project, {
-        "channel_config": {"upsert": [{"name": "other"}]},
-        "component_channels": {"upsert": [{"id": "driver", "channel": "other"}]},
-    })
+    candidate = apply(
+        project,
+        {
+            "channel_config": {"upsert": [{"name": "other"}]},
+            "component_channels": {"upsert": [{"id": "driver", "channel": "other"}]},
+        },
+    )
     assert candidate.physical_system.metadata[AUTO_SEEDED_EXTERIOR_KEY] is False
 
 
@@ -122,15 +147,18 @@ def test_empty_operations_can_be_applied_before_first_geometry(project):
     assert candidate == project
 
 
-@pytest.mark.parametrize("patch", [
-    {"freq_count": 2},
-    {"channel_config": None},
-    {"channel_config": {"upsert": [{"name": "main", "level_db": None}]}},
-    {"channel_config": {"upsert": [{"name": "main", "level_db": float("nan")}]}},
-    {"component_assignments": {"upsert": [{"id": "driver", "freq_count": 2}]}},
-    {"component_assignments": {"upsert": [{"id": "driver"}], "remove": ["driver"]}},
-    {"surface_assignments": {"upsert": [{"id": "throat", "group": {"typo": "throat"}}]}},
-])
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"freq_count": 2},
+        {"channel_config": None},
+        {"channel_config": {"upsert": [{"name": "main", "level_db": None}]}},
+        {"channel_config": {"upsert": [{"name": "main", "level_db": float("nan")}]}},
+        {"component_assignments": {"upsert": [{"id": "driver", "freq_count": 2}]}},
+        {"component_assignments": {"upsert": [{"id": "driver"}], "remove": ["driver"]}},
+        {"surface_assignments": {"upsert": [{"id": "throat", "group": {"typo": "throat"}}]}},
+    ],
+)
 def test_malformed_patch_is_rejected(patch):
     with pytest.raises(ValueError):
         validate_patch(patch)
@@ -139,39 +167,56 @@ def test_malformed_patch_is_rejected(patch):
 def test_removing_referenced_boundary_is_atomic(project):
     before = deepcopy(project)
     with pytest.raises(ValueError, match="missing boundaries"):
-        apply(project, {
-            "surface_assignments": {"remove": ["throat"]},
-            "channel_config": {"upsert": [{"name": "main", "level_db": -9.0}]},
-        })
+        apply(
+            project,
+            {
+                "surface_assignments": {"remove": ["throat"]},
+                "channel_config": {"upsert": [{"name": "main", "level_db": -9.0}]},
+            },
+        )
     assert project == before
 
 
 def test_explicit_remove_requires_removing_dependent_ports(project):
     with pytest.raises(ValueError, match="missing component"):
         apply(project, {"component_assignments": {"remove": ["driver"]}})
-    candidate = apply(project, {
-        "component_assignments": {"remove": ["driver"]},
-        "excitation_ports": {"remove": ["drive"]},
-    })
+    candidate = apply(
+        project,
+        {
+            "component_assignments": {"remove": ["driver"]},
+            "excitation_ports": {"remove": ["drive"]},
+        },
+    )
     assert candidate.physical_system.components == ()
     assert candidate.component_channel_by_id == {}
 
 
 def test_cannot_modify_other_design_or_create_unnamespaced_entity(project):
     with pytest.raises(ValueError, match="unrelated"):
-        apply_configuration_patch(project, {"component_parameters": {"driver": {"x": 1}}},
-                                  document_id="other", mesh_ids=set())
+        apply_configuration_patch(
+            project, {"component_parameters": {"driver": {"x": 1}}}, document_id="other", mesh_ids=set()
+        )
     with pytest.raises(ValueError, match="must start"):
         apply(project, {"component_assignments": {"upsert": [{"id": "foreign"}]}})
 
 
 def test_new_namespaced_component_can_be_routed(project):
-    candidate = apply(project, {
-        "component_assignments": {"upsert": [{
-            "id": "design/new", "name": "New", "kind": "ideal_velocity_source", "boundary_ids": ["throat"],
-        }]},
-        "component_channels": {"upsert": [{"id": "design/new", "channel": "main"}]},
-    })
+    candidate = apply(
+        project,
+        {
+            "component_assignments": {
+                "upsert": [
+                    {
+                        "id": "design/new",
+                        "name": "New",
+                        "kind": "ideal_velocity_source",
+                        "boundary_ids": ["throat"],
+                    }
+                ]
+            },
+            "component_channels": {"upsert": [{"id": "design/new", "channel": "main"}]},
+        },
+    )
     assert candidate.component_channel_by_id["design/new"] == "main"
 
 
@@ -180,13 +225,16 @@ def test_channel_removal_cannot_leave_dangling_routing(project):
         apply(project, {"channel_config": {"remove": ["main"], "upsert": [{"name": "other"}]}})
 
 
-@pytest.mark.parametrize("patch", [
-    {"symmetry_config": {"mode": "bad"}},
-    {"stitching_config": {"enabled": "false"}},
-    {"stitching_config": {"tolerance_mm": -1}},
-    {"channel_config": {"upsert": [{"name": "main", "polarity": 0}]}},
-    {"channel_config": {"upsert": [{"name": "main", "hpf": {"type": "highpass"}}]}},
-])
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"symmetry_config": {"mode": "bad"}},
+        {"stitching_config": {"enabled": "false"}},
+        {"stitching_config": {"tolerance_mm": -1}},
+        {"channel_config": {"upsert": [{"name": "main", "polarity": 0}]}},
+        {"channel_config": {"upsert": [{"name": "main", "hpf": {"type": "highpass"}}]}},
+    ],
+)
 def test_invalid_settings_do_not_mutate_project(project, patch):
     before = deepcopy(project)
     with pytest.raises(ValueError):
@@ -209,17 +257,27 @@ def test_response_correlation_and_legacy_adapter(project, tmp_path):
     assert legacy.configuration_patch == {}
     response = GenerationResponse(req.request_id, result)
     assert not complete_generation(req, response).legacy_response
-    for invalid in (replace(response, request_id="wrong"), replace(response, schema_version=99),
-                    replace(response, geometry=replace(result, provider_id="other"))):
+    for invalid in (
+        replace(response, request_id="wrong"),
+        replace(response, schema_version=99),
+        replace(response, geometry=replace(result, provider_id="other")),
+    ):
         with pytest.raises(ValueError):
             complete_generation(req, invalid)
 
 
 def test_stage_generation_updates_file_and_settings_together(project, tmp_path):
     req, result = request(project, tmp_path), geometry(tmp_path)
-    completed = complete_generation(req, GenerationResponse(req.request_id, result, {
-        "channel_config": {"upsert": [{"name": "main", "level_db": -12.0}]},
-    }))
+    completed = complete_generation(
+        req,
+        GenerationResponse(
+            req.request_id,
+            result,
+            {
+                "channel_config": {"upsert": [{"name": "main", "level_db": -12.0}]},
+            },
+        ),
+    )
     before = deepcopy(project)
     candidate = stage_generation(project, {}, completed)
     assert candidate.generator_documents[0].artifact.mesh_path == str(result.mesh_path)
@@ -290,11 +348,18 @@ def test_main_window_commits_provider_settings_and_preserves_them_on_regeneratio
     revision, configuration = main_window.generation_context()
     req = replace(request(project, tmp_path), project_revision=revision, configuration=configuration)
     result = geometry(tmp_path)
-    completed = complete_generation(req, GenerationResponse(req.request_id, result, {
-        "component_parameters": {"driver": {"custom": {"changed": 5}}},
-        "channel_config": {"upsert": [{"name": "main", "level_db": -8.0}]},
-        "stitching_config": {"tolerance_mm": 0.3},
-    }))
+    completed = complete_generation(
+        req,
+        GenerationResponse(
+            req.request_id,
+            result,
+            {
+                "component_parameters": {"driver": {"custom": {"changed": 5}}},
+                "channel_config": {"upsert": [{"name": "main", "level_db": -8.0}]},
+                "stitching_config": {"tolerance_mm": 0.3},
+            },
+        ),
+    )
     main_window.accept_generation(completed)
     assert main_window.project.channel_config_by_name["main"]["level_db"] == -8
     saved = write_project_file(tmp_path / "saved.blab.json", main_window.project_workflow.project_payload())
@@ -315,9 +380,16 @@ def test_main_window_rejects_bad_patch_without_replacing_artifact(main_window, p
     main_window.project = project
     revision, configuration = main_window.generation_context()
     req = replace(request(project, tmp_path), project_revision=revision, configuration=configuration)
-    completed = complete_generation(req, GenerationResponse(req.request_id, geometry(tmp_path), {
-        "surface_assignments": {"remove": ["throat"]},
-    }))
+    completed = complete_generation(
+        req,
+        GenerationResponse(
+            req.request_id,
+            geometry(tmp_path),
+            {
+                "surface_assignments": {"remove": ["throat"]},
+            },
+        ),
+    )
     with pytest.raises(ValueError):
         main_window.accept_generation(completed)
     assert main_window.project is project
@@ -340,9 +412,12 @@ def test_registry_allows_explicit_registration_but_never_replaces_builtins(monke
 def test_versioned_memory_generation_preserves_configuration(project, tmp_path, monkeypatch):
     from blab.mesh_data import MeshData
 
-    data = MeshData(points=[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
-                    cells=[("triangle", [[0, 1, 2]])], physical_tags=[[2]],
-                    physical_names={"throat": [2, 2]})
+    data = MeshData(
+        points=[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        cells=[("triangle", [[0, 1, 2]])],
+        physical_tags=[[2]],
+        physical_names={"throat": [2, 2]},
+    )
     generated = GeneratedGeometry("test", tmp_path, None, (), mesh_data=data)
     pending = request(project, tmp_path)
     completed = complete_generation(pending, GenerationResponse(pending.request_id, generated))

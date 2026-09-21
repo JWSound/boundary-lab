@@ -61,14 +61,20 @@ class DocumentHost:
 
     def snapshot(self) -> SourceSnapshot:
         document = self._document()
-        payload = json.dumps([self._epoch, document.id, document.provider_schema_version, document.source],
-                             sort_keys=True, allow_nan=False)
-        return SourceSnapshot(deepcopy(document.source), hashlib.sha256(payload.encode()).hexdigest(),
-                              document.provider_schema_version)
+        payload = json.dumps(
+            [self._epoch, document.id, document.provider_schema_version, document.source],
+            sort_keys=True,
+            allow_nan=False,
+        )
+        return SourceSnapshot(
+            deepcopy(document.source), hashlib.sha256(payload.encode()).hexdigest(), document.provider_schema_version
+        )
 
     def _check_revision(self, revision):
         if self.snapshot().revision != revision:
-            raise ProviderHostError("stale_source", "Source changed; read a fresh snapshot before editing or generating.")
+            raise ProviderHostError(
+                "stale_source", "Source changed; read a fresh snapshot before editing or generating."
+            )
 
     def update_source(self, source: dict, *, expected_revision: str) -> SourceSnapshot:
         self._check_revision(expected_revision)
@@ -77,7 +83,9 @@ class DocumentHost:
         # Roundtrip both validates JSON values and detaches provider-owned data.
         source = json.loads(json.dumps(source, allow_nan=False))
         self._window.generator_documents = replace_generator_document(
-            self._window.generator_documents, self.document_id, source=source,
+            self._window.generator_documents,
+            self.document_id,
+            source=source,
         )
         return self.snapshot()
 

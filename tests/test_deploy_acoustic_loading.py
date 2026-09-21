@@ -60,14 +60,18 @@ def test_mixed_loading_uses_each_speakers_parameters_and_driver_count():
     a, _, result, _ = fixture()
     b = deepcopy(a)
     b.manifest["physical_system"]["components"] = b.manifest["physical_system"]["components"][:1]
-    b.manifest["physical_system"]["metadata"]["acoustic_impedance_normalization"]["a"]["effective_area_m2"] = .04
+    b.manifest["physical_system"]["metadata"]["acoustic_impedance_normalization"]["a"]["effective_area_m2"] = 0.04
     b.manifest["physical_system"]["components"][0]["parameters"]["bl_n_per_a"] = 3
-    single_result = {"diagnostics": {key: [{part: values[:1] for part, values in rows[0].items()}]
-                                     for key, rows in result["diagnostics"].items()}}
+    single_result = {
+        "diagnostics": {
+            key: [{part: values[:1] for part, values in rows[0].items()}] for key, rows in result["diagnostics"].items()
+        }
+    }
     expected_b = normalized_acoustic_loading(b, {"transducers": [{"id": "b:a"}]}, single_result, 100)
     expected_a = normalized_acoustic_loading(a, {"transducers": [{"id": "a:a"}, {"id": "a:b"}]}, result, 100)
-    combined = {"diagnostics": {key: single_result["diagnostics"][key] + rows
-                                for key, rows in result["diagnostics"].items()}}
+    combined = {
+        "diagnostics": {key: single_result["diagnostics"][key] + rows for key, rows in result["diagnostics"].items()}
+    }
     request = {
         "speakers": [{"id": "b"}, {"id": "a"}],
         "transducers": [

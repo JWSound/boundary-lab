@@ -112,10 +112,19 @@ class MeshCache:
         volumes = tuple(sorted((name, tag) for name, (tag, dim) in data.physical_names.items() if dim == 3))
         has_tetrahedra = any(kind.startswith("tetra") for kind, _ in data.cells)
         names = {tag: name for name, tag in surfaces}
-        ownership = tuple(
-            (name, tuple(sorted(names[tag] for tag in selected_volume_surface_tags(mesh, (volume_tag,)) if tag in names)))
-            for name, volume_tag in volumes
-        ) if has_tetrahedra else ()
+        ownership = (
+            tuple(
+                (
+                    name,
+                    tuple(
+                        sorted(names[tag] for tag in selected_volume_surface_tags(mesh, (volume_tag,)) if tag in names)
+                    ),
+                )
+                for name, volume_tag in volumes
+            )
+            if has_tetrahedra
+            else ()
+        )
         return MeshInventory(surfaces, volumes, has_tetrahedra, ownership)
 
 

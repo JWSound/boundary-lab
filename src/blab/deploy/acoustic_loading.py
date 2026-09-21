@@ -17,7 +17,10 @@ ACOUSTIC_LOADING_KEYS = (
 
 
 def normalized_acoustic_loading(
-    package: DeployPackageData | dict[str, DeployPackageData], request: dict[str, Any], result: dict[str, Any], frequency_hz: float
+    package: DeployPackageData | dict[str, DeployPackageData],
+    request: dict[str, Any],
+    result: dict[str, Any],
+    frequency_hz: float,
 ) -> dict[str, list[float | None]]:
     """Recover opposing load as dimensionless R/X and complex RMS pressure (Pa).
 
@@ -38,8 +41,12 @@ def normalized_acoustic_loading(
             local = normalized_acoustic_loading(
                 package[descriptors[indices[0]]["package_id"]],
                 {"transducers": [descriptors[i] for i in indices]},
-                {"diagnostics": {"transducer_velocity": [velocities[instance_index]],
-                                 "transducer_current": [currents[instance_index]]}},
+                {
+                    "diagnostics": {
+                        "transducer_velocity": [velocities[instance_index]],
+                        "transducer_current": [currents[instance_index]],
+                    }
+                },
                 frequency_hz,
             )
             for key in output:

@@ -1215,7 +1215,9 @@ def prepare_deploy_solve_request(
             "ground_image_close_face_pairs": ground_image_face_pairs,
         },
         "provenance": {
-            "packages": {key: {"path": str(value.path), "fingerprint": value.fingerprint} for key, value in packages.items()},
+            "packages": {
+                key: {"path": str(value.path), "fingerprint": value.fingerprint} for key, value in packages.items()
+            },
             "package_path": str(package_path),
             "package_name": str(manifest.get("name", package_path.stem)),
             "frequency_index": frequency_index,
@@ -1230,20 +1232,31 @@ def prepare_deploy_solve_request(
             "face_count": int(sum(component.triangles.shape[0] for component in components)),
             "excitation_index": 0,
             "excitation_indices": list(excitation_indices),
-            "excitation_port_ids": [str(package_data.manifest["excitation_port_ids"][index]) for index in excitation_indices],
+            "excitation_port_ids": [
+                str(package_data.manifest["excitation_port_ids"][index]) for index in excitation_indices
+            ],
             "exterior_domain": "rigid_y0_half_space",
         },
     }
     if len(packages) > 1:
         provenance = request["provenance"]
-        for key in ("package_path", "package_name", "frequency_index", "package_node_count",
-                    "package_face_count", "excitation_index", "excitation_indices", "excitation_port_ids"):
+        for key in (
+            "package_path",
+            "package_name",
+            "frequency_index",
+            "package_node_count",
+            "package_face_count",
+            "excitation_index",
+            "excitation_indices",
+            "excitation_port_ids",
+        ):
             provenance.pop(key, None)
         provenance["source_packages"] = {raw["id"]: str(raw.get("packageId", "")) for raw in raw_sources}
         for package_id, data in packages.items():
             indices = _logical_excitation_indices(data.manifest, data.normal.shape[1])
             provenance["packages"][package_id].update(
-                node_count=len(data.points), face_count=len(data.triangles),
+                node_count=len(data.points),
+                face_count=len(data.triangles),
                 frequency_index=int(np.argmin(np.abs(data.frequencies - frequency_hz))),
                 excitation_port_ids=[str(data.manifest["excitation_port_ids"][i]) for i in indices],
             )
@@ -1294,7 +1307,10 @@ def _prepare_scene_rom(
 
     geometry_payload = {**payload, "frequencyHz": frequencies[0] if sweep else payload.get("frequencyHz")}
     request_path, geometry = prepare_deploy_solve_request(
-        geometry_payload, work_dir, cache=cache, status_callback=status_callback,
+        geometry_payload,
+        work_dir,
+        cache=cache,
+        status_callback=status_callback,
     )
     sources = payload["sources"]
     by_source = {c["id"]: c for c in geometry["boundary_components"]}
@@ -1309,8 +1325,11 @@ def _prepare_scene_rom(
         local_payload.pop("packagePaths", None)
         local_geometry = {**geometry, "boundary_components": [by_source[s["id"]] for s in subset]}
         _, local = prepare(
-            local_payload, Path(work_dir) / f"model-{index}", cache=cache,
-            status_callback=status_callback, boundary_request=local_geometry,
+            local_payload,
+            Path(work_dir) / f"model-{index}",
+            cache=cache,
+            status_callback=status_callback,
+            boundary_request=local_geometry,
         )
         model = local["rom_sweep" if sweep else "rom"]
         models[package_id] = model
@@ -1334,7 +1353,8 @@ def _prepare_scene_rom(
         "gmres_max_iterations": int(payload.get("romGmresMaxIterations", 30)),
     }
     geometry.update(
-        schema="boundary_lab_deploy_rom", schema_version=3,
+        schema="boundary_lab_deploy_rom",
+        schema_version=3,
         burton_miller_assembly="direct_system",
         transducers=sorted(transducers, key=lambda t: order[t["source_id"]]),
         speakers=sorted(speakers, key=lambda s: order[s["id"]]),
@@ -1351,12 +1371,16 @@ def _prepare_scene_rom(
             per_model = {key: value["frequencies"][i] for key, value in models.items()}
             drives = {item["id"]: item for model in per_model.values() for item in model["instances"]}
             entries.append({"models": per_model, "instances": [drives[s["id"]] for s in sources]})
-        collection["models"] = {key: {k: v for k, v in model.items() if k != "frequencies"} for key, model in models.items()}
+        collection["models"] = {
+            key: {k: v for k, v in model.items() if k != "frequencies"} for key, model in models.items()
+        }
         collection["frequencies"] = entries
         geometry.update(schema=DEPLOY_MICROPHONE_SWEEP_SCHEMA, frequencies_hz=frequencies, rom_sweep=collection)
         geometry["provenance"].update(
-            frequency_count=len(frequencies), rom_sweep_stage_binary_bytes=stage_bytes,
-            rom_sweep_stage_binary_bytes_written=stage_written, rom_sweep_stage_cache_hit=int(stage_written == 0),
+            frequency_count=len(frequencies),
+            rom_sweep_stage_binary_bytes=stage_bytes,
+            rom_sweep_stage_binary_bytes_written=stage_written,
+            rom_sweep_stage_cache_hit=int(stage_written == 0),
         )
     else:
         geometry["rom"] = collection
@@ -1365,14 +1389,20 @@ def _prepare_scene_rom(
 
 
 def prepare_deploy_rom_request(
-    payload: object, work_dir: str | Path, *, cache: DeploySolveCache | None = None,
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     return _prepare_scene_rom(payload, work_dir, sweep=False, cache=cache, status_callback=status_callback)
 
 
 def prepare_deploy_rom_microphone_sweep_request(
-    payload: object, work_dir: str | Path, *, cache: DeploySolveCache | None = None,
+    payload: object,
+    work_dir: str | Path,
+    *,
+    cache: DeploySolveCache | None = None,
     status_callback: Callable[[str], None] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     return _prepare_scene_rom(payload, work_dir, sweep=True, cache=cache, status_callback=status_callback)
@@ -1401,7 +1431,10 @@ def _prepare_single_rom_request(
 
     if boundary_request is None:
         request_path, request = prepare_deploy_solve_request(
-            payload, work_dir, cache=cache, status_callback=status_callback,
+            payload,
+            work_dir,
+            cache=cache,
+            status_callback=status_callback,
         )
     else:
         Path(work_dir).mkdir(parents=True, exist_ok=True)
@@ -1598,11 +1631,17 @@ def _prepare_single_rom_sweep_request(
     }
     if boundary_request is None:
         request_path, request = prepare_deploy_rom_request(
-            first_payload, work_dir, cache=cache, status_callback=status_callback,
+            first_payload,
+            work_dir,
+            cache=cache,
+            status_callback=status_callback,
         )
     else:
         request_path, request = _prepare_single_rom_request(
-            first_payload, work_dir, cache=cache, status_callback=status_callback,
+            first_payload,
+            work_dir,
+            cache=cache,
+            status_callback=status_callback,
             boundary_request=boundary_request,
         )
     base_rom = request["rom"]

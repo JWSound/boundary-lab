@@ -106,7 +106,9 @@ class GeneratedGeometry:
             raise ValueError("GeneratedGeometry requires exactly one of mesh_path and mesh_data.")
         if self.reduced_mesh_data is not None and self.mesh_data is None:
             raise ValueError("reduced_mesh_data requires an in-memory primary mesh.")
-        if self.mesh_data is not None and (self.cleaned_mesh_path is not None or self.reduced_cleaned_mesh_path is not None):
+        if self.mesh_data is not None and (
+            self.cleaned_mesh_path is not None or self.reduced_cleaned_mesh_path is not None
+        ):
             raise ValueError("In-memory geometry cannot have file-backed variants.")
 
     def solver_mesh_data_for_symmetry(self, symmetry: str) -> MeshData | None:
@@ -164,7 +166,9 @@ class GenerationResponse:
     schema_version: int = PROVIDER_API_VERSION
 
 
-def complete_generation(request: GenerationRequest, response: GenerationResponse | GeneratedGeometry) -> GenerationCompleted:
+def complete_generation(
+    request: GenerationRequest, response: GenerationResponse | GeneratedGeometry
+) -> GenerationCompleted:
     """Validate correlation and adapt legacy built-in providers at one boundary."""
     legacy = isinstance(response, GeneratedGeometry)
     if legacy:

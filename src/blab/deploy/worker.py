@@ -460,7 +460,10 @@ def _microphone_sweep(
                 if rom_coupled:
                     # Use the matched sweep frequency for acoustic postprocessing.
                     acoustic = normalized_acoustic_loading(
-                        packages if len(packages) > 1 else package_data, _request, frequency_result, frequencies[frequency_index]
+                        packages if len(packages) > 1 else package_data,
+                        _request,
+                        frequency_result,
+                        frequencies[frequency_index],
                     )
                     for key, values in acoustic.items():
                         for index, value in enumerate(values):

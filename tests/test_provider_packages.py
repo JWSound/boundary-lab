@@ -14,8 +14,18 @@ from blab.generators.registry import create_generator, generator_info
 def package(root, name="example", **overrides):
     folder = root / name
     folder.mkdir(parents=True)
-    manifest = dict(manifest_version=1, id="test.example", name="Example", version="1.0",
-                    provider_api=1, source_schema_version=1, backend="backend:create_backend") | overrides
+    manifest = (
+        dict(
+            manifest_version=1,
+            id="test.example",
+            name="Example",
+            version="1.0",
+            provider_api=1,
+            source_schema_version=1,
+            backend="backend:create_backend",
+        )
+        | overrides
+    )
     (folder / "provider.json").write_text(json.dumps(manifest))
     (folder / "backend.py").write_text("raise RuntimeError('code was executed')\n")
     return folder
@@ -37,11 +47,18 @@ def test_scan_and_disabled_lookup_never_execute_code(tmp_path, monkeypatch):
     assert "code was executed" in catalog.packages[0].error
 
 
-@pytest.mark.parametrize("overrides", [
-    {"provider_api": 2}, {"manifest_version": True}, {"source_schema_version": 0},
-    {"backend": "../backend:factory"}, {"id": "ATH"}, {"mesh_scale_factor": 0},
-    {"default_source": []},
-])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"provider_api": 2},
+        {"manifest_version": True},
+        {"source_schema_version": 0},
+        {"backend": "../backend:factory"},
+        {"id": "ATH"},
+        {"mesh_scale_factor": 0},
+        {"default_source": []},
+    ],
+)
 def test_incompatible_manifests_remain_visible(tmp_path, overrides):
     package(tmp_path, **overrides)
     records = ProviderCatalog([tmp_path]).scan()

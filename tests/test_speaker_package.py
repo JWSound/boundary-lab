@@ -56,8 +56,9 @@ def test_viewport_asset_is_portable_and_does_not_change_acoustics(tmp_path: Path
     obj = tmp_path / "cabinet.obj"
     obj.write_text("v 0 0 0\nv 100 0 0\nv 0 100 0\nf 1 2 3\n")
     base = SpeakerPackageConfig(tmp_path / "base.blabsp", "Cabinet", SpeakerPackageFidelity.FIXED_SOURCES)
-    visual = replace(base, output_path=tmp_path / "visual.blabsp", viewport_model_path=obj,
-                     viewport_model_scale_to_m=0.01)
+    visual = replace(
+        base, output_path=tmp_path / "visual.blabsp", viewport_model_path=obj, viewport_model_scale_to_m=0.01
+    )
     solved = _solved_system()
     export_speaker_package(solved, base)
     export_speaker_package(solved, visual)

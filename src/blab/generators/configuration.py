@@ -38,7 +38,11 @@ ENTITY_SECTIONS = {
     "excitation_ports": ("excitation_ports", ExcitationPort),
 }
 PATCH_SECTIONS = frozenset(ENTITY_SECTIONS) | {
-    "component_parameters", "channel_config", "component_channels", "symmetry_config", "stitching_config",
+    "component_parameters",
+    "channel_config",
+    "component_channels",
+    "symmetry_config",
+    "stitching_config",
 }
 
 
@@ -62,6 +66,7 @@ def project_revision(project: ProjectDocument) -> str:
     """Content revision includes artifacts and input source, not active-tab state."""
     payload = asdict(project)
     payload.pop("active_generator_document_id", None)
+
     def encode(value):
         if isinstance(value, MeshData):
             return {"mesh_data_sha256": value.digest}
@@ -123,7 +128,14 @@ def validate_patch(raw: Mapping[str, Any]) -> dict[str, Any]:
             items, _ = _operations(patch[section], section)
             for item in items:
                 _keys(item, {field.name for field in fields(model)}, section)
-                for key in ("name", "kind", "region_id", "component_id", "bounded_boundary_id", "unbounded_boundary_id"):
+                for key in (
+                    "name",
+                    "kind",
+                    "region_id",
+                    "component_id",
+                    "bounded_boundary_id",
+                    "unbounded_boundary_id",
+                ):
                     if key in item and (not isinstance(item[key], str) or not item[key].strip()):
                         raise ValueError(f"{section}.{key} must be a nonempty string.")
                 for key in ("parameters", "loss_model"):
@@ -147,14 +159,19 @@ def validate_patch(raw: Mapping[str, Any]) -> dict[str, Any]:
         if section in patch:
             items, _ = _operations(patch[section], section, "name" if section == "channel_config" else "id")
             for item in items:
-                allowed = {field.name for field in fields(ChannelConfig)} if section == "channel_config" else {"id", "channel"}
+                allowed = (
+                    {field.name for field in fields(ChannelConfig)}
+                    if section == "channel_config"
+                    else {"id", "channel"}
+                )
                 _keys(item, allowed, section)
                 _merge({}, item)
     if "component_parameters" in patch:
         for value in _object(patch["component_parameters"], "component_parameters").values():
             _merge({}, _object(value, "component parameters"))
     for section, allowed in (
-        ("symmetry_config", {"mode"}), ("stitching_config", {"enabled", "tolerance_mm"}),
+        ("symmetry_config", {"mode"}),
+        ("stitching_config", {"enabled", "tolerance_mm"}),
     ):
         if section in patch:
             value = _object(patch[section], section)
@@ -165,16 +182,15 @@ def validate_patch(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 def _owned_entities(system, mesh_ids: set[str]) -> dict[str, set[str]]:
     boundaries = {item.id for item in system.boundaries if item.group.mesh_id in mesh_ids}
-    components = {
-        item.id for item in system.components if item.boundary_ids and set(item.boundary_ids) <= boundaries
-    }
+    components = {item.id for item in system.components if item.boundary_ids and set(item.boundary_ids) <= boundaries}
     return {
         "regions": {item.id for item in system.regions if item.mesh_ids and set(item.mesh_ids) <= mesh_ids},
         "boundaries": boundaries,
         "components": components,
         "excitation_ports": {item.id for item in system.excitation_ports if item.component_id in components},
         "interfaces": {
-            item.id for item in system.interfaces
+            item.id
+            for item in system.interfaces
             if {item.bounded_boundary_id, item.unbounded_boundary_id} <= boundaries
         },
     }
@@ -283,7 +299,9 @@ def apply_configuration_patch(
             del channels[name]
         for item in upsert:
             name = item["name"]
-            channels[name] = _merge(channels.get(name, {}), {key: value for key, value in item.items() if key != "name"})
+            channels[name] = _merge(
+                channels.get(name, {}), {key: value for key, value in item.items() if key != "name"}
+            )
         if not channels:
             raise ValueError("At least one channel must remain.")
         for name, channel in channels.items():
@@ -327,7 +345,8 @@ def apply_configuration_patch(
         if isinstance(tolerance, bool) or not isinstance(tolerance, (int, float)) or tolerance < 0:
             raise ValueError("Stitch tolerance must be a nonnegative finite number.")
         candidate.project_preferences = replace(
-            candidate.project_preferences or ProjectPreferencesState(), stitch_tolerance_mm=float(tolerance),
+            candidate.project_preferences or ProjectPreferencesState(),
+            stitch_tolerance_mm=float(tolerance),
         )
     return candidate
 

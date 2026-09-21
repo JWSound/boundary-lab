@@ -662,14 +662,14 @@ def test_provider_solve_uses_host_frequency_and_result_pipeline(controller):
     system = memory_system()
     controller.project.physical_system = system
     controller.inputs.mesh_entries_for_symmetry = lambda _: (
-        InventoryEntry(name="tetra", source_file="", scale_factor=1., mesh_data=system.meshes[0].mesh_data),
+        InventoryEntry(name="tetra", source_file="", scale_factor=1.0, mesh_data=system.meshes[0].mesh_data),
     )
     controller.start_provider_solve("provider-job")
     assert len(controller.solve.started) == 1
     prepared = controller.solve.started[0]
     assert len(prepared.request.frequencies_hz) == 41
-    assert min(prepared.request.frequencies_hz) == pytest.approx(200.)
-    assert max(prepared.request.frequencies_hz) == pytest.approx(20000.)
+    assert min(prepared.request.frequencies_hz) == pytest.approx(200.0)
+    assert max(prepared.request.frequencies_hz) == pytest.approx(20000.0)
     assert controller.session.result_builder is not None
     assert controller.session.result_builder.compiled_system is prepared.request.compiled_system
     assert controller.view.errors == [] and controller.view.warnings == []

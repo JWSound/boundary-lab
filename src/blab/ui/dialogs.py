@@ -157,8 +157,9 @@ class PreferencesDialog(QDialog):
         self.enabled_geometry_providers = set(preferences.enabled_geometry_providers)
         self.provider_management_changed = False
         self.default_provider_combo = QComboBox()
-        populate_provider_choices(self.default_provider_combo, self.enabled_geometry_providers,
-                                  preferences.default_geometry_provider)
+        populate_provider_choices(
+            self.default_provider_combo, self.enabled_geometry_providers, preferences.default_geometry_provider
+        )
         self.provider_packages_button = QPushButton("Manage packages…")
         self.provider_packages_button.clicked.connect(self._manage_provider_packages)
         self.setWindowTitle("Preferences")
@@ -408,7 +409,11 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Application",
                 (
-                    ("Default geometry provider", self.default_provider_combo, "Used for new designs; existing designs retain their provider."),
+                    (
+                        "Default geometry provider",
+                        self.default_provider_combo,
+                        "Used for new designs; existing designs retain their provider.",
+                    ),
                     ("Geometry providers", self.provider_packages_button, ""),
                     ("Solver", self.solve_backend_combo, ""),
                     ("Server", self.server_preferences, "Use your server address and optional access key."),
@@ -438,8 +443,9 @@ class PreferencesDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.enabled_geometry_providers = dialog.enabled
             self.provider_management_changed = True
-            populate_provider_choices(self.default_provider_combo, self.enabled_geometry_providers,
-                                      self.default_provider_combo.currentData())
+            populate_provider_choices(
+                self.default_provider_combo, self.enabled_geometry_providers, self.default_provider_combo.currentData()
+            )
         dialog.deleteLater()
 
     @staticmethod

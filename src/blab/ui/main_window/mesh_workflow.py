@@ -67,7 +67,9 @@ class MeshWorkflowMixin:
             entries.append(
                 MeshDialogEntry(
                     name=generator_mesh_name(document),
-                    source_file="" if solver_result.mesh_data is not None else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    source_file=""
+                    if solver_result.mesh_data is not None
+                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,
@@ -285,7 +287,9 @@ class MeshWorkflowMixin:
             configs.append(
                 MeshConfig(
                     name=generator_mesh_name(document),
-                    file="" if solver_result.mesh_data is not None else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    file=""
+                    if solver_result.mesh_data is not None
+                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
                     mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
@@ -479,9 +483,7 @@ class MeshWorkflowMixin:
             if not mesh_configs:
                 self.clear_mesh_preview()
                 return
-            surface_tags_by_mesh = {
-                mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs
-            }
+            surface_tags_by_mesh = {mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs}
             interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
                 self._project_document().physical_system,
                 surface_tags_by_mesh,
@@ -492,9 +494,7 @@ class MeshWorkflowMixin:
                 mesh_regions=mesh_regions,
                 has_interior=has_interior,
             )
-            source_surface_tags_by_mesh = {
-                mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs
-            }
+            source_surface_tags_by_mesh = {mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs}
             hierarchy = build_preview_hierarchy(
                 self._project_document().physical_system,
                 source_mesh_configs=mesh_configs,

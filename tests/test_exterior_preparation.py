@@ -337,10 +337,13 @@ def test_headless_resolves_generated_variant_from_saved_canonical_resource(
 def test_memory_stitch_and_interface_conformance_do_not_touch_disk(cutout_system, monkeypatch, tmp_path):
     from blab.mesh_data import MeshData
 
-    system = replace(cutout_system, meshes=tuple(
-        replace(resource, file="", mesh_data=MeshData.from_meshio(meshio.read(resource.file)))
-        for resource in cutout_system.meshes
-    ))
+    system = replace(
+        cutout_system,
+        meshes=tuple(
+            replace(resource, file="", mesh_data=MeshData.from_meshio(meshio.read(resource.file)))
+            for resource in cutout_system.meshes
+        ),
+    )
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Unexpected mesh-file access")

@@ -62,8 +62,9 @@ class ProviderManifest:
         scale = data.get("mesh_scale_factor", 1.0)
         if type(scale) not in (float, int) or not math.isfinite(scale) or scale <= 0:
             raise ValueError("mesh_scale_factor must be positive and finite.")
-        return cls(data["id"], data["name"], data["version"], data["backend"], data.get("editor"),
-                   schema, source, float(scale))
+        return cls(
+            data["id"], data["name"], data["version"], data["backend"], data.get("editor"), schema, source, float(scale)
+        )
 
 
 @dataclass
@@ -93,8 +94,9 @@ class ProviderCatalog:
     def scan(self):
         with self._lock:
             packages = []
-            paths = sorted({path.resolve() for root in self.roots if root.is_dir()
-                            for path in root.glob("*/provider.json")})
+            paths = sorted(
+                {path.resolve() for root in self.roots if root.is_dir() for path in root.glob("*/provider.json")}
+            )
             for path in paths:
                 package = ProviderPackage(path.parent)
                 try:
@@ -124,8 +126,9 @@ class ProviderCatalog:
         return tuple(packages)
 
     def status(self, package, *, enabled=None):
-        return package.error or ("Enabled" if package.manifest.id in (
-            self.enabled if enabled is None else enabled) else "Disabled")
+        return package.error or (
+            "Enabled" if package.manifest.id in (self.enabled if enabled is None else enabled) else "Disabled"
+        )
 
     def package(self, provider_id):
         matches = [p for p in self.packages if p.manifest and p.manifest.id == provider_id]
@@ -146,8 +149,7 @@ class ProviderCatalog:
                 return None
             loaded = self._loaded.get(provider_id)
             if loaded is None:
-                namespace = "_blab_provider_" + hashlib.sha256(
-                    str(package.path).encode()).hexdigest()[:20]
+                namespace = "_blab_provider_" + hashlib.sha256(str(package.path).encode()).hexdigest()[:20]
                 root = ModuleType(namespace)
                 root.__path__ = [str(package.path)]
                 sys.modules[namespace] = root

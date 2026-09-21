@@ -102,9 +102,20 @@ python -m pip install -e ".[gui]"
 blab gui
 ```
 
-## Boundary Lab Deploy prototype
+## Boundary Lab Deploy
 
-Boundary lab deploy is an interactive advanced array simulation tool that ingests .blabspeaker packages generated from the main boundary lab application. It is an experimental application early in development and currently only supports BEM/coupled solving using BEAT engine on Nvidia hardware. The application can be found inside the /deploy/ folder where a separate readme contains installation instructions.
+[Boundary Lab Deploy](https://github.com/JWSound/boundary_lab_deploy) is the
+standalone deployment application. It consumes `.blabsp` speaker packages exported
+by Boundary Lab and depends directly on BEAT Engine. New Deploy development and
+installer releases belong in that repository. The `deploy/` tree here is a legacy
+snapshot retained for compatibility during extraction.
+
+## Development
+
+Create scoped branches and pull requests targeting `main`. Stable users should
+install a [published release](https://github.com/JWSound/boundary-lab/releases/latest).
+See [development and releases](docs/development.md) for setup, engine upgrades and
+release qualification. The permanent `dev` branch is retired after reconciliation.
 
 ## Documentation
 

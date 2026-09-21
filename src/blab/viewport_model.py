@@ -76,17 +76,25 @@ def viewport_model_members(path: Path, scale: float) -> tuple[dict[str, bytes], 
             detected.append(library.name)
             for line in library.read_text(encoding="utf-8-sig").splitlines():
                 parts = line.split()
-                if parts and (parts[0].lower().startswith("map_") or parts[0].lower() in {"bump", "disp", "decal", "refl", "norm"}):
+                if parts and (
+                    parts[0].lower().startswith("map_") or parts[0].lower() in {"bump", "disp", "decal", "refl", "norm"}
+                ):
                     warnings.append("Texture maps are not supported; material colors will be used.")
                     continue
                 material_lines.append(line)
         members = {}
         descriptor = {
-            "path": "viewport/model.obj", "format": "obj", "unit": "m",
-            "coordinate_frame": "package", "geometry_expansion": "full",
-            "source_scale_to_m": scale, "source_name": path.name,
-            "materials_detected": detected, "warnings": list(dict.fromkeys(warnings)),
-            "bounds_min_m": minimum, "bounds_max_m": maximum,
+            "path": "viewport/model.obj",
+            "format": "obj",
+            "unit": "m",
+            "coordinate_frame": "package",
+            "geometry_expansion": "full",
+            "source_scale_to_m": scale,
+            "source_name": path.name,
+            "materials_detected": detected,
+            "warnings": list(dict.fromkeys(warnings)),
+            "bounds_min_m": minimum,
+            "bounds_max_m": maximum,
         }
         if material_lines:
             output.insert(0, "mtllib materials.mtl")
