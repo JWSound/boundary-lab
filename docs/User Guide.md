@@ -184,6 +184,12 @@ guide.
   use the physical system. CPU is the default; saved Bempp and Server selections
   migrate to CPU. Julia is required.
 
+- **Reuse CUDA Worker Memory** is an opt-in setting in Application Config for
+  faster consecutive local CUDA solves. Cached memory is reclaimed after five
+  seconds idle, every eight requests, or under memory pressure. If a new solve
+  arrives during reclamation, it waits while the UI remains responsive. This
+  requires a compatible BEAT Engine; see [CUDA memory reuse](advanced/beat-engine-CUDA.md#reusing-cuda-worker-memory-between-solves).
+
 - **Balloon Sampling** requests Fibonacci-sphere observation points during the
   solve. Without these samples, the Balloon Plot action remains unavailable.
 - **Balloon Angle Precision** controls the approximate angular spacing and,

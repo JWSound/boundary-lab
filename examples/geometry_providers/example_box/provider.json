@@ -1,0 +1,12 @@
+{
+  "manifest_version": 1,
+  "id": "example.box",
+  "name": "Example Box",
+  "version": "0.1.0",
+  "provider_api": 1,
+  "source_schema_version": 1,
+  "backend": "box.backend:create_backend",
+  "editor": "box.editor:create_editor",
+  "default_source": {"width_m": 0.1, "height_m": 0.1, "depth_m": 0.1},
+  "mesh_scale_factor": 1.0
+}

@@ -109,7 +109,13 @@ def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> No
 
 
 @pytest.mark.parametrize(
-    "backend,expected", [("cuda", "direct_system"), ("cpu", "operator_matrices"), ("rocm", "operator_matrices")]
+    "backend,expected",
+    [
+        ("cuda", "direct_system"),
+        ("metal", "direct_system"),
+        ("cpu", "operator_matrices"),
+        ("rocm", "operator_matrices"),
+    ],
 )
 def test_exterior_backend_selects_assembly_and_preserves_fallback(backend: str, expected: str) -> None:
     compiled = PhysicalSystemCompiler().compile(_exterior_fixture_system())
@@ -967,12 +973,23 @@ def test_coupled_reference_backend_solves_mixed_fem_and_bem_prescribed_sources()
     assert result.diagnostics["all_bem_replay_error"] < 1e-8
 
 
-@pytest.mark.skipif(
-    os.environ.get("BLAB_RUN_EXTERIOR_CUDA") != "1",
-    reason="Set BLAB_RUN_EXTERIOR_CUDA=1 to compare direct and operator CUDA exterior assembly.",
+@pytest.mark.parametrize(
+    "bem_backend",
+    [
+        pytest.param(
+            backend,
+            marks=pytest.mark.skipif(
+                os.environ.get(f"BLAB_RUN_EXTERIOR_{backend.upper()}") != "1",
+                reason=f"Set BLAB_RUN_EXTERIOR_{backend.upper()}=1 to compare direct and operator exterior assembly.",
+            ),
+        )
+        for backend in ("cuda", "metal")
+    ],
 )
 @pytest.mark.parametrize("excitation_count,order", [(1, 1), (1, 2), (2, 2)])
-def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excitation_count: int, order: int) -> None:
+def test_exterior_direct_assembly_preserves_complex_excitation_basis(
+    bem_backend: str, excitation_count: int, order: int
+) -> None:
     system = _exterior_fixture_system()
     if excitation_count == 2:
         second_component = PhysicalComponent(
@@ -1015,7 +1032,7 @@ def test_exterior_cuda_direct_assembly_preserves_complex_excitation_basis(excita
         {"solver_script": os.environ["BLAB_BEAT_SYSTEM_SOLVER"]} if "BLAB_BEAT_SYSTEM_SOLVER" in os.environ else {}
     )
     backend = CoupledProductionBackend(
-        bem_backend="cuda",
+        bem_backend=bem_backend,
         julia_executable=os.environ.get("BLAB_JULIA_EXE", "julia"),
         **backend_options,
     )
@@ -1967,7 +1984,7 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
             group=PhysicalGroupRef(
                 mesh_id="mesh:skram-rear",
                 dimension=2,
-                name="Diaphragm",
+                name="cone",
             ),
             kind=BoundaryKind.MOVING,
         ),
@@ -1991,6 +2008,13 @@ def _skram_fixture_system(tmp_path: Path) -> PhysicalSystem:
                 dimension=2,
                 name="RearChamber_boundary",
             ),
+            kind=BoundaryKind.RIGID,
+        ),
+        Boundary(
+            id="boundary:rear-lining",
+            name="Rear chamber lining",
+            region_id="region:skram-rear",
+            group=PhysicalGroupRef(mesh_id="mesh:skram-rear", dimension=2, name="Lining"),
             kind=BoundaryKind.RIGID,
         ),
         Boundary(

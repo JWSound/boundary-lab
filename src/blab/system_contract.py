@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterator, Protocol
 import numpy as np
 
 from blab.interface_conform import InterfaceTopologyMap
+from blab.mesh_data import MeshData
 from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import (
     COMPILED_SYSTEM_VERSION,
@@ -173,7 +174,11 @@ def compiled_system_to_dict(system: CompiledPhysicalSystem) -> dict[str, Any]:
 
     raw = _record_fields(system, "id name contract_version source_model_version metadata")
     raw.update(
-        meshes=[_record_fields(mesh, "id name file purpose scale_to_m translation_m") for mesh in system.meshes],
+        meshes=[
+            _record_fields(mesh, "id name file purpose scale_to_m translation_m")
+            | ({"mesh_data": mesh.mesh_data.to_payload()} if mesh.mesh_data is not None else {})
+            for mesh in system.meshes
+        ],
         regions=[
             _record_fields(region, "id name kind mesh_ids sound_speed_m_per_s density_kg_per_m3 loss_model")
             | {"volume_groups": [group(value) for value in region.volume_groups]}
@@ -339,6 +344,7 @@ def _compiled_mesh_from_dict(raw: dict[str, Any]) -> CompiledMesh:
         purpose=MeshPurpose(str(raw["purpose"])),
         scale_to_m=float(raw["scale_to_m"]),
         translation_m=tuple(float(value) for value in raw.get("translation_m", (0.0, 0.0, 0.0))),
+        mesh_data=MeshData.from_payload(raw["mesh_data"]) if "mesh_data" in raw else None,
     )
 
 

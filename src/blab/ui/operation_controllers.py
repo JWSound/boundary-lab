@@ -6,7 +6,7 @@ import time
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from blab.generators.base import GeneratedGeometry, GenerationCompleted, GenerationRequest
+from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.ui.application_state import OperationPhase, OperationState, SolveCompletion
 from blab.ui.generator_worker import GeneratorWorker
 from blab.ui.solve_progress import format_frequency_completion
@@ -25,6 +25,7 @@ class GeometryController(QObject):
         super().__init__(parent)
         self.state = OperationState()
         self._request: GenerationRequest | None = None
+        self.host_factory = None
         self._thread: QThread | None = None
         self._worker: GeneratorWorker | None = None
         self._failed = False
@@ -44,7 +45,11 @@ class GeometryController(QObject):
         self.last_error = None
         self._set_state(OperationPhase.RUNNING, "Generating geometry")
         thread = QThread(self)
-        worker = GeneratorWorker(request)
+        worker = (
+            GeneratorWorker(request)
+            if self.host_factory is None
+            else GeneratorWorker(request, host=self.host_factory(request.document_id, request.provider_id))
+        )
         self._thread = thread
         self._worker = worker
         worker.moveToThread(thread)
@@ -68,9 +73,9 @@ class GeometryController(QObject):
             self._worker.stop()
 
     @Slot(object)
-    def _on_generated(self, result: GeneratedGeometry) -> None:
-        if self._request is not None:
-            self.completed.emit(GenerationCompleted(self._request, result))
+    def _on_generated(self, completed: GenerationCompleted) -> None:
+        if self._request is not None and completed.request.request_id == self._request.request_id:
+            self.completed.emit(completed)
 
     @Slot(str)
     def _on_status(self, message: str) -> None:

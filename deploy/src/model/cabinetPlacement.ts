@@ -26,11 +26,12 @@ export function cabinetLocalBounds(pkg: BoundaryMeshAsset): CabinetLocalBounds {
   if (cached) return cached;
   let minimum: [number, number, number] = [-pkg.boundsM[0] / 2, -pkg.boundsM[2] / 2, -pkg.boundsM[1] / 2];
   let maximum: [number, number, number] = [pkg.boundsM[0] / 2, pkg.boundsM[2] / 2, pkg.boundsM[1] / 2];
-  if (pkg.mesh) {
+  const mesh = "viewportModel" in pkg && pkg.viewportModel ? pkg.viewportModel.mesh : pkg.mesh;
+  if (mesh) {
     minimum = [Infinity, Infinity, Infinity];
     maximum = [-Infinity, -Infinity, -Infinity];
-    for (let index = 0; index < pkg.mesh.positions.length; index += 3) {
-      const point = [pkg.mesh.positions[index], -pkg.mesh.positions[index + 2], pkg.mesh.positions[index + 1]];
+    for (let index = 0; index < mesh.positions.length; index += 3) {
+      const point = [mesh.positions[index], -mesh.positions[index + 2], mesh.positions[index + 1]];
       for (let axis = 0; axis < 3; axis += 1) {
         minimum[axis] = Math.min(minimum[axis], point[axis]);
         maximum[axis] = Math.max(maximum[axis], point[axis]);

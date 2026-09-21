@@ -9,7 +9,7 @@ import meshio
 import numpy as np
 
 from blab.config import normalize_symmetry
-from blab.mesh_cache import read_mesh
+from blab.mesh_data import read_resource_mesh
 from blab.physical_model import Boundary, MeshResource
 
 _ACTIVE_AXIS_NAMES = {
@@ -389,6 +389,7 @@ def _resource_geometry_key(resource: MeshResource) -> tuple:
     return (
         resource.id,
         resource.file,
+        resource.mesh_data.digest if resource.mesh_data is not None else None,
         float(resource.scale_to_m),
         tuple(float(value) for value in resource.translation_m),
     )
@@ -436,7 +437,7 @@ def _orient_surface_normals_outward(
 
 def _transformed_mesh(resource: MeshResource) -> meshio.Mesh:
     try:
-        mesh = read_mesh(resource.file)
+        mesh = read_resource_mesh(resource)
     except Exception as exc:
         raise ComponentSymmetryInferenceError(
             f"Could not read component mesh '{resource.name}' from {resource.file}: {exc}"

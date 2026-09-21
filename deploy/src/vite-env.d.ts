@@ -21,6 +21,7 @@ type DesktopRigidObject = import("./model/types").RigidMeshConfiguration & {
 
 interface DesktopLevel2SolveRequest {
   packagePath: string;
+  packagePaths?: Record<string, string>;
   frequencyHz: number;
   backend: "cuda";
   fidelity?: "boundary" | "coupled";
@@ -41,6 +42,7 @@ interface DesktopSolveStatus {
 
 interface DesktopMicrophoneSweepRequest {
   packagePath: string;
+  packagePaths?: Record<string, string>;
   backend: "cuda";
   fidelity: "boundary" | "coupled";
   sources: import("./model/types").SourceConfiguration[];

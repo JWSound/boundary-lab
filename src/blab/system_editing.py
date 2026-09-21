@@ -18,6 +18,7 @@ from blab.interface_conform import (
     build_conforming_interface_map,
     conform_bem_interface_to_fem,
 )
+from blab.mesh_data import MeshData, read_resource_mesh
 from blab.mesh_inventory import AvailableSystemMesh
 from blab.physical_model import (
     AcousticInterface,
@@ -205,6 +206,7 @@ def sync_physical_system_meshes(
                 file=available.file,
                 scale_to_m=available.scale_to_m,
                 translation_m=available.translation_m,
+                mesh_data=available.mesh_data,
             )
         )
     return replace(system, meshes=tuple(resources))
@@ -296,7 +298,7 @@ def rebuild_configured_interfaces(
 
     def transformed(resource: MeshResource) -> meshio.Mesh:
         key = (
-            str(Path(resource.file).resolve()),
+            resource.mesh_data.digest if resource.mesh_data is not None else str(Path(resource.file).resolve()),
             float(resource.scale_to_m),
             tuple(float(value) for value in resource.translation_m),
         )
@@ -390,6 +392,13 @@ def rebuild_configured_interfaces(
                 require_closed_bem=True,
                 symmetry_mode=normalized_symmetry,
             )
+        if bem_resource.mesh_data is not None:
+            resources_by_id[bem_resource.id] = replace(
+                bem_resource,
+                file="",
+                mesh_data=MeshData.from_meshio(_mesh_in_resource_coordinates(bem_mesh, bem_resource)),
+            )
+            continue
         output_path = _conformed_mesh_path(
             available,
             fem_resource=final_fem_resource,
@@ -421,7 +430,7 @@ def rebuild_configured_interfaces(
 
 
 def _transformed_mesh(resource: MeshResource) -> meshio.Mesh:
-    mesh = meshio.read(Path(resource.file))
+    mesh = read_resource_mesh(resource)
     points = np.asarray(mesh.points, dtype=float) * float(resource.scale_to_m)
     points += np.asarray(resource.translation_m, dtype=float)
     return meshio.Mesh(

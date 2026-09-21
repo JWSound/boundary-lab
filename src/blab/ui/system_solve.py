@@ -8,6 +8,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from blab.solvers.beat_engine_runtime import hold_beat_engine_idle_cleanup
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend
 from blab.system_solve import (
     PreparedSystemSolve,
@@ -34,6 +35,8 @@ class SystemSolveWorker(QObject):
         self.prepared = prepared
         self._stop = False
         self._session = None
+        self._release_idle = hold_beat_engine_idle_cleanup()
+        self.destroyed.connect(self._release_idle)
 
     @Slot()
     def run(self) -> None:
@@ -44,6 +47,7 @@ class SystemSolveWorker(QObject):
             if not self._stop:
                 self.failed.emit(str(exc))
         finally:
+            self._release_idle()
             self.finished.emit()
 
     def _run_physical_system(self, request) -> None:
@@ -65,6 +69,8 @@ class SystemSolveWorker(QObject):
         if self._stop:
             return
         session = backend.create_system_session(request)
+        if self.prepared.backend_id != "beat_remote":
+            session.cuda_worker_reuse = self.prepared.cuda_worker_reuse
         self._session = session
         self.initialized.emit(
             self.prepared.polar_angle_deg,

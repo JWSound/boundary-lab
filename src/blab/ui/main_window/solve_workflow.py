@@ -49,6 +49,7 @@ from blab.solve_results import (
     SolveProvenance,
 )
 from blab.solve_results.live_projection import LiveResultProjector
+from blab.solvers.beat_engine_runtime import hold_beat_engine_idle_cleanup
 from blab.speaker_package import (
     SpeakerPackageConfig,
     SpeakerPackageFidelity,
@@ -84,6 +85,8 @@ class SolveWorkflowController(QObject):
     #: Emitted when a solve changes something the mesh preview derives from,
     #: so the host can invalidate anything downstream of it.
     mesh_state_changed = Signal(str)
+    provider_preparation_failed = Signal(str, str)
+    provider_solve_finished = Signal(str, object, object)
 
     def __init__(
         self,
@@ -111,6 +114,33 @@ class SolveWorkflowController(QObject):
         self._preparations = preparations
         self._pending_speaker_package: SpeakerPackageConfig | None = None
         self._pending_speaker_package_temp_dir: tempfile.TemporaryDirectory[str] | None = None
+        self._provider_job_id: str | None = None
+
+    def start_provider_solve(self, job_id: str) -> None:
+        """Use the regular preparation/results path without provider-owned settings."""
+        if self._provider_job_id is not None or self._geometry_controller.active or self._solve_controller.active:
+            raise ValueError("The host is busy.")
+        system = self._project().physical_system
+        if system is None or not system.excitation_ports or not self._inputs.has_solver_meshes():
+            raise ValueError("The accepted physical system requires meshes and excitation ports before solving.")
+        kind = infer_physical_solve_kind(system)
+        self._provider_job_id = job_id
+        try:
+            self._prepare_system_solve(exterior=kind == PhysicalSolveKind.EXTERIOR_BEM)
+        except Exception:
+            self._provider_job_id = None
+            raise
+
+    def cancel_provider_solve(self, job_id: str) -> None:
+        if self._provider_job_id != job_id:
+            return
+        if self._solve_controller.active:
+            self._solve_controller.cancel()
+        else:
+            if self._preparations is not None:
+                self._preparations.cancel("solve")
+            self._provider_job_id = None
+            self.provider_preparation_failed.emit(job_id, "Solve preparation cancelled")
 
     # -- starting a run -----------------------------------------------------
 
@@ -133,6 +163,13 @@ class SolveWorkflowController(QObject):
 
     @Slot()
     def start_solve(self) -> None:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            self._start_solve_reserved()
+        finally:
+            release_idle()
+
+    def _start_solve_reserved(self) -> None:
         if (
             self._geometry_controller.active
             or self._solve_controller.active
@@ -172,6 +209,13 @@ class SolveWorkflowController(QObject):
             self._start_coupled_system_solve()
 
     def start_speaker_package_solve(self, config: SpeakerPackageConfig) -> bool:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            return self._start_speaker_package_solve_reserved(config)
+        finally:
+            release_idle()
+
+    def _start_speaker_package_solve_reserved(self, config: SpeakerPackageConfig) -> bool:
         """Prepare the requested package outputs, run once, then export on completion."""
 
         if (
@@ -237,6 +281,7 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=0,
                 component_channel_by_id=component_channels,
                 backend_id=preferences.solve_backend,
+                cuda_worker_reuse=preferences.cuda_worker_reuse,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
@@ -278,6 +323,14 @@ class SolveWorkflowController(QObject):
         self._prepare_system_solve(exterior=False)
 
     def _prepare_system_solve(self, *, exterior: bool) -> None:
+        release_idle = hold_beat_engine_idle_cleanup()
+        try:
+            self._prepare_system_solve_reserved(exterior=exterior, release_idle=release_idle)
+        except BaseException:
+            release_idle()
+            raise
+
+    def _prepare_system_solve_reserved(self, *, exterior: bool, release_idle) -> None:
         # Capture all widget/project inputs before entering the worker. Only the
         # completion callback may publish the synchronized system or touch UI.
         self._view.show_status("Preparing solve...")
@@ -286,8 +339,15 @@ class SolveWorkflowController(QObject):
         preferences = deepcopy(self._read_preferences())
         frequencies = self._view.frequency_range()
         title = "Exterior system preparation failed" if exterior else "FEM system solve"
+        provider_job_id = self._provider_job_id
 
         def failed(exc):
+            release_idle()
+            if provider_job_id is not None:
+                if self._provider_job_id == provider_job_id:
+                    self._provider_job_id = None
+                    self.provider_preparation_failed.emit(provider_job_id, str(exc))
+                return
             self._view.show_status("Solve preparation failed")
             if exterior:
                 self._view.show_stitch_or_generic_error(title, exc)
@@ -315,6 +375,7 @@ class SolveWorkflowController(QObject):
                 spherical_sampling_points=balloon_sampling_points(preferences.balloon_angle_precision_deg),
                 component_channel_by_id=snapshot.component_channel_by_id,
                 backend_id=preferences.solve_backend,
+                cuda_worker_reuse=preferences.cuda_worker_reuse,
                 remote_options={
                     "url": preferences.solve_server_url,
                     "access_key": preferences.solve_server_access_key,
@@ -328,6 +389,8 @@ class SolveWorkflowController(QObject):
             return system, prepared
 
         def complete(result):
+            if provider_job_id is not None and self._provider_job_id != provider_job_id:
+                return
             if (
                 self._project() is not project
                 or project != snapshot
@@ -335,6 +398,8 @@ class SolveWorkflowController(QObject):
                 or self._view.frequency_range() != frequencies
             ):
                 self._view.show_status("Solve preparation discarded because inputs changed")
+                if provider_job_id is not None:
+                    failed(ValueError("Solve preparation discarded because inputs changed"))
                 return
             system, prepared = result
             project.physical_system = system
@@ -353,6 +418,7 @@ class SolveWorkflowController(QObject):
                 complete,
                 failed,
                 report_progress=True,
+                settled=release_idle,
             )
         else:
             # Non-window hosts can still use the synchronous controller seam.
@@ -360,10 +426,19 @@ class SolveWorkflowController(QObject):
                 complete(work(self._view.show_status))
             except Exception as exc:
                 failed(exc)
+            finally:
+                release_idle()
 
     def _start_prepared_system_solve(self, prepared, status: str) -> bool:
+        if self._provider_job_id is not None and prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
+            report = analyze_exterior_mesh_topology(
+                self._prepared_exterior_mesh_configs(prepared),
+                symmetry=str(prepared.request.solver_options.get("symmetry", "off")),
+            )
+            if report.has_warnings:
+                raise ValueError("Provider solve requires valid exterior topology; inspect the mesh in the host.")
         if prepared.solve_kind == PhysicalSolveKind.EXTERIOR_BEM:
-            if not self._confirm_exterior_mesh_topology(
+            if self._provider_job_id is None and not self._confirm_exterior_mesh_topology(
                 self._prepared_exterior_mesh_configs(prepared),
                 symmetry=str(prepared.request.solver_options.get("symmetry", "off")),
             ):
@@ -376,7 +451,7 @@ class SolveWorkflowController(QObject):
             if record.relative_side_mismatch is not None
             and record.relative_side_mismatch > ACOUSTIC_AREA_MISMATCH_WARNING_THRESHOLD
         ]
-        if mismatched:
+        if mismatched and self._provider_job_id is None:
             details = "\n".join(
                 f"• {record.component_name}: {record.positive_side_area_m2 * 10_000.0:.2f} cm² versus "
                 f"{record.negative_side_area_m2 * 10_000.0:.2f} cm² "
@@ -549,6 +624,7 @@ class SolveWorkflowController(QObject):
                 file=meshes_by_id[mesh_id].file,
                 scale_factor=meshes_by_id[mesh_id].scale_to_m,
                 translation_m=meshes_by_id[mesh_id].translation_m,
+                mesh_data=meshes_by_id[mesh_id].mesh_data,
             )
             for mesh_id in exterior.mesh_ids
         )
@@ -634,6 +710,9 @@ class SolveWorkflowController(QObject):
 
     @Slot(str)
     def _on_solve_failed(self, message: str) -> None:
+        if self._provider_job_id is not None:
+            self._view.show_status(f"Provider solve failed: {message}")
+            return
         self._view.show_error("Solve failed", message)
         self._view.show_status("Solve failed")
 
@@ -643,6 +722,9 @@ class SolveWorkflowController(QObject):
         self._view.set_workflow_phase(OperationPhase.IDLE)
         session = self._session
         session.finalize_results(status=completion.phase.value)
+        provider_job_id, self._provider_job_id = self._provider_job_id, None
+        if provider_job_id is not None:
+            self.provider_solve_finished.emit(provider_job_id, completion, session.solved_system)
         pending_package = self._pending_speaker_package
         self._pending_speaker_package = None
         pending_package_temp_dir = self._pending_speaker_package_temp_dir

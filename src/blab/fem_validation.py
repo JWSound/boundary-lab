@@ -12,6 +12,7 @@ from typing import Any
 import meshio
 import numpy as np
 
+from blab.mesh_data import read_resource_mesh
 from blab.phasor import LEGACY_PHASOR_CONVENTION, SOLVER_PHASOR_CONVENTION, convert_phasor
 from blab.physical_model import AcousticRegionKind, BoundaryKind
 from blab.system_contract import compiled_system_from_dict
@@ -649,7 +650,7 @@ def _reconstruct_surfaces(
     for region in bounded:
         region_position = region_ids.index(region.id)
         mesh_resource = meshes[region.mesh_ids[0]]
-        mesh = meshio.read(Path(mesh_resource.file))
+        mesh = read_resource_mesh(mesh_resource)
         selected_tags = {int(item.tag) for item in region.volume_groups if item.mesh_id == mesh_resource.id}
         selected_tets = _selected_cells(
             mesh,

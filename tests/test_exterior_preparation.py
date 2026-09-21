@@ -332,3 +332,28 @@ def test_headless_resolves_generated_variant_from_saved_canonical_resource(
     assert Path(cap.file) == tmp_path / expected
     assert cap.scale_to_m == 0.002
     assert cap.translation_m == (0.001, 0.002, 0.003)
+
+
+def test_memory_stitch_and_interface_conformance_do_not_touch_disk(cutout_system, monkeypatch, tmp_path):
+    from blab.mesh_data import MeshData
+
+    system = replace(
+        cutout_system,
+        meshes=tuple(
+            replace(resource, file="", mesh_data=MeshData.from_meshio(meshio.read(resource.file)))
+            for resource in cutout_system.meshes
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unexpected mesh-file access")
+
+    monkeypatch.setattr(meshio, "read", forbidden)
+    monkeypatch.setattr(meshio, "write", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    prepared = prepare_exterior_system(system, stitch_tolerance_mm=3, output_root=tmp_path / "unused")
+    assert all(resource.mesh_data is not None and resource.file == "" for resource in prepared.meshes)
+    compiled = PhysicalSystemCompiler().compile(prepared)
+    assert len(compiled.interfaces[0].topology.fem_face_indices) == 1
+    assert compiled.interfaces[0].topology.max_coordinate_error == 0
+    assert system.meshes[0].mesh_data is prepared.meshes[0].mesh_data

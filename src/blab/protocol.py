@@ -24,6 +24,10 @@ PROTOCOL_VERSION = 2
 
 
 def mesh_asset_references(config: SimulationConfig) -> list[str]:
+    if any(mesh.mesh_data is not None for mesh in config.meshes):
+        raise ValueError(
+            "In-memory meshes require the local physical-system solver; remote asset transport is not supported."
+        )
     paths: list[str] = []
     if config.mesh_file:
         paths.append(config.mesh_file)
@@ -75,6 +79,10 @@ def crossover_from_dict(raw: dict[str, Any] | None) -> CrossoverConfig:
 
 
 def mesh_to_dict(mesh: MeshConfig) -> dict[str, Any]:
+    if mesh.mesh_data is not None:
+        raise ValueError(
+            "Legacy simulation transport does not support in-memory meshes; use the physical-system solver."
+        )
     return {
         "name": mesh.name,
         "file": mesh.file,

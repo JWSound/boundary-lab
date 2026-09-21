@@ -162,6 +162,7 @@ $EndElements
             SimpleNamespace(
                 id="mesh:a",
                 purpose=MeshPurpose.BEM_SURFACE,
+                mesh_data=None,
                 file=str(mesh_a),
                 scale_to_m=2.0,
                 translation_m=(1.0, 0.0, 0.0),
@@ -169,6 +170,7 @@ $EndElements
             SimpleNamespace(
                 id="mesh:b",
                 purpose=MeshPurpose.BEM_SURFACE,
+                mesh_data=None,
                 file=str(mesh_b),
                 scale_to_m=1.0,
                 translation_m=(0.0, 2.0, 0.0),

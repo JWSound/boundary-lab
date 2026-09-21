@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from blab.generators.base import GenerationCancelledError, GenerationRequest, GeneratorSession
+from blab.generators.base import GenerationCancelledError, GenerationRequest, GeneratorSession, complete_generation
 from blab.generators.registry import create_generator
 
 
@@ -15,9 +15,10 @@ class GeneratorWorker(QObject):
     cancelled = Signal()
     finished = Signal()
 
-    def __init__(self, request: GenerationRequest):
+    def __init__(self, request: GenerationRequest, *, host=None):
         super().__init__()
         self.request = request
+        self.host = host
         self._session: GeneratorSession | None = None
         self._stop = False
 
@@ -25,6 +26,8 @@ class GeneratorWorker(QObject):
     def run(self) -> None:
         try:
             backend = create_generator(self.request.provider_id, **dict(self.request.provider_options))
+            if self.host is not None and callable(getattr(backend, "bind_host", None)):
+                backend.bind_host(self.host)
             self._session = backend.create_session(self.request)
             if self._stop:
                 self._session.stop()
@@ -37,7 +40,7 @@ class GeneratorWorker(QObject):
             if self._stop:
                 self.cancelled.emit()
                 return
-            self.generated.emit(result)
+            self.generated.emit(complete_generation(self.request, result))
         except GenerationCancelledError:
             self.cancelled.emit()
         except Exception as exc:

@@ -336,41 +336,44 @@ export function App() {
     ? selectedSolvedField.field
     : patternField;
   const boundaryCurrent = selectedSolvedField?.key === currentSolveKey;
-  const level2Package = activeSourcePackageIds.length === 1 ? packageById.get(activeSourcePackageIds[0]) ?? null : null;
+  const level2Package = activeSourcePackageIds.length > 0 ? packageById.get(activeSourcePackageIds[0]) ?? null : null;
   const level2FrequencyAvailable = Boolean(level2Package && Array.from(level2Package.frequenciesHz).some(
     (frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6),
   ));
   const rigidMeshesAvailable = rigidObjects.every((object) => Boolean(rigidMeshById.get(object.assetId)?.sourcePath));
   const boundaryAvailable = Boolean(
-    window.boundaryLabDesktop && level2Package?.sourcePath && level2Package.manifest.fidelity_level >= 2 && level2FrequencyAvailable && rigidMeshesAvailable,
+    window.boundaryLabDesktop && activeSourcePackageIds.length > 0 && activeSourcePackageIds.every((id) => {
+      const item = packageById.get(id);
+      return item?.sourcePath && item.manifest.fidelity_level >= 2 && Array.from(item.frequenciesHz).some((frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6));
+    }) && rigidMeshesAvailable,
   );
-  const coupledRepresentation = level2Package?.manifest.files.coupled_model?.representation;
-  const coupledRepresentationSupported = coupledRepresentation === "parity_petrov_galerkin_rom";
-  const coupledAvailable = Boolean(
-    boundaryAvailable && level2Package && level2Package.manifest.fidelity_level >= 3 &&
-    coupledRepresentationSupported,
-  );
+  const solvePackagePaths = useMemo(() => Object.fromEntries(
+    [...new Set(sourceConfigs.map((source) => source.packageId))].map((id) => [id, packages.find((item) => item.id === id)?.sourcePath ?? ""]),
+  ), [sourceConfigs, packages]);
+  const scenePackages = activeSourcePackageIds.map((id) => packageById.get(id));
+  const coupledUnavailableReason = !window.boundaryLabDesktop
+    ? "Coupled solving requires the desktop app."
+    : scenePackages.length === 0 ? "Add a speaker object to enable Coupled solving."
+    : scenePackages.some((item) => !item?.sourcePath) ? "Every speaker package must be loaded from disk."
+    : scenePackages.some((item) => (item?.manifest.fidelity_level ?? 0) < 3 || item?.manifest.files.coupled_model?.representation !== "parity_petrov_galerkin_rom")
+      ? "Every speaker package must contain a Level 3 parity Petrov-Galerkin ROM."
+    : !rigidMeshesAvailable ? "Every rigid mesh must be loaded from disk."
+    : scenePackages.some((item) => !item || !Array.from(item.frequenciesHz).some((frequency) => Math.abs(frequency - selectedFrequencyHz) <= Math.max(1e-4, selectedFrequencyHz * 1e-6)))
+      ? "Select a frequency exported by every speaker package."
+    : undefined;
+  const coupledAvailable = coupledUnavailableReason === undefined;
   const scenePackageLevel = sourceConfigs.length > 0 ? Math.min(...sourceConfigs.map(
     (source) => packageById.get(source.packageId)?.manifest.fidelity_level ?? 1,
   )) : 1;
   const boundaryUnavailableReason = activeSourcePackageIds.length === 0
     ? "Add a speaker object to enable Boundary solving."
-    : activeSourcePackageIds.length > 1
-    ? "Level 2 currently requires all speakers to use the same package; mixed-package Level 1 remains available."
     : !level2Package?.sourcePath
       ? "Level 2 requires a disk-backed speaker package in the desktop app."
       : !rigidMeshesAvailable
         ? "Level 2 requires every rigid mesh to be loaded from disk in the desktop app."
       : !level2FrequencyAvailable
         ? "The selected frequency was not exported by the active Level 2 package."
-        : undefined;
-  const coupledUnavailableReason = boundaryUnavailableReason ?? (
-    (level2Package?.manifest.fidelity_level ?? 0) < 3
-      ? "The active speaker package does not contain Level 3 data."
-      : !coupledRepresentationSupported
-        ? "Level 3 Deploy requires a parity Petrov–Galerkin ROM package."
-        : undefined
-  );
+        : !boundaryAvailable ? "Every speaker package must contain Level 2 data at the selected frequency." : undefined;
   const selectedSolverAvailable = fidelity === "boundary"
     ? boundaryAvailable
     : fidelity === "coupled"
@@ -542,16 +545,16 @@ export function App() {
       [...nextSources.map(buildSourceInstance), ...nextRigidObjects.map(buildRigidInstance)],
     );
     const nextFrequencyIndex = nearestFrequencyIndex(nextPackage, project.selected_frequency_hz);
-    const homogeneousProject = new Set(nextSources.map((source) => source.packageId)).size === 1;
     const requestedSolverFidelity = project.requested_fidelity === "boundary" ||
       project.requested_fidelity === "coupled";
     const nextFidelity: Fidelity = requestedSolverFidelity &&
-      homogeneousProject &&
       Boolean(
         window.boundaryLabDesktop && nextPackage.sourcePath &&
-        nextPackage.manifest.fidelity_level >= (project.requested_fidelity === "coupled" ? 3 : 2) &&
-        (project.requested_fidelity !== "coupled" ||
-          nextPackage.manifest.files.coupled_model?.representation === "parity_petrov_galerkin_rom"),
+        nextSources.every((source) => {
+          const sourcePackage = nextPackageById.get(source.packageId);
+          return sourcePackage?.sourcePath && sourcePackage.manifest.fidelity_level >= (project.requested_fidelity === "coupled" ? 3 : 2) &&
+            (project.requested_fidelity !== "coupled" || sourcePackage.manifest.files.coupled_model?.representation === "parity_petrov_galerkin_rom");
+        }),
       )
       ? project.requested_fidelity
       : "pattern";
@@ -829,7 +832,7 @@ export function App() {
 
   const solveLevel2 = useCallback(async () => {
     if (!window.boundaryLabDesktop || !level2Package?.sourcePath) {
-      setError("Boundary and coupled solving require every speaker to use the same disk-backed package.");
+      setError("Solving requires disk-backed speaker packages.");
       return;
     }
     const coupled = fidelity === "coupled";
@@ -855,6 +858,7 @@ export function App() {
       const reuseBoundary = !coupled && boundaryGeometryKey === requestedGeometryKey;
       const request: DesktopLevel2SolveRequest = {
         packagePath: level2Package.sourcePath,
+        packagePaths: solvePackagePaths,
         frequencyHz: pkg.frequenciesHz[frequencyIndex],
         backend: "cuda",
         fidelity: coupled ? "coupled" : "boundary",
@@ -913,7 +917,7 @@ export function App() {
       setSolveMessage(`${fidelityLabel} solve failed`);
       setError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [boundaryGeometryKey, currentGeometryKey, currentSolveKey, drivenSourceConfigs, fidelity, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects]);
+  }, [solvePackagePaths, boundaryGeometryKey, currentGeometryKey, currentSolveKey, drivenSourceConfigs, fidelity, frequencyIndex, level2Package, observation, patternField, pkg.frequenciesHz, rigidMeshById, rigidObjects]);
 
   const stopMicrophoneSweep = useCallback(async () => {
     if (!window.boundaryLabDesktop || microphoneSweepState !== "solving") return;
@@ -962,6 +966,7 @@ export function App() {
     try {
       const result = await window.boundaryLabDesktop.calculateMicrophoneSweep({
         packagePath: level2Package.sourcePath,
+        packagePaths: solvePackagePaths,
         backend: "cuda",
         fidelity: fidelity === "coupled" ? "coupled" : "boundary",
         sources: drivenSourceConfigs,
@@ -1037,7 +1042,7 @@ export function App() {
     } finally {
       stoppingMicrophoneSweep.current = false;
     }
-  }, [drivenSourceConfigs, fidelity, level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects]);
+  }, [solvePackagePaths, drivenSourceConfigs, fidelity, level2Package, microphonePatternResponses.frequenciesHz, microphoneSweepKey, microphones, rigidMeshById, rigidObjects]);
 
   const calculateOrStopMicrophoneSweep = () => {
     if (microphoneSweepState === "solving") void stopMicrophoneSweep();

@@ -29,6 +29,22 @@ Create new speaker packages in the main Boundary Lab application; see its
 
 ## Scene and controls
 
+Speaker packages can include an optional OBJ viewport model. In Boundary Lab's
+**Export Speaker Package** dialog, choose **Viewport model** and set **OBJ units**.
+The dimensions shown below the picker help verify scale. Supply a fully expanded
+model with +Z forward and the same origin as the acoustic model; no automatic
+centering or mirroring is applied. The S218BP OBJ example uses **Centimeters**.
+
+Material files referenced by the OBJ are detected in the same directory, with a
+same-name `.mtl` fallback. Geometry and color materials are embedded in the package,
+so Deploy does not need the original files. Texture maps are not included; the
+dialog reports them and uses material colors. Missing materials use default shading.
+Packages without a viewport model keep their existing appearance. The acoustic
+mesh continues to drive Boundary and Coupled solves.
+
+For headless exports, use `--viewport-model cabinet.obj --viewport-model-scale 0.01`
+to attach a model expressed in centimeters (`1` for meters, `0.001` for millimeters).
+
 The library contains reusable speaker packages and rigid-mesh assets. The scene
 contains their placed instances, microphones, and the audience plane. Selecting
 an item exposes its properties. Positions and distances in Deploy are in metres;
@@ -90,10 +106,11 @@ to the same nonzero free-field prediction; elevated receivers show interference,
 not a constant boost.
 
 Pattern supports mixed speaker packages over their overlapping frequency range.
-Boundary and Coupled currently require the Electron desktop app, disk-backed
-assets, and all placed speakers using the same package. Boundary requires Level 2
-data; Coupled requires a supported parity-ROM Level 3 package. The selected
-frequency must be present in the relevant exported data. A disabled method's
+Boundary and Coupled require the Electron desktop app and disk-backed assets.
+Both support mixed speaker packages. Every package needs Level 2 data for Boundary
+or a supported parity-ROM Level 3 model for Coupled, and all packages must use the
+same exterior air density and sound speed. The selected frequency must be exported
+by every package; sweeps use their common exported frequencies. A disabled method's
 tooltip explains the restriction. The desktop currently requests CUDA; it does
 not offer the main application's automatic CPU fallback.
 
@@ -196,8 +213,8 @@ close the application assuming a project save preserved them.
 
 ## Limits and troubleshooting
 
-- If Boundary/Coupled is unavailable, check package type, homogeneous package
-  use, disk paths, exported frequency, and CUDA/backend setup.
+- If Boundary/Coupled is unavailable, check every package's type, disk path,
+  common exported frequencies, and CUDA/backend setup.
 - If a solve fails, inspect the reported error and verify geometry clearance and
   runtime setup. Moving an object or changing drive invalidates a current solve.
 - If speaker plots are empty, select an appropriate subject and run a new Coupled

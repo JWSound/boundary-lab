@@ -21,8 +21,18 @@ Speaker-package schema v1 contains sampled complex spherical pressure (Level 1),
 exterior geometry and pressure/normal-derivative traces (Level 2), and, for the
 supported Level 3 path, frequency-indexed parity Petrov–Galerkin ROM operators.
 See [Inputs and Outputs](../../docs/Inputs%20and%20Outputs.md) for archive and
-coordinate contracts. Deploy supports multiple instances of one disk-backed
-package for Boundary/Coupled; mixed-package scenes are currently Pattern-only.
+coordinate contracts. Deploy supports mixed disk-backed packages for Boundary
+and Coupled. Each instance uses its own package mesh and traces or ROM, while all
+instances share one exterior boundary problem. Packages must agree on exterior
+medium properties; Boundary/Coupled sweeps use their common exported frequencies.
+
+Desktop requests may provide `packagePaths` (package ID to disk path), with each
+source referencing its `packageId`. Legacy `packagePath` requests remain supported.
+Mixed coupled requests use Deploy solve schema version 3: `rom.models` contains
+one model per package and `rom.instances` records scene order and model IDs.
+Mixed `rom_sweep` entries provide per-model arrays and drives at each frequency.
+Ranks, symmetry modes, mesh sizes, and input/transducer counts may differ between
+models. Single-package requests retain their existing representation.
 New packages do not include an isolated acoustic-impedance reference. Legacy
 optional reference members are ignored.
 

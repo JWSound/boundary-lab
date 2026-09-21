@@ -353,6 +353,9 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> None:
     try:
         exit_code = app.exec()
     finally:
+        from blab.solvers.beat_engine_runtime import shutdown_beat_engine_workers
+
+        shutdown_beat_engine_workers()
         reporter.close()
     raise SystemExit(exit_code)
 

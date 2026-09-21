@@ -78,9 +78,7 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         apply_compact_plot_text(self.phase_axes)
         self.phase_axes.set_visible(False)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
-        clear_plot_axes(self.phase_axes)
+    def _reset_plot_data(self) -> None:
         self._magnitude_lines = {}
         self._phase_lines = {}
         self._lines = []
@@ -89,9 +87,15 @@ class ElectricalImpedanceCanvas(RawCoordinatePlotCanvas):
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
-        self._configure_axes()
         self._sync_trace_filter_actions(())
         self.show_phase_action.setEnabled(False)
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        clear_plot_axes(self.phase_axes)
+        self._reset_plot_data()
+        self._configure_axes()
         self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()

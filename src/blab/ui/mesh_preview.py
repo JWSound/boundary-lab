@@ -25,6 +25,7 @@ from blab.ath import read_surface_physical_names
 from blab.config import MeshConfig
 from blab.generators.base import GeneratedGeometry
 from blab.mesh_cache import read_mesh
+from blab.mesh_data import read_resource_mesh
 from blab.preview_hierarchy import PreviewHierarchy, build_preview_hierarchy
 from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
@@ -629,7 +630,7 @@ class MeshPreview(QWidget):
         symmetry: str,
         mesh: meshio.Mesh | None = None,
     ) -> tuple[int, np.ndarray]:
-        mesh = read_mesh(mesh_cfg.file) if mesh is None else mesh
+        mesh = read_resource_mesh(mesh_cfg) if mesh is None else mesh
         points = np.asarray(mesh.points, dtype=float)
         scale_factor = 0.001 if mesh_cfg.scale_factor is None else float(mesh_cfg.scale_factor)
         points = points * scale_factor + np.asarray(mesh_cfg.translation_m, dtype=float)

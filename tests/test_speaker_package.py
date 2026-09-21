@@ -52,6 +52,26 @@ from blab.system_contract import OutputRequest, SystemSolveRequest
 from blab.system_solve import PreparedSystemSolve
 
 
+def test_viewport_asset_is_portable_and_does_not_change_acoustics(tmp_path: Path) -> None:
+    obj = tmp_path / "cabinet.obj"
+    obj.write_text("v 0 0 0\nv 100 0 0\nv 0 100 0\nf 1 2 3\n")
+    base = SpeakerPackageConfig(tmp_path / "base.blabsp", "Cabinet", SpeakerPackageFidelity.FIXED_SOURCES)
+    visual = replace(
+        base, output_path=tmp_path / "visual.blabsp", viewport_model_path=obj, viewport_model_scale_to_m=0.01
+    )
+    solved = _solved_system()
+    export_speaker_package(solved, base)
+    export_speaker_package(solved, visual)
+    obj.unlink()
+    manifest = validate_speaker_package(visual.output_path)
+    assert manifest["files"]["viewport_model"]["unit"] == "m"
+    with zipfile.ZipFile(base.output_path) as a, zipfile.ZipFile(visual.output_path) as b:
+        for name in a.namelist():
+            if name not in {"manifest.json", "checksums.json"}:
+                assert a.read(name) == b.read(name)
+        assert b"v 1 0 -0" in b.read("viewport/model.obj")
+
+
 def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> SolvedSystem:
     frequencies = np.asarray([100.0, 1000.0])
     excitation_ids = ("port:a", "port:b")

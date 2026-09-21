@@ -12,10 +12,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from blab.deploy.acoustic_loading import ACOUSTIC_LOADING_KEYS, normalized_acoustic_loading
 from blab.deploy.assets import DeploySolveCache
+from blab.deploy.packages import common_frequencies, scene_packages
 from blab.deploy.solve import (
     prepare_deploy_field_request,
     prepare_deploy_microphone_sweep_request,
@@ -75,11 +74,11 @@ def _execution_worker_key(payload: object, solve_cache: DeploySolveCache) -> str
     worker_key = _worker_key(payload)
     if not isinstance(payload, dict) or str(payload.get("fidelity", "boundary")).strip().lower() != "coupled":
         return worker_key
-    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
-    package = solve_cache.load_package(package_path)
-    representation = package.coupled_model.get("representation") if isinstance(package.coupled_model, dict) else None
-    if representation != "parity_petrov_galerkin_rom":
-        raise ValueError("Deploy Level 3 requires a parity Petrov–Galerkin ROM package.")
+    packages = scene_packages(payload, solve_cache)
+    for package in packages.values():
+        model = package.coupled_model
+        if not isinstance(model, dict) or model.get("representation") != "parity_petrov_galerkin_rom":
+            raise ValueError("Deploy Level 3 requires a parity Petrov?Galerkin ROM package.")
     return worker_key
 
 
@@ -181,17 +180,7 @@ def _solve(
     solution_keys: dict[str, str],
 ) -> None:
     worker_key = _execution_worker_key(payload, solve_cache)
-    rom = False
-    if isinstance(payload, dict) and str(payload.get("fidelity", "boundary")).strip().lower() == "coupled":
-        package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
-        package = solve_cache.load_package(package_path)
-        representation = (
-            package.coupled_model.get("representation") if isinstance(package.coupled_model, dict) else None
-        )
-        if representation == "parity_petrov_galerkin_rom":
-            # The ROM path uses the same BEAT solver process as Level 2, so it
-            # benefits from the desktop's background CUDA warmup.
-            rom = True
+    rom = isinstance(payload, dict) and str(payload.get("fidelity", "boundary")).strip().lower() == "coupled"
     worker = workers.get(worker_key)
     if worker is None:
         worker = _worker(worker_key)
@@ -280,22 +269,12 @@ def _microphone_sweep(
 ) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Deploy microphone sweep request must be an object.")
-    package_path = Path(str(payload.get("packagePath", ""))).expanduser().resolve()
-    package_data = solve_cache.load_package(package_path)
+    packages = scene_packages(payload, solve_cache)
+    package_data = next(iter(packages.values()))
     fidelity = str(payload.get("fidelity", "boundary")).strip().lower()
     coupled_model = package_data.coupled_model if fidelity == "coupled" else None
     representation = coupled_model.get("representation") if isinstance(coupled_model, dict) else None
-    frequencies = sorted({float(value) for value in package_data.frequencies})
-    if representation == "parity_petrov_galerkin_rom":
-        arrays = coupled_model.get("arrays")
-        rom_frequencies = (
-            np.asarray(arrays.get("frequencies_hz", ()), dtype=np.float64) if isinstance(arrays, dict) else np.empty(0)
-        )
-        frequencies = [
-            value
-            for value in frequencies
-            if rom_frequencies.size and np.min(np.abs(rom_frequencies - value)) <= max(1e-4, abs(value) * 1e-6)
-        ]
+    frequencies = common_frequencies(packages, coupled=fidelity == "coupled")
     if not frequencies:
         raise ValueError("Speaker package contains no frequencies supported by the selected microphone sweep.")
     raw_microphones = payload.get("microphones")
@@ -481,7 +460,10 @@ def _microphone_sweep(
                 if rom_coupled:
                     # Use the matched sweep frequency for acoustic postprocessing.
                     acoustic = normalized_acoustic_loading(
-                        package_data, _request, frequency_result, frequencies[frequency_index]
+                        packages if len(packages) > 1 else package_data,
+                        _request,
+                        frequency_result,
+                        frequencies[frequency_index],
                     )
                     for key, values in acoustic.items():
                         for index, value in enumerate(values):

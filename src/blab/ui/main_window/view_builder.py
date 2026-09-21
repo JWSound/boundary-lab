@@ -452,6 +452,8 @@ class ViewBuilderMixin:
     def apply_workflow_controls(self, controls: WorkflowControls) -> None:
         preparing = self.preparations.active
         self.generate_button.setEnabled(controls.generate and not preparing)
+        if controls.generate and not preparing:
+            self._refresh_generate_availability()
         self.solve_button.setEnabled(controls.solve and not preparing)
         self.cancel_button.setEnabled(controls.cancel or preparing)
         self.mesh_config_button.setEnabled(controls.mesh_config and not preparing)

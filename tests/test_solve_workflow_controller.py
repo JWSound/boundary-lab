@@ -653,3 +653,47 @@ def test_background_solve_preparation_lifecycle(controller, monkeypatch, outcome
     finally:
         gate.set()
         preparations.close()
+
+
+def test_provider_solve_uses_host_frequency_and_result_pipeline(controller):
+    from blab.mesh_inventory import InventoryEntry
+    from test_memory_mesh import memory_system
+
+    system = memory_system()
+    controller.project.physical_system = system
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (
+        InventoryEntry(name="tetra", source_file="", scale_factor=1.0, mesh_data=system.meshes[0].mesh_data),
+    )
+    controller.start_provider_solve("provider-job")
+    assert len(controller.solve.started) == 1
+    prepared = controller.solve.started[0]
+    assert len(prepared.request.frequencies_hz) == 41
+    assert min(prepared.request.frequencies_hz) == pytest.approx(200.0)
+    assert max(prepared.request.frequencies_hz) == pytest.approx(20000.0)
+    assert controller.session.result_builder is not None
+    assert controller.session.result_builder.compiled_system is prepared.request.compiled_system
+    assert controller.view.errors == [] and controller.view.warnings == []
+
+
+def test_provider_preparation_failure_is_correlated_without_modal(controller):
+    from test_memory_mesh import memory_system
+
+    controller.project.physical_system = memory_system()
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (_ for _ in ()).throw(ValueError("Invalid mesh"))
+    failures = []
+    controller.provider_preparation_failed.connect(lambda job, message: failures.append((job, message)))
+    controller.start_provider_solve("provider-job")
+    assert failures == [("provider-job", "Invalid mesh")]
+    assert controller._provider_job_id is None
+    assert not controller.view.errors and not controller.view.warnings
+
+
+def test_provider_cancel_cannot_stop_unrelated_job(controller):
+    controller.solve.active = True
+    controller.cancel_provider_solve("foreign")
+    assert controller.solve.cancelled == 0
+    controller._provider_job_id = "owned"
+    controller.cancel_provider_solve("foreign")
+    assert controller.solve.cancelled == 0
+    controller.cancel_provider_solve("owned")
+    assert controller.solve.cancelled == 1

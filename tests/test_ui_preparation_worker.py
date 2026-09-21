@@ -14,6 +14,47 @@ def wait_until(predicate, timeout=3):
     assert predicate()
 
 
+def test_settlement_releases_reservation_after_delivery_and_when_cancelled(qapp):
+    controller = PreparationController(None, ActivityController())
+    events = []
+    try:
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 1,
+            lambda value: events.append("delivered"),
+            lambda exc: None,
+            settled=lambda: events.append("settled"),
+        )
+        wait_until(lambda: not controller.active)
+        assert events == ["delivered", "settled"]
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 2,
+            lambda value: events.append("obsolete"),
+            lambda exc: None,
+            settled=lambda: events.append("cancelled-settled"),
+        )
+        controller.cancel("solve")
+        wait_until(lambda: not controller.active)
+        assert events[-1] == "cancelled-settled"
+        assert "obsolete" not in events
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 3,
+            lambda value: None,
+            lambda exc: None,
+            settled=lambda: events.append("closed-settled"),
+        )
+        controller.close()
+        qapp.processEvents()
+        assert events.count("closed-settled") == 1
+    finally:
+        controller.close()
+
+
 def test_worker_does_not_block_gui_and_delivers_only_latest_result(qapp):
     activities = ActivityController(delay_ms=10)
     controller = PreparationController(None, activities)

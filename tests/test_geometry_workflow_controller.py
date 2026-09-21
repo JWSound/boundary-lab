@@ -65,6 +65,14 @@ class FakeInputs:
     def active_generator_document(self):
         return self._document
 
+    def generation_context(self):
+        return "revision-1", {}
+
+    def accept_generation(self, completed):
+        self.record_generated_geometry(completed.request.document_id, completed.result)
+        self.ensure_seeded_exterior_system()
+        return completed.result
+
     def apply_saved_source_config_to_result(self, result, mesh_name):
         return result
 
@@ -184,6 +192,7 @@ def test_generated_geometry_is_recorded_seeded_and_quality_checked(controller) -
     )
     emitted: list[str] = []
     controller.mesh_state_changed.connect(emitted.append)
+    controller._pending_request_id = request.request_id
 
     controller._on_geometry_generated(GenerationCompleted(request=request, result=result))
 
@@ -191,3 +200,38 @@ def test_generated_geometry_is_recorded_seeded_and_quality_checked(controller) -
     assert controller.inputs.seeded == 1
     assert emitted == ["geometry_generated"]
     assert controller.view.quality_warnings == [result]
+
+
+def test_stale_or_replayed_completion_does_not_publish_geometry(controller) -> None:
+    from dataclasses import replace
+
+    from blab.project.model import new_generator_document
+
+    controller.inputs._document = new_generator_document("horn")
+    controller.generate_geometry()
+    request = controller.geometry.started[0]
+    controller._on_geometry_generated(GenerationCompleted(replace(request, request_id="old"), _geometry()))
+    assert controller.inputs.recorded == []
+    completed = GenerationCompleted(request, _geometry())
+    controller._on_geometry_generated(completed)
+    controller._on_geometry_generated(completed)
+    assert len(controller.inputs.recorded) == 1
+
+
+def test_rejected_configuration_does_not_trigger_preview_refresh(controller):
+    from blab.project.model import new_generator_document
+
+    controller.inputs._document = new_generator_document("horn")
+    controller.generate_geometry()
+    request = controller.geometry.started[0]
+    refreshed = []
+    controller.mesh_state_changed.connect(refreshed.append)
+
+    def reject(completed):
+        raise ValueError("Invalid boundary assignment")
+
+    controller.inputs.accept_generation = reject
+    controller._on_geometry_generated(GenerationCompleted(request, _geometry()))
+    assert controller.inputs.recorded == []
+    assert refreshed == []
+    assert controller.view.errors == [("Geometry generation failed", "Invalid boundary assignment")]

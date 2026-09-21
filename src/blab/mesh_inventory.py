@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from blab.mesh_cache import mesh_cache
+from blab.mesh_data import MeshData
 
 
 class MeshEntry(Protocol):
@@ -28,6 +29,7 @@ class InventoryEntry:
     translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     enabled: bool = True
     locked: bool = False
+    mesh_data: MeshData | None = None
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class AvailableSystemMesh:
     has_tetrahedra: bool
     surface_groups_by_volume: tuple[tuple[str, tuple[str, ...]], ...] = ()
     locked: bool = False
+    mesh_data: MeshData | None = None
 
     def surface_groups_for_volume(self, volume_group: str | None) -> tuple[str, ...]:
         if volume_group is None:
@@ -64,12 +67,13 @@ def inspect_system_meshes(meshes: tuple[MeshEntry, ...]) -> tuple[AvailableSyste
             if entry.cleaned_file is not None and Path(entry.cleaned_file).is_file()
             else source_path
         )
-        inventory = mesh_cache.inventory(effective_path)
+        data = getattr(entry, "mesh_data", None)
+        inventory = mesh_cache.inventory_data(data) if data is not None else mesh_cache.inventory(effective_path)
         inspected.append(
             AvailableSystemMesh(
                 name=entry.name,
-                source_file=str(source_path),
-                file=str(effective_path),
+                source_file="" if data is not None else str(source_path),
+                file="" if data is not None else str(effective_path),
                 scale_to_m=float(entry.scale_factor),
                 translation_m=tuple(float(value) / 1000.0 for value in entry.translation_mm),
                 surface_groups=tuple(name for name, _tag in inventory.surfaces),
@@ -77,6 +81,7 @@ def inspect_system_meshes(meshes: tuple[MeshEntry, ...]) -> tuple[AvailableSyste
                 has_tetrahedra=inventory.has_tetrahedra,
                 surface_groups_by_volume=inventory.surfaces_by_volume,
                 locked=bool(entry.locked),
+                mesh_data=data,
             )
         )
     return tuple(inspected)

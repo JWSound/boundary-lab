@@ -19,7 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.generators.ath import ath_source_text, with_ath_source_text
-from blab.generators.registry import create_generator
+from blab.generators.registry import restore_generator_document
 from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
     physical_system_from_dict,
@@ -96,6 +96,7 @@ class ProjectWorkflowController(QObject):
         forget_recent: Callable[[Path], None],
         activities: ActivityController | None = None,
         preparations=None,
+        default_document_factory=None,
     ) -> None:
         super().__init__(parent)
         self._view = view
@@ -110,6 +111,7 @@ class ProjectWorkflowController(QObject):
         self._forget_recent = forget_recent
         self._activities = activities if activities is not None else ActivityController(self)
         self._preparations = preparations
+        self._default_document_factory = default_document_factory
 
     @property
     def _project(self) -> ProjectDocument:
@@ -237,11 +239,21 @@ class ProjectWorkflowController(QObject):
     def new_project(self) -> None:
         if not self.confirm_unsaved_project_changes("new_project"):
             return
+        project = new_project_document(project_preferences=self.current_project_preferences())
+        if self._default_document_factory is not None:
+            name = project.generator_documents[0].name
+            try:
+                document = self._default_document_factory(name)
+            except ValueError:
+                # Keep the requested provider visible even if its package was removed.
+                document = new_generator_document(name, provider_id=self._read_preferences().default_geometry_provider)
+            project.generator_documents = (document,)
+            project.active_generator_document_id = document.id
         if self._preparations is not None:
             self._preparations.cancel("project")
         self._inputs.discard_channel_config_dialog()
         self._session.replace(
-            new_project_document(project_preferences=self.current_project_preferences()),
+            project,
             path=None,
         )
         self._geometry_store.generated_by_document_id = {}
@@ -310,7 +322,7 @@ class ProjectWorkflowController(QObject):
                 generated = {}
                 for item in generator_documents_from_payload(payload.get("generator_documents")):
                     try:
-                        generated[item.id] = create_generator(item.provider_id).restore(item)
+                        generated[item.id] = restore_generator_document(item)
                     except Exception:
                         generated[item.id] = None
                 return payload, generated
@@ -414,7 +426,7 @@ class ProjectWorkflowController(QObject):
         component_channels = payload.get("component_channel_by_id", {})
         if not isinstance(component_channels, dict):
             component_channels = {}
-        self._session.document = ProjectDocument(
+        loaded_document = ProjectDocument(
             generator_documents=documents,
             active_generator_document_id=active_id,
             imported_meshes=tuple(
@@ -442,6 +454,7 @@ class ProjectWorkflowController(QObject):
             },
             observation_planes=observation_planes_from_payload(payload.get("observation_planes")),
         )
+        self._session.replace(loaded_document, path=self._session.path)
         self._geometry_store.generated_by_document_id = {}
         for document in self._project.generator_documents:
             result = (

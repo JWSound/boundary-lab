@@ -120,7 +120,7 @@ class PlotPresenterMixin:
         if observation_planes is not None:
             observation_planes.sync_view()
         for entry in self.plot_entries:
-            entry.widget._draw_empty()
+            entry.widget.clear_for_solve()
             if entry.plot_id in {"real_input_power", "interface_velocity"}:
                 entry.widget.setEnabled(False)
         self.set_plot_exports_available(False)

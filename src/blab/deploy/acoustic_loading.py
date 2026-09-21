@@ -17,7 +17,10 @@ ACOUSTIC_LOADING_KEYS = (
 
 
 def normalized_acoustic_loading(
-    package: DeployPackageData, request: dict[str, Any], result: dict[str, Any], frequency_hz: float
+    package: DeployPackageData | dict[str, DeployPackageData],
+    request: dict[str, Any],
+    result: dict[str, Any],
+    frequency_hz: float,
 ) -> dict[str, list[float | None]]:
     """Recover opposing load as dimensionless R/X and complex RMS pressure (Pa).
 
@@ -27,6 +30,29 @@ def normalized_acoustic_loading(
     """
     descriptors = request.get("transducers", [])
     output = {key: [None] * len(descriptors) for key in ACOUSTIC_LOADING_KEYS}
+    if isinstance(package, dict):
+        diagnostics = result.get("diagnostics", {})
+        velocities = diagnostics.get("transducer_velocity", [])
+        currents = diagnostics.get("transducer_current", [])
+        for instance_index, speaker in enumerate(request.get("speakers", [])):
+            indices = [i for i, d in enumerate(descriptors) if d.get("source_id") == speaker["id"]]
+            if not indices or instance_index >= len(velocities) or instance_index >= len(currents):
+                continue
+            local = normalized_acoustic_loading(
+                package[descriptors[indices[0]]["package_id"]],
+                {"transducers": [descriptors[i] for i in indices]},
+                {
+                    "diagnostics": {
+                        "transducer_velocity": [velocities[instance_index]],
+                        "transducer_current": [currents[instance_index]],
+                    }
+                },
+                frequency_hz,
+            )
+            for key in output:
+                for index, value in zip(indices, local[key], strict=True):
+                    output[key][index] = value
+        return output
     if not np.isfinite(frequency_hz) or frequency_hz <= 0:
         return output
     physical = package.manifest.get("physical_system", {})

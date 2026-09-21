@@ -34,6 +34,7 @@ from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, valida
 from blab.symmetry import snap_points_to_symmetry_planes
 from blab.system_contract import OutputRequest, compiled_system_to_dict
 from blab.system_solve import PreparedSystemSolve, canonicalize_observation_result
+from blab.viewport_model import viewport_model_members
 
 SPEAKER_PACKAGE_SCHEMA = "boundary-lab-speaker-package"
 SPEAKER_PACKAGE_SCHEMA_VERSION = 1
@@ -131,6 +132,8 @@ class SpeakerPackageConfig:
     name: str
     fidelity: SpeakerPackageFidelity = SpeakerPackageFidelity.PATTERN
     coupled_representation: SpeakerPackageCoupledRepresentation = SpeakerPackageCoupledRepresentation.PARITY_ROM
+    viewport_model_path: Path | None = None
+    viewport_model_scale_to_m: float = 1.0
 
     def normalized(self) -> SpeakerPackageConfig:
         path = Path(self.output_path)
@@ -139,11 +142,15 @@ class SpeakerPackageConfig:
         name = str(self.name).strip()
         if not name:
             raise ValueError("Speaker package name must not be empty.")
+        if self.viewport_model_path is not None:
+            viewport_model_members(self.viewport_model_path, self.viewport_model_scale_to_m)
         return SpeakerPackageConfig(
             path,
             name,
             SpeakerPackageFidelity.parse(self.fidelity),
             SpeakerPackageCoupledRepresentation.parse(self.coupled_representation),
+            Path(self.viewport_model_path) if self.viewport_model_path is not None else None,
+            float(self.viewport_model_scale_to_m),
         )
 
 
@@ -732,6 +739,13 @@ def _archive_members(solved: SolvedSystem, config: SpeakerPackageConfig) -> tupl
                 },
                 "metadata": rom_metadata,
             }
+    if config.viewport_model_path is not None:
+        visual_members, visual_descriptor = viewport_model_members(
+            config.viewport_model_path, config.viewport_model_scale_to_m
+        )
+        members.update(visual_members)
+        files["viewport_model"] = visual_descriptor
+        capabilities.append("viewport_model")
     manifest = {
         "schema": SPEAKER_PACKAGE_SCHEMA,
         "schema_version": SPEAKER_PACKAGE_SCHEMA_VERSION,

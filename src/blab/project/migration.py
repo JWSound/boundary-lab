@@ -10,6 +10,7 @@ import meshio
 import numpy as np
 
 from blab.config import RadiatorConfig
+from blab.mesh_data import surface_names
 from blab.mesh_inventory import AvailableSystemMesh
 from blab.physical_model import (
     AcousticRegion,
@@ -63,6 +64,7 @@ def seed_exterior_system(
             purpose=MeshPurpose.BEM_SURFACE,
             scale_to_m=mesh.scale_to_m,
             translation_m=mesh.translation_m,
+            mesh_data=mesh.mesh_data,
         )
         resources.append(resource)
         resource_by_name[mesh.name] = resource
@@ -79,7 +81,7 @@ def seed_exterior_system(
     driven_boundaries = []
     for mesh in exterior_meshes:
         resource = resource_by_name[mesh.name]
-        tags_by_name = _surface_tags_by_name(Path(mesh.file))
+        tags_by_name = surface_names(mesh) if mesh.mesh_data is not None else _surface_tags_by_name(Path(mesh.file))
         for group_name in mesh.surface_groups:
             tag = tags_by_name.get(group_name)
             if tag is None:
