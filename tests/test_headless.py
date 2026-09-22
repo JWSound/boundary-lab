@@ -22,12 +22,12 @@ from blab.physical_model import (
     PhysicalSolveKind,
     PhysicalSystem,
 )
+from blab.project.model import ProjectPreferencesState
 from blab.project_cli import _build_arg_parser
 from blab.solve_results import ResultDomain
 from blab.solvers.coupled_backend import validate_solve_plan
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
-from blab.system_solve import SystemUiSolveRequest, canonicalize_observation_result
-from blab.ui.project_state import ProjectPreferencesState
+from blab.system_solve import PreparedSystemSolve, canonicalize_observation_result
 
 
 def test_headless_request_parses_explicit_frequencies_and_probes(tmp_path: Path) -> None:
@@ -246,7 +246,7 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         outputs=prepared.request.outputs,
         solver_options={"static_condensation": True},
     )
-    prepared = SystemUiSolveRequest(
+    prepared = PreparedSystemSolve(
         request=request,
         backend_id=prepared.backend_id,
         solve_kind=prepared.solve_kind,
@@ -257,7 +257,7 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
         vertical_count=prepared.vertical_count,
         result_domains=prepared.result_domains,
     )
-    monkeypatch.setattr(headless_module, "prepare_system_ui_solve", lambda *_args, **_kwargs: prepared)
+    monkeypatch.setattr(headless_module, "prepare_system_solve", lambda *_args, **_kwargs: prepared)
     validated = []
     monkeypatch.setattr(headless_module, "validate_solve_plan", validated.append)
     project_path = tmp_path / "project.blab.json"
@@ -283,7 +283,7 @@ def test_headless_full_matrix_diagnostics_disable_default_condensation(monkeypat
     assert result.request.solver_options["static_condensation"] is False
 
 
-def _prepared_request() -> SystemUiSolveRequest:
+def _prepared_request() -> PreparedSystemSolve:
     port = ExcitationPort(
         id="excitation:source",
         name="Source",
@@ -321,7 +321,7 @@ def _prepared_request() -> SystemUiSolveRequest:
             ),
         ),
     )
-    return SystemUiSolveRequest(
+    return PreparedSystemSolve(
         request=request,
         backend_id="beat_cpu",
         solve_kind=PhysicalSolveKind.EXTERIOR_BEM,

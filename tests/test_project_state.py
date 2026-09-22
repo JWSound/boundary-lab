@@ -1,4 +1,4 @@
-from blab.ui.project_state import (
+from blab.project.model import (
     ProjectPreferencesState,
     default_generator_documents,
     generator_document_from_payload,

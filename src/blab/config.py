@@ -1,7 +1,7 @@
 """Domain configuration used by the solver and protocol layers.
 
 GUI-only workflow state, such as saved project editor text and imported mesh
-choices, belongs in ``blab.ui.project_io`` until it becomes solver input.
+choices, belongs in ``blab.project.io`` until it becomes solver input.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from blab.defaults import SOLVER_OUTPUT_NPZ
+from blab.mesh_data import MeshData
 
 SYMMETRY_OPTIONS = {"off", "x", "xy"}
 DEFAULT_CHANNEL_VOLTAGE_V = 2.83
@@ -64,6 +65,7 @@ class MeshConfig:
     file: str
     scale_factor: float | None = None
     translation_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    mesh_data: MeshData | None = None
 
 
 @dataclass

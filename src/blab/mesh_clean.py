@@ -517,14 +517,6 @@ def _path_edge_vertices(path: Sequence[int], edge_index: int, closed: bool) -> T
     return start, int(path[end_index])
 
 
-def _closest_point_on_loop(
-    point: np.ndarray,
-    points: np.ndarray,
-    loop: Sequence[int],
-) -> Tuple[float, int, float, np.ndarray]:
-    return _closest_point_on_path(point, points, loop, True)
-
-
 def _closest_point_on_path(
     point: np.ndarray,
     points: np.ndarray,
@@ -546,12 +538,6 @@ def _closest_point_on_path(
     return best_distance, best_edge_index, best_t, best_point
 
 
-def _loop_distance(points: np.ndarray, source_loop: Sequence[int], target_loop: Sequence[int]) -> float:
-    if not source_loop or not target_loop:
-        return float("inf")
-    return _path_distance(points, source_loop, True, target_loop, True)
-
-
 def _path_distance(
     points: np.ndarray,
     source_path: Sequence[int],
@@ -565,28 +551,6 @@ def _path_distance(
         _closest_point_on_path(points[vertex], points, target_path, target_closed)[0] for vertex in source_path
     ]
     return float(max(distances))
-
-
-def _choose_stitch_loop_pair(
-    points: np.ndarray,
-    loops_a: Sequence[Sequence[int]],
-    loops_b: Sequence[Sequence[int]],
-    stitch_tol: float,
-) -> Tuple[List[int], List[int]]:
-    best_pair: Tuple[List[int], List[int]] | None = None
-    best_score = float("inf")
-    for loop_a in loops_a:
-        for loop_b in loops_b:
-            distance_ab = _loop_distance(points, loop_a, loop_b)
-            distance_ba = _loop_distance(points, loop_b, loop_a)
-            score = max(distance_ab, distance_ba)
-            if score <= stitch_tol and score < best_score:
-                best_pair = (list(loop_a), list(loop_b))
-                best_score = score
-
-    if best_pair is None:
-        raise ValueError(f"No compatible boundary loop pair found within stitch tolerance {stitch_tol:g}.")
-    return best_pair
 
 
 def _choose_stitch_loop_pairs(
@@ -633,15 +597,6 @@ def _choose_stitch_loop_pairs(
     if not stitched_pairs:
         raise ValueError(f"No compatible boundary loop pair found within stitch tolerance {stitch_tol:g}.")
     return stitched_pairs
-
-
-def _seam_points_from_loops(
-    points: np.ndarray,
-    reference_loop: Sequence[int],
-    other_loop: Sequence[int],
-    stitch_tol: float,
-) -> np.ndarray:
-    return _seam_points_from_paths(points, reference_loop, True, other_loop, True, stitch_tol)
 
 
 def _seam_points_from_paths(
@@ -818,7 +773,7 @@ def _split_stitched_loop_edges(
                     np.asarray([sequence[i], sequence[i + 1], opposite], dtype=np.int64)
                     for i in range(len(sequence) - 1)
                 ]
-                current[current_index:current_index + 1] = replacement
+                current[current_index : current_index + 1] = replacement
                 break
         else:
             raise ValueError("Could not locate stitch edge after splitting an adjacent edge.")

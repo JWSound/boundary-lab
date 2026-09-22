@@ -60,15 +60,19 @@ class FrequencyTraceCanvas(RawCoordinatePlotCanvas):
         )
         apply_compact_plot_text(self.axes)
 
-    def _draw_empty(self) -> None:
-        clear_plot_axes(self.axes)
+    def _reset_plot_data(self) -> None:
         self._lines = {}
         self._series_labels = ()
         self._plot_state = None
         self._reset_crosshair_artists()
         self._reset_comparison_interaction()
-        self._configure_axes()
         self._sync_trace_filter_actions(())
+
+    def _draw_empty(self) -> None:
+        self._empty_plot_pending = False
+        clear_plot_axes(self.axes)
+        self._reset_plot_data()
+        self._configure_axes()
         self._apply_manual_axis_limits()
         self._redraw_crosshair()
         self.draw_idle()

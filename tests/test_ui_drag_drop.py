@@ -3,10 +3,10 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QUrl
-from PySide6.QtWidgets import QApplication, QTabWidget
+from PySide6.QtWidgets import QApplication
 
 from blab.ui.dialogs import MeshDropTable
-from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, AthScriptEditor, MainWindow
+from blab.ui.main_window import ADD_DESIGN_TAB_LABEL, AthScriptEditor
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -68,9 +68,8 @@ def test_dropping_a_config_on_a_tab_reaches_the_project_workflow(main_window, tm
     assert "Source.Shape = 1;" in ath_source_text(active)
 
 
-def test_empty_design_tabs_keep_add_drop_target() -> None:
-    window = MainWindow.__new__(MainWindow)
-    window.editor_tabs = QTabWidget()
+def test_empty_design_tabs_keep_add_drop_target(main_window) -> None:
+    window = main_window
     window.generator_documents = ()
     window.active_generator_document_id = None
 

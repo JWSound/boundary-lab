@@ -39,7 +39,7 @@ interface_tag = physical_tag(mesh, 2, "INTERFACE")
 interface_faces = findall(==(interface_tag), mesh.boundary_physical_tags)
 interface_nodes = sort(unique(vcat([collect(mesh.boundary_faces[index]) for index in interface_faces]...)))
 interface_set = Set(interface_nodes)
-interior_nodes = [index for index in eachindex(mesh.vertices) if index âˆ‰ interface_set]
+interior_nodes = [index for index in eachindex(mesh.vertices) if !(index in interface_set)]
 wavenumber = Float32(2pi) * frequency_hz / Float32(343)
 fem_system = stiffness - wavenumber^2 .* mass
 interior_system = fem_system[interior_nodes, interior_nodes]

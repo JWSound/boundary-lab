@@ -17,7 +17,9 @@ x86-compatible Wine environment.
 
 ### Guided installation
 
-The recommended Windows path uses the two batch files in the repository:
+Download and extract the latest stable source archive from
+[GitHub Releases](https://github.com/JWSound/boundary-lab/releases/latest).
+The Windows path uses the two batch files in that release:
 
 1. Double-click `01_install_update_boundary-lab.bat`.
 2. Allow the script to install Git or Python if either prerequisite is missing.
@@ -30,10 +32,13 @@ The recommended Windows path uses the two batch files in the repository:
 
 The installer creates `.venv`, installs or repairs Boundary Lab and its GUI
 dependencies, and validates the `blab` command. When run from an existing Git
-checkout, it can optionally pull a fast-forward update from `origin/main`.
+checkout, it can optionally select the latest published stable release tag in a
+detached checkout. Source archives have no Git metadata and must be updated by
+downloading another stable archive.
 
-For a development checkout on `dev`, decline that `origin/main` update prompt
-and update `dev` separately. Installation and repair then use the current checkout.
+For development, use scoped branches from `main` and decline the stable update
+prompt. The permanent `dev` branch is retired; see [development](development.md).
+Installation and repair then use the current checkout.
 
 Installing Boundary Lab also downloads its pinned BEAT Engine wheel from GitHub
 and verifies the declared SHA-256. No separate BEAT checkout or manual wheel
@@ -43,7 +48,7 @@ they do not control whether the BEAT Python package is installed.
 The installer discovers numerical asset paths inside `.venv` through BEAT's
 `engine_paths()` API. Old commands pointing into `src/blab/solvers/julia_local`,
 `julia_cuda`, or `julia_rocm` no longer apply. See
-[BEAT dependency setup](BEAT%20Local%20Dependency.md) for manual updates.
+[BEAT dependency setup](advanced/BEAT%20Local%20Dependency.md) for manual updates.
 
 The launcher remembers an NVIDIA GPU selection when more than one is
 available. To select again, run this from Command Prompt in the repository:
@@ -242,14 +247,18 @@ elements. The following values are planning estimates rather than hard limits:
 
 ## Updating an installation
 
-On Windows, rerun `01_install_update_boundary-lab.bat` and accept the update
-prompt. Automatic updates require a clean checkout on the `main` branch and use
-a fast-forward-only pull.
+For installations from 0.4.3 or older, first replace the updater with the `.bat`
+asset from the latest stable release. Old updater copies still pull main.
+Then run `01_install_update_boundary-lab.bat` and accept the stable update prompt.
+Automatic updates require clean tracked files, no unpublished commits, and either
+main or a detached release tag. Feature branches must be managed manually.
 
-For a manual Windows or Linux checkout:
+For manual Windows or Linux installations, select the published stable tag from
+the Releases page (replace `vX.Y.Z` with that exact tag):
 
 ```bash
-git pull --ff-only
+git fetch origin tag vX.Y.Z
+git switch --detach vX.Y.Z
 python -m pip install -e ".[gui]"
 ```
 

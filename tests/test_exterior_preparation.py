@@ -139,7 +139,7 @@ def test_volume_resource_cannot_be_stitched(cutout_system, tmp_path):
 def test_headless_coupled_request_stitches_and_preserves_excitation(cutout_system, tmp_path, monkeypatch):
     from blab.headless import HeadlessProject, HeadlessSolveSpec, prepare_headless_solve
     from blab.physical_model import ComponentKind, ExcitationPort, ExcitationPortKind, PhysicalComponent
-    from blab.ui.project_state import ProjectPreferencesState
+    from blab.project.model import ProjectPreferencesState
 
     monkeypatch.chdir(tmp_path)
     system = replace(
@@ -164,10 +164,11 @@ def test_headless_coupled_request_stitches_and_preserves_excitation(cutout_syste
 
 
 def test_editor_build_and_preview_share_preparation(cutout_system, tmp_path, monkeypatch, qapp):
+    from blab.mesh_inventory import inspect_system_meshes
+    from blab.project.model import ImportedMeshState
     from blab.ui.dialogs import MeshDialogEntry
     from blab.ui.mesh_assembly import MeshAssemblyService
-    from blab.ui.project_state import ImportedMeshState
-    from blab.ui.system_config import SystemConfigDialog, inspect_system_meshes
+    from blab.ui.system_config import SystemConfigDialog
 
     system = replace(cutout_system, interfaces=())
     meshes = inspect_system_meshes(
@@ -209,10 +210,14 @@ def test_editor_build_and_preview_share_preparation(cutout_system, tmp_path, mon
 
 
 def test_editor_build_uses_symmetry_variant_without_replacing_authoring_asset(
-    cutout_system, tmp_path, monkeypatch, qapp,
+    cutout_system,
+    tmp_path,
+    monkeypatch,
+    qapp,
 ):
+    from blab.mesh_inventory import inspect_system_meshes
     from blab.ui.dialogs import MeshDialogEntry
-    from blab.ui.system_config import SystemConfigDialog, inspect_system_meshes
+    from blab.ui.system_config import SystemConfigDialog
 
     # Keep the fixture away from symmetry planes so its entire seam must stitch.
     for resource in cutout_system.meshes:
@@ -224,16 +229,27 @@ def test_editor_build_uses_symmetry_variant_without_replacing_authoring_asset(
     wrong_full.points[:, 0] += 1000
     full_path = tmp_path / "cap_full.msh"
     meshio.write(full_path, wrong_full, file_format="gmsh22", binary=False)
-    system = replace(cutout_system, interfaces=(), meshes=(
-        *cutout_system.meshes[:-1], replace(reduced, file=str(full_path)),
-    ))
-    canonical = inspect_system_meshes(tuple(
-        MeshDialogEntry(name=m.name, source_file=m.file, scale_factor=.001) for m in system.meshes
-    ))
+    system = replace(
+        cutout_system,
+        interfaces=(),
+        meshes=(
+            *cutout_system.meshes[:-1],
+            replace(reduced, file=str(full_path)),
+        ),
+    )
+    canonical = inspect_system_meshes(
+        tuple(MeshDialogEntry(name=m.name, source_file=m.file, scale_factor=0.001) for m in system.meshes)
+    )
     variants = tuple(replace(m, file=reduced.file) if m.name == reduced.name else m for m in canonical)
     dialog = SystemConfigDialog(
-        canonical, system, ("main",), stitch_exterior_meshes=True, stitch_tolerance_mm=3,
-        symmetry_mode="xy", symmetry_analysis_meshes=variants, interface_output_root=tmp_path / "derived",
+        canonical,
+        system,
+        ("main",),
+        stitch_exterior_meshes=True,
+        stitch_tolerance_mm=3,
+        symmetry_mode="xy",
+        symmetry_analysis_meshes=variants,
+        interface_output_root=tmp_path / "derived",
     )
     errors = []
     monkeypatch.setattr("blab.ui.system_config.QMessageBox.warning", lambda *args: errors.append(args[2]))
@@ -245,18 +261,27 @@ def test_editor_build_uses_symmetry_variant_without_replacing_authoring_asset(
     assert configured.mesh_file_overrides_by_name == {}
     # Auto-reload must also validate reduced geometry while retaining canonical
     # authoring paths. Without the variant input the deliberate full mesh fails.
-    from blab.ui.system_config import rebuild_configured_interfaces
+    from blab.system_editing import rebuild_configured_interfaces
 
     with pytest.raises(ValueError, match="No compatible boundary loop pair"):
         rebuild_configured_interfaces(
-            configured.system, canonical, changed_mesh_names={"fem"},
-            stitch_exterior_meshes=True, stitch_tolerance_mm=3, symmetry_mode="xy",
+            configured.system,
+            canonical,
+            changed_mesh_names={"fem"},
+            stitch_exterior_meshes=True,
+            stitch_tolerance_mm=3,
+            symmetry_mode="xy",
             interface_output_root=tmp_path / "reload",
         )
     reloaded = rebuild_configured_interfaces(
-        configured.system, canonical, changed_mesh_names={"fem"},
-        stitch_exterior_meshes=True, stitch_tolerance_mm=3, symmetry_mode="xy",
-        symmetry_analysis_meshes=variants, interface_output_root=tmp_path / "reload",
+        configured.system,
+        canonical,
+        changed_mesh_names={"fem"},
+        stitch_exterior_meshes=True,
+        stitch_tolerance_mm=3,
+        symmetry_mode="xy",
+        symmetry_analysis_meshes=variants,
+        interface_output_root=tmp_path / "reload",
     )
     assert reloaded.system == configured.system
     assert reloaded.mesh_file_overrides_by_name == {}
@@ -265,25 +290,70 @@ def test_editor_build_uses_symmetry_variant_without_replacing_authoring_asset(
 
 @pytest.mark.parametrize(("symmetry", "expected"), [("off", "full.msh"), ("xy", "reduced.msh")])
 def test_headless_resolves_generated_variant_from_saved_canonical_resource(
-    cutout_system, tmp_path, symmetry, expected,
+    cutout_system,
+    tmp_path,
+    symmetry,
+    expected,
 ):
     from blab.headless import load_headless_project
     from blab.physical_model import physical_system_to_dict
 
     path = tmp_path / "case.blab.json"
-    path.write_text(json.dumps({
-        "schema_version": 9, "symmetry": symmetry,
-        "physical_system": physical_system_to_dict(cutout_system),
-        "generator_documents": [{
-            "id": "cap-generator", "name": "cap", "provider_id": "ath", "provider_schema_version": 1,
-            "source": {"format": "ath_cfg", "text": ""}, "mesh_enabled": True,
-            "mesh_scale_factor": .002, "mesh_translation_mm": [1, 2, 3],
-            "artifact": {"output_dir": ".", "mesh_path": "reduced.msh",
-                         "cleaned_mesh_path": "full.msh", "reduced_cleaned_mesh_path": "reduced.msh"},
-        }],
-    }), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 9,
+                "symmetry": symmetry,
+                "physical_system": physical_system_to_dict(cutout_system),
+                "generator_documents": [
+                    {
+                        "id": "cap-generator",
+                        "name": "cap",
+                        "provider_id": "ath",
+                        "provider_schema_version": 1,
+                        "source": {"format": "ath_cfg", "text": ""},
+                        "mesh_enabled": True,
+                        "mesh_scale_factor": 0.002,
+                        "mesh_translation_mm": [1, 2, 3],
+                        "artifact": {
+                            "output_dir": ".",
+                            "mesh_path": "reduced.msh",
+                            "cleaned_mesh_path": "full.msh",
+                            "reduced_cleaned_mesh_path": "reduced.msh",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     project = load_headless_project(path)
     cap = next(m for m in project.physical_system.meshes if m.name == "cap")
     assert Path(cap.file) == tmp_path / expected
-    assert cap.scale_to_m == .002
-    assert cap.translation_m == (.001, .002, .003)
+    assert cap.scale_to_m == 0.002
+    assert cap.translation_m == (0.001, 0.002, 0.003)
+
+
+def test_memory_stitch_and_interface_conformance_do_not_touch_disk(cutout_system, monkeypatch, tmp_path):
+    from blab.mesh_data import MeshData
+
+    system = replace(
+        cutout_system,
+        meshes=tuple(
+            replace(resource, file="", mesh_data=MeshData.from_meshio(meshio.read(resource.file)))
+            for resource in cutout_system.meshes
+        ),
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unexpected mesh-file access")
+
+    monkeypatch.setattr(meshio, "read", forbidden)
+    monkeypatch.setattr(meshio, "write", forbidden)
+    monkeypatch.setattr(Path, "mkdir", forbidden)
+    prepared = prepare_exterior_system(system, stitch_tolerance_mm=3, output_root=tmp_path / "unused")
+    assert all(resource.mesh_data is not None and resource.file == "" for resource in prepared.meshes)
+    compiled = PhysicalSystemCompiler().compile(prepared)
+    assert len(compiled.interfaces[0].topology.fem_face_indices) == 1
+    assert compiled.interfaces[0].topology.max_coordinate_error == 0
+    assert system.meshes[0].mesh_data is prepared.meshes[0].mesh_data

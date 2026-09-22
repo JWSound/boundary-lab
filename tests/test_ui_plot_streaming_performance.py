@@ -1,5 +1,7 @@
 import os
+from io import BytesIO
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -8,7 +10,8 @@ from matplotlib import rcParams
 from matplotlib.backend_bases import MouseButton
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QDockWidget, QMainWindow
 
 from blab.spinorama import SpinoramaCurves
 from blab.ui.balloon import SliceRadarCanvas, WavefrontShapeCanvas
@@ -17,7 +20,7 @@ from blab.ui.excursion_plot import ExcursionCanvas
 from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window import MainWindow
 from blab.ui.max_spl_plot import MaxSplCanvas
-from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, SpinoramaCanvas
+from blab.ui.plots import ImpedanceCanvas, IsobarCanvas, OnAxisResponseCanvas, PlotAxisLimits, SpinoramaCanvas
 from blab.ui.result_projection import (
     ElectricalImpedanceProjection,
     ExcursionProjection,
@@ -30,6 +33,157 @@ from blab.ui.result_projection import (
 )
 
 _APP = QApplication.instance() or QApplication([])
+
+
+@pytest.mark.parametrize("kind", ["isobar", "impedance", "response", "electrical", "excursion", "delay", "max", "spin"])
+@pytest.mark.parametrize("materialize", ["show", "export", "update"])
+def test_hidden_solve_reset_discards_state_and_defers_axes(kind, materialize, monkeypatch):
+    freqs = np.asarray([100.0, 1000.0, 10000.0])
+    angles = np.asarray([-90.0, 0.0, 90.0])
+    names = np.asarray(["Driver"])
+    values = np.asarray([[1.0, 2.0, 3.0]])
+    factories = {
+        "isobar": lambda: IsobarCanvas("Horizontal"),
+        "impedance": ImpedanceCanvas,
+        "response": OnAxisResponseCanvas,
+        "electrical": ElectricalImpedanceCanvas,
+        "excursion": ExcursionCanvas,
+        "delay": GroupDelayCanvas,
+        "max": MaxSplCanvas,
+        "spin": SpinoramaCanvas,
+    }
+    canvas = factories[kind]()
+    try:
+        if kind == "isobar":
+            canvas.update_plot(freqs, angles, np.tile(values, (3, 1)), -30, 6, shading="gouraud")
+        elif kind == "response":
+            canvas.update_plot(freqs, angles, np.tile(values, (3, 1)), on_axis_phase_deg=values[0])
+        elif kind in {"impedance", "electrical"}:
+            canvas.update_plot(freqs, names, values, values)
+        elif kind == "spin":
+            canvas.update_curves(_spinorama_curves())
+        else:
+            canvas.update_plot(freqs, names, values)
+        limits = PlotAxisLimits(100, 10000, -30, 10)
+        canvas.set_axis_limits(limits)
+        previous = canvas._current_plot_state()
+        canvas._set_comparison_plot_state(previous)
+        canvas._comparison_active = True
+        canvas._comparison_restore_plot = previous
+        canvas._crosshair_visible = True
+        old_artists = [
+            artist for axes in canvas.figure.axes for artist in (*axes.lines, *axes.images, *axes.collections)
+        ]
+        rebuild = Mock(wraps=canvas._draw_empty)
+        monkeypatch.setattr(canvas, "_draw_empty", rebuild)
+
+        canvas.clear_for_solve()
+        canvas.clear_for_solve()
+        _APP.processEvents()
+        assert rebuild.call_count == 0
+        assert canvas._current_plot_state() is None
+        assert not canvas._comparison_active
+        assert canvas._comparison_restore_plot is None
+        assert not canvas._crosshair_visible
+        assert canvas._comparison_plot is previous
+
+        if materialize == "show":
+            canvas.show()
+            _APP.processEvents()
+        elif materialize == "export":
+            image = BytesIO()
+            canvas.figure.savefig(image, format="png")
+            assert image.getvalue().startswith(b"\x89PNG")
+        else:
+            canvas._apply_plot_state(previous)
+        assert rebuild.call_count == 1
+        assert not canvas._empty_plot_pending
+        current_artists = [a for axes in canvas.figure.axes for a in (*axes.lines, *axes.images, *axes.collections)]
+        assert not any(a in current_artists for a in old_artists)
+        assert (canvas._current_plot_state() is not None) == (materialize == "update")
+        assert canvas.displayed_axis_limits() == limits
+    finally:
+        canvas.close()
+        canvas.deleteLater()
+
+
+def test_hidden_canvas_defers_queued_draw_and_redraws_on_reveal(monkeypatch):
+    canvas = ImpedanceCanvas()
+    try:
+        render = Mock(wraps=canvas.draw)
+        monkeypatch.setattr(canvas, "draw", render)
+        canvas.draw_idle()
+        _APP.processEvents()
+        assert render.call_count == 0
+        canvas.show()
+        _APP.processEvents()
+        assert render.call_count > 0
+        render.reset_mock()
+        canvas.draw_idle()
+        canvas.hide()
+        _APP.processEvents()
+        assert render.call_count == 0
+        canvas.show()
+        _APP.processEvents()
+        assert render.call_count > 0
+    finally:
+        canvas.close()
+        canvas.deleteLater()
+
+
+def test_tab_covered_plot_defers_reset_until_activated(monkeypatch):
+    window = QMainWindow()
+    first, second = ImpedanceCanvas(), ImpedanceCanvas()
+    first_dock, second_dock = QDockWidget("First"), QDockWidget("Second")
+    first_dock.setWidget(first)
+    second_dock.setWidget(second)
+    window.addDockWidget(Qt.RightDockWidgetArea, first_dock)
+    window.addDockWidget(Qt.RightDockWidgetArea, second_dock)
+    window.tabifyDockWidget(first_dock, second_dock)
+    try:
+        window.show()
+        second_dock.raise_()
+        _APP.processEvents()
+        assert first.visibleRegion().isEmpty()
+        reset = Mock(wraps=first._draw_empty)
+        render = Mock(wraps=first.draw)
+        monkeypatch.setattr(first, "_draw_empty", reset)
+        monkeypatch.setattr(first, "draw", render)
+        first.clear_for_solve()
+        first.draw_idle()
+        _APP.processEvents()
+        assert reset.call_count == render.call_count == 0
+        first_dock.raise_()
+        _APP.processEvents()
+        assert reset.call_count == 1
+        assert render.call_count > 0
+    finally:
+        window.close()
+        window.deleteLater()
+
+
+def test_deferred_isobar_reset_preserves_captured_contours_and_comparison():
+    canvas = IsobarCanvas("Horizontal")
+    try:
+        freqs = np.asarray([100, 1000, 10000])
+        angles = np.asarray([-90, 0, 90])
+        values = np.arange(9).reshape(3, 3) - 8.0
+        canvas.update_plot(freqs, angles, values, -30, 0)
+        assert canvas.capture_contours()
+        captured = canvas._captured_contours
+        canvas.set_comparison_plot(freqs, angles, values, -30, 0)
+        canvas.clear_for_solve()
+        assert canvas._captured_contours is captured
+        canvas.update_plot(freqs, angles, values - 3, -30, 0)
+        canvas._on_comparison_button_press(_mouse_event(canvas.axes, MouseButton.RIGHT))
+        assert canvas._comparison_active
+        np.testing.assert_array_equal(canvas._mesh_values_db, values)
+        canvas._on_comparison_button_release(_mouse_event(canvas.axes, MouseButton.RIGHT))
+        np.testing.assert_array_equal(canvas._mesh_values_db, values - 3)
+        assert canvas._captured_contours is captured
+    finally:
+        canvas.close()
+        canvas.deleteLater()
 
 
 def _mouse_event(axes, button, *, xdata=1000.0, ydata=0.0, dblclick=False):
@@ -112,7 +266,7 @@ def test_final_plot_refresh_skips_tab_covered_canvases() -> None:
         plot_entries=(active, covered),
         plot_docks={"active": dock, "covered": dock},
         _plot_entry_is_actively_visible=lambda entry: entry.plot_id == "active",
-        _use_final_isobar_resolution=True,
+        solve_session=SimpleNamespace(use_final_isobar_resolution=True),
         prepared_live_dataset=lambda **_options: dataset,
     )
 
@@ -135,8 +289,7 @@ def test_activated_plot_refresh_uses_cached_solve_after_geometry_is_visible() ->
         preferences=SimpleNamespace(live_plot_streaming=True),
         refresh_plots=lambda **options: refresh_calls.append(options),
         request_live_refresh=lambda: None,
-        _use_final_isobar_resolution=True,
-        _final_isobar_plots_rendered=False,
+        solve_session=SimpleNamespace(use_final_isobar_resolution=True, final_isobar_plots_rendered=False),
         refresh_contour_controls=lambda: contour_calls.append(True),
     )
 
@@ -144,7 +297,7 @@ def test_activated_plot_refresh_uses_cached_solve_after_geometry_is_visible() ->
 
     assert window._plot_activation_refresh_pending is False
     assert refresh_calls == [{"active_only": True}]
-    assert window._final_isobar_plots_rendered is False
+    assert window.solve_session.final_isobar_plots_rendered is False
     assert contour_calls == [True]
 
 
@@ -594,14 +747,16 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
     maximum = MaxSplProjection(freqs, np.asarray(["main"]), np.full((1, 2), 110.0))
     plots = [PlotRecorder() for _index in range(9)]
     window = SimpleNamespace(
-        _last_completed_visualization_dataset=VisualizationProjection(
-            isobar,
-            impedance,
-            response,
-            excursion,
-            electrical,
-            group_delay,
-            maximum,
+        solve_session=SimpleNamespace(
+            last_completed_visualization=VisualizationProjection(
+                isobar,
+                impedance,
+                response,
+                excursion,
+                electrical,
+                group_delay,
+                maximum,
+            )
         ),
         horizontal_plot=plots[0],
         vertical_plot=plots[1],
@@ -626,12 +781,15 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
     }
     assert len(plots[4].calls[0][0]) == 7
 
-    window._last_completed_visualization_dataset = VisualizationProjection(
-        None, None, None, excursion=excursion, electrical_impedance=electrical,
+    window.solve_session.last_completed_visualization = VisualizationProjection(
+        None,
+        None,
+        None,
+        excursion=excursion,
+        electrical_impedance=electrical,
     )
     MainWindow.apply_last_completed_comparison(window)
     assert [len(plot.calls) for plot in plots] == [0, 0, 0, 2, 0, 0, 2, 0, 0]
-
 
 
 def test_chart_panels_share_layout_profiles_by_artist_requirements() -> None:

@@ -1,0 +1,17 @@
+name: Bug report
+description: Report a reproducible problem
+body:
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction and expected behavior
+      description: Include a minimal project or steps, actual behavior, and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and environment
+      description: App and BEAT versions, OS, backend, GPU/driver where relevant, and logs. Remove private paths or data before uploading.
+    validations:
+      required: true

@@ -148,30 +148,11 @@ A plane-wave tube termination imposes the first-order outgoing condition
 $\partial p/\partial n=-i k p$ for the `exp(+i omega t)` convention. It represents
 the characteristic impedance $\rho c$ of a locally uniform tube, not a hidden
 exterior region. Its accuracy degrades when higher-order or evanescent modes
-are significant at the cut plane. See [Interior FEM Solver](Interior%20FEM%20Solver.md).
+are significant at the cut plane. See [Interior FEM Solver](advanced/Interior%20FEM%20Solver.md).
 
 ## Coupled FEM-BEM Model
 
-Each bounded region uses first-order pressure FEM on selected tetrahedral
-volume groups. Rigid boundaries contribute the natural zero-normal-velocity
-condition; moving boundaries contribute prescribed or component-coupled loads.
-An interface enforces pressure continuity and normal-flux conservation between
-its FEM boundary facets and the conforming BEM surface facets.
-
-The current coupled model assumes linear pressure acoustics and the same
-density and sound speed in every participating acoustic region. Each bounded
-region may have its own homogeneous bulk-loss factor. Bounded rigid walls may
-also use the supported locally reacting, rigid-backed Miki porous treatment;
-this is not a thermoviscous boundary-layer model.
-
-The coupled application path requires BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.
-Production solves exactly eliminate eligible FEM interior degrees of freedom
-with a Schur complement and reconstruct the eliminated FEM pressure afterward.
-CPU uses UMFPACK for the sparse interior and a CPU dense solve. CUDA performs the
-condensed factorization and retained solve on the GPU. ROCm factors the sparse
-interior on the CPU, uploads the retained system, and uses rocSOLVER for its dense
-solve. These are algebraically equivalent execution strategies for the same
-linear model.
+See [Coupled Solver](Coupled%20Solver.md).
 
 ## Symmetry
 

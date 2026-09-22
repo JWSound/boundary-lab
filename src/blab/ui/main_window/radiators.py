@@ -3,23 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from pathlib import Path
 
-from blab.ath import (
-    read_surface_physical_names,
-)
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
-from blab.ui.mesh_assembly import (
-    STITCHED_MESH_NAME,
-)
-from blab.ui.physical_system_migration import (
+from blab.mesh_data import surface_names
+from blab.mesh_inventory import inspect_system_meshes
+from blab.project.migration import (
     AUTO_SEEDED_EXTERIOR_KEY,
     PhysicalSystemMigrationError,
     seed_exterior_system,
 )
-from blab.ui.system_config import (
-    inspect_system_meshes,
+from blab.ui.mesh_assembly import (
+    STITCHED_MESH_NAME,
 )
 
 
@@ -80,7 +75,7 @@ class RadiatorsMixin:
             source_name_by_key = {
                 (mesh.name, int(tag)): f"{mesh.name}:{name}"
                 for mesh in source_meshes
-                for name, tag in read_surface_physical_names(Path(mesh.file)).items()
+                for name, tag in surface_names(mesh).items()
             }
         except (OSError, ValueError):
             return radiators

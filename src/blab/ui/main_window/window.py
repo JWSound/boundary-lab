@@ -22,6 +22,10 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.live import (
     LiveSolveDataset,
 )
+from blab.project.model import (
+    ImportedMeshState,
+    ProjectDocument,
+)
 from blab.solve_results import SolvedSystem
 from blab.ui.activity import ActivityController
 from blab.ui.dialogs import (
@@ -78,20 +82,15 @@ from blab.ui.plots import (
     frequency_to_slider_value,
 )
 from blab.ui.preparation_worker import PreparationController
-from blab.ui.project_state import (
-    ImportedMeshState,
-    ProjectDocument,
-)
+from blab.ui.provider_host import DesktopProviderHost
 from blab.ui.result_projection import (
     ResultProjectionService,
-    VisualizationProjection,
 )
 from blab.ui.settings import (
     application_settings,
     load_syntax_highlighting_enabled,
     settings_int,
 )
-from blab.ui.simulation_assembler import SimulationAssembler
 
 
 class MainWindow(
@@ -186,30 +185,6 @@ class MainWindow(
         return self._solve_session().solved_system
 
     @property
-    def _use_final_isobar_resolution(self) -> bool:
-        return self._solve_session().use_final_isobar_resolution
-
-    @_use_final_isobar_resolution.setter
-    def _use_final_isobar_resolution(self, value: bool) -> None:
-        self._solve_session().use_final_isobar_resolution = bool(value)
-
-    @property
-    def _final_isobar_plots_rendered(self) -> bool:
-        return self._solve_session().final_isobar_plots_rendered
-
-    @_final_isobar_plots_rendered.setter
-    def _final_isobar_plots_rendered(self, value: bool) -> None:
-        self._solve_session().final_isobar_plots_rendered = bool(value)
-
-    @property
-    def _last_completed_visualization_dataset(self) -> VisualizationProjection | None:
-        return self._solve_session().last_completed_visualization
-
-    @_last_completed_visualization_dataset.setter
-    def _last_completed_visualization_dataset(self, value: VisualizationProjection | None) -> None:
-        self._solve_session().last_completed_visualization = value
-
-    @property
     def generated_geometry_by_document_id(self) -> dict[str, GeneratedGeometry]:
         return self._geometry_store().generated_by_document_id
 
@@ -298,13 +273,16 @@ class MainWindow(
         self.setWindowTitle(f"Boundary Lab Beta {__version__}")
         self.resize(1500, 900)
         self.preferences = self._load_preferences()
+        from blab.generators.catalog import provider_catalog
+
+        provider_catalog().enabled = set(self.preferences.enabled_geometry_providers)
+        provider_catalog().scan()
         # Needed before the design tabs are built.
         self.syntax_highlighting_enabled = load_syntax_highlighting_enabled(self.settings)
         self.project_session = ProjectSession()
         self.activities = ActivityController(self)
         self.preparations = PreparationController(self, self.activities)
         self._operation_activities = {}
-        self.simulation_assembler = SimulationAssembler()
         self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
         self.result_projection_service = ResultProjectionService()
         self.geometry_controller = GeometryController(self)
@@ -322,7 +300,6 @@ class MainWindow(
             session=self.solve_session,
             project=self._project_document,
             preferences=lambda: self.preferences,
-            assembler=self.simulation_assembler,
             geometry_controller=self.geometry_controller,
             solve_controller=self.solve_controller,
             preparations=self.preparations,
@@ -350,6 +327,7 @@ class MainWindow(
             save_frequency_settings=lambda: self._save_frequency_settings(),
             remember_recent=lambda path: self._remember_recent_project(path),
             forget_recent=lambda path: self._remove_recent_project(path),
+            default_document_factory=self.new_default_generator_document,
             activities=self.activities,
             preparations=self.preparations,
         )
@@ -375,7 +353,6 @@ class MainWindow(
         self.editor_tabs.currentChanged.connect(self._on_active_generator_tab_changed)
         self.editor_tabs.tabCloseRequested.connect(self._remove_generator_document_at)
         self.editor_tabs.tabBar().installEventFilter(self)
-        self.rebuild_generator_document_tabs()
 
         startup("Creating mesh preview...")
         from blab.ui.mesh_preview import MeshPreview
@@ -493,13 +470,19 @@ class MainWindow(
                 PlotDataExportSpec("group_delay.txt"),
             ),
             PlotEntry(
-                "real_input_power", "Real Input Power", "real_input_power.png",
-                self.real_input_power_plot, self._update_real_input_power_plot,
+                "real_input_power",
+                "Real Input Power",
+                "real_input_power.png",
+                self.real_input_power_plot,
+                self._update_real_input_power_plot,
                 PlotDataExportSpec("real_input_power.txt"),
             ),
             PlotEntry(
-                "interface_velocity", "Interface Particle Velocity", "interface_velocity.png",
-                self.interface_velocity_plot, self._update_interface_velocity_plot,
+                "interface_velocity",
+                "Interface Particle Velocity",
+                "interface_velocity.png",
+                self.interface_velocity_plot,
+                self._update_interface_velocity_plot,
                 PlotDataExportSpec("interface_velocity.txt"),
             ),
             PlotEntry(
@@ -544,6 +527,10 @@ class MainWindow(
         self._build_layout()
         self._connect_state_events()
         self._connect_operation_controllers()
+        self.provider_host = DesktopProviderHost(self)
+        self.geometry_controller.host_factory = self.provider_host.bind
+        self.geometry_controller.state_changed.connect(self.update_provider_editor_states)
+        self.solve_controller.state_changed.connect(self.update_provider_editor_states)
         startup("Restoring window layout...")
         self._restore_window_state()
         startup("Starting new project...")
@@ -662,6 +649,8 @@ class MainWindow(
         self._save_frequency_settings()
         self._save_preferences()
         self._save_window_state()
+        self.dispose_provider_editors()
+        self.provider_host.close()
         self.preparations.close()
         self.activities.clear()
         super().closeEvent(event)

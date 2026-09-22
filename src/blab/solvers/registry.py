@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from blab.solvers.base import SolverBackend, SolverCapabilities
+from blab.solvers.engine_distribution import backend_catalog, engine_backend_info, engine_paths
 
 
 @dataclass(frozen=True)
@@ -27,52 +28,36 @@ _BACKENDS: dict[str, SolverBackendInfo] = {
         ),
         description="Run the physical system on a Boundary Lab server.",
     ),
-    "beat_cuda": SolverBackendInfo(
-        backend_id="beat_cuda",
-        label="BEAT Engine (Nvidia CUDA)",
-        capabilities=SolverCapabilities(
-            supports_remote_assets=False,
-            supports_parallel_workers=False,
-            supports_symmetry=True,
-            supports_channel_resynthesis=True,
-            is_remote=False,
-        ),
-        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cuda", **kwargs),
-        description="Run the local Boundary Element Acoustic Toolkit Engine CUDA solver through the Boundary Lab subprocess adapter.",
-    ),
-    "beat_cpu": SolverBackendInfo(
-        backend_id="beat_cpu",
-        label="BEAT Engine (CPU)",
-        capabilities=SolverCapabilities(
-            supports_remote_assets=False,
-            supports_parallel_workers=False,
-            supports_symmetry=True,
-            supports_channel_resynthesis=True,
-            is_remote=False,
-        ),
-        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="cpu", **kwargs),
-        description="Run the local Boundary Element Acoustic Toolkit Engine CPU solver through the Boundary Lab subprocess adapter.",
-    ),
-    "beat_rocm": SolverBackendInfo(
-        backend_id="beat_rocm",
-        label="BEAT Engine (AMD ROCm)",
-        capabilities=SolverCapabilities(
-            supports_remote_assets=False,
-            supports_parallel_workers=False,
-            supports_symmetry=True,
-            supports_channel_resynthesis=True,
-            is_remote=False,
-        ),
-        factory=lambda **kwargs: _create_beat_engine_backend(beat_engine_backend="rocm", **kwargs),
-        description="Run the local Boundary Element Acoustic Toolkit Engine ROCm solver through the Boundary Lab subprocess adapter.",
-    ),
+    **{
+        f"beat_{info.backend_id}": SolverBackendInfo(
+            backend_id=f"beat_{info.backend_id}",
+            label=info.label,
+            capabilities=SolverCapabilities(
+                supports_remote_assets=False,
+                supports_parallel_workers=False,
+                supports_symmetry=info.supports_symmetry,
+                supports_channel_resynthesis=info.supports_channel_resynthesis,
+                is_remote=False,
+            ),
+            factory=lambda backend=info.backend_id, **kwargs: _create_beat_engine_backend(
+                beat_engine_backend=backend, **kwargs
+            ),
+            description=f"Run the local {info.label} solver.",
+        )
+        for info in backend_catalog()
+    },
 }
 
 
 #: Backends that can run compiled physical-system (exterior and coupled FEM-BEM) solves.
-PHYSICAL_SYSTEM_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"})
+PHYSICAL_SYSTEM_BACKEND_IDS = frozenset(
+    {f"beat_{info.backend_id}" for info in backend_catalog() if "coupled_fem_bem_lem" in info.solve_kinds}
+    | {"beat_remote"}
+)
 #: Backends that condense the FEM interior onto the retained interface for coupled solves.
-CONDENSING_BACKEND_IDS = frozenset({"beat_cpu", "beat_cuda", "beat_rocm", "beat_remote"})
+CONDENSING_BACKEND_IDS = frozenset(
+    {f"beat_{info.backend_id}" for info in backend_catalog() if info.condenses_fem_interior} | {"beat_remote"}
+)
 
 
 def supports_physical_system_solves(backend_id: str) -> bool:
@@ -94,7 +79,7 @@ def available_backend_infos() -> tuple[SolverBackendInfo, ...]:
 def backend_info(backend_id: str) -> SolverBackendInfo:
     normalized_id = normalize_backend_id(backend_id)
     if normalized_id in {"local", "server"}:
-        raise ValueError("The legacy Bempp and HTTP solve backends are retired. Select BEAT Engine CPU, CUDA, or ROCm.")
+        raise ValueError("The legacy Bempp and HTTP solve backends are retired. Select a BEAT Engine backend.")
     try:
         return _BACKENDS[normalized_id]
     except KeyError as exc:
@@ -135,6 +120,7 @@ def normalize_backend_id(backend_id: str) -> str:
         "amd": "beat_rocm",
         "amdgpu": "beat_rocm",
     }
+    aliases.update({info.backend_id: f"beat_{info.backend_id}" for info in backend_catalog()})
     return aliases.get(text, text or "beat_cpu")
 
 
@@ -155,32 +141,14 @@ def _create_beat_engine_backend(
     label_override: str | None = None,
     **_kwargs: Any,
 ) -> SolverBackend:
-    from blab.solvers.beat_engine_backend import (
-        DEFAULT_BEAT_ENGINE_CPU_PROJECT,
-        DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-        DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
-        BeatEngineBackend,
-    )
+    from blab.solvers.beat_engine_backend import BeatEngineBackend
+    from blab.solvers.beat_engine_runtime import normalize_beat_engine_backend
 
-    normalized_backend = {
-        "cpu": "cpu",
-        "rocm": "rocm",
-        "beat_rocm": "rocm",
-    }.get(str(beat_engine_backend).strip().lower(), "cuda")
+    normalized_backend = normalize_beat_engine_backend(beat_engine_backend)
+    info = engine_backend_info(normalized_backend)
     backend_id = backend_id_override or f"beat_{normalized_backend}"
-    label = (
-        label_override
-        or {
-            "cpu": "BEAT Engine (CPU)",
-            "cuda": "BEAT Engine (Nvidia CUDA)",
-            "rocm": "BEAT Engine (AMD ROCm)",
-        }[normalized_backend]
-    )
-    default_project = {
-        "cpu": DEFAULT_BEAT_ENGINE_CPU_PROJECT,
-        "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-        "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
-    }[normalized_backend]
+    label = label_override or info.label
+    default_project = engine_paths(normalized_backend).project
     kwargs: dict[str, Any] = {
         "julia_executable": julia_executable,
         "julia_threads": julia_threads,

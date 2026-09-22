@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 import blab.speaker_package as speaker_package_module
-from blab.deploy_solve import DeploySolveCache, stage_exact_coupled_system
 from blab.physical_model import (
     AcousticRegionKind,
     CompiledMesh,
@@ -48,7 +47,27 @@ from blab.speaker_package import (
     validate_speaker_package,
 )
 from blab.system_contract import OutputRequest, SystemSolveRequest
-from blab.system_solve import SystemUiSolveRequest
+from blab.system_solve import PreparedSystemSolve
+
+
+def test_viewport_asset_is_portable_and_does_not_change_acoustics(tmp_path: Path) -> None:
+    obj = tmp_path / "cabinet.obj"
+    obj.write_text("v 0 0 0\nv 100 0 0\nv 0 100 0\nf 1 2 3\n")
+    base = SpeakerPackageConfig(tmp_path / "base.blabsp", "Cabinet", SpeakerPackageFidelity.FIXED_SOURCES)
+    visual = replace(
+        base, output_path=tmp_path / "visual.blabsp", viewport_model_path=obj, viewport_model_scale_to_m=0.01
+    )
+    solved = _solved_system()
+    export_speaker_package(solved, base)
+    export_speaker_package(solved, visual)
+    obj.unlink()
+    manifest = validate_speaker_package(visual.output_path)
+    assert manifest["files"]["viewport_model"]["unit"] == "m"
+    with zipfile.ZipFile(base.output_path) as a, zipfile.ZipFile(visual.output_path) as b:
+        for name in a.namelist():
+            if name not in {"manifest.json", "checksums.json"}:
+                assert a.read(name) == b.read(name)
+        assert b"v 1 0 -0" in b.read("viewport/model.obj")
 
 
 def _solved_system(*, include_bem: bool = True, symmetry: str = "off") -> SolvedSystem:
@@ -296,7 +315,7 @@ def test_level_two_manifest_accepts_legacy_string_model_kinds(tmp_path: Path) ->
     assert manifest["physical_system"]["regions"][0]["kind"] == "unbounded_air"
 
 
-def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -> None:
+def test_level_three_parity_rom_archives_compact_arrays(tmp_path: Path) -> None:
     solved = _coupled_rom_solved_system()
     output = tmp_path / "speaker-rom.blabsp"
 
@@ -320,12 +339,10 @@ def test_level_three_parity_rom_is_compact_and_deploy_loadable(tmp_path: Path) -
         model = _read_npz(archive, declaration["path"])
     assert model["k"].shape == (2, 4, 2, 2)
     assert model["d"].shape == (2, 4, 2, 2)
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    assert package.coupled_model["arrays"]["velocity"].shape == (2, 4, 2, 2)
+    assert model["velocity"].shape == (2, 4, 2, 2)
 
 
-def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> None:
+def test_level_three_omits_reference_and_validates_legacy_extra(tmp_path: Path) -> None:
     output = tmp_path / "speaker-rom.blabsp"
     export_speaker_package(
         _coupled_rom_solved_system(),
@@ -337,7 +354,7 @@ def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> N
     with zipfile.ZipFile(output) as archive:
         assert "data/isolated-acoustic-impedance.npz" not in archive.namelist()
         members = {name: archive.read(name) for name in archive.namelist()}
-    # Legacy extra data remains legal but is no longer interpreted by Deploy.
+    # The archive validator accepts checksummed legacy extra data.
     manifest["files"]["isolated_acoustic_impedance"] = {"path": "data/isolated-acoustic-impedance.npz"}
     manifest["capabilities"].append("isolated_free_field_acoustic_impedance")
     members["manifest.json"] = json.dumps(manifest).encode()
@@ -349,12 +366,10 @@ def test_level_three_omits_reference_and_loads_legacy_extra(tmp_path: Path) -> N
     with zipfile.ZipFile(legacy, "w") as archive:
         for name, value in members.items():
             archive.writestr(name, value)
-    package = DeploySolveCache().load_package(legacy)
-    assert package.coupled_model is not None
-    assert not hasattr(package, "isolated_acoustic_impedance")
+    assert validate_speaker_package(legacy)["files"]["coupled_model"] == manifest["files"]["coupled_model"]
 
 
-def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
+def test_level_three_x_symmetry_rom_archives_two_sectors(
     tmp_path: Path,
 ) -> None:
     solved = _coupled_rom_solved_system("x")
@@ -379,10 +394,7 @@ def test_level_three_x_symmetry_rom_uses_two_sectors_and_is_deploy_loadable(
         model = _read_npz(archive, declaration["path"])
     assert model["k"].shape == (2, 2, 2, 2)
     assert model["d"].shape == (2, 2, 2, 2)
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    assert package.coupled_model["symmetry_mode"] == "x"
-    assert package.coupled_model["arrays"]["velocity"].shape == (2, 2, 2, 2)
+    assert model["velocity"].shape == (2, 2, 2, 2)
 
 
 def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(tmp_path: Path) -> None:
@@ -443,13 +455,6 @@ def test_level_three_exact_system_archives_compiled_meshes_without_dense_macro(t
         member = descriptor["mesh_members"]["mesh:interior"]
         assert descriptor["compiled_system"]["meshes"][0]["file"] == member
         assert archive.read(member) == mesh_path.read_bytes()
-
-    package = DeploySolveCache().load_package(output)
-    assert package.coupled_model is not None
-    staged = stage_exact_coupled_system(package, tmp_path / "deploy-worker")
-    staged_mesh = Path(staged["compiled_system"]["meshes"][0]["file"])
-    assert staged["mesh_path_kind"] == "local_file"
-    assert staged_mesh.read_bytes() == mesh_path.read_bytes()
 
 
 def test_export_rotation_maps_plus_z_to_plus_y_without_reflection(tmp_path: Path) -> None:
@@ -682,7 +687,7 @@ def test_export_solve_preparation_forces_sphere_and_level_two_traces() -> None:
         ),
         solver_options={"symmetry": "x"},
     )
-    prepared = SystemUiSolveRequest(
+    prepared = PreparedSystemSolve(
         request=request,
         backend_id="beat_cpu",
         solve_kind=PhysicalSolveKind.EXTERIOR_BEM,
@@ -735,7 +740,7 @@ def test_parity_rom_preparation_preserves_source_x_symmetry(monkeypatch) -> None
         outputs=(),
         solver_options={"symmetry": "off"},
     )
-    prepared = SystemUiSolveRequest(
+    prepared = PreparedSystemSolve(
         request=request,
         backend_id="beat_cpu",
         solve_kind=PhysicalSolveKind.COUPLED_BEM_FEM,

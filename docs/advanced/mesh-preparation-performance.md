@@ -45,8 +45,7 @@ Starting a new project cannot receive a previous project's late preview.
 System opening inspects its snapshot in a worker and constructs the dialog on
 the GUI thread after the job completes. Project file reading and generator
 restoration also run in a worker. Solve/generation and mesh-editing controls are
-locked while preparation is active. See [activity integration](ui-activities.md)
-for cancellation and lifecycle behavior.
+locked while preparation is active.
 
 ## SAWMAX measurements, 2026-09-12
 

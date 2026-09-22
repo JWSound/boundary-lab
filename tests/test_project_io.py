@@ -3,7 +3,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
-from blab.ui.project_io import (
+from blab.project.io import (
     PROJECT_SCHEMA_VERSION,
     build_project_payload,
     migrate_project_payload,

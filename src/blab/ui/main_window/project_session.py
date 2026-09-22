@@ -14,7 +14,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from blab.ui.project_state import ProjectDocument, new_project_document
+from blab.project.model import ProjectDocument, new_project_document
 
 
 def canonical_payload(payload: dict) -> dict:
@@ -43,6 +43,8 @@ class ProjectSession:
     #: Canonical payload as of the last save. None means change tracking has
     #: not started yet, and nothing is reported as unsaved.
     clean_payload: dict | None = None
+    #: Changes on new/open, not on an accepted generation within this project.
+    epoch: int = 0
 
     # -- derivations -------------------------------------------------------
 
@@ -69,5 +71,6 @@ class ProjectSession:
     def replace(self, document: ProjectDocument, *, path: Path | None) -> None:
         """Swap in a freshly created or freshly loaded project."""
         self.document = document
+        self.epoch += 1
         self.path = path
         self.clean_payload = None

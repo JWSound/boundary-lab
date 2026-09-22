@@ -142,14 +142,14 @@ Supported `retain` entries are `bem_boundary_pressure`,
 Complex results remain separated by excitation port; the headless path does not
 collapse them into synthesized GUI channels.
 
-Exterior-only CUDA solves select direct Burton–Miller system assembly. The
-engine assembles the dense system and excitation right-hand sides without
-materializing the four boundary-operator matrices, and shares one pivoted LU
-factorization across all excitations at each frequency. CPU and ROCm retain
-operator-matrix assembly. Result diagnostics record `burton_miller_assembly`
+Exterior-only CUDA and Metal solves select direct Burton–Miller system
+assembly. The engine assembles the dense system and excitation right-hand sides
+on the GPU without materializing the four boundary-operator matrices, and
+shares one pivoted LU factorization across all excitations at each frequency.
+Metal factorizes on the host. CPU and ROCm retain operator-matrix assembly. Result diagnostics record `burton_miller_assembly`
 and `factorization_count`.
 
-For numerical or performance comparisons, select the previous CUDA path in a
+For numerical or performance comparisons, select the previous CUDA or Metal path in a
 request overlay with `"solver_options": {"burton_miller_assembly":
 "operator_matrices"}`. This option applies to exterior-only solving.
 
@@ -312,7 +312,7 @@ backend; remote observation planes remain unsupported. Private-network mode
 permits LAN HTTP, while hosted mode requires an access key behind provider HTTPS,
 a VPN, or SSH. Localhost remains the default. See the
 [server setup guide](../Boundary%20Lab%20Server.md) for connection instructions and
-the [server developer reference](boundary-lab-server.md) for the remote job contract.
+the [server developer reference](boundary-lab-server_advanced.md) for the remote job contract.
 
 ## Clean A Mesh
 

@@ -85,7 +85,7 @@ class SolveService:
             ["beat_cpu"]
             if interior
             else (
-                ["beat_cuda", "beat_rocm", "beat_cpu"]
+                [key for key in REMOTE_BACKENDS if key != "beat_cpu"] + ["beat_cpu"]
                 if self.backend_policy == "auto"
                 else ["beat_" + self.backend_policy]
             )
@@ -344,9 +344,9 @@ def main(argv: Sequence[str] | None = None, *, prog: str | None = None) -> None:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument(
         "--backend",
-        choices=("auto", "cpu", "cuda", "rocm"),
+        choices=("auto", *(key.removeprefix("beat_") for key in REMOTE_BACKENDS)),
         default="auto",
-        help="Server execution policy; auto prefers CUDA, ROCm, then CPU",
+        help="Server execution policy; auto tries catalog accelerators before CPU",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument(

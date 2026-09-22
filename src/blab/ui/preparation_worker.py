@@ -56,7 +56,7 @@ class PreparationController(QObject):
     def active(self):
         return bool(self._jobs)
 
-    def submit(self, key, message, work, complete, failed, *, report_progress=False):
+    def submit(self, key, message, work, complete, failed, *, report_progress=False, settled=None):
         self.cancel(key)
         self._next += 1
         token = (key, self._next)
@@ -64,7 +64,7 @@ class PreparationController(QObject):
         job = _Job(token, work, cancelled, report_progress)
         activity = self._activities.start(message)
         self._requests[key] = (token, cancelled, activity, complete, failed, job)
-        self._jobs[token] = (job, activity)
+        self._jobs[token] = (job, activity, settled)
         job.signals.progress.connect(self._progress, Qt.QueuedConnection)
         job.signals.completed.connect(self._complete, Qt.QueuedConnection)
         self._pool.start(job)
@@ -90,13 +90,22 @@ class PreparationController(QObject):
         self.cancel_all()
         # Jobs touch no window state. Keep the pool alive until workers finish.
         self._pool.waitForDone()
-        for _job, activity in self._jobs.values():
+        for _job, activity, settled in self._jobs.values():
             activity.finish()
+            if settled is not None:
+                settled()
         self._jobs.clear()
 
     @Slot(object, object, object)
     def _complete(self, token, result, error):
         job = self._jobs.pop(token, None)
+        try:
+            self._deliver(token, result, error, job)
+        finally:
+            if job is not None and job[2] is not None:
+                job[2]()
+
+    def _deliver(self, token, result, error, job):
         if job is not None:
             job[1].finish()
         request = self._requests.get(token[0])

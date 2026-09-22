@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import subprocess
 import tempfile
 import threading
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
@@ -26,13 +28,15 @@ from blab.physical_model import (
     ExcitationPortKind,
 )
 from blab.solvers.beat_engine_runtime import (
+    BEAT_ENGINE_BACKENDS,
     DEFAULT_BEAT_ENGINE_CPU_PROJECT,
-    DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-    DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
     DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT,
     BeatEngineWorkerProcess,
+    default_beat_engine_project,
+    friendly_julia_error,
     get_beat_engine_worker,
     julia_process_env,
+    normalize_beat_engine_backend,
 )
 from blab.system_contract import (
     SystemFrequencyResult,
@@ -45,7 +49,7 @@ from blab.system_contract import (
 
 DEFAULT_COUPLED_SOLVER_SCRIPT = DEFAULT_BEAT_ENGINE_SYSTEM_SOLVER_SCRIPT
 DEFAULT_COUPLED_CPU_PROJECT = DEFAULT_BEAT_ENGINE_CPU_PROJECT
-COUPLED_BEM_BACKENDS = {"cpu", "cuda", "rocm"}
+COUPLED_BEM_BACKENDS = BEAT_ENGINE_BACKENDS
 COUPLED_BOUNDARY_KINDS = {
     BoundaryKind.RIGID,
     BoundaryKind.MOVING,
@@ -105,8 +109,11 @@ class CoupledSession:
         self._process: subprocess.Popen[str] | None = None
         self._worker: BeatEngineWorkerProcess | None = None
         self.worker_provenance: dict | None = None
+        self.worker_cleanup: dict | None = None
+        self.cuda_worker_reuse = False
         self._stop = False
         self._cancel_path: Path | None = None
+        self._inline_submission = False
         self._stderr_lines: list[str] = []
         self._stderr_thread: threading.Thread | None = None
         self._metadata = SystemSolveMetadata(
@@ -121,6 +128,25 @@ class CoupledSession:
         return self._metadata
 
     def solve_stream(
+        self,
+        *,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> Iterator[SystemFrequencyResult]:
+        try:
+            yield from self._solve_stream(stop_requested=stop_requested)
+        except (OSError, RuntimeError) as exc:
+            if self._stop:
+                return
+            from blab.solvers.engine_distribution import engine_backend_info
+
+            backend = str(self.request.solver_options.get("bem_backend", "cpu"))
+            label = engine_backend_info(backend).label
+            detail = friendly_julia_error(str(exc), julia_project=self.julia_project, beat_engine_backend=backend)
+            if isinstance(exc, FileNotFoundError):
+                detail = f"Could not start Julia at {self.julia_executable!r} or find its runtime files. {detail}"
+            raise RuntimeError(f"{label} could not run the solve. {detail}") from exc
+
+    def _solve_stream(
         self,
         *,
         stop_requested: Callable[[], bool] | None = None,
@@ -194,19 +220,47 @@ class CoupledSession:
             julia_project=self.julia_project,
         )
         callback = self.request.status_callback
-        with tempfile.TemporaryDirectory(prefix="blab-coupled-") as temp_dir:
-            request_path = Path(temp_dir) / "request.json"
-            self._cancel_path = Path(temp_dir) / "cancel"
-            payload = system_solve_request_to_dict(self.request)
-            payload["cancel_path"] = str(self._cancel_path)
-            request_path.write_text(
-                json.dumps(payload, separators=(",", ":")),
-                encoding="utf-8",
-            )
+        request = self.request
+        if self.cuda_worker_reuse and request.solver_options.get("bem_backend") == "cuda":
+            configure_idle = getattr(self._worker, "configure_idle_cleanup", None)
+            if configure_idle is not None:
+                self._worker.ensure_started(status_callback=callback)
+                info = self._worker.worker_info or {}
+                if "cuda_reuse" in info.get("worker_cleanup_policies", []) and "reclaim" in info.get("operations", []):
+                    configure_idle(5000)
+                    request = replace(
+                        request,
+                        solver_options=dict(
+                            request.solver_options,
+                            worker_cleanup={
+                                "policy": "cuda_reuse",
+                                "max_requests": 8,
+                                "min_free_fraction": 0.2,
+                            },
+                        ),
+                    )
+                else:
+                    logging.getLogger(__name__).info("CUDA memory reuse unavailable; retaining aggressive cleanup")
+            else:
+                logging.getLogger(__name__).info(
+                    "BEAT runtime has no idle cleanup support; retaining aggressive cleanup"
+                )
+        inline = any(mesh.mesh_data is not None for mesh in request.compiled_system.meshes)
+        context = nullcontext(None) if inline else tempfile.TemporaryDirectory(prefix="blab-coupled-")
+        with context as temp_dir:
+            payload = system_solve_request_to_dict(request)
+            self._inline_submission = inline
+            if inline:
+                submission = payload
+            else:
+                submission = Path(temp_dir) / "request.json"
+                self._cancel_path = Path(temp_dir) / "cancel"
+                payload["cancel_path"] = str(self._cancel_path)
+                submission.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
             try:
                 if self._stop:
                     return
-                events = self._worker.submit(request_path, status_callback=callback)
+                events = self._worker.submit(submission, status_callback=callback)
                 for event in events:
                     if not self._stop and stop_requested is not None and stop_requested():
                         self.stop()
@@ -219,6 +273,9 @@ class CoupledSession:
                     elif event_type == "failed":
                         raise RuntimeError(str(event.get("error", "Coupled Julia solver failed.")))
                     elif event_type in {"completed", "cancelled"}:
+                        self.worker_cleanup = event.get("worker_cleanup")
+                        if self.worker_cleanup is not None:
+                            logging.getLogger(__name__).info("Solve worker cleanup: %s", self.worker_cleanup)
                         return
             except RuntimeError:
                 if not self._stop:
@@ -226,11 +283,18 @@ class CoupledSession:
             finally:
                 self.worker_provenance = getattr(self._worker, "worker_info", None)
                 self._cancel_path = None
+                self._inline_submission = False
 
     def stop(self) -> None:
         self._stop = True
         worker = self._worker
         if worker is not None:
+            if self._inline_submission:
+                # No marker-file fallback on the memory path. Cancellation retires
+                # this worker; the next solve starts a fresh process.
+                worker.terminate()
+                self._worker = None
+                return
             cancel_path = self._cancel_path
             if cancel_path is not None:
                 try:
@@ -286,9 +350,9 @@ class _CoupledBackend:
         normalized_precision = str(precision).strip().lower()
         if normalized_precision not in {"float32", "float64"}:
             raise ValueError("Coupled precision must be float32 or float64.")
-        normalized_bem_backend = str(bem_backend).strip().lower()
+        normalized_bem_backend = normalize_beat_engine_backend(bem_backend)
         if normalized_bem_backend not in COUPLED_BEM_BACKENDS:
-            raise ValueError("Coupled BEM backend must be cpu, cuda, or rocm.")
+            raise ValueError(f"Unsupported coupled BEM backend: {bem_backend}")
         self.julia_executable = julia_executable
         self.solver_script = Path(solver_script)
         self.julia_project = None if julia_project is None else Path(julia_project)
@@ -308,7 +372,8 @@ class _CoupledBackend:
         is_interior = has_bounded and not has_unbounded
         if has_unbounded and not has_bounded:
             solver_options.setdefault(
-                "burton_miller_assembly", "direct_system" if self.bem_backend == "cuda" else "operator_matrices"
+                "burton_miller_assembly",
+                "direct_system" if self.bem_backend in {"cuda", "metal"} else "operator_matrices",
             )
         solver_options.setdefault(
             "static_condensation",
@@ -946,14 +1011,10 @@ class PhysicalSystemProductionBackend(_CoupledBackend):
         julia_threads: str | int | None = None,
         persistent_worker: bool = True,
     ):
-        normalized_bem_backend = str(bem_backend).strip().lower()
+        normalized_bem_backend = normalize_beat_engine_backend(bem_backend)
         default_threads = 4 if normalized_bem_backend == "cuda" else 8
         resolved_threads = default_threads if julia_threads is None else julia_threads
-        julia_project = {
-            "cpu": DEFAULT_COUPLED_CPU_PROJECT,
-            "cuda": DEFAULT_BEAT_ENGINE_CUDA_PROJECT,
-            "rocm": DEFAULT_BEAT_ENGINE_ROCM_PROJECT,
-        }.get(normalized_bem_backend, DEFAULT_COUPLED_CPU_PROJECT)
+        julia_project = default_beat_engine_project(normalized_bem_backend)
         super().__init__(
             julia_executable=julia_executable,
             solver_script=solver_script,

@@ -34,6 +34,7 @@ for %%I in ("%~2") do set "BASE_DIR=%%~fI"
 set "PROJECT_DIR="
 set "REPO_URL=https://github.com/JWSound/boundary-lab.git"
 set "TARGET_BRANCH=main"
+set "LATEST_RELEASE="
 set "HAS_WINGET=0"
 set "OPTIONAL_SOLVER_WARNING=0"
 
@@ -58,14 +59,15 @@ if exist "%PROJECT_DIR%\.git" goto EXISTING_GIT_CHECKOUT
 if exist "%PROJECT_DIR%\pyproject.toml" if exist "%PROJECT_DIR%\src\blab" goto SOURCE_ARCHIVE
 if exist "%PROJECT_DIR%" goto PROJECT_COLLISION
 
-echo No checkout was found. Boundary Lab will be cloned from the latest
-echo %TARGET_BRANCH% branch.
+echo No checkout was found. Boundary Lab will install the latest stable release.
 echo.
 call :ENSURE_GIT
 if errorlevel 2 goto RERUN_REQUIRED
 if errorlevel 1 goto FAILED
 
-git clone --branch "%TARGET_BRANCH%" --single-branch "%REPO_URL%" "%PROJECT_DIR%"
+call :RESOLVE_STABLE_TAG
+if errorlevel 1 goto FAILED
+git clone --branch "%LATEST_RELEASE%" --single-branch "%REPO_URL%" "%PROJECT_DIR%"
 if errorlevel 1 (
     echo.
     echo ERROR: Boundary Lab could not be cloned.
@@ -75,9 +77,9 @@ goto PROJECT_READY
 
 :EXISTING_GIT_CHECKOUT
 echo Existing Git checkout detected.
-call :ASK_YN "Pull the latest origin/%TARGET_BRANCH% update"
+call :ASK_YN "Update to the latest published stable release"
 if /i not "%ANSWER%"=="Y" goto PROJECT_READY
-call :UPDATE_MAIN
+call :UPDATE_STABLE
 if errorlevel 2 goto RERUN_REQUIRED
 if errorlevel 1 goto FAILED
 goto PROJECT_READY
@@ -455,37 +457,65 @@ if errorlevel 1 (
 )
 exit /b 2
 
-:UPDATE_MAIN
+rem Only published stable releases are install targets. Never fall back to main.
+:RESOLVE_STABLE_TAG
+set "LATEST_RELEASE="
+for /f "delims=" %%T in ('powershell.exe -NoProfile -Command "$ErrorActionPreference='Stop'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $r=Invoke-RestMethod -Uri 'https://api.github.com/repos/JWSound/boundary-lab/releases/latest' -Headers @{'User-Agent'='Boundary-Lab-Updater'}; if ($r.draft -or $r.prerelease -or $r.tag_name -notmatch '^v?[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid stable release' }; $r.tag_name"') do set "LATEST_RELEASE=%%T"
+if not defined LATEST_RELEASE (
+    echo ERROR: Could not resolve a published stable release. No update was attempted.
+    exit /b 1
+)
+echo Stable release: %LATEST_RELEASE%
+exit /b 0
+
+:UPDATE_STABLE
 call :ENSURE_GIT
 if errorlevel 2 exit /b 2
 if errorlevel 1 exit /b 1
+call :RESOLVE_STABLE_TAG
+if errorlevel 1 exit /b 1
 
 pushd "%PROJECT_DIR%"
-if errorlevel 1 (
-    echo ERROR: Could not enter the Git checkout.
-    exit /b 1
-)
-
+if errorlevel 1 exit /b 1
 set "CURRENT_BRANCH="
 for /f "delims=" %%B in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%B"
-if /i not "%CURRENT_BRANCH%"=="%TARGET_BRANCH%" goto UPDATE_WRONG_BRANCH
+if defined CURRENT_BRANCH if /i not "%CURRENT_BRANCH%"=="main" goto UPDATE_WRONG_BRANCH
 
 git diff --quiet
 if errorlevel 1 goto UPDATE_DIRTY
 git diff --cached --quiet
 if errorlevel 1 goto UPDATE_DIRTY
 
-echo Pulling the latest origin/%TARGET_BRANCH%...
-git pull --ff-only origin "%TARGET_BRANCH%"
+rem Fetch explicitly from the official repository, without changing origin.
+git fetch "%REPO_URL%" "refs/heads/main:refs/remotes/blab-release/main" "refs/tags/%LATEST_RELEASE%:refs/tags/%LATEST_RELEASE%"
+if errorlevel 1 goto UPDATE_FAILED
+rem Refuse to strand unpublished commits, including detached development commits.
+git merge-base --is-ancestor HEAD refs/remotes/blab-release/main
+if errorlevel 1 goto UPDATE_LOCAL_COMMITS
+git merge-base --is-ancestor "refs/tags/%LATEST_RELEASE%" refs/remotes/blab-release/main
+if errorlevel 1 goto UPDATE_FAILED
+if not defined CURRENT_BRANCH (
+    set "CURRENT_TAG="
+    for /f "delims=" %%T in ('git describe --tags --exact-match HEAD 2^>nul') do set "CURRENT_TAG=%%T"
+    if not defined CURRENT_TAG goto UPDATE_WRONG_BRANCH
+)
+
+echo Installing stable release %LATEST_RELEASE%...
+git checkout --detach "refs/tags/%LATEST_RELEASE%"
 if errorlevel 1 goto UPDATE_FAILED
 popd
 echo.
 exit /b 0
 
 :UPDATE_WRONG_BRANCH
-echo ERROR: Automatic updates are only supported on the %TARGET_BRANCH% branch.
-echo Current branch: %CURRENT_BRANCH%
-echo Switch branches manually or decline the update to repair this checkout.
+echo ERROR: Automatic updates require main or a detached release tag.
+echo Development branches must be managed manually. Decline the update to repair in place.
+popd
+exit /b 1
+
+:UPDATE_LOCAL_COMMITS
+echo ERROR: This checkout contains unpublished commits. No checkout was attempted.
+echo Preserve your work on a development branch and manage it manually.
 popd
 exit /b 1
 
@@ -496,6 +526,6 @@ popd
 exit /b 1
 
 :UPDATE_FAILED
-echo ERROR: Git could not fast-forward to origin/%TARGET_BRANCH%.
+echo ERROR: Git could not select the published stable release. No reset was attempted.
 popd
 exit /b 1

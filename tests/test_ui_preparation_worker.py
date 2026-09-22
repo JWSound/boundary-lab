@@ -14,6 +14,47 @@ def wait_until(predicate, timeout=3):
     assert predicate()
 
 
+def test_settlement_releases_reservation_after_delivery_and_when_cancelled(qapp):
+    controller = PreparationController(None, ActivityController())
+    events = []
+    try:
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 1,
+            lambda value: events.append("delivered"),
+            lambda exc: None,
+            settled=lambda: events.append("settled"),
+        )
+        wait_until(lambda: not controller.active)
+        assert events == ["delivered", "settled"]
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 2,
+            lambda value: events.append("obsolete"),
+            lambda exc: None,
+            settled=lambda: events.append("cancelled-settled"),
+        )
+        controller.cancel("solve")
+        wait_until(lambda: not controller.active)
+        assert events[-1] == "cancelled-settled"
+        assert "obsolete" not in events
+        controller.submit(
+            "solve",
+            "Prepare",
+            lambda: 3,
+            lambda value: None,
+            lambda exc: None,
+            settled=lambda: events.append("closed-settled"),
+        )
+        controller.close()
+        qapp.processEvents()
+        assert events.count("closed-settled") == 1
+    finally:
+        controller.close()
+
+
 def test_worker_does_not_block_gui_and_delivers_only_latest_result(qapp):
     activities = ActivityController(delay_ms=10)
     controller = PreparationController(None, activities)
@@ -73,7 +114,7 @@ def test_cancelled_work_and_failed_work_release_handles(qapp):
 
 
 def test_project_edit_while_loading_discards_completion(main_window, monkeypatch, tmp_path):
-    from blab.ui.project_state import replace_generator_document
+    from blab.project.model import replace_generator_document
 
     gate = Event()
     started = Event()
@@ -121,7 +162,7 @@ def test_authored_project_skips_legacy_mesh_preparation(main_window, monkeypatch
 
 
 def test_preview_completion_cannot_replace_a_new_project(main_window, monkeypatch):
-    from blab.ui.project_state import ImportedMeshState
+    from blab.project.model import ImportedMeshState
 
     pending = {}
     main_window.project.imported_meshes = (ImportedMeshState("mesh", "unused.msh"),)
@@ -208,8 +249,7 @@ def test_cancelled_worker_progress_cannot_overwrite_current_activity(qapp):
         release.wait(3)
 
     try:
-        controller.submit("solve", "Preparing solve...", work, results.append, errors.append,
-                          report_progress=True)
+        controller.submit("solve", "Preparing solve...", work, results.append, errors.append, report_progress=True)
         wait_until(started.is_set)
         controller.cancel("solve")
         gate.set()

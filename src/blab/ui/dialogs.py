@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.config import ChannelConfig, CrossoverConfig
+from blab.mesh_data import MeshData
 from blab.paths import APP_ROOT
 from blab.solvers.registry import backend_label_to_id, normalize_backend_id
 from blab.ui.drag_drop import local_drop_paths
@@ -72,6 +73,7 @@ class MeshDialogEntry:
     translation_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
     enabled: bool = True
     locked: bool = False
+    mesh_data: MeshData | None = None
 
 
 class DonateDialog(QDialog):
@@ -150,6 +152,16 @@ def _build_crossover_frequency_spin(frequency_hz: float | None) -> QDoubleSpinBo
 class PreferencesDialog(QDialog):
     def __init__(self, preferences: GuiPreferences, parent: QWidget | None = None):
         super().__init__(parent)
+        from blab.ui.provider_preferences import populate_provider_choices
+
+        self.enabled_geometry_providers = set(preferences.enabled_geometry_providers)
+        self.provider_management_changed = False
+        self.default_provider_combo = QComboBox()
+        populate_provider_choices(
+            self.default_provider_combo, self.enabled_geometry_providers, preferences.default_geometry_provider
+        )
+        self.provider_packages_button = QPushButton("Manage packages…")
+        self.provider_packages_button.clicked.connect(self._manage_provider_packages)
         self.setWindowTitle("Preferences")
 
         self.theme_combo = QComboBox()
@@ -179,6 +191,8 @@ class PreferencesDialog(QDialog):
         )
         self.live_plot_quality_combo.setCurrentText(live_plot_quality_label)
 
+        self.cuda_worker_reuse_check = QCheckBox("Enabled")
+        self.cuda_worker_reuse_check.setChecked(preferences.cuda_worker_reuse)
         self.live_plot_streaming_check = QCheckBox("Enabled")
         self.live_plot_streaming_check.setChecked(preferences.live_plot_streaming)
         self.live_plot_quality_combo.setEnabled(preferences.live_plot_streaming)
@@ -395,9 +409,20 @@ class PreferencesDialog(QDialog):
             self._section(
                 "Application",
                 (
+                    (
+                        "Default geometry provider",
+                        self.default_provider_combo,
+                        "Used for new designs; existing designs retain their provider.",
+                    ),
+                    ("Geometry providers", self.provider_packages_button, ""),
                     ("Solver", self.solve_backend_combo, ""),
                     ("Server", self.server_preferences, "Use your server address and optional access key."),
                     ("Theme", self.theme_combo, ""),
+                    (
+                        "Reuse CUDA Worker Memory",
+                        self.cuda_worker_reuse_check,
+                        "Speeds up consecutive local CUDA solves. Releases cached memory after 5 seconds idle, every 8 solves, or when device memory is low. Requires a compatible BEAT worker.",
+                    ),
                     ("Live Plot Streaming", self.live_plot_streaming_check, ""),
                     ("Live Plot Quality", self.live_plot_quality_combo, ""),
                 ),
@@ -410,6 +435,18 @@ class PreferencesDialog(QDialog):
         layout.addLayout(columns)
         layout.addWidget(buttons)
         self.resize(900, 500)
+
+    def _manage_provider_packages(self):
+        from blab.ui.provider_preferences import ProviderPackagesDialog, populate_provider_choices
+
+        dialog = ProviderPackagesDialog(self.enabled_geometry_providers, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.enabled_geometry_providers = dialog.enabled
+            self.provider_management_changed = True
+            populate_provider_choices(
+                self.default_provider_combo, self.enabled_geometry_providers, self.default_provider_combo.currentData()
+            )
+        dialog.deleteLater()
 
     @staticmethod
     def _section(title: str, rows: tuple[tuple[str, QWidget] | tuple[str, QWidget, str], ...]) -> QGroupBox:
@@ -445,10 +482,13 @@ class PreferencesDialog(QDialog):
             spl_max = spl_min + 1.0
 
         return GuiPreferences(
+            default_geometry_provider=self.default_provider_combo.currentData(),
+            enabled_geometry_providers=tuple(sorted(self.enabled_geometry_providers)),
             theme=self.theme_options[self.theme_combo.currentText()],
             solve_backend=self.solve_backend_options[self.solve_backend_combo.currentText()],
             solve_server_url=self.server_preferences.url.text().strip(),
             solve_server_access_key=self.server_preferences.access_key.text().strip(),
+            cuda_worker_reuse=bool(self.cuda_worker_reuse_check.isChecked()),
             live_plot_streaming=bool(self.live_plot_streaming_check.isChecked()),
             live_plot_quality=self.live_plot_quality_options[self.live_plot_quality_combo.currentText()],
             polar_angle_step_deg=float(self.polar_step_spin.value()),
@@ -625,6 +665,7 @@ class MeshConfigDialog(QDialog):
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
         file_item.setData(Qt.ItemDataRole.UserRole, mesh.cleaned_file)
         file_item.setData(int(Qt.ItemDataRole.UserRole) + 1, False)
+        file_item.setData(int(Qt.ItemDataRole.UserRole) + 2, mesh.mesh_data)
         self.table.setItem(row, 2, file_item)
         self.file_items.append(file_item)
 
@@ -761,6 +802,7 @@ class MeshConfigDialog(QDialog):
                     ),
                     enabled=bool(self.enabled_widgets[row].isChecked()),
                     locked=is_generated_row,
+                    mesh_data=self.file_items[row].data(int(Qt.ItemDataRole.UserRole) + 2),
                 )
             )
         return tuple(meshes)

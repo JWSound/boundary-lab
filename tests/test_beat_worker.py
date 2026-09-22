@@ -132,7 +132,6 @@ sys.meta_path.insert(0, RejectSourceAdapter())
 import blab.headless
 import blab.solvers.coupled_backend
 import blab.solvers.coupled_field
-import blab.deploy_worker
 """
     root = Path(__file__).resolve().parents[1]
     process = subprocess.run(
@@ -159,3 +158,17 @@ def test_compatibility_exports_share_the_runtime_pool(worker_script):
         )
     finally:
         runtime.shutdown_beat_engine_workers()
+
+
+@pytest.mark.parametrize("timeout", [None, 17.5])
+def test_application_worker_forwards_startup_timeout_only_when_supplied(worker_script, monkeypatch, timeout):
+    from blab.solvers import beat_engine_runtime as runtime
+
+    captured = {}
+    monkeypatch.setattr(runtime.WorkerProcess, "__init__", lambda self, **kwargs: captured.update(kwargs))
+    kwargs = {} if timeout is None else {"startup_timeout_s": timeout}
+    runtime.BeatEngineWorkerProcess(**options(worker_script), **kwargs)
+    if timeout is None:
+        assert "startup_timeout_s" not in captured
+    else:
+        assert captured["startup_timeout_s"] == timeout

@@ -1,20 +1,6 @@
 # Boundary Lab Server with Docker
 
 These instructions build and run the current physical-model server locally.
-These are local builds; a new Docker Hub release and Runpod template have not
-been published yet. Older server images use the retired protocol.
-
-CPU local qualification passes. The CUDA image remains experimental: coupled
-solves complete, but repeated solves have exceeded the strict numerical
-comparison tolerance for retained BEM boundary pressure. See the
-[qualification findings](advanced/container-development.md#qualification-findings)
-before using it for production work.
-
-CPU local qualification passes. The CUDA image remains experimental: coupled
-solves complete, but repeated solves have exceeded the strict numerical
-comparison tolerance for retained BEM boundary pressure. See the
-[qualification findings](advanced/container-development.md#qualification-findings)
-before using it for production work.
 
 ## Build
 

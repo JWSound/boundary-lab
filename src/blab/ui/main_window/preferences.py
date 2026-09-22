@@ -210,6 +210,13 @@ class PreferencesMixin:
 
         dialog.deleteLater()
         self.preferences = preferences
+        from blab.generators.catalog import provider_catalog
+
+        provider_catalog().enabled = set(preferences.enabled_geometry_providers)
+        if previous_preferences.enabled_geometry_providers != preferences.enabled_geometry_providers or getattr(
+            dialog, "provider_management_changed", False
+        ):
+            self.rebuild_generator_document_tabs()
         self._apply_field_preferences()
         self._save_preferences()
         self.project.project_preferences = self._current_project_preferences()

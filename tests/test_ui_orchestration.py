@@ -3,17 +3,16 @@ from pathlib import Path
 import meshio
 import numpy as np
 
-from blab.config import ChannelConfig, MeshConfig, RadiatorConfig
+from blab.config import ChannelConfig, RadiatorConfig
 from blab.live import FrequencyResult, LiveSolveDataset
+from blab.project.model import ImportedMeshState
 from blab.ui.application_state import (
     OperationPhase,
     SolveCompletion,
     solve_invalidation_policy,
 )
 from blab.ui.mesh_assembly import MeshAssemblyService
-from blab.ui.project_state import ImportedMeshState
 from blab.ui.result_projection import ProjectionOptions, ResultProjectionService
-from blab.ui.simulation_assembler import SimulationAssembler, SimulationParameters
 
 
 def _write_triangle_mesh(path: Path, tag: int = 2) -> None:
@@ -48,34 +47,6 @@ def test_solve_completion_only_marks_full_frequency_sets_complete() -> None:
 
     assert partial.completed is False
     assert complete.completed is True
-
-
-def test_simulation_assembler_builds_domain_request_without_widgets() -> None:
-    prepared = SimulationAssembler().prepare(
-        mesh_configs=(MeshConfig(name="speaker", file="speaker.msh", scale_factor=0.001),),
-        radiators=(RadiatorConfig(name="driver", mesh="speaker", tag=2),),
-        channels=(ChannelConfig(name="main"),),
-        parameters=SimulationParameters(
-            freq_min_hz=20000,
-            freq_max_hz=200,
-            freq_count=5,
-            observation_distance_m=3.0,
-            polar_angle_step_deg=5.0,
-            use_burton_miller=False,
-            gmres_tolerance=1e-4,
-            normalized_channel_correction=True,
-            horizontal_normalization_angle_deg=10.0,
-            spherical_sampling_enabled=False,
-            spherical_sampling_points=100,
-            symmetry="off",
-        ),
-    )
-
-    assert prepared.config.freq_min == 200.0
-    assert prepared.config.freq_max == 20000.0
-    assert prepared.config.distance == 3.0
-    assert prepared.config.gmres_tolerance == 1e-4
-    assert prepared.ordered_frequencies.size == 5
 
 
 def test_mesh_assembly_prepares_preview_and_solver_contract(tmp_path: Path) -> None:
@@ -205,31 +176,44 @@ def test_interior_projection_retains_motion_and_electrical_data_without_polar_sa
         voltage_channel_names=frozenset({"main"}),
     )
     frequency = 100.0
-    dataset.add(FrequencyResult(
-        freq_hz=frequency,
-        horizontal_spl_norm_db=np.empty(0),
-        vertical_spl_norm_db=np.empty(0),
-        impedance=np.zeros((1, 2)),
-        channel_names=np.asarray(["main"]),
-        horizontal_pressure=np.empty((1, 0), dtype=np.complex64),
-        vertical_pressure=np.empty((1, 0), dtype=np.complex64),
-    ))
+    dataset.add(
+        FrequencyResult(
+            freq_hz=frequency,
+            horizontal_spl_norm_db=np.empty(0),
+            vertical_spl_norm_db=np.empty(0),
+            impedance=np.zeros((1, 2)),
+            channel_names=np.asarray(["main"]),
+            horizontal_pressure=np.empty((1, 0), dtype=np.complex64),
+            vertical_pressure=np.empty((1, 0), dtype=np.complex64),
+        )
+    )
     motion = TransducerMotionDataset(
         excitation_channel_names=np.asarray(["main"]),
         transducer_names=np.asarray(["Woofer"]),
     )
     motion.results[frequency] = np.asarray([[1j * 2 * np.pi * frequency * 0.001]])
-    electrical = SimpleNamespace(as_power_arrays=lambda _dataset: None, as_impedance_arrays=lambda: (
-        np.asarray([frequency]), np.asarray(["main"]), np.asarray([[6.0]]), np.asarray([[0.0]])
-    ))
+    electrical = SimpleNamespace(
+        as_power_arrays=lambda _dataset: None,
+        as_impedance_arrays=lambda: (
+            np.asarray([frequency]),
+            np.asarray(["main"]),
+            np.asarray([[6.0]]),
+            np.asarray([[0.0]]),
+        ),
+    )
     projection = ResultProjectionService().prepare(
         dataset,
         (ChannelConfig(name="main", voltage_v=5.66),),
         ProjectionOptions(
-            angle_samples=3, freq_samples=1, octave_smoothing=None,
-            horizontal_reference_angle_deg=0.0, vertical_reference_angle_deg=0.0,
-            spin_horizontal_reference_angle_deg=0.0, spin_vertical_reference_angle_deg=0.0,
-            min_db=-30.0, max_db=0.0,
+            angle_samples=3,
+            freq_samples=1,
+            octave_smoothing=None,
+            horizontal_reference_angle_deg=0.0,
+            vertical_reference_angle_deg=0.0,
+            spin_horizontal_reference_angle_deg=0.0,
+            spin_vertical_reference_angle_deg=0.0,
+            min_db=-30.0,
+            max_db=0.0,
         ),
         transducer_motion=motion,
         electrical_impedance=electrical,

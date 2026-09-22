@@ -9,10 +9,10 @@ from PySide6.QtCore import QObject, Qt, Slot
 from PySide6.QtWidgets import QWidget
 
 from blab.observation_planes import ObservationPlane, new_observation_plane
+from blab.project.model import ProjectDocument
 from blab.ui.exterior_field_service import ExteriorFieldEvaluationService, ExteriorFieldTask
 from blab.ui.observation_plane_dialog import ObservationPlanePropertiesDialog
 from blab.ui.observation_plane_results import ObservationFieldResults
-from blab.ui.project_state import ProjectDocument
 
 
 class ObservationPlaneController(QObject):

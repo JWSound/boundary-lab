@@ -19,6 +19,7 @@ import numpy as np
 from blab.component_symmetry import ComponentSymmetryInferenceError, infer_component_symmetry
 from blab.config import normalize_symmetry
 from blab.fem_topology import selected_volume_surface_tags
+from blab.mesh_data import read_resource_mesh
 from blab.physical_model import (
     AcousticRegionKind,
     Boundary,
@@ -108,7 +109,9 @@ def expand_speaker_system_for_export(
             and _mesh_is_full_domain(preferred_path, resource, mode)
         )
         selected_path = preferred_path if use_preferred else source_path
-        source_mesh = _mesh_in_project_coordinates(meshio.read(selected_path), resource)
+        source_mesh = _mesh_in_project_coordinates(
+            meshio.read(selected_path) if use_preferred else read_resource_mesh(resource), resource
+        )
         if use_preferred:
             expanded = _classify_full_domain_mesh(source_mesh, mode)
             preferred_names.append(resource.name)
@@ -133,6 +136,7 @@ def expand_speaker_system_for_export(
             replace(
                 resource,
                 file=str(mesh_path),
+                mesh_data=None,
                 scale_to_m=1.0,
                 translation_m=(0.0, 0.0, 0.0),
             )

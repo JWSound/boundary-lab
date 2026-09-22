@@ -53,7 +53,7 @@ from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyR
 
 
 @dataclass(frozen=True)
-class SystemUiSolveRequest:
+class PreparedSystemSolve:
     """Prepared physical-system solve plus the metadata used by result consumers."""
 
     request: SystemSolveRequest
@@ -67,9 +67,10 @@ class SystemUiSolveRequest:
     sphere_metadata: dict[str, np.ndarray] | None = None
     result_domains: tuple[ResultDomain, ...] = ()
     remote_options: dict[str, str] | None = field(default=None, repr=False)
+    cuda_worker_reuse: bool = False
 
 
-def prepare_system_ui_solve(
+def prepare_system_solve(
     system: PhysicalSystem,
     *,
     freq_min_hz: float,
@@ -87,8 +88,9 @@ def prepare_system_ui_solve(
     stitch_exterior_meshes: bool = False,
     stitch_tolerance_mm: float = 2.0,
     progress: Callable[[str], None] | None = None,
-) -> SystemUiSolveRequest:
-    """Compile an editable physical system and request the fields used by the UI."""
+    cuda_worker_reuse: bool = False,
+) -> PreparedSystemSolve:
+    """Compile an editable physical system and request application observation fields."""
 
     report = progress or (lambda _message: None)
     symmetry = normalize_symmetry(symmetry_mode)
@@ -99,7 +101,9 @@ def prepare_system_ui_solve(
     if stitch_exterior_meshes:
         report("Preparing exterior interfaces...")
         system = prepare_exterior_system(
-            system, stitch_tolerance_mm=stitch_tolerance_mm, symmetry_mode=symmetry,
+            system,
+            stitch_tolerance_mm=stitch_tolerance_mm,
+            symmetry_mode=symmetry,
         )
     report("Compiling physical system...")
     compiled = PhysicalSystemCompiler().compile(system, symmetry_mode=symmetry)
@@ -209,7 +213,7 @@ def prepare_system_ui_solve(
 
     normalized_backend_id = normalize_backend_id(backend_id)
     if not supports_physical_system_solves(normalized_backend_id):
-        raise ValueError("Physical-system solves require BEAT Engine CPU, Nvidia CUDA, or AMD ROCm.")
+        raise ValueError("Physical-system solves require BEAT Engine.")
     outputs = []
     if has_exterior:
         outputs.append(
@@ -300,20 +304,24 @@ def prepare_system_ui_solve(
 
     is_coupled = solve_kind == PhysicalSolveKind.COUPLED_BEM_FEM
     if is_coupled and compiled.interfaces:
-        result_domains.append(ResultDomain(
-            id=INTERFACE_DOMAIN_ID,
-            kind="interface_collection",
-            dimensions=("interface",),
-            coordinates={
-                "interface_id": np.asarray([item.id for item in compiled.interfaces]),
-                "name": np.asarray([item.name for item in compiled.interfaces]),
-            },
-        ))
-        outputs.append(OutputRequest(
-            id=INTERFACE_VELOCITY_ID,
-            quantity="interface_average_normal_velocity",
-            target_ids=(INTERFACE_DOMAIN_ID,),
-        ))
+        result_domains.append(
+            ResultDomain(
+                id=INTERFACE_DOMAIN_ID,
+                kind="interface_collection",
+                dimensions=("interface",),
+                coordinates={
+                    "interface_id": np.asarray([item.id for item in compiled.interfaces]),
+                    "name": np.asarray([item.name for item in compiled.interfaces]),
+                },
+            )
+        )
+        outputs.append(
+            OutputRequest(
+                id=INTERFACE_VELOCITY_ID,
+                quantity="interface_average_normal_velocity",
+                target_ids=(INTERFACE_DOMAIN_ID,),
+            )
+        )
     has_fem = solve_kind != PhysicalSolveKind.EXTERIOR_BEM
     request = SystemSolveRequest(
         compiled_system=compiled,
@@ -330,7 +338,8 @@ def prepare_system_ui_solve(
         },
     )
     validate_solve_plan(request)
-    return SystemUiSolveRequest(
+    return PreparedSystemSolve(
+        cuda_worker_reuse=cuda_worker_reuse,
         remote_options=remote_options,
         request=request,
         backend_id=normalized_backend_id,
@@ -360,10 +369,10 @@ def _impedance_area_coordinates(components, records) -> dict[str, np.ndarray]:
     }
 
 
-def prepare_coupled_ui_solve(*args, **kwargs) -> SystemUiSolveRequest:
+def prepare_coupled_ui_solve(*args, **kwargs) -> PreparedSystemSolve:
     """Compatibility name for callers that predate exterior system solves."""
 
-    return prepare_system_ui_solve(*args, **kwargs)
+    return prepare_system_solve(*args, **kwargs)
 
 
 def supports_exterior_system_protocol(
@@ -398,7 +407,7 @@ def supports_exterior_system_protocol(
 
 
 def canonicalize_observation_result(
-    prepared: SystemUiSolveRequest,
+    prepared: PreparedSystemSolve,
     result: SystemFrequencyResult,
 ) -> SystemFrequencyResult:
     """Split a compact exterior-pressure block into named observation quantities."""
@@ -466,9 +475,9 @@ def _fibonacci_sphere_points(
 
 
 __all__ = [
-    "SystemUiSolveRequest",
+    "PreparedSystemSolve",
     "canonicalize_observation_result",
     "prepare_coupled_ui_solve",
-    "prepare_system_ui_solve",
+    "prepare_system_solve",
     "supports_exterior_system_protocol",
 ]

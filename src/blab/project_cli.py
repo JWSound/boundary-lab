@@ -130,6 +130,8 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     export_speaker.add_argument("project_file", type=Path, help="Path to the .blab.json project")
     export_speaker.add_argument("--output", type=Path, required=True, help="Output .blabsp package path")
     export_speaker.add_argument("--name", help="Package display name; defaults to the physical-system name")
+    export_speaker.add_argument("--viewport-model", type=Path, help="Optional expanded +Z-forward OBJ")
+    export_speaker.add_argument("--viewport-model-scale", type=float, default=1.0, help="OBJ units to meters")
     export_speaker.add_argument("--fidelity", choices=("pattern", "fixed", "coupled"), default="pattern")
     export_speaker.add_argument("--speaker-rom-rank", type=int, default=32)
     export_speaker.add_argument("--speaker-rom-training-count", type=int, default=96)
@@ -365,6 +367,12 @@ def _speaker_preflight(args: argparse.Namespace) -> None:
 
 
 def _export_speaker(args: argparse.Namespace) -> None:
+    if args.viewport_model is not None:
+        from blab.viewport_model import viewport_model_members
+
+        _, visual = viewport_model_members(args.viewport_model, args.viewport_model_scale)
+        for warning in visual["warnings"]:
+            print(f"Viewport model: {warning}", file=sys.stderr)
     project = load_headless_project(args.project_file)
     spec = load_headless_solve_spec(args.request)
     sphere_angle_deg = min(max(float(project.preferences.balloon_angle_precision_deg), 0.5), 15.0)
@@ -427,6 +435,8 @@ def _export_speaker(args: argparse.Namespace) -> None:
                 name=args.name or project.physical_system.name,
                 fidelity=fidelity,
                 coupled_representation=coupled_representation,
+                viewport_model_path=args.viewport_model,
+                viewport_model_scale_to_m=args.viewport_model_scale,
             ),
         )
     finally:

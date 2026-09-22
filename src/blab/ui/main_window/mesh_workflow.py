@@ -13,15 +13,20 @@ from PySide6.QtWidgets import (
     QMessageBox,
 )
 
-from blab.ath import (
-    read_surface_physical_names,
-)
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
 from blab.mesh_cache import mesh_cache
+from blab.mesh_data import surface_names
+from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.preview_hierarchy import build_preview_hierarchy
+from blab.project.model import (
+    ImportedMeshState,
+    generator_mesh_name,
+    replace_generator_document,
+)
+from blab.system_editing import interface_bem_mesh_names_for_changes, rebuild_configured_interfaces
 from blab.ui.dialogs import (
     MeshDialogEntry,
 )
@@ -35,17 +40,7 @@ from blab.ui.mesh_assembly import (
     PreparedMeshAssembly,
 )
 from blab.ui.mesh_preparation import MeshPreparationSnapshot, prepare_preview
-from blab.ui.project_state import (
-    ImportedMeshState,
-    generator_mesh_name,
-    replace_generator_document,
-)
-from blab.ui.system_config import (
-    INTERFACE_SEAM_SIMPLIFICATION_WARNING,
-    inspect_system_meshes,
-    interface_bem_mesh_names_for_changes,
-    rebuild_configured_interfaces,
-)
+from blab.ui.system_config import INTERFACE_SEAM_SIMPLIFICATION_WARNING
 
 
 class MeshWorkflowMixin:
@@ -72,11 +67,14 @@ class MeshWorkflowMixin:
             entries.append(
                 MeshDialogEntry(
                     name=generator_mesh_name(document),
-                    source_file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    source_file=""
+                    if solver_result.mesh_data is not None
+                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,
                     locked=True,
+                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
                 )
             )
         entries.extend(self.imported_meshes)
@@ -289,9 +287,12 @@ class MeshWorkflowMixin:
             configs.append(
                 MeshConfig(
                     name=generator_mesh_name(document),
-                    file=str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
+                    file=""
+                    if solver_result.mesh_data is not None
+                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
+                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
                 )
             )
         return tuple(configs)
@@ -397,7 +398,9 @@ class MeshWorkflowMixin:
             self.generated_geometry_by_document_id = generated
             for document_id, geometry in generated.items():
                 self.generator_documents = replace_generator_document(
-                    self.generator_documents, document_id, artifact=geometry.to_reference(),
+                    self.generator_documents,
+                    document_id,
+                    artifact=geometry.to_reference(),
                 )
             self.show_mesh_preview(assembly.mesh_configs, **options)
             if was_clean:
@@ -411,15 +414,26 @@ class MeshWorkflowMixin:
                 self.show_status(f"Mesh preview preparation failed: {exc}")
 
         self.preparations.submit(
-            "preview", "Preparing mesh preview...", lambda: prepare_preview(work_snapshot, output_root), complete, failed,
+            "preview",
+            "Preparing mesh preview...",
+            lambda: prepare_preview(work_snapshot, output_root),
+            complete,
+            failed,
         )
 
     def _mesh_preparation_snapshot(self):
-        return deepcopy(MeshPreparationSnapshot(
-            documents=self.generator_documents, generated=self.generated_geometry_by_document_id,
-            imported=self.project.imported_meshes, radiators=self.all_radiators(), system=self.project.physical_system,
-            symmetry=self.symmetry, stitch=self.stitch_imported_meshes, tolerance_mm=self.preferences.stitch_tolerance_mm,
-        ))
+        return deepcopy(
+            MeshPreparationSnapshot(
+                documents=self.generator_documents,
+                generated=self.generated_geometry_by_document_id,
+                imported=self.project.imported_meshes,
+                radiators=self.all_radiators(),
+                system=self.project.physical_system,
+                symmetry=self.symmetry,
+                stitch=self.stitch_imported_meshes,
+                tolerance_mm=self.preferences.stitch_tolerance_mm,
+            )
+        )
 
     def _refresh_mesh_preview_sync(self) -> None:
         if not self.has_solver_meshes():
@@ -469,9 +483,7 @@ class MeshWorkflowMixin:
             if not mesh_configs:
                 self.clear_mesh_preview()
                 return
-            surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
-            }
+            surface_tags_by_mesh = {mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs}
             interface_surfaces, component_surfaces, mesh_regions, has_interior = _physical_system_preview_metadata(
                 self._project_document().physical_system,
                 surface_tags_by_mesh,
@@ -482,9 +494,7 @@ class MeshWorkflowMixin:
                 mesh_regions=mesh_regions,
                 has_interior=has_interior,
             )
-            source_surface_tags_by_mesh = {
-                mesh_cfg.name: read_surface_physical_names(Path(mesh_cfg.file)) for mesh_cfg in mesh_configs
-            }
+            source_surface_tags_by_mesh = {mesh_cfg.name: surface_names(mesh_cfg) for mesh_cfg in mesh_configs}
             hierarchy = build_preview_hierarchy(
                 self._project_document().physical_system,
                 source_mesh_configs=mesh_configs,

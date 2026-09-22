@@ -2,8 +2,7 @@
 
 Run solves on another workstation or hosted machine while working in the Boundary
 Lab application. The server chooses its solver automatically; clients do not need
-to know its hardware. This feature is currently a preview. Polar and balloon
-results are supported; observation planes are not yet available for remote solves.
+to know its hardware. Polar and balloon results are supported; observation planes are not yet available for remote solves.
 
 ## Connect from the application
 
@@ -22,7 +21,7 @@ key on the server as described below.
 
 Save the key locally in a safe place so you can paste it again next time. Boundary
 Lab remembers the address but keeps the key only for the current application
-session. It does not save the key in preferences or the OS credential store.
+session. It does not save the key in preferences.
 
 To resume local solving, choose a local solver in Preferences. The server address
 remains saved for later use.
@@ -88,8 +87,6 @@ interior FEM uses CPU. Clients still only choose the server address.
 
 For locally built CPU/CUDA images, see [Docker setup](Docker.md).
 
-For locally built CPU/CUDA images, see [Docker setup](Docker.md).
-
 Use these settings in an environment with Boundary Lab, Julia, and the required
 solver runtime already installed:
 
@@ -120,7 +117,7 @@ key into clients.
 ## Everyday operation and troubleshooting
 
 The server currently runs one job at a time. If it is busy, wait for that job to
-finish and submit again; additional jobs are not queued. Closing a client does not
+finish and submit again; additional jobs are rejected and not queued. Closing a client does not
 necessarily stop a submitted job, so use **Stop** when you intend to cancel it.
 
 Server job files remain until you remove them. Stop the server before removing
@@ -137,4 +134,4 @@ unneeded job directories. Use a separate job root for each server process.
 
 For command-line submission, see the [headless project workflow](advanced/cli-workflow.md#headless-project-workflow).
 For protocol details, job behavior, and testing, see the
-[server developer reference](advanced/boundary-lab-server.md).
+[server developer reference](advanced/boundary-lab-server_advanced.md).

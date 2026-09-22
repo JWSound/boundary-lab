@@ -25,6 +25,7 @@ from blab.speaker_package import (
     SpeakerPackageFidelity,
 )
 from blab.ui.file_dialogs import FileDialogService
+from blab.viewport_model import viewport_model_members
 
 
 class SpeakerPackageDialog(QDialog):
@@ -61,10 +62,29 @@ class SpeakerPackageDialog(QDialog):
         output_row.addWidget(self.output_edit, 1)
         output_row.addWidget(browse_button)
 
+        self.viewport_edit = QLineEdit()
+        self.viewport_edit.setPlaceholderText("Optional expanded OBJ, +Z forward")
+        self.viewport_edit.setClearButtonEnabled(True)
+        model_button = QPushButton("Browse…")
+        model_button.clicked.connect(self._browse_viewport)
+        model_row = QHBoxLayout()
+        model_row.addWidget(self.viewport_edit, 1)
+        model_row.addWidget(model_button)
+        self.viewport_units = QComboBox()
+        for label, scale in (("Meters", 1.0), ("Centimeters", 0.01), ("Millimeters", 0.001), ("Inches", 0.0254)):
+            self.viewport_units.addItem(label, scale)
+        self.viewport_status = QLabel("Uses the acoustic mesh when no OBJ is attached.")
+        self.viewport_status.setWordWrap(True)
+        self.viewport_edit.editingFinished.connect(self._update_viewport_status)
+        self.viewport_units.currentIndexChanged.connect(self._update_viewport_status)
+
         form = QFormLayout()
         form.addRow("Package name", self.name_edit)
         form.addRow("Fidelity", self.fidelity_combo)
         form.addRow("Output file", output_row)
+        form.addRow("Viewport model", model_row)
+        form.addRow("OBJ units", self.viewport_units)
+        form.addRow(self.viewport_status)
 
         note = QLabel(
             "Boundary Lab will run a new solve with the complex spherical field and any boundary traces "
@@ -90,7 +110,32 @@ class SpeakerPackageDialog(QDialog):
             name=self.name_edit.text().strip(),
             fidelity=SpeakerPackageFidelity(int(self.fidelity_combo.currentData())),
             coupled_representation=SpeakerPackageCoupledRepresentation.PARITY_ROM,
+            viewport_model_path=Path(self.viewport_edit.text().strip()) if self.viewport_edit.text().strip() else None,
+            viewport_model_scale_to_m=float(self.viewport_units.currentData()),
         ).normalized()
+
+    @Slot()
+    def _browse_viewport(self) -> None:
+        path = self.file_dialogs.open_file(self, "Attach viewport model", "Wavefront OBJ (*.obj)")
+        if path is not None:
+            self.viewport_edit.setText(str(path))
+            self._update_viewport_status()
+
+    def _update_viewport_status(self, *_args) -> None:
+        value = self.viewport_edit.text().strip()
+        if not value:
+            self.viewport_status.setText("Uses the acoustic mesh when no OBJ is attached.")
+            return
+        try:
+            _, descriptor = viewport_model_members(Path(value), float(self.viewport_units.currentData()))
+            materials = ", ".join(descriptor["materials_detected"]) or "None (default material)"
+            sizes = [b - a for a, b in zip(descriptor["bounds_min_m"], descriptor["bounds_max_m"])]
+            dimensions = f"Width × height × depth: {sizes[0]:.4g} × {sizes[2]:.4g} × {sizes[1]:.4g} m"
+            self.viewport_status.setText(
+                dimensions + "\nMaterials: " + materials + "\n" + "\n".join(descriptor["warnings"])
+            )
+        except ValueError as exc:
+            self.viewport_status.setText(str(exc))
 
     @Slot()
     def _browse(self) -> None:
@@ -106,6 +151,7 @@ class SpeakerPackageDialog(QDialog):
 
     @Slot()
     def _accept_if_valid(self) -> None:
+        self._update_viewport_status()
         if not self.output_edit.text().strip():
             QMessageBox.warning(self, "Output file required", "Choose an output .blabsp file.")
             return

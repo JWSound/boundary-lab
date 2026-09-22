@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from blab.generators.ath import ATH_PROVIDER_ID
 from blab.generators.base import GenerationCompleted, GenerationRequest
 from blab.generators.registry import generator_info
+from blab.project.model import generator_mesh_name
 from blab.ui.application_state import OperationPhase
 from blab.ui.main_window.constants import (
     ATH_BUNDLE_DIR,
@@ -24,7 +25,6 @@ from blab.ui.main_window.constants import (
 )
 from blab.ui.main_window.workflow_view import GeometryInputs, PlotPresenter, WorkflowView
 from blab.ui.operation_controllers import GeometryController, SolveController
-from blab.ui.project_state import generator_mesh_name
 
 #: Stop stays hidden this long, so a short generation cannot be interrupted
 #: part-way through writing its output.
@@ -39,6 +39,7 @@ class GeometryWorkflowController(QObject):
 
     #: Emitted when starting a generation invalidates existing solve results.
     solve_results_invalidated = Signal(str)
+    generation_accepted = Signal(object)
 
     def __init__(
         self,
@@ -56,6 +57,7 @@ class GeometryWorkflowController(QObject):
         self._inputs = inputs
         self._geometry_controller = geometry_controller
         self._solve_controller = solve_controller
+        self._pending_request_id: str | None = None
 
     # -- Ath runtime --------------------------------------------------------
 
@@ -71,6 +73,10 @@ class GeometryWorkflowController(QObject):
 
     # -- generation ---------------------------------------------------------
 
+    @property
+    def pending_request_id(self) -> str | None:
+        return self._pending_request_id
+
     @Slot()
     def generate_geometry(self) -> None:
         if self._geometry_controller.active or self._solve_controller.active:
@@ -85,6 +91,10 @@ class GeometryWorkflowController(QObject):
         provider_options = {}
         try:
             provider = generator_info(document.provider_id)
+            if not provider.available:
+                raise ValueError(f"Provider {provider.label} is unavailable.")
+            if document.provider_schema_version != provider.source_schema_version:
+                raise ValueError("Provider source schema is incompatible; automatic source migration is not supported.")
             if document.provider_id == ATH_PROVIDER_ID:
                 provider_options["ath_exe"] = str(self._find_ath_exe())
         except Exception as exc:
@@ -92,6 +102,18 @@ class GeometryWorkflowController(QObject):
             self._view.show_error("Geometry generation failed", str(exc))
             return
 
+        revision, configuration = self._inputs.generation_context()
+        request = GenerationRequest(
+            provider_id=document.provider_id,
+            document_id=document.id,
+            mesh_name=mesh_name,
+            source=document.source,
+            run_root=run_root,
+            case_name=case_name,
+            provider_options=provider_options,
+            project_revision=revision,
+            configuration=configuration,
+        )
         self.solve_results_invalidated.emit("geometry_generation_started")
         self._view.show_status(f"Generating {document.name} with {provider.label}...")
         # Stop is withheld until _enable_geometry_cancel_if_active fires.
@@ -100,17 +122,8 @@ class GeometryWorkflowController(QObject):
         self._plots.refresh_contour_controls()
         self._view.set_busy_cursor(True)
 
-        self._geometry_controller.start(
-            GenerationRequest(
-                provider_id=document.provider_id,
-                document_id=document.id,
-                mesh_name=mesh_name,
-                source=document.source,
-                run_root=run_root,
-                case_name=case_name,
-                provider_options=provider_options,
-            )
-        )
+        self._pending_request_id = request.request_id
+        self._geometry_controller.start(request)
         QTimer.singleShot(CANCEL_DELAY_MS, self._enable_geometry_cancel_if_active)
 
     @Slot()
@@ -124,13 +137,16 @@ class GeometryWorkflowController(QObject):
 
     @Slot(object)
     def _on_geometry_generated(self, completed: GenerationCompleted) -> None:
-        document_id = completed.request.document_id
-        mesh_name = completed.request.mesh_name
-        result = self._inputs.apply_saved_source_config_to_result(completed.result, mesh_name)
-        assert result is not None
-        self._inputs.record_generated_geometry(document_id, result)
-        self._inputs.ensure_seeded_exterior_system()
+        if completed.request.request_id != self._pending_request_id:
+            return
+        self._pending_request_id = None
+        try:
+            result = self._inputs.accept_generation(completed)
+        except Exception as exc:
+            self._on_geometry_generation_failed(str(exc))
+            return
         self.mesh_state_changed.emit("geometry_generated")
+        self.generation_accepted.emit(completed)
         self._view.show_status(f"Generated and cleaned {result.output_dir}")
         self._view.show_mesh_quality_warning(result)
 
@@ -145,5 +161,6 @@ class GeometryWorkflowController(QObject):
 
     @Slot()
     def _on_geometry_generation_finished(self) -> None:
+        self._pending_request_id = None
         self._view.set_busy_cursor(False)
         self._view.set_workflow_phase(OperationPhase.IDLE)

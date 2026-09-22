@@ -171,7 +171,10 @@ def test_http_complex_results_and_replay_after_service_restart(prepared, http_se
     assert len(results) == 1
     np.testing.assert_array_equal(results[0].quantities[0].values, fake_result(prepared.request).quantities[0].values)
     assert results[0].excitation_port_ids == prepared.request.excitation_port_ids
-    assert results[0].diagnostics == {**fake_result(prepared.request).diagnostics, "phasor_convention": "exp(+i omega t)"}
+    assert results[0].diagnostics == {
+        **fake_result(prepared.request).diagnostics,
+        "phasor_convention": "exp(+i omega t)",
+    }
     assert session.worker_provenance["engine"]["version"] == "test-engine"
     replay = SolveService(service.root, backend=service.backend)
     assert replay.events(session.job_id, 0)[-1]["type"] == "completed"
@@ -283,7 +286,7 @@ def test_plane_exclusion_does_not_disable_polar_sampling(prepared, monkeypatch):
     import blab.headless as module
 
     captured = {}
-    monkeypatch.setattr(module, "prepare_system_ui_solve", lambda *_args, **kwargs: captured.update(kwargs) or prepared)
+    monkeypatch.setattr(module, "prepare_system_solve", lambda *_args, **kwargs: captured.update(kwargs) or prepared)
     root = Path(__file__).resolve().parents[1]
     project = load_headless_project(root / "examples/Simple_Sealed/simple_sealed.blab.json")
     project = replace(project, payload=project.payload | {"observation_planes": "deliberately invalid"})

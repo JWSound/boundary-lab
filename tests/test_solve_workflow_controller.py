@@ -21,12 +21,12 @@ from blab.physical_model import (  # noqa: E402
     ExcitationPortKind,
     PhysicalSolveKind,
 )
+from blab.project.migration import PhysicalSystemMigrationError  # noqa: E402
+from blab.project.model import new_project_document  # noqa: E402
 from blab.ui.application_state import OperationPhase, SolveCompletion  # noqa: E402
 from blab.ui.main_window.solve_session import SolveSession  # noqa: E402
 from blab.ui.main_window.solve_workflow import SolveWorkflowController  # noqa: E402
 from blab.ui.main_window.workflow_view import FrequencyRange  # noqa: E402
-from blab.ui.physical_system_migration import PhysicalSystemMigrationError  # noqa: E402
-from blab.ui.project_state import new_project_document  # noqa: E402
 from blab.ui.settings import GuiPreferences  # noqa: E402
 
 
@@ -150,7 +150,6 @@ def controller(qapp):
         session=session,
         project=lambda: project,
         preferences=lambda: GuiPreferences(),
-        assembler=None,
         geometry_controller=geometry,
         solve_controller=solve,
     )
@@ -402,15 +401,15 @@ def test_exterior_backend_uses_physical_request_without_legacy_preparation(contr
         prepare_mesh_configs=lambda *_args, **_kwargs: (("mesh-config",), ("radiator",))
     )
     controller.inputs.solver_channel_configs = lambda _radiators: ("channel",)
-    prepared_simulation = SimpleNamespace(config=SimpleNamespace(name="legacy-config"))
-    controller._assembler = SimpleNamespace(prepare=lambda **_kwargs: prepared_simulation)
     monkeypatch.setattr(solve_workflow_module, "inspect_system_meshes", lambda _entries: ("mesh",))
     monkeypatch.setattr(solve_workflow_module, "sync_physical_system_meshes", lambda value, _meshes: value)
     prepared_calls = []
     monkeypatch.setattr(
         solve_workflow_module,
-        "prepare_system_ui_solve",
-        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
+        "prepare_system_solve",
+        lambda value, **kwargs: (
+            prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM)
+        ),
     )
     dispatched = []
     monkeypatch.setattr(
@@ -425,8 +424,9 @@ def test_exterior_backend_uses_physical_request_without_legacy_preparation(contr
     assert prepared_calls[0][0] is not system
     assert prepared_calls[0][1]["backend_id"] == "beat_cpu"
     assert "allow_exterior_compatibility" not in prepared_calls[0][1]
-    assert dispatched == [(SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
-                           "Initializing exterior solver...")]
+    assert dispatched == [
+        (SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM), "Initializing exterior solver...")
+    ]
 
 
 def test_stitched_exterior_uses_shared_preparation_preserving_source_system(controller, monkeypatch) -> None:
@@ -439,14 +439,15 @@ def test_stitched_exterior_uses_shared_preparation_preserving_source_system(cont
         prepare_mesh_configs=lambda *_args, **_kwargs: (("stitched-mesh",), ("stitched-radiator",))
     )
     controller.inputs.solver_channel_configs = lambda _radiators: ("channel",)
-    controller._assembler = SimpleNamespace(prepare=lambda **_kwargs: SimpleNamespace(config="legacy-config"))
     monkeypatch.setattr(solve_workflow_module, "inspect_system_meshes", lambda _entries: ("mesh",))
     monkeypatch.setattr(solve_workflow_module, "sync_physical_system_meshes", lambda value, _meshes: value)
     prepared_calls = []
     monkeypatch.setattr(
         solve_workflow_module,
-        "prepare_system_ui_solve",
-        lambda value, **kwargs: prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
+        "prepare_system_solve",
+        lambda value, **kwargs: (
+            prepared_calls.append((value, kwargs)) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM)
+        ),
     )
     dispatched = []
     monkeypatch.setattr(
@@ -463,8 +464,9 @@ def test_stitched_exterior_uses_shared_preparation_preserving_source_system(cont
     assert prepared_calls[0][1]["stitch_tolerance_mm"] == GuiPreferences().stitch_tolerance_mm
     assert prepared_calls[0][1]["component_channel_by_id"] == controller.project.component_channel_by_id
     assert prepared_calls[0][1]["backend_id"] == "beat_cpu"
-    assert dispatched == [(SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
-                           "Initializing exterior solver...")]
+    assert dispatched == [
+        (SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM), "Initializing exterior solver...")
+    ]
 
 
 @pytest.mark.parametrize(("confirmed", "expected"), [(False, False), (True, True)])
@@ -618,9 +620,12 @@ def test_background_solve_preparation_lifecycle(controller, monkeypatch, outcome
             raise ValueError("Invalid interface")
         return SimpleNamespace(solve_kind=PhysicalSolveKind.INTERIOR_FEM)
 
-    monkeypatch.setattr(solve_workflow_module, "prepare_system_ui_solve", prepare)
-    monkeypatch.setattr(controller, "_start_prepared_system_solve",
-                        lambda prepared, status: dispatched.append((get_ident(), status)) or True)
+    monkeypatch.setattr(solve_workflow_module, "prepare_system_solve", prepare)
+    monkeypatch.setattr(
+        controller,
+        "_start_prepared_system_solve",
+        lambda prepared, status: dispatched.append((get_ident(), status)) or True,
+    )
     try:
         controller._start_coupled_system_solve()
         assert controller.view.status[-1] == "Preparing solve..."
@@ -648,3 +653,47 @@ def test_background_solve_preparation_lifecycle(controller, monkeypatch, outcome
     finally:
         gate.set()
         preparations.close()
+
+
+def test_provider_solve_uses_host_frequency_and_result_pipeline(controller):
+    from blab.mesh_inventory import InventoryEntry
+    from test_memory_mesh import memory_system
+
+    system = memory_system()
+    controller.project.physical_system = system
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (
+        InventoryEntry(name="tetra", source_file="", scale_factor=1.0, mesh_data=system.meshes[0].mesh_data),
+    )
+    controller.start_provider_solve("provider-job")
+    assert len(controller.solve.started) == 1
+    prepared = controller.solve.started[0]
+    assert len(prepared.request.frequencies_hz) == 41
+    assert min(prepared.request.frequencies_hz) == pytest.approx(200.0)
+    assert max(prepared.request.frequencies_hz) == pytest.approx(20000.0)
+    assert controller.session.result_builder is not None
+    assert controller.session.result_builder.compiled_system is prepared.request.compiled_system
+    assert controller.view.errors == [] and controller.view.warnings == []
+
+
+def test_provider_preparation_failure_is_correlated_without_modal(controller):
+    from test_memory_mesh import memory_system
+
+    controller.project.physical_system = memory_system()
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (_ for _ in ()).throw(ValueError("Invalid mesh"))
+    failures = []
+    controller.provider_preparation_failed.connect(lambda job, message: failures.append((job, message)))
+    controller.start_provider_solve("provider-job")
+    assert failures == [("provider-job", "Invalid mesh")]
+    assert controller._provider_job_id is None
+    assert not controller.view.errors and not controller.view.warnings
+
+
+def test_provider_cancel_cannot_stop_unrelated_job(controller):
+    controller.solve.active = True
+    controller.cancel_provider_solve("foreign")
+    assert controller.solve.cancelled == 0
+    controller._provider_job_id = "owned"
+    controller.cancel_provider_solve("foreign")
+    assert controller.solve.cancelled == 0
+    controller.cancel_provider_solve("owned")
+    assert controller.solve.cancelled == 1

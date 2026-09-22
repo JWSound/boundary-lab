@@ -3,7 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
+import numpy as np
+import pytest
+
+from blab.live import LiveSolveDataset
+from blab.physical_model import PhysicalSolveKind
+from blab.solve_results import (
+    HORIZONTAL_POLAR_PRESSURE_ID,
+    VERTICAL_POLAR_PRESSURE_ID,
+    SolvedSystemBuilder,
+    SolveProvenance,
+)
+from blab.solve_results.live_projection import LiveResultProjector
+from blab.system_contract import QuantityResult, SystemFrequencyResult
 from blab.ui.main_window.solve_session import SolveSession
 
 
@@ -12,6 +26,53 @@ class _Dataset:
     """Stands in for LiveSolveDataset, which needs solver output to build."""
 
     solved_count: int = 0
+
+
+def test_canonical_stream_retains_excitation_basis_and_projects_channel_sum() -> None:
+    pressure = np.asarray([[1 + 2j], [3 - 4j]], dtype=np.complex64)
+    result = SystemFrequencyResult(
+        freq_hz=500.0,
+        excitation_port_ids=("port:a", "port:b"),
+        quantities=tuple(
+            QuantityResult(quantity_id, "exterior_pressure", "Pa", pressure, axes=("excitation", "observation"))
+            for quantity_id in (HORIZONTAL_POLAR_PRESSURE_ID, VERTICAL_POLAR_PRESSURE_ID)
+        ),
+        diagnostics={"timings": {"assembly_s": 1.0, "mesh_setup_s": 0.2, "solve_s": 0.3}},
+    )
+    prepared = SimpleNamespace(
+        solve_kind=PhysicalSolveKind.EXTERIOR_BEM,
+        excitation_channel_names=np.asarray(["main", "main"]),
+        excitation_component_names=np.asarray(["A", "B"]),
+        polar_angle_deg=np.asarray([0.0]),
+    )
+    session = SolveSession(
+        result_builder=SolvedSystemBuilder(
+            frequencies_hz=(500.0,),
+            excitation_ids=result.excitation_port_ids,
+            provenance=SolveProvenance("beat_cpu", "exterior_bem"),
+        ),
+        live_dataset=LiveSolveDataset(prepared.polar_angle_deg),
+        live_projector=LiveResultProjector(prepared),
+    )
+
+    session.add_result(result)
+
+    snapshot = session.result_builder.snapshot(status="partial")
+    np.testing.assert_array_equal(snapshot.quantities[HORIZONTAL_POLAR_PRESSURE_ID].values[0], pressure)
+    projected = session.live_dataset.ordered_results()[0]
+    np.testing.assert_array_equal(projected.horizontal_pressure, [[4 - 2j]])
+    assert projected.channel_names.tolist() == ["main"]
+    assert projected.timings.assembly_s == pytest.approx(1.2)
+    assert session.result_builder.solved_count == session.solved_count == 1
+
+    # Replacing a frequency updates both representations without counting it twice.
+    session.add_result(result)
+    assert session.result_builder.solved_count == session.solved_count == 1
+
+
+def test_canonical_result_requires_initialized_session() -> None:
+    with pytest.raises(RuntimeError, match="before its session was initialized"):
+        SolveSession().add_result(SystemFrequencyResult(500.0, ()))
 
 
 def test_a_fresh_session_holds_nothing() -> None:

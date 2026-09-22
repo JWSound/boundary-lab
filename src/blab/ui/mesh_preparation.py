@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
-from blab.mesh_cache import read_mesh
+from blab.mesh_data import read_resource_mesh
 from blab.mesh_inventory import InventoryEntry, inspect_system_mesh_variants
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import PhysicalSystem
 from blab.preview_hierarchy import build_preview_hierarchy, physical_system_preview_metadata
+from blab.project.model import ImportedMeshState, generator_mesh_name
 from blab.ui.mesh_assembly import STITCH_FAILURE_MESSAGE, MeshAssemblyService
-from blab.ui.project_state import ImportedMeshState, generator_mesh_name
 
 
 @dataclass
@@ -39,11 +39,14 @@ class MeshPreparationSnapshot:
             entries.append(
                 InventoryEntry(
                     name=generator_mesh_name(document),
-                    source_file=str(result.solver_mesh_path_for_symmetry(symmetry)),
+                    source_file=""
+                    if result.mesh_data is not None
+                    else str(result.solver_mesh_path_for_symmetry(symmetry)),
                     scale_factor=float(document.mesh_scale_factor),
                     translation_mm=document.mesh_translation_mm,
                     enabled=document.mesh_enabled,
                     locked=True,
+                    mesh_data=result.solver_mesh_data_for_symmetry(symmetry),
                 )
             )
         entries.extend(
@@ -74,6 +77,7 @@ def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
             file=entry.source_file,
             scale_factor=entry.scale_factor,
             translation_m=tuple(value / 1000 for value in entry.translation_mm),
+            mesh_data=entry.mesh_data,
         )
         for entry in snapshot.entries(snapshot.symmetry)
         if entry.locked and entry.enabled
@@ -118,6 +122,6 @@ def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
         symmetry=snapshot.symmetry,
         topology_report=topology,
         hierarchy=hierarchy,
-        loaded_meshes={mesh.name: read_mesh(mesh.file) for mesh in assembly.mesh_configs},
+        loaded_meshes={mesh.name: read_resource_mesh(mesh) for mesh in assembly.mesh_configs},
     )
     return assembly, snapshot.generated, view_options, warning
