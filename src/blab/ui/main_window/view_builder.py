@@ -155,6 +155,10 @@ class ViewBuilderMixin:
             action.setChecked(True)
             view_menu.addAction(action)
             self.plot_view_actions[entry.plot_id] = action
+        view_menu.addSeparator()
+        reset_layout_action = QAction("Reset Layout to Default", self)
+        reset_layout_action.triggered.connect(self.reset_window_layout)
+        view_menu.addAction(reset_layout_action)
 
         edit_menu = self.menuBar().addMenu("Edit")
         preferences_action = QAction("Preferences", self)

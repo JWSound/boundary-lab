@@ -196,3 +196,16 @@ def test_contour_levels_exclude_the_configured_endpoints() -> None:
 
 def test_the_beam_shape_is_fitted_at_the_minus_six_db_contour() -> None:
     assert WAVEFRONT_LEVEL_DB == -6.0
+
+
+def test_reset_layout_restores_the_built_default(balloon_window) -> None:
+    docks = _docks(balloon_window)
+    docks["radar_slicer"].setFloating(True)
+    docks["isobar_angle_slice"].hide()
+    docks["forward_beam_shape"].show()
+
+    balloon_window.reset_window_layout()
+
+    assert not docks["radar_slicer"].isFloating()
+    assert not docks["isobar_angle_slice"].isHidden()
+    assert docks["forward_beam_shape"].isHidden()
