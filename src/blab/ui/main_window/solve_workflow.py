@@ -32,6 +32,7 @@ from blab.live import (
 )
 from blab.max_spl import max_spl_limits_from_payload, transducer_rated_resistance_ohm
 from blab.mesh_inventory import inspect_system_meshes
+from blab.mesh_quality import MeshQualityError, inspect_near_coincident_vertices, mesh_solve_failure_message
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import (
     AcousticRegionKind,
@@ -322,15 +323,17 @@ class SolveWorkflowController(QObject):
     def _start_coupled_system_solve(self) -> None:
         self._prepare_system_solve(exterior=False)
 
-    def _prepare_system_solve(self, *, exterior: bool) -> None:
+    def _prepare_system_solve(self, *, exterior: bool, mesh_quality_action: str = "ask") -> None:
         release_idle = hold_beat_engine_idle_cleanup()
         try:
-            self._prepare_system_solve_reserved(exterior=exterior, release_idle=release_idle)
+            self._prepare_system_solve_reserved(
+                exterior=exterior, release_idle=release_idle, mesh_quality_action=mesh_quality_action
+            )
         except BaseException:
             release_idle()
             raise
 
-    def _prepare_system_solve_reserved(self, *, exterior: bool, release_idle) -> None:
+    def _prepare_system_solve_reserved(self, *, exterior: bool, release_idle, mesh_quality_action: str = "ask") -> None:
         # Capture all widget/project inputs before entering the worker. Only the
         # completion callback may publish the synchronized system or touch UI.
         self._view.show_status("Preparing solve...")
@@ -341,6 +344,14 @@ class SolveWorkflowController(QObject):
         title = "Exterior system preparation failed" if exterior else "FEM system solve"
         provider_job_id = self._provider_job_id
 
+        def inputs_unchanged():
+            return (
+                self._project() is project
+                and project == snapshot
+                and self._read_preferences() == preferences
+                and self._view.frequency_range() == frequencies
+            )
+
         def failed(exc):
             release_idle()
             if provider_job_id is not None:
@@ -348,14 +359,31 @@ class SolveWorkflowController(QObject):
                     self._provider_job_id = None
                     self.provider_preparation_failed.emit(provider_job_id, str(exc))
                 return
+            if isinstance(exc, MeshQualityError):
+                if not inputs_unchanged():
+                    self._view.show_status("Solve preparation discarded because inputs changed")
+                    return
+                action = self._view.choose_mesh_quality_action(exc.issues)
+                if action in {"continue", "repair"} and inputs_unchanged():
+                    self._prepare_system_solve(exterior=exterior, mesh_quality_action=action)
+                else:
+                    self._view.show_status("Solve cancelled")
+                return
             self._view.show_status("Solve preparation failed")
-            if exterior:
+            if mesh_quality_action == "repair":
+                self._view.show_error(
+                    "Mesh auto-repair or preparation failed",
+                    "The solve was not started. Cleanup or validation of the repaired mesh failed. "
+                    "Inspect or remesh the affected surfaces before retrying.\n\n" + str(exc),
+                )
+            elif exterior:
                 self._view.show_stitch_or_generic_error(title, exc)
             else:
                 self._view.warn(title, str(exc))
 
         try:
             entries = deepcopy(self._inputs.mesh_entries_for_symmetry(snapshot.symmetry))
+            mesh_service = self._inputs.mesh_service() if mesh_quality_action == "repair" else None
         except Exception as exc:
             failed(exc)
             return
@@ -364,6 +392,15 @@ class SolveWorkflowController(QObject):
             report("Inspecting meshes...")
             meshes = inspect_system_meshes(entries)
             system = sync_physical_system_meshes(snapshot.physical_system, meshes)
+            issues = inspect_near_coincident_vertices(system)
+            imported_meshes = snapshot.imported_meshes
+            if issues and mesh_quality_action == "ask":
+                raise MeshQualityError(issues)
+            if issues and mesh_quality_action == "repair":
+                report("Repairing nearly coincident mesh vertices...")
+                system, imported_meshes = mesh_service.repair_near_coincident_meshes(
+                    system, imported_meshes, issues, symmetry=snapshot.symmetry
+                )
             prepared = prepare_system_solve(
                 system,
                 freq_min_hz=float(frequencies.min_hz),
@@ -386,23 +423,21 @@ class SolveWorkflowController(QObject):
                 observation_planes=snapshot.observation_planes,
                 progress=report,
             )
-            return system, prepared
+            return system, prepared, imported_meshes
 
         def complete(result):
             if provider_job_id is not None and self._provider_job_id != provider_job_id:
                 return
-            if (
-                self._project() is not project
-                or project != snapshot
-                or self._read_preferences() != preferences
-                or self._view.frequency_range() != frequencies
-            ):
+            if not inputs_unchanged():
                 self._view.show_status("Solve preparation discarded because inputs changed")
                 if provider_job_id is not None:
                     failed(ValueError("Solve preparation discarded because inputs changed"))
                 return
-            system, prepared = result
+            system, prepared, imported_meshes = result
             project.physical_system = system
+            if mesh_quality_action == "repair":
+                project.imported_meshes = imported_meshes
+                self.mesh_state_changed.emit("mesh_auto_repaired")
             status = {
                 PhysicalSolveKind.EXTERIOR_BEM: "Initializing exterior solver...",
                 PhysicalSolveKind.INTERIOR_FEM: "Initializing interior FEM solver...",
@@ -713,7 +748,7 @@ class SolveWorkflowController(QObject):
         if self._provider_job_id is not None:
             self._view.show_status(f"Provider solve failed: {message}")
             return
-        self._view.show_error("Solve failed", message)
+        self._view.show_error("Solve failed", mesh_solve_failure_message(message))
         self._view.show_status("Solve failed")
 
     @Slot(object)

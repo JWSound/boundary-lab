@@ -114,6 +114,7 @@ class _MessageBoxStub:
     Warning = QMessageBox.Warning
     NoButton = QMessageBox.NoButton
     AcceptRole = QMessageBox.AcceptRole
+    ActionRole = QMessageBox.ActionRole
     RejectRole = QMessageBox.RejectRole
     DestructiveRole = QMessageBox.DestructiveRole
 
@@ -565,6 +566,23 @@ def test_exterior_topology_override_uses_cancel_as_the_safe_default(main_window,
 
     message_box.click = "Continue"
     assert main_window.confirm_mesh_topology_warning(report) is True
+
+
+@pytest.mark.parametrize(
+    ("button", "expected"),
+    [("Continue Anyway", "continue"), ("Auto-repair", "repair"), ("Cancel Solve", "cancel")],
+)
+def test_mesh_quality_dialog_offers_cleanup_or_override(main_window, message_box, button, expected):
+    from blab.mesh_quality import NearCoincidentVertices
+
+    issue = NearCoincidentVertices("mesh:test", "Cabinet", 2, 1e-7, 1e-6, (0, 0, 0))
+    message_box.click = button
+    assert main_window.choose_mesh_quality_action((issue,)) == expected
+    box = message_box.instances[-1]
+    assert box.button_texts == ["Continue Anyway", "Auto-repair", "Cancel Solve"]
+    assert box.default.text == "Cancel Solve"
+    assert "Cabinet: 2 vertices" in box.text
+    assert "0.0001 mm" in box.text
 
 
 # --------------------------------------------------------------- unsaved project guard

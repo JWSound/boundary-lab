@@ -322,6 +322,22 @@ blab clean input.msh output_clean.msh --merge-tol 1e-9
 
 This merges coincident vertices, removes degenerate or duplicate triangles, and writes Gmsh 2.2 format.
 
+The desktop Solve workflow also checks BEM surface meshes for nearly coincident
+vertices before preparing the solver. The warning lists the affected meshes and
+closest separations, and offers **Continue Anyway**, **Auto-repair**, or
+**Cancel Solve**. The screening tolerance scales with the mesh coordinates and
+single-precision resolution; a warning does not mean the solve will necessarily
+fail.
+
+Auto-repair uses the same surface cleaner with that tolerance, then checks for
+remaining near-coincident vertices, lost physical groups, and additional invalid
+edges. It updates an imported mesh's existing cleanup cache while preserving the
+source file. Generated meshes are repaired in memory for the current solve;
+regenerating the geometry restores the generator's output. FEM volume meshes are
+excluded from surface cleanup. Repair or preparation failures stop the solve and
+report the reason. Non-finite solver outputs are rejected rather than published
+as completed frequencies.
+
 ## Prepare Visualization Data
 
 ```bash
