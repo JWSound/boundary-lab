@@ -34,6 +34,7 @@ from blab.solve_results import (
     bem_boundary_result_domain,
     fem_volume_result_domain,
 )
+from blab.solve_results.model import INTERFACE_RADIATION_ID, RADIATION_SOURCE_DOMAIN_ID
 from blab.solvers.beat_engine_runtime import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.solvers.engine_distribution import backend_catalog
@@ -53,6 +54,7 @@ from blab.system_solve import (
 HEADLESS_REQUEST_VERSION = 1
 HEADLESS_RESULT_VERSION = 2
 SUPPORTED_RETAIN_VALUES = {
+    "interface_radiated_pressure",
     "bem_boundary_pressure",
     "bem_boundary_neumann",
     "bem_boundary_traces",
@@ -288,10 +290,15 @@ def prepare_headless_solve(
             )
         )
 
+    if "interface_radiated_pressure" in spec.retain and not request.compiled_system.interfaces:
+        raise ValueError("Retaining interface radiation requires a coupled system with FEM-BEM interfaces.")
     outputs = list(request.outputs)
     domains = list(prepared.result_domains)
     if not spec.include_project_observations:
         outputs, domains = _without_project_observations(outputs, domains)
+        if "interface_radiated_pressure" in spec.retain:
+            outputs.extend(output for output in request.outputs if output.id == INTERFACE_RADIATION_ID)
+            domains.extend(domain for domain in prepared.result_domains if domain.id == RADIATION_SOURCE_DOMAIN_ID)
     outputs, domains = _with_probes(outputs, domains, spec.probes)
     outputs, domains = _with_retained_fields(request.compiled_system, outputs, domains, spec.retain, project.symmetry)
 
@@ -658,8 +665,10 @@ def _without_project_observations(
     outputs: list[OutputRequest],
     domains: list[ResultDomain],
 ) -> tuple[list[OutputRequest], list[ResultDomain]]:
-    removed_ids = {HORIZONTAL_POLAR_DOMAIN_ID, VERTICAL_POLAR_DOMAIN_ID, SPHERE_DOMAIN_ID}
-    retained_outputs = [output for output in outputs if output.id != "ui:exterior-pressure"]
+    removed_ids = {HORIZONTAL_POLAR_DOMAIN_ID, VERTICAL_POLAR_DOMAIN_ID, SPHERE_DOMAIN_ID, RADIATION_SOURCE_DOMAIN_ID}
+    retained_outputs = [
+        output for output in outputs if output.id not in {"ui:exterior-pressure", INTERFACE_RADIATION_ID}
+    ]
     return retained_outputs, [domain for domain in domains if domain.id not in removed_ids]
 
 

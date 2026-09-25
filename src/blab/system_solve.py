@@ -43,6 +43,7 @@ from blab.solve_results import (
     bem_boundary_result_domain,
     fem_volume_result_domain,
 )
+from blab.solve_results.model import INTERFACE_RADIATION_ID, RADIATION_SOURCE_DOMAIN_ID
 from blab.solvers.coupled_backend import validate_solve_plan
 from blab.solvers.registry import (
     backend_condenses_fem_interior,
@@ -320,6 +321,37 @@ def prepare_system_solve(
                 id=INTERFACE_VELOCITY_ID,
                 quantity="interface_average_normal_velocity",
                 target_ids=(INTERFACE_DOMAIN_ID,),
+            )
+        )
+    if is_coupled and compiled.interfaces:
+        exterior_ids = {region.id for region in compiled.regions if region.kind.value == "unbounded_air"}
+        has_other = any(
+            boundary.region_id in exterior_ids and boundary.kind == BoundaryKind.MOVING
+            for boundary in compiled.boundaries
+        )
+        source_ids = [item.id for item in compiled.interfaces]
+        source_names = [item.name for item in compiled.interfaces]
+        if has_other:
+            source_ids.append("radiation:other-exterior")
+            source_names.append("Other exterior sources")
+        source_ids.append("radiation:total")
+        source_names.append("Combined")
+        radiation_point = [[0.0, 0.0, float(observation_distance_m)]]
+        result_domains.append(
+            ResultDomain(
+                id=RADIATION_SOURCE_DOMAIN_ID,
+                kind="radiation_source_collection",
+                dimensions=("radiation_source",),
+                coordinates={"source_id": np.asarray(source_ids), "name": np.asarray(source_names)},
+                metadata={"points_m": radiation_point},
+            )
+        )
+        outputs.append(
+            OutputRequest(
+                id=INTERFACE_RADIATION_ID,
+                quantity="interface_radiated_pressure",
+                target_ids=(RADIATION_SOURCE_DOMAIN_ID,),
+                options={"points_m": radiation_point},
             )
         )
     has_fem = solve_kind != PhysicalSolveKind.EXTERIOR_BEM

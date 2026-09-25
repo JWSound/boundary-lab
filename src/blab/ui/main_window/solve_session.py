@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from blab.interface_radiation import InterfaceRadiationDataset
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
@@ -44,6 +45,7 @@ class SolveSession:
     #: Voltage-basis currents projected into parallel per-channel loads.
     electrical_impedance: ElectricalImpedanceDataset | None = None
     interface_velocity: InterfaceVelocityDataset | None = None
+    interface_radiation: InterfaceRadiationDataset | None = None
 
     #: Intrinsic coupled acoustic load recovered from the voltage basis.
     acoustic_load_impedance: AcousticLoadImpedanceDataset | None = None
@@ -101,6 +103,7 @@ class SolveSession:
         for dataset in (
             self.transducer_motion,
             self.interface_velocity,
+            self.interface_radiation,
             self.electrical_impedance,
             self.acoustic_load_impedance,
         ):
@@ -120,6 +123,7 @@ class SolveSession:
         self.transducer_motion = None
         self.electrical_impedance = None
         self.interface_velocity = None
+        self.interface_radiation = None
         self.acoustic_load_impedance = None
         self.acoustic_impedance_effective_areas_m2 = None
         self.acoustic_impedance_density_kg_per_m3 = 1.21

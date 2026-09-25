@@ -208,3 +208,102 @@ def test_interface_velocity_prescribed_basis_and_duplicate_names():
     np.testing.assert_allclose(values[:, 0], [4, 3])
     live.set_channel_synthesis((ChannelConfig(name="A", polarity=-1),))
     np.testing.assert_allclose(data.as_velocity_arrays(live)[2], values)
+
+
+def radiation_data():
+    from blab.interface_radiation import InterfaceRadiationDataset
+    from blab.solve_results.model import INTERFACE_RADIATION_ID
+
+    data = InterfaceRadiationDataset(
+        excitation_port_ids=("a", "b"),
+        excitation_channel_names=np.asarray(["A", "B"]),
+        voltage_excitation_mask=np.asarray([True, True]),
+        source_ids=("front", "rear", "radiation:total"),
+        source_names=np.asarray(["Port", "Port", "Combined"]),
+        points_m=np.asarray([[0.0, 0.0, 3.0]]),
+    )
+    # Each independent excitation's source sum must reproduce its total.
+    values = np.asarray([[1j, -0.9j, 0.1j], [2.0, -1.0, 1.0]], dtype=complex)[:, :, None]
+    result = SystemFrequencyResult(
+        freq_hz=100,
+        excitation_port_ids=("b", "a"),
+        diagnostics={"transducer_reference_voltage_v": 2.0},
+        quantities=(
+            QuantityResult(
+                id=INTERFACE_RADIATION_ID,
+                quantity="interface_radiated_pressure",
+                unit="Pa",
+                axes=("excitation", "radiation_source", "observation"),
+                values=values[::-1, ::-1],
+                metadata={"radiation_source_ids": list(reversed(data.source_ids)), "points_m": [[0, 0, 3]]},
+            ),
+        ),
+    )
+    data.add(result)
+    return data, result
+
+
+def test_interface_radiation_coherent_dsp_and_id_alignment():
+    data, _ = radiation_data()
+    live = acoustic([ChannelConfig(name="A", voltage_v=2), ChannelConfig(name="B", voltage_v=2)])
+    _, names, p = data.as_pressure_arrays(live)
+    assert names.tolist() == ["Port [front]", "Port [rear]", "Combined"]
+    np.testing.assert_allclose(p[:, 0], [2 + 1j, -1 - 0.9j, 1 + 0.1j])
+    np.testing.assert_allclose(p[:-1].sum(axis=0), p[-1])
+    # Voltage scaling, gain, polarity and time delay are applied before magnitude.
+    live.set_channel_synthesis(
+        (ChannelConfig(name="A", voltage_v=4, polarity=-1), ChannelConfig(name="B", voltage_v=2, delay_ms=2.5))
+    )
+    processed = data.as_pressure_arrays(live)[2]
+    np.testing.assert_allclose(processed[:, 0], [-4j, 2.8j, -1.2j], atol=1e-6)
+    np.testing.assert_allclose(processed[:-1].sum(axis=0), processed[-1])
+    np.testing.assert_allclose(data.as_spl_arrays(live)[2], 20 * np.log10(abs(processed) / 2e-5))
+
+
+def test_interface_radiation_rejects_invalid_contract_and_handles_old_results():
+    data, result = radiation_data()
+    for quantity in (
+        replace(result.quantities[0], values=result.quantities[0].values.real),
+        replace(result.quantities[0], values=np.full((2, 3, 1), complex(np.nan, 0))),
+        replace(
+            result.quantities[0],
+            metadata={"radiation_source_ids": list(reversed(data.source_ids)), "points_m": [[0, 0, 1]]},
+        ),
+    ):
+        with pytest.raises(ValueError):
+            data.add(replace(result, quantities=(quantity,)))
+    data.results.clear()
+    data.add(replace(result, quantities=()))
+    live = acoustic([ChannelConfig(name="A"), ChannelConfig(name="B")])
+    assert data.as_spl_arrays(live) is None
+    data.add(replace(result, diagnostics={}))
+    assert np.isnan(data.as_pressure_arrays(live)[2]).all()
+
+
+def test_interface_radiation_canvas_export_and_snapshot(main_window, tmp_path, monkeypatch):
+    window = main_window
+    from blab.ui.result_projection import FrequencyTraceProjection, VisualizationProjection
+
+    data, _ = radiation_data()
+    live = acoustic([ChannelConfig(name="A", voltage_v=2), ChannelConfig(name="B", voltage_v=2)])
+    window.live_dataset = live
+    window._solve_session().interface_radiation = data
+    monkeypatch.setattr(window, "channel_configs", lambda: live.channel_configs)
+    plot_data = FrequencyTraceProjection(*data.as_spl_arrays(live))
+    projection = VisualizationProjection(None, None, None, interface_radiation=plot_data)
+    assert not window.interface_radiation_plot.isEnabled()
+    window._update_interface_radiation_plot(projection)
+    assert window.interface_radiation_plot.isEnabled()
+    assert len(window.interface_radiation_plot._lines) == 3
+    snapshot = projection.snapshot()
+    plot_data.values[:] = -40
+    assert np.all(snapshot.interface_radiation.values > 0)
+    line = window.interface_radiation_plot._lines["Port [front]"]
+    window.interface_radiation_plot.set_series_visible("Port [front]", False)
+    assert not line.get_visible()
+    target = tmp_path / "radiation.txt"
+    assert window._write_plot_data("interface_radiation", target) == [target]
+    text = target.read_text()
+    assert "Real pressure" in text and "Imaginary pressure" in text and "Phase" in text
+    window._update_interface_radiation_plot(VisualizationProjection(None, None, None))
+    assert not window.interface_radiation_plot.isEnabled()

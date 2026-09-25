@@ -2,6 +2,36 @@
 
 ### Drive-dependent desktop plots
 
+**Radiated SPL by Interface** shows each FEM-BEM interface's contribution at
+`(0, 0, observation_distance_m)`, on the project +Z axis. It uses the full
+spatial complex interface flux from the operating coupled solution and replays
+each contribution through the whole exterior BEM system, including cabinet
+scattering. It does not average the interface velocity or mask boundary pressure.
+These are contributions with the original coupled motion held fixed, not
+predictions of blocking or removing another opening. The curves are absolute
+SPL; channel voltage, gain, delay, polarity and DSP apply before taking magnitude.
+
+The **Combined** trace is the independently evaluated total pressure. For mixed
+designs, **Other exterior sources** groups directly radiating exterior components.
+Sum the complex contributions, excluding Combined, to reconstruct the total;
+adding their SPL values is not meaningful. The plot supports trace filtering,
+previous-solve comparison, image export, and tabular export of SPL, phase and
+complex pressure. Older results without the new quantity leave it unavailable.
+
+The output `interface_radiated_pressure` has axes
+`(frequency, excitation, radiation_source, observation)` and units Pa. Metadata
+records source IDs/names, observation coordinates and decomposition method.
+Per-frequency diagnostics record the boundary-pressure reconstruction error. It requires an engine advertising that
+optional output. Replay adds one shared host exterior LU factorization per
+frequency and per-interface right-hand sides; it does not rerun the coupled FEM
+solve. This extra cost is absent when the output is not requested.
+
+Project observations include this on-axis output by default for coupled designs
+with interfaces. With `include_project_observations: false`, add
+`"interface_radiated_pressure"` to `retain` to request it explicitly, still at
+the project's on-axis observation distance. Arbitrary probe points do not change
+that retained on-axis location. No full boundary-trace retention is required.
+
 Real Input Power shows signed RMS terminal power per voltage-only channel and
 its total, in watts. It combines the complex current response to all excitations
 before computing `Re(V * conj(I))`, including physical driver multiplicities.

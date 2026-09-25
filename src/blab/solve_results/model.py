@@ -42,6 +42,8 @@ BEM_BOUNDARY_NEUMANN_ID = "acoustic:normal-derivative:bem-boundary"
 RADIATION_IMPEDANCE_ID = "acoustic:radiation-impedance"
 DIAPHRAGM_VELOCITY_ID = "mechanical:diaphragm-velocity"
 INTERFACE_DOMAIN_ID = "domain:interfaces"
+INTERFACE_RADIATION_ID = "acoustic:interface-radiated-pressure"
+RADIATION_SOURCE_DOMAIN_ID = "domain:radiation-sources"
 INTERFACE_VELOCITY_ID = "acoustic:interface-average-normal-velocity"
 VOICE_COIL_CURRENT_ID = "electrical:voice-coil-current"
 

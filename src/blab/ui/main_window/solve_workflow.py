@@ -23,6 +23,7 @@ from blab.acoustic_impedance import (
     normalization_records,
 )
 from blab.config import MeshConfig
+from blab.interface_radiation import InterfaceRadiationDataset
 from blab.live import (
     AcousticLoadImpedanceDataset,
     ElectricalImpedanceDataset,
@@ -49,6 +50,7 @@ from blab.solve_results import (
     SolveProvenance,
 )
 from blab.solve_results.live_projection import LiveResultProjector
+from blab.solve_results.model import RADIATION_SOURCE_DOMAIN_ID
 from blab.solvers.beat_engine_runtime import hold_beat_engine_idle_cleanup
 from blab.speaker_package import (
     SpeakerPackageConfig,
@@ -514,6 +516,18 @@ class SolveWorkflowController(QObject):
                 ),
                 interface_ids=tuple(item.id for item in interfaces),
                 interface_names=np.asarray([item.name for item in interfaces]),
+            )
+        radiation_domain = next((d for d in prepared.result_domains if d.id == RADIATION_SOURCE_DOMAIN_ID), None)
+        if radiation_domain is not None:
+            self._session.interface_radiation = InterfaceRadiationDataset(
+                excitation_port_ids=tuple(prepared.request.excitation_port_ids),
+                excitation_channel_names=np.asarray(prepared.excitation_channel_names).copy(),
+                voltage_excitation_mask=np.asarray(
+                    [port.kind == ExcitationPortKind.VOLTAGE for port in excitation_ports]
+                ),
+                source_ids=tuple(radiation_domain.coordinates["source_id"].astype(str)),
+                source_names=np.asarray(radiation_domain.coordinates["name"]).copy(),
+                points_m=np.asarray(radiation_domain.metadata["points_m"], dtype=float),
             )
         transducer_names = np.asarray([component.name for component in transducers])
         if transducer_names.size:

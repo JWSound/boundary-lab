@@ -339,3 +339,26 @@ def _prepared_request() -> PreparedSystemSolve:
             ),
         ),
     )
+
+
+def test_interface_radiation_is_an_explicitly_retainable_project_observation(tmp_path):
+    from blab.solve_results.model import INTERFACE_RADIATION_ID, RADIATION_SOURCE_DOMAIN_ID
+
+    path = tmp_path / "radiation.json"
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "include_project_observations": False, "retain": ["interface_radiated_pressure"]}
+        )
+    )
+    assert load_headless_solve_spec(path).retain == ("interface_radiated_pressure",)
+    output = OutputRequest(
+        id=INTERFACE_RADIATION_ID, quantity="interface_radiated_pressure", options={"points_m": [[0, 0, 3]]}
+    )
+    domain = ResultDomain(
+        id=RADIATION_SOURCE_DOMAIN_ID, kind="radiation_source_collection", dimensions=("radiation_source",)
+    )
+    outputs, domains = headless_module._without_project_observations([output], [domain])
+    assert outputs == [] and domains == []
+    prepared = _prepared_request()
+    with pytest.raises(ValueError, match="FEM-BEM interfaces"):
+        validate_solve_plan(replace(prepared.request, outputs=(output,)))

@@ -105,6 +105,11 @@ class ExportsMixin:
                     session.electrical_impedance is not None
                     and session.electrical_impedance.as_power_arrays(dataset) is not None
                 )
+            if plot_id == "interface_radiation":
+                return (
+                    session.interface_radiation is not None
+                    and session.interface_radiation.as_pressure_arrays(dataset) is not None
+                )
             if plot_id == "interface_velocity":
                 return (
                     session.interface_velocity is not None
@@ -190,6 +195,29 @@ class ExportsMixin:
                 )
             ]
 
+        if plot_id == "interface_radiation":
+            radiation = self._solve_session().interface_radiation
+            data = None if radiation is None else radiation.as_pressure_arrays(self.live_dataset)
+            if data is None:
+                raise ValueError("No interface radiation data is available; run a new coupled solve.")
+            from blab.solve_results.derived import pressure_spl_db
+
+            frequency, names, pressure = data
+            point = radiation.points_m[0]
+            return [
+                export_frequency_trace_table(
+                    target,
+                    title=f"Radiated SPL by Interface at {tuple(float(value) for value in point)} m (fixed operating flux)",
+                    frequency_hz=frequency,
+                    trace_names=names,
+                    quantities=(
+                        TraceQuantity("SPL", "dB re 20 uPa", pressure_spl_db(pressure)),
+                        TraceQuantity("Phase", "deg", np.angle(pressure, deg=True)),
+                        TraceQuantity("Real pressure", "Pa", pressure.real),
+                        TraceQuantity("Imaginary pressure", "Pa", pressure.imag),
+                    ),
+                )
+            ]
         projection = self.prepared_live_dataset()
         if projection is None:
             raise ValueError("No prepared plot data is available.")

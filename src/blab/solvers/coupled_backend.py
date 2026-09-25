@@ -13,6 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+import numpy as np
+
 from blab.acoustic_materials import (
     REGION_BULK_LOSS_FACTOR_KEY,
     WALL_IMPEDANCE_KEY,
@@ -559,6 +561,13 @@ def validate_solve_plan(request: SystemSolveRequest) -> None:
     """Validate both the protocol contract and supported solver capabilities."""
 
     validate_system_solve_request(request)
+    for output in request.outputs:
+        if output.quantity == "interface_radiated_pressure":
+            if not request.compiled_system.interfaces:
+                raise ValueError("Interface radiation requires a coupled system with FEM-BEM interfaces.")
+            points = np.asarray(output.options.get("points_m", []), dtype=float)
+            if points.ndim != 2 or points.shape[1:] != (3,) or not len(points) or not np.isfinite(points).all():
+                raise ValueError("Interface radiation requires finite observation points with shape (point, 3).")
     validate_system_capabilities(request)
 
 
