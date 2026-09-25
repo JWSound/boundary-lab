@@ -415,6 +415,27 @@ class ViewBuilderMixin:
     def show_mesh_topology_issues(self, report) -> None:
         self.preview.set_topology_report(report)
 
+    def choose_mesh_quality_action(self, issues) -> str:
+        from blab.mesh_quality import near_coincident_warning_text
+
+        message = QMessageBox(
+            QMessageBox.Warning,
+            "Nearly Coincident Mesh Vertices",
+            near_coincident_warning_text(issues),
+            QMessageBox.NoButton,
+            self,
+        )
+        continue_button = message.addButton("Continue Anyway", QMessageBox.AcceptRole)
+        repair_button = message.addButton("Auto-repair", QMessageBox.ActionRole)
+        cancel_button = message.addButton("Cancel Solve", QMessageBox.RejectRole)
+        message.setDefaultButton(cancel_button)
+        message.exec()
+        if message.clickedButton() is repair_button:
+            return "repair"
+        if message.clickedButton() is continue_button:
+            return "continue"
+        return "cancel"
+
     def ask_unsaved_changes(self, *, closing: bool) -> UnsavedChoice:
         message = QMessageBox(
             QMessageBox.Warning,

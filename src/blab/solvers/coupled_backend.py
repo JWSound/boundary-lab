@@ -13,6 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator
 
+import numpy as np
+
 from blab.acoustic_materials import (
     REGION_BULK_LOSS_FACTOR_KEY,
     WALL_IMPEDANCE_KEY,
@@ -206,7 +208,14 @@ class CoupledSession:
         actual = raw.get("diagnostics", {}).get("phasor_convention", "exp(-i omega t)")
         if actual != expected:
             raise RuntimeError(f"BEAT phasor convention mismatch: requested {expected}, received {actual}.")
-        return system_frequency_result_from_dict(raw)
+        result = system_frequency_result_from_dict(raw)
+        if any(not np.all(np.isfinite(quantity.values)) for quantity in result.quantities):
+            raise RuntimeError(
+                f"The solver returned non-finite results (NaN or infinity) at {result.freq_hz:g} Hz. "
+                "Nearly coincident vertices or degenerate triangles can cause this. "
+                "Try mesh Auto-repair; if cleanup was already attempted, inspect or remesh the affected surfaces."
+            )
+        return result
 
     def _solve_stream_persistent(
         self,

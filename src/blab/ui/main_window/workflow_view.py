@@ -288,6 +288,9 @@ class WorkflowView(Protocol):
     def confirm_mesh_topology_warning(self, report) -> bool:
         """Offer a cancel-safe override for an exterior mesh topology warning."""
 
+    def choose_mesh_quality_action(self, issues) -> str:
+        """Return 'continue', 'repair', or 'cancel' for nearly coincident vertices."""
+
     def show_mesh_topology_issues(self, report) -> None:
         """Highlight invalid exterior mesh edges, or clear an earlier highlight."""
 

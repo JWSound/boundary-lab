@@ -164,6 +164,83 @@ def test_the_controller_needs_no_main_window(controller) -> None:
     assert isinstance(controller, SolveWorkflowController)
 
 
+@pytest.mark.parametrize("action", ["continue", "repair", "cancel"])
+@pytest.mark.parametrize("background", [False, True])
+def test_near_coincident_vertices_prompt_before_preparing_solver(controller, monkeypatch, tmp_path, action, background):
+    from blab.mesh_inventory import InventoryEntry
+    from blab.mesh_quality import inspect_near_coincident_vertices
+    from blab.ui.activity import ActivityController
+    from blab.ui.mesh_assembly import MeshAssemblyService
+    from blab.ui.preparation_worker import PreparationController
+    from test_mesh_quality import sliver_system
+    from test_ui_preparation_worker import wait_until
+
+    system = sliver_system()
+    controller.project.physical_system = system
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (
+        InventoryEntry("test", "", scale_factor=1.0, mesh_data=system.meshes[0].mesh_data),
+    )
+    controller.inputs.mesh_service = lambda: MeshAssemblyService(tmp_path)
+    prompts, compiled, dispatched = [], [], []
+    controller.view.choose_mesh_quality_action = lambda issues: prompts.append(issues) or action
+    monkeypatch.setattr(
+        solve_workflow_module,
+        "prepare_system_solve",
+        lambda system, **kwargs: compiled.append(system) or SimpleNamespace(solve_kind=PhysicalSolveKind.EXTERIOR_BEM),
+    )
+    monkeypatch.setattr(controller, "_start_prepared_system_solve", lambda *args: dispatched.append(args) or True)
+    preparations = PreparationController(None, ActivityController(delay_ms=0)) if background else None
+    controller._preparations = preparations
+    try:
+        controller._start_exterior_system_solve()
+        if preparations:
+            wait_until(lambda: not preparations.active)
+        assert len(prompts) == 1
+        assert len(compiled) == len(dispatched) == (0 if action == "cancel" else 1)
+        if action == "repair":
+            assert not inspect_near_coincident_vertices(compiled[0])
+            assert controller.project.physical_system is compiled[0]
+        elif action == "continue":
+            assert inspect_near_coincident_vertices(compiled[0])
+        else:
+            assert controller.project.physical_system is system
+            assert controller.view.status[-1] == "Solve cancelled"
+        assert not controller.view.errors
+    finally:
+        if preparations:
+            preparations.close()
+
+
+def test_failed_mesh_repair_does_not_start_solver(controller, monkeypatch, tmp_path):
+    from blab.mesh_inventory import InventoryEntry
+    from blab.ui.mesh_assembly import MeshAssemblyService
+    from test_mesh_quality import sliver_system
+
+    system = sliver_system(tiny_group=True)
+    controller.project.physical_system = system
+    controller.inputs.mesh_entries_for_symmetry = lambda _: (
+        InventoryEntry("test", "", scale_factor=1.0, mesh_data=system.meshes[0].mesh_data),
+    )
+    controller.inputs.mesh_service = lambda: MeshAssemblyService(tmp_path)
+    controller.view.choose_mesh_quality_action = lambda _: "repair"
+    compiled = []
+    monkeypatch.setattr(solve_workflow_module, "prepare_system_solve", lambda *a, **k: compiled.append(a))
+    controller._start_exterior_system_solve()
+    assert not compiled
+    assert not controller.solve.started
+    assert controller.project.physical_system is system
+    assert controller.view.errors[0][0] == "Mesh auto-repair or preparation failed"
+    assert "preserve every physical surface" in controller.view.errors[0][1]
+
+
+def test_singular_solve_failure_explains_mesh_recovery_and_retains_details(controller):
+    controller._on_solve_failed("SingularException(16)")
+    title, message = controller.view.errors[-1]
+    assert title == "Solve failed"
+    assert "Auto-repair" in message
+    assert "SingularException(16)" in message
+
+
 def test_beginning_a_solve_withdraws_every_export_entry_point(controller) -> None:
     controller._begin_run("Initializing solver...")
 
@@ -393,7 +470,7 @@ def test_exterior_solve_dispatch_requires_a_physical_system(controller, monkeypa
 
 
 def test_exterior_backend_uses_physical_request_without_legacy_preparation(controller, monkeypatch) -> None:
-    system = SimpleNamespace()
+    system = SimpleNamespace(meshes=(), regions=())
     controller.project.physical_system = system
     controller.project.stitch_imported_meshes = False
     controller.inputs.mesh_entries_for_symmetry = lambda _symmetry: ("mesh-entry",)
@@ -430,7 +507,7 @@ def test_exterior_backend_uses_physical_request_without_legacy_preparation(contr
 
 
 def test_stitched_exterior_uses_shared_preparation_preserving_source_system(controller, monkeypatch) -> None:
-    source_system = SimpleNamespace()
+    source_system = SimpleNamespace(meshes=(), regions=())
     controller.project.physical_system = source_system
     controller.project.stitch_imported_meshes = True
     controller._read_preferences = lambda: GuiPreferences(solve_backend="beat_cpu")
@@ -601,7 +678,7 @@ def test_background_solve_preparation_lifecycle(controller, monkeypatch, outcome
     activities = ActivityController(delay_ms=0)
     preparations = PreparationController(None, activities)
     controller._preparations = preparations
-    source = SimpleNamespace(name="Original")
+    source = SimpleNamespace(name="Original", meshes=(), regions=())
     controller.project.physical_system = source
     controller.inputs.mesh_entries_for_symmetry = lambda _symmetry: ()
     monkeypatch.setattr(solve_workflow_module, "inspect_system_meshes", lambda _entries: ())

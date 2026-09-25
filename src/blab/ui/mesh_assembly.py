@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import meshio
 import numpy as np
 
 from blab.config import MeshConfig, RadiatorConfig
 from blab.exterior_preparation import prepare_exterior_system
-from blab.mesh_cache import read_mesh
+from blab.mesh_cache import mesh_cache, read_mesh
 from blab.mesh_clean import AREA_TOL, MERGE_TOL, clean_mesh_file
-from blab.mesh_data import read_resource_mesh, surface_names
+from blab.mesh_data import MeshData, read_resource_mesh, surface_names
+from blab.mesh_quality import repair_near_coincident_vertices
 from blab.physical_model import PhysicalSystem
 from blab.project.model import ImportedMeshState
 
@@ -89,6 +92,48 @@ class MeshAssemblyService:
     def is_volume_mesh(path: str | Path) -> bool:
         mesh = read_mesh(Path(path))
         return any(block.type in {"tetra", "tetra4"} and len(block.data) for block in mesh.cells)
+
+    def repair_near_coincident_meshes(self, system, imported_meshes, issues, *, symmetry):
+        """Refresh the normal cleanup cache; never overwrite an imported source.
+
+        Generated resources are repaired in memory for this solve. Regeneration
+        remains authoritative for their geometry. Validate all repairs before
+        publishing any cache files.
+        """
+        by_id = {resource.id: resource for resource in system.meshes}
+        imported = {mesh.name: mesh for mesh in imported_meshes}
+        source_paths = {Path(mesh.source_file).resolve() for mesh in imported_meshes}
+        staged = []
+        replacements = {}
+        for issue in issues:
+            resource = by_id[issue.mesh_id]
+            cleaned = repair_near_coincident_vertices(resource, issue, symmetry=symmetry)
+            state = imported.get(resource.name)
+            if state is None or resource.mesh_data is not None:
+                replacements[resource.id] = replace(resource, mesh_data=MeshData.from_meshio(cleaned))
+                continue
+            target = Path(state.cleaned_file) if state.cleaned_file else self.cleaned_imported_mesh_path(state)
+            if target.resolve() in source_paths:
+                target = self.cleaned_imported_mesh_path(state)
+            if target.resolve() in source_paths:
+                raise ValueError(f"Cleanup cache for '{resource.name}' conflicts with an imported source file.")
+            staged.append((resource, state, target, cleaned))
+
+        for resource, state, target, cleaned in staged:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.stem}-{uuid.uuid4().hex}.msh")
+            try:
+                meshio.write(temporary, cleaned, file_format="gmsh22", binary=False)
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            mesh_cache.invalidate(target)
+            imported[state.name] = replace(state, cleaned_file=str(target))
+            replacements[resource.id] = replace(resource, file=str(target), mesh_data=None)
+        return (
+            replace(system, meshes=tuple(replacements.get(resource.id, resource) for resource in system.meshes)),
+            tuple(imported[mesh.name] for mesh in imported_meshes),
+        )
 
     def prepare(
         self,
