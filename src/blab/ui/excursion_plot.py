@@ -207,4 +207,22 @@ class InterfaceVelocityCanvas(FrequencyTraceCanvas):
         super().__init__("Interface Particle Velocity", "Average normal velocity, RMS (m/s)", "m/s")
 
 
-__all__ = ["ExcursionCanvas", "RealInputPowerCanvas", "InterfaceVelocityCanvas"]
+class InterfaceRadiationCanvas(FrequencyTraceCanvas):
+    """Absolute on-axis SPL of the frozen operating-state source contributions."""
+
+    def __init__(self) -> None:
+        super().__init__("Radiated SPL by Interface", "On-axis SPL (dB re 20 uPa)", "dB", signed=True)
+
+    def _update_y_limits(self) -> None:
+        rows = [np.asarray(line.get_ydata(), dtype=float) for line in self._lines.values() if line.get_visible()]
+        values = np.concatenate(rows) if rows else np.empty(0)
+        values = values[np.isfinite(values)]
+        if values.size:
+            low, high = float(values.min()), float(values.max())
+            padding = max(3.0, (high - low) * 0.08)
+            self.axes.set_ylim(low - padding, high + padding)
+        else:
+            self.axes.set_ylim(0, 100)
+
+
+__all__ = ["InterfaceRadiationCanvas", "ExcursionCanvas", "RealInputPowerCanvas", "InterfaceVelocityCanvas"]

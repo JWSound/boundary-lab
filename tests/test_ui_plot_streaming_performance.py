@@ -769,6 +769,7 @@ def test_main_window_distributes_previous_projection_to_every_plot() -> None:
         spinorama_plot=plots[8],
         real_input_power_plot=PlotRecorder(),
         interface_velocity_plot=PlotRecorder(),
+        interface_radiation_plot=PlotRecorder(),
         preferences=SimpleNamespace(isobar_contour_step_db=3.0),
     )
 

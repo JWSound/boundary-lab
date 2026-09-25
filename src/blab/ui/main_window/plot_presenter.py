@@ -121,7 +121,7 @@ class PlotPresenterMixin:
             observation_planes.sync_view()
         for entry in self.plot_entries:
             entry.widget.clear_for_solve()
-            if entry.plot_id in {"real_input_power", "interface_velocity"}:
+            if entry.plot_id in {"real_input_power", "interface_velocity", "interface_radiation"}:
                 entry.widget.setEnabled(False)
         self.set_plot_exports_available(False)
         self.set_balloon_plot_available(False)
@@ -187,7 +187,7 @@ class PlotPresenterMixin:
                 impedance.imaginary,
             )
 
-        for name in ("real_input_power", "interface_velocity"):
+        for name in ("real_input_power", "interface_velocity", "interface_radiation"):
             canvas = getattr(self, f"{name}_plot")
             data = getattr(dataset, name)
             if data is None:
@@ -349,6 +349,7 @@ class PlotPresenterMixin:
             transducer_motion=self._solve_session().transducer_motion,
             electrical_impedance=self._solve_session().electrical_impedance,
             interface_velocity=self._solve_session().interface_velocity,
+            interface_radiation=self._solve_session().interface_radiation,
             acoustic_load_impedance=self._solve_session().acoustic_load_impedance,
             max_spl_limits=(
                 max_spl_limits_from_payload(self.project.max_spl_limits_by_channel)
@@ -455,6 +456,9 @@ class PlotPresenterMixin:
 
     def _update_real_input_power_plot(self, dataset: VisualizationProjection) -> None:
         self._update_frequency_trace_plot(self.real_input_power_plot, dataset.real_input_power)
+
+    def _update_interface_radiation_plot(self, dataset: VisualizationProjection) -> None:
+        self._update_frequency_trace_plot(self.interface_radiation_plot, dataset.interface_radiation)
 
     def _update_interface_velocity_plot(self, dataset: VisualizationProjection) -> None:
         self._update_frequency_trace_plot(self.interface_velocity_plot, dataset.interface_velocity)

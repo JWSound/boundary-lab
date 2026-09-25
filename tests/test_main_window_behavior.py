@@ -96,6 +96,7 @@ PLOT_IDS = {
     "transducer_excursion",
     "real_input_power",
     "interface_velocity",
+    "interface_radiation",
     "max_spl",
     "spinorama",
 }

@@ -254,6 +254,7 @@ class ViewBuilderMixin:
                 "transducer_excursion",
                 "real_input_power",
                 "interface_velocity",
+                "interface_radiation",
             }:
                 tool_actions.append(entry.widget.trace_filter_action)
             elif entry.plot_id == "max_spl":

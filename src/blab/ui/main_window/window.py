@@ -33,7 +33,12 @@ from blab.ui.dialogs import (
     MeshDialogEntry,
 )
 from blab.ui.electrical_impedance_plot import ElectricalImpedanceCanvas
-from blab.ui.excursion_plot import ExcursionCanvas, InterfaceVelocityCanvas, RealInputPowerCanvas
+from blab.ui.excursion_plot import (
+    ExcursionCanvas,
+    InterfaceRadiationCanvas,
+    InterfaceVelocityCanvas,
+    RealInputPowerCanvas,
+)
 from blab.ui.file_dialogs import FileDialogService
 from blab.ui.group_delay_plot import GroupDelayCanvas
 from blab.ui.main_window.backend_health import BackendHealthController
@@ -415,6 +420,8 @@ class MainWindow(
         self.excursion_plot = ExcursionCanvas()
         self.real_input_power_plot = RealInputPowerCanvas()
         self.real_input_power_plot.setEnabled(False)
+        self.interface_radiation_plot = InterfaceRadiationCanvas()
+        self.interface_radiation_plot.setEnabled(False)
         self.interface_velocity_plot = InterfaceVelocityCanvas()
         self.interface_velocity_plot.setEnabled(False)
         self.max_spl_plot = MaxSplCanvas()
@@ -476,6 +483,14 @@ class MainWindow(
                 self.real_input_power_plot,
                 self._update_real_input_power_plot,
                 PlotDataExportSpec("real_input_power.txt"),
+            ),
+            PlotEntry(
+                "interface_radiation",
+                "Radiated SPL by Interface",
+                "interface_radiation.png",
+                self.interface_radiation_plot,
+                self._update_interface_radiation_plot,
+                PlotDataExportSpec("interface_radiation.txt"),
             ),
             PlotEntry(
                 "interface_velocity",
