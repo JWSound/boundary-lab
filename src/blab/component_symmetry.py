@@ -339,8 +339,13 @@ def infer_weighted_surface_area(
     *,
     boundary_motion_weights: dict[str, float] | None = None,
     mesh_cache: dict[str, meshio.Mesh] | None = None,
+    motion_axis: list[float] | None = None,
 ) -> float:
-    """Integrate symmetry-completed physical area for normal-velocity sources."""
+    """Integrate weighted area, or absolute projected area for an axial source.
+
+    Opposing patches remain additive; a tangential axial source has zero area.
+    The axis must already be normalized by prescribed-source validation.
+    """
 
     if not boundaries:
         raise ComponentSymmetryInferenceError(
@@ -352,6 +357,7 @@ def infer_weighted_surface_area(
     weights = {} if boundary_motion_weights is None else boundary_motion_weights
     cache = {} if mesh_cache is None else mesh_cache
     total_area = 0.0
+    physical_area = 0.0
     for boundary in boundaries:
         resource = resources_by_id.get(boundary.group.mesh_id)
         if resource is None:
@@ -365,10 +371,9 @@ def infer_weighted_surface_area(
         tag = _boundary_surface_tag(mesh, boundary)
         triangles = _triangles_for_tags(mesh, {tag}, resource.name)
         vertices = np.asarray(mesh.points, dtype=float)[triangles]
-        double_area = np.linalg.norm(
-            np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0]),
-            axis=1,
-        )
+        cross = np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
+        physical_area += float(np.sum(np.linalg.norm(cross, axis=1))) / 2.0
+        double_area = np.linalg.norm(cross, axis=1) if motion_axis is None else np.abs(cross @ motion_axis)
         try:
             coefficient = float(weights.get(boundary.id, 1.0))
         except (TypeError, ValueError) as exc:
@@ -380,7 +385,7 @@ def infer_weighted_surface_area(
                 f"Moving boundary '{boundary.name}' has a non-finite or non-positive motion weight."
             )
         total_area += completion * coefficient * float(np.sum(0.5 * double_area))
-    if not np.isfinite(total_area) or total_area <= np.finfo(float).eps:
+    if not np.isfinite(total_area) or physical_area <= np.finfo(float).eps:
         raise ComponentSymmetryInferenceError("Selected moving surfaces have zero physical area.")
     return total_area
 

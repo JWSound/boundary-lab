@@ -16,8 +16,7 @@ from blab.interface_conform import InterfaceTopologyMap
 from blab.mesh_data import MeshData
 
 PHYSICAL_MODEL_VERSION = 1
-# Boundary Lab emits the baseline schema. The engine's latest supported version
-# also enables exterior-source features that this application does not emit.
+# Keep legacy systems on v1; the compiler selects v2 for axial velocity sources.
 COMPILED_SYSTEM_VERSION = 1
 
 

@@ -21,6 +21,7 @@ from blab.mesh_data import surface_names
 from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.preview_hierarchy import build_preview_hierarchy
+from blab.preview_motion import preview_motion_assignments
 from blab.project.model import (
     ImportedMeshState,
     generator_mesh_name,
@@ -463,6 +464,10 @@ class MeshWorkflowMixin:
             )
             self.show_mesh_preview(
                 mesh_configs,
+                motion_assignments=preview_motion_assignments(
+                    assembly.physical_system or self._project_document().physical_system,
+                    assembly.surface_tags_by_mesh,
+                ),
                 driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=assembly.surface_tags_by_mesh,
                 interface_surfaces=interface_surfaces,
@@ -506,6 +511,10 @@ class MeshWorkflowMixin:
             )
             self.show_mesh_preview(
                 mesh_configs,
+                motion_assignments=preview_motion_assignments(
+                    self._project_document().physical_system,
+                    surface_tags_by_mesh,
+                ),
                 driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=surface_tags_by_mesh,
                 interface_surfaces=interface_surfaces,

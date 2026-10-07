@@ -97,6 +97,9 @@ def _stub_mesh_preview_class():
         def load_mesh_configs(self, *args, **kwargs) -> None:
             self.loaded.append((args, kwargs))
 
+        def set_motion_directions_visible(self, visible: bool) -> None:
+            self.motion_directions_visible = visible
+
         def set_observation_planes(self, planes, *, selected_id=None) -> None:
             self.observation_planes = tuple(planes)
             self.selected_observation_plane_id = selected_id

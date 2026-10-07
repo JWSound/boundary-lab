@@ -124,10 +124,39 @@ is treated as peak and compared with the peak displacement derived from the
 RMS solve basis. The linear model does not include thermal compression,
 amplifier voltage/current limits, or excursion-dependent motor parameters.
 
+New **Prescribed Velocity** components in exterior-only BEM projects default to
+a shared motion axis with **Automatic from surface normals** selected. Choose
+**Manual** to enter an X/Y/Z direction, and use **Flip** to reverse it. The direction is normalized;
+its length does not change the source speed. Automatic inference reports its
+confidence and requires a manual direction when the selected surfaces do not
+identify a clear axis. One axis applies to all surfaces selected for the component.
+
+Saved surface-normal sources retain their existing behavior: each face receives the same
+normal velocity, multiplied by its boundary's relative velocity weight. With a
+single direction, that velocity is additionally multiplied by the signed dot
+product of the face normal and the unit axis. Existing projects keep their
+surface-normal motion, indicated by a note in the component editor. The editor
+has no velocity-motion selector. Interior FEM and coupled FEM?BEM projects support only
+surface-normal prescribed sources. Under X or XY symmetry, a prescribed axis
+must lie in all active symmetry planes.
+
+Use **View ? Show Motion Directions** to inspect saved axial assignments in the
+Mesh Preview. Yellow arrows show the positive mechanical direction for prescribed
+axial sources and electrodynamic transducers, before channel polarity or phase.
+Arrow lengths are illustrative, not velocity magnitudes. Arrows follow the body
+tree's surface visibility and symmetry images, and are hidden by intervening
+geometry; hide enclosure surfaces to inspect an enclosed driver. Surface-normal
+sources have no axial arrows and are identified in surface hover text. The toggle
+starts off and remains selected across preview rebuilds during the application
+session. No solve is required.
+
 The **Acoustic Impedance** dock reports dimensionless normalized acoustic load
 impedance, `Z / (rho*c*Sd)`. For exterior-only prescribed-velocity sources,
 `Sd` is the symmetry-completed physical surface area weighted by each boundary's
-motion coefficient. For electrodynamic transducers, it is the average projected
+motion coefficient. For single-direction prescribed sources, it is the sum of
+absolute projected face areas with the same weights and physical symmetry
+copies. Tangential motion with zero projected area can still be solved, but
+normalized impedance is unavailable. For electrodynamic transducers, it is the average projected
 area of the two diaphragm sides; Boundary Lab warns before solving if those
 areas differ by more than 10%. Coupled FEM-BEM solves report each transducer's
 net acoustic self load, including its interior and exterior loading; the other

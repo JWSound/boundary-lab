@@ -1151,7 +1151,7 @@ class SystemConfigDialog(QDialog):
             kind=ComponentKind.IDEAL_VELOCITY_SOURCE,
             boundary_ids=(),
             channel=self._channel_names[0],
-            parameters={"motion_profile": "uniform"},
+            parameters={},
             motion_axis_mode="automatic",
         )
         self._open_component_editor(draft, row=None)
@@ -1280,6 +1280,7 @@ class SystemConfigDialog(QDialog):
             symmetry_mode=self._symmetry_mode,
             mesh_cache=self._motion_axis_mesh_cache,
             projected_geometry_cache=self._projected_area_geometry_cache,
+            exterior_only=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in _regions),
             parent=self,
         )
         if editor.exec() != QDialog.DialogCode.Accepted:
@@ -1399,7 +1400,13 @@ class SystemConfigDialog(QDialog):
                 else ExcitationPortKind.NORMAL_VELOCITY
             )
             default_port_name = (
-                f"{name} voltage" if port_kind == ExcitationPortKind.VOLTAGE else f"{name} unit normal velocity"
+                f"{name} voltage"
+                if port_kind == ExcitationPortKind.VOLTAGE
+                else (
+                    f"{name} unit axial velocity"
+                    if draft.parameters.get("motion_profile") == "rigid_translation"
+                    else f"{name} unit normal velocity"
+                )
             )
             ports.append(
                 ExcitationPort(
@@ -1564,6 +1571,12 @@ class SystemConfigDialog(QDialog):
         )
         self._refresh_component_symmetry_parameters(boundaries, resources)
         components, ports, component_channels = self._collect_components(boundaries)
+        if any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions) and any(
+            component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE
+            and component.parameters.get("motion_profile") == "rigid_translation"
+            for component in components
+        ):
+            raise ValueError("Axial prescribed-velocity sources require an exterior-only BEM system.")
         if not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in regions):
             unsupported = [
                 component.name for component in components if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE

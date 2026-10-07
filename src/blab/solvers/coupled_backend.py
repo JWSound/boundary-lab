@@ -40,6 +40,7 @@ from blab.solvers.beat_engine_runtime import (
     julia_process_env,
     normalize_beat_engine_backend,
 )
+from blab.source_motion import prescribed_source_parameters
 from blab.system_contract import (
     SystemFrequencyResult,
     SystemSolveMetadata,
@@ -739,14 +740,7 @@ def validate_exterior_capabilities(request: SystemSolveRequest) -> None:
         )
     for component in system.components:
         _validate_boundary_motion_weights(component)
-        unsupported_parameters = set(component.parameters) - {"motion_profile", "boundary_motion_weights"}
-        if unsupported_parameters:
-            raise ValueError(
-                f"Exterior solver does not support component parameters on '{component.id}': "
-                + ", ".join(sorted(unsupported_parameters))
-            )
-        if component.parameters.get("motion_profile", "uniform") != "uniform":
-            raise ValueError(f"Exterior component '{component.id}' must use uniform prescribed motion.")
+        prescribed_source_parameters(component.parameters, symmetry=requested_symmetry)
     components_by_id = {component.id: component for component in system.components}
     incompatible_ports = [
         port.id

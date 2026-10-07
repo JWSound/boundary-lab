@@ -55,6 +55,7 @@ from blab.physical_model import (
     PhysicsAssumption,
     ResolvedPhysicalGroup,
 )
+from blab.source_motion import prescribed_source_parameters
 from blab.symmetry import snap_points_to_symmetry_planes
 
 
@@ -117,6 +118,13 @@ class PhysicalSystemCompiler:
             assumptions=self._assumptions(system),
             source_model_version=system.model_version,
             metadata=metadata,
+            contract_version=2
+            if any(
+                component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE
+                and component.parameters.get("motion_profile") == "rigid_translation"
+                for component in compiled_components
+            )
+            else 1,
         )
 
     def _compile_components(
@@ -136,15 +144,15 @@ class PhysicalSystemCompiler:
         symmetry_factor = 2 ** len({"off": (), "x": ("x",), "xy": ("x", "y")}[symmetry_mode])
         for component in system.components:
             if component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE:
-                # The authoring alias "uniform" is baseline normal velocity.
-                # Contract v1 expresses it by omitting a source motion profile.
-                if component.parameters.get("motion_profile") == "uniform":
-                    component = replace(
-                        component,
-                        parameters={
-                            key: value for key, value in component.parameters.items() if key != "motion_profile"
-                        },
+                try:
+                    parameters = prescribed_source_parameters(
+                        component.parameters,
+                        symmetry=symmetry_mode,
+                        exterior=not any(region.kind == AcousticRegionKind.BOUNDED_AIR for region in system.regions),
                     )
+                except ValueError as exc:
+                    raise PhysicalModelCompileError(f"Component '{component.name}': {exc}") from exc
+                component = replace(component, parameters=parameters)
                 exterior_boundaries = tuple(
                     boundaries_by_id[boundary_id]
                     for boundary_id in component.boundary_ids
@@ -159,16 +167,23 @@ class PhysicalSystemCompiler:
                             symmetry_factor,
                             boundary_motion_weights=dict(component.parameters.get("boundary_motion_weights", {})),
                             mesh_cache=mesh_cache,
+                            motion_axis=parameters.get("motion_axis"),
                         )
                     except (ComponentSymmetryInferenceError, TypeError, ValueError) as exc:
                         raise PhysicalModelCompileError(
                             f"Could not infer driven area for component '{component.name}': {exc}"
                         ) from exc
+                    if area_m2 == 0.0:
+                        # Tangential motion is valid but has no impedance normalization area.
+                        compiled.append(component)
+                        continue
                     normalization[component.id] = AcousticImpedanceNormalization(
                         component_id=component.id,
                         component_name=component.name,
                         effective_area_m2=area_m2,
-                        area_kind="weighted_physical_surface",
+                        area_kind=(
+                            "weighted_projected_surface" if "motion_axis" in parameters else "weighted_physical_surface"
+                        ),
                     )
                 compiled.append(component)
                 continue

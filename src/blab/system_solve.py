@@ -50,6 +50,7 @@ from blab.solvers.registry import (
     normalize_backend_id,
     supports_physical_system_solves,
 )
+from blab.source_motion import prescribed_source_parameters
 from blab.system_contract import OutputRequest, QuantityResult, SystemFrequencyResult, SystemSolveRequest
 
 
@@ -431,9 +432,9 @@ def supports_exterior_system_protocol(
     for component in system.components:
         if component.kind != ComponentKind.IDEAL_VELOCITY_SOURCE:
             return False
-        if component.parameters.get("motion_profile", "uniform") != "uniform":
-            return False
-        if set(component.parameters) - {"motion_profile", "boundary_motion_weights"}:
+        try:
+            prescribed_source_parameters(component.parameters)
+        except ValueError:
             return False
     return True
 

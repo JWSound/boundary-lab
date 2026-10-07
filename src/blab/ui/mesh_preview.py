@@ -27,6 +27,7 @@ from blab.generators.base import GeneratedGeometry
 from blab.mesh_cache import read_mesh
 from blab.mesh_data import read_resource_mesh
 from blab.preview_hierarchy import PreviewHierarchy, build_preview_hierarchy
+from blab.preview_motion import PreviewMotion, motion_arrow_geometry
 from blab.ui.observation_plane_viewport import ObservationPlaneViewport
 from blab.ui.theme import themed_content_background
 
@@ -78,6 +79,7 @@ class _PreviewActorRecord:
     surface_key: tuple[str, int | None] | None
     mesh_region: str | None
     diagnostic: bool = False
+    motion_arrow: bool = False
 
 
 class _ViewportTreeOverlay(QFrame):
@@ -133,6 +135,10 @@ class MeshPreview(QWidget):
 
     def __init__(self):
         super().__init__()
+        self._motion_directions_visible = False
+        self._motion_assignments = {}
+        self._motion_arrow_batches = []
+        self._motion_arrows_built = False
         self._axis_label_actor = None
         self._hover_picker = None
         self._hover_observer = None
@@ -214,6 +220,10 @@ class MeshPreview(QWidget):
         status_row.addWidget(self.hover_label, 1)
         status_row.addWidget(self.total_elements_label)
         viewport_layout.addLayout(status_row)
+        self.motion_legend = QLabel("Arrows: positive assigned axis; surface-normal sources omitted")
+        self.motion_legend.setWordWrap(True)
+        self.motion_legend.setVisible(False)
+        viewport_layout.addWidget(self.motion_legend)
 
         layout.addWidget(viewport)
         self._refresh_viewer_theme()
@@ -273,6 +283,9 @@ class MeshPreview(QWidget):
 
     def clear(self) -> None:
         self._actor_records = []
+        self._motion_arrow_batches = []
+        self._motion_arrows_built = False
+        self._motion_assignments = {}
         self._topology_issue_actors = []
         self._hierarchy = None
         self._surface_visibility = {}
@@ -356,6 +369,9 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._actor_records = []
+        self._motion_arrow_batches = []
+        self._motion_arrows_built = False
+        self._motion_assignments = {}
         self._topology_issue_actors = []
         self._hierarchy = None
         self._surface_visibility = {}
@@ -424,6 +440,7 @@ class MeshPreview(QWidget):
         topology_report=None,
         hierarchy: PreviewHierarchy | None = None,
         loaded_meshes: dict[str, meshio.Mesh] | None = None,
+        motion_assignments: dict[tuple[str, int], PreviewMotion] | None = None,
     ) -> None:
         if self.viewer is None:
             return
@@ -432,8 +449,12 @@ class MeshPreview(QWidget):
         self.viewer.clear()
         self._actor_surface_labels = {}
         self._actor_records = []
+        self._motion_arrow_batches = []
+        self._motion_arrows_built = False
+        self._motion_assignments = {}
         self._topology_issue_actors = []
         self.hover_label.setText("")
+        self._motion_assignments = motion_assignments or {}
         total_elements = 0
         preview_points = []
         mirrored = str(symmetry or "off").strip().lower() != "off"
@@ -474,6 +495,8 @@ class MeshPreview(QWidget):
             )
         self.set_hierarchy(hierarchy, render=False)
         self.set_topology_report(topology_report, render=False)
+        if self._motion_directions_visible:
+            self._build_motion_arrows()
         self._apply_actor_visibility(render=False)
         self._restore_camera_or_reset(camera_position)
 
@@ -717,10 +740,23 @@ class MeshPreview(QWidget):
                 mesh_name=mesh_cfg.name,
                 surface_tag=int(tag),
             )
+            motion = self._motion_assignments.get((mesh_cfg.name, int(tag)))
+            if motion is not None and motion.axis is not None:
+                self._queue_motion_arrows(points, tag_triangles, motion.axis, mesh_cfg.name, int(tag), mesh_region)
             for mirror_label, mirror_points, mirror_triangles, source_indices in mirrored_images:
                 mirror_tag_triangles = mirror_triangles[physical_tags[source_indices] == tag]
                 if not mirror_tag_triangles.size:
                     continue
+                if motion is not None and motion.axis is not None:
+                    signs = dict(_symmetry_preview_transforms(symmetry))[mirror_label]
+                    self._queue_motion_arrows(
+                        mirror_points,
+                        mirror_tag_triangles,
+                        np.asarray(motion.axis) * signs,
+                        mesh_cfg.name,
+                        int(tag),
+                        mesh_region,
+                    )
                 mirror_color, mirror_edge_color = _surface_preview_colors(
                     is_driven=is_driven,
                     is_interface=is_interface,
@@ -747,6 +783,48 @@ class MeshPreview(QWidget):
                 )
         return base_count, _preview_points_with_images(points, mirrored_images)
 
+    def _queue_motion_arrows(self, points, triangles, axis, mesh_name, tag, region) -> None:
+        origins, vectors = motion_arrow_geometry(points, triangles, axis)
+        if len(origins):
+            self._motion_arrow_batches.append((origins, vectors, mesh_name, tag, region))
+
+    def set_motion_directions_visible(self, visible: bool) -> None:
+        self._motion_directions_visible = bool(visible)
+        if self.viewer is None:
+            return
+        self.motion_legend.setVisible(visible)
+        if visible:
+            self._build_motion_arrows()
+        self._apply_actor_visibility()
+
+    def _build_motion_arrows(self) -> None:
+        if self._motion_arrows_built:
+            return
+        for origins, vectors, mesh_name, tag, region in self._motion_arrow_batches:
+            cloud = pv.PolyData(origins)
+            cloud["direction"] = vectors
+            cloud["length"] = np.linalg.norm(vectors, axis=1)
+            arrows = cloud.glyph(orient="direction", scale="length", factor=1.0)
+            actor = self.viewer.add_mesh(
+                arrows,
+                color="#ffc857",
+                pickable=False,
+                lighting=False,
+                reset_camera=False,
+                render=False,
+            )
+            actor.SetUseBounds(False)
+            self._actor_records.append(
+                _PreviewActorRecord(
+                    actor,
+                    mesh_name,
+                    (mesh_name, tag),
+                    region,
+                    motion_arrow=True,
+                )
+            )
+        self._motion_arrows_built = True
+
     def _register_mesh_actor(
         self,
         actor: object,
@@ -756,6 +834,13 @@ class MeshPreview(QWidget):
         surface_tag: int | None,
         diagnostic: bool = False,
     ) -> None:
+        motion = self._motion_assignments.get((mesh_name, surface_tag))
+        if motion is not None and not diagnostic:
+            key = _vtk_actor_address(actor)
+            direction = "surface-normal motion" if motion.axis is None else "saved axis " + str(motion.axis)
+            self._actor_surface_labels[key] = (
+                self._actor_surface_labels.get(key, "") + f" | {motion.component_name}: {direction}"
+            )
         self._actor_records.append(
             _PreviewActorRecord(
                 actor=actor,
@@ -777,6 +862,8 @@ class MeshPreview(QWidget):
                 visible = self._surface_visibility.get(record.surface_key, True)
             if self._observation_clip_active and record.mesh_region == PREVIEW_REGION_INTERIOR:
                 visible = False
+            if record.motion_arrow:
+                visible = visible and self._motion_directions_visible
             record.actor.SetVisibility(visible)
         if render:
             self.viewer.render()

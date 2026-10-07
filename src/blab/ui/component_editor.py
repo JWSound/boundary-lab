@@ -41,6 +41,7 @@ from blab.physical_model import (
     ComponentKind,
     MeshResource,
 )
+from blab.source_motion import prescribed_source_parameters
 from blab.system_editing import (
     MotionAxisInference,
     infer_component_motion_axis,
@@ -182,10 +183,12 @@ class _ComponentEditorDialog(QDialog):
         symmetry_mode: str,
         mesh_cache: dict[str, meshio.Mesh],
         projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
+        exterior_only: bool = True,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Component")
+        self._exterior_only = exterior_only
         self._draft = draft
         self._boundaries_by_id = {boundary.id: boundary for boundary in boundaries}
         self._resources_by_id = resources_by_id
@@ -278,10 +281,24 @@ class _ComponentEditorDialog(QDialog):
         )
         surfaces_layout.addWidget(self.boundary_table)
 
+        new_source = not draft.id and draft.kind == ComponentKind.IDEAL_VELOCITY_SOURCE
+        self._source_motion_profile = (
+            "rigid_translation"
+            if draft.parameters.get("motion_profile") == "rigid_translation"
+            or (exterior_only and (new_source or draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER))
+            else "uniform"
+        )
+        self.source_motion_note = QLabel(
+            "This saved source uses surface-normal velocity."
+            if exterior_only
+            else "Prescribed sources in FEM and coupled systems use surface-normal velocity."
+        )
+        self.source_motion_note.setWordWrap(True)
         self.axis_mode_combo = QComboBox()
         self.axis_mode_combo.addItem("Automatic from surface normals", "automatic")
         self.axis_mode_combo.addItem("Manual", "manual")
-        mode_index = self.axis_mode_combo.findData(draft.motion_axis_mode)
+        axis_mode = "automatic" if new_source and "motion_axis" not in draft.parameters else draft.motion_axis_mode
+        mode_index = self.axis_mode_combo.findData(axis_mode)
         self.axis_mode_combo.setCurrentIndex(max(mode_index, 0))
         raw_axis = draft.parameters.get("motion_axis", (0.0, 0.0, 1.0))
         if not isinstance(raw_axis, (list, tuple)) or len(raw_axis) != 3:
@@ -356,7 +373,9 @@ class _ComponentEditorDialog(QDialog):
         self.transducer_group = QGroupBox("Rigid-piston transducer")
         transducer_layout = QVBoxLayout(self.transducer_group)
         transducer_layout.addLayout(transducer_form)
-        transducer_layout.addLayout(axis_form)
+        self.motion_group = QGroupBox("Motion direction")
+        motion_layout = QVBoxLayout(self.motion_group)
+        motion_layout.addLayout(axis_form)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept)
@@ -365,6 +384,8 @@ class _ComponentEditorDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(identity_form)
         layout.addWidget(surfaces_group)
+        layout.addWidget(self.source_motion_note)
+        layout.addWidget(self.motion_group)
         layout.addWidget(self.transducer_group)
         layout.addWidget(buttons)
         self.resize(680, 700)
@@ -384,6 +405,9 @@ class _ComponentEditorDialog(QDialog):
         self._refresh_semi_inductance_controls()
         self._refresh_type_controls(update_geometry=False)
         self._refresh_axis_controls(update_geometry=False)
+        if draft.kind == ComponentKind.IDEAL_VELOCITY_SOURCE:
+            if self._uses_axis() and self.axis_mode_combo.currentData() == "automatic":
+                self._infer_axis()
         if draft.kind == ComponentKind.ELECTRODYNAMIC_TRANSDUCER:
             symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
             if symmetry_inference is not None:
@@ -485,9 +509,24 @@ class _ComponentEditorDialog(QDialog):
                 parameters[_LUMPED_SEALED_REAR_CHAMBER_KEY] = rear_chamber_parameters
             confidence = None if self._axis_inference is None else self._axis_inference.confidence
         else:
-            parameters = {"motion_profile": "uniform"}
-            mode = "manual"
+            parameters = {"motion_profile": self._source_motion_profile}
+            mode = str(self.axis_mode_combo.currentData())
             confidence = None
+            if self._uses_axis():
+                if mode == "automatic":
+                    inference = self._infer_axis(update_projected_area=False)
+                    if inference is None or inference.confidence < 0.2:
+                        raise ValueError(
+                            self._axis_inference_error or "Automatic motion-axis confidence is low. Use a manual axis."
+                        )
+                    confidence = inference.confidence
+                axis = self._automatic_axis if mode == "automatic" else [spin.value() for spin in self.axis_spins]
+                parameters["motion_axis"] = list(axis)
+                parameters = prescribed_source_parameters(
+                    parameters,
+                    symmetry=self._symmetry_mode,
+                    exterior=self._exterior_only,
+                )
         parameters[_BOUNDARY_MOTION_WEIGHTS_KEY] = self.boundary_motion_weights()
         return _ComponentDraft(
             id=self._draft.id,
@@ -508,12 +547,22 @@ class _ComponentEditorDialog(QDialog):
             return
         self.accept()
 
+    def _uses_axis(self) -> bool:
+        return (
+            self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
+            or self._source_motion_profile == "rigid_translation"
+        )
+
     def _refresh_type_controls(self, _index: int = -1, *, update_geometry: bool = True) -> None:
         electrodynamic = self.type_combo.currentData() == ComponentKind.ELECTRODYNAMIC_TRANSDUCER
         self.transducer_group.setVisible(electrodynamic)
+        self.source_motion_note.setVisible(not self._uses_axis())
+        self.motion_group.setVisible(self._uses_axis())
         if not electrodynamic:
             self._projected_area_update_timer.stop()
-        if electrodynamic and update_geometry:
+            if update_geometry and self._uses_axis() and self.axis_mode_combo.currentData() == "automatic":
+                self._infer_axis()
+        elif update_geometry:
             symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
             if symmetry_inference is None:
                 return
@@ -561,7 +610,7 @@ class _ComponentEditorDialog(QDialog):
         for spin in self.axis_spins:
             spin.setEnabled(not automatic)
         if automatic:
-            if update_geometry:
+            if update_geometry and self._uses_axis():
                 self._infer_axis()
         elif not self.axis_confidence_label.text():
             self.axis_confidence_label.setText("Manual direction; it will be normalized when saved.")
@@ -571,6 +620,10 @@ class _ComponentEditorDialog(QDialog):
             self.boundary_weight_spins[item.row()].setEnabled(
                 bool(item.flags() & Qt.ItemFlag.ItemIsEnabled) and item.checkState() == Qt.CheckState.Checked
             )
+        if self.type_combo.currentData() == ComponentKind.IDEAL_VELOCITY_SOURCE:
+            if self._uses_axis() and self.axis_mode_combo.currentData() == "automatic":
+                self._infer_axis()
+            return
         symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
         if symmetry_inference is None:
             return
@@ -682,9 +735,10 @@ class _ComponentEditorDialog(QDialog):
             for boundary_id in self.selected_boundary_ids()
             if boundary_id in self._boundaries_by_id
         )
-        if symmetry_inference is None:
+        prescribed = self.type_combo.currentData() == ComponentKind.IDEAL_VELOCITY_SOURCE
+        if not prescribed and symmetry_inference is None:
             symmetry_inference = self._infer_component_symmetry(update_projected_area=False)
-        if symmetry_inference is None:
+        if not prescribed and symmetry_inference is None:
             self._axis_inference = None
             self._automatic_axis = None
             self._axis_inference_error = self._symmetry_inference_error
@@ -696,7 +750,11 @@ class _ComponentEditorDialog(QDialog):
             inference = infer_component_motion_axis(
                 selected,
                 self._resources_by_id,
-                fractional_symmetry_axes=symmetry_inference.fractional_symmetry_axes,
+                fractional_symmetry_axes=(
+                    {"off": (), "x": ("x",), "xy": ("x", "y")}[self._symmetry_mode]
+                    if prescribed
+                    else symmetry_inference.fractional_symmetry_axes
+                ),
                 mesh_cache=self._mesh_cache,
             )
         except (ValueError, OSError) as exc:
@@ -724,7 +782,7 @@ class _ComponentEditorDialog(QDialog):
             f"{inference.triangle_count} triangles, projected-normal alignment "
             f"{inference.mean_squared_alignment:.0%}."
         )
-        if update_projected_area:
+        if update_projected_area and not prescribed:
             self._update_projected_area_readout(symmetry_inference, axis=inferred_axis)
         return inference
 

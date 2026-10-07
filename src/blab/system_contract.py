@@ -212,7 +212,7 @@ def compiled_system_to_dict(system: CompiledPhysicalSystem) -> dict[str, Any]:
 def compiled_system_from_dict(raw: dict[str, Any]) -> CompiledPhysicalSystem:
     validate_compiled_system(raw)
     contract_version = int(raw.get("contract_version", 0))
-    if contract_version != COMPILED_SYSTEM_VERSION:
+    if contract_version not in {COMPILED_SYSTEM_VERSION, 2}:
         raise ValueError(f"Unsupported compiled system contract_version {contract_version}.")
     return CompiledPhysicalSystem(
         id=str(raw["id"]),

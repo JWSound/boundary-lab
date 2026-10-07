@@ -108,6 +108,15 @@ def test_compiler_records_weighted_area_for_exterior_prescribed_velocity() -> No
     assert record.relative_side_mismatch is None
 
 
+def test_compiler_rejects_axial_prescribed_source_in_coupled_system() -> None:
+    system = _fixture_system()
+    component = replace(
+        system.components[0], parameters={"motion_profile": "rigid_translation", "motion_axis": [0, 0, 1]}
+    )
+    with pytest.raises(PhysicalModelCompileError, match="exterior-only"):
+        PhysicalSystemCompiler().compile(replace(system, components=(component,)))
+
+
 @pytest.mark.parametrize(
     "backend,expected",
     [

@@ -12,6 +12,7 @@ from blab.mesh_inventory import InventoryEntry, inspect_system_mesh_variants
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import PhysicalSystem
 from blab.preview_hierarchy import build_preview_hierarchy, physical_system_preview_metadata
+from blab.preview_motion import preview_motion_assignments
 from blab.project.model import ImportedMeshState, generator_mesh_name
 from blab.ui.mesh_assembly import STITCH_FAILURE_MESSAGE, MeshAssemblyService
 
@@ -115,6 +116,9 @@ def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
         solver_surface_by_source=assembly.solver_surface_by_source,
     )
     view_options = dict(
+        motion_assignments=preview_motion_assignments(
+            assembly.physical_system or snapshot.system, assembly.surface_tags_by_mesh
+        ),
         driven_surfaces={(r.mesh, r.tag) for r in assembly.radiators} | components,
         surface_tags_by_mesh=assembly.surface_tags_by_mesh,
         interface_surfaces=interfaces,
