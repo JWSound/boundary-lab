@@ -136,6 +136,15 @@ class PhysicalSystemCompiler:
         symmetry_factor = 2 ** len({"off": (), "x": ("x",), "xy": ("x", "y")}[symmetry_mode])
         for component in system.components:
             if component.kind == ComponentKind.IDEAL_VELOCITY_SOURCE:
+                # The authoring alias "uniform" is baseline normal velocity.
+                # Contract v1 expresses it by omitting a source motion profile.
+                if component.parameters.get("motion_profile") == "uniform":
+                    component = replace(
+                        component,
+                        parameters={
+                            key: value for key, value in component.parameters.items() if key != "motion_profile"
+                        },
+                    )
                 exterior_boundaries = tuple(
                     boundaries_by_id[boundary_id]
                     for boundary_id in component.boundary_ids

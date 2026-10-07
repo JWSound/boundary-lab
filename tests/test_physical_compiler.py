@@ -161,10 +161,14 @@ def test_legacy_unused_boundary_deserializes_as_rigid() -> None:
 
 
 def test_compiled_system_and_request_round_trip_through_versioned_contract() -> None:
-    compiled = PhysicalSystemCompiler().compile(_fixture_system())
+    authoring_system = _fixture_system()
+    compiled = PhysicalSystemCompiler().compile(authoring_system)
     compiled_wire = compiled_system_to_dict(compiled)
     restored = compiled_system_from_dict(compiled_wire)
     assert restored == compiled
+    assert authoring_system.components[0].parameters["motion_profile"] == "uniform"
+    assert "motion_profile" not in compiled_wire["components"][0]["parameters"]
+    assert compiled_wire["contract_version"] == 1
     assert "signals" not in compiled_wire
     assert compiled_wire["excitation_ports"][0]["kind"] == "normal_velocity"
 

@@ -1,7 +1,7 @@
 # BEAT Engine dependency
 
 Boundary Lab requires the independently released `beat-engine` package. Its
-`pyproject.toml` pins the `v0.2.0` wheel URL and SHA-256, so ordinary installation
+`pyproject.toml` pins the `v0.4.0` wheel URL and SHA-256, so ordinary installation
 downloads and verifies that exact artifact without a sibling engine checkout:
 
 ```text
@@ -47,7 +47,7 @@ packages. Previous Julia package downloads may be reused from the local depot;
 the installed release's own project still needs to be instantiated. Restart
 Boundary Lab after updating so existing workers do not retain the old engine.
 
-The release is [v0.2.0](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.2.0).
+The release is [v0.4.0](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.4.0).
 It contains wheel and source distributions. No PyPI publication is configured.
 The compiled-system contract, worker negotiation, transport, numerical sources,
 and fixtures belong to BEAT Engine. Boundary Lab owns project compilation,
@@ -75,10 +75,18 @@ Reinstalling Boundary Lab may restore the pinned release; use a separate virtual
 environment for engine development. To restore the release explicitly:
 
 ```text
-python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.2.0/beat_engine-0.2.0-py3-none-any.whl#sha256=bccad47b9647e5f4f7bc1ca6ac9d22e2e7751f1f39046fadc1e5e9782a282ad1"
+python -m pip install --force-reinstall --no-deps "beat-engine @ https://github.com/JWSound/BEAT_Engine/releases/download/v0.4.0/beat_engine-0.4.0-py3-none-any.whl#sha256=70e22574437f0dcbf1c4ad4e227883fcbc6b4e5a654f36ea0ab601ea93a59594"
 ```
 
 ## Updating the engine
+
+BEAT 0.4.0 changes the default CPU regular quadrature to fixed order and enables
+coupled reductions with Float64 assembly and refined Float32 LU. Dense-system
+memory use can be approximately three times the previous default. See the
+[engine release notes](https://github.com/JWSound/BEAT_Engine/releases/tag/v0.4.0)
+for controls and compatibility details. Boundary Lab continues to emit compiled
+contract v1 for its existing model features; its legacy uniform source setting
+is translated to the equivalent baseline normal-velocity request.
 
 Qualify the new engine version independently, then update Boundary Lab's dependency
 URL/hash and supported-version check together. Run application tests and

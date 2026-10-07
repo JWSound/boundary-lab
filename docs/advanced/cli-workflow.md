@@ -50,8 +50,8 @@ unchanged by identical symmetry replication.
 Both plots support trace filtering, previous-solve comparisons, image export,
 and tabular export. Older results without the new quantity leave interface
 velocity unavailable. This output requires a BEAT worker advertising
-`interface_average_normal_velocity` in `optional_output_quantities`; use the
-updated engine checkout until a release containing this capability is pinned.
+`interface_average_normal_velocity` in `optional_output_quantities`; the pinned
+BEAT Engine 0.4.0 release includes this capability.
 Headless artifacts retain independent complex bases without GUI processing.
 
 Boundary Lab still includes command-line tools for mesh cleaning, solving, data preparation, and static plot generation. The GUI is the recommended entry point for normal use.
