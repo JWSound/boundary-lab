@@ -2357,3 +2357,18 @@ def test_repeated_compilation_reuses_shared_meshes_without_changing_contract(mon
     second = PhysicalSystemCompiler().compile(_fixture_system())
     assert reads == []
     assert compiled_system_to_dict(first) == compiled_system_to_dict(second)
+
+
+def test_cram_example_compiles_with_both_diaphragm_sides_in_one_region() -> None:
+    project = REPO_ROOT / "examples" / "2x12_CRAM" / "2x12_CRAM.blab.json"
+    system = physical_system_from_dict(json.loads(project.read_text())["physical_system"])
+    system = replace(
+        system, meshes=tuple(replace(mesh, file=str(project.parent / mesh.file)) for mesh in system.meshes)
+    )
+    compiled = PhysicalSystemCompiler().compile(system, symmetry_mode="x")
+    records = normalization_records(compiled.metadata)
+    for component in system.components:
+        area = records[component.id]
+        assert area.effective_area_m2 == pytest.approx(0.06229375, rel=1e-6)
+        assert area.positive_side_area_m2 == pytest.approx(area.negative_side_area_m2)
+        assert area.relative_side_mismatch == pytest.approx(0.0, abs=1e-12)

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import meshio
@@ -394,3 +395,54 @@ def test_inconsistent_disconnected_surface_patches_are_rejected() -> None:
             "x",
             mesh_cache={resource.id: mesh},
         )
+
+
+@pytest.mark.parametrize("axis_sign", (1.0, -1.0))
+@pytest.mark.parametrize("shared_region", (False, True))
+def test_projected_area_keeps_disconnected_opposing_faces_separate(axis_sign, shared_region) -> None:
+    resource = MeshResource("mesh:driver", "Driver", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.8, 1), (0.8, 0, 1))),
+        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5))))],
+        cell_data={"gmsh:physical": [np.asarray((1, 2))]},
+        field_data={"Front": np.asarray((1, 2)), "Rear": np.asarray((2, 2))},
+    )
+    front = _boundary(resource, "Front", "boundary:front")
+    rear = replace(
+        _boundary(resource, "Rear", "boundary:rear"), region_id=front.region_id if shared_region else "region:rear"
+    )
+    for boundaries in ((front, rear), (rear, front)):
+        area = infer_projected_diaphragm_area(
+            boundaries,
+            {resource.id: resource},
+            (0, 0, axis_sign),
+            2,
+            boundary_motion_weights={front.id: 0.5, rear.id: 0.5},
+            mesh_cache={resource.id: mesh},
+        )
+        assert area.projected_area_m2 == pytest.approx(0.41)
+        assert area.has_opposing_sides
+        assert area.relative_side_mismatch == pytest.approx(0.36)
+
+
+@pytest.mark.parametrize("axis_sign", (1.0, -1.0))
+def test_automatic_side_inference_integrates_connected_fold_across_tags(axis_sign) -> None:
+    resource = MeshResource("mesh:folded", "Folded", "unused.msh", MeshPurpose.FEM_VOLUME)
+    mesh = meshio.Mesh(
+        points=np.asarray(((0, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.5, 1), (1, 0, 1))),
+        cells=[("triangle", np.asarray(((0, 1, 2), (0, 3, 1), (1, 3, 5), (3, 4, 5))))],
+        cell_data={"gmsh:physical": [np.asarray((1, 1, 2, 2))]},
+        field_data={"Dome": np.asarray((1, 2)), "Return": np.asarray((2, 2))},
+    )
+    dome = _boundary(resource, "Dome", "boundary:dome")
+    folded = _boundary(resource, "Return", "boundary:return")
+    area = infer_projected_diaphragm_area(
+        (dome, folded),
+        {resource.id: resource},
+        (0, 0, axis_sign),
+        4,
+        boundary_motion_weights={folded.id: 0.5},
+        mesh_cache={resource.id: mesh},
+    )
+    assert area.projected_area_m2 == pytest.approx(3.5)
+    assert not area.has_opposing_sides

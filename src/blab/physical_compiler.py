@@ -217,7 +217,6 @@ class PhysicalSystemCompiler:
                     parameters["motion_axis"],
                     inference.surface_completion_factor,
                     boundary_motion_weights=dict(parameters.get("boundary_motion_weights", {})),
-                    boundary_side_keys={boundary.id: boundary.region_id for boundary in boundaries},
                     mesh_cache=mesh_cache,
                     projected_geometry_cache=projected_geometry_cache,
                 )

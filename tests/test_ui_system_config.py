@@ -797,7 +797,8 @@ def test_semi_inductance_dialog_requires_a_complete_enabled_model() -> None:
         dialog.model_parameters()
 
 
-def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monkeypatch) -> None:
+@pytest.mark.parametrize("shared_region", (False, True))
+def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monkeypatch, shared_region) -> None:
     resources = {
         "mesh:front": MeshResource(
             id="mesh:front",
@@ -823,7 +824,7 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
         Boundary(
             id="boundary:rear",
             name="Rear",
-            region_id="region:rear",
+            region_id="region:front" if shared_region else "region:rear",
             group=PhysicalGroupRef(mesh_id="mesh:rear", dimension=2, name="Rear"),
             kind=BoundaryKind.MOVING,
         ),
@@ -934,14 +935,15 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
 
 
 def test_front_only_folded_surface_keeps_full_lumped_chamber_area() -> None:
+    # Axial connector faces join the fold across tags without adding projected area.
     resource = MeshResource("mesh:folded", "Folded", "unused.msh", MeshPurpose.FEM_VOLUME)
     mesh = meshio.Mesh(
         points=np.asarray(
             ((0, 0, 0), (2, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0.5, 1), (1, 0, 1)),
             dtype=float,
         ),
-        cells=[("triangle", np.asarray(((0, 1, 2), (3, 4, 5))))],
-        cell_data={"gmsh:physical": [np.asarray((1, 2))]},
+        cells=[("triangle", np.asarray(((0, 1, 2), (0, 3, 1), (1, 3, 5), (3, 4, 5))))],
+        cell_data={"gmsh:physical": [np.asarray((1, 1, 2, 2))]},
         field_data={"Dome": np.asarray((1, 2)), "Return": np.asarray((2, 2))},
     )
     boundaries = tuple(

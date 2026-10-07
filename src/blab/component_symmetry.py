@@ -57,7 +57,9 @@ class ProjectedAreaGeometryCache:
     """Reusable mesh geometry needed by projected diaphragm-area inference."""
 
     opposite_vertex_by_resource: dict[tuple, dict[tuple[int, int, int], int]] = field(default_factory=dict)
-    surface_geometry_by_resource_tag: dict[tuple, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+    surface_geometry_by_resource_tag: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -219,7 +221,13 @@ def infer_projected_diaphragm_area(
     mesh_cache: dict[str, meshio.Mesh] | None = None,
     projected_geometry_cache: ProjectedAreaGeometryCache | None = None,
 ) -> ProjectedDiaphragmAreaInference:
-    """Integrate the solver's projected rigid-translation area by acoustic side."""
+    """Integrate signed displacement within each connected moving-surface patch.
+
+    A region can border both diaphragm sides. Unless explicit side keys are
+    supplied, connected patches identify sides, including folds spanning tags.
+    Disconnected patches with the same net sign in a region contribute to the
+    same side. Explicit keys retain the caller's acoustic-side assignments.
+    """
 
     if not boundaries:
         raise ComponentSymmetryInferenceError("Select at least one moving boundary before calculating projected area.")
@@ -234,9 +242,8 @@ def infer_projected_diaphragm_area(
     weights = {} if boundary_motion_weights is None else boundary_motion_weights
     cache = {} if mesh_cache is None else mesh_cache
     geometry_cache = ProjectedAreaGeometryCache() if projected_geometry_cache is None else projected_geometry_cache
-    positive_area = 0.0
-    negative_area = 0.0
     area_by_side: dict[str, float] = {}
+    patch_geometry: dict[tuple[str, str], list[tuple[np.ndarray, np.ndarray]]] = defaultdict(list)
     for boundary in boundaries:
         resource = resources_by_id.get(boundary.group.mesh_id)
         if resource is None:
@@ -276,9 +283,9 @@ def infer_projected_diaphragm_area(
                 normals,
                 opposite_vertices,
             )
-            surface_geometry = (normals, double_area)
+            surface_geometry = (normals, double_area, triangles)
             geometry_cache.surface_geometry_by_resource_tag[surface_key] = surface_geometry
-        normals, double_area = surface_geometry
+        normals, double_area, triangles = surface_geometry
         try:
             coefficient = float(weights.get(boundary.id, 1.0))
         except (TypeError, ValueError) as exc:
@@ -290,10 +297,10 @@ def infer_projected_diaphragm_area(
                 f"Moving boundary '{boundary.name}' has a non-finite or non-positive motion weight."
             )
         projected = completion * coefficient * (normals @ axis) * (0.5 * double_area)
-        positive_area += float(np.sum(projected[projected > 0.0]))
-        negative_area += float(np.sum(-projected[projected < 0.0]))
 
-        if boundary_side_keys is not None:
+        if boundary_side_keys is None:
+            patch_geometry[(boundary.region_id, resource.id)].append((triangles, projected))
+        else:
             side_key = boundary_side_keys.get(boundary.id)
             if side_key is None:
                 raise ComponentSymmetryInferenceError(
@@ -304,17 +311,29 @@ def infer_projected_diaphragm_area(
             # integral, not two separate diaphragm sides.
             area_by_side[side_key] = area_by_side.get(side_key, 0.0) + float(np.sum(projected))
 
-    region_side_areas = [abs(area) for area in area_by_side.values() if abs(area) > np.finfo(float).eps]
-    if len(region_side_areas) > 2:
-        raise ComponentSymmetryInferenceError(
-            "An electrodynamic transducer may drive surfaces in no more than two acoustic regions."
-        )
-    if len(region_side_areas) == 2:
-        positive_area, negative_area = region_side_areas
-    elif boundary_side_keys is not None:
+    if boundary_side_keys is None:
+        # Keep opposite faces separate even when they bound the same air region.
+        # Integrate a whole connected patch before classifying its direction:
+        # taking absolute values per triangle would overcount folded surfaces.
+        region_areas: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
+        for (region_id, resource_id), geometry in patch_geometry.items():
+            triangles = np.vstack([item[0] for item in geometry])
+            projected = np.concatenate([item[1] for item in geometry])
+            for indices in _triangle_patch_indices(triangles, resources_by_id[resource_id].name):
+                area = float(np.sum(projected[indices]))
+                region_areas[region_id][0 if area >= 0.0 else 1] += abs(area)
+        side_areas = [area for areas in region_areas.values() for area in areas if area > np.finfo(float).eps]
+        positive_area = sum(areas[0] for areas in region_areas.values())
+        negative_area = sum(areas[1] for areas in region_areas.values())
+    else:
+        side_areas = [abs(area) for area in area_by_side.values() if abs(area) > np.finfo(float).eps]
         signed_area = sum(area_by_side.values())
         positive_area = max(signed_area, 0.0)
         negative_area = max(-signed_area, 0.0)
+    if len(side_areas) > 2:
+        raise ComponentSymmetryInferenceError("An electrodynamic transducer may drive no more than two acoustic sides.")
+    if len(side_areas) == 2:
+        positive_area, negative_area = side_areas
 
     scale = max(positive_area, negative_area)
     tolerance = max(np.finfo(float).eps, scale * 1.0e-9)
@@ -497,6 +516,10 @@ def _triangles_for_tags(mesh: meshio.Mesh, tags: set[int], mesh_name: str) -> np
 
 
 def _triangle_patches(triangles: np.ndarray, mesh_name: str) -> tuple[np.ndarray, ...]:
+    return tuple(triangles[indices] for indices in _triangle_patch_indices(triangles, mesh_name))
+
+
+def _triangle_patch_indices(triangles: np.ndarray, mesh_name: str) -> tuple[np.ndarray, ...]:
     edge_faces: dict[tuple[int, int], list[int]] = defaultdict(list)
     for face_index, triangle in enumerate(triangles):
         for start, end in (
@@ -528,7 +551,7 @@ def _triangle_patches(triangles: np.ndarray, mesh_name: str) -> tuple[np.ndarray
                     unseen.remove(neighbor)
                     faces.append(neighbor)
                     stack.append(neighbor)
-        patches.append(np.asarray(triangles[np.asarray(faces, dtype=np.int64)], dtype=np.int64))
+        patches.append(np.asarray(faces, dtype=np.int64))
     return tuple(patches)
 
 
