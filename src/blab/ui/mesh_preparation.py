@@ -117,7 +117,9 @@ def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
     )
     view_options = dict(
         motion_assignments=preview_motion_assignments(
-            assembly.physical_system or snapshot.system, assembly.surface_tags_by_mesh
+            assembly.physical_system or snapshot.system,
+            assembly.surface_tags_by_mesh,
+            driven_surfaces={(r.mesh, r.tag) for r in assembly.radiators},
         ),
         driven_surfaces={(r.mesh, r.tag) for r in assembly.radiators} | components,
         surface_tags_by_mesh=assembly.surface_tags_by_mesh,

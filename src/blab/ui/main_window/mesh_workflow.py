@@ -467,6 +467,7 @@ class MeshWorkflowMixin:
                 motion_assignments=preview_motion_assignments(
                     assembly.physical_system or self._project_document().physical_system,
                     assembly.surface_tags_by_mesh,
+                    driven_surfaces=driven_surfaces,
                 ),
                 driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=assembly.surface_tags_by_mesh,
@@ -514,6 +515,7 @@ class MeshWorkflowMixin:
                 motion_assignments=preview_motion_assignments(
                     self._project_document().physical_system,
                     surface_tags_by_mesh,
+                    driven_surfaces=driven_surfaces,
                 ),
                 driven_surfaces=driven_surfaces,
                 surface_tags_by_mesh=surface_tags_by_mesh,

@@ -1,4 +1,4 @@
-"""Qt-free motion assignments and sparse arrow placement for mesh previews."""
+"""Qt-free motion assignments and representative arrow placement for mesh previews."""
 
 from dataclasses import dataclass
 
@@ -9,6 +9,7 @@ from blab.physical_model import BoundaryKind, ComponentKind, PhysicalSystem
 
 @dataclass(frozen=True)
 class PreviewMotion:
+    component_id: str
     component_name: str
     axis: tuple[float, float, float] | None
 
@@ -16,10 +17,15 @@ class PreviewMotion:
 def preview_motion_assignments(
     system: PhysicalSystem | None,
     surface_tags_by_mesh: dict[str, dict[str, int]],
+    *,
+    driven_surfaces: set[tuple[str, int]] | None = None,
 ) -> dict[tuple[str, int], PreviewMotion]:
     """Resolve the assembled system's saved axes, without guessing or solving."""
     if system is None:
-        return {}
+        return {
+            (mesh, tag): PreviewMotion(f"legacy:{mesh}:{tag}", f"{mesh}: Tag {tag}", None)
+            for mesh, tag in sorted(driven_surfaces or ())
+        }
     meshes = {mesh.id: mesh for mesh in system.meshes}
     boundaries = {boundary.id: boundary for boundary in system.boundaries}
     assignments = {}
@@ -58,43 +64,42 @@ def preview_motion_assignments(
             if sign not in (-1, 1):
                 continue
             assignments[(mesh.name, int(tag))] = PreviewMotion(
+                component.id,
                 component.name,
                 None if axis is None else tuple(float(value * sign) for value in axis),
             )
     return assignments
 
 
-def motion_arrow_geometry(points, triangles, axis, *, limit: int = 32):
-    """Return spaced arrow origins/vectors; inward arrows end just above the face.
-
-    Area-stratified candidates followed by farthest-point sampling avoid both
-    dense-mesh clutter and large clusters on finely tessellated patches.
-    """
+def motion_arrow_anchor(points, triangles):
+    """Choose the face centroid nearest the patch's area-weighted center."""
     vertices = np.asarray(points, dtype=float)[np.asarray(triangles, dtype=np.int64)]
     cross = np.cross(vertices[:, 1] - vertices[:, 0], vertices[:, 2] - vertices[:, 0])
     areas = np.linalg.norm(cross, axis=1)
     valid = np.isfinite(vertices).all(axis=(1, 2)) & (areas > 0)
     vertices, cross, areas = vertices[valid], cross[valid], areas[valid]
     if not len(vertices):
-        return np.empty((0, 3)), np.empty((0, 3))
+        return None
     centers = vertices.mean(axis=1)
-    extent = float(np.linalg.norm(np.ptp(vertices.reshape(-1, 3), axis=0)))
-    length = extent * 0.08
-    cumulative = np.cumsum(areas)
-    count = min(len(areas), 2048)
-    samples = (np.arange(count) + 0.5) * (cumulative[-1] / count)
-    candidates = np.unique(np.searchsorted(cumulative, samples))
-    chosen = [int(candidates[np.argmax(areas[candidates])])]
-    distances = np.full(len(candidates), np.inf)
-    for _ in range(min(limit, len(candidates)) - 1):
-        distances = np.minimum(distances, np.sum((centers[candidates] - centers[chosen[-1]]) ** 2, axis=1))
-        if distances.max() < length**2:
-            break
-        chosen.append(int(candidates[np.argmax(distances)]))
-    normals = cross[chosen] / areas[chosen, None]
-    direction = np.asarray(axis, dtype=float)
+    center = np.average(centers, axis=0, weights=areas)
+    index = int(np.argmin(np.sum((centers - center) ** 2, axis=1)))
+    length = float(np.linalg.norm(np.ptp(vertices.reshape(-1, 3), axis=0))) * 0.12
+    return centers[index], cross[index] / areas[index], length
+
+
+def motion_arrow_geometry(anchor, axis, camera_position=None):
+    """Place one arrow above the camera-facing side, independent of winding.
+
+    An absent axis represents a saved surface-normal source at the chosen face.
+    Only the display offset changes with the camera; the motion vector does not.
+    """
+    center, normal, length = anchor
+    direction = np.array(normal if axis is None else axis, dtype=float, copy=True)
     direction /= np.linalg.norm(direction)
-    vectors = np.tile(direction * length, (len(chosen), 1))
-    origins = centers[chosen] + normals * length * 0.06
-    origins -= (normals @ direction < 0)[:, None] * vectors
-    return origins, vectors
+    facing = normal.copy()
+    if camera_position is not None and np.dot(facing, np.asarray(camera_position) - center) < 0:
+        facing *= -1
+    vector = direction * length
+    offset = length * 0.06 + max(0.0, -float(np.dot(vector, facing)))
+    origin = center + facing * offset
+    return origin[None, :], vector[None, :]

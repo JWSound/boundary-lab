@@ -140,13 +140,16 @@ has no velocity-motion selector. Interior FEM and coupled FEM?BEM projects suppo
 surface-normal prescribed sources. Under X or XY symmetry, a prescribed axis
 must lie in all active symmetry planes.
 
-Use **View ? Show Motion Directions** to inspect saved axial assignments in the
-Mesh Preview. Yellow arrows show the positive mechanical direction for prescribed
-axial sources and electrodynamic transducers, before channel polarity or phase.
-Arrow lengths are illustrative, not velocity magnitudes. Arrows follow the body
-tree's surface visibility and symmetry images, and are hidden by intervening
-geometry; hide enclosure surfaces to inspect an enclosed driver. Surface-normal
-sources have no axial arrows and are identified in surface hover text. The toggle
+Use **View > Show Motion Directions** to inspect saved axial assignments in the
+Mesh Preview. One yellow arrow per component shows its positive mechanical
+direction before channel polarity or phase. For saved surface-normal sources,
+the arrow shows the local normal at a representative face. Legacy driven
+surfaces without a physical-component model are included. Arrow lengths are
+illustrative, not velocity magnitudes. The arrow follows a visible assigned
+surface, including symmetry images, and is offset toward the camera so reversed
+mesh winding cannot bury it. Other geometry still occludes it; hide enclosure
+surfaces to inspect an enclosed driver. Surface hover text identifies the motion
+assignment. The toggle
 starts off and remains selected across preview rebuilds during the application
 session. No solve is required.
 

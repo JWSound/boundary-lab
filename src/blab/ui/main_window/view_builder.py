@@ -159,7 +159,7 @@ class ViewBuilderMixin:
         self.motion_directions_action = QAction("Show Motion Directions", self)
         self.motion_directions_action.setCheckable(True)
         self.motion_directions_action.setToolTip(
-            "Show positive assigned motion axes; surface-normal sources have no axial arrows."
+            "Show one motion arrow per visible component, including saved surface-normal sources."
         )
         self.motion_directions_action.toggled.connect(self.preview.set_motion_directions_visible)
         view_menu.addAction(self.motion_directions_action)
