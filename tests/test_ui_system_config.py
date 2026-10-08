@@ -1454,37 +1454,87 @@ def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:
     assert wall.parameters["wall_impedance"]["flow_resistivity_pa_s_per_m2"] == pytest.approx(5000.0)
 
 
+def _thermoviscous_wall_row(dialog):
+    return next(
+        r
+        for r in range(dialog.boundaries_table.rowCount())
+        if dialog.boundaries_table.item(r, 1).text() == "Interior"
+        and dialog.boundaries_table.item(r, 2).text() == "Volume_boundary"
+    )
+
+
 def test_thermoviscous_dropdown_round_trips_and_defaults_off() -> None:
     dialog = _configured_fixture_dialog()
-    row = next(
-        r for r in range(dialog.regions_table.rowCount()) if dialog._region_kind(r) == AcousticRegionKind.BOUNDED_AIR
-    )
-    combo = dialog.regions_table.cellWidget(row, 5)
+    assert dialog.regions_table.columnCount() == 5
+    row = _thermoviscous_wall_row(dialog)
+    combo = dialog.boundaries_table.cellWidget(row, 5)
     assert isinstance(combo, QComboBox)
     assert [combo.itemText(i) for i in range(combo.count())] == ["Off", "Thin boundary layer"]
     assert combo.currentData() == "off"
+    assert combo.isEnabled()
     combo.setCurrentIndex(1)
+    dialog._refresh_boundaries()
     system = dialog.physical_system()
-    region = next(r for r in system.regions if r.kind == AcousticRegionKind.BOUNDED_AIR)
-    assert region.loss_model["thermoviscous_wall_losses"] == "thin_boundary_layer"
+    selected = [b for b in system.boundaries if b.parameters.get("thermoviscous_wall_losses") == "thin_boundary_layer"]
+    assert len(selected) == 1
+    assert selected[0].group.name == "Volume_boundary"
+    assert all("thermoviscous_wall_losses" not in r.loss_model for r in system.regions)
     restored = SystemConfigDialog(inspect_system_meshes(_fixture_mesh_entries()), system, ("main",))
-    row = next(
-        r
-        for r in range(restored.regions_table.rowCount())
-        if restored._region_kind(r) == AcousticRegionKind.BOUNDED_AIR
-    )
-    combo = restored.regions_table.cellWidget(row, 5)
+    row = _thermoviscous_wall_row(restored)
+    combo = restored.boundaries_table.cellWidget(row, 5)
     assert combo.currentData() == "thin_boundary_layer"
-    exterior = next(
-        r
-        for r in range(restored.regions_table.rowCount())
-        if restored._region_kind(r) == AcousticRegionKind.UNBOUNDED_AIR
-    )
-    assert not restored.regions_table.cellWidget(exterior, 5).isEnabled()
-    combo.setCurrentIndex(0)
     assert all(
-        r.loss_model.get("thermoviscous_wall_losses", "off") == "off" for r in restored.physical_system().regions
+        not restored.boundaries_table.cellWidget(r, 5).isEnabled()
+        for r in range(restored.boundaries_table.rowCount())
+        if r != row
     )
+    combo.setCurrentIndex(0)
+    assert all("thermoviscous_wall_losses" not in b.parameters for b in restored.physical_system().boundaries)
+
+
+def test_wall_impedance_editor_preserves_thermoviscous_selection(monkeypatch) -> None:
+    dialog = _configured_fixture_dialog()
+    row = _thermoviscous_wall_row(dialog)
+    loss = dialog.boundaries_table.cellWidget(row, 5)
+    loss.setCurrentIndex(1)
+
+    class Editor:
+        def __init__(self, *args):
+            pass
+
+        def exec(self):
+            return system_config_module.QDialog.DialogCode.Accepted
+
+        def parameters(self):
+            return {}
+
+    monkeypatch.setattr(system_config_module, "_WallImpedanceDialog", Editor)
+    button = dialog.boundaries_table.cellWidget(row, 4)
+    dialog._edit_wall_impedance(button, dialog.boundaries_table.cellWidget(row, 3), True)
+    assert loss.currentData() == "thin_boundary_layer"
+    assert button.property("boundary_parameters")["thermoviscous_wall_losses"] == "thin_boundary_layer"
+
+
+def test_thermoviscous_selection_clears_for_incompatible_assignment_or_lining() -> None:
+    dialog = _configured_fixture_dialog()
+    row = _thermoviscous_wall_row(dialog)
+    loss = dialog.boundaries_table.cellWidget(row, 5)
+    assignment = dialog.boundaries_table.cellWidget(row, 3)
+    button = dialog.boundaries_table.cellWidget(row, 4)
+    loss.setCurrentIndex(1)
+    assignment.setCurrentIndex(assignment.findData(BoundaryKind.MOVING))
+    assert not loss.isEnabled()
+    assert loss.currentData() == "off"
+    assignment.setCurrentIndex(assignment.findData(BoundaryKind.RIGID))
+    assert loss.isEnabled()
+    loss.setCurrentIndex(1)
+    parameters = dict(button.property("boundary_parameters"))
+    parameters["wall_impedance"] = {"model": "miki"}
+    button.setProperty("boundary_parameters", parameters)
+    dialog._refresh_wall_impedance_button(button, assignment, True)
+    assert not loss.isEnabled()
+    assert loss.currentData() == "off"
+    assert "thermoviscous_wall_losses" not in button.property("boundary_parameters")
 
 
 def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:

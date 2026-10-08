@@ -44,6 +44,7 @@ from blab.solvers.coupled_backend import (
     DEFAULT_TRANSDUCER_REFERENCE_VOLTAGE_V,
     CoupledProductionBackend,
     CoupledReferenceBackend,
+    PhysicalSystemProductionBackend,
 )
 from blab.system_contract import (
     OutputRequest,
@@ -2375,40 +2376,62 @@ def test_cram_example_compiles_with_both_diaphragm_sides_in_one_region() -> None
 
 
 @pytest.mark.parametrize("model", ["thin_boundary_layer", "off"])
-def test_compiler_and_backend_preserve_thermoviscous_model(model) -> None:
+@pytest.mark.parametrize("interior_only", [False, True])
+def test_compiler_and_backend_preserve_thermoviscous_model(model, interior_only) -> None:
     system = _fixture_system()
     configured = replace(
         system,
-        regions=tuple(
-            replace(r, loss_model={"thermoviscous_wall_losses": model})
-            if r.kind == AcousticRegionKind.BOUNDED_AIR
-            else r
-            for r in system.regions
+        boundaries=tuple(
+            replace(b, parameters={"thermoviscous_wall_losses": model}) if b.id == "boundary:wall" else b
+            for b in system.boundaries
         ),
     )
+    if interior_only:
+        interior_ids = {r.id for r in configured.regions if r.kind == AcousticRegionKind.BOUNDED_AIR}
+        configured = replace(
+            configured,
+            regions=tuple(r for r in configured.regions if r.id in interior_ids),
+            boundaries=tuple(
+                replace(b, kind=BoundaryKind.RIGID) if b.kind == BoundaryKind.INTERFACE else b
+                for b in configured.boundaries
+                if b.region_id in interior_ids
+            ),
+            interfaces=(),
+        )
+    # Exercise project serialization as well as compilation and backend acceptance.
+    configured = physical_system_from_dict(physical_system_to_dict(configured))
     compiled = PhysicalSystemCompiler().compile(configured)
     request = SystemSolveRequest(
         compiled_system=compiled, frequencies_hz=(500.0,), excitation_port_ids=("excitation:radiator",)
     )
-    session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
-    assert (
-        next(r for r in session.request.compiled_system.regions if r.kind == AcousticRegionKind.BOUNDED_AIR).loss_model[
-            "thermoviscous_wall_losses"
-        ]
-        == model
-    )
+    session = PhysicalSystemProductionBackend(bem_backend="cpu").create_system_session(request)
+    boundaries = session.request.compiled_system.boundaries
+    assert next(b for b in boundaries if b.id == "boundary:wall").parameters["thermoviscous_wall_losses"] == model
+    assert all("thermoviscous_wall_losses" not in b.parameters for b in boundaries if b.id != "boundary:wall")
+    beat_contract.validate_solve_request(system_solve_request_to_dict(session.request))
 
 
-def test_compiler_rejects_thermoviscous_losses_on_exterior() -> None:
+@pytest.mark.parametrize("ineligible", ["exterior", "moving", "interface", "termination", "lining", "component"])
+def test_compiler_rejects_ineligible_thermoviscous_wall(ineligible) -> None:
     system = _fixture_system()
-    configured = replace(
-        system,
-        regions=tuple(
-            replace(r, loss_model={"thermoviscous_wall_losses": "thin_boundary_layer"})
-            if r.kind == AcousticRegionKind.UNBOUNDED_AIR
-            else r
-            for r in system.regions
-        ),
-    )
+    wall = next(b for b in system.boundaries if b.id == "boundary:wall")
+    parameters = {"thermoviscous_wall_losses": "thin_boundary_layer"}
+    if ineligible == "lining":
+        parameters.update(miki_wall_impedance_parameters())
+    wall = replace(wall, parameters=parameters)
+    if ineligible in {"moving", "interface", "termination"}:
+        wall = replace(
+            wall,
+            kind={
+                "moving": BoundaryKind.MOVING,
+                "interface": BoundaryKind.INTERFACE,
+                "termination": BoundaryKind.PLANE_WAVE_TUBE_TERMINATION,
+            }[ineligible],
+        )
+    if ineligible == "exterior":
+        wall = replace(wall, region_id=next(r.id for r in system.regions if r.kind == AcousticRegionKind.UNBOUNDED_AIR))
+    configured = replace(system, boundaries=tuple(wall if b.id == wall.id else b for b in system.boundaries))
+    if ineligible == "component":
+        configured = replace(configured, components=(replace(system.components[0], boundary_ids=(wall.id,)),))
     with pytest.raises(PhysicalModelCompileError, match="thermoviscous wall losses require"):
         PhysicalSystemCompiler().compile(configured)

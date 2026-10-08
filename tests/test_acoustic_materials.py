@@ -1,21 +1,22 @@
 import pytest
 
 from blab.acoustic_materials import (
+    boundary_thermoviscous_wall_losses,
     miki_wall_impedance_parameters,
     region_bulk_loss_factor,
-    region_thermoviscous_wall_losses,
     wall_impedance_parameters,
 )
 
 
 def test_thermoviscous_losses_default_off_and_validate() -> None:
-    assert region_thermoviscous_wall_losses({}) == "off"
+    assert boundary_thermoviscous_wall_losses({}) == "off"
     assert (
-        region_thermoviscous_wall_losses({"thermoviscous_wall_losses": "thin_boundary_layer"}) == "thin_boundary_layer"
+        boundary_thermoviscous_wall_losses({"thermoviscous_wall_losses": "thin_boundary_layer"})
+        == "thin_boundary_layer"
     )
     for invalid in (True, None, "unknown", {}, []):
         with pytest.raises(ValueError, match="Thermoviscous"):
-            region_thermoviscous_wall_losses({"thermoviscous_wall_losses": invalid})
+            boundary_thermoviscous_wall_losses({"thermoviscous_wall_losses": invalid})
 
 
 def test_region_bulk_loss_factor_defaults_and_validates() -> None:
