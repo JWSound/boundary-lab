@@ -17,8 +17,10 @@ from blab.acoustic_impedance import (
 )
 from blab.acoustic_materials import (
     REGION_BULK_LOSS_FACTOR_KEY,
+    REGION_THERMOVISCOUS_LOSS_KEY,
     WALL_IMPEDANCE_KEY,
     region_bulk_loss_factor,
+    region_thermoviscous_wall_losses,
     wall_impedance_parameters,
 )
 from blab.component_symmetry import (
@@ -494,16 +496,19 @@ class PhysicalSystemCompiler:
         ):
             issues.append(f"Region '{region.id}' sound speed and density must be finite and positive.")
         self._validate_json_mapping(region.loss_model, owner=f"Region '{region.id}' loss_model", issues=issues)
-        unknown_loss_keys = sorted(set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY})
+        unknown_loss_keys = sorted(set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY, REGION_THERMOVISCOUS_LOSS_KEY})
         if unknown_loss_keys:
             issues.append(
                 f"Region '{region.id}' uses unsupported loss parameters: " + ", ".join(unknown_loss_keys) + "."
             )
         try:
             bulk_loss_factor = region_bulk_loss_factor(region.loss_model)
+            thermoviscous_model = region_thermoviscous_wall_losses(region.loss_model)
         except ValueError as exc:
             issues.append(f"Region '{region.id}' {exc}")
         else:
+            if region.kind != AcousticRegionKind.BOUNDED_AIR and thermoviscous_model != "off":
+                issues.append(f"Region '{region.id}' thermoviscous wall losses require a bounded-air region.")
             if region.kind != AcousticRegionKind.BOUNDED_AIR and bulk_loss_factor != 0.0:
                 issues.append(f"Region '{region.id}' FEM bulk loss requires a bounded-air region.")
 

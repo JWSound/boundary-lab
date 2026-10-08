@@ -33,7 +33,9 @@ from PySide6.QtWidgets import (
 from blab.acoustic_materials import (
     FEM_BULK_LOSS_FACTOR_OPTIONS,
     REGION_BULK_LOSS_FACTOR_KEY,
+    REGION_THERMOVISCOUS_LOSS_KEY,
     region_bulk_loss_factor,
+    region_thermoviscous_wall_losses,
     wall_impedance_parameters,
 )
 from blab.component_symmetry import (
@@ -315,12 +317,14 @@ class SystemConfigDialog(QDialog):
         self.resize(980, 560)
 
     def _build_regions_tab(self) -> None:
-        self.regions_table = QTableWidget(0, 5)
-        self.regions_table.setHorizontalHeaderLabels(["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor"])
+        self.regions_table = QTableWidget(0, 6)
+        self.regions_table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Mesh", "Volume Group", "FEM Bulk Loss Factor", "Thermoviscous wall losses"]
+        )
         self.regions_table.verticalHeader().setVisible(False)
         self.regions_table.setAlternatingRowColors(True)
         self.regions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 5):
+        for column in range(1, 6):
             self.regions_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
 
         add_button = QPushButton("Add Region")
@@ -448,6 +452,7 @@ class SystemConfigDialog(QDialog):
                     volume_group=volume_name,
                     region_id=region.id,
                     bulk_loss_factor=region_bulk_loss_factor(region.loss_model),
+                    thermoviscous_wall_losses=region_thermoviscous_wall_losses(region.loss_model),
                 )
             return
         exterior_meshes = tuple(mesh.name for mesh in self._meshes if not mesh.has_tetrahedra)
@@ -491,6 +496,7 @@ class SystemConfigDialog(QDialog):
         volume_group: str | None,
         region_id: str | None = None,
         bulk_loss_factor: float = 0.0,
+        thermoviscous_wall_losses: str = "off",
     ) -> None:
         row = self.regions_table.rowCount()
         self.regions_table.insertRow(row)
@@ -525,6 +531,17 @@ class SystemConfigDialog(QDialog):
         )
         loss_combo.setEnabled(kind == AcousticRegionKind.BOUNDED_AIR)
         self.regions_table.setCellWidget(row, 4, loss_combo)
+        thermoviscous_combo = QComboBox()
+        thermoviscous_combo.addItem("Off", "off")
+        thermoviscous_combo.addItem("Thin boundary layer", "thin_boundary_layer")
+        thermoviscous_combo.setCurrentIndex(thermoviscous_combo.findData(thermoviscous_wall_losses))
+        thermoviscous_combo.setEnabled(kind == AcousticRegionKind.BOUNDED_AIR)
+        self.regions_table.setCellWidget(row, 5, thermoviscous_combo)
+        type_combo.currentIndexChanged.connect(
+            lambda _index, combo=thermoviscous_combo, r=row: combo.setEnabled(
+                self._region_kind(r) == AcousticRegionKind.BOUNDED_AIR
+            )
+        )
         type_combo.currentIndexChanged.connect(lambda _index, r=row: self._refresh_region_volume_combo(r))
         type_combo.currentIndexChanged.connect(self._refresh_interfaces_tab_availability)
         type_combo.currentIndexChanged.connect(
@@ -1438,6 +1455,7 @@ class SystemConfigDialog(QDialog):
             mesh_combo = self.regions_table.cellWidget(row, 2)
             volume_combo = self.regions_table.cellWidget(row, 3)
             loss_combo = self.regions_table.cellWidget(row, 4)
+            thermoviscous_combo = self.regions_table.cellWidget(row, 5)
             if not isinstance(name_edit, QLineEdit) or not isinstance(mesh_combo, _RegionMeshCombo):
                 continue
             name = name_edit.text().strip()
@@ -1467,6 +1485,11 @@ class SystemConfigDialog(QDialog):
                     "mesh_names": mesh_names,
                     "mesh_ids": tuple(resource_ids[mesh_name] for mesh_name in mesh_names),
                     "volume_group": None if volume_group is None else str(volume_group),
+                    "thermoviscous_wall_losses": (
+                        thermoviscous_combo.currentData()
+                        if kind == AcousticRegionKind.BOUNDED_AIR and isinstance(thermoviscous_combo, QComboBox)
+                        else "off"
+                    ),
                     "bulk_loss_factor": (
                         float(loss_combo.currentData())
                         if kind == AcousticRegionKind.BOUNDED_AIR and isinstance(loss_combo, QComboBox)
@@ -1554,7 +1577,14 @@ class SystemConfigDialog(QDialog):
                     loss_model=(
                         {}
                         if draft["kind"] == AcousticRegionKind.UNBOUNDED_AIR
-                        else {REGION_BULK_LOSS_FACTOR_KEY: draft["bulk_loss_factor"]}
+                        else {
+                            REGION_BULK_LOSS_FACTOR_KEY: draft["bulk_loss_factor"],
+                            **(
+                                {REGION_THERMOVISCOUS_LOSS_KEY: draft["thermoviscous_wall_losses"]}
+                                if draft["thermoviscous_wall_losses"] != "off"
+                                else {}
+                            ),
+                        }
                     ),
                 )
             )

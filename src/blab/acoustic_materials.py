@@ -6,12 +6,21 @@ import math
 from typing import Any, Mapping
 
 REGION_BULK_LOSS_FACTOR_KEY = "bulk_loss_factor"
+REGION_THERMOVISCOUS_LOSS_KEY = "thermoviscous_wall_losses"
 FEM_BULK_LOSS_FACTOR_OPTIONS = (0.0, 0.002, 0.005, 0.01, 0.02, 0.05)
 WALL_IMPEDANCE_KEY = "wall_impedance"
 WALL_IMPEDANCE_MODEL_MIKI = "miki"
 
 DEFAULT_WALL_LINING_THICKNESS_M = 0.03
 DEFAULT_WALL_LINING_FLOW_RESISTIVITY_PA_S_PER_M2 = 5_000.0
+
+
+def region_thermoviscous_wall_losses(loss_model: Mapping[str, Any] | None) -> str:
+    """Return the pressure FEM wall-loss model; old projects remain lossless."""
+    model = "off" if not loss_model else loss_model.get(REGION_THERMOVISCOUS_LOSS_KEY, "off")
+    if model not in ("off", "thin_boundary_layer"):
+        raise ValueError("Thermoviscous wall losses must be 'off' or 'thin_boundary_layer'.")
+    return model
 
 
 def region_bulk_loss_factor(loss_model: Mapping[str, Any] | None) -> float:

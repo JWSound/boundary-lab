@@ -1454,6 +1454,31 @@ def test_system_dialog_edits_region_loss_and_rigid_wall_impedance() -> None:
     assert wall.parameters["wall_impedance"]["flow_resistivity_pa_s_per_m2"] == pytest.approx(5000.0)
 
 
+def test_thermoviscous_dropdown_round_trips_and_defaults_off() -> None:
+    dialog = _configured_fixture_dialog()
+    row = next(r for r in range(dialog.regions_table.rowCount())
+               if dialog._region_kind(r) == AcousticRegionKind.BOUNDED_AIR)
+    combo = dialog.regions_table.cellWidget(row, 5)
+    assert isinstance(combo, QComboBox)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["Off", "Thin boundary layer"]
+    assert combo.currentData() == "off"
+    combo.setCurrentIndex(1)
+    system = dialog.physical_system()
+    region = next(r for r in system.regions if r.kind == AcousticRegionKind.BOUNDED_AIR)
+    assert region.loss_model["thermoviscous_wall_losses"] == "thin_boundary_layer"
+    restored = SystemConfigDialog(inspect_system_meshes(_fixture_mesh_entries()), system, ("main",))
+    row = next(r for r in range(restored.regions_table.rowCount())
+               if restored._region_kind(r) == AcousticRegionKind.BOUNDED_AIR)
+    combo = restored.regions_table.cellWidget(row, 5)
+    assert combo.currentData() == "thin_boundary_layer"
+    exterior = next(r for r in range(restored.regions_table.rowCount())
+                    if restored._region_kind(r) == AcousticRegionKind.UNBOUNDED_AIR)
+    assert not restored.regions_table.cellWidget(exterior, 5).isEnabled()
+    combo.setCurrentIndex(0)
+    assert all(r.loss_model.get("thermoviscous_wall_losses", "off") == "off"
+               for r in restored.physical_system().regions)
+
+
 def test_excitation_rows_on_the_same_channel_are_combined_before_dsp() -> None:
     system = _configured_fixture_dialog().physical_system()
     prepared = prepare_coupled_ui_solve(
