@@ -10,7 +10,9 @@ from blab.acoustic_materials import (
 
 def test_thermoviscous_losses_default_off_and_validate() -> None:
     assert region_thermoviscous_wall_losses({}) == "off"
-    assert region_thermoviscous_wall_losses({"thermoviscous_wall_losses": "thin_boundary_layer"}) == "thin_boundary_layer"
+    assert (
+        region_thermoviscous_wall_losses({"thermoviscous_wall_losses": "thin_boundary_layer"}) == "thin_boundary_layer"
+    )
     for invalid in (True, None, "unknown", {}, []):
         with pytest.raises(ValueError, match="Thermoviscous"):
             region_thermoviscous_wall_losses({"thermoviscous_wall_losses": invalid})

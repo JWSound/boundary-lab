@@ -496,7 +496,9 @@ class PhysicalSystemCompiler:
         ):
             issues.append(f"Region '{region.id}' sound speed and density must be finite and positive.")
         self._validate_json_mapping(region.loss_model, owner=f"Region '{region.id}' loss_model", issues=issues)
-        unknown_loss_keys = sorted(set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY, REGION_THERMOVISCOUS_LOSS_KEY})
+        unknown_loss_keys = sorted(
+            set(region.loss_model) - {REGION_BULK_LOSS_FACTOR_KEY, REGION_THERMOVISCOUS_LOSS_KEY}
+        )
         if unknown_loss_keys:
             issues.append(
                 f"Region '{region.id}' uses unsupported loss parameters: " + ", ".join(unknown_loss_keys) + "."

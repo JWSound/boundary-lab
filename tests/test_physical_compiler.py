@@ -2377,23 +2377,38 @@ def test_cram_example_compiles_with_both_diaphragm_sides_in_one_region() -> None
 @pytest.mark.parametrize("model", ["thin_boundary_layer", "off"])
 def test_compiler_and_backend_preserve_thermoviscous_model(model) -> None:
     system = _fixture_system()
-    configured = replace(system, regions=tuple(
-        replace(r, loss_model={"thermoviscous_wall_losses": model})
-        if r.kind == AcousticRegionKind.BOUNDED_AIR else r for r in system.regions
-    ))
+    configured = replace(
+        system,
+        regions=tuple(
+            replace(r, loss_model={"thermoviscous_wall_losses": model})
+            if r.kind == AcousticRegionKind.BOUNDED_AIR
+            else r
+            for r in system.regions
+        ),
+    )
     compiled = PhysicalSystemCompiler().compile(configured)
-    request = SystemSolveRequest(compiled_system=compiled, frequencies_hz=(500.0,),
-                                 excitation_port_ids=("excitation:radiator",))
+    request = SystemSolveRequest(
+        compiled_system=compiled, frequencies_hz=(500.0,), excitation_port_ids=("excitation:radiator",)
+    )
     session = CoupledProductionBackend(bem_backend="cpu").create_system_session(request)
-    assert next(r for r in session.request.compiled_system.regions
-                if r.kind == AcousticRegionKind.BOUNDED_AIR).loss_model["thermoviscous_wall_losses"] == model
+    assert (
+        next(r for r in session.request.compiled_system.regions if r.kind == AcousticRegionKind.BOUNDED_AIR).loss_model[
+            "thermoviscous_wall_losses"
+        ]
+        == model
+    )
 
 
 def test_compiler_rejects_thermoviscous_losses_on_exterior() -> None:
     system = _fixture_system()
-    configured = replace(system, regions=tuple(
-        replace(r, loss_model={"thermoviscous_wall_losses": "thin_boundary_layer"})
-        if r.kind == AcousticRegionKind.UNBOUNDED_AIR else r for r in system.regions
-    ))
+    configured = replace(
+        system,
+        regions=tuple(
+            replace(r, loss_model={"thermoviscous_wall_losses": "thin_boundary_layer"})
+            if r.kind == AcousticRegionKind.UNBOUNDED_AIR
+            else r
+            for r in system.regions
+        ),
+    )
     with pytest.raises(PhysicalModelCompileError, match="thermoviscous wall losses require"):
         PhysicalSystemCompiler().compile(configured)
