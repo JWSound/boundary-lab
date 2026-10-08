@@ -190,6 +190,7 @@ def resolve_headless_backend(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=max(float(cuda_probe_timeout_s), 0.1),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):

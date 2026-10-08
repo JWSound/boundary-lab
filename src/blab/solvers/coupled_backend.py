@@ -174,6 +174,7 @@ class CoupledSession:
             text=True,
             encoding="utf-8",
             env=environment,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         assert self._process.stdin is not None
         assert self._process.stdout is not None
