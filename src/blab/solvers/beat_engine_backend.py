@@ -247,6 +247,7 @@ class BeatEngineSession:
                     encoding="utf-8",
                     errors="replace",
                     env=_julia_process_env(self.julia_threads, self.julia_project),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except FileNotFoundError as exc:
                 raise RuntimeError(

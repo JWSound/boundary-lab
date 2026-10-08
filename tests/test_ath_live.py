@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import meshio
@@ -130,6 +131,9 @@ def test_ath_process_runner_captures_blaba_output_and_launches_gmsh_worker(tmp_p
     assert (output_dir / "ath.log").read_text(encoding="utf-8") == "Ath diagnostic"
     assert popen_calls[0][0][0] == [str(ath_exe.resolve()), str(config_path), "-b"]
     assert popen_calls[0][1]["cwd"] == output_dir
+    assert popen_calls[0][1]["creationflags"] == (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
     assert worker_calls[0]["mirror_axes"] == ("x", "y")
 
 
