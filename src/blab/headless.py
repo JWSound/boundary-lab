@@ -38,7 +38,7 @@ from blab.solve_results.model import INTERFACE_RADIATION_ID, RADIATION_SOURCE_DO
 from blab.solvers.beat_engine_runtime import DEFAULT_BEAT_ENGINE_CUDA_PROJECT
 from blab.solvers.coupled_backend import PhysicalSystemProductionBackend, validate_solve_plan
 from blab.solvers.engine_distribution import backend_catalog
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import normalize_backend_id, packaged_backend_available
 from blab.system_contract import (
     OutputRequest,
     SystemFrequencyResult,
@@ -169,7 +169,11 @@ def resolve_headless_backend(
     if requested not in HEADLESS_BACKEND_IDS:
         raise ValueError(f"Unknown headless backend {backend_id!r}; expected " + ", ".join(HEADLESS_BACKEND_IDS))
     if requested != HEADLESS_BACKEND_AUTO:
+        if not packaged_backend_available(requested):
+            raise ValueError(f"{requested} is not included in this Boundary Lab installation.")
         return requested
+    if not packaged_backend_available("beat_cuda"):
+        return "beat_cpu"
     if not _command_available("nvidia-smi") or not _command_available(julia_executable):
         return "beat_cpu"
     command = [

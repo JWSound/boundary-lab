@@ -91,6 +91,10 @@ GPU solving VRAM requirements scale quadratically with mesh element count for ex
 
 ## Application Installation
 
+Self-contained Windows x64 installer candidates (CPU, or CPU + NVIDIA CUDA) can
+be built and qualified using the [Windows installer workflow](docs/windows-installer.md).
+They place examples, generated runs, and documentation in `Documents\Boundary Lab`.
+
 From the repository root run:
 
 ```bash

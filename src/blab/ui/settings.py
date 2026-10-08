@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from PySide6.QtCore import QSettings
 
 from blab.project.model import ProjectPreferencesState
-from blab.solvers.registry import normalize_backend_id
+from blab.solvers.registry import normalize_backend_id, packaged_backend_available
 
 SETTINGS_ORG = "Boundary Lab"
 SETTINGS_APP = "Ath4LiveBEM"
@@ -41,7 +41,9 @@ def application_settings() -> QSettings:
 class GuiPreferences:
     def __post_init__(self) -> None:
         backend = normalize_backend_id(self.solve_backend)
-        self.solve_backend = "beat_cpu" if backend in {"local", "server"} else backend
+        self.solve_backend = (
+            "beat_cpu" if backend in {"local", "server"} or not packaged_backend_available(backend) else backend
+        )
 
     theme: str = "system"
     default_geometry_provider: str = "ath"

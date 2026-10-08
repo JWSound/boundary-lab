@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -73,7 +74,12 @@ def backend_condenses_fem_interior(backend_id: str) -> bool:
 
 
 def available_backend_infos() -> tuple[SolverBackendInfo, ...]:
-    return tuple(info for info in _BACKENDS.values() if info.available)
+    return tuple(info for info in _BACKENDS.values() if info.available and packaged_backend_available(info.backend_id))
+
+
+def packaged_backend_available(backend_id: str) -> bool:
+    packaged = os.environ.get("BLAB_PACKAGED_BACKENDS")
+    return packaged is None or backend_id == "beat_remote" or backend_id.removeprefix("beat_") in packaged.split(",")
 
 
 def backend_info(backend_id: str) -> SolverBackendInfo:

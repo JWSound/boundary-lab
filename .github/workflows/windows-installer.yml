@@ -1,0 +1,47 @@
+name: Windows installer candidate
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: Bundled solvers (CUDA includes CPU fallback)
+        type: choice
+        options: [cpu, cuda]
+        default: cpu
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: packaging/requirements-win.txt
+      - name: Stage isolated runtime
+        run: python scripts/build_windows_runtime.py --backend ${{ inputs.backend }}
+      - name: Qualify CPU GUI, geometry, and solves offline
+        run: python scripts/verify_windows_runtime.py --payload build/windows-${{ inputs.backend }} --destination "build/Relocated Boundary Lab" --solve
+      - name: Compile unsigned local-test installer
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) { throw 'Inno Setup 6 is required on the Windows runner.' }
+          python scripts/build_windows_installer.py --payload build/windows-${{ inputs.backend }} --iscc "$compiler"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: boundary-lab-windows-x64-${{ inputs.backend }}-unsigned
+          path: |
+            dist/*.exe
+            dist/*.sha256
+            build/windows-${{ inputs.backend }}/runtime-manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qualification-${{ inputs.backend }}
+          path: |
+            build/qualification-*/qualification.log
+            build/qualification-*/verification.json
+            build/qualification-*/Documents */Boundary Lab/runs/smoke/smoke.json
+            build/qualification-*/Documents */Boundary Lab/runs/smoke/*.png

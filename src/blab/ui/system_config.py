@@ -51,6 +51,7 @@ from blab.interface_conform import (
     conform_bem_interface_to_fem,
 )
 from blab.mesh_inventory import AvailableSystemMesh, inspect_system_mesh_variants, inspect_system_meshes
+from blab.paths import working_runs_root
 from blab.physical_model import (
     AcousticInterface,
     AcousticRegion,
@@ -234,7 +235,7 @@ class SystemConfigDialog(QDialog):
         self._restored_resources_by_mesh_name: dict[str, MeshResource] = {}
         self._symmetry_mode = normalize_symmetry(symmetry_mode)
         self._interface_output_root = (
-            Path.cwd() / "runs" / "imported_meshes" if interface_output_root is None else Path(interface_output_root)
+            working_runs_root() / "imported_meshes" if interface_output_root is None else Path(interface_output_root)
         )
         self._interfaces = list(system.interfaces if system is not None else ())
         self._existing_regions = {region.id: region for region in (() if system is None else system.regions)}

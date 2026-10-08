@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from blab.paths import APP_ROOT
+from blab.paths import APP_ROOT, DOCS_ROOT, RUNS_ROOT
 
 DEFAULT_MESH_SCALE_FACTOR = 0.001
 
@@ -10,9 +10,9 @@ LIVE_PLOT_REFRESH_INTERVAL_MS = 250
 
 ATH_BUNDLE_DIR = APP_ROOT / "ath"
 
-GENERATED_GEOMETRY_ROOT = APP_ROOT / "runs" / "generated_geometry"
+GENERATED_GEOMETRY_ROOT = RUNS_ROOT / "generated_geometry"
 
-HELP_GUIDE_PDF = APP_ROOT / "docs" / "Boundary Lab Guide.pdf"
+HELP_GUIDE_PDF = DOCS_ROOT / "Boundary Lab Guide.pdf"
 
 EXPORT_DARK_ICON = APP_ROOT / "assets" / "export_dark.ico"
 

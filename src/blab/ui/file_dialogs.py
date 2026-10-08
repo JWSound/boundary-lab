@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QFileDialog, QWidget
 
+from blab.paths import USER_ROOT
 from blab.ui.settings import application_settings
 
 LAST_USED_DIRECTORY_KEY = "file_dialogs/last_used_directory"
@@ -22,7 +23,7 @@ class FileDialogService:
         fallback_directory: str | Path | None = None,
     ) -> None:
         self.settings = settings if settings is not None else application_settings()
-        self.fallback_directory = Path.home() if fallback_directory is None else Path(fallback_directory)
+        self.fallback_directory = (USER_ROOT or Path.home()) if fallback_directory is None else Path(fallback_directory)
 
     def open_file(
         self,

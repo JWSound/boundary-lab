@@ -24,6 +24,7 @@ from blab.interface_conform import (
 from blab.mesh_clean import stitch_meshes
 from blab.mesh_data import MeshData, read_resource_mesh
 from blab.mesh_topology import analyze_exterior_mesh_topology
+from blab.paths import working_runs_root
 from blab.physical_model import (
     AcousticInterface,
     AcousticRegionKind,
@@ -71,7 +72,7 @@ def prepare_exterior_system(
     symmetry_mode = normalize_symmetry(symmetry_mode)
     if not np.isfinite(stitch_tolerance_mm) or stitch_tolerance_mm <= 0:
         raise ValueError("Exterior stitch tolerance must be positive.")
-    root = Path(output_root) if output_root is not None else Path.cwd() / "runs" / "exterior_meshes"
+    root = Path(output_root) if output_root is not None else working_runs_root() / "exterior_meshes"
     in_memory = any(mesh.mesh_data is not None for mesh in system.meshes)
     resources = {mesh.id: mesh for mesh in system.meshes}
     boundaries = list(system.boundaries)

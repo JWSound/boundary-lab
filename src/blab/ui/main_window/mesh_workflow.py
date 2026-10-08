@@ -20,6 +20,7 @@ from blab.mesh_cache import mesh_cache
 from blab.mesh_data import surface_names
 from blab.mesh_inventory import inspect_system_meshes
 from blab.mesh_topology import analyze_exterior_mesh_topology
+from blab.paths import working_runs_root
 from blab.preview_hierarchy import build_preview_hierarchy
 from blab.preview_motion import preview_motion_assignments
 from blab.project.model import (
@@ -122,7 +123,7 @@ class MeshWorkflowMixin:
     def mesh_service(self) -> MeshAssemblyService:
         service = getattr(self, "mesh_assembly_service", None)
         if service is None:
-            service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
+            service = MeshAssemblyService(working_runs_root() / "imported_meshes")
             self.mesh_assembly_service = service
         return service
 

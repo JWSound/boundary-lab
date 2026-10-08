@@ -22,6 +22,7 @@ from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.live import (
     LiveSolveDataset,
 )
+from blab.paths import working_runs_root
 from blab.project.model import (
     ImportedMeshState,
     ProjectDocument,
@@ -288,7 +289,7 @@ class MainWindow(
         self.activities = ActivityController(self)
         self.preparations = PreparationController(self, self.activities)
         self._operation_activities = {}
-        self.mesh_assembly_service = MeshAssemblyService(Path.cwd() / "runs" / "imported_meshes")
+        self.mesh_assembly_service = MeshAssemblyService(working_runs_root() / "imported_meshes")
         self.result_projection_service = ResultProjectionService()
         self.geometry_controller = GeometryController(self)
         self.solve_controller = SolveController(self)

@@ -271,6 +271,9 @@ class AthProcessRunner:
         result_path.unlink(missing_ok=True)
         command = [
             sys.executable,
+            "-B",
+            "-X",
+            "utf8",
             "-m",
             "blab.ath_gmsh_worker",
             "--geo",
