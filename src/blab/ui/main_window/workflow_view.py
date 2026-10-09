@@ -279,7 +279,7 @@ class WorkflowView(Protocol):
         constructor signature.
         """
 
-    def show_error(self, title: str, message: str) -> None:
+    def show_error(self, title: str, message: str, details: str | None = None) -> None:
         """Report a failure that interrupted work already under way."""
 
     def confirm(self, title: str, message: str) -> bool:

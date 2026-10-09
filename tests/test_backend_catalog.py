@@ -76,7 +76,7 @@ def test_backend_failure_is_emitted_only_when_solve_runs(qapp, monkeypatch):
     prepared = prepare_headless_solve(project, HeadlessSolveSpec(frequencies_hz=(500.0,)), backend_id="beat_metal")
     worker = SystemSolveWorker(prepared)
     errors = []
-    worker.failed.connect(errors.append)
+    worker.failed.connect(lambda message, _details: errors.append(message))
     assert attempts == []
     assert errors == []
     worker.run()

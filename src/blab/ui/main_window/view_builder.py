@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from blab.ui.activity import ActivityStatusBar
 from blab.ui.application_state import OperationPhase
+from blab.ui.error_dialog import ErrorDialog
 from blab.ui.main_window.workflow_view import (
     FrequencyRange,
     UnsavedChoice,
@@ -394,8 +395,8 @@ class ViewBuilderMixin:
     def warn(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
 
-    def show_error(self, title: str, message: str) -> None:
-        QMessageBox.critical(self, title, message)
+    def show_error(self, title: str, message: str, details: str | None = None) -> None:
+        ErrorDialog(title, message, details, self).exec()
 
     def confirm(self, title: str, message: str) -> bool:
         return (

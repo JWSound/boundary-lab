@@ -37,6 +37,7 @@ class FakeView:
         self.status: list[str] = []
         self.warnings: list[tuple[str, str]] = []
         self.errors: list[tuple[str, str]] = []
+        self.error_details: list[str | None] = []
         self.stitch_errors: list[tuple[str, Exception]] = []
         self.phases: list[tuple[OperationPhase, bool]] = []
         self.plot_exports: list[bool] = []
@@ -52,8 +53,9 @@ class FakeView:
     def warn(self, title, message):
         self.warnings.append((title, message))
 
-    def show_error(self, title, message):
+    def show_error(self, title, message, details=None):
         self.errors.append((title, message))
+        self.error_details.append(details)
 
     def show_stitch_or_generic_error(self, title, exc):
         self.stitch_errors.append((title, exc))
@@ -610,6 +612,13 @@ def test_a_failed_solve_is_reported_as_an_error_not_a_warning(controller) -> Non
 
     assert controller.view.errors == [("Solve failed", "backend exploded")]
     assert controller.view.warnings == []
+
+
+def test_a_failed_solve_passes_the_traceback_as_error_details(controller) -> None:
+    controller._on_solve_failed("backend exploded", "Traceback (most recent call last): ...")
+
+    assert controller.view.errors == [("Solve failed", "backend exploded")]
+    assert controller.view.error_details == ["Traceback (most recent call last): ..."]
 
 
 def test_finishing_with_no_results_restores_idle_without_offering_exports(controller) -> None:

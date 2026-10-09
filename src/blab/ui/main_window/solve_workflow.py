@@ -759,12 +759,12 @@ class SolveWorkflowController(QObject):
             return
         self._plots.request_live_refresh()
 
-    @Slot(str)
-    def _on_solve_failed(self, message: str) -> None:
+    @Slot(str, str)
+    def _on_solve_failed(self, message: str, details: str = "") -> None:
         if self._provider_job_id is not None:
             self._view.show_status(f"Provider solve failed: {message}")
             return
-        self._view.show_error("Solve failed", mesh_solve_failure_message(message))
+        self._view.show_error("Solve failed", mesh_solve_failure_message(message), details or None)
         self._view.show_status("Solve failed")
 
     @Slot(object)

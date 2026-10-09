@@ -113,7 +113,7 @@ class SolveController(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
     status = Signal(str)
-    failed = Signal(str)
+    failed = Signal(str, str)
     finished = Signal(object)
     state_changed = Signal(object)
 
@@ -208,12 +208,12 @@ class SolveController(QObject):
         self._set_state(self.state.phase, message)
         self.status.emit(message)
 
-    @Slot(str)
-    def _on_failed(self, message: str) -> None:
+    @Slot(str, str)
+    def _on_failed(self, message: str, details: str = "") -> None:
         self._failed = True
         self.last_error = message
         self._set_state(OperationPhase.FAILED, message)
-        self.failed.emit(message)
+        self.failed.emit(message, details)
 
     @Slot()
     def _on_finished(self) -> None:

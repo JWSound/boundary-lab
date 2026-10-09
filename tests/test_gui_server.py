@@ -83,7 +83,7 @@ def test_gui_remote_worker_streams_complex_results(qapp, monkeypatch):
     monkeypatch.setattr("blab.remote.RemoteBackend", Backend)
     worker = SystemSolveWorker(prepared)
     errors, results = [], []
-    worker.failed.connect(errors.append)
+    worker.failed.connect(lambda message, _details: errors.append(message))
     worker.result_ready.connect(results.append)
     worker.run()
     assert not errors

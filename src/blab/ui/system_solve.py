@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 from dataclasses import replace
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -27,7 +28,7 @@ class SystemSolveWorker(QObject):
     initialized = Signal(object, object, object)
     result_ready = Signal(object)
     status = Signal(str)
-    failed = Signal(str)
+    failed = Signal(str, str)
     finished = Signal()
 
     def __init__(self, prepared: PreparedSystemSolve):
@@ -45,7 +46,7 @@ class SystemSolveWorker(QObject):
             self._run_physical_system(request)
         except Exception as exc:
             if not self._stop:
-                self.failed.emit(str(exc))
+                self.failed.emit(str(exc), traceback.format_exc())
         finally:
             self._release_idle()
             self.finished.emit()
