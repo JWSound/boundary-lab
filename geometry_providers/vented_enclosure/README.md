@@ -106,5 +106,5 @@ and 100 Hz with 2.83 V excitation, retaining complex pressure/current/motion
 and FEM nodal pressure. This is workflow validation, not mesh convergence or
 measurement validation.
 
-`examples/geometry_providers/example_box/` remains the minimal developer API
-example. It is not the bundled enclosure model.
+`tests/fixtures/geometry_providers/example_box/` is the minimal developer API
+fixture. It is excluded from the packaged user examples.

@@ -23,7 +23,7 @@ def isolated_provider_preferences():
 
 @pytest.fixture
 def box_catalog(monkeypatch):
-    root = Path(__file__).resolve().parents[1] / "examples" / "geometry_providers"
+    root = Path(__file__).resolve().parent / "fixtures" / "geometry_providers"
     catalog = ProviderCatalog([root], enabled=("example.box",))
     catalog.scan()
     monkeypatch.setattr(catalog_module, "_catalog", catalog)

@@ -96,7 +96,7 @@ def test_example_package_generates_and_stages_without_mesh_files(tmp_path, monke
     from blab.generators.application import stage_generation
     from blab.project.model import ProjectDocument, new_generator_document
 
-    root = Path(__file__).resolve().parents[1] / "examples" / "geometry_providers" / "example_box"
+    root = Path(__file__).resolve().parent / "fixtures" / "geometry_providers" / "example_box"
     shutil.copytree(root, tmp_path / "example_box")
     catalog = ProviderCatalog([tmp_path], enabled=("example.box",))
     catalog.scan()

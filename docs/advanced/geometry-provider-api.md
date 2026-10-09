@@ -297,8 +297,9 @@ an **Open install folder** shortcut and **Rescan**. Enable the
 plugin, choose the **Default Generator Plugin** for new designs, then click **OK**. Existing designs keep their own provider ID. Newly discovered
 packages are disabled until enabled; opening a project never enables a package.
 
-The runnable [Example Box package](../../examples/geometry_providers/example_box/)
+The developer-only [Example Box test fixture](../../tests/fixtures/geometry_providers/example_box/)
 contains a custom Qt editor and a backend producing a closed mesh in memory.
+It is kept out of the packaged user examples.
 Copy its `example_box` folder, enable **Example Box**, select it as the default,
 and add a design. Edit the dimensions and click the host's **Generate** button.
 Its twelve triangles demonstrate the integration rather than acoustic accuracy.
