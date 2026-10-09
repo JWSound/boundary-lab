@@ -43,6 +43,10 @@ model and validates interface topology; backend-specific solve checks still appl
   resources and supply physical assignments in the same transactional response.
 - Local folders with a `provider.json` manifest appear in **Edit > Generator Plugins...**. Enable a package before its code can be loaded.
   Custom widgets live inside the host's design dock; Ath remains the default.
+  The bundled [Vented Enclosure](../../geometry_providers/vented_enclosure/README.md)
+  is enabled on introduction and provides a working FEM–BEM–LEM assembly.
+  Other packages still require explicit enablement; a manifest cannot claim
+  first-party status. Disabling the bundled plugin is remembered.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
   The host owns the frequency range and count; provider commands cannot change them.

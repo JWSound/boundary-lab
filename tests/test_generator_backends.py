@@ -30,7 +30,7 @@ def test_generator_registry_exposes_ath_provider_contract() -> None:
 
     assert info.provider_id == ATH_PROVIDER_ID
     assert info.capabilities.source_formats == ("ath_cfg",)
-    assert {item.provider_id for item in available_generator_infos()} == {"ath"}
+    assert info in available_generator_infos()
     assert isinstance(create_generator("ath", ath_exe="ath.exe"), AthGeneratorBackend)
 
 
