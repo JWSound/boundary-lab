@@ -126,17 +126,13 @@ class EnclosureEditor:
                 self.spins[key], self.sliders[key] = spin, slider
             if title == "Transducer geometry":
                 note = QLabel(
-                    "The surround translates with the cone; the dust cap is a shallow spherical dome. "
                     "After Generate, set Re, Le, Bl, dry Mmd, Cms and Rms in System → Components. "
                     "The initial values are illustrative and are preserved when regenerating."
                 )
                 note.setWordWrap(True)
                 form.addWidget(note)
             if title == "Port":
-                note = QLabel(
-                    "NFR = length / (2 × flare radius). Zero gives a straight throat. "
-                    "Both lips have tangent roundovers. This controls geometry; solve to evaluate tuning."
-                )
+                note = QLabel("NFR = length / (2 × flare radius). Zero gives a straight throat.")
                 note.setWordWrap(True)
                 form.addWidget(note)
             form.addStretch()
@@ -181,16 +177,13 @@ class EnclosureEditor:
         else:
             mouth = 2 * port_profile(p)["mouth"][1] * 1000
             throat = 2 * math.sqrt(p["port_area_m2"] / math.pi) * 1000
-            self.summary.setText(
-                f"Port throat Ø{throat:.1f} mm · mouth Ø{mouth:.1f} mm\n"
-                "Sketch only. Generate creates the FEM cavity and exterior BEM mesh."
-            )
+            self.summary.setText(f"Port throat Ø{throat:.1f} mm · mouth Ø{mouth:.1f} mm")
             self.sketch.source = p
         self.sketch.update()
 
     def event(self, event):
         if event.kind == "geometry_accepted":
-            self.status.setText("Meshes accepted. Review the driver parameters in System → Components before solving.")
+            self.status.setText("Meshes accepted.")
         elif event.job is not None:
             self.status.setText(event.job.message)
 
