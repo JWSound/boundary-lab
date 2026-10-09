@@ -6,6 +6,7 @@ Project files store:
 
 - generator design documents, including plugin ID and plugin-owned source
 - generated mesh enabled state, scale, and XYZ offset
+- named generated FEM/BEM assembly resources and plugin provenance (schema 10)
 - imported mesh rows, including absolute `.msh` paths
 - whether the exterior region's mesh parts should be stitched into one solve mesh
 - an editable physical-system graph for exterior BEM and coupled BEM/FEM models
@@ -17,7 +18,7 @@ Project files do not store:
 - solved BEM results
 - exported plots
 - solver backend, GMRES tolerance, and Burton-Miller preferences
-- generated geometry file contents
+- external generated geometry file contents (in-memory mesh snapshots are embedded)
 
 ## Example Shape
 

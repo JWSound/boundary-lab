@@ -15,7 +15,7 @@ from typing import Any
 from blab.observation_planes import observation_planes_from_payload
 from blab.project.model import ProjectPreferencesState
 
-PROJECT_SCHEMA_VERSION = 9
+PROJECT_SCHEMA_VERSION = 10
 PROJECT_FILE_FILTER = "Boundary Lab project files (*.blab.json *.json);;JSON files (*.json);;All files (*)"
 PROJECT_DEFAULT_NAME = "boundary_lab_project.blab.json"
 PROJECT_PAYLOAD_KEYS = (
@@ -91,6 +91,10 @@ def resolve_project_paths(payload: dict[str, Any], base_dir: str | Path) -> dict
             ("output_dir", "mesh_path", "cleaned_mesh_path", "reduced_cleaned_mesh_path", "source_path"),
         )
         document["artifact"] = artifact or None
+        if artifact.get("meshes"):
+            artifact["meshes"] = [dict(mesh) for mesh in artifact["meshes"]]
+            for mesh in artifact["meshes"]:
+                _resolve_path_fields(mesh, base_path, ("mesh_path",))
         generator_documents.append(document)
     resolved["generator_documents"] = generator_documents
 
@@ -131,6 +135,8 @@ def _project_payload_with_portable_paths(payload: dict[str, Any], base_dir: str 
                 base_path,
                 ("output_dir", "mesh_path", "cleaned_mesh_path", "reduced_cleaned_mesh_path", "source_path"),
             )
+            for mesh in artifact.get("meshes", ()):
+                _relativize_path_fields(mesh, base_path, ("mesh_path",))
 
     physical_system = portable.get("physical_system")
     if isinstance(physical_system, dict):

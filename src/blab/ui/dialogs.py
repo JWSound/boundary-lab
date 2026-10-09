@@ -74,6 +74,7 @@ class MeshDialogEntry:
     enabled: bool = True
     locked: bool = False
     mesh_data: MeshData | None = None
+    assembly_id: str | None = None
 
 
 class DonateDialog(QDialog):
@@ -633,6 +634,9 @@ class MeshConfigDialog(QDialog):
             name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
         self.table.setItem(row, 1, name_item)
         self.name_items.append(name_item)
+        name_item.setData(Qt.ItemDataRole.UserRole, mesh.assembly_id)
+        if mesh.assembly_id:
+            name_item.setToolTip("Generated assembly: enabling, scale and position apply to all of its meshes.")
 
         file_item = QTableWidgetItem(mesh.source_file)
         file_item.setFlags(file_item.flags() & ~Qt.ItemIsEditable)
@@ -663,6 +667,24 @@ class MeshConfigDialog(QDialog):
             spin.setValue(round(float(value)))
             self.table.setCellWidget(row, column, spin)
             widgets.append(spin)
+
+        if mesh.assembly_id:
+            for column in (0, 3, 4, 5, 6):
+                widget = self.table.cellWidget(row, column)
+                signal = widget.toggled if column == 0 else widget.valueChanged
+                signal.connect(lambda value, group=mesh.assembly_id, col=column: self._sync_assembly(group, col, value))
+
+    def _sync_assembly(self, assembly_id, column, value):
+        for row, item in enumerate(self.name_items):
+            if item.data(Qt.ItemDataRole.UserRole) != assembly_id:
+                continue
+            widget = self.table.cellWidget(row, column)
+            blocked = widget.blockSignals(True)
+            if column == 0:
+                widget.setChecked(value)
+            else:
+                widget.setValue(value)
+            widget.blockSignals(blocked)
 
     def _add_mesh(self) -> None:
         path = self.file_dialogs.open_file(
@@ -776,6 +798,7 @@ class MeshConfigDialog(QDialog):
                     enabled=bool(self.enabled_widgets[row].isChecked()),
                     locked=is_generated_row,
                     mesh_data=self.file_items[row].data(int(Qt.ItemDataRole.UserRole) + 2),
+                    assembly_id=self.name_items[row].data(Qt.ItemDataRole.UserRole),
                 )
             )
         return tuple(meshes)

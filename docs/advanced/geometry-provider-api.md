@@ -23,13 +23,15 @@ Host document + configuration snapshot
 The generation backend and configuration/application modules do not depend on
 Qt. The desktop worker adapts their results to Qt signals. The physical compiler
 and normal solve preparation still decide whether a model is solve-ready;
-acceptance does not assert that every driver parameter or numerical assumption
-is complete.
+single-mesh acceptance does not assert that every driver parameter or numerical
+assumption is complete. Assembly acceptance additionally compiles the physical
+model and validates interface topology; backend-specific solve checks still apply.
 
 ### Current scope
 
-- `GeneratedGeometry` accepts one immutable `MeshData` snapshot or one mesh file
-  per design, with optional symmetry variants. Memory snapshots pass through
+- `GeneratedGeometry` accepts either a legacy single mesh with optional symmetry
+  variants, or a tuple of named `GeneratedMesh` resources forming an assembly.
+  Each resource is an immutable `MeshData` snapshot or a mesh file. Memory snapshots pass through
   preview, compilation, exterior stitching and the local BEAT worker without
   mesh/request-file round trips. File providers must write distinct artifacts
   and never overwrite a file belonging to an accepted revision.
@@ -37,8 +39,8 @@ is complete.
   by the host's accepted artifact, not by configuration patches.
 - A first exterior generation can seed the standard exterior model from mesh
   groups and legacy radiator hints. Existing FEM/coupled models can be edited
-  within the provider's ownership scope. Creating a new multi-mesh FEM/coupled
-  contribution is not implemented in this increment.
+  within the provider's ownership scope. Assemblies create their FEM/BEM mesh
+  resources and supply physical assignments in the same transactional response.
 - Local folders with a `provider.json` manifest appear in **Edit > Generator Plugins...**. Enable a package before its code can be loaded.
   Custom widgets live inside the host's design dock; Ath remains the default.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
@@ -107,6 +109,80 @@ Ath and existing backends returning bare `GeneratedGeometry` are adapted to a
 correlated completion and retain their legacy exterior-seeding behavior. New
 providers should return `GenerationResponse`, including when they have no
 configuration changes, to use transactional configuration acceptance.
+
+## Named mesh assemblies
+
+An assembly is an additive exchange-schema-1 feature. Existing single-mesh
+plugins and bare legacy responses remain supported. Assembly plugins must return
+`GenerationResponse`; a bare assembly `GeneratedGeometry` is rejected.
+
+```python
+from blab.generators import (
+    GeneratedGeometry, GeneratedMesh, GenerationResponse, generated_mesh_id,
+)
+
+geometry = GeneratedGeometry(
+    provider_id=request.provider_id,
+    output_dir=request.run_root,
+    mesh_path=None,
+    radiators=(),  # Assembly motion belongs to physical components.
+    meshes=(
+        GeneratedMesh("interior", "fem_volume", mesh_path=interior_path),
+        GeneratedMesh("exterior", "bem_surface", mesh_data=exterior_data),
+    ),
+    provider_metadata={"generator_version": "1.0", "mesher_version": "4.13"},
+)
+interior_id = generated_mesh_id(request.document_id, "interior")
+exterior_id = generated_mesh_id(request.document_id, "exterior")
+# Use these IDs in region mesh_ids, volume_groups and boundary group.mesh_id.
+# physical_patch supplies the regions, boundaries, interface, component and
+# excitation using the patch operations below.
+response = GenerationResponse(request.request_id, geometry, physical_patch)
+```
+
+Local mesh IDs must match `[a-z][a-z0-9_-]*` and be unique within the assembly.
+Host mesh IDs are `<document_id>/mesh/<local_id>` and remain stable across
+regeneration and design renaming. Display names are `<design_name>__<local_id>`.
+Every resource must have exactly one source and a `bem_surface` or `fem_volume`
+purpose. An assembly cannot also populate the legacy primary mesh, radiator or
+symmetry-variant fields. Mesh coordinates share the design's scale and XYZ
+translation; the Mesh Config dialog links those controls and enabled state across
+all resources in the assembly.
+
+On first generation, include complete physical assignments for every mesh:
+bounded regions need volume groups; moving boundaries need a component and its
+excitation; FEM/BEM interfaces need both boundary IDs and conforming facets.
+The host compiles the detached candidate before accepting it. No numerical solve
+is launched by acceptance. Normal solve preparation still validates backend
+capabilities and transducer parameters.
+
+When joining an existing exterior region, use its ID from the request's
+configuration snapshot in the new exterior boundary assignments. The host adds
+only the assembly's referenced BEM resource IDs to that region. Do not upsert
+shared-region settings or replace its mesh list. Create a new exterior region
+only when none exists: the model permits one unbounded exterior region.
+
+The response's resource list is the complete new inventory. Regeneration with
+the same local IDs replaces their sources while omitted physical fields remain
+unchanged. To retire a resource, explicitly remove or update its dependent
+entities in the same patch. Dangling references, missing groups, invalid roles,
+unowned edits, name/ID collisions and nonconforming interfaces reject the entire
+candidate. Never overwrite files belonging to an accepted revision: use fresh
+paths beneath the generation run directory. A rejected response retains the
+previous model and artifact references, but cannot undo a plugin's file writes.
+
+Assembly artifacts and finite JSON `provider_metadata` are saved in project
+schema 10. Both file-backed and in-memory resources restore without importing
+the plugin. File paths inside the project directory are saved relatively.
+Older project schemas remain readable; releases supporting only schema 9 or
+earlier reject schema 10 rather than silently losing assembly resources.
+
+This increment supports full models with symmetry **Off**. It rejects automatic
+assembly symmetry reduction rather than independently reducing interface meshes.
+Enabling/disabling applies to the whole assembly. Removing a design removes its
+owned physical entities; cross-design component/interface dependencies must be
+resolved before removing or disabling it. It does not automatically construct
+geometry or install a vented-enclosure plugin.
 
 ## Patch semantics
 
@@ -205,9 +281,9 @@ defaults. Headless consumers can call `complete_generation()` and
 together and enforce request ordering themselves.
 
 In-memory artifacts are embedded in `.blab.json` on explicit project save and can
-be restored without importing the provider. File artifacts still use
-`backend.restore()`. A provider is required to generate again. Multi-mesh provider
-contributions remain a separate increment.
+be restored without importing the provider. Legacy single-mesh file artifacts
+still use `backend.restore()`; named assembly file artifacts restore through the
+host. A provider is required to generate again.
 
 ## Installing and developing provider packages
 

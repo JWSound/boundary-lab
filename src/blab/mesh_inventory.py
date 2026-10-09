@@ -30,6 +30,7 @@ class InventoryEntry:
     enabled: bool = True
     locked: bool = False
     mesh_data: MeshData | None = None
+    assembly_id: str | None = None
 
 
 @dataclass(frozen=True)

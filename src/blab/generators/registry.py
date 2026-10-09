@@ -83,6 +83,16 @@ def create_generator(provider_id: str, **kwargs: Any) -> GeneratorBackend:
 
 def restore_generator_document(document: GeneratorDocument) -> GeneratedGeometry | None:
     artifact = document.artifact
+    if artifact is not None and artifact.meshes:
+        return GeneratedGeometry(
+            provider_id=document.provider_id,
+            output_dir=Path(artifact.output_dir),
+            mesh_path=None,
+            radiators=(),
+            meshes=artifact.meshes,
+            source_path=Path(artifact.source_path) if artifact.source_path else None,
+            provider_metadata=artifact.provider_metadata,
+        )
     if artifact is not None and artifact.mesh_data is not None:
         return GeneratedGeometry(
             provider_id=document.provider_id,

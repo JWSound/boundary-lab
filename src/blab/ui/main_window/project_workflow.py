@@ -20,6 +20,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.registry import restore_generator_document
+from blab.generators.resources import generated_mesh_names as document_mesh_names
 from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
     physical_system_from_dict,
@@ -160,7 +161,9 @@ class ProjectWorkflowController(QObject):
                 continue
             source_file = str(item.get("source_file", "")).strip()
             name = str(item.get("name", "")).strip()
-            generated_mesh_names = {generator_mesh_name(document) for document in self._project.generator_documents}
+            generated_mesh_names = {
+                name for document in self._project.generator_documents for name in document_mesh_names(document)
+            }
             if not source_file or not name or name in generated_mesh_names:
                 continue
             translation = item.get("translation_mm", [0.0, 0.0, 0.0])

@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
+from blab.generators.resources import active_assembly_system, generated_mesh_entries
 from blab.mesh_data import read_resource_mesh
 from blab.mesh_inventory import InventoryEntry, inspect_system_mesh_variants
 from blab.mesh_topology import analyze_exterior_mesh_topology
 from blab.physical_model import PhysicalSystem
 from blab.preview_hierarchy import build_preview_hierarchy, physical_system_preview_metadata
 from blab.preview_motion import preview_motion_assignments
-from blab.project.model import ImportedMeshState, generator_mesh_name
+from blab.project.model import ImportedMeshState
 from blab.ui.mesh_assembly import STITCH_FAILURE_MESSAGE, MeshAssemblyService
 
 
@@ -37,19 +38,7 @@ class MeshPreparationSnapshot:
             if symmetry != "off" and document.mesh_enabled:
                 result = ensure_reduced_geometry(result)
                 self.generated[document.id] = result
-            entries.append(
-                InventoryEntry(
-                    name=generator_mesh_name(document),
-                    source_file=""
-                    if result.mesh_data is not None
-                    else str(result.solver_mesh_path_for_symmetry(symmetry)),
-                    scale_factor=float(document.mesh_scale_factor),
-                    translation_mm=document.mesh_translation_mm,
-                    enabled=document.mesh_enabled,
-                    locked=True,
-                    mesh_data=result.solver_mesh_data_for_symmetry(symmetry),
-                )
-            )
+            entries.extend(generated_mesh_entries(document, result, symmetry))
         entries.extend(
             InventoryEntry(
                 name=mesh.name,
@@ -71,6 +60,7 @@ def prepare_system_inventory(snapshot: MeshPreparationSnapshot):
 
 
 def prepare_preview(snapshot: MeshPreparationSnapshot, output_root):
+    snapshot.system = active_assembly_system(snapshot.system, snapshot.documents)
     service = MeshAssemblyService(output_root)
     generated = tuple(
         MeshConfig(

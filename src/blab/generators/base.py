@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -14,6 +16,11 @@ from blab.mesh_clean import MeshQualityWarning
 from blab.mesh_data import MeshData
 
 PROVIDER_API_VERSION = 1
+
+
+def generated_mesh_id(document_id: str, local_id: str) -> str:
+    """Stable host resource ID for an assembly-local mesh key."""
+    return f"{document_id}/mesh/{local_id}"
 
 
 class GenerationCancelledError(RuntimeError):
@@ -31,6 +38,35 @@ class GeneratorCapabilities:
 
 
 @dataclass(frozen=True)
+class GeneratedMesh:
+    """One named resource in a generated assembly, in document-local coordinates."""
+
+    id: str
+    purpose: str
+    mesh_path: Path | None = None
+    mesh_data: MeshData | None = None
+
+    def __post_init__(self):
+        if not isinstance(self.id, str) or not re.fullmatch(r"[a-z][a-z0-9_-]*", self.id):
+            raise ValueError("Generated mesh IDs must be lowercase local identifiers (letters, digits, '_' or '-').")
+        if not isinstance(self.purpose, str) or self.purpose not in {"bem_surface", "fem_volume"}:
+            raise ValueError("Generated meshes require a bem_surface or fem_volume purpose.")
+        if (self.mesh_path is None) == (self.mesh_data is None):
+            raise ValueError("GeneratedMesh requires exactly one of mesh_path and mesh_data.")
+        if self.mesh_data is not None and not isinstance(self.mesh_data, MeshData):
+            raise ValueError("GeneratedMesh.mesh_data must be an immutable MeshData snapshot.")
+        if self.mesh_path is not None:
+            object.__setattr__(self, "mesh_path", Path(self.mesh_path))
+
+
+def _validate_meshes(meshes):
+    if not isinstance(meshes, tuple) or any(not isinstance(mesh, GeneratedMesh) for mesh in meshes):
+        raise ValueError("Generated meshes must be a tuple of GeneratedMesh resources.")
+    if len({mesh.id for mesh in meshes}) != len(meshes):
+        raise ValueError("Generated mesh IDs must be unique within a design.")
+
+
+@dataclass(frozen=True)
 class GeneratedGeometryReference:
     """Serializable mesh source for the last artifact produced by a design."""
 
@@ -42,6 +78,8 @@ class GeneratedGeometryReference:
     mesh_data: MeshData | None = None
     reduced_mesh_data: MeshData | None = None
     mirror_axes: tuple[str, ...] = ()
+    meshes: tuple[GeneratedMesh, ...] = ()
+    provider_metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -100,8 +138,31 @@ class GeneratedGeometry:
     provider_metadata: Mapping[str, Any] = field(default_factory=dict)
     mesh_data: MeshData | None = None
     reduced_mesh_data: MeshData | None = None
+    meshes: tuple[GeneratedMesh, ...] = ()
 
     def __post_init__(self):
+        _validate_meshes(self.meshes)
+        if self.meshes:
+            try:
+                json.dumps(dict(self.provider_metadata), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Assembly provenance must contain finite JSON values.") from exc
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.mesh_path,
+                        self.mesh_data,
+                        self.cleaned_mesh_path,
+                        self.reduced_cleaned_mesh_path,
+                        self.reduced_mesh_data,
+                    )
+                )
+                or self.radiators
+                or self.mirror_axes
+            ):
+                raise ValueError("An assembly cannot also supply legacy mesh, radiator or symmetry fields.")
+            return
         if (self.mesh_path is None) == (self.mesh_data is None):
             raise ValueError("GeneratedGeometry requires exactly one of mesh_path and mesh_data.")
         if self.reduced_mesh_data is not None and self.mesh_data is None:
@@ -132,7 +193,7 @@ class GeneratedGeometry:
     def to_reference(self) -> GeneratedGeometryReference:
         return GeneratedGeometryReference(
             output_dir=str(self.output_dir),
-            mesh_path="" if self.mesh_data is not None else str(self.mesh_path),
+            mesh_path="" if self.mesh_path is None else str(self.mesh_path),
             cleaned_mesh_path=None if self.cleaned_mesh_path is None else str(self.cleaned_mesh_path),
             reduced_cleaned_mesh_path=(
                 None if self.reduced_cleaned_mesh_path is None else str(self.reduced_cleaned_mesh_path)
@@ -141,6 +202,8 @@ class GeneratedGeometry:
             mirror_axes=self.mirror_axes,
             mesh_data=self.mesh_data,
             reduced_mesh_data=self.reduced_mesh_data,
+            meshes=self.meshes,
+            provider_metadata=deepcopy(self.provider_metadata) if self.meshes else {},
         )
 
 
@@ -171,6 +234,8 @@ def complete_generation(
 ) -> GenerationCompleted:
     """Validate correlation and adapt legacy built-in providers at one boundary."""
     legacy = isinstance(response, GeneratedGeometry)
+    if legacy and response.meshes:
+        raise ValueError("Mesh assemblies require a GenerationResponse with physical assignments.")
     if legacy:
         response = GenerationResponse(request_id=request.request_id, geometry=response)
     if not isinstance(response, GenerationResponse):

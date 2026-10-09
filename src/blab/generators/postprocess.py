@@ -17,6 +17,10 @@ def ensure_reduced_geometry(
     area_tol: float = AREA_TOL,
 ) -> GeneratedGeometry:
     """Materialize a cleaned, unmirrored mesh for native-symmetry solvers."""
+    if result.meshes:
+        raise ValueError(
+            "Generated mesh assemblies currently require symmetry Off; automatic coupled reduction is unsupported."
+        )
     if result.mesh_data is not None:
         result.solver_mesh_data_for_symmetry("x")
         return result

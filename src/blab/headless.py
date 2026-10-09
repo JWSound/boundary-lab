@@ -14,7 +14,9 @@ from typing import Any, Callable, Iterable
 
 import numpy as np
 
+from blab.generators.base import generated_mesh_id
 from blab.generators.registry import restore_generator_document
+from blab.generators.resources import active_assembly_system, generated_mesh_entries
 from blab.live import build_log_frequencies
 from blab.observation_planes import observation_planes_from_payload
 from blab.phasor import SOLVER_PHASOR_CONVENTION
@@ -108,13 +110,39 @@ def load_headless_project(path: str | Path) -> HeadlessProject:
         symmetry = "off"
     # System authoring stores canonical generated assets. Resolve the same
     # full/reduced variants selected by GUI preview and solve preparation.
+    documents = generator_documents_from_payload(payload.get("generator_documents"))
     generated = {
         generator_mesh_name(document): document
-        for document in generator_documents_from_payload(payload.get("generator_documents"))
-        if document.mesh_enabled and document.artifact is not None
+        for document in documents
+        if document.mesh_enabled and document.artifact is not None and not document.artifact.meshes
     }
+    assembly_resources = {}
+    system = active_assembly_system(system, documents)
+    for document in documents:
+        if document.mesh_enabled and document.artifact is not None and document.artifact.meshes:
+            result = restore_generator_document(document)
+            assembly_resources.update(
+                {
+                    generated_mesh_id(document.id, mesh.id): entry
+                    for mesh, entry in zip(
+                        result.meshes, generated_mesh_entries(document, result, symmetry), strict=True
+                    )
+                }
+            )
     resources = []
     for resource in system.meshes:
+        entry = assembly_resources.get(resource.id)
+        if entry is not None:
+            resources.append(
+                replace(
+                    resource,
+                    file=entry.source_file,
+                    mesh_data=entry.mesh_data,
+                    scale_to_m=entry.scale_factor,
+                    translation_m=tuple(value / 1000 for value in entry.translation_mm),
+                )
+            )
+            continue
         document = generated.get(resource.name)
         if document is None:
             resources.append(resource)

@@ -155,6 +155,8 @@ def apply_saved_source_config_to_result(
 ) -> GeneratedGeometry | None:
     if result is None:
         return None
+    if result.meshes:
+        return result  # Assembly sources are defined by physical components.
     try:
         surface_tags = {
             f"{mesh_name}:{surface_name}": (mesh_name, tag)

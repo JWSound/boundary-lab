@@ -23,6 +23,7 @@ from blab.acoustic_impedance import (
     normalization_records,
 )
 from blab.config import MeshConfig
+from blab.generators.resources import active_assembly_system
 from blab.interface_radiation import InterfaceRadiationDataset
 from blab.live import (
     AcousticLoadImpedanceDataset,
@@ -251,6 +252,7 @@ class SolveWorkflowController(QObject):
             meshes = inspect_system_meshes(self._inputs.mesh_entries_for_symmetry(project.symmetry))
             system = sync_physical_system_meshes(project.physical_system, meshes)
             project.physical_system = system
+            system = active_assembly_system(system, project.generator_documents)
             solve_symmetry = project.symmetry
             component_channels = project.component_channel_by_id
             if normalized.fidelity >= SpeakerPackageFidelity.COUPLED and project.symmetry != "off":
@@ -404,7 +406,7 @@ class SolveWorkflowController(QObject):
                     system, imported_meshes, issues, symmetry=snapshot.symmetry
                 )
             prepared = prepare_system_solve(
-                system,
+                active_assembly_system(system, snapshot.generator_documents),
                 freq_min_hz=float(frequencies.min_hz),
                 freq_max_hz=float(frequencies.max_hz),
                 freq_count=frequencies.count,

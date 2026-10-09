@@ -20,12 +20,12 @@ from PySide6.QtWidgets import (
 
 from blab.generators.application import stage_generation
 from blab.generators.ath import ATH_PROVIDER_ID, with_ath_source_text
-from blab.generators.base import GeneratedGeometry, GenerationCompleted, GeneratorDocument
+from blab.generators.base import GeneratedGeometry, GenerationCompleted, GeneratorDocument, generated_mesh_id
 from blab.generators.catalog import provider_catalog
 from blab.generators.configuration import configuration_snapshot, project_revision
 from blab.generators.registry import generator_info, restore_generator_document
+from blab.generators.resources import generated_mesh_name, generated_mesh_names, without_assembly
 from blab.project.model import (
-    generator_mesh_name,
     new_generator_document,
     replace_generator_document,
     unique_generator_name,
@@ -307,14 +307,33 @@ class GeneratorDocumentsMixin:
         name = name.strip()
         if not name:
             return
-        self.generator_documents = replace_generator_document(
-            self.generator_documents,
-            document.id,
+        renamed = replace(
+            document,
             name=unique_generator_name(
                 name,
                 tuple(item for item in self.generator_documents if item.id != document.id),
             ),
         )
+        if document.artifact is not None and document.artifact.meshes and self.project.physical_system is not None:
+            names = {
+                generated_mesh_id(document.id, mesh.id): generated_mesh_name(renamed, mesh.id)
+                for mesh in document.artifact.meshes
+            }
+            other_names = {mesh.name for mesh in self.project.physical_system.meshes if mesh.id not in names}
+            other_names.update(mesh.name for mesh in self.project.imported_meshes)
+            if other_names.intersection(names.values()):
+                self.show_error(
+                    "Cannot rename generated assembly", "The generated mesh names conflict with existing meshes."
+                )
+                return
+            self.project.physical_system = replace(
+                self.project.physical_system,
+                meshes=tuple(
+                    replace(mesh, name=names[mesh.id]) if mesh.id in names else mesh
+                    for mesh in self.project.physical_system.meshes
+                ),
+            )
+        self.generator_documents = replace_generator_document(self.generator_documents, document.id, name=renamed.name)
         self.rebuild_generator_document_tabs()
         self.mesh_state_changed.emit("generator_document_renamed")
         self.solve_results_invalidated.emit("generator_document_renamed")
@@ -323,6 +342,17 @@ class GeneratorDocumentsMixin:
         if not (0 <= index < len(self.generator_documents)):
             return
         document = self.generator_documents[index]
+        try:
+            system = without_assembly(self.project.physical_system, document)
+        except ValueError as exc:
+            self.show_error("Cannot remove generated assembly", str(exc))
+            return
+        if system is not None and system is not self.project.physical_system:
+            components = {item.id for item in system.components}
+            self.project.component_channel_by_id = {
+                key: value for key, value in self.project.component_channel_by_id.items() if key in components
+            }
+        self.project.physical_system = system
         self.generator_documents = tuple(item for item in self.generator_documents if item.id != document.id)
         self.generated_geometry_by_document_id.pop(document.id, None)
         self.active_generator_document_id = (
@@ -336,7 +366,7 @@ class GeneratorDocumentsMixin:
 
     def _generator_document_for_mesh_name(self, mesh_name: str) -> GeneratorDocument | None:
         return next(
-            (document for document in self.generator_documents if generator_mesh_name(document) == mesh_name),
+            (document for document in self.generator_documents if mesh_name in generated_mesh_names(document)),
             None,
         )
 

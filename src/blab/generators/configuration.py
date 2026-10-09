@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, fields, replace
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
 from blab.config import ChannelConfig, CrossoverConfig, normalize_symmetry
@@ -70,6 +71,8 @@ def project_revision(project: ProjectDocument) -> str:
     def encode(value):
         if isinstance(value, MeshData):
             return {"mesh_data_sha256": value.digest}
+        if isinstance(value, Path):
+            return str(value)
         raise TypeError(f"Unsupported project revision value: {type(value)}")
 
     return sha256(json.dumps(payload, sort_keys=True, allow_nan=False, default=encode).encode()).hexdigest()

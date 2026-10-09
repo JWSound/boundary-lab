@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from blab.generators.base import GeneratedGeometryReference, GeneratorDocument
+from blab.generators.base import GeneratedGeometryReference, GeneratedMesh, GeneratorDocument, _validate_meshes
 from blab.mesh_data import MeshData
 from blab.observation_planes import ObservationPlane
 from blab.physical_model import PhysicalSystem
@@ -285,6 +285,17 @@ def _artifact_to_payload(
         payload["mirror_axes"] = list(artifact.mirror_axes)
     if artifact.reduced_mesh_data is not None:
         payload["reduced_mesh_data"] = artifact.reduced_mesh_data.to_payload()
+    if artifact.meshes:
+        payload["meshes"] = [
+            {
+                "id": mesh.id,
+                "purpose": mesh.purpose,
+                "mesh_path": _path_payload(str(mesh.mesh_path) if mesh.mesh_path is not None else None, absolute_paths),
+                "mesh_data": None if mesh.mesh_data is None else mesh.mesh_data.to_payload(),
+            }
+            for mesh in artifact.meshes
+        ]
+        payload["provider_metadata"] = dict(artifact.provider_metadata)
     return payload
 
 
@@ -294,12 +305,36 @@ def _artifact_from_payload(payload: object) -> GeneratedGeometryReference | None
     output_dir = _optional_path_text(payload.get("output_dir"))
     mesh_path = _optional_path_text(payload.get("mesh_path"))
     mesh_data = MeshData.from_payload(payload["mesh_data"]) if payload.get("mesh_data") is not None else None
+    meshes = tuple(
+        GeneratedMesh(
+            id=item["id"],
+            purpose=item["purpose"],
+            mesh_path=item.get("mesh_path"),
+            mesh_data=MeshData.from_payload(item["mesh_data"]) if item.get("mesh_data") is not None else None,
+        )
+        for item in payload.get("meshes", ())
+    )
+    _validate_meshes(meshes)
+    if meshes and any(
+        payload.get(key)
+        for key in (
+            "mesh_path",
+            "mesh_data",
+            "cleaned_mesh_path",
+            "reduced_cleaned_mesh_path",
+            "reduced_mesh_data",
+            "mirror_axes",
+        )
+    ):
+        raise ValueError("An assembly artifact cannot also supply legacy mesh fields.")
     if mesh_data is not None and mesh_path is not None:
         raise ValueError("A generated artifact cannot supply both mesh_path and mesh_data.")
-    if output_dir is None or (mesh_path is None and mesh_data is None):
+    if output_dir is None or (mesh_path is None and mesh_data is None and not meshes):
         return None
     return GeneratedGeometryReference(
         output_dir=output_dir,
+        meshes=meshes,
+        provider_metadata=dict(payload.get("provider_metadata", {})),
         mesh_path=mesh_path or "",
         cleaned_mesh_path=_optional_path_text(payload.get("cleaned_mesh_path")),
         reduced_cleaned_mesh_path=_optional_path_text(payload.get("reduced_cleaned_mesh_path")),

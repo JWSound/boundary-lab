@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 
 from blab.config import RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
+from blab.generators.resources import generated_mesh_names as document_mesh_names
 from blab.project.model import generator_mesh_name
 
 
@@ -60,7 +61,7 @@ class GeometryStore:
         imported radiators, so imported-mesh sources survive the round trip.
         """
         documents = tuple(documents)
-        generated_mesh_names = {generator_mesh_name(document) for document in documents}
+        generated_mesh_names = {name for document in documents for name in document_mesh_names(document)}
         for document, result in self.enabled_geometry(documents):
             mesh_name = generator_mesh_name(document)
             updated = [replace(radiator, mesh=mesh_name) for radiator in radiators if radiator.mesh == mesh_name]

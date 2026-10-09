@@ -6,10 +6,8 @@ from PySide6.QtCore import Slot
 
 from blab.config import ChannelConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry
+from blab.generators.resources import generated_mesh_names as document_mesh_names
 from blab.physical_model import ComponentKind, ExcitationPortKind
-from blab.project.model import (
-    generator_mesh_name,
-)
 from blab.ui.dialogs import (
     ChannelConfigDialog,
 )
@@ -103,7 +101,7 @@ class ChannelsMixin:
         return apply_saved_source_config_to_result(result, mesh_name, self.source_config_by_name())
 
     def apply_saved_imported_source_config(self, surface_tags: dict[str, tuple[str, int]]) -> None:
-        generated_mesh_names = {generator_mesh_name(document) for document in self.generator_documents}
+        generated_mesh_names = {name for document in self.generator_documents for name in document_mesh_names(document)}
         self.imported_radiators = apply_saved_imported_source_config(
             surface_tags=surface_tags,
             generated_mesh_names=generated_mesh_names,

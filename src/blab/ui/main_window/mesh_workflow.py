@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from blab.config import MeshConfig, RadiatorConfig
 from blab.generators.base import GeneratedGeometry, GeneratorDocument
 from blab.generators.postprocess import ensure_reduced_geometry
+from blab.generators.resources import active_assembly_system, generated_mesh_entries
 from blab.mesh_cache import mesh_cache
 from blab.mesh_data import surface_names
 from blab.mesh_inventory import inspect_system_meshes
@@ -25,7 +26,6 @@ from blab.preview_hierarchy import build_preview_hierarchy
 from blab.preview_motion import preview_motion_assignments
 from blab.project.model import (
     ImportedMeshState,
-    generator_mesh_name,
     replace_generator_document,
 )
 from blab.system_editing import interface_bem_mesh_names_for_changes, rebuild_configured_interfaces
@@ -66,18 +66,9 @@ class MeshWorkflowMixin:
             if result is None:
                 continue
             solver_result = self._generated_geometry_for_solver_symmetry(document, result, symmetry)
-            entries.append(
-                MeshDialogEntry(
-                    name=generator_mesh_name(document),
-                    source_file=""
-                    if solver_result.mesh_data is not None
-                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
-                    scale_factor=float(document.mesh_scale_factor),
-                    translation_mm=document.mesh_translation_mm,
-                    enabled=document.mesh_enabled,
-                    locked=True,
-                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
-                )
+            entries.extend(
+                MeshDialogEntry(**{field.name: getattr(entry, field.name) for field in fields(MeshDialogEntry)})
+                for entry in generated_mesh_entries(document, solver_result, symmetry)
             )
         entries.extend(self.imported_meshes)
         return tuple(entries)
@@ -271,7 +262,7 @@ class MeshWorkflowMixin:
         result: GeneratedGeometry,
         symmetry: str,
     ) -> GeneratedGeometry:
-        if symmetry == "off":
+        if symmetry == "off" or not document.mesh_enabled:
             return result
         updated = ensure_reduced_geometry(result)
         self.generated_geometry_by_document_id[document.id] = updated
@@ -286,16 +277,15 @@ class MeshWorkflowMixin:
         configs = []
         for document, result in self._enabled_generated_geometry():
             solver_result = self._generated_geometry_for_solver_symmetry(document, result, symmetry)
-            configs.append(
+            configs.extend(
                 MeshConfig(
-                    name=generator_mesh_name(document),
-                    file=""
-                    if solver_result.mesh_data is not None
-                    else str(solver_result.solver_mesh_path_for_symmetry(symmetry)),
-                    scale_factor=float(document.mesh_scale_factor),
-                    translation_m=tuple(value / 1000.0 for value in document.mesh_translation_mm),
-                    mesh_data=solver_result.solver_mesh_data_for_symmetry(symmetry),
+                    name=entry.name,
+                    file=entry.source_file,
+                    scale_factor=entry.scale_factor,
+                    translation_m=tuple(value / 1000 for value in entry.translation_mm),
+                    mesh_data=entry.mesh_data,
                 )
+                for entry in generated_mesh_entries(document, solver_result, symmetry)
             )
         return tuple(configs)
 
@@ -329,7 +319,7 @@ class MeshWorkflowMixin:
         radiators: tuple[RadiatorConfig, ...],
     ) -> PreparedMeshAssembly:
         assembly = self.mesh_service().prepare(
-            physical_system=self._project_document().physical_system,
+            physical_system=active_assembly_system(self._project_document().physical_system, self.generator_documents),
             generated_mesh_configs=self._generated_solver_mesh_configs(),
             imported_meshes=self._project_document().imported_meshes,
             radiators=radiators,
