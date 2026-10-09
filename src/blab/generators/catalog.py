@@ -133,7 +133,9 @@ class ProviderCatalog:
     def package(self, provider_id):
         matches = [p for p in self.packages if p.manifest and p.manifest.id == provider_id]
         if len(matches) != 1:
-            raise ValueError(f"Generator Plugin {provider_id!r} is missing or has conflicting packages. Open Edit > Generator Plugins...")
+            raise ValueError(
+                f"Generator Plugin {provider_id!r} is missing or has conflicting packages. Open Edit > Generator Plugins..."
+            )
         package = matches[0]
         if package.error:
             raise ValueError(package.error)

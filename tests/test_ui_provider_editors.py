@@ -223,9 +223,7 @@ def test_preferences_preserve_plugin_settings_without_manager_controls(qapp):
 
 
 @pytest.mark.parametrize("accepted", [True, False])
-def test_plugin_manager_commit_preserves_design_artifacts_and_results(
-    main_window, box_catalog, monkeypatch, accepted
-):
+def test_plugin_manager_commit_preserves_design_artifacts_and_results(main_window, box_catalog, monkeypatch, accepted):
     from PySide6.QtWidgets import QDialog
 
     from blab.ui.provider_preferences import ProviderPackagesDialog

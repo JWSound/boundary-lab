@@ -131,8 +131,10 @@ class ProviderPackagesDialog(QDialog):
 
     def _validate_default(self):
         valid = self.default_provider == "ath" or any(
-            package.manifest and package.manifest.id == self.default_provider
-            and not package.error and package.manifest.id in self.enabled
+            package.manifest
+            and package.manifest.id == self.default_provider
+            and not package.error
+            and package.manifest.id in self.enabled
             for package in self.catalog.packages
         )
         self.default_warning.setVisible(not valid)
