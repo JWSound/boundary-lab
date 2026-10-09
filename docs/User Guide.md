@@ -2,7 +2,7 @@
 
 The main window is a dockable workspace containing:
 
-- the waveguide design editor;
+- the Generator dock;
 - the 3D mesh preview;
 - horizontal and vertical isobars, acoustic impedance, on-axis response, and
   spinorama plots;
@@ -13,12 +13,27 @@ The main window is a dockable workspace containing:
 Panels can be resized, rearranged, floated, or closed. Reopen a closed panel
 from the **View** menu.
 
-## Waveguide Design Editor
+## Generator
 
-The waveguide design panel contains the editor supplied by the active geometry
-provider. The bundled Ath provider edits Ath `.cfg` text. Use **File > Import
-Waveguide Design...** and **Export Waveguide Design...** to exchange the active
-design with other tools.
+The **Generator** dock contains the editor supplied by each design's Generator
+Plugin. Reopen it with **View > Generator**. The bundled Ath plugin edits Ath
+`.cfg` text. Use **File > Import Ath Design...** and **Export Ath Design...** to
+exchange Ath designs with other tools. Importing while a different plugin's
+design is selected creates a separate Ath design; export is available for Ath
+designs only.
+
+Open **Edit > Generator Plugins...** to manage plugins and choose the **Default
+Generator Plugin** for new designs. Ath appears as **Built-in** and is always
+enabled. Use **Open install folder**, copy a plugin folder there, then **Rescan**
+and enable it. Only enable plugins you trust: they execute Python inside Boundary
+Lab. Click **OK** to save or **Cancel** to discard selection changes. Existing
+designs retain their plugin and saved source. If you disable the default, choose
+an enabled, available replacement before saving.
+
+Plugin management is unavailable during preparation, generation, or solving.
+Changes to loaded plugin code require a restart, shown in the plugin's status.
+Missing or disabled plugins preserve design source and generated results; enable
+or repair the plugin to edit and generate again.
 
 <img src="../assets/scripteditor.png" alt="Ath waveguide design editor" width="300">
 
@@ -74,7 +89,7 @@ rather than snapping to one curve.
 - **Save Project As** selects a new project path.
 - **Open Project** loads a `.blab.json` project.
 - **Open Recent** lists recently opened projects and can clear that history.
-- **Import/Export Waveguide Design** reads or writes the active provider's
+- **Import/Export Ath Design** reads or writes the active Ath design's
   editable design source.
 - **Export Polar Data** writes horizontal and vertical response text files.
 - **Export On-Axis Data** writes SPL and phase for each solved channel.
@@ -276,7 +291,7 @@ current status message.
 
 ### Generate
 
-**Generate (F7)** runs the active design through its geometry provider. With
+**Generate (F7)** runs the active design through its Generator Plugin. With
 Ath, Boundary Lab stages the design script, captures Gmsh geometry from Ath's
 blab mode, meshes and cleans it in a cancellable worker, and loads the final
 surface mesh into the project and preview. **Stop (Shift+F5)** terminates either

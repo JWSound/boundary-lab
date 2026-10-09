@@ -2,7 +2,7 @@
 
 <img src="assets/mainwindow.png" alt="Boundary Lab main window" width="700">
 
-Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from a configured physical system, and presents acoustic and electroacoustic results in a desktop application. Ath is bundled as a geometry-generator provider with permission from Marcel Batik.
+Boundary Lab is a GUI-based multiphysics acoustic simulation tool for loudspeaker design. It generates or imports loudspeaker meshes, infers exterior BEM, interior FEM, or coupled FEM-BEM-LEM solving from a configured physical system, and presents acoustic and electroacoustic results in a desktop application. Ath is bundled as a Generator Plugin with permission from Marcel Batik.
 
 ### [Follow the official development thread on DIYAudio](https://www.diyaudio.com/community/threads/boundary-lab.440847/)
 
@@ -134,7 +134,7 @@ release qualification. The permanent `dev` branch is retired after reconciliatio
 - [Model Assumptions](docs/Model%20Assumptions.md)
 - [Inputs and Outputs](docs/Inputs%20and%20Outputs.md)
 - [Advanced CLI workflow](docs/advanced/cli-workflow.md)
-- [Geometry provider API](docs/advanced/geometry-provider-api.md)
+- [Generator Plugin API](docs/advanced/geometry-provider-api.md)
 - [Server developer reference](docs/advanced/boundary-lab-server_advanced.md)
 - [BEAT Engine Core](docs/advanced/beat-engine-core.md)
 - [BEAT Engine CPU](docs/advanced/beat-engine-CPU.md)

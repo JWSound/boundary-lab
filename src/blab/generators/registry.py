@@ -53,9 +53,9 @@ def register_generator(info: GeneratorBackendInfo) -> None:
     if info.provider_id in _BACKENDS or any(
         p.manifest and p.manifest.id == info.provider_id for p in provider_catalog().packages
     ):
-        raise ValueError(f"Geometry provider {info.provider_id!r} is already registered.")
+        raise ValueError(f"Generator Plugin {info.provider_id!r} is already registered.")
     if not info.label.strip() or not callable(info.factory):
-        raise ValueError("A geometry provider needs a label and callable factory.")
+        raise ValueError("A Generator Plugin needs a label and callable factory.")
     _BACKENDS[info.provider_id] = info
 
 

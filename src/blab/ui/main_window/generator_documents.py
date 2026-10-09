@@ -116,7 +116,7 @@ class GeneratorDocumentsMixin:
             try:
                 info = generator_info(document.provider_id)
                 if document.provider_schema_version != info.source_schema_version:
-                    raise ValueError("Incompatible provider source schema; source has been preserved.")
+                    raise ValueError("Incompatible Generator Plugin source schema; source has been preserved.")
                 if document.provider_id == ATH_PROVIDER_ID:
                     adapter = AthProviderEditor(
                         self.editor_tabs, host, highlight_syntax=self.syntax_highlighting_enabled
@@ -129,7 +129,7 @@ class GeneratorDocumentsMixin:
                 else:
                     factory = provider_catalog().factory(document.provider_id, "editor")
                     if factory is None:
-                        raise ValueError("This provider does not supply a custom editor.")
+                        raise ValueError("This Generator Plugin does not supply a custom editor.")
                     # Own even partially constructed child widgets if a factory raises.
                     container = QWidget(self.editor_tabs)
                     container.hide()
@@ -142,10 +142,10 @@ class GeneratorDocumentsMixin:
                     or adapter.widget is self.editor_tabs
                     or adapter.widget is container
                 ):
-                    raise TypeError("Provider must supply its own widget.")
+                    raise TypeError("Generator Plugin must supply its own widget.")
                 for method in ("apply_source", "set_operation_state", "dispose"):
                     if not callable(getattr(adapter, method, None)):
-                        raise TypeError(f"Provider editor is missing {method}().")
+                        raise TypeError(f"Generator Plugin editor is missing {method}().")
                 snapshot = host.snapshot()
                 adapter.apply_source(snapshot.source, snapshot.revision)
                 editor = adapter.widget
@@ -166,7 +166,10 @@ class GeneratorDocumentsMixin:
                 editor = QPlainTextEdit()
                 editor.setReadOnly(True)
                 editor.setPlainText(
-                    f"{document.provider_id}: {exc}\n\n" + json.dumps(document.source, indent=2, sort_keys=True)
+                    f"{document.provider_id}: {exc}\n\n"
+                    "Open Edit > Generator Plugins... to check availability.\n"
+                    "Saved design source has been preserved.\n\n"
+                    + json.dumps(document.source, indent=2, sort_keys=True)
                 )
             self._install_tab_close_button(self.editor_tabs.addTab(editor, document.name), document.name)
         add_tab = AthScriptEditor(highlight_syntax=False)
@@ -174,7 +177,7 @@ class GeneratorDocumentsMixin:
         add_tab.configDropped.connect(lambda path: self.import_config_path(Path(path)))
         add_index = self.editor_tabs.addTab(add_tab, ADD_DESIGN_TAB_LABEL)
         self.editor_tabs.tabBar().setTabButton(add_index, QTabBar.ButtonPosition.RightSide, None)
-        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add waveguide design")
+        self.editor_tabs.tabBar().setTabToolTip(add_index, "Add design")
         active_index = self.active_generator_document_index()
         if active_index >= 0:
             self.editor_tabs.setCurrentIndex(active_index)
@@ -243,6 +246,8 @@ class GeneratorDocumentsMixin:
         if not hasattr(self, "generate_button"):
             return
         document = self.active_generator_document()
+        if hasattr(self, "export_ath_design_action"):
+            self.export_ath_design_action.setEnabled(bool(document and document.provider_id == ATH_PROVIDER_ID))
         try:
             info = generator_info(document.provider_id) if document else None
             available = bool(info and info.available and info.source_schema_version == document.provider_schema_version)
@@ -259,6 +264,8 @@ class GeneratorDocumentsMixin:
         provider_id = self.preferences.default_geometry_provider
         if provider_id == ATH_PROVIDER_ID:
             return new_generator_document(name, "")
+        if name == "waveguide":
+            name = "design"
         # Defaults are declarative: creating a design never instantiates a backend.
         manifest = provider_catalog().package(provider_id).manifest
         return replace(
@@ -273,11 +280,11 @@ class GeneratorDocumentsMixin:
 
     @Slot()
     def add_generator_document(self) -> None:
-        name = unique_generator_name("waveguide", self.generator_documents)
+        name = unique_generator_name("design", self.generator_documents)
         try:
             document = self.new_default_generator_document(name)
         except ValueError as exc:
-            self.show_error("Geometry provider unavailable", str(exc))
+            self.show_error("Generator Plugin unavailable", str(exc))
             self.editor_tabs.setCurrentIndex(self.active_generator_document_index())
             return
         self.generator_documents = (*self.generator_documents, document)
@@ -291,7 +298,7 @@ class GeneratorDocumentsMixin:
             return
         name, accepted = QInputDialog.getText(
             self,
-            "Rename Waveguide Design",
+            "Rename Design",
             "Design name:",
             text=document.name,
         )

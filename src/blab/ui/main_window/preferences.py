@@ -210,13 +210,6 @@ class PreferencesMixin:
 
         dialog.deleteLater()
         self.preferences = preferences
-        from blab.generators.catalog import provider_catalog
-
-        provider_catalog().enabled = set(preferences.enabled_geometry_providers)
-        if previous_preferences.enabled_geometry_providers != preferences.enabled_geometry_providers or getattr(
-            dialog, "provider_management_changed", False
-        ):
-            self.rebuild_generator_document_tabs()
         self._apply_field_preferences()
         self._save_preferences()
         self.project.project_preferences = self._current_project_preferences()
@@ -228,3 +221,32 @@ class PreferencesMixin:
         elif preferences_require_visualization_refresh(previous_preferences, self.preferences):
             self.visualization_settings_changed.emit("preferences_changed")
         self.status_label.setText("Preferences updated")
+
+    def generator_plugins_busy(self) -> bool:
+        return self.geometry_controller.active or self.solve_controller.active or self.preparations.active
+
+    @Slot()
+    def open_generator_plugins(self) -> None:
+        from blab.generators.catalog import provider_catalog
+        from blab.ui.provider_preferences import ProviderPackagesDialog
+
+        if self.generator_plugins_busy():
+            self.status_label.setText("Generator Plugins are unavailable while preparing, generating or solving.")
+            return
+        dialog = ProviderPackagesDialog(
+            self.preferences.enabled_geometry_providers,
+            self,
+            default_provider=self.preferences.default_geometry_provider,
+            is_busy=self.generator_plugins_busy,
+        )
+        try:
+            if dialog.exec() != QDialog.Accepted:
+                return
+            self.preferences.enabled_geometry_providers = tuple(sorted(dialog.enabled))
+            self.preferences.default_geometry_provider = dialog.default_provider
+            provider_catalog().enabled = set(dialog.enabled)
+            self._save_preferences()
+            self.rebuild_generator_document_tabs()
+            self.status_label.setText("Generator Plugins updated")
+        finally:
+            dialog.deleteLater()

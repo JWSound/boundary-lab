@@ -80,11 +80,11 @@ class ViewBuilderMixin:
 
         file_menu.addSeparator()
 
-        import_action = QAction("Import Waveguide Design...", self)
+        import_action = QAction("Import Ath Design...", self)
         import_action.triggered.connect(self.import_config)
         file_menu.addAction(import_action)
 
-        export_cfg_action = QAction("Export Waveguide Design...", self)
+        self.export_ath_design_action = export_cfg_action = QAction("Export Ath Design...", self)
         export_cfg_action.triggered.connect(self.export_config)
         file_menu.addAction(export_cfg_action)
 
@@ -140,7 +140,7 @@ class ViewBuilderMixin:
         view_menu.addAction(self.balloon_plot_action)
         view_menu.addSeparator()
         for dock_id, title in (
-            ("editor", "Waveguide Design Panel"),
+            ("editor", "Generator"),
             ("preview", "Mesh Preview Panel"),
         ):
             action = QAction(title, self)
@@ -169,6 +169,10 @@ class ViewBuilderMixin:
         view_menu.addAction(reset_layout_action)
 
         edit_menu = self.menuBar().addMenu("Edit")
+        self.generator_plugins_action = QAction("Generator Plugins...", self)
+        self.generator_plugins_action.triggered.connect(self.open_generator_plugins)
+        edit_menu.addAction(self.generator_plugins_action)
+        edit_menu.addSeparator()
         preferences_action = QAction("Preferences", self)
         preferences_action.triggered.connect(self.open_preferences)
         edit_menu.addAction(preferences_action)
@@ -227,7 +231,7 @@ class ViewBuilderMixin:
         self.syntax_highlighting_action.toggled.connect(self.set_syntax_highlighting_enabled)
         self.editor_dock = self._make_panel_dock(
             "ath_editor_dock",
-            "Waveguide Design",
+            "Generator",
             self.editor_container,
             tool_actions=(self.syntax_highlighting_action,),
         )
@@ -485,6 +489,7 @@ class ViewBuilderMixin:
 
     def apply_workflow_controls(self, controls: WorkflowControls) -> None:
         preparing = self.preparations.active
+        self.generator_plugins_action.setEnabled(controls.generate and not self.generator_plugins_busy())
         self.generate_button.setEnabled(controls.generate and not preparing)
         if controls.generate and not preparing:
             self._refresh_generate_availability()

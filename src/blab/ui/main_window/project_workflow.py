@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from blab.generators.ath import ath_source_text, with_ath_source_text
+from blab.generators.ath import ATH_PROVIDER_ID, ath_source_text, with_ath_source_text
 from blab.generators.registry import restore_generator_document
 from blab.observation_planes import observation_planes_from_payload
 from blab.physical_model import (
@@ -486,7 +486,7 @@ class ProjectWorkflowController(QObject):
 
     @Slot()
     def import_config(self) -> None:
-        path = self._view.choose_open_file("Import Waveguide Design", ATH_CONFIG_FILTER)
+        path = self._view.choose_open_file("Import Ath Design", ATH_CONFIG_FILTER)
         if path is None:
             return
 
@@ -501,7 +501,7 @@ class ProjectWorkflowController(QObject):
                 if document_id
                 else self._inputs.active_generator_document()
             )
-            if document is None:
+            if document is None or document.provider_id != ATH_PROVIDER_ID:
                 document = new_generator_document(
                     unique_generator_name(path.stem, project.generator_documents),
                     config_text,
@@ -520,7 +520,7 @@ class ProjectWorkflowController(QObject):
 
     @Slot()
     def export_config(self) -> None:
-        path = self._view.choose_save_file("Export Waveguide Design", ATH_CONFIG_FILTER, "waveguide.cfg")
+        path = self._view.choose_save_file("Export Ath Design", ATH_CONFIG_FILTER, "waveguide.cfg")
         if path is None:
             return
 

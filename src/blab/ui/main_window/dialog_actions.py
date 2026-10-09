@@ -145,7 +145,7 @@ class DialogActionsMixin:
             "project": {
                 "file": self.project_path.name if self.project_path is not None else "unsaved",
                 "modified": self._has_unsaved_project_changes(),
-                "waveguide designs": len(self.generator_documents),
+                "generator designs": len(self.generator_documents),
                 "enabled meshes": enabled_generated_meshes + enabled_imported_meshes,
                 "imported meshes": len(self.imported_meshes),
                 "radiators": len(self.all_radiators()),

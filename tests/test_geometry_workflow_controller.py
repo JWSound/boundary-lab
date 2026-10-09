@@ -124,7 +124,7 @@ def controller(qapp):
 def test_generating_without_a_design_warns_instead_of_starting(controller) -> None:
     controller.generate_geometry()
 
-    assert controller.view.warnings == [("No waveguide design", "Add a waveguide design before generating.")]
+    assert controller.view.warnings == [("No design", "Add a design in the Generator dock before generating.")]
     assert controller.geometry.started == []
 
 

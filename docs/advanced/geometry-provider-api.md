@@ -1,4 +1,4 @@
-# Geometry provider API: generation and configuration
+# Generator Plugin API: generation and configuration
 
 This guide covers the implemented provider API (exchange schema version `1`):
 generation, configuration, in-memory geometry, host solve/result services,
@@ -39,8 +39,7 @@ is complete.
   groups and legacy radiator hints. Existing FEM/coupled models can be edited
   within the provider's ownership scope. Creating a new multi-mesh FEM/coupled
   contribution is not implemented in this increment.
-- Local folders with a `provider.json` manifest appear in Preferences → Geometry
-  providers → Manage packages. Enable a package before its code can be loaded.
+- Local folders with a `provider.json` manifest appear in **Edit > Generator Plugins...**. Enable a package before its code can be loaded.
   Custom widgets live inside the host's design dock; Ath remains the default.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
@@ -213,10 +212,9 @@ contributions remain a separate increment.
 ## Installing and developing provider packages
 
 Copy a package folder into `<Boundary Lab>/geometry_providers/`, the application's
-only provider location. Preferences → Geometry providers → Manage packages offers
+only plugin location. **Edit > Generator Plugins...** offers
 an **Open install folder** shortcut and **Rescan**. Enable the
-package, accept Preferences, then choose it as the **default geometry provider**
-for new designs. Existing designs keep their own provider ID. Newly discovered
+plugin, choose the **Default Generator Plugin** for new designs, then click **OK**. Existing designs keep their own provider ID. Newly discovered
 packages are disabled until enabled; opening a project never enables a package.
 
 The runnable [Example Box package](../../examples/geometry_providers/example_box/)

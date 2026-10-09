@@ -83,7 +83,7 @@ class GeometryWorkflowController(QObject):
             return
         document = self._inputs.active_generator_document()
         if document is None:
-            self._view.warn("No waveguide design", "Add a waveguide design before generating.")
+            self._view.warn("No design", "Add a design in the Generator dock before generating.")
             return
         mesh_name = generator_mesh_name(document)
         case_name = f"{mesh_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{document.id}"
