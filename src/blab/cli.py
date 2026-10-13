@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from importlib import import_module
 
 COMMAND_MODULES = {
+    "cad-import": "blab.cad_import.cli",
     "clean": "blab.mesh_clean",
     "conform-interface": "blab.interface_conform",
     "gui": "blab.gui",

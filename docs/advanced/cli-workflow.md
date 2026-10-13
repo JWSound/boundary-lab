@@ -384,6 +384,24 @@ a VPN, or SSH. Localhost remains the default. See the
 [server setup guide](../Boundary%20Lab%20Server.md) for connection instructions and
 the [server developer reference](boundary-lab-server_advanced.md) for the remote job contract.
 
+## Mesh A STEP File
+
+```bash
+blab cad-import enclosure.step --fmax 2000 --elements-per-wavelength 5 --output meshes
+```
+
+Runs the CAD import pipeline without the desktop app and writes one `<mesh id>.msh`
+file per mesh, in metres. Solids become air bodies: touching air bodies share one
+tetrahedral mesh with a volume group per body. Surface bodies together form the
+`exterior.msh` BEM surface. Air faces that fill openings in the exterior get a
+`<body> opening` surface group in both meshes, node for node; every other face is in
+`walls`. The target element size is sound speed ÷ `--fmax` ÷ elements per wavelength
+(`--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
+circle. `--forward` and `--up` name the CAD axes that become +Z and +Y. The command
+prints the meshes and groups, the bounding box, detected interfaces, the suggested
+symmetry (open exterior edges on X=0 / Y=0), and warnings such as open exterior
+edges or air faces covered by the exterior.
+
 ## Clean A Mesh
 
 ```bash
