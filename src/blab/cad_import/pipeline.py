@@ -148,6 +148,43 @@ def inspect_step(step_path: str | Path, *, forward: str = "+Z", up: str = "+Y") 
         return _analyse(gmsh, Path(step_path), _axis_matrix(forward, up)).geometry
 
 
+@dataclass(frozen=True)
+class CadPreview:
+    """A coarse display tessellation: ``triangles`` index ``points`` (m); ``face_ids`` per triangle."""
+
+    geometry: CadGeometry
+    points: np.ndarray
+    triangles: np.ndarray
+    face_ids: np.ndarray
+
+
+def preview_step(step_path: str | Path, *, forward: str = "+Z", up: str = "+Y") -> CadPreview:
+    """Inspect a STEP file and tessellate its faces coarsely for display."""
+    with _gmsh_session() as gmsh:
+        geometry = _analyse(gmsh, Path(step_path), _axis_matrix(forward, up)).geometry
+        low, high = geometry.bbox_m
+        gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(low, high) / 30)
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
+        gmsh.model.mesh.generate(2)
+        node_tags, coords, _ = gmsh.model.mesh.getNodes()
+        index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
+        index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
+        triangles, face_ids = [], []
+        for face in geometry.faces:
+            types, _, nodes = gmsh.model.mesh.getElements(2, face.id)
+            for kind, data in zip(types, nodes, strict=True):
+                if kind == 2:
+                    block = index[np.asarray(data, dtype=np.int64)].reshape(-1, 3)
+                    triangles.append(block)
+                    face_ids.append(np.full(len(block), face.id))
+        return CadPreview(
+            geometry,
+            np.asarray(coords).reshape(-1, 3),
+            np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
+            np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
+        )
+
+
 def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: str | Path) -> CadImportResult:
     """Mesh a STEP file into ``output_dir`` as ``<mesh id>.msh`` files (metres)."""
     output_dir = Path(output_dir)

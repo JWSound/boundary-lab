@@ -102,6 +102,13 @@ class DocumentHost:
             raise ProviderHostError("generation_failed", "The host could not start generation.")
         return request_id
 
+    def cancel_generation(self, request_id: str) -> None:
+        """Stop the generation that ``generate`` started; ignored once it has finished."""
+        self._document()
+        window = self._window
+        if window.geometry_controller.active and window.geometry_workflow.pending_request_id == request_id:
+            window.cancel_geometry_generation()
+
     def _dispatch(self, method, *args):
         with self._lock:
             if self._disposed:

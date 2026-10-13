@@ -12,9 +12,11 @@ from .pipeline import (
     CadImportSettings,
     CadInterface,
     CadMesh,
+    CadPreview,
     CadRegion,
     inspect_step,
     mesh_step,
+    preview_step,
 )
 
 __all__ = [
@@ -25,7 +27,9 @@ __all__ = [
     "CadImportSettings",
     "CadInterface",
     "CadMesh",
+    "CadPreview",
     "CadRegion",
     "inspect_step",
     "mesh_step",
+    "preview_step",
 ]

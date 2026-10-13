@@ -44,9 +44,11 @@ model and validates interface topology; backend-specific solve checks still appl
 - Local folders with a `provider.json` manifest appear in **Edit > Generator Plugins...**. Enable a package before its code can be loaded.
   Custom widgets live inside the host's design dock; Ath remains the default.
   The bundled [Vented Enclosure](../../geometry_providers/vented_enclosure/README.md)
-  is enabled on introduction and provides a working FEM–BEM–LEM assembly.
+  and [CAD Import](../../geometry_providers/cad_import/README.md) plugins are
+  each enabled once on introduction; Vented Enclosure provides a working
+  FEM–BEM–LEM assembly and CAD Import meshes a STEP file into one.
   Other packages still require explicit enablement; a manifest cannot claim
-  first-party status. Disabling the bundled plugin is remembered.
+  first-party status. Disabling a bundled plugin is remembered.
 - Providers can submit asynchronous solves, subscribe to status, cancel their
   own jobs, and query canonical solved data through the host services below.
   The host owns the frequency range and count; provider commands cannot change them.
@@ -398,6 +400,7 @@ The supplied `DocumentHost` exposes:
 | `snapshot()` | Detached `SourceSnapshot(source, revision, schema_version)` |
 | `update_source(source, expected_revision=...)` | Replace the whole source JSON object; return a fresh snapshot |
 | `generate(expected_revision=...)` | Select this document, start normal generation, return the request ID |
+| `cancel_generation(request_id)` | Stop the generation that `generate` started; ignored once it has finished |
 | `services` | Scoped `ProviderHost`: context, solve, status, cancel, result, current_result, subscribe, unsubscribe |
 
 Source methods and `generate` are synchronous and GUI-thread only. Source updates
