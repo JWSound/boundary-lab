@@ -21,18 +21,27 @@ in **Edit > Generator Plugins...** and add a design.
    after the shell, **Exterior surface** (also Escape) keeps it exterior. Change
    the choice later under **Closed shells**; another STEP file is asked afresh.
    The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
-2. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
+2. Pick **Forward** and **Up**: the CAD axes that become Boundary Lab +Z and +Y.
+3. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
    all hiding, **Clear** also clears the selection.
-3. Set elements per wavelength (default 5), curvature and growth. The target
+4. Click faces in the view (Ctrl/Shift+click adds or removes) or select them
+   in the tree, enter a name and **Group selection** to make a **face group**
+   (an existing name adds the faces; a face is in one group only). Faces named
+   in the STEP file form groups of their name unless picked into another
+   group. Groups store STEP names and fingerprints in CAD axes, so they
+   survive changing Forward/Up. **Delete group** removes a picked group.
+5. Set elements per wavelength (default 5), curvature and growth. The target
    element size is sound speed ÷ the project's maximum frequency ÷ elements per
    wavelength; the sound speed is that of the project's exterior air region
-   (343 m/s when there is none yet).
-4. Set the project symmetry to the suggested one, then **Generate** (F7);
+   (343 m/s when there is none yet). Override it in mm per body (double-click
+   the tree's size column) or per face group (the list's size column).
+6. Set the project symmetry to the suggested one, then **Generate** (F7);
    cancelling geometry generation stops it.
 
 Each generation creates one tetrahedral mesh per touching group of air bodies
 (one volume group per body), one exterior surface mesh, a region for each, a
-rigid `walls` boundary for every ungrouped face, and an interface with matching
+rigid boundary for each new face group, a rigid `walls` boundary for every
+ungrouped face, and an interface with matching
 boundaries on both sides of every opening. Boundaries that already exist are
 never resent, so roles, components and channels set in System survive
 regeneration; mesh IDs stay stable. Under X or XY symmetry the model must

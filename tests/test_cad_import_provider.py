@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import meshio
 import numpy as np
 import pytest
 
+from blab.cad_import import face_ref, inspect_step
 from blab.generators import GenerationRequest
 from blab.generators.application import stage_generation
 from blab.generators.base import GenerationCancelledError, complete_generation
@@ -84,6 +85,7 @@ def test_vented_box_stages_regions_walls_and_interface_and_prepares_a_coupled_so
     }
     boundaries = {(b.group.mesh_id.removeprefix(f"{doc}/mesh/"), b.group.name): b.kind for b in system.boundaries}
     assert boundaries == {
+        ("chamber", "Driver"): "rigid",  # STEP face name
         ("chamber", "walls"): "rigid",
         ("chamber", "Port opening"): "interface",
         ("exterior", "walls"): "rigid",
@@ -154,6 +156,85 @@ def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
     assert (kept.kind, kept.name) == ("moving", "Diaphragm")
     assert [c.boundary_ids for c in regenerated.physical_system.components] == [(walls.id,)]
     assert {r.density_kg_per_m3 for r in regenerated.physical_system.regions} == {1.19}
+
+
+def stored_group(name, step, predicate, *, forward="+Z", up="+Y"):
+    """A face group as the editor stores it: the faces of ``step`` matching ``predicate``."""
+    faces = [f for f in inspect_step(step, forward=forward, up=up).faces if predicate(f)]
+    return {"name": name, "faces": [asdict(face_ref(f, forward=forward, up=up)) for f in faces]}
+
+
+def front_faces(face):
+    """The cabinet front around the port hole and the chamber's front, both at z=0 / z=-20 mm."""
+    return face.surface_type == "Plane" and abs(abs(face.normal[2]) - 1) < 1e-9 and face.centre[2] > -0.021
+
+
+def test_new_face_group_arrives_as_a_rigid_boundary_and_user_edits_survive_regeneration(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    group = stored_group("Baffle", box_step, lambda f: f.bodies == ("Cabinet",) and front_faces(f))
+    project, _ = generate(backend, make_project(catalog, box_step, face_groups=[group]), tmp_path)
+    doc = project.generator_documents[0].id
+    baffle = next(b for b in project.physical_system.boundaries if b.group.name == "Baffle")
+
+    assert (baffle.id, baffle.kind, baffle.group.mesh_id) == (f"{doc}/exterior/Baffle", "rigid", f"{doc}/mesh/exterior")
+    exterior = meshio.read(
+        next(m.mesh_path for m in project.generator_documents[0].artifact.meshes if m.id == "exterior")
+    )
+    assert "Baffle" in exterior.field_data
+
+    project.physical_system = with_source(project.physical_system, f"{doc}/mesh/chamber", "Driver")
+    regenerated, _ = generate(backend, project, tmp_path)
+
+    system = regenerated.physical_system
+    driver = next(b for b in system.boundaries if b.group.name == "Driver")
+    assert driver.kind == "moving"
+    assert [c.boundary_ids for c in system.components] == [(driver.id,)]
+    assert sum(b.group.name == "Baffle" for b in system.boundaries) == 1
+    assert len(PhysicalSystemCompiler().compile(system).interfaces) == 1
+
+
+def test_orientation_change_remeshes_reoriented_and_keeps_face_groups(plugin, tmp_path):
+    catalog, backend = plugin
+    step = vented_box(tmp_path / "box.step", cad_axes=("-Y", "+Z"))
+    # Picked before the axes were fixed: the cabinet front lies on CAD Y=0.
+    group = stored_group("Baffle", step, lambda f: f.bodies == ("Cabinet",) and abs(f.centre[1]) < 1e-6)
+    project = make_project(catalog, step, face_groups=[group])
+    project, first = generate(backend, project, tmp_path)
+    project.generator_documents = (
+        replace(
+            project.generator_documents[0], source=project.generator_documents[0].source | {"forward": "-Y", "up": "+Z"}
+        ),
+    )
+
+    _, second = generate(backend, project, tmp_path)
+
+    def bounds(response):
+        mesh = meshio.read(next(m.mesh_path for m in response.geometry.meshes if m.id == "exterior"))
+        return mesh.points.min(axis=0), mesh.points.max(axis=0), mesh
+
+    assert np.allclose(bounds(first)[:2], [(-0.06, 0, -0.06), (0.06, 0.21, 0.06)], atol=1e-6)
+    low, high, mesh = bounds(second)
+    assert np.allclose([low, high], [(-0.06, -0.06, -0.21), (0.06, 0.06, 0)], atol=1e-6)
+    baffle = mesh.cells_dict["triangle"][
+        mesh.cell_data_dict["gmsh:physical"]["triangle"] == mesh.field_data["Baffle"][0]
+    ]
+    assert np.allclose(mesh.points[baffle][..., 2], 0, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "groups,match",
+    [
+        ({"Baffle": []}, "Face groups must be a list"),
+        ([{"name": "A", "faces": []}, {"name": "A", "faces": []}], "Face group 'A' is defined twice"),
+        ([{"faces": []}], "Invalid CAD import source"),
+    ],
+)
+def test_invalid_face_groups_are_rejected_before_meshing(plugin, box_step, tmp_path, groups, match):
+    catalog, backend = plugin
+    session = backend.create_session(make_request(make_project(catalog, box_step, face_groups=groups), tmp_path))
+    with pytest.raises(ValueError, match=match):
+        session.generate()
+    assert not list(tmp_path.iterdir())
 
 
 def test_target_size_follows_project_sound_speed_and_maximum_frequency(plugin, box_step, tmp_path):

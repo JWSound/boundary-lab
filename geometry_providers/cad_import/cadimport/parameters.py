@@ -16,12 +16,24 @@ def sound_speed(configuration):
     return DEFAULT_SOUND_SPEED_M_PER_S
 
 
+def face_groups(source):
+    """``{name: faces}`` from the source's list of ``{"name", "faces": [CadFaceRef fields]}``."""
+    groups = source.get("face_groups", [])
+    if not isinstance(groups, list):
+        raise ValueError("Face groups must be a list.")
+    result = {}
+    for group in groups:
+        if group["name"] in result:
+            raise ValueError(f"Face group '{group['name']}' is defined twice.")
+        result[group["name"]] = tuple(group["faces"])
+    return result
+
+
 def settings(source, configuration):
     """Pipeline settings for ``source`` with c, fmax and symmetry from the project configuration."""
-    if not isinstance(source.get("face_groups", []), list):
-        raise ValueError("Face groups must be a list.")
     try:
         return CadImportSettings(
+            face_groups=face_groups(source),
             fmax_hz=float(configuration["frequency"]["freq_max_hz"]),
             sound_speed_m_per_s=sound_speed(configuration),
             elements_per_wavelength=float(source["elements_per_wavelength"]),

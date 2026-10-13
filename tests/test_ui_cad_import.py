@@ -201,6 +201,98 @@ def test_closed_shell_is_asked_once_and_stays_editable(cad_editor, qapp, monkeyp
     assert not editor.closed_shell_combos["Closed shell 1"].isEnabled()
 
 
+def cabinet_faces(editor, predicate):
+    return [f["id"] for f in editor.geometry["faces"] if f["bodies"] == ["Cabinet"] and predicate(f)]
+
+
+def test_picked_faces_become_a_face_group_that_generates_a_rigid_boundary(
+    cad_editor, main_window, monkeypatch, qapp, tmp_path
+):
+    from blab.ui.main_window import geometry_workflow
+
+    editor, host = cad_editor
+    sides = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)  # the two X sides
+    editor.pick_face(sides[0])
+    editor.pick_face(sides[1], add=True)
+    assert editor.selected_faces() == set(sides)
+
+    editor.group_selection("Sides")
+
+    (group,) = host.snapshot().source["face_groups"]
+    assert group["name"] == "Sides"
+    assert sorted(abs(face["centre"][0]) for face in group["faces"]) == pytest.approx([0.06, 0.06])
+    assert {face["surface_type"] for face in group["faces"]} == {"Plane"}
+    assert [editor.groups_table.item(r, 0).text() for r in range(editor.groups_table.rowCount())] == [
+        "Sides",
+        "Driver",  # from the STEP file
+    ]
+    monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
+    errors = []
+    monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
+    host.generate(expected_revision=host.snapshot().revision)
+    wait(qapp, lambda: not main_window.geometry_controller.active)
+
+    assert not errors
+    sides_boundary = next(b for b in main_window.project.physical_system.boundaries if b.group.name == "Sides")
+    assert sides_boundary.kind == "rigid"
+
+
+def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
+    editor, host = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.pick_face(first)
+    editor.group_selection("A")
+    editor.pick_face(second)
+    editor.group_selection("A")  # an existing name adds the selection
+    editor.pick_face(first)
+    editor.group_selection("B")
+
+    groups = {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]}
+    assert groups == {"A": 1, "B": 1}
+    editor.set_face_group_size("B", 0.008)
+    editor.delete_face_group("B")
+    assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["A"]
+    assert host.snapshot().source["face_group_sizes_m"] == {}
+
+
+def test_size_overrides_for_bodies_and_face_groups_edit_the_source(cad_editor):
+    editor, host = cad_editor
+
+    editor.set_face_group_size("Driver", 0.008)
+    editor.set_body_size("Chamber", 0.04)
+
+    source = host.snapshot().source
+    assert source["face_group_sizes_m"] == {"Driver": 0.008}
+    assert source["body_sizes_m"] == {"Chamber": 0.04}
+    driver_row = next(
+        r for r in range(editor.groups_table.rowCount()) if editor.groups_table.item(r, 0).text() == "Driver"
+    )
+    assert editor.groups_table.item(driver_row, 2).text() == "8"
+    assert body_items(editor)["Chamber"].text(1) == "40"
+
+    editor.groups_table.item(driver_row, 2).setText("")  # typing in the table clears the override
+    body_items(editor)["Chamber"].setText(1, "25")
+    source = host.snapshot().source
+    assert source["face_group_sizes_m"] == {}
+    assert source["body_sizes_m"] == {"Chamber": 0.025}
+
+
+def test_orientation_pickers_reorient_the_preview(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    editor.set_step_path(str(vented_box(tmp_path / "turned.step", cad_axes=("-Y", "+Z"))))
+    wait(qapp, lambda: not editor.loading)
+    assert "120.0 x 210.0 x 120.0 mm" in editor.info.text()
+
+    editor.up_combo.setCurrentIndex(editor.up_combo.findData("+Z"))  # +Z up while forward is +Z: invalid
+    wait(qapp, lambda: not editor.loading)
+    assert "perpendicular" in editor.info.text()
+    editor.forward_combo.setCurrentIndex(editor.forward_combo.findData("-Y"))
+    wait(qapp, lambda: not editor.loading)
+
+    assert (host.snapshot().source["forward"], host.snapshot().source["up"]) == ("-Y", "+Z")
+    assert "120.0 x 120.0 x 210.0 mm" in editor.info.text()
+
+
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():
     settings = MemorySettings({"providers/enabled": [VENTED], "providers/vented_enclosure_introduced": True})
     assert load_gui_preferences(settings).enabled_geometry_providers == (VENTED, PROVIDER)

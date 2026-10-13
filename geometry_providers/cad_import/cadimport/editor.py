@@ -1,14 +1,17 @@
-"""3D view with a body/face visibility tree and sizing settings; the host's Generate meshes."""
+"""3D view with face picking, a body/face visibility tree, face groups, axes and sizing; the host's Generate meshes."""
 
 import json
 import shutil
 import tempfile
 import threading
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -20,32 +23,42 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from blab.cad_import import CadFace, CadFaceRef, face_ref, match_face_ref
+
 from .backend import run_worker
 from .parameters import DEFAULT_SOUND_SPEED_M_PER_S
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
+AXES = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
 FACE_ROLE = Qt.ItemDataRole.UserRole
 SIZING = (
     ("elements_per_wavelength", "Elements per wavelength", 1.0, 50.0, 1, ""),
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
+FACE_COLOUR, SELECTED_COLOUR = "#c8ccd2", "#e8a33d"
 
 
 class _Relay(QObject):
     loaded = Signal(object, object, object)  # key, preview or None, error or None
 
 
-class Viewport(QWidget):
-    """Visible faces of the preview tessellation in a VTK plotter."""
+def _actor_key(actor):
+    return actor.GetAddressAsString("") if hasattr(actor, "GetAddressAsString") else id(actor)
 
-    def __init__(self, parent=None):
+
+class Viewport(QWidget):
+    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face."""
+
+    def __init__(self, parent=None, *, picked=lambda face_id, add: None):
         super().__init__(parent)
         from pyvistaqt import QtInteractor
 
@@ -54,19 +67,51 @@ class Viewport(QWidget):
         self.plotter = QtInteractor(self)
         layout.addWidget(self.plotter)
         self.setMinimumHeight(220)
+        self.picked = picked
+        self._cell_faces = {}  # actor -> face id per cell
+        self._press = None
+        interactor = getattr(getattr(self.plotter, "iren", None), "interactor", None)
+        if hasattr(interactor, "AddObserver"):
+            interactor.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
+            interactor.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
 
-    def show_faces(self, preview, visible, *, reset_camera=False):
+    def show_faces(self, preview, visible, selected=frozenset(), *, reset_camera=False):
         import pyvista as pv
 
         self.plotter.clear()
+        self._cell_faces = {}
         if preview is not None:
-            triangles = preview["triangles"][np.isin(preview["face_ids"], list(visible))]
-            if len(triangles):
-                cells = np.hstack([np.full((len(triangles), 1), 3), triangles]).ravel()
-                self.plotter.add_mesh(pv.PolyData(preview["points"], cells), color="#c8ccd2", show_edges=True)
+            for faces, colour in (
+                (set(visible) - set(selected), FACE_COLOUR),
+                (set(visible) & set(selected), SELECTED_COLOUR),
+            ):
+                mask = np.isin(preview["face_ids"], list(faces))
+                if mask.any():
+                    triangles = preview["triangles"][mask]
+                    cells = np.hstack([np.full((len(triangles), 1), 3), triangles]).ravel()
+                    actor = self.plotter.add_mesh(pv.PolyData(preview["points"], cells), color=colour, show_edges=True)
+                    self._cell_faces[_actor_key(actor)] = preview["face_ids"][mask]
             if reset_camera:
                 self.plotter.reset_camera()
         self.plotter.render()
+
+    def _on_press(self, interactor, _event):
+        self._press = interactor.GetEventPosition()
+
+    def _on_release(self, interactor, _event):
+        x, y = interactor.GetEventPosition()
+        if self._press is None or abs(x - self._press[0]) + abs(y - self._press[1]) > 3:
+            return  # a drag rotates the view
+        from vtkmodules.vtkRenderingCore import vtkCellPicker
+
+        picker = vtkCellPicker()
+        picker.SetTolerance(0.0005)
+        face = None
+        if picker.Pick(x, y, 0, self.plotter.renderer):
+            faces = self._cell_faces.get(_actor_key(picker.GetActor()))
+            if faces is not None and 0 <= picker.GetCellId() < len(faces):
+                face = int(faces[picker.GetCellId()])
+        self.picked(face, bool(interactor.GetControlKey() or interactor.GetShiftKey()))
 
     def close(self):
         self.plotter.close()
@@ -83,6 +128,8 @@ class CadImportEditor:
         self._key = None
         self._hidden = set()
         self._face_items = {}
+        self._body_items = {}
+        self._faces = None  # geometry with CadFace objects, for matching stored face groups
         self._syncing = False
         self._fmax_hz = None
         self._disposed = False
@@ -107,16 +154,21 @@ class CadImportEditor:
         layout.addWidget(self.info)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.viewport = Viewport()
+        self.viewport = Viewport(picked=self._viewport_picked)
         splitter.addWidget(self.viewport)
         tree_panel = QWidget()
         tree_layout = QVBoxLayout(tree_panel)
         tree_layout.setContentsMargins(0, 0, 0, 0)
         self.tree = QTreeWidget()
-        self.tree.setHeaderHidden(True)
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Body / face", "Size (mm)"])
+        self.tree.headerItem().setToolTip(1, "Element size override for an air or exterior surface body.")
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.ExtendedSelection)
+        self.tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree.setAccessibleName("Bodies and faces")
         self.tree.itemChanged.connect(self._item_changed)
+        self.tree.itemDoubleClicked.connect(self._tree_double_clicked)
+        self.tree.itemSelectionChanged.connect(lambda: self._render_timer.start(0))
         tree_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
         self.show_all_button = QPushButton("Show all")
@@ -131,6 +183,32 @@ class CadImportEditor:
         splitter.addWidget(tree_panel)
         layout.addWidget(splitter, 1)
 
+        self.groups_box = QGroupBox("Face groups")
+        self.groups_box.setToolTip("Pick faces in the view or the tree, then name them as a face group.")
+        groups_layout = QVBoxLayout(self.groups_box)
+        name_row = QHBoxLayout()
+        self.group_name = QLineEdit()
+        self.group_name.setPlaceholderText("Face group name")
+        self.group_name.setAccessibleName("Face group name")
+        self.group_button = QPushButton("Group selection")
+        self.group_button.setToolTip("Put the selected faces into the named face group (new or existing).")
+        self.group_button.clicked.connect(lambda: self.group_selection(self.group_name.text()))
+        self.delete_group_button = QPushButton("Delete group")
+        self.delete_group_button.clicked.connect(self._delete_selected_group)
+        name_row.addWidget(self.group_name, 1)
+        name_row.addWidget(self.group_button)
+        name_row.addWidget(self.delete_group_button)
+        groups_layout.addLayout(name_row)
+        self.groups_table = QTableWidget(0, 3)
+        self.groups_table.setHorizontalHeaderLabels(["Face group", "Faces", "Size (mm)"])
+        self.groups_table.verticalHeader().hide()
+        self.groups_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.groups_table.setAccessibleName("Face groups")
+        self.groups_table.itemChanged.connect(self._group_item_changed)
+        self.groups_table.itemSelectionChanged.connect(self._group_selected)
+        groups_layout.addWidget(self.groups_table)
+        layout.addWidget(self.groups_box)
+
         self.closed_shell_box = QGroupBox("Closed shells")
         self.closed_shell_box.setToolTip("Closed shells of surfaces can be air volumes or exterior surfaces.")
         self.closed_shell_form = QFormLayout(self.closed_shell_box)
@@ -139,6 +217,14 @@ class CadImportEditor:
         layout.addWidget(self.closed_shell_box)
 
         form = QFormLayout()
+        self.forward_combo, self.up_combo = QComboBox(), QComboBox()
+        for key, combo, label in (("forward", self.forward_combo, "Forward (+Z)"), ("up", self.up_combo, "Up (+Y)")):
+            for axis in AXES:
+                combo.addItem(f"CAD {axis}", axis)
+            combo.setAccessibleName(label)
+            combo.setToolTip(f"The CAD axis that becomes Boundary Lab {label[-3:-1]}.")
+            combo.currentIndexChanged.connect(lambda _, k=key, c=combo: self.edited({k: c.currentData()}))
+            form.addRow(label, combo)
         self.spins = {}
         for key, label, low, high, decimals, suffix in SIZING:
             spin = QDoubleSpinBox()
@@ -173,6 +259,10 @@ class CadImportEditor:
             blocked = spin.blockSignals(True)
             spin.setValue(float(source[key]))
             spin.blockSignals(blocked)
+        for key, combo in (("forward", self.forward_combo), ("up", self.up_combo)):
+            blocked = combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(source.get(key, "+Z" if key == "forward" else "+Y")))
+            combo.blockSignals(blocked)
         self._refresh_context()
         key = (
             str(source.get("step_path") or ""),
@@ -182,6 +272,9 @@ class CadImportEditor:
         )
         if key != self._key:
             self._load(key)
+        else:
+            self._show_sizes()
+            self._show_groups()
 
     def edited(self, changes):
         try:
@@ -305,20 +398,30 @@ class CadImportEditor:
     def _show_preview(self, preview):
         self._preview = preview
         self.geometry = None if preview is None else preview["geometry"]
+        self._faces = None
         self._hidden.clear()
         self._face_items = {}
+        self._body_items = {}
         self._syncing = True
         self.tree.clear()
         if self.geometry is not None:
             faces = {face["id"]: face for face in self.geometry["faces"]}
+            self._faces = SimpleNamespace(
+                faces=[CadFace(**face) for face in self.geometry["faces"]], bbox_m=self.geometry["bbox_m"]
+            )
             for body in self.geometry["bodies"]:
                 item = QTreeWidgetItem([body["name"]])
                 item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate
+                    Qt.ItemFlag.ItemIsEnabled
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                    | Qt.ItemFlag.ItemIsAutoTristate
+                    | Qt.ItemFlag.ItemIsEditable
                 )
                 item.setCheckState(0, Qt.CheckState.Checked)
                 item.setToolTip(0, "Air body" if body["kind"] == "air" else "Exterior surface body")
+                item.setToolTip(1, "Double-click to override the element size (mm); empty uses the target size.")
                 self.tree.addTopLevelItem(item)
+                self._body_items[body["name"]] = item
                 for face_id in body["face_ids"]:
                     face = faces[face_id]
                     child = QTreeWidgetItem([face["step_name"] or f"Face {face_id}"])
@@ -335,17 +438,45 @@ class CadImportEditor:
             lines += [f"Warning: {warning}" for warning in self.geometry["warnings"]]
             self.info.setText("\n".join(lines))
         self._syncing = False
+        self._show_sizes()
+        self._show_groups()
         self._show_closed_shells()
         self.viewport.show_faces(preview, self.visible_faces(), reset_camera=True)
 
-    # -- visibility ---------------------------------------------------------------------------
+    # -- visibility and selection -------------------------------------------------------------
 
     def visible_faces(self):
         return set(self._face_items) - self._hidden
 
-    def _item_changed(self, item, _column):
+    def selected_faces(self):
+        return {item.data(0, FACE_ROLE) for item in self.tree.selectedItems()} - {None}
+
+    def select_faces(self, face_ids):
+        self.tree.clearSelection()
+        for face_id in face_ids:
+            for item in self._face_items.get(face_id, ()):
+                item.setSelected(True)
+
+    def pick_face(self, face_id, *, add=False):
+        """Select ``face_id`` (as a click in the view does); ``add`` toggles it in the selection."""
+        selected = self.selected_faces()
+        if not add:
+            selected = set()
+        if face_id is not None:
+            selected ^= {face_id}
+        self.select_faces(selected)
+
+    def _viewport_picked(self, face_id, add):
+        self.pick_face(face_id, add=add)
+
+    def _item_changed(self, item, column):
+        if self._syncing:
+            return
+        if column == 1 and item.parent() is None:
+            self._size_typed(lambda size: self.set_body_size(item.text(0), size), item.text(1))
+            return
         face_id = item.data(0, FACE_ROLE)
-        if self._syncing or face_id is None:
+        if face_id is None:
             return  # Bodies only propagate their state to their faces.
         visible = item.checkState(0) == Qt.CheckState.Checked
         (self._hidden.discard if visible else self._hidden.add)(face_id)
@@ -355,6 +486,10 @@ class CadImportEditor:
                 other.setCheckState(0, item.checkState(0))
         self._syncing = False
         self._render_timer.start(0)
+
+    def _tree_double_clicked(self, item, column):
+        if column == 1 and item.parent() is None:
+            self.tree.editItem(item, 1)
 
     def show_all(self):
         self._syncing = True
@@ -371,7 +506,123 @@ class CadImportEditor:
         self.tree.clearSelection()
 
     def _render(self):
-        self.viewport.show_faces(self._preview, self.visible_faces())
+        self.viewport.show_faces(self._preview, self.visible_faces(), self.selected_faces())
+
+    # -- face groups --------------------------------------------------------------------------
+
+    def _ref(self, face_id):
+        face = next(f for f in self._faces.faces if f.id == face_id)
+        return asdict(face_ref(face, forward=self.source["forward"], up=self.source["up"]))
+
+    def _members(self, group):
+        """Face ids of a stored group in the loaded geometry, and its refs that match nothing."""
+        ids, unmatched = set(), []
+        for ref in group["faces"]:
+            found = match_face_ref(CadFaceRef(**ref), self._faces, forward=self.source["forward"], up=self.source["up"])
+            ids.update(found)
+            if not found:
+                unmatched.append(ref)
+        return ids, unmatched
+
+    def face_groups(self):
+        """``{name: face ids}``: stored face groups, then those named in the STEP file."""
+        groups = {}
+        if self._faces is None:
+            return groups
+        for group in self.source.get("face_groups", []):
+            groups[group["name"]] = self._members(group)[0]
+        taken = set().union(*groups.values()) | {f for i in self.geometry["interfaces"] for f in i["face_ids"]}
+        for face in self._faces.faces:
+            if face.step_name and face.id not in taken:
+                groups.setdefault(face.step_name, set()).add(face.id)
+        return groups
+
+    def group_selection(self, name):
+        """Put the selected faces into face group ``name``, out of any other group."""
+        name = name.strip()
+        selected = self.selected_faces()
+        if not name or not selected or self._faces is None:
+            self.status.setText("Select faces and enter a face group name first.")
+            return
+        stored = list(self.source.get("face_groups", []))
+        if name not in [g["name"] for g in stored]:
+            stored.append({"name": name, "faces": []})
+        groups = []
+        for group in stored:
+            ids, unmatched = self._members(group)
+            ids = (ids | selected) if group["name"] == name else (ids - selected)
+            if ids or unmatched:
+                groups.append({"name": group["name"], "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
+        # A group emptied by the move loses its size override.
+        names = {g["name"] for g in groups} | {f.step_name for f in self._faces.faces if f.step_name}
+        sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k in names}
+        self.edited({"face_groups": groups, "face_group_sizes_m": sizes})
+
+    def delete_face_group(self, name):
+        groups = [g for g in self.source.get("face_groups", []) if g["name"] != name]
+        sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k != name}
+        self.edited({"face_groups": groups, "face_group_sizes_m": sizes})
+
+    def _delete_selected_group(self):
+        rows = {item.row() for item in self.groups_table.selectedItems()}
+        for row in sorted(rows):
+            self.delete_face_group(self.groups_table.item(row, 0).text())
+
+    def set_face_group_size(self, name, size_m):
+        """Override the element size of face group ``name`` (metres); ``None`` clears it."""
+        self.edited({"face_group_sizes_m": _with_size(self.source.get("face_group_sizes_m", {}), name, size_m)})
+
+    def set_body_size(self, name, size_m):
+        """Override the element size of body ``name`` (metres); ``None`` clears it."""
+        self.edited({"body_sizes_m": _with_size(self.source.get("body_sizes_m", {}), name, size_m)})
+
+    def _size_typed(self, apply, text):
+        text = text.strip()
+        try:
+            size = None if not text else float(text) / 1000
+            if size is not None and not size > 0:
+                raise ValueError
+        except ValueError:
+            self.status.setText(f"Size override must be a positive number of millimetres, not '{text}'.")
+            self._show_sizes()
+            self._show_groups()
+            return
+        apply(size)
+
+    def _group_item_changed(self, item):
+        if not self._syncing and item.column() == 2:
+            name = self.groups_table.item(item.row(), 0).text()
+            self._size_typed(lambda size: self.set_face_group_size(name, size), item.text())
+
+    def _group_selected(self):
+        if self._syncing:
+            return
+        groups = self.face_groups()
+        rows = {item.row() for item in self.groups_table.selectedItems()}
+        self.select_faces(set().union(*(groups[self.groups_table.item(r, 0).text()] for r in rows)))
+
+    def _show_groups(self):
+        self._syncing = True
+        stored = {g["name"] for g in self.source.get("face_groups", [])}
+        sizes = self.source.get("face_group_sizes_m", {})
+        groups = self.face_groups()
+        self.groups_table.setRowCount(len(groups))
+        for row, (name, faces) in enumerate(groups.items()):
+            cells = [QTableWidgetItem(name), QTableWidgetItem(str(len(faces))), QTableWidgetItem(_mm(sizes.get(name)))]
+            for cell in cells[:2]:
+                cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            cells[0].setToolTip("Picked face group" if name in stored else "Named in the STEP file")
+            cells[2].setToolTip("Element size override in mm; empty uses the body or target size.")
+            for column, cell in enumerate(cells):
+                self.groups_table.setItem(row, column, cell)
+        self._syncing = False
+
+    def _show_sizes(self):
+        self._syncing = True
+        sizes = self.source.get("body_sizes_m", {})
+        for name, item in self._body_items.items():
+            item.setText(1, _mm(sizes.get(name)))
+        self._syncing = False
 
     # -- sizing and meshing -------------------------------------------------------------------
 
@@ -404,7 +655,16 @@ class CadImportEditor:
             self.status.setText(event.job.message)
 
     def set_operation_state(self, state):
-        for widget in (self.step_path, self.browse_button, *self.spins.values(), self.closed_shell_box):
+        widgets = (
+            self.step_path,
+            self.browse_button,
+            self.forward_combo,
+            self.up_combo,
+            self.groups_box,
+            *self.spins.values(),
+            self.closed_shell_box,
+        )
+        for widget in widgets:
             widget.setEnabled(not state.active)
 
     def dispose(self):
@@ -412,6 +672,15 @@ class CadImportEditor:
         self._cancel_preview.set()
         self._render_timer.stop()
         self.viewport.close()
+
+
+def _mm(size_m):
+    return "" if size_m is None else f"{size_m * 1000:g}"
+
+
+def _with_size(sizes, name, size_m):
+    sizes = {k: v for k, v in sizes.items() if k != name}
+    return sizes if size_m is None else sizes | {name: size_m}
 
 
 def create_editor(parent, document_host):

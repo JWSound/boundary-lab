@@ -36,12 +36,29 @@ _GMSH_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
+class CadFaceRef:
+    """A face as a face group stores it: STEP name and fingerprint in CAD axes (before axis mapping).
+
+    It resolves to the faces carrying ``step_name``, else to the face with the same surface
+    type, centre, area and normal.
+    """
+
+    step_name: str | None
+    centre: tuple[float, float, float]
+    area: float
+    normal: tuple[float, float, float]
+    surface_type: str
+
+
+@dataclass(frozen=True)
 class CadImportSettings:
     """Meshing inputs. Sizes in metres; ``forward``/``up`` name the CAD axes mapped to +Z/+Y.
 
-    ``face_groups`` maps a group name to face ids (``CadFace.id``). ``symmetry`` is the
-    project symmetry to check the geometry against; ``None`` accepts what is detected.
-    ``closed_shells`` maps a closed shell name to ``"air"`` or ``"exterior"`` (the default).
+    ``face_groups`` maps a group name to its faces: ``CadFaceRef`` (or mappings of its
+    fields), or face ids (``CadFace.id``). Faces with a STEP name in no face group form a
+    group of that name. ``symmetry`` is the project symmetry to check the geometry
+    against; ``None`` accepts what is detected. ``closed_shells`` maps a closed shell name
+    to ``"air"`` or ``"exterior"`` (the default).
     """
 
     fmax_hz: float
@@ -49,7 +66,7 @@ class CadImportSettings:
     elements_per_wavelength: float = 5.0
     forward: str = "+Z"
     up: str = "+Y"
-    face_groups: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
+    face_groups: Mapping[str, tuple[int | CadFaceRef, ...]] = field(default_factory=dict)
     body_sizes_m: Mapping[str, float] = field(default_factory=dict)
     face_group_sizes_m: Mapping[str, float] = field(default_factory=dict)
     curvature_elements_per_circle: float = 12.0
@@ -70,9 +87,11 @@ class CadImportSettings:
         if not (math.isfinite(self.growth_rate) and self.growth_rate > 1):
             raise ValueError("Growth rate must be greater than 1.")
         _axis_matrix(self.forward, self.up)
-        unknown = sorted(set(self.face_group_sizes_m) - set(self.face_groups))
-        if unknown:
-            raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
+        groups = {
+            name: tuple(CadFaceRef(**face) if isinstance(face, Mapping) else face for face in faces)
+            for name, faces in self.face_groups.items()
+        }
+        object.__setattr__(self, "face_groups", groups)
         if self.symmetry not in (None, *SYMMETRY_LABELS):
             raise ValueError(f"Unknown symmetry '{self.symmetry}'.")
 
@@ -162,6 +181,18 @@ def inspect_step(
         return _analyse(gmsh, Path(step_path), _axis_matrix(forward, up), closed_shells or {}).geometry
 
 
+def face_ref(face: CadFace, *, forward: str = "+Z", up: str = "+Y") -> CadFaceRef:
+    """How a face group stores ``face`` of a geometry read with axes ``forward``/``up``."""
+    back = _axis_matrix(forward, up).T
+    return CadFaceRef(
+        face.step_name,
+        tuple(float(v) for v in back @ np.asarray(face.centre, dtype=float)),
+        float(face.area),
+        tuple(float(v) for v in back @ np.asarray(face.normal, dtype=float)),
+        face.surface_type,
+    )
+
+
 @dataclass(frozen=True)
 class CadPreview:
     """A coarse display tessellation: ``triangles`` index ``points`` (m); ``face_ids`` per triangle."""
@@ -238,14 +269,20 @@ class _Model:
     mesh_faces: dict[str, list[int]]  # mesh id -> faces on its boundary
     interface_of: dict[int, str]  # face -> interface name
     face_bodies: dict[int, tuple[str, ...]]
+    matrix: np.ndarray
 
-    def surface_groups(self, face_groups: Mapping[str, tuple[int, ...]]) -> dict[str, dict[str, list[int]]]:
+    def surface_groups(
+        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]]
+    ) -> dict[str, dict[str, list[int]]]:
         """Mesh id -> {surface group name -> faces}, sorted by name."""
         member = {}
         reserved = {WALLS, *self.interface_of.values()}
-        for name, faces in face_groups.items():
+        for name, refs in face_groups.items():
             if not name or name in reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
+            faces = [f for ref in refs for f in self._resolve(ref)]
+            if refs and not faces:
+                raise ValueError(f"Face group '{name}' matches no face of the STEP file.")
             for face in faces:
                 if face not in self.face_bodies:
                     raise ValueError(f"Face group '{name}' refers to unknown face {face}.")
@@ -256,6 +293,10 @@ class _Model:
                 if face in member and member[face] != name:
                     raise ValueError(f"Face {face} is in face groups '{member[face]}' and '{name}'.")
                 member[face] = name
+        for face in self.geometry.faces:
+            name = face.step_name
+            if name and name not in reserved and face.id not in member and face.id not in self.interface_of:
+                member[face.id] = name
         result = {}
         for mesh_id, faces in self.mesh_faces.items():
             groups = defaultdict(list)
@@ -263,6 +304,35 @@ class _Model:
                 groups[self.interface_of.get(face) or member.get(face) or WALLS].append(face)
             result[mesh_id] = dict(sorted(groups.items()))
         return result
+
+    def _resolve(self, ref: int | CadFaceRef) -> list[int]:
+        if not isinstance(ref, CadFaceRef):
+            return [ref]
+        return match_face_ref(ref, self.geometry, matrix=self.matrix)
+
+
+def match_face_ref(
+    ref: CadFaceRef, geometry: CadGeometry, *, forward: str = "+Z", up: str = "+Y", matrix: np.ndarray | None = None
+) -> list[int]:
+    """Ids of the faces of ``geometry`` (read with ``forward``/``up``) that ``ref`` stands for.
+
+    The faces carrying its STEP name, else those whose fingerprint matches after axis mapping.
+    """
+    if ref.step_name:
+        named = [f.id for f in geometry.faces if f.step_name == ref.step_name]
+        if named:
+            return named
+    matrix = _axis_matrix(forward, up) if matrix is None else matrix
+    centre, normal = matrix @ np.asarray(ref.centre, dtype=float), matrix @ np.asarray(ref.normal, dtype=float)
+    tol = 1e-4 * math.dist(*geometry.bbox_m)
+    return [
+        f.id
+        for f in geometry.faces
+        if f.surface_type == ref.surface_type
+        and math.dist(f.centre, centre) <= tol
+        and abs(f.area - ref.area) <= 1e-3 * ref.area
+        and abs(np.dot(f.normal, normal)) >= 0.999
+    ]
 
 
 def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str]) -> _Model:
@@ -439,7 +509,7 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         tuple(warnings),
         tuple(CadClosedShell(name, role) for name, role in roles.items()),
     )
-    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies)
+    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies, matrix)
 
 
 def _exterior_bodies(names, children, edges) -> dict[str, list[int]]:
@@ -626,7 +696,7 @@ def _step_face_vertices(path) -> list[tuple[str, np.ndarray]]:
     result = []
     for key, body in records.items():
         match = re.match(r"ADVANCED_FACE\s*\(\s*'((?:[^']|'')+)'\s*,\s*\(([^)]*)\)", body)
-        if not match:
+        if not match or match.group(1) == "NONE":  # SolidWorks' placeholder for unnamed faces
             continue
         refs = set().union(*(vertex_points(b, set()) for b in re.findall(r"#(\d+)", match.group(2))))
         coords = [re.search(r"\(([^()]*)\)\s*\)$", records[r]).group(1).split(",") for r in refs]
@@ -645,6 +715,9 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
     unknown = sorted(set(settings.body_sizes_m) - {b.name for b in model.geometry.bodies})
     if unknown:
         raise ValueError(f"Size override for unknown body '{unknown[0]}'.")
+    unknown = sorted(set(settings.face_group_sizes_m) - {name for g in groups.values() for name in g})
+    if unknown:
+        raise ValueError(f"Size override for unknown face group '{unknown[0]}'.")
     body_size = {b.name: settings.body_sizes_m.get(b.name, target) for b in model.geometry.bodies}
     face_size = {f: min(body_size[b] for b in bodies) for f, bodies in model.face_bodies.items()}
     for mesh_groups in groups.values():

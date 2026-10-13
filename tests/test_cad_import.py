@@ -9,7 +9,7 @@ import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import CadClosedShell, CadImportSettings, inspect_step, mesh_step
+from blab.cad_import import CadClosedShell, CadFaceRef, CadImportSettings, face_ref, inspect_step, mesh_step
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import strip_names, two_chambers, vented_box, waveguide
@@ -37,7 +37,8 @@ def test_vented_box_becomes_one_air_mesh_and_one_exterior_mesh(vented):
         "chamber": "fem_volume",
         "exterior": "bem_surface",
     }
-    assert groups(meshes["chamber"].path) == {2: ["Port opening", "walls"], 3: ["Chamber", "Port"]}
+    # The chamber's back face is named "Driver" in the STEP file.
+    assert groups(meshes["chamber"].path) == {2: ["Driver", "Port opening", "walls"], 3: ["Chamber", "Port"]}
     assert groups(meshes["exterior"].path) == {2: ["Port opening", "walls"], 3: []}
     assert np.allclose(vented.geometry.bbox_m, [(-0.06, -0.06, -0.21), (0.06, 0.06, 0.0)], atol=1e-6)
 
@@ -71,14 +72,66 @@ def test_edges_follow_the_target_element_size(vented):
     assert np.quantile(tets, 0.95) < 0.034
 
 
-def test_face_group_becomes_a_physical_group_with_its_own_size(vented, tmp_path):
-    driver = next(face.id for face in vented.geometry.faces if face.step_name == "Driver")
-    settings = replace(SETTINGS, face_groups={"Driver": (driver,)}, face_group_sizes_m={"Driver": 0.008})
+def test_step_named_face_group_takes_its_own_size(vented, tmp_path):
+    settings = replace(SETTINGS, face_group_sizes_m={"Driver": 0.008})
     result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
 
     assert [m.surface_groups for m in result.meshes] == [("Driver", "Port opening", "walls"), ("Port opening", "walls")]
     assert 0.0065 < np.median(edge_lengths(read(result, "chamber"), group="Driver")) < 0.0095
     assert 0.016 < np.median(edge_lengths(read(result, "exterior"), group="walls")) < 0.022
+
+
+def test_face_group_spans_several_faces_and_overrides_a_step_name(vented, tmp_path):
+    cabinet = [f.id for f in vented.geometry.faces if f.bodies == ("Cabinet",) and abs(f.centre[2]) > 1e-6]
+    driver = next(f.id for f in vented.geometry.faces if f.step_name == "Driver")
+    settings = replace(SETTINGS, face_groups={"Sides": tuple(cabinet[:2]), "Cone": (driver,)})
+    result = mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    assert [m.surface_groups for m in result.meshes] == [
+        ("Cone", "Port opening", "walls"),
+        ("Port opening", "Sides", "walls"),
+    ]
+    sides = read(result, "exterior")
+    assert (
+        len(
+            np.unique(
+                sides.cell_data_dict["gmsh:geometrical"]["triangle"][
+                    sides.cell_data_dict["gmsh:physical"]["triangle"] == sides.field_data["Sides"][0]
+                ]
+            )
+        )
+        == 2
+    )
+
+
+def test_placeholder_step_face_names_are_ignored(tmp_path):
+    step = vented_box(tmp_path / "box.step", face_names=lambda centre: "NONE")
+
+    geometry = inspect_step(step)
+    assert all(face.step_name is None for face in geometry.faces)
+
+
+def test_face_group_stored_in_cad_axes_survives_an_axis_mapping_change(tmp_path):
+    step = vented_box(tmp_path / "box.step", cad_axes=("-Y", "+Z"))
+    as_written = inspect_step(step)
+    # Picked as written: the cabinet front with the port hole lies on CAD Y=0.
+    front = next(f for f in as_written.faces if f.bodies == ("Cabinet",) and abs(f.centre[1]) < 1e-6)
+    ref = face_ref(front, forward="+Z", up="+Y")
+
+    settings = replace(SETTINGS, forward="-Y", up="+Z", face_groups={"Baffle": (ref,)})
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    assert [m.surface_groups for m in result.meshes] == [("Port opening", "walls"), ("Baffle", "Port opening", "walls")]
+    bem = read(result, "exterior")
+    baffle = bem.cells_dict["triangle"][bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Baffle"][0]]
+    assert np.allclose(bem.points[baffle][..., 2], 0, atol=1e-9)  # now the +Z front
+
+
+def test_face_group_whose_faces_no_longer_match_is_rejected(vented, tmp_path):
+    lost = CadFaceRef(None, (1.0, 1.0, 1.0), 0.5, (0.0, 0.0, 1.0), "Plane")
+
+    with pytest.raises(ValueError, match="Face group 'Lid' matches no face"):
+        mesh_step(vented_box(tmp_path / "box.step"), replace(SETTINGS, face_groups={"Lid": (lost,)}), tmp_path / "out")
 
 
 def test_body_override_coarsens_one_air_body_only(vented, tmp_path):
@@ -332,7 +385,7 @@ def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):
         assert (tmp_path / "cli" / mesh.path.name).read_bytes() == mesh.path.read_bytes()
     output = capsys.readouterr().out
     assert "Target element size: 20.0 mm" in output
-    assert "chamber.msh (fem_volume): volume groups Chamber, Port; surface groups Port opening, walls" in output
+    assert "chamber.msh (fem_volume): volume groups Chamber, Port; surface groups Driver, Port opening, walls" in output
     assert "Interface: Port opening (chamber <-> exterior)" in output
     assert "Suggested symmetry: Off" in output
 
