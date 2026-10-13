@@ -32,6 +32,7 @@ def settings(source, configuration):
             curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
             growth_rate=float(source["growth_rate"]),
             symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),
+            closed_shells=dict(source.get("closed_shells", {})),
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Invalid CAD import source: {exc}") from exc

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QDockWidget
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
-from cad_fixtures import vented_box
+from cad_fixtures import vented_box, waveguide
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings
@@ -174,6 +174,31 @@ def test_clear_shows_everything_and_clears_the_selection(cad_editor):
     assert editor.visible_faces() == {face["id"] for face in editor.geometry["faces"]}
     assert editor.tree.selectedItems() == []
     assert host.snapshot().source == source
+
+
+def test_closed_shell_is_asked_once_and_stays_editable(cad_editor, qapp, monkeypatch, tmp_path):
+    editor, host = cad_editor
+    asked = []
+    monkeypatch.setattr(editor, "ask_closed_shell", lambda name: asked.append(name) or "air")
+
+    editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
+    wait(qapp, lambda: not editor.loading)
+
+    assert asked == ["Closed shell 1"]
+    assert host.snapshot().source["closed_shells"] == {"Closed shell 1": "air"}
+    assert list(body_items(editor)) == ["Closed shell 1", "Exterior surface 1"]
+    combo = editor.closed_shell_combos["Closed shell 1"]
+    assert combo.currentData() == "air"
+
+    combo.setCurrentIndex(combo.findData("exterior"))
+    wait(qapp, lambda: not editor.loading)
+
+    assert host.snapshot().source["closed_shells"] == {"Closed shell 1": "exterior"}
+    assert "Closed shell 1" not in body_items(editor)
+    assert editor.closed_shell_combos["Closed shell 1"].currentData() == "exterior"
+    assert asked == ["Closed shell 1"]
+    editor.set_operation_state(SimpleNamespace(active=True))
+    assert not editor.closed_shell_combos["Closed shell 1"].isEnabled()
 
 
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():

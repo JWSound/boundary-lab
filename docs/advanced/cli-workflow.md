@@ -397,8 +397,11 @@ tetrahedral mesh with a volume group per body. Surface bodies together form the
 `<body> opening` surface group in both meshes, node for node; every other face is in
 `walls`. The target element size is sound speed ÷ `--fmax` ÷ elements per wavelength
 (`--sound-speed`, default 343 m/s), refined on curved edges to about 12 elements per
-circle. `--forward` and `--up` name the CAD axes that become +Z and +Y. The command
-prints the meshes and groups, the bounding box, detected interfaces, the suggested
+circle. `--forward` and `--up` name the CAD axes that become +Z and +Y. Closed shells
+of surfaces (how SolidWorks writes solids of parts that mix solid and surface bodies)
+stay exterior unless `--closed-shell "Closed shell 1=air"` (repeatable) makes them air
+bodies. The command prints the meshes and groups, the bounding box, the closed shells
+and their roles, detected interfaces, the suggested
 symmetry (open exterior edges on X=0 / Y=0), and warnings such as open exterior
 edges or air faces covered by the exterior.
 

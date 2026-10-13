@@ -16,7 +16,8 @@
     "face_group_sizes_m": {},
     "curvature_elements_per_circle": 12.0,
     "growth_rate": 1.3,
-    "face_groups": []
+    "face_groups": [],
+    "closed_shells": {}
   },
   "mesh_scale_factor": 1.0
 }

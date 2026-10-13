@@ -25,7 +25,7 @@ from blab.project.model import (
     new_generator_document,
 )
 from blab.system_solve import prepare_system_solve
-from cad_fixtures import vented_box
+from cad_fixtures import vented_box, waveguide
 
 ROOT = Path(__file__).resolve().parents[1] / "geometry_providers"
 PROVIDER = "blab.cad_import"
@@ -99,6 +99,18 @@ def test_vented_box_stages_regions_walls_and_interface_and_prepares_a_coupled_so
         polar_angle_step_deg=90,
     )
     assert prepared.solve_kind == "coupled_bem_fem"
+
+
+def test_closed_shell_chosen_as_air_in_the_source_stages_a_bounded_region(plugin, tmp_path):
+    catalog, backend = plugin
+    step = waveguide(tmp_path / "wg.step", surface_model=True)
+    project = make_project(catalog, step, closed_shells={"Closed shell 1": "air"})
+
+    project, response = generate(backend, project, tmp_path)
+
+    assert [m.id for m in response.geometry.meshes] == ["closed_shell_1", "exterior"]
+    assert [r.kind for r in project.physical_system.regions] == ["bounded_air", "unbounded_air"]
+    assert len(PhysicalSystemCompiler().compile(project.physical_system).interfaces) == 1
 
 
 @pytest.mark.parametrize("symmetry", ["x", "xy"])

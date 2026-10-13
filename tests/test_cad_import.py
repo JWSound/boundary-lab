@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import gmsh
 import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import CadImportSettings, inspect_step, mesh_step
+from blab.cad_import import CadClosedShell, CadImportSettings, inspect_step, mesh_step
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import strip_names, two_chambers, vented_box, waveguide
@@ -245,6 +246,78 @@ def test_curvature_refines_curved_edges_beyond_the_target_size(tmp_path):
 
     assert [i.name for i in result.geometry.interfaces] == ["Throat opening"]
     assert boundary_edge_count(read(result, "throat"), "Throat opening") >= 12
+
+
+@pytest.fixture(scope="module")
+def surface_model(tmp_path_factory):
+    """The waveguide written as SolidWorks does: the throat a closed shell, no solid."""
+    return waveguide(tmp_path_factory.mktemp("surface_model") / "wg.step", surface_model=True)
+
+
+def test_surface_model_fixture_holds_no_solid(surface_model):
+    gmsh.initialize(readConfigFiles=False, interruptible=False)
+    try:
+        gmsh.option.setNumber("General.Terminal", 0)
+        gmsh.model.occ.importShapes(str(surface_model), highestDimOnly=False)
+        gmsh.model.occ.synchronize()
+        assert gmsh.model.getEntities(3) == []
+    finally:
+        gmsh.finalize()
+
+
+def test_closed_shell_without_a_choice_stays_exterior(surface_model):
+    geometry = inspect_step(surface_model)
+
+    assert geometry.closed_shells == (CadClosedShell("Closed shell 1", "exterior"),)
+    assert [(r.mesh_id, r.kind) for r in geometry.regions] == [("exterior", "unbounded_air")]
+    assert geometry.interfaces == ()
+    assert inspect_step(surface_model, closed_shells={"Closed shell 1": "exterior"}) == geometry
+
+
+def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(surface_model, tmp_path):
+    settings = replace(SETTINGS, fmax_hz=1000.0, closed_shells={"Closed shell 1": "air"})
+    result = mesh_step(surface_model, settings, tmp_path / "out")
+    geometry = result.geometry
+
+    assert geometry.closed_shells == (CadClosedShell("Closed shell 1", "air"),)
+    assert [(r.mesh_id, r.kind, r.bodies) for r in geometry.regions] == [
+        ("closed_shell_1", "bounded_air", ("Closed shell 1",)),
+        ("exterior", "unbounded_air", ("Exterior surface 1",)),
+    ]
+    assert [(i.name, i.mesh_id) for i in geometry.interfaces] == [("Closed shell 1 opening", "closed_shell_1")]
+    report = validate_conforming_interfaces(
+        read(result, "closed_shell_1"),
+        read(result, "exterior"),
+        fem_interface_name="Closed shell 1 opening",
+        bem_interface_name="Closed shell 1 opening",
+    )
+    assert report.interface_triangles > 0 and report.bem_boundary_edges == 0
+
+
+@pytest.mark.parametrize(
+    ("closed_shells", "message"),
+    [
+        ({"Closed shell 1": "solid"}, "Closed shell 'Closed shell 1' must be 'air' or 'exterior'"),
+        ({"Closed shell 7": "air"}, "Unknown closed shell 'Closed shell 7'"),
+    ],
+)
+def test_invalid_closed_shell_choices_are_rejected(surface_model, closed_shells, message):
+    with pytest.raises(ValueError, match=message):
+        inspect_step(surface_model, closed_shells=closed_shells)
+
+
+def test_cli_sets_closed_shell_roles(surface_model, tmp_path, capsys):
+    cad_cli.main(
+        [str(surface_model), "--fmax", "1000", "--output", str(tmp_path), "--closed-shell", "Closed shell 1=air"],
+        prog="blab cad-import",
+    )
+
+    output = capsys.readouterr().out
+    assert "Closed shell: Closed shell 1 (air)" in output
+    assert "Interface: Closed shell 1 opening (closed_shell_1 <-> exterior)" in output
+    with pytest.raises(SystemExit):
+        cad_cli.main([str(surface_model), "--fmax", "1000", "--output", str(tmp_path), "--closed-shell", "air"])
+    assert "NAME=air or NAME=exterior" in capsys.readouterr().err
 
 
 def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):

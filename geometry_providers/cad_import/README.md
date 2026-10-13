@@ -15,6 +15,12 @@ in **Edit > Generator Plugins...** and add a design.
    the bodies and their faces, the model size and the suggested symmetry
    (from open exterior edges on X=0 / Y=0), plus warnings for covered air faces
    and exterior gaps.
+   A **closed shell** of surfaces (free faces that close up, as SolidWorks
+   writes the solids of parts mixing solid and surface bodies) could be either,
+   so the editor asks for each one: **Air volume** makes it an air body named
+   after the shell, **Exterior surface** (also Escape) keeps it exterior. Change
+   the choice later under **Closed shells**; another STEP file is asked afresh.
+   The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
 2. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
    all hiding, **Clear** also clears the selection.
 3. Set elements per wavelength (default 5), curvature and growth. The target

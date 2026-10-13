@@ -6,6 +6,7 @@ provider, so both produce identical meshes for identical inputs.
 
 from .pipeline import (
     CadBody,
+    CadClosedShell,
     CadFace,
     CadGeometry,
     CadImportResult,
@@ -21,6 +22,7 @@ from .pipeline import (
 
 __all__ = [
     "CadBody",
+    "CadClosedShell",
     "CadFace",
     "CadGeometry",
     "CadImportResult",

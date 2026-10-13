@@ -11,7 +11,8 @@ from .pipeline import AXES, SYMMETRY_LABELS, CadImportSettings, mesh_step
 def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Mesh a STEP file: solids become FEM air bodies, surface bodies the BEM exterior.",
+        description="Mesh a STEP file: solids become FEM air bodies, surface bodies the BEM exterior. "
+        "Closed shells of surfaces are exterior unless --closed-shell makes them air.",
     )
     parser.add_argument("step", help="STEP file (units are taken from the file)")
     parser.add_argument("--fmax", type=float, required=True, help="Maximum frequency in Hz")
@@ -24,7 +25,24 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--forward", choices=tuple(AXES), default="+Z", help="CAD axis mapped to +Z (default: +Z)")
     parser.add_argument("--up", choices=tuple(AXES), default="+Y", help="CAD axis mapped to +Y (default: +Y)")
+    parser.add_argument(
+        "--closed-shell",
+        action="append",
+        default=[],
+        metavar="NAME=air|exterior",
+        help="Treat a closed shell of surfaces as an air volume or exterior surface (default: exterior); repeatable",
+    )
     return parser
+
+
+def _closed_shells(parser, values) -> dict[str, str]:
+    roles = {}
+    for value in values:
+        name, _, role = value.rpartition("=")
+        if not name or role not in ("air", "exterior"):
+            parser.error(f"--closed-shell takes NAME=air or NAME=exterior, not '{value}'.")
+        roles[name] = role
+    return roles
 
 
 def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
@@ -37,6 +55,7 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             elements_per_wavelength=args.elements_per_wavelength,
             forward=args.forward,
             up=args.up,
+            closed_shells=_closed_shells(parser, args.closed_shell),
         )
         result = mesh_step(args.step, settings, args.output)
     except (ValueError, OSError) as exc:
@@ -50,6 +69,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
     for mesh in result.meshes:
         volumes = f"volume groups {', '.join(mesh.volume_groups)}; " if mesh.volume_groups else ""
         print(f"Wrote {mesh.path.name} ({mesh.purpose}): {volumes}surface groups {', '.join(mesh.surface_groups)}")
+    for shell in geometry.closed_shells:
+        print(f"Closed shell: {shell.name} ({shell.role})")
     for interface in geometry.interfaces:
         print(f"Interface: {interface.name} ({interface.mesh_id} <-> exterior)")
     print(f"Suggested symmetry: {SYMMETRY_LABELS[geometry.symmetry]}")

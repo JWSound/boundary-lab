@@ -174,8 +174,12 @@ def vented_box(
     return write_step(path, build, face_names=face_names or default_names)
 
 
-def waveguide(path: Path) -> Path:
-    """Conical throat (r 15 -> 40 mm over 40 mm) opening into a 200 mm baffle box at z=0."""
+def waveguide(path: Path, *, surface_model: bool = False) -> Path:
+    """Conical throat (r 15 -> 40 mm over 40 mm) opening into a 200 mm baffle box at z=0.
+
+    ``surface_model`` writes it like SolidWorks writes parts mixing solid and surface
+    bodies: no solid, the throat only as the closed shell of a surface model, no names.
+    """
 
     def build():
         occ = gmsh.model.occ
@@ -183,7 +187,14 @@ def waveguide(path: Path) -> Path:
         baffle = _cabinet(100, 100, 150, [(0, 0, 40)])
         return throat + baffle, ["Throat"] + ["Baffle"] * len(baffle)
 
-    return write_step(path, build, face_names=lambda c: "Driver" if abs(c[2] + 40) < 1e-6 else None)
+    write_step(path, build, face_names=lambda c: "Driver" if abs(c[2] + 40) < 1e-6 else None)
+    if surface_model:
+        text = path.read_text(encoding="utf-8")
+        text = text.replace("ADVANCED_BREP_SHAPE_REPRESENTATION(", "MANIFOLD_SURFACE_SHAPE_REPRESENTATION(")
+        text = re.sub(r"MANIFOLD_SOLID_BREP\('[^']*',\s*(#\d+)\)", r"SHELL_BASED_SURFACE_MODEL('NONE',(\1))", text)
+        path.write_text(text, encoding="utf-8")
+        strip_names(path, path)
+    return path
 
 
 def two_chambers(path: Path) -> Path:

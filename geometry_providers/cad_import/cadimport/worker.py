@@ -16,7 +16,9 @@ def main(job_path):
 
     output = Path(job["output"])
     if job["mode"] == "preview":
-        preview = preview_step(job["step_path"], forward=job["forward"], up=job["up"])
+        preview = preview_step(
+            job["step_path"], forward=job["forward"], up=job["up"], closed_shells=job.get("closed_shells")
+        )
         info = {
             "geometry": asdict(preview.geometry),
             "points": preview.points.tolist(),

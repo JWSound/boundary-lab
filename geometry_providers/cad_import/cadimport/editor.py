@@ -9,12 +9,15 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QTreeWidget,
@@ -128,6 +131,13 @@ class CadImportEditor:
         splitter.addWidget(tree_panel)
         layout.addWidget(splitter, 1)
 
+        self.closed_shell_box = QGroupBox("Closed shells")
+        self.closed_shell_box.setToolTip("Closed shells of surfaces can be air volumes or exterior surfaces.")
+        self.closed_shell_form = QFormLayout(self.closed_shell_box)
+        self.closed_shell_box.hide()
+        self.closed_shell_combos = {}
+        layout.addWidget(self.closed_shell_box)
+
         form = QFormLayout()
         self.spins = {}
         for key, label, low, high, decimals, suffix in SIZING:
@@ -164,7 +174,12 @@ class CadImportEditor:
             spin.setValue(float(source[key]))
             spin.blockSignals(blocked)
         self._refresh_context()
-        key = (str(source.get("step_path") or ""), source.get("forward", "+Z"), source.get("up", "+Y"))
+        key = (
+            str(source.get("step_path") or ""),
+            source.get("forward", "+Z"),
+            source.get("up", "+Y"),
+            json.dumps(source.get("closed_shells", {}), sort_keys=True),
+        )
         if key != self._key:
             self._load(key)
 
@@ -179,7 +194,8 @@ class CadImportEditor:
 
     def set_step_path(self, path):
         if path != self.source.get("step_path"):
-            self.edited({"step_path": path})
+            # Closed shell choices belong to a file; another file is asked about afresh.
+            self.edited({"step_path": path, "closed_shells": {}})
 
     def _browse(self):
         start = str(Path(self.source.get("step_path") or Path.home()).parent)
@@ -194,7 +210,7 @@ class CadImportEditor:
         self._cancel_preview.set()
         self._cancel_preview = cancel = threading.Event()
         self._show_preview(None)
-        path, forward, up = key
+        path, forward, up, closed_shells = key
         if not path:
             self.loading = False
             return
@@ -209,7 +225,13 @@ class CadImportEditor:
         def work():
             output = Path(tempfile.mkdtemp(prefix="blab_cad_preview_"))
             try:
-                job = {"mode": "preview", "step_path": path, "forward": forward, "up": up}
+                job = {
+                    "mode": "preview",
+                    "step_path": path,
+                    "forward": forward,
+                    "up": up,
+                    "closed_shells": json.loads(closed_shells),
+                }
                 run_worker(job, output, cancelled=cancel.is_set)
                 preview = json.loads((output / "preview.json").read_text(encoding="utf-8"))
             except Exception as exc:
@@ -234,6 +256,51 @@ class CadImportEditor:
         preview["triangles"] = np.asarray(preview["triangles"], dtype=np.int64).reshape(-1, 3)
         preview["face_ids"] = np.asarray(preview["face_ids"], dtype=np.int64)
         self._show_preview(preview)
+        stored = self.source.get("closed_shells", {})
+        answers = {
+            shell["name"]: self.ask_closed_shell(shell["name"])
+            for shell in self.geometry["closed_shells"]
+            if shell["name"] not in stored
+        }
+        if answers:
+            self.edited({"closed_shells": stored | answers})
+
+    def ask_closed_shell(self, name):
+        """Ask whether closed shell ``name`` is an air volume or an exterior surface."""
+        box = QMessageBox(self.widget)
+        box.setWindowTitle("Closed shell")
+        box.setText(
+            f"'{name}' is a closed shell of surfaces. Is it an air volume (meshed inside, like a solid) "
+            "or an exterior surface?"
+        )
+        air = box.addButton("Air volume", QMessageBox.ButtonRole.AcceptRole)
+        exterior = box.addButton("Exterior surface", QMessageBox.ButtonRole.RejectRole)
+        box.setEscapeButton(exterior)
+        box.exec()
+        return "air" if box.clickedButton() is air else "exterior"
+
+    def _show_closed_shells(self):
+        if self.geometry is None:
+            # Hide only: a role change reloads the preview from inside its combo's signal.
+            self.closed_shell_box.hide()
+            return
+        while self.closed_shell_form.rowCount():
+            self.closed_shell_form.removeRow(0)
+        self.closed_shell_combos = {}
+        shells = self.geometry["closed_shells"]
+        for shell in shells:
+            combo = QComboBox()
+            combo.addItem("Air volume", "air")
+            combo.addItem("Exterior surface", "exterior")
+            combo.setCurrentIndex(combo.findData(shell["role"]))
+            combo.setAccessibleName(shell["name"])
+            combo.currentIndexChanged.connect(lambda _, n=shell["name"], c=combo: self._set_role(n, c.currentData()))
+            self.closed_shell_form.addRow(shell["name"], combo)
+            self.closed_shell_combos[shell["name"]] = combo
+        self.closed_shell_box.setVisible(bool(shells))
+
+    def _set_role(self, name, role):
+        self.edited({"closed_shells": self.source.get("closed_shells", {}) | {name: role}})
 
     def _show_preview(self, preview):
         self._preview = preview
@@ -268,6 +335,7 @@ class CadImportEditor:
             lines += [f"Warning: {warning}" for warning in self.geometry["warnings"]]
             self.info.setText("\n".join(lines))
         self._syncing = False
+        self._show_closed_shells()
         self.viewport.show_faces(preview, self.visible_faces(), reset_camera=True)
 
     # -- visibility ---------------------------------------------------------------------------
@@ -336,7 +404,7 @@ class CadImportEditor:
             self.status.setText(event.job.message)
 
     def set_operation_state(self, state):
-        for widget in (self.step_path, self.browse_button, *self.spins.values()):
+        for widget in (self.step_path, self.browse_button, *self.spins.values(), self.closed_shell_box):
             widget.setEnabled(not state.active)
 
     def dispose(self):

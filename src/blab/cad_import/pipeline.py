@@ -1,7 +1,8 @@
 """STEP -> classified, fragmented OpenCASCADE model -> one conformal mesh -> assembly files.
 
 Solids are air bodies (bounded regions, one tetrahedral mesh per touching group);
-surface bodies are exterior surface bodies (together one BEM surface mesh). An air
+surface bodies are exterior surface bodies (together one BEM surface mesh). Closed
+shells of free faces are exterior unless chosen as air, then they become solids. An air
 face that fills an opening of the exterior, or coincides with a whole exterior
 face, is an interface: the same face group name appears in both meshes.
 """
@@ -40,6 +41,7 @@ class CadImportSettings:
 
     ``face_groups`` maps a group name to face ids (``CadFace.id``). ``symmetry`` is the
     project symmetry to check the geometry against; ``None`` accepts what is detected.
+    ``closed_shells`` maps a closed shell name to ``"air"`` or ``"exterior"`` (the default).
     """
 
     fmax_hz: float
@@ -53,6 +55,7 @@ class CadImportSettings:
     curvature_elements_per_circle: float = 12.0
     growth_rate: float = 1.3
     symmetry: str | None = None
+    closed_shells: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -116,6 +119,14 @@ class CadInterface:
 
 
 @dataclass(frozen=True)
+class CadClosedShell:
+    """Closed connected free faces: an air volume or exterior surface, as the user chooses."""
+
+    name: str
+    role: str  # "air" | "exterior"
+
+
+@dataclass(frozen=True)
 class CadGeometry:
     bodies: tuple[CadBody, ...]
     faces: tuple[CadFace, ...]
@@ -124,6 +135,7 @@ class CadGeometry:
     bbox_m: tuple[tuple[float, float, float], tuple[float, float, float]]
     symmetry: str  # suggested project symmetry: "off" | "x" | "xy"
     warnings: tuple[str, ...]
+    closed_shells: tuple[CadClosedShell, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -142,10 +154,12 @@ class CadImportResult:
     target_size_m: float
 
 
-def inspect_step(step_path: str | Path, *, forward: str = "+Z", up: str = "+Y") -> CadGeometry:
+def inspect_step(
+    step_path: str | Path, *, forward: str = "+Z", up: str = "+Y", closed_shells: Mapping[str, str] | None = None
+) -> CadGeometry:
     """Read, orient, classify and fragment a STEP file without meshing it."""
     with _gmsh_session() as gmsh:
-        return _analyse(gmsh, Path(step_path), _axis_matrix(forward, up)).geometry
+        return _analyse(gmsh, Path(step_path), _axis_matrix(forward, up), closed_shells or {}).geometry
 
 
 @dataclass(frozen=True)
@@ -158,10 +172,12 @@ class CadPreview:
     face_ids: np.ndarray
 
 
-def preview_step(step_path: str | Path, *, forward: str = "+Z", up: str = "+Y") -> CadPreview:
+def preview_step(
+    step_path: str | Path, *, forward: str = "+Z", up: str = "+Y", closed_shells: Mapping[str, str] | None = None
+) -> CadPreview:
     """Inspect a STEP file and tessellate its faces coarsely for display."""
     with _gmsh_session() as gmsh:
-        geometry = _analyse(gmsh, Path(step_path), _axis_matrix(forward, up)).geometry
+        geometry = _analyse(gmsh, Path(step_path), _axis_matrix(forward, up), closed_shells or {}).geometry
         low, high = geometry.bbox_m
         gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(low, high) / 30)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
@@ -189,7 +205,7 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
     """Mesh a STEP file into ``output_dir`` as ``<mesh id>.msh`` files (metres)."""
     output_dir = Path(output_dir)
     with _gmsh_session() as gmsh:
-        model = _analyse(gmsh, Path(step_path), _axis_matrix(settings.forward, settings.up))
+        model = _analyse(gmsh, Path(step_path), _axis_matrix(settings.forward, settings.up), settings.closed_shells)
         geometry = model.geometry
         if settings.symmetry is not None and settings.symmetry != geometry.symmetry:
             raise ValueError(
@@ -249,8 +265,11 @@ class _Model:
         return result
 
 
-def _analyse(gmsh, path: Path, matrix: np.ndarray) -> _Model:
+def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str]) -> _Model:
     occ = gmsh.model.occ
+    for name, role in closed_shells.items():
+        if role not in ("air", "exterior"):
+            raise ValueError(f"Closed shell '{name}' must be 'air' or 'exterior', not '{role}'.")
     if not path.is_file():
         raise ValueError(f"STEP file not found: {path}")
     gmsh.option.setString("Geometry.OCCTargetUnit", "M")
@@ -264,7 +283,28 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray) -> _Model:
     sheets = [tag for _, tag in gmsh.model.getEntities(2) if len(gmsh.model.getAdjacencies(2, tag)[0]) == 0]
     if not solids and not sheets:
         raise ValueError(f"STEP file {path} contains no solids or surfaces.")
-    solid_names = _unique([_label(gmsh, 3, t) or f"Air body {i + 1}" for i, t in enumerate(solids)])
+    # Closed shells: free faces that close up among themselves (SolidWorks writes solids of
+    # parts mixing solid and surface bodies this way). The user decides what each one is.
+    sheet_edges = {f: _edges(gmsh, f) for f in sheets}
+    shells = [
+        faces
+        for faces in _components(sheets, sheet_edges)
+        if set(Counter(e for f in faces for e in sheet_edges[f]).values()) == {2}
+    ]
+    names = _unique(
+        [_label(gmsh, 3, t) or f"Air body {i + 1}" for i, t in enumerate(solids)]
+        + [_label(gmsh, 2, faces[0]) or f"Closed shell {k}" for k, faces in enumerate(shells, start=1)]
+    )
+    solid_names, shell_names = names[: len(solids)], names[len(solids) :]
+    unknown = sorted(set(closed_shells) - set(shell_names))
+    if unknown:
+        raise ValueError(f"Unknown closed shell '{unknown[0]}'.")
+    roles = {name: closed_shells.get(name, "exterior") for name in shell_names}
+    for name, faces in zip(shell_names, shells, strict=True):
+        if roles[name] == "air":
+            solids.append(occ.addVolume([occ.addSurfaceLoop(faces)]))
+            solid_names.append(name)
+            sheets = [f for f in sheets if f not in faces]
     sheet_names = [_label(gmsh, 2, t) for t in sheets]
     inputs = [(3, t) for t in solids] + [(2, t) for t in sheets]
     # A rigid rotation keeps exact surface types (a general affine transform makes BSplines).
@@ -397,6 +437,7 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray) -> _Model:
         (tuple(bbox[:3]), tuple(bbox[3:])),
         symmetry,
         tuple(warnings),
+        tuple(CadClosedShell(name, role) for name, role in roles.items()),
     )
     return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies)
 

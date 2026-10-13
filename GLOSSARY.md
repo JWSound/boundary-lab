@@ -39,6 +39,10 @@ _Avoid_: Solid, cavity, chamber body
 A surface body in imported CAD geometry representing the outside of a cabinet or waveguide; it bounds the unbounded region.
 _Avoid_: Shell, skin, BEM body
 
+**Closed shell**:
+Free faces in imported CAD geometry that close up among themselves without being a solid; the user chooses whether it is an air body or exterior surface.
+_Avoid_: Surface solid, watertight body
+
 **Face group**:
 A named set of geometry faces that becomes one physical surface group in a mesh.
 _Avoid_: Tag, patch, selection

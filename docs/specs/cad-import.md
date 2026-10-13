@@ -9,6 +9,7 @@ Getting CAD geometry into Boundary Lab today means exporting each body to its ow
 A bundled **CAD import** geometry design reads a STEP file and turns it into a complete mesh assembly.
 - Solids are treated as **air bodies** (rear chambers, ports, waveguide throats) and become bounded regions.
 - Surface bodies are treated as **exterior surface bodies** (cabinet and waveguide outsides) and together form the unbounded region.
+- A **closed shell** of surfaces can be either, so the user chooses: an air volume or an exterior surface. SolidWorks writes the solids of parts that mix solid and surface bodies this way.
 - All bodies are meshed in one conformal pass, so every interface between an air body and the exterior matches node for node. Interfaces are detected and created automatically.
 - Mesh size follows the **target element size** rule: sound speed ÷ maximum frequency ÷ elements per wavelength. It can be overridden per body and per **face group**.
 
@@ -35,6 +36,10 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 6. As a designer, I want STEP units honoured and the model's bounding-box size shown, so that a millimetre/metre mistake is obvious immediately.
 7. As a designer, I want body names from the STEP file shown in the tree, so that I recognise my CAD bodies.
 8. As a designer, I want unnamed bodies to get stable, readable default names, so that STEP exports without names are still usable.
+
+### Closed shells
+
+61. As a designer, I want to be asked whether each closed shell of surfaces is an air volume or an exterior surface, and to change my answer later, so that SolidWorks exports (which write solids as closed shells) and closed waveguide outsides both import correctly.
 
 ### Orientation
 
@@ -125,11 +130,12 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
   - elements per wavelength;
   - size overrides per body and per face group;
   - curvature and growth settings;
-  - the face groups: each a name, its member faces' STEP names if present, and geometric fingerprints.
+  - the face groups: each a name, its member faces' STEP names if present, and geometric fingerprints;
+  - the closed shell choices: closed shell name → `air` or `exterior`.
 - **Meshing pipeline** (headless, in the provider's worker process):
   1. Read the STEP file with Gmsh's OpenCASCADE kernel, in metres.
   2. Apply the axis mapping.
-  3. Classify solids as air bodies and surface bodies as exterior surface bodies.
+  3. Classify solids as air bodies and surface bodies as exterior surface bodies. Before that, free faces that close up among themselves through shared edges (each edge used by exactly two of them, as imported, before fragmenting) form a closed shell. Closed shells are named from the STEP if possible, else "Closed shell N" in import order. A closed shell chosen as air becomes a solid (an air body named after the shell); one without a choice, or chosen as exterior, stays exterior surface. A choice for a name the file does not contain is rejected.
   4. Fragment all bodies into shared topology.
   5. Detect interfaces and symmetry-plane open edges.
   6. Mesh once, with size fields from the target element size, the overrides, curvature and the growth limit.
@@ -144,8 +150,8 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 - **Re-import matching:** faces are matched by STEP name, then by fingerprint within a tolerance. If any face group is left without faces, generation is rejected before the response is sent; the previous meshes stay in place and the unmatched groups are reported to the editor. Deleting a group sends explicit removal of its boundary and detachment from its component in the same patch.
 - **Watching the STEP file:** when the application regains focus, a changed STEP file triggers a re-mesh prompt rather than an automatic regeneration.
 - **Symmetry suggestion:** open edges lying entirely on X=0 or Y=0 after reorientation suggest the matching project symmetry. A mismatch with the project setting rejects generation with a message.
-- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). Below that sit the face-group list, the orientation pickers, and the sizing settings with the computed target element size. Meshing uses the host's Generate (F7) and geometry-generation cancel. The editor follows host revisions and busy state like the vented-enclosure editor.
-- **CLI:** a thin command over the same headless pipeline taking a STEP path, the maximum frequency, elements per wavelength and an output folder, and writing the assembly meshes.
+- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). Below that sit the face-group list, the orientation pickers, and the sizing settings with the computed target element size. Meshing uses the host's Generate (F7) and geometry-generation cancel. When a loaded STEP file has closed shells without a stored choice, the editor asks for each one (Air volume / Exterior surface; Escape means exterior) and stores the answers; a Closed shells list keeps each choice editable afterwards. Choosing another STEP file clears the stored choices. The editor follows host revisions and busy state like the vented-enclosure editor.
+- **CLI:** a thin command over the same headless pipeline taking a STEP path, the maximum frequency, elements per wavelength and an output folder, and writing the assembly meshes. A repeatable `--closed-shell NAME=air|exterior` sets closed shell choices.
 - **Licence:** Fusion2Msh (CC BY-NC 4.0) informed the design only. Its code must not be copied into Boundary Lab, which is GPL-3.
 
 ## Testing Decisions
