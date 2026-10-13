@@ -1,8 +1,8 @@
 """Qt-free, transactional configuration patches for geometry providers.
 
 Only explicit fields change. Collections use upsert/remove operations; nested
-objects merge, while supplied arrays replace. Frequency settings are deliberately
-absent. Mesh files remain owned by the generation/artifact path.
+objects merge, while supplied arrays replace. Frequency settings are exposed
+read-only in the snapshot and cannot be patched. Mesh files remain owned by the generation/artifact path.
 """
 
 from __future__ import annotations
@@ -48,8 +48,14 @@ PATCH_SECTIONS = frozenset(ENTITY_SECTIONS) | {
 
 
 def configuration_snapshot(project: ProjectDocument) -> dict[str, Any]:
-    """Editable configuration exposed to providers, with host entity IDs."""
+    """Configuration exposed to providers, with host entity IDs; ``frequency`` is read-only."""
+    preferences = project.project_preferences or ProjectPreferencesState()
     return {
+        "frequency": {
+            "freq_min_hz": preferences.freq_min_hz,
+            "freq_max_hz": preferences.freq_max_hz,
+            "freq_count": preferences.freq_count,
+        },
         "physical_system": (
             None if project.physical_system is None else physical_system_to_dict(project.physical_system)
         ),
@@ -58,7 +64,7 @@ def configuration_snapshot(project: ProjectDocument) -> dict[str, Any]:
         "symmetry_config": {"mode": project.symmetry},
         "stitching_config": {
             "enabled": project.stitch_imported_meshes,
-            "tolerance_mm": (project.project_preferences or ProjectPreferencesState()).stitch_tolerance_mm,
+            "tolerance_mm": preferences.stitch_tolerance_mm,
         },
     }
 

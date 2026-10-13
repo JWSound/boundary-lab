@@ -72,7 +72,10 @@ Import the public exchange types from `blab.generators`.
 | `provider_options` | Host-provided runtime options, such as the Ath executable |
 
 `configuration` contains `physical_system`, `channel_config`,
-`component_channels`, `symmetry_config`, and `stitching_config`. Inspect the
+`component_channels`, `symmetry_config`, `stitching_config`, and a read-only
+`frequency` block (`freq_min_hz`, `freq_max_hz`, `freq_count`) with the project
+sweep, for example to size meshes for the highest frequency. `frequency` is not
+a patch section; a patch naming it is rejected. Inspect the
 physical system to discover existing mesh, boundary and component IDs. Do not
 derive IDs from display labels. It may be `None` before the first generation;
 generate a mesh first to obtain host-assigned IDs on the next request.
@@ -181,9 +184,17 @@ the plugin. File paths inside the project directory are saved relatively.
 Older project schemas remain readable; releases supporting only schema 9 or
 earlier reject schema 10 rather than silently losing assembly resources.
 
-This increment supports full models with symmetry **Off**. It rejects automatic
-assembly symmetry reduction rather than independently reducing interface meshes.
-Enabling/disabling applies to the whole assembly. Removing a design removes its
+Under project symmetry **Off**, assemblies are full models. Under **X** or **XY**
+symmetry an assembly is accepted only when it declares itself already reduced
+with `GeneratedGeometry(..., reduced=True)`. The host then checks that every
+resource, after the design's scale and translation, lies in the positive X (X
+symmetry) or positive X and Y (XY symmetry) region, within the usual
+symmetry-plane tolerance. A resource outside that region rejects the whole
+candidate. The candidate is compiled with the project symmetry. The host never cuts an assembly: one that does not declare itself reduced is still
+rejected under X or XY symmetry, including when the response's own
+`symmetry_config` patch selects symmetry. The declaration means "reduced for the
+project symmetry"; it is saved with the artifact and checked again whenever the
+project symmetry is applied to the assembly. Enabling/disabling applies to the whole assembly. Removing a design removes its
 owned physical entities; cross-design component/interface dependencies must be
 resolved before removing or disabling it. It does not automatically construct
 geometry or install a vented-enclosure plugin.
@@ -264,7 +275,8 @@ in separate accepted updates or use the application's authoring UI when a kind
 change requires removing incompatible parameters.
 
 Symmetry modes currently match the host: `off`, `x`, `xy`. This patch selects the
-host setting; it does not certify that a mesh has the requested symmetry. Normal
+host setting; it does not certify that a mesh has the requested symmetry (see
+[Named mesh assemblies](#named-mesh-assemblies) for reduced assemblies). Normal
 mesh/solver validation still applies. Stitching currently maps to the host's
 existing project-wide stitching switch and nonnegative tolerance in millimeters;
 per-pair stitching policies are not implemented.
