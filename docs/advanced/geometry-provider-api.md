@@ -400,7 +400,6 @@ The supplied `DocumentHost` exposes:
 | `snapshot()` | Detached `SourceSnapshot(source, revision, schema_version)` |
 | `update_source(source, expected_revision=...)` | Replace the whole source JSON object; return a fresh snapshot |
 | `generate(expected_revision=...)` | Select this document, start normal generation, return the request ID |
-| `cancel_generation(request_id)` | Stop the generation that `generate` started; ignored once it has finished |
 | `services` | Scoped `ProviderHost`: context, solve, status, cancel, result, current_result, subscribe, unsubscribe |
 
 Source methods and `generate` are synchronous and GUI-thread only. Source updates

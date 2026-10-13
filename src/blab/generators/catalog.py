@@ -24,13 +24,13 @@ def provider_roots() -> tuple[Path, ...]:
     return (APP_ROOT / "geometry_providers",)
 
 
-_BUNDLED = {"vented_enclosure": "blab.vented_enclosure", "cad_import": "blab.cad_import"}
+_BUNDLED_PROVIDER_IDS = {"vented_enclosure": "blab.vented_enclosure", "cad_import": "blab.cad_import"}
 
 
 def bundled_provider_ids() -> tuple[str, ...]:
     """Explicit first-party allowlist, never a trust claim from a manifest."""
     ids = []
-    for folder, provider_id in _BUNDLED.items():
+    for folder, provider_id in _BUNDLED_PROVIDER_IDS.items():
         try:
             manifest = ProviderManifest.read(APP_ROOT / "geometry_providers" / folder / "provider.json")
         except (OSError, ValueError):

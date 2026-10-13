@@ -1,4 +1,4 @@
-"""3D view with a body/face visibility tree, sizing settings, and Mesh/Cancel."""
+"""3D view with a body/face visibility tree and sizing settings; the host's Generate meshes."""
 
 import json
 import shutil
@@ -40,27 +40,19 @@ class _Relay(QObject):
 
 
 class Viewport(QWidget):
-    """Visible faces of the preview tessellation, in a VTK plotter when one is available."""
+    """Visible faces of the preview tessellation in a VTK plotter."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        from pyvistaqt import QtInteractor
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        try:
-            from pyvistaqt import QtInteractor
-        except ImportError:
-            self.plotter = None
-            label = QLabel("Install pyvista and pyvistaqt to enable the 3D view.")
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(label)
-        else:
-            self.plotter = QtInteractor(self)
-            layout.addWidget(self.plotter)
+        self.plotter = QtInteractor(self)
+        layout.addWidget(self.plotter)
         self.setMinimumHeight(220)
 
     def show_faces(self, preview, visible, *, reset_camera=False):
-        if self.plotter is None:
-            return
         import pyvista as pv
 
         self.plotter.clear()
@@ -74,8 +66,7 @@ class Viewport(QWidget):
         self.plotter.render()
 
     def close(self):
-        if self.plotter is not None:
-            self.plotter.close()
+        self.plotter.close()
 
 
 class CadImportEditor:
@@ -91,7 +82,6 @@ class CadImportEditor:
         self._face_items = {}
         self._syncing = False
         self._fmax_hz = None
-        self._request_id = None
         self._disposed = False
         self._cancel_preview = threading.Event()
         self._relay = _Relay()
@@ -129,7 +119,7 @@ class CadImportEditor:
         self.show_all_button = QPushButton("Show all")
         self.show_all_button.clicked.connect(self.show_all)
         self.clear_button = QPushButton("Clear")
-        self.clear_button.setToolTip("Show everything and clear the selection; face groups are kept.")
+        self.clear_button.setToolTip("Show everything and clear the selection.")
         self.clear_button.clicked.connect(self.clear)
         buttons.addWidget(self.show_all_button)
         buttons.addWidget(self.clear_button)
@@ -156,17 +146,7 @@ class CadImportEditor:
         form.addRow(self.target_label)
         layout.addLayout(form)
 
-        actions = QHBoxLayout()
-        self.mesh_button = QPushButton("Mesh")
-        self.mesh_button.clicked.connect(self.mesh)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setEnabled(False)
-        self.cancel_button.clicked.connect(self.cancel)
-        actions.addWidget(self.mesh_button)
-        actions.addWidget(self.cancel_button)
-        actions.addStretch()
-        layout.addLayout(actions)
-        self.status = QLabel("Use Mesh to create the meshes.")
+        self.status = QLabel("Use Generate to create the meshes.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self._render_timer = QTimer(self.widget)
@@ -195,7 +175,7 @@ class CadImportEditor:
             self.status.setText(str(exc))
             return
         self.apply_source(snapshot.source, snapshot.revision)
-        self.status.setText("Settings changed. Use Mesh to update the meshes.")
+        self.status.setText("Settings changed. Use Generate to update the meshes.")
 
     def set_step_path(self, path):
         if path != self.source.get("step_path"):
@@ -295,9 +275,6 @@ class CadImportEditor:
     def visible_faces(self):
         return set(self._face_items) - self._hidden
 
-    def selected_faces(self):
-        return {item.data(0, FACE_ROLE) for item in self.tree.selectedItems() if item.data(0, FACE_ROLE) is not None}
-
     def _item_changed(self, item, _column):
         face_id = item.data(0, FACE_ROLE)
         if self._syncing or face_id is None:
@@ -321,7 +298,7 @@ class CadImportEditor:
         self._render()
 
     def clear(self):
-        """Show everything and clear the selection; face groups are never deleted."""
+        """Show everything and clear the selection."""
         self.show_all()
         self.tree.clearSelection()
 
@@ -352,19 +329,6 @@ class CadImportEditor:
             f"(c = {DEFAULT_SOUND_SPEED_M_PER_S:g} m/s unless the exterior region sets another)"
         )
 
-    def mesh(self):
-        try:
-            self._request_id = self.host.generate(expected_revision=self.revision)
-        except (ValueError, RuntimeError) as exc:
-            self.status.setText(str(exc))
-        else:
-            # The busy state arrived while generate() was starting, before the request ID.
-            self.cancel_button.setEnabled(not self.mesh_button.isEnabled())
-
-    def cancel(self):
-        if self._request_id is not None:
-            self.host.cancel_generation(self._request_id)
-
     def event(self, event):
         if event.kind == "geometry_accepted":
             self.status.setText("Meshes accepted.")
@@ -372,9 +336,8 @@ class CadImportEditor:
             self.status.setText(event.job.message)
 
     def set_operation_state(self, state):
-        for widget in (self.step_path, self.browse_button, self.mesh_button, *self.spins.values()):
+        for widget in (self.step_path, self.browse_button, *self.spins.values()):
             widget.setEnabled(not state.active)
-        self.cancel_button.setEnabled(bool(state.active) and self._request_id is not None)
 
     def dispose(self):
         self._disposed = True

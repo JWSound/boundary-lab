@@ -167,12 +167,7 @@ def gui_preferences_with_project_preferences(
 
 def _introduced_providers(settings: QSettings) -> list[str]:
     """Bundled providers already enabled once; earlier versions recorded only the vented enclosure."""
-    introduced = settings.value("providers/introduced", [])
-    if isinstance(introduced, str):
-        introduced = [introduced] if introduced else []
-    if not isinstance(introduced, (list, tuple)):
-        introduced = []
-    introduced = [item for item in introduced if isinstance(item, str) and item]
+    introduced = settings_str_list(settings, "providers/introduced")
     if settings_bool(settings, "providers/vented_enclosure_introduced", False):
         introduced = list(dict.fromkeys(["blab.vented_enclosure", *introduced]))
     return introduced
@@ -180,12 +175,7 @@ def _introduced_providers(settings: QSettings) -> list[str]:
 
 def load_gui_preferences(settings: QSettings) -> GuiPreferences:
     defaults = GuiPreferences()
-    enabled = settings.value("providers/enabled", [])
-    if isinstance(enabled, str):
-        enabled = [enabled] if enabled else []
-    if not isinstance(enabled, (list, tuple)):
-        enabled = []
-    enabled = [item for item in enabled if isinstance(item, str) and item]
+    enabled = settings_str_list(settings, "providers/enabled")
     # First-party packages ship with the application. Enable each one once,
     # while preserving later opt-outs and every existing default selection.
     introduced = _introduced_providers(settings)
@@ -409,6 +399,16 @@ def settings_str(settings: QSettings, key: str, default: str) -> str:
         return default
     text = str(value).strip()
     return text or default
+
+
+def settings_str_list(settings: QSettings, key: str) -> list[str]:
+    """Nonempty strings stored under ``key``; QSettings may return one string for a one-item list."""
+    value = settings.value(key, [])
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
 
 
 def normalize_live_plot_quality(value: object) -> str:

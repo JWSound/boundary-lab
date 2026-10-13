@@ -118,24 +118,22 @@ def test_sizing_settings_edit_the_source_and_show_the_target_size(cad_editor, ma
     assert host.snapshot().source["growth_rate"] == 1.2
 
     editor.set_operation_state(SimpleNamespace(active=True))
-    assert not editor.mesh_button.isEnabled() and not editor.spins["growth_rate"].isEnabled()
+    assert not editor.step_path.isEnabled() and not editor.spins["growth_rate"].isEnabled()
     editor.set_operation_state(SimpleNamespace(active=False))
-    assert editor.mesh_button.isEnabled() and not editor.cancel_button.isEnabled()
+    assert editor.step_path.isEnabled() and editor.spins["growth_rate"].isEnabled()
 
 
-def test_mesh_from_the_dock_accepts_locked_meshes_and_system_entries(
-    cad_editor, main_window, monkeypatch, qapp, tmp_path
-):
+def test_host_generate_accepts_locked_meshes_and_system_entries(cad_editor, main_window, monkeypatch, qapp, tmp_path):
     from blab.ui.main_window import geometry_workflow
 
-    editor, _ = cad_editor
+    editor, host = cad_editor
     monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
     errors = []
     monkeypatch.setattr(main_window, "show_error", lambda *args: errors.append(args))
     main_window.freq_max_spin.setValue(3430)
 
-    editor.mesh_button.click()
-    assert editor.cancel_button.isEnabled()
+    host.generate(expected_revision=host.snapshot().revision)
+    assert not editor.spins["growth_rate"].isEnabled()  # busy while the host generates
     wait(qapp, lambda: not main_window.geometry_controller.active)
 
     assert not errors
@@ -148,18 +146,19 @@ def test_mesh_from_the_dock_accepts_locked_meshes_and_system_entries(
     assert main_window.editor_dock.features() & QDockWidget.DockWidgetFeature.DockWidgetClosable
 
 
-def test_cancel_stops_meshing_without_meshes(cad_editor, main_window, monkeypatch, qapp, tmp_path):
+def test_host_cancel_stops_meshing_without_meshes(cad_editor, main_window, monkeypatch, qapp, tmp_path):
     from blab.ui.main_window import geometry_workflow
 
-    editor, _ = cad_editor
+    editor, host = cad_editor
     monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
     monkeypatch.setattr(main_window, "show_error", lambda *args: None)
 
-    editor.mesh_button.click()
-    editor.cancel_button.click()
+    host.generate(expected_revision=host.snapshot().revision)
+    main_window.cancel_geometry_generation()
     wait(qapp, lambda: not main_window.geometry_controller.active)
 
     assert main_window.active_generator_document().artifact is None
+    assert editor.spins["growth_rate"].isEnabled()
 
 
 def test_clear_shows_everything_and_clears_the_selection(cad_editor):
@@ -168,12 +167,12 @@ def test_clear_shows_everything_and_clears_the_selection(cad_editor):
     bodies = body_items(editor)
     bodies["Port"].setCheckState(0, Qt.CheckState.Unchecked)
     bodies["Chamber"].child(0).setSelected(True)
-    assert editor.selected_faces()
+    assert editor.tree.selectedItems()
 
     editor.clear_button.click()
 
     assert editor.visible_faces() == {face["id"] for face in editor.geometry["faces"]}
-    assert editor.selected_faces() == set()
+    assert editor.tree.selectedItems() == []
     assert host.snapshot().source == source
 
 

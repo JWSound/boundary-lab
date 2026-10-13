@@ -16,13 +16,13 @@ in **Edit > Generator Plugins...** and add a design.
    (from open exterior edges on X=0 / Y=0), plus warnings for covered air faces
    and exterior gaps.
 2. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
-   all hiding, **Clear** also clears the selection (face groups are kept).
+   all hiding, **Clear** also clears the selection.
 3. Set elements per wavelength (default 5), curvature and growth. The target
    element size is sound speed ÷ the project's maximum frequency ÷ elements per
    wavelength; the sound speed is that of the project's exterior air region
    (343 m/s when there is none yet).
-4. Set the project symmetry to the suggested one, then press **Mesh**
-   (**Cancel** stops it).
+4. Set the project symmetry to the suggested one, then **Generate** (F7);
+   cancelling geometry generation stops it.
 
 Each generation creates one tetrahedral mesh per touching group of air bodies
 (one volume group per body), one exterior surface mesh, a region for each, a

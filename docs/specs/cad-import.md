@@ -17,7 +17,7 @@ The user works in a closable CAD Import dock:
 - a tree of bodies and faces with visibility controls;
 - face-group naming;
 - orientation pickers that map the CAD axes onto Boundary Lab's +Z forward and +Y up;
-- sizing settings and a Mesh button.
+- sizing settings; the host's Generate (F7) meshes and its cancel stops meshing.
 
 The resulting meshes appear in Meshes and the regions, boundaries and interfaces appear in System. The user only marks diaphragm face groups as moving and attaches components.
 
@@ -144,7 +144,7 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 - **Re-import matching:** faces are matched by STEP name, then by fingerprint within a tolerance. If any face group is left without faces, generation is rejected before the response is sent; the previous meshes stay in place and the unmatched groups are reported to the editor. Deleting a group sends explicit removal of its boundary and detachment from its component in the same patch.
 - **Watching the STEP file:** when the application regains focus, a changed STEP file triggers a re-mesh prompt rather than an automatic regeneration.
 - **Symmetry suggestion:** open edges lying entirely on X=0 or Y=0 after reorientation suggest the matching project symmetry. A mismatch with the project setting rejects generation with a message.
-- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). Below that sit the face-group list, the orientation pickers, the sizing settings with the computed target element size, and Mesh and Cancel. The editor follows host revisions and busy state like the vented-enclosure editor.
+- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). Below that sit the face-group list, the orientation pickers, and the sizing settings with the computed target element size. Meshing uses the host's Generate (F7) and geometry-generation cancel. The editor follows host revisions and busy state like the vented-enclosure editor.
 - **CLI:** a thin command over the same headless pipeline taking a STEP path, the maximum frequency, elements per wavelength and an output folder, and writing the assembly meshes.
 - **Licence:** Fusion2Msh (CC BY-NC 4.0) informed the design only. Its code must not be copied into Boundary Lab, which is GPL-3.
 
