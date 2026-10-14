@@ -174,6 +174,13 @@ def vented_box(
     return write_step(path, build, face_names=face_names or default_names)
 
 
+def named_sides(centre):
+    """``vented_box`` face names: the four cabinet sides share the name "Side"."""
+    if abs(abs(centre[0]) - 60) < 1e-6 or abs(abs(centre[1]) - 60) < 1e-6:
+        return "Side"
+    return "Driver" if abs(centre[2] + 200) < 1e-6 else None
+
+
 def waveguide(path: Path, *, surface_model: bool = False) -> Path:
     """Conical throat (r 15 -> 40 mm over 40 mm) opening into a 200 mm baffle box at z=0.
 

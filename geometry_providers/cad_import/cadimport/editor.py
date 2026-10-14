@@ -1,12 +1,12 @@
 """3D view with face picking, a body/face visibility tree, face groups, axes and sizing; the host's Generate meshes."""
 
 import json
+import math
 import shutil
 import tempfile
 import threading
 from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -31,13 +31,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.cad_import import CadFace, CadFaceRef, face_ref, match_face_ref
+from blab.cad_import import AXES, WALLS, CadFace, CadFaceRef, face_ref, match_face_ref
 
 from .backend import run_worker
 from .parameters import DEFAULT_SOUND_SPEED_M_PER_S
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
-AXES = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
 FACE_ROLE = Qt.ItemDataRole.UserRole
 SIZING = (
     ("elements_per_wavelength", "Elements per wavelength", 1.0, 50.0, 1, ""),
@@ -52,7 +51,7 @@ class _Relay(QObject):
 
 
 def _actor_key(actor):
-    return actor.GetAddressAsString("") if hasattr(actor, "GetAddressAsString") else id(actor)
+    return actor.GetAddressAsString("")
 
 
 class Viewport(QWidget):
@@ -70,10 +69,9 @@ class Viewport(QWidget):
         self.picked = picked
         self._cell_faces = {}  # actor -> face id per cell
         self._press = None
-        interactor = getattr(getattr(self.plotter, "iren", None), "interactor", None)
-        if hasattr(interactor, "AddObserver"):
-            interactor.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
-            interactor.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
+        interactor = self.plotter.iren.interactor
+        interactor.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
+        interactor.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
 
     def show_faces(self, preview, visible, selected=frozenset(), *, reset_camera=False):
         import pyvista as pv
@@ -129,7 +127,7 @@ class CadImportEditor:
         self._hidden = set()
         self._face_items = {}
         self._body_items = {}
-        self._faces = None  # geometry with CadFace objects, for matching stored face groups
+        self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
         self._syncing = False
         self._fmax_hz = None
         self._disposed = False
@@ -273,8 +271,7 @@ class CadImportEditor:
         if key != self._key:
             self._load(key)
         else:
-            self._show_sizes()
-            self._show_groups()
+            self._show_overrides()
 
     def edited(self, changes):
         try:
@@ -406,9 +403,7 @@ class CadImportEditor:
         self.tree.clear()
         if self.geometry is not None:
             faces = {face["id"]: face for face in self.geometry["faces"]}
-            self._faces = SimpleNamespace(
-                faces=[CadFace(**face) for face in self.geometry["faces"]], bbox_m=self.geometry["bbox_m"]
-            )
+            self._faces = {face_id: CadFace(**face) for face_id, face in faces.items()}
             for body in self.geometry["bodies"]:
                 item = QTreeWidgetItem([body["name"]])
                 item.setFlags(
@@ -438,8 +433,7 @@ class CadImportEditor:
             lines += [f"Warning: {warning}" for warning in self.geometry["warnings"]]
             self.info.setText("\n".join(lines))
         self._syncing = False
-        self._show_sizes()
-        self._show_groups()
+        self._show_overrides()
         self._show_closed_shells()
         self.viewport.show_faces(preview, self.visible_faces(), reset_camera=True)
 
@@ -510,30 +504,40 @@ class CadImportEditor:
 
     # -- face groups --------------------------------------------------------------------------
 
+    def _axes(self):
+        """The Forward/Up axes the loaded faces were read with."""
+        _, forward, up, _ = self._key
+        return {"forward": forward, "up": up}
+
     def _ref(self, face_id):
-        face = next(f for f in self._faces.faces if f.id == face_id)
-        return asdict(face_ref(face, forward=self.source["forward"], up=self.source["up"]))
+        return asdict(face_ref(self._faces[face_id], **self._axes()))
 
     def _members(self, group):
         """Face ids of a stored group in the loaded geometry, and its refs that match nothing."""
         ids, unmatched = set(), []
         for ref in group["faces"]:
-            found = match_face_ref(CadFaceRef(**ref), self._faces, forward=self.source["forward"], up=self.source["up"])
-            ids.update(found)
-            if not found:
+            found = match_face_ref(CadFaceRef(**ref), self._faces.values(), self.geometry["bbox_m"], **self._axes())
+            if found is None:
                 unmatched.append(ref)
+            else:
+                ids.add(found)
         return ids, unmatched
 
-    def face_groups(self):
-        """``{name: face ids}``: stored face groups, then those named in the STEP file."""
+    def _interface_of(self):
+        return {f: i["name"] for i in self.geometry["interfaces"] for f in i["face_ids"]}
+
+    def face_groups(self, stored=None):
+        """``{name: face ids}``: ``stored`` (default: the source's) face groups, then those named in the STEP file."""
         groups = {}
         if self._faces is None:
             return groups
-        for group in self.source.get("face_groups", []):
+        for group in self.source.get("face_groups", []) if stored is None else stored:
             groups[group["name"]] = self._members(group)[0]
-        taken = set().union(*groups.values()) | {f for i in self.geometry["interfaces"] for f in i["face_ids"]}
-        for face in self._faces.faces:
-            if face.step_name and face.id not in taken:
+        interface_of = self._interface_of()
+        reserved = {WALLS, *interface_of.values()}
+        taken = set().union(*groups.values(), interface_of)
+        for face in self._faces.values():
+            if face.step_name and face.step_name not in reserved and face.id not in taken:
                 groups.setdefault(face.step_name, set()).add(face.id)
         return groups
 
@@ -544,6 +548,14 @@ class CadImportEditor:
         if not name or not selected or self._faces is None:
             self.status.setText("Select faces and enter a face group name first.")
             return
+        interface_of = self._interface_of()
+        if name in {WALLS, *interface_of.values()}:
+            self.status.setText(f"Face group name '{name}' is reserved.")
+            return
+        if selected & interface_of.keys():
+            face = min(selected & interface_of.keys())
+            self.status.setText(f"Face group '{name}' contains face {face} of interface '{interface_of[face]}'.")
+            return
         stored = list(self.source.get("face_groups", []))
         if name not in [g["name"] for g in stored]:
             stored.append({"name": name, "faces": []})
@@ -553,14 +565,15 @@ class CadImportEditor:
             ids = (ids | selected) if group["name"] == name else (ids - selected)
             if ids or unmatched:
                 groups.append({"name": group["name"], "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
-        # A group emptied by the move loses its size override.
-        names = {g["name"] for g in groups} | {f.step_name for f in self._faces.faces if f.step_name}
-        sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k in names}
-        self.edited({"face_groups": groups, "face_group_sizes_m": sizes})
+        self._edit_groups(groups)
 
     def delete_face_group(self, name):
-        groups = [g for g in self.source.get("face_groups", []) if g["name"] != name]
-        sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k != name}
+        self._edit_groups([g for g in self.source.get("face_groups", []) if g["name"] != name])
+
+    def _edit_groups(self, groups):
+        """Store ``groups``; size overrides of face groups no longer listed are dropped."""
+        listed = self.face_groups(groups).keys() | {g["name"] for g in groups}
+        sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k in listed}
         self.edited({"face_groups": groups, "face_group_sizes_m": sizes})
 
     def _delete_selected_group(self):
@@ -580,12 +593,11 @@ class CadImportEditor:
         text = text.strip()
         try:
             size = None if not text else float(text) / 1000
-            if size is not None and not size > 0:
+            if size is not None and not (math.isfinite(size) and size > 0):
                 raise ValueError
         except ValueError:
             self.status.setText(f"Size override must be a positive number of millimetres, not '{text}'.")
-            self._show_sizes()
-            self._show_groups()
+            self._show_overrides()
             return
         apply(size)
 
@@ -617,12 +629,14 @@ class CadImportEditor:
                 self.groups_table.setItem(row, column, cell)
         self._syncing = False
 
-    def _show_sizes(self):
+    def _show_overrides(self):
+        """Body sizes in the tree, face groups and their sizes in the table."""
         self._syncing = True
         sizes = self.source.get("body_sizes_m", {})
         for name, item in self._body_items.items():
             item.setText(1, _mm(sizes.get(name)))
         self._syncing = False
+        self._show_groups()
 
     # -- sizing and meshing -------------------------------------------------------------------
 

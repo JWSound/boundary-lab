@@ -12,7 +12,7 @@ import pytest
 from blab.cad_import import CadClosedShell, CadFaceRef, CadImportSettings, face_ref, inspect_step, mesh_step
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
-from cad_fixtures import strip_names, two_chambers, vented_box, waveguide
+from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, waveguide
 
 # Target element size 343 / 3430 / 5 = 20 mm.
 SETTINGS = CadImportSettings(fmax_hz=3430.0, sound_speed_m_per_s=343.0)
@@ -125,6 +125,25 @@ def test_face_group_stored_in_cad_axes_survives_an_axis_mapping_change(tmp_path)
     bem = read(result, "exterior")
     baffle = bem.cells_dict["triangle"][bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Baffle"][0]]
     assert np.allclose(bem.points[baffle][..., 2], 0, atol=1e-9)  # now the +Z front
+
+
+def test_faces_sharing_a_step_name_can_be_split_across_face_groups(tmp_path):
+    step = vented_box(tmp_path / "box.step", face_names=named_sides)
+    sides = [f for f in inspect_step(step).faces if f.step_name == "Side"]
+    left, right = sorted((f for f in sides if abs(abs(f.normal[0]) - 1) < 1e-9), key=lambda f: f.centre[0])
+
+    settings = replace(SETTINGS, face_groups={"Left": (face_ref(left),), "Right": (face_ref(right),)})
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    assert len(sides) == 4
+    assert [m.surface_groups for m in result.meshes] == [
+        ("Driver", "Port opening", "walls"),
+        ("Left", "Port opening", "Right", "Side", "walls"),
+    ]
+    bem = read(result, "exterior")
+    physical, geometrical = (bem.cell_data_dict[k]["triangle"] for k in ("gmsh:physical", "gmsh:geometrical"))
+    assert set(geometrical[physical == bem.field_data["Left"][0]]) == {left.id}
+    assert len(set(geometrical[physical == bem.field_data["Side"][0]])) == 2
 
 
 def test_face_group_whose_faces_no_longer_match_is_rejected(vented, tmp_path):

@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from blab.cad_import import face_ref, inspect_step
+from blab.config import ChannelConfig
 from blab.generators import GenerationRequest
 from blab.generators.application import stage_generation
 from blab.generators.base import GenerationCancelledError, complete_generation
@@ -145,8 +146,15 @@ def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
         system,
         boundaries=tuple(replace(b, name="Diaphragm") if b is walls else b for b in system.boundaries),
         regions=tuple(replace(r, density_kg_per_m3=1.19) for r in system.regions),
+        components=tuple(
+            replace(c, parameters={"boundary_motion_weights": {walls.id: 0.5}}) for c in system.components
+        ),
     )
     project.physical_system = system
+    project.channel_config_by_name = {
+        "woofer": {k: v for k, v in asdict(ChannelConfig("woofer")).items() if k != "name"}
+    }
+    project.component_channel_by_id = {"source": "woofer"}
 
     regenerated, second = generate(backend, project, tmp_path)
 
@@ -154,7 +162,10 @@ def test_regeneration_keeps_mesh_ids_and_user_edits(plugin, box_step, tmp_path):
     assert second.geometry.output_dir != first.geometry.output_dir
     kept = next(b for b in regenerated.physical_system.boundaries if b.id == walls.id)
     assert (kept.kind, kept.name) == ("moving", "Diaphragm")
-    assert [c.boundary_ids for c in regenerated.physical_system.components] == [(walls.id,)]
+    (component,) = regenerated.physical_system.components
+    assert component.boundary_ids == (walls.id,)
+    assert component.parameters["boundary_motion_weights"] == {walls.id: 0.5}
+    assert regenerated.component_channel_by_id == {"source": "woofer"}
     assert {r.density_kg_per_m3 for r in regenerated.physical_system.regions} == {1.19}
 
 

@@ -13,7 +13,7 @@ import math
 import re
 import threading
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,8 +39,8 @@ _GMSH_LOCK = threading.RLock()
 class CadFaceRef:
     """A face as a face group stores it: STEP name and fingerprint in CAD axes (before axis mapping).
 
-    It resolves to the faces carrying ``step_name``, else to the face with the same surface
-    type, centre, area and normal.
+    It resolves to one face: the only face carrying ``step_name``, else the face with the same
+    surface type, centre, area and normal (among those carrying ``step_name``, if several do).
     """
 
     step_name: str | None
@@ -243,7 +243,7 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
                 f"Project symmetry {SYMMETRY_LABELS[settings.symmetry]} does not match the geometry, "
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
-        groups = model.surface_groups(settings.face_groups)
+        groups = model.surface_groups(settings.face_groups, forward=settings.forward, up=settings.up)
         _apply_sizes(gmsh, model, settings, groups)
         gmsh.model.mesh.generate(3)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -269,18 +269,24 @@ class _Model:
     mesh_faces: dict[str, list[int]]  # mesh id -> faces on its boundary
     interface_of: dict[int, str]  # face -> interface name
     face_bodies: dict[int, tuple[str, ...]]
-    matrix: np.ndarray
 
     def surface_groups(
-        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]]
+        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], *, forward: str, up: str
     ) -> dict[str, dict[str, list[int]]]:
-        """Mesh id -> {surface group name -> faces}, sorted by name."""
+        """Mesh id -> {surface group name -> faces}, sorted by name; ``forward``/``up`` as read."""
         member = {}
         reserved = {WALLS, *self.interface_of.values()}
+        geometry = self.geometry
         for name, refs in face_groups.items():
             if not name or name in reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
-            faces = [f for ref in refs for f in self._resolve(ref)]
+            found = (
+                match_face_ref(ref, geometry.faces, geometry.bbox_m, forward=forward, up=up)
+                if isinstance(ref, CadFaceRef)
+                else ref
+                for ref in refs
+            )
+            faces = [f for f in found if f is not None]
             if refs and not faces:
                 raise ValueError(f"Face group '{name}' matches no face of the STEP file.")
             for face in faces:
@@ -305,34 +311,30 @@ class _Model:
             result[mesh_id] = dict(sorted(groups.items()))
         return result
 
-    def _resolve(self, ref: int | CadFaceRef) -> list[int]:
-        if not isinstance(ref, CadFaceRef):
-            return [ref]
-        return match_face_ref(ref, self.geometry, matrix=self.matrix)
-
 
 def match_face_ref(
-    ref: CadFaceRef, geometry: CadGeometry, *, forward: str = "+Z", up: str = "+Y", matrix: np.ndarray | None = None
-) -> list[int]:
-    """Ids of the faces of ``geometry`` (read with ``forward``/``up``) that ``ref`` stands for.
+    ref: CadFaceRef, faces: Sequence[CadFace], bbox_m, *, forward: str = "+Z", up: str = "+Y"
+) -> int | None:
+    """Id of the face among ``faces`` (read with ``forward``/``up``, bounded by ``bbox_m``) that ``ref`` stands for.
 
-    The faces carrying its STEP name, else those whose fingerprint matches after axis mapping.
+    The only face carrying its STEP name; else, among the faces with that name (or all faces
+    when none has it), the closest whose fingerprint matches after axis mapping.
     """
-    if ref.step_name:
-        named = [f.id for f in geometry.faces if f.step_name == ref.step_name]
-        if named:
-            return named
-    matrix = _axis_matrix(forward, up) if matrix is None else matrix
+    named = [f for f in faces if ref.step_name and f.step_name == ref.step_name]
+    if len(named) == 1:
+        return named[0].id
+    matrix = _axis_matrix(forward, up)
     centre, normal = matrix @ np.asarray(ref.centre, dtype=float), matrix @ np.asarray(ref.normal, dtype=float)
-    tol = 1e-4 * math.dist(*geometry.bbox_m)
-    return [
-        f.id
-        for f in geometry.faces
+    tol = 1e-4 * math.dist(*bbox_m)
+    matches = [
+        f
+        for f in named or faces
         if f.surface_type == ref.surface_type
         and math.dist(f.centre, centre) <= tol
         and abs(f.area - ref.area) <= 1e-3 * ref.area
         and abs(np.dot(f.normal, normal)) >= 0.999
     ]
+    return min(matches, key=lambda f: math.dist(f.centre, centre)).id if matches else None
 
 
 def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str]) -> _Model:
@@ -509,7 +511,7 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         tuple(warnings),
         tuple(CadClosedShell(name, role) for name, role in roles.items()),
     )
-    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies, matrix)
+    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies)
 
 
 def _exterior_bodies(names, children, edges) -> dict[str, list[int]]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from time import monotonic, sleep
 from types import SimpleNamespace
 
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import QDockWidget
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
-from cad_fixtures import vented_box, waveguide
+from cad_fixtures import named_sides, vented_box, waveguide
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings
@@ -28,12 +29,37 @@ def wait(qapp, condition, timeout=30):
     assert condition()
 
 
+class _StubActor:
+    def GetAddressAsString(self, _type_name):
+        return hex(id(self))
+
+
+class _StubInteractor:
+    def AddObserver(self, event, callback, priority):
+        pass
+
+
+def _cad_qt_interactor_class():
+    """The plotter stub plus what the face picking uses: the VTK interactor and actors from ``add_mesh``."""
+
+    class CadQtInteractor(_stub_qt_interactor_class()):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.iren = SimpleNamespace(interactor=_StubInteractor())
+
+        def add_mesh(self, *args, **kwargs):
+            self.calls.append("add_mesh")
+            return _StubActor()
+
+    return CadQtInteractor
+
+
 @pytest.fixture
 def cad_editor(main_window, monkeypatch, qapp, tmp_path):
     """A CAD Import design in the dock, with the vented box loaded and previewed."""
     import pyvistaqt
 
-    monkeypatch.setattr(pyvistaqt, "QtInteractor", _stub_qt_interactor_class())
+    monkeypatch.setattr(pyvistaqt, "QtInteractor", _cad_qt_interactor_class())
     catalog = catalog_module.ProviderCatalog([ROOT], enabled=[PROVIDER])
     catalog.scan()
     monkeypatch.setattr(catalog_module, "_catalog", catalog)
@@ -253,6 +279,95 @@ def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
     editor.delete_face_group("B")
     assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["A"]
     assert host.snapshot().source["face_group_sizes_m"] == {}
+
+
+def group_rows(editor):
+    table = editor.groups_table
+    return {table.item(r, 0).text(): int(table.item(r, 1).text()) for r in range(table.rowCount())}
+
+
+def test_picking_one_of_several_faces_sharing_a_step_name_groups_only_that_face(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    editor.set_step_path(str(vented_box(tmp_path / "sides.step", face_names=named_sides)))
+    wait(qapp, lambda: not editor.loading)
+    left, right = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+
+    editor.pick_face(left)
+    editor.group_selection("Left")
+    editor.pick_face(right)
+    editor.group_selection("Right")
+
+    assert {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]} == {"Left": 1, "Right": 1}
+    assert group_rows(editor) == {"Left": 1, "Right": 1, "Side": 2, "Driver": 1}
+
+
+def test_grouping_waits_for_the_reload_after_an_axis_change(cad_editor, qapp):
+    editor, host = cad_editor
+    editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
+
+    editor.forward_combo.setCurrentIndex(editor.forward_combo.findData("-Y"))
+    editor.up_combo.setCurrentIndex(editor.up_combo.findData("+Z"))
+    assert editor.loading
+    editor.group_selection("Early")
+
+    assert host.snapshot().source.get("face_groups", []) == []
+    wait(qapp, lambda: not editor.loading)
+    assert "Driver" in group_rows(editor)
+
+
+@pytest.mark.parametrize(
+    ("name", "pick", "message"),
+    [
+        ("walls", "cabinet", "Face group name 'walls' is reserved"),
+        ("Port opening", "cabinet", "Face group name 'Port opening' is reserved"),
+        ("Mouth", "interface", "Face group 'Mouth' contains face .* of interface 'Port opening'"),
+    ],
+)
+def test_reserved_names_and_interface_faces_cannot_be_grouped(cad_editor, name, pick, message):
+    editor, host = cad_editor
+    if pick == "interface":
+        face = editor.geometry["interfaces"][0]["face_ids"][0]
+    else:
+        face = cabinet_faces(editor, lambda f: True)[0]
+    editor.pick_face(face)
+
+    editor.group_selection(name)
+
+    assert host.snapshot().source.get("face_groups", []) == []
+    assert re.search(message, editor.status.text())
+
+
+def test_step_names_that_are_reserved_form_no_face_group(cad_editor, qapp, tmp_path):
+    editor, _ = cad_editor
+    names = {-210: "walls", -200: "Driver"}
+    editor.set_step_path(str(vented_box(tmp_path / "walls.step", face_names=lambda c: names.get(round(c[2])))))
+    wait(qapp, lambda: not editor.loading)
+
+    assert group_rows(editor) == {"Driver": 1}
+
+
+def test_deleting_a_picked_group_keeps_the_size_of_a_step_named_group_of_that_name(cad_editor):
+    editor, host = cad_editor
+    editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
+    editor.group_selection("Driver")
+    editor.set_face_group_size("Driver", 0.008)
+
+    editor.delete_face_group("Driver")
+
+    assert host.snapshot().source["face_groups"] == []
+    assert host.snapshot().source["face_group_sizes_m"] == {"Driver": 0.008}
+    assert group_rows(editor) == {"Driver": 1}
+
+
+@pytest.mark.parametrize("text", ["inf", "nan", "-5"])
+def test_size_override_must_be_finite_and_positive(cad_editor, text):
+    editor, host = cad_editor
+
+    body_items(editor)["Chamber"].setText(1, text)
+
+    assert host.snapshot().source.get("body_sizes_m", {}) == {}
+    assert "positive number" in editor.status.text()
+    assert body_items(editor)["Chamber"].text(1) == ""
 
 
 def test_size_overrides_for_bodies_and_face_groups_edit_the_source(cad_editor):
