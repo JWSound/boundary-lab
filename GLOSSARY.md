@@ -44,7 +44,7 @@ Free faces in imported CAD geometry that close up among themselves without being
 _Avoid_: Surface solid, watertight body
 
 **Face group**:
-A named set of geometry faces that becomes one physical surface group in a mesh. A face group **needs review** when the current STEP file no longer has all of its stored faces; generation is rejected until it is re-picked or deleted.
+A named set of geometry faces that becomes one physical surface group in a mesh. Faces in no other face group form the **walls** face group; each detected interface has its own face group on each side, whose faces detection decides. A face group **needs review** when the current STEP file no longer has all of its stored faces; generation is rejected until it is re-picked or deleted.
 _Avoid_: Tag, patch, selection
 
 **Placement**:
