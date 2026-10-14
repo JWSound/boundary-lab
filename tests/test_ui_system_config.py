@@ -57,6 +57,7 @@ from blab.ui.component_editor import _ComponentDraft, _ComponentEditorDialog, _S
 from blab.ui.dialogs import MeshDialogEntry
 from blab.ui.main_window.radiators import RadiatorsMixin
 from blab.ui.mesh_assembly import MeshAssemblyService
+from blab.ui.numeric_locale import parse_decimal_number
 from blab.ui.system_config import SystemConfigDialog
 from blab.ui.system_solve import CoupledSolveWorker, prepare_coupled_ui_solve
 
@@ -888,9 +889,9 @@ def test_component_editor_applies_automatic_axis_to_a_two_sided_transducer(monke
     )
 
     assert projected_area_calls == 1
-    assert float(editor.parameter_edits["le_h"].text()) == pytest.approx(0.5)
-    assert float(editor.parameter_edits["mmd_kg"].text()) == pytest.approx(15.0)
-    assert float(editor.parameter_edits["cms_m_per_n"].text()) == pytest.approx(500.0)
+    for key, expected in (("le_h", 0.5), ("mmd_kg", 15.0), ("cms_m_per_n", 500.0)):
+        edit = editor.parameter_edits[key]
+        assert parse_decimal_number(edit.text(), edit.locale()) == pytest.approx(expected)
     assert not editor.parameter_edits["le_h"].isEnabled()
     assert editor.semi_inductance_button.text() == "Semi-Inductance: On…"
     assert editor.rear_chamber_check.isChecked()
