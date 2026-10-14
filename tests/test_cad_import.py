@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import replace
 
 import gmsh
@@ -14,10 +16,16 @@ from blab.cad_import import (
     CadFace,
     CadFaceRef,
     CadImportSettings,
+    CadPreview,
+    CadScan,
     face_ref,
     inspect_step,
     match_face_ref,
     mesh_step,
+    open_step,
+    place_preview,
+    preview_from_json,
+    preview_to_json,
 )
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
@@ -473,3 +481,77 @@ def test_port_mouth_is_a_node_for_node_interface_on_a_closed_outward_exterior(ve
     assert signed_volume(meshes["exterior"]) == pytest.approx(0.12 * 0.12 * 0.21, rel=1e-3)
     assert vented.geometry.symmetry == "off"
     assert vented.geometry.warnings == ()
+
+
+def test_closed_shell_without_a_choice_opens_as_a_quick_scan_only(surface_model):
+    scan = open_step(surface_model)
+
+    assert isinstance(scan, CadScan)
+    (shell,) = scan.closed_shells
+    assert (shell.name, shell.role) == ("Closed shell 1", "exterior")
+    assert set(shell.face_ids) < set(scan.face_ids.tolist())  # the other faces are shown around it
+    assert scan.triangles.max() < len(scan.points)
+    preview = open_step(surface_model, closed_shells={"Closed shell 1": "air"})
+    assert isinstance(preview, CadPreview)
+    assert preview.geometry == inspect_step(surface_model, closed_shells={"Closed shell 1": "air"})
+
+
+# Placements that keep the cabinet front, which the port mouth opens in, off X=0 and Y=0.
+@pytest.mark.parametrize("axes", [("-Z", "+X"), ("+Z", "-Y")])
+def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_path, axes):
+    step = vented_box(tmp_path / "box.step", open_back=True)
+    forward, up = axes
+
+    placed = place_preview(open_step(step), forward=forward, up=up)
+    read = open_step(step, forward=forward, up=up)
+
+    assert placed.axes == read.axes == axes
+    assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-9)
+    assert np.allclose(placed.points.min(axis=0), read.points.min(axis=0), atol=1e-9)
+    assert placed.geometry.symmetry == read.geometry.symmetry
+    assert unsigned(placed.geometry.warnings) == unsigned(read.geometry.warnings)
+    assert "Exterior surface is not closed" in placed.geometry.warnings[0]
+    assert fingerprints(placed.geometry) == fingerprints(read.geometry)
+    assert [(b.name, len(b.face_ids)) for b in placed.geometry.bodies] == [
+        (b.name, len(b.face_ids)) for b in read.geometry.bodies
+    ]
+    assert placed.geometry.regions == read.geometry.regions
+
+
+def fingerprints(geometry):
+    """The faces by name, type, centre (mm) and normal, rounded: face ids differ between reads."""
+    return sorted(
+        (f.step_name or "", f.surface_type, *(np.round(np.array(f.centre) * 1000, 3) + 0), *(np.round(f.normal, 6) + 0))
+        for f in geometry.faces
+    )
+
+
+def unsigned(warnings):
+    """``warnings`` with -0.0 written as 0.0: rounding noise about zero."""
+    return [re.sub(r"-(0\.0)\b", r"\1", w) for w in warnings]
+
+
+def test_placement_moves_the_symmetry_planes_the_open_edges_suggest(tmp_path):
+    preview = open_step(vented_box(tmp_path / "box.step", symmetry="x"))
+    assert preview.geometry.symmetry == "x"
+
+    turned = place_preview(preview, forward="+Z", up="+X")  # CAD X=0 becomes Y=0, no symmetry alone
+
+    assert turned.geometry.symmetry == "off"
+    assert turned.geometry.warnings[0].startswith("Exterior surface is not closed")
+    back = place_preview(turned, forward="+Z", up="+Y")
+    assert back.geometry.symmetry == "x" and back.geometry.warnings == ()
+    with pytest.raises(ValueError, match="perpendicular"):
+        place_preview(preview, forward="+Z", up="-Z")
+
+
+def test_previews_survive_their_json_form(surface_model):
+    for preview in (open_step(surface_model), open_step(surface_model, closed_shells={"Closed shell 1": "air"})):
+        copy = preview_from_json(json.loads(json.dumps(preview_to_json(preview))))
+
+        assert type(copy) is type(preview)
+        for name, value in vars(preview).items():
+            if isinstance(value, np.ndarray):
+                assert np.array_equal(getattr(copy, name), value)
+            else:
+                assert getattr(copy, name) == value

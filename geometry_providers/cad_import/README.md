@@ -19,12 +19,16 @@ in **Edit > Generator Plugins...** and add a design.
    and exterior gaps.
    A **closed shell** of surfaces (free faces that close up, as SolidWorks
    writes the solids of parts mixing solid and surface bodies) could be either,
-   so the editor asks for each one, with the shell highlighted and framed and
+   so the editor asks for each one after a quick scan, before the file is read
+   fully once with the answers, with the shell highlighted and framed and
    the rest see-through: **Air volume** makes it an air body named
    after the shell, **Exterior surface** (also Escape) keeps it exterior. Change
    the choice later under **Closed shells**; another STEP file is asked afresh.
    The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
 2. Pick **Forward** and **Up**: the CAD axes that become Boundary Lab +Z and +Y.
+   The view, size and suggested symmetry follow at once, without reading the
+   file again; which faces open into air bodies is kept from the last read,
+   and Generate uses the new axes.
 3. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
    all hiding, **Clear** also clears the selection.
 4. Click faces in the view (Ctrl/Shift+click adds or removes) or select them

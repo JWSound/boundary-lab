@@ -35,7 +35,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from blab.cad_import import AXES, WALLS, CadFace, CadFaceRef, face_ref, match_face_ref
+from blab.cad_import import (
+    AXES,
+    WALLS,
+    CadFace,
+    CadFaceRef,
+    CadScan,
+    face_ref,
+    match_face_ref,
+    place_preview,
+    preview_from_json,
+)
 from blab.ui.file_dialogs import FileDialogService
 
 from .backend import run_worker
@@ -214,8 +224,10 @@ class CadImportEditor:
         self.revision = ""
         self.geometry = None
         self.loading = False
-        self._preview = None
+        self._read = None  # the CadPreview last read; placement changes only move it
+        self._preview = None  # what the viewport shows: the placed preview's geometry and triangles
         self._key = None
+        self._placement = None  # forward, up of the shown preview
         self._hidden = set()
         self._highlight = None  # face ids of the closed shell being asked about
         self._face_items = {}
@@ -370,14 +382,11 @@ class CadImportEditor:
             combo.setCurrentIndex(combo.findData(source.get(key, "+Z" if key == "forward" else "+Y")))
             combo.blockSignals(blocked)
         self._refresh_context()
-        key = (
-            str(source.get("step_path") or ""),
-            source.get("forward", "+Z"),
-            source.get("up", "+Y"),
-            json.dumps(source.get("closed_shells", {}), sort_keys=True),
-        )
+        key = (str(source.get("step_path") or ""), json.dumps(source.get("closed_shells", {}), sort_keys=True))
         if key != self._key:
             self._load(key)
+        elif self._placement_of(source) != self._placement:
+            self._place()
         else:
             self._show_overrides()
 
@@ -406,8 +415,11 @@ class CadImportEditor:
         self._key = key
         self._cancel_preview.set()
         self._cancel_preview = cancel = threading.Event()
+        self._read = None
+        self._placement = self._placement_of(self.source)
         self._show_preview(None)
-        path, forward, up, closed_shells = key
+        path, closed_shells = key
+        forward, up = self._placement
         # Taken before reading: an edit while the file loads changes it, so the next focus asks.
         self._stamp = _file_stamp(path) if path else None
         if not path:
@@ -432,7 +444,7 @@ class CadImportEditor:
                     "closed_shells": json.loads(closed_shells),
                 }
                 run_worker(job, output, cancelled=cancel.is_set)
-                preview = json.loads((output / "preview.json").read_text(encoding="utf-8"))
+                preview = preview_from_json(json.loads((output / "preview.json").read_text(encoding="utf-8")))
             except Exception as exc:
                 if not cancel.is_set():
                     relay.loaded.emit(key, None, str(exc))
@@ -451,18 +463,42 @@ class CadImportEditor:
         if error is not None:
             self.info.setText(error)
             return
-        preview["points"] = np.asarray(preview["points"], dtype=float).reshape(-1, 3)
-        preview["triangles"] = np.asarray(preview["triangles"], dtype=np.int64).reshape(-1, 3)
-        preview["face_ids"] = np.asarray(preview["face_ids"], dtype=np.int64)
-        self._show_preview(preview)
-        stored = self.source.get("closed_shells", {})
-        answers = {
-            shell["name"]: self._ask_highlighted(shell)
-            for shell in self.geometry["closed_shells"]
-            if shell["name"] not in stored
-        }
-        if answers:
+        if isinstance(preview, CadScan):
+            # Closed shells without a choice: ask now, then the answers read the file fully, once.
+            try:
+                preview = place_preview(preview, forward=self._placement[0], up=self._placement[1])
+            except ValueError:
+                pass  # shown as read; the full read reports the placement
+            view = _view(preview)
+            stored = self.source.get("closed_shells", {})
+            answers = {
+                shell.name: self._ask_highlighted(view, shell)
+                for shell in preview.closed_shells
+                if shell.name not in stored
+            }
             self.edited({"closed_shells": stored | answers})
+            return
+        self._read = preview
+        self._place()
+
+    @staticmethod
+    def _placement_of(source):
+        return source.get("forward", "+Z"), source.get("up", "+Y")
+
+    def _place(self):
+        """Show the read preview with the source's placement, moved without reading the STEP file again."""
+        self._placement = self._placement_of(self.source)
+        if self._read is None:
+            if not self.loading and self._key is not None and self._key[0]:
+                self._load(self._key)  # nothing read yet, e.g. the last read's placement was invalid
+            return
+        try:
+            placed = place_preview(self._read, forward=self._placement[0], up=self._placement[1])
+        except ValueError as exc:
+            self._show_preview(None)
+            self.info.setText(str(exc))
+            return
+        self._show_preview(_view(placed) | {"geometry": asdict(placed.geometry)})
 
     def _application_state_changed(self, state):
         """Back in the application with a changed STEP file: offer to re-mesh, never regenerate unasked."""
@@ -488,17 +524,19 @@ class CadImportEditor:
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _ask_highlighted(self, shell):
-        """Ask about closed ``shell`` with its faces highlighted and framed; the view comes back after."""
-        self._highlight = set(shell["face_ids"])
-        self._render()
-        camera = self.viewport.frame(self._preview, self._highlight)
+    def _ask_highlighted(self, view, shell):
+        """Ask about closed ``shell`` of the scan ``view`` with its faces highlighted and framed; the view
+        comes back after."""
+        faces = set(view["face_ids"].tolist())
+        self._highlight = set(shell.face_ids)
+        self.viewport.show_faces(view, faces, highlight=self._highlight)
+        camera = self.viewport.frame(view, self._highlight)
         try:
-            return self.ask_closed_shell(shell["name"])
+            return self.ask_closed_shell(shell.name)
         finally:
             self._highlight = None
             self.viewport.restore_camera(camera)
-            self._render()
+            self.viewport.show_faces(view, faces)
 
     def highlighted_faces(self):
         """The faces drawn highlighted (the rest see-through), empty when none are."""
@@ -697,7 +735,6 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
-            highlight=self._highlight,
             reset_camera=reset_camera,
         )
 
@@ -717,8 +754,8 @@ class CadImportEditor:
     # -- face groups --------------------------------------------------------------------------
 
     def _axes(self):
-        """The Forward/Up axes the loaded faces were read with."""
-        _, forward, up, _ = self._key
+        """The Forward/Up axes the shown faces are placed with."""
+        forward, up = self._placement
         return {"forward": forward, "up": up}
 
     def _ref(self, face_id):
@@ -971,6 +1008,11 @@ class CadImportEditor:
         self._cancel_preview.set()
         self._render_timer.stop()
         self.viewport.close()
+
+
+def _view(preview):
+    """What the viewport draws of a scan or preview."""
+    return {"points": preview.points, "triangles": preview.triangles, "face_ids": preview.face_ids}
 
 
 def _file_stamp(path):

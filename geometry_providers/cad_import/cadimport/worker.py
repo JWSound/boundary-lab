@@ -12,20 +12,13 @@ from pathlib import Path
 def main(job_path):
     job = json.loads(Path(job_path).read_text(encoding="utf-8"))
     sys.path.insert(0, job["blab_path"])
-    from blab.cad_import import CadImportSettings, mesh_step, preview_step
+    from blab.cad_import import CadImportSettings, mesh_step, open_step, preview_to_json
 
     output = Path(job["output"])
     if job["mode"] == "preview":
-        preview = preview_step(
-            job["step_path"], forward=job["forward"], up=job["up"], closed_shells=job.get("closed_shells")
-        )
-        info = {
-            "geometry": asdict(preview.geometry),
-            "points": preview.points.tolist(),
-            "triangles": preview.triangles.tolist(),
-            "face_ids": preview.face_ids.tolist(),
-        }
-        (output / "preview.json").write_text(json.dumps(info), encoding="utf-8")
+        # Only the quick scan while a closed shell has no choice: the answers decide the full read.
+        preview = open_step(job["step_path"], forward=job["forward"], up=job["up"], closed_shells=job["closed_shells"])
+        (output / "preview.json").write_text(json.dumps(preview_to_json(preview)), encoding="utf-8")
         return
     result = mesh_step(job["step_path"], CadImportSettings(**job["settings"]), output)
     info = {

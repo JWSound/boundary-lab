@@ -9,13 +9,14 @@ face, is an interface: the same face group name appears in both meshes.
 
 from __future__ import annotations
 
+import itertools
 import math
 import re
 import threading
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import meshio
@@ -200,41 +201,177 @@ def face_ref(face: CadFace, *, forward: str = "+Z", up: str = "+Y") -> CadFaceRe
 
 @dataclass(frozen=True)
 class CadPreview:
-    """A coarse display tessellation: ``triangles`` index ``points`` (m); ``face_ids`` per triangle."""
+    """A coarse display tessellation: ``triangles`` index ``points`` (m); ``face_ids`` per triangle.
+
+    ``open_edges`` and ``overlap_edges`` (nine sampled points each) and ``cover_warnings`` let
+    :func:`place_preview` redo the placement-dependent symmetry suggestion and warnings.
+    """
 
     geometry: CadGeometry
     points: np.ndarray
     triangles: np.ndarray
     face_ids: np.ndarray
+    axes: tuple[str, str]  # forward, up: the placement it shows
+    open_edges: np.ndarray
+    overlap_edges: np.ndarray
+    cover_warnings: tuple[str, ...]
 
 
-def preview_step(
+@dataclass(frozen=True)
+class CadScan:
+    """A STEP file as imported, not fragmented: its closed shells (faces: imported face tags) and a
+    coarse tessellation of all its faces, to ask about the closed shells quickly."""
+
+    closed_shells: tuple[CadClosedShell, ...]
+    points: np.ndarray
+    triangles: np.ndarray
+    face_ids: np.ndarray
+    axes: tuple[str, str]
+
+
+def open_step(
     step_path: str | Path, *, forward: str = "+Z", up: str = "+Y", closed_shells: Mapping[str, str] | None = None
-) -> CadPreview:
-    """Inspect a STEP file and tessellate its faces coarsely for display."""
+) -> CadScan | CadPreview:
+    """Read a STEP file for display with the placement ``forward``/``up``.
+
+    While a closed shell has no choice in ``closed_shells``, only the quick scan; else the full preview.
+    """
+    closed_shells = closed_shells or {}
+    matrix = _axis_matrix(forward, up)
     with _gmsh_session() as gmsh:
-        geometry = _analyse(gmsh, Path(step_path), _axis_matrix(forward, up), closed_shells or {}).geometry
-        low, high = geometry.bbox_m
-        gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(low, high) / 30)
-        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
-        gmsh.model.mesh.generate(2)
-        node_tags, coords, _ = gmsh.model.mesh.getNodes()
-        index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
-        index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
-        triangles, face_ids = [], []
-        for face in geometry.faces:
-            types, _, nodes = gmsh.model.mesh.getElements(2, face.id)
-            for kind, data in zip(types, nodes, strict=True):
-                if kind == 2:
-                    block = index[np.asarray(data, dtype=np.int64)].reshape(-1, 3)
-                    triangles.append(block)
-                    face_ids.append(np.full(len(block), face.id))
+        step = _read(gmsh, Path(step_path))
+        if set(step.shell_names) - set(closed_shells):
+            shells = tuple(
+                CadClosedShell(name, closed_shells.get(name, "exterior"), tuple(faces))
+                for name, faces in zip(step.shell_names, step.shells, strict=True)
+            )
+            bbox = gmsh.model.getBoundingBox(-1, -1)
+            points, triangles, face_ids = _tessellate(
+                gmsh, [t for _, t in gmsh.model.getEntities(2)], (bbox[:3], bbox[3:])
+            )
+            return CadScan(shells, points @ matrix.T, triangles, face_ids, (forward, up))
+        model = _analyse(gmsh, Path(step_path), matrix, closed_shells, step)
+        geometry = model.geometry
         return CadPreview(
             geometry,
-            np.asarray(coords).reshape(-1, 3),
-            np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
-            np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
+            *_tessellate(gmsh, [face.id for face in geometry.faces], geometry.bbox_m),
+            (forward, up),
+            model.open_edges,
+            model.overlap_edges,
+            model.cover_warnings,
         )
+
+
+def place_preview(preview: CadScan | CadPreview, *, forward: str = "+Z", up: str = "+Y") -> CadScan | CadPreview:
+    """``preview`` moved to the placement ``forward``/``up`` without reading the STEP file again.
+
+    The result reports what reading the file with that placement does, face ids aside; only which
+    faces open into air bodies is kept, though it can change where faces lie on X=0 or Y=0.
+    """
+    matrix = _axis_matrix(forward, up) @ _axis_matrix(*preview.axes).T
+    points = preview.points @ matrix.T
+    if isinstance(preview, CadScan):
+        return replace(preview, points=points, axes=(forward, up))
+    geometry = preview.geometry
+    corners = np.array(list(itertools.product(*zip(*geometry.bbox_m, strict=True)))) @ matrix.T
+    open_edges, overlap_edges = preview.open_edges @ matrix.T, preview.overlap_edges @ matrix.T
+    symmetry, warnings = _edge_findings(open_edges, overlap_edges, _plane_tolerance(*geometry.bbox_m))
+    faces = tuple(
+        replace(face, centre=_moved(matrix, face.centre), normal=_moved(matrix, face.normal)) for face in geometry.faces
+    )
+    geometry = replace(
+        geometry,
+        faces=faces,
+        bbox_m=(tuple(corners.min(axis=0).tolist()), tuple(corners.max(axis=0).tolist())),
+        symmetry=symmetry,
+        warnings=preview.cover_warnings + warnings,
+    )
+    return replace(
+        preview,
+        geometry=geometry,
+        points=points,
+        axes=(forward, up),
+        open_edges=open_edges,
+        overlap_edges=overlap_edges,
+    )
+
+
+def preview_to_json(preview: CadScan | CadPreview) -> dict:
+    """``preview`` as JSON data; :func:`preview_from_json` reads it back."""
+    data = {k: v.tolist() if isinstance(v, np.ndarray) else v for k, v in asdict(preview).items()}
+    return data | {"kind": "scan" if isinstance(preview, CadScan) else "preview"}
+
+
+def preview_from_json(data: Mapping) -> CadScan | CadPreview:
+    """The preview :func:`preview_to_json` wrote as ``data``."""
+    arrays = dict(
+        points=np.asarray(data["points"], dtype=float).reshape(-1, 3),
+        triangles=np.asarray(data["triangles"], dtype=np.int64).reshape(-1, 3),
+        face_ids=np.asarray(data["face_ids"], dtype=np.int64),
+        axes=tuple(data["axes"]),
+    )
+    if data["kind"] == "scan":
+        return CadScan(_shells_from_json(data["closed_shells"]), **arrays)
+    g = data["geometry"]
+    geometry = CadGeometry(
+        tuple(CadBody(b["name"], b["kind"], tuple(b["face_ids"])) for b in g["bodies"]),
+        tuple(
+            CadFace(
+                f["id"],
+                tuple(f["bodies"]),
+                f["step_name"],
+                tuple(f["centre"]),
+                f["area"],
+                tuple(f["normal"]),
+                f["surface_type"],
+            )
+            for f in g["faces"]
+        ),
+        tuple(CadRegion(r["mesh_id"], r["kind"], tuple(r["bodies"])) for r in g["regions"]),
+        tuple(CadInterface(i["name"], i["mesh_id"], tuple(i["face_ids"])) for i in g["interfaces"]),
+        (tuple(g["bbox_m"][0]), tuple(g["bbox_m"][1])),
+        g["symmetry"],
+        tuple(g["warnings"]),
+        _shells_from_json(g["closed_shells"]),
+    )
+    return CadPreview(
+        geometry,
+        **arrays,
+        open_edges=np.asarray(data["open_edges"], dtype=float).reshape(-1, 9, 3),
+        overlap_edges=np.asarray(data["overlap_edges"], dtype=float).reshape(-1, 9, 3),
+        cover_warnings=tuple(data["cover_warnings"]),
+    )
+
+
+def _shells_from_json(items) -> tuple[CadClosedShell, ...]:
+    return tuple(CadClosedShell(s["name"], s["role"], tuple(s["face_ids"])) for s in items)
+
+
+def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Coarse display triangles of ``faces``: points, triangles, face id per triangle."""
+    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*bbox_m) / 30)
+    gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
+    gmsh.model.mesh.generate(2)
+    node_tags, coords, _ = gmsh.model.mesh.getNodes()
+    index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
+    index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
+    triangles, face_ids = [], []
+    for face in faces:
+        types, _, nodes = gmsh.model.mesh.getElements(2, face)
+        for kind, data in zip(types, nodes, strict=True):
+            if kind == 2:
+                block = index[np.asarray(data, dtype=np.int64)].reshape(-1, 3)
+                triangles.append(block)
+                face_ids.append(np.full(len(block), face))
+    return (
+        np.asarray(coords).reshape(-1, 3),
+        np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
+        np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
+    )
+
+
+def _moved(matrix, vector) -> tuple[float, float, float]:
+    return tuple(float(v) for v in matrix @ np.asarray(vector, dtype=float))
 
 
 def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: str | Path) -> CadImportResult:
@@ -274,6 +411,9 @@ class _Model:
     mesh_faces: dict[str, list[int]]  # mesh id -> faces on its boundary
     interface_of: dict[int, str]  # face -> interface name
     face_bodies: dict[int, tuple[str, ...]]
+    open_edges: np.ndarray  # sampled points of the exterior's open edges
+    overlap_edges: np.ndarray  # ... and of its edges shared by more than two faces
+    cover_warnings: tuple[str, ...]  # the warnings the placement does not change
 
     def surface_groups(
         self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], *, forward: str, up: str
@@ -349,11 +489,19 @@ def match_face_ref(
     return matches[0].id if len(matches) == 1 else None
 
 
-def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str]) -> _Model:
+@dataclass
+class _Step:
+    """A STEP file as imported: solids, free faces and the closed shells among them, with body names."""
+
+    solids: list[int]
+    solid_names: list[str]
+    sheets: list[int]
+    shells: list[list[int]]
+    shell_names: list[str]
+
+
+def _read(gmsh, path: Path) -> _Step:
     occ = gmsh.model.occ
-    for name, role in closed_shells.items():
-        if role not in ("air", "exterior"):
-            raise ValueError(f"Closed shell '{name}' must be 'air' or 'exterior', not '{role}'.")
     if not path.is_file():
         raise ValueError(f"STEP file not found: {path}")
     gmsh.option.setString("Geometry.OCCTargetUnit", "M")
@@ -379,7 +527,20 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         [_label(gmsh, 3, t) or f"Air body {i + 1}" for i, t in enumerate(solids)]
         + [_label(gmsh, 2, faces[0]) or f"Closed shell {k}" for k, faces in enumerate(shells, start=1)]
     )
-    solid_names, shell_names = names[: len(solids)], names[len(solids) :]
+    return _Step(solids, names[: len(solids)], sheets, shells, names[len(solids) :])
+
+
+def _analyse(
+    gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str], step: _Step | None = None
+) -> _Model:
+    """Classify and fragment ``path`` (``step``: already read) with the axis mapping ``matrix``."""
+    occ = gmsh.model.occ
+    for name, role in closed_shells.items():
+        if role not in ("air", "exterior"):
+            raise ValueError(f"Closed shell '{name}' must be 'air' or 'exterior', not '{role}'.")
+    step = step or _read(gmsh, path)
+    solids, sheets, shells, shell_names = list(step.solids), list(step.sheets), step.shells, step.shell_names
+    solid_names = list(step.solid_names)
     unknown = sorted(set(closed_shells) - set(shell_names))
     if unknown:
         raise ValueError(f"Unknown closed shell '{unknown[0]}'.")
@@ -419,7 +580,7 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
     outer_air = sorted(f for f, vols in face_volumes.items() if len(vols) == 1)
 
     bbox = gmsh.model.getBoundingBox(-1, -1)
-    tol = max(1e-9, 1e-6 * math.dist(bbox[:3], bbox[3:]))
+    tol = _plane_tolerance(bbox[:3], bbox[3:])
     plane = _PlaneTest(gmsh, tol)
 
     # Openings: air faces whose edges close holes in the exterior surface.
@@ -450,21 +611,9 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
 
     shell = sorted(exterior_set | fillers)
     counts = Counter(e for f in shell for e in edges[f])
-    open_edges = sorted(e for e, n in counts.items() if n == 1)
-    on_x = [e for e in open_edges if plane.edge(e, axis=0)]
-    on_y = [e for e in open_edges if e not in on_x and plane.edge(e, axis=1)]
-    symmetry = ("xy" if on_y else "x") if on_x else "off"
-    # Y=0 alone is no supported symmetry, so those edges are gaps too.
-    on_planes = set(on_x) | (set(on_y) if on_x else set())
-    gaps = [e for e in open_edges if e not in on_planes]
-    if gaps:
-        warnings.append(f"Exterior surface is not closed: {len(gaps)} open edge(s) near {plane.describe(gaps)}.")
-    overlaps = sorted(e for e, n in counts.items() if n > 2)
-    if overlaps:
-        warnings.append(
-            f"Exterior surface bodies overlap: {len(overlaps)} edge(s) are shared by more than two faces "
-            f"near {plane.describe(overlaps)}."
-        )
+    open_edges = np.array([plane.points(e) for e, n in sorted(counts.items()) if n == 1]).reshape(-1, 9, 3)
+    overlap_edges = np.array([plane.points(e) for e, n in sorted(counts.items()) if n > 2]).reshape(-1, 9, 3)
+    symmetry, edge_warnings = _edge_findings(open_edges, overlap_edges, tol)
 
     # Regions: touching air bodies form one mesh.
     parent = {name: name for name in volumes}
@@ -528,10 +677,37 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         tuple(interfaces),
         (tuple(bbox[:3]), tuple(bbox[3:])),
         symmetry,
-        tuple(warnings),
+        tuple(warnings) + edge_warnings,
         tuple(closed),
     )
-    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies)
+    return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies, open_edges, overlap_edges, tuple(warnings))
+
+
+def _plane_tolerance(low, high) -> float:
+    return max(1e-9, 1e-6 * math.dist(low, high))
+
+
+def _edge_findings(open_edges, overlap_edges, tol) -> tuple[str, tuple[str, ...]]:
+    """Suggested symmetry and warnings from the exterior's open and overlapping edges (sampled points, m)."""
+    on_x = [bool(np.all(np.abs(e[:, 0]) <= tol)) for e in open_edges]
+    on_y = [not x and bool(np.all(np.abs(e[:, 1]) <= tol)) for e, x in zip(open_edges, on_x, strict=True)]
+    symmetry = ("xy" if any(on_y) else "x") if any(on_x) else "off"
+    # Y=0 alone is no supported symmetry, so those edges are gaps too.
+    gaps = [e for e, x, y in zip(open_edges, on_x, on_y, strict=True) if not (x or (y and any(on_x)))]
+    warnings = []
+    if gaps:
+        warnings.append(f"Exterior surface is not closed: {len(gaps)} open edge(s) near {_describe(gaps)}.")
+    if len(overlap_edges):
+        warnings.append(
+            f"Exterior surface bodies overlap: {len(overlap_edges)} edge(s) are shared by more than two faces "
+            f"near {_describe(overlap_edges)}."
+        )
+    return symmetry, tuple(warnings)
+
+
+def _describe(edges, limit=5) -> str:
+    text = ", ".join("({:.1f}, {:.1f}, {:.1f}) mm".format(*(e[4] * 1000)) for e in edges[:limit])
+    return text + (", ..." if len(edges) > limit else "")
 
 
 def _exterior_bodies(names, children, edges) -> dict[str, list[int]]:
@@ -560,9 +736,8 @@ class _PlaneTest:
             self._points[edge] = np.reshape(self.gmsh.model.getValue(1, edge, params), (-1, 3))
         return self._points[edge]
 
-    def edge(self, edge, axis=None):
-        axes = (0, 1) if axis is None else (axis,)
-        return any(np.all(np.abs(self.points(edge)[:, a]) <= self.tol) for a in axes)
+    def edge(self, edge):
+        return any(np.all(np.abs(self.points(edge)[:, a]) <= self.tol) for a in (0, 1))
 
     def face(self, face):
         if self.gmsh.model.getType(2, face) != "Plane":
@@ -570,11 +745,6 @@ class _PlaneTest:
         centre = self.gmsh.model.occ.getCenterOfMass(2, face)
         normal = _normal(self.gmsh, face)
         return any(abs(centre[a]) <= self.tol and abs(abs(normal[a]) - 1) < 1e-9 for a in (0, 1))
-
-    def describe(self, edges, limit=5):
-        mids = [self.points(e)[4] * 1000 for e in edges[:limit]]
-        text = ", ".join("({:.1f}, {:.1f}, {:.1f}) mm".format(*m) for m in mids)
-        return text + (", ..." if len(edges) > limit else "")
 
 
 def _edges(gmsh, face) -> set[int]:

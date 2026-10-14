@@ -18,11 +18,15 @@ from .pipeline import (
     CadMesh,
     CadPreview,
     CadRegion,
+    CadScan,
     face_ref,
     inspect_step,
     match_face_ref,
     mesh_step,
-    preview_step,
+    open_step,
+    place_preview,
+    preview_from_json,
+    preview_to_json,
 )
 
 __all__ = [
@@ -39,9 +43,13 @@ __all__ = [
     "CadMesh",
     "CadPreview",
     "CadRegion",
+    "CadScan",
     "face_ref",
     "inspect_step",
     "match_face_ref",
     "mesh_step",
-    "preview_step",
+    "open_step",
+    "place_preview",
+    "preview_from_json",
+    "preview_to_json",
 ]

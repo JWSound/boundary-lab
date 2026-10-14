@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -14,6 +15,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget, QHeaderView
 
+from blab.cad_import import open_step
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
@@ -255,21 +257,22 @@ def test_closed_shell_is_highlighted_and_framed_while_asked(cad_editor, qapp, mo
     editor, _ = cad_editor
     plotter = editor.viewport.plotter
     plotter.camera_position = "before"
+    step = waveguide(tmp_path / "wg.step", surface_model=True)
+    (shell,) = open_step(step).closed_shells  # the quick scan the question shows
     seen = []
 
     def ask(name):
-        (shell,) = editor.geometry["closed_shells"]
         opacities = [kwargs.get("opacity", 1.0) for mesh, kwargs in plotter.meshes if not mesh.n_lines]
-        seen.append((editor.highlighted_faces(), set(shell["face_ids"]), opacities, "reset_camera" in plotter.calls))
+        seen.append((editor.highlighted_faces(), opacities, "reset_camera" in plotter.calls))
         plotter.camera_position = "framed"
         return "exterior"
 
     monkeypatch.setattr(editor, "ask_closed_shell", ask)
-    editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
+    editor.set_step_path(str(step))
     wait(qapp, lambda: not editor.loading)
 
-    ((highlighted, shell_faces, opacities, framed),) = seen
-    assert highlighted == shell_faces and shell_faces
+    ((highlighted, opacities, framed),) = seen
+    assert highlighted == set(shell.face_ids) and highlighted
     assert min(opacities) < 1 and max(opacities) == 1  # the rest see-through
     assert framed
     assert editor.highlighted_faces() == set()
@@ -298,7 +301,7 @@ def test_face_outlines_are_the_edges_between_faces(blank_cad_editor):
 
 
 def cabinet_faces(editor, predicate):
-    return [f["id"] for f in editor.geometry["faces"] if f["bodies"] == ["Cabinet"] and predicate(f)]
+    return [f["id"] for f in editor.geometry["faces"] if list(f["bodies"]) == ["Cabinet"] and predicate(f)]
 
 
 def test_picked_faces_become_a_face_group_that_generates_a_rigid_boundary(
@@ -379,18 +382,53 @@ def test_picking_one_of_several_faces_sharing_a_step_name_groups_only_that_face(
     assert group_rows(editor) == {"Left": 1, "Right": 1, "Side": 2, "Driver": 1}
 
 
-def test_grouping_waits_for_the_reload_after_an_axis_change(cad_editor, qapp):
+def test_axis_change_moves_the_display_without_reading_the_step_file_and_groups_still_match(cad_editor, monkeypatch):
     editor, host = cad_editor
-    editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
+    editor.pick_face(chamber_back(editor))
+    editor.group_selection("Back")
+    reads = record_reads(editor, monkeypatch)
+    before = editor.viewport.plotter.meshes[0][0].points.copy()
 
+    editor.up_combo.setCurrentIndex(editor.up_combo.findData("+Z"))  # +Z up while forward is +Z: invalid
+    assert "perpendicular" in editor.info.text()
     editor.forward_combo.setCurrentIndex(editor.forward_combo.findData("-Y"))
-    editor.up_combo.setCurrentIndex(editor.up_combo.findData("+Z"))
-    assert editor.loading
-    editor.group_selection("Early")
 
-    assert host.snapshot().source.get("face_groups", []) == []
+    assert reads == [] and not editor.loading
+    assert "120.0 x 210.0 x 120.0 mm" in editor.info.text()
+    assert np.allclose(editor.viewport.plotter.meshes[0][0].points[:, 1], before[:, 2])  # CAD +Z is now up
+    assert editor.groups_needing_review() == []
+    assert group_rows(editor)["Back"] == 1
+    editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
+    editor.group_selection("Side")
+    assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["Back", "Side"]
+
+
+def record_reads(editor, monkeypatch):
+    """What each STEP read of ``editor`` gives: "scan" or "preview" (the full read), in order."""
+    editor_module = sys.modules[type(editor).__module__]
+    run_worker = editor_module.run_worker
+    reads = []
+
+    def recorded(job, output, *args, **kwargs):
+        run_worker(job, output, *args, **kwargs)
+        reads.append(json.loads((output / "preview.json").read_text(encoding="utf-8"))["kind"])
+
+    monkeypatch.setattr(editor_module, "run_worker", recorded)
+    return reads
+
+
+def test_opening_a_step_file_with_a_closed_shell_reads_it_fully_once(cad_editor, monkeypatch, qapp, tmp_path):
+    editor, _ = cad_editor
+    monkeypatch.setattr(editor, "ask_closed_shell", lambda name: "air")
+    reads = record_reads(editor, monkeypatch)
+
+    editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
     wait(qapp, lambda: not editor.loading)
-    assert "Driver" in group_rows(editor)
+    assert reads == ["scan", "preview"]
+
+    editor.set_step_path(str(vented_box(tmp_path / "other.step")))
+    wait(qapp, lambda: not editor.loading)
+    assert reads == ["scan", "preview", "preview"]  # no closed shell: straight to the full read
 
 
 @pytest.mark.parametrize(
