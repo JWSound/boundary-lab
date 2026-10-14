@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDockWidget
+from PySide6.QtWidgets import QDockWidget, QHeaderView
 
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
@@ -102,6 +102,13 @@ def test_loaded_step_lists_bodies_and_faces_with_size_and_symmetry(cad_editor):
     assert "120.0 x 120.0 x 210.0 mm" in editor.info.text()
     assert "Symmetry Off" in editor.info.text()
     assert editor.visible_faces() == {face["id"] for face in editor.geometry["faces"]}
+
+
+def test_tree_gives_spare_width_to_names_and_fits_the_size_column(cad_editor):
+    header = cad_editor[0].tree.header()
+
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
 
 
 def test_tree_hides_bodies_and_faces_and_show_all_restores_them(cad_editor, qapp):
