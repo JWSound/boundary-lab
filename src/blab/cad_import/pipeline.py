@@ -147,6 +147,7 @@ class CadClosedShell:
 
     name: str
     role: str  # "air" | "exterior"
+    face_ids: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -512,6 +513,14 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         faces.append(_face(gmsh, f, face_bodies[f], step_names.get(f)))
     bodies = [CadBody(n, "air", tuple(f for f in face_bodies if n in face_bodies[f])) for n in volumes]
     bodies += [CadBody(n, "exterior", tuple(fs)) for n, fs in exterior_bodies.items()]
+    body_faces = {b.name: b.face_ids for b in bodies}
+    closed = []
+    for name, shell_faces in zip(shell_names, shells, strict=True):
+        if roles[name] == "air":
+            closed.append(CadClosedShell(name, "air", body_faces[name]))
+        else:
+            kids = {f for s, k in zip(sheets, sheet_children, strict=True) if s in shell_faces for f in k}
+            closed.append(CadClosedShell(name, "exterior", tuple(sorted(kids))))
     geometry = CadGeometry(
         tuple(bodies),
         tuple(faces),
@@ -520,7 +529,7 @@ def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, s
         (tuple(bbox[:3]), tuple(bbox[3:])),
         symmetry,
         tuple(warnings),
-        tuple(CadClosedShell(name, role) for name, role in roles.items()),
+        tuple(closed),
     )
     return _Model(geometry, volumes, mesh_faces, interface_of, face_bodies)
 

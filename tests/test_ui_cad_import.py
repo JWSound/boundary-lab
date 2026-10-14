@@ -9,6 +9,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget, QHeaderView
@@ -38,21 +39,25 @@ class _StubActor:
 
 
 def _cad_qt_interactor_class():
-    """The plotter stub plus what the face picking uses: actors from ``add_mesh``, whose colours it records."""
+    """The plotter stub plus what the face picking uses: actors from ``add_mesh``, whose meshes it records."""
 
     class CadQtInteractor(_stub_qt_interactor_class()):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.colours = []  # of the meshes since the last clear
+            self.meshes = []  # (mesh, add_mesh keywords) since the last clear
+
+        @property
+        def colours(self):
+            return [kwargs["color"] for mesh, kwargs in self.meshes if not mesh.n_lines]
 
         def clear(self):
             self.calls.append("clear")
-            self.colours = []
+            self.meshes = []
 
-        def add_mesh(self, *args, **kwargs):
+        def add_mesh(self, mesh, **kwargs):
             # pyvista resets the camera unless told not to while it counts the camera as unset, which here is always.
             self.calls.append("add_mesh" if kwargs.get("reset_camera") is False else "add_mesh_resetting_camera")
-            self.colours.append(kwargs["color"])
+            self.meshes.append((mesh, kwargs))
             return _StubActor()
 
     return CadQtInteractor
@@ -244,6 +249,52 @@ def test_closed_shell_is_asked_once_and_stays_editable(cad_editor, qapp, monkeyp
     assert asked == ["Closed shell 1"]
     editor.set_operation_state(SimpleNamespace(active=True))
     assert not editor.closed_shell_combos["Closed shell 1"].isEnabled()
+
+
+def test_closed_shell_is_highlighted_and_framed_while_asked(cad_editor, qapp, monkeypatch, tmp_path):
+    editor, _ = cad_editor
+    plotter = editor.viewport.plotter
+    plotter.camera_position = "before"
+    seen = []
+
+    def ask(name):
+        (shell,) = editor.geometry["closed_shells"]
+        opacities = [kwargs.get("opacity", 1.0) for mesh, kwargs in plotter.meshes if not mesh.n_lines]
+        seen.append((editor.highlighted_faces(), set(shell["face_ids"]), opacities, "reset_camera" in plotter.calls))
+        plotter.camera_position = "framed"
+        return "exterior"
+
+    monkeypatch.setattr(editor, "ask_closed_shell", ask)
+    editor.set_step_path(str(waveguide(tmp_path / "wg.step", surface_model=True)))
+    wait(qapp, lambda: not editor.loading)
+
+    ((highlighted, shell_faces, opacities, framed),) = seen
+    assert highlighted == shell_faces and shell_faces
+    assert min(opacities) < 1 and max(opacities) == 1  # the rest see-through
+    assert framed
+    assert editor.highlighted_faces() == set()
+    assert all(kwargs.get("opacity", 1.0) == 1 for _, kwargs in plotter.meshes)
+    assert plotter.camera_position == "before"
+
+
+def test_preview_is_smooth_shaded_with_face_outlines_and_no_triangle_edges(cad_editor):
+    editor, _ = cad_editor
+    meshes = editor.viewport.plotter.meshes
+    faces = [kwargs for mesh, kwargs in meshes if not mesh.n_lines]
+    outlines = [kwargs for mesh, kwargs in meshes if mesh.n_lines]
+
+    assert faces and all(kwargs.get("smooth_shading") and not kwargs.get("show_edges") for kwargs in faces)
+    assert len(outlines) == 1 and outlines[0]["pickable"] is False
+
+
+def test_face_outlines_are_the_edges_between_faces(blank_cad_editor):
+    editor, _ = blank_cad_editor
+    outline_edges = sys.modules[type(editor).__module__].outline_edges  # the provider package loads with the editor
+    triangles = np.array([[0, 1, 2], [0, 2, 3], [1, 4, 2]])  # face 1: a square of two triangles; face 2 beside it
+
+    edges = outline_edges(triangles, np.array([1, 1, 2]))
+
+    assert sorted(map(tuple, edges)) == [(0, 1), (0, 3), (1, 2), (1, 4), (2, 3), (2, 4)]
 
 
 def cabinet_faces(editor, predicate):

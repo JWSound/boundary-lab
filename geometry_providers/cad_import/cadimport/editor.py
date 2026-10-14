@@ -48,7 +48,8 @@ SIZING = (
     ("curvature_elements_per_circle", "Curvature elements per circle", 3.0, 100.0, 0, ""),
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
-FACE_COLOUR, SELECTED_COLOUR = "#c8ccd2", "#e8a33d"
+FACE_COLOUR, SELECTED_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#e8a33d", "#2b2f36"
+SEE_THROUGH = 0.15  # opacity of the faces around a highlighted closed shell
 GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
@@ -63,6 +64,21 @@ def _actor_key(actor):
     return actor.GetAddressAsString("")
 
 
+def outline_edges(triangles, face_ids):
+    """Point index pairs of the triangle edges between faces or on the border: the face outlines."""
+    edges = np.sort(triangles[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    faces = np.repeat(face_ids, 3)
+    order = np.lexsort((faces, edges[:, 1], edges[:, 0]))
+    edges, faces = edges[order], faces[order]
+    first = np.ones(len(edges), dtype=bool)
+    first[1:] = (edges[1:] != edges[:-1]).any(axis=1)
+    starts = np.flatnonzero(first)
+    counts = np.diff(np.append(starts, len(edges)))
+    # An inner edge of one face is used twice by it; any other edge outlines a face.
+    inner = (counts == 2) & (faces[starts] == faces[starts + counts - 1])
+    return edges[starts[~inner]]
+
+
 class Viewport(QWidget):
     """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu.
 
@@ -73,7 +89,10 @@ class Viewport(QWidget):
     def __init__(self, parent=None, *, picked=lambda face_id, add: None, menu=lambda face_id, global_pos: None):
         super().__init__(parent)
         from pyvistaqt import QtInteractor
+        from vtkmodules.vtkRenderingCore import vtkMapper
 
+        # Faces back off from the outlines on them, which would otherwise z-fight (a VTK-wide setting).
+        vtkMapper.SetResolveCoincidentTopologyToPolygonOffset()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.plotter = QtInteractor(self)
@@ -85,29 +104,65 @@ class Viewport(QWidget):
         self._press = None  # button and position of the last press
         self.plotter.installEventFilter(self)
 
-    def show_faces(self, preview, visible, selected=frozenset(), colours=None, *, reset_camera=False):
-        """Draw the ``visible`` faces in their ``colours`` (face id -> colour, default plain), ``selected`` on top."""
+    def show_faces(self, preview, visible, selected=frozenset(), colours=None, *, highlight=None, reset_camera=False):
+        """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
+        plain), ``selected`` on top; with ``highlight`` (face ids) all other faces are see-through."""
         import pyvista as pv
 
         self.plotter.clear()
         self._cell_faces = {}
         if preview is not None:
-            by_colour = {}
+            by_look = {}
             for face in visible:
                 colour = SELECTED_COLOUR if face in selected else (colours or {}).get(face, FACE_COLOUR)
-                by_colour.setdefault(colour, []).append(face)
-            for colour, faces in by_colour.items():
+                opacity = 1.0 if highlight is None or face in highlight else SEE_THROUGH
+                by_look.setdefault((colour, opacity), []).append(face)
+            for (colour, opacity), faces in by_look.items():
                 mask = np.isin(preview["face_ids"], faces)
                 if mask.any():
                     triangles = preview["triangles"][mask]
                     cells = np.hstack([np.full((len(triangles), 1), 3), triangles]).ravel()
                     # pyvista would reset (zoom out) the camera on each redraw: it never counts it as set.
                     actor = self.plotter.add_mesh(
-                        pv.PolyData(preview["points"], cells), color=colour, show_edges=True, reset_camera=False
+                        pv.PolyData(preview["points"], cells),
+                        color=colour,
+                        opacity=opacity,
+                        smooth_shading=True,
+                        split_sharp_edges=True,
+                        reset_camera=False,
                     )
                     self._cell_faces[_actor_key(actor)] = preview["face_ids"][mask]
+            outlined = {}
+            for face in visible:
+                outlined.setdefault(1.0 if highlight is None or face in highlight else SEE_THROUGH, []).append(face)
+            for opacity, faces in outlined.items():
+                mask = np.isin(preview["face_ids"], faces)
+                edges = outline_edges(preview["triangles"][mask], preview["face_ids"][mask])
+                if len(edges):
+                    lines = np.hstack([np.full((len(edges), 1), 2), edges]).ravel()
+                    self.plotter.add_mesh(
+                        pv.PolyData(preview["points"], lines=lines),
+                        color=OUTLINE_COLOUR,
+                        opacity=opacity,
+                        line_width=1.5,
+                        pickable=False,
+                        reset_camera=False,
+                    )
             if reset_camera:
                 self.plotter.reset_camera()
+        self.plotter.render()
+
+    def frame(self, preview, face_ids):
+        """Fit the view to ``face_ids``; returns the camera to give back to :meth:`restore_camera`."""
+        camera = self.plotter.camera_position
+        points = preview["points"][np.unique(preview["triangles"][np.isin(preview["face_ids"], list(face_ids))])]
+        if len(points):
+            low, high = points.min(axis=0), points.max(axis=0)
+            self.plotter.reset_camera(bounds=[v for pair in zip(low, high, strict=True) for v in pair])
+        return camera
+
+    def restore_camera(self, camera):
+        self.plotter.camera_position = camera
         self.plotter.render()
 
     def eventFilter(self, watched, event):
@@ -162,6 +217,7 @@ class CadImportEditor:
         self._preview = None
         self._key = None
         self._hidden = set()
+        self._highlight = None  # face ids of the closed shell being asked about
         self._face_items = {}
         self._body_items = {}
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
@@ -401,7 +457,7 @@ class CadImportEditor:
         self._show_preview(preview)
         stored = self.source.get("closed_shells", {})
         answers = {
-            shell["name"]: self.ask_closed_shell(shell["name"])
+            shell["name"]: self._ask_highlighted(shell)
             for shell in self.geometry["closed_shells"]
             if shell["name"] not in stored
         }
@@ -431,6 +487,22 @@ class CadImportEditor:
             self.widget, "STEP file changed", f"{Path(path).name} changed on disk. Re-mesh it now?"
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _ask_highlighted(self, shell):
+        """Ask about closed ``shell`` with its faces highlighted and framed; the view comes back after."""
+        self._highlight = set(shell["face_ids"])
+        self._render()
+        camera = self.viewport.frame(self._preview, self._highlight)
+        try:
+            return self.ask_closed_shell(shell["name"])
+        finally:
+            self._highlight = None
+            self.viewport.restore_camera(camera)
+            self._render()
+
+    def highlighted_faces(self):
+        """The faces drawn highlighted (the rest see-through), empty when none are."""
+        return set(self._highlight or ())
 
     def ask_closed_shell(self, name):
         """Ask whether closed shell ``name`` is an air volume or an exterior surface."""
@@ -621,7 +693,12 @@ class CadImportEditor:
         colours = self.group_colours()
         face_colours = {face: colours[name] for name, faces, _ in self.rows() for face in faces}
         self.viewport.show_faces(
-            self._preview, self.visible_faces(), self.selected_faces(), face_colours, reset_camera=reset_camera
+            self._preview,
+            self.visible_faces(),
+            self.selected_faces(),
+            face_colours,
+            highlight=self._highlight,
+            reset_camera=reset_camera,
         )
 
     def group_colours(self):

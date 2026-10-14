@@ -374,7 +374,10 @@ def test_surface_model_fixture_holds_no_solid(surface_model):
 def test_closed_shell_without_a_choice_stays_exterior(surface_model):
     geometry = inspect_step(surface_model)
 
-    assert geometry.closed_shells == (CadClosedShell("Closed shell 1", "exterior"),)
+    (shell,) = geometry.closed_shells
+    assert (shell.name, shell.role) == ("Closed shell 1", "exterior")
+    faces = {f.id: f for f in geometry.faces}
+    assert sorted(faces[f].surface_type for f in shell.face_ids) == ["Cone", "Plane", "Plane"]
     assert [(r.mesh_id, r.kind) for r in geometry.regions] == [("exterior", "unbounded_air")]
     assert geometry.interfaces == ()
     assert inspect_step(surface_model, closed_shells={"Closed shell 1": "exterior"}) == geometry
@@ -385,7 +388,8 @@ def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(s
     result = mesh_step(surface_model, settings, tmp_path / "out")
     geometry = result.geometry
 
-    assert geometry.closed_shells == (CadClosedShell("Closed shell 1", "air"),)
+    body = next(b for b in geometry.bodies if b.name == "Closed shell 1")
+    assert geometry.closed_shells == (CadClosedShell("Closed shell 1", "air", body.face_ids),)
     assert [(r.mesh_id, r.kind, r.bodies) for r in geometry.regions] == [
         ("closed_shell_1", "bounded_air", ("Closed shell 1",)),
         ("exterior", "unbounded_air", ("Exterior surface 1",)),

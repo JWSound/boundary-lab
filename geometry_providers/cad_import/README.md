@@ -11,13 +11,16 @@ meshes for identical inputs.
 The plugin is enabled once when introduced. Select **CAD Import** as the default
 in **Edit > Generator Plugins...** and add a design.
 
-1. **Open STEP…** and pick the file. Units come from the file. The editor shows
-   the bodies and their faces, the model size and the suggested symmetry
+1. **Open STEP…** and pick the file. Units come from the file. The view draws
+   the CAD faces smooth-shaded with their outlines (a display preview, not the
+   generated mesh). The editor shows the bodies and their faces, the model
+   size and the suggested symmetry
    (from open exterior edges on X=0 / Y=0), plus warnings for covered air faces
    and exterior gaps.
    A **closed shell** of surfaces (free faces that close up, as SolidWorks
    writes the solids of parts mixing solid and surface bodies) could be either,
-   so the editor asks for each one: **Air volume** makes it an air body named
+   so the editor asks for each one, with the shell highlighted and framed and
+   the rest see-through: **Air volume** makes it an air body named
    after the shell, **Exterior surface** (also Escape) keeps it exterior. Change
    the choice later under **Closed shells**; another STEP file is asked afresh.
    The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
