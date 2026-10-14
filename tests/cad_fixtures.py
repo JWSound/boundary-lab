@@ -142,10 +142,12 @@ def vented_box(
     covered: bool = False,
     open_back: bool = False,
     cad_axes: tuple[str, str] = ("+Z", "+Y"),
+    depth: float = 180,
 ) -> Path:
-    """Chamber (100x100x180 mm) joined by a port (r=10 mm) to a hole in a cabinet surface.
+    """Chamber (100x100x``depth`` mm) joined by a port (r=10 mm) to a hole in a cabinet surface.
 
-    The cabinet front lies at z=0 and the port mouth fills its hole. ``covered``
+    The cabinet front lies at z=0 and the port mouth fills its hole; the cabinet is 30 mm
+    deeper than the chamber. ``covered``
     leaves the cabinet front without the hole, covering the port mouth;
     ``open_back`` leaves out the cabinet's back face (z=-210 mm).
     ``cad_axes`` (forward, up) names the CAD axes that the model's +Z and +Y are
@@ -154,12 +156,12 @@ def vented_box(
 
     def build():
         occ = gmsh.model.occ
-        chamber = _cut_to_symmetry([(3, occ.addBox(-50, -50, -200, 100, 100, 180))], symmetry)
+        chamber = _cut_to_symmetry([(3, occ.addBox(-50, -50, -20 - depth, 100, 100, depth))], symmetry)
         port = _cut_to_symmetry([(3, occ.addCylinder(0, 0, -20, 0, 0, 20, 10))], symmetry)
-        cabinet = _cut_to_symmetry(_cabinet(60, 60, 210, () if covered else [(0, 0, 10)]), symmetry)
+        cabinet = _cut_to_symmetry(_cabinet(60, 60, depth + 30, () if covered else [(0, 0, 10)]), symmetry)
         if open_back:
             occ.synchronize()
-            back = [f for f in cabinet if abs(occ.getCenterOfMass(*f)[2] + 210) < 1e-9]
+            back = [f for f in cabinet if abs(occ.getCenterOfMass(*f)[2] + depth + 30) < 1e-9]
             occ.remove(back, recursive=True)
             cabinet = [f for f in cabinet if f not in back]
         entities = chamber + port + cabinet
@@ -169,7 +171,7 @@ def vented_box(
         return entities, ["Chamber", "Port"] + ["Cabinet"] * len(cabinet)
 
     def default_names(centre):
-        return "Driver" if abs(centre[2] + 200) < 1e-6 else None
+        return "Driver" if abs(centre[2] + 20 + depth) < 1e-6 else None
 
     return write_step(path, build, face_names=face_names or default_names)
 

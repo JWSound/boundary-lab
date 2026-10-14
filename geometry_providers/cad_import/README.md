@@ -44,7 +44,21 @@ rigid boundary for each new face group, a rigid `walls` boundary for every
 ungrouped face, and an interface with matching
 boundaries on both sides of every opening. Boundaries that already exist are
 never resent, so roles, components and channels set in System survive
-regeneration; mesh IDs stay stable. Under X or XY symmetry the model must
+regeneration; mesh IDs stay stable. Boundaries of face groups that are gone
+(a deleted group, a STEP name no longer present) are removed in the same
+patch, with their interfaces; their components keep their other boundaries or,
+left with none, are removed with their excitations.
+
+**Re-import.** After the STEP file changes, a stored face is found again by its
+STEP name when only one face carries it, else by its fingerprint: same surface
+type, centre within 1 % of the model's diagonal, area within 5 %, normal within
+about 2.6°. A group missing any of its faces is marked **needs review** in the
+face-group list and Generate is rejected, keeping the previous meshes. Pick
+the faces again and **Group selection** under the group's name (this drops its
+missing faces), or delete the group. When Boundary Lab regains focus and the
+STEP file has changed on disk, the editor asks once whether to re-mesh.
+
+Under X or XY symmetry the model must
 already be the half or quarter part; the host checks it lies in the positive
 region. Saved projects reopen from their cached meshes without re-meshing.
 

@@ -103,11 +103,56 @@ def configuration_patch(request, info):
                 unbounded_boundary_id=f"{doc}/exterior/{interface['name']}",
             )
         )
-    return {
+    patch = {
         "regions": {"upsert": region_upserts},
         "surface_assignments": {"upsert": boundary_upserts},
         "interfaces": {"upsert": interfaces},
     }
+    return _remove_stale(patch, system, doc, info["meshes"])
+
+
+def _remove_stale(patch, system, doc, meshes):
+    """Remove this design's boundaries whose face group is gone, with what depends on them, in ``patch``.
+
+    Their interfaces go, and so do bounded regions whose mesh is gone. Components keep their
+    other boundaries; a component left without any is removed with its excitation ports.
+    """
+    prefix = generated_mesh_id(doc, "")
+    current = {generated_mesh_id(doc, m["id"]) for m in meshes}
+    groups = {(generated_mesh_id(doc, m["id"]), g) for m in meshes for g in m["surface_groups"]}
+    stale = {
+        b["id"]
+        for b in system.get("boundaries", [])
+        if b["group"]["mesh_id"].startswith(prefix) and (b["group"]["mesh_id"], b["group"].get("name")) not in groups
+    }
+    if not stale:
+        return patch
+    ours = {b["id"] for b in system.get("boundaries", []) if b["group"]["mesh_id"].startswith(prefix)}
+    components, removed_components = [], []
+    for component in system.get("components", []):
+        kept = [b for b in component["boundary_ids"] if b not in stale]
+        if len(kept) == len(component["boundary_ids"]) or not set(component["boundary_ids"]) <= ours:
+            continue  # untouched, or shared with other designs: the host rejects the dangling reference
+        if kept:
+            components.append({"id": component["id"], "boundary_ids": kept})
+        else:
+            removed_components.append(component["id"])
+    patch["surface_assignments"]["remove"] = sorted(stale)
+    patch["interfaces"]["remove"] = sorted(
+        i["id"] for i in system.get("interfaces", []) if {i["bounded_boundary_id"], i["unbounded_boundary_id"]} & stale
+    )
+    patch["regions"]["remove"] = sorted(
+        r["id"]
+        for r in system.get("regions", [])
+        if r["kind"] == "bounded_air"
+        and r["mesh_ids"]
+        and all(m.startswith(prefix) and m not in current for m in r["mesh_ids"])
+    )
+    patch["component_assignments"] = {"upsert": components, "remove": removed_components}
+    patch["excitation_ports"] = {
+        "remove": [p["id"] for p in system.get("excitation_ports", []) if p["component_id"] in removed_components]
+    }
+    return patch
 
 
 class CadImportSession:

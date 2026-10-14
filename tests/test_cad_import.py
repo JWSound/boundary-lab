@@ -149,7 +149,7 @@ def test_faces_sharing_a_step_name_can_be_split_across_face_groups(tmp_path):
 def test_face_group_whose_faces_no_longer_match_is_rejected(vented, tmp_path):
     lost = CadFaceRef(None, (1.0, 1.0, 1.0), 0.5, (0.0, 0.0, 1.0), "Plane")
 
-    with pytest.raises(ValueError, match="Face group 'Lid' matches no face"):
+    with pytest.raises(ValueError, match="Face groups need review .*: 'Lid'"):
         mesh_step(vented_box(tmp_path / "box.step"), replace(SETTINGS, face_groups={"Lid": (lost,)}), tmp_path / "out")
 
 

@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QDockWidget
 from blab.generators import catalog as catalog_module
 from blab.physical_compiler import PhysicalSystemCompiler
 from blab.ui.settings import load_gui_preferences, save_gui_preferences
-from cad_fixtures import named_sides, vented_box, waveguide
+from cad_fixtures import named_sides, strip_names, vented_box, waveguide
 from conftest import _stub_qt_interactor_class
 from test_cad_import_provider import PROVIDER, ROOT
 from test_ui_settings import MemorySettings
@@ -406,6 +406,59 @@ def test_orientation_pickers_reorient_the_preview(cad_editor, qapp, tmp_path):
 
     assert (host.snapshot().source["forward"], host.snapshot().source["up"]) == ("-Y", "+Z")
     assert "120.0 x 120.0 x 210.0 mm" in editor.info.text()
+
+
+def chamber_back(editor):
+    """The chamber's 100 x 100 mm back face."""
+    (face,) = [
+        f["id"] for f in editor.geometry["faces"] if abs(f["normal"][2]) > 0.999 and f["area"] == pytest.approx(0.01)
+    ]
+    return face
+
+
+def test_group_whose_faces_are_gone_needs_review_and_re_picking_repairs_it(cad_editor, qapp, tmp_path):
+    editor, host = cad_editor
+    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step"), tmp_path / "stripped.step")))
+    wait(qapp, lambda: not editor.loading)
+    editor.pick_face(chamber_back(editor))
+    editor.group_selection("Back")
+    assert editor.groups_needing_review() == []
+
+    editor.set_step_path(str(strip_names(vented_box(tmp_path / "named.step", depth=230), tmp_path / "deep.step")))
+    wait(qapp, lambda: not editor.loading)
+
+    assert editor.groups_needing_review() == ["Back"]
+    row = next(r for r in range(editor.groups_table.rowCount()) if editor.groups_table.item(r, 0).text() == "Back")
+    assert "needs review" in editor.groups_table.item(row, 1).text()
+    editor.pick_face(chamber_back(editor))
+    editor.group_selection("Back")
+
+    assert editor.groups_needing_review() == []
+    assert [len(g["faces"]) for g in host.snapshot().source["face_groups"]] == [1]
+    assert group_rows(editor)["Back"] == 1
+
+
+@pytest.mark.parametrize("answer", [True, False])
+def test_changed_step_file_offers_to_re_mesh_when_the_application_regains_focus(
+    cad_editor, monkeypatch, qapp, tmp_path, answer
+):
+    editor, host = cad_editor
+    asked, generated = [], []
+    monkeypatch.setattr(editor, "ask_remesh", lambda path: asked.append(path) or answer)
+    monkeypatch.setattr(host, "generate", lambda *, expected_revision: generated.append(expected_revision))
+
+    def regain_focus():
+        qapp.applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
+
+    regain_focus()
+    assert asked == []
+
+    vented_box(tmp_path / "box.step", depth=181)
+    regain_focus()
+    regain_focus()
+
+    assert asked == [host.snapshot().source["step_path"]]  # asked once per change
+    assert generated == ([host.snapshot().revision] if answer else [])
 
 
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():

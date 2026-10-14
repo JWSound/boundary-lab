@@ -27,7 +27,7 @@ from blab.project.model import (
     new_generator_document,
 )
 from blab.system_solve import prepare_system_solve
-from cad_fixtures import vented_box, waveguide
+from cad_fixtures import strip_names, vented_box, waveguide
 
 ROOT = Path(__file__).resolve().parents[1] / "geometry_providers"
 PROVIDER = "blab.cad_import"
@@ -114,6 +114,22 @@ def test_closed_shell_chosen_as_air_in_the_source_stages_a_bounded_region(plugin
     assert [m.id for m in response.geometry.meshes] == ["closed_shell_1", "exterior"]
     assert [r.kind for r in project.physical_system.regions] == ["bounded_air", "unbounded_air"]
     assert len(PhysicalSystemCompiler().compile(project.physical_system).interfaces) == 1
+
+
+def test_closed_shell_switched_to_exterior_retires_its_region_boundaries_and_interface(plugin, tmp_path):
+    catalog, backend = plugin
+    step = waveguide(tmp_path / "wg.step", surface_model=True)
+    project, _ = generate(backend, make_project(catalog, step, closed_shells={"Closed shell 1": "air"}), tmp_path)
+    document = project.generator_documents[0]
+    project.generator_documents = (replace(document, source=document.source | {"closed_shells": {}}),)
+
+    regenerated, response = generate(backend, project, tmp_path)
+
+    system = regenerated.physical_system
+    assert [m.id for m in response.geometry.meshes] == ["exterior"]
+    assert [r.kind for r in system.regions] == ["unbounded_air"]
+    assert {b.group.mesh_id for b in system.boundaries} == {f"{document.id}/mesh/exterior"}
+    assert system.interfaces == ()
 
 
 @pytest.mark.parametrize("symmetry", ["x", "xy"])
@@ -230,6 +246,107 @@ def test_orientation_change_remeshes_reoriented_and_keeps_face_groups(plugin, tm
         mesh.cell_data_dict["gmsh:physical"]["triangle"] == mesh.field_data["Baffle"][0]
     ]
     assert np.allclose(mesh.points[baffle][..., 2], 0, atol=1e-9)
+
+
+def chamber_sides(face):
+    """The chamber's four sides (x or y = ±50 mm), whatever the chamber body is called."""
+    return abs(face.normal[2]) < 1e-9 and max(abs(face.centre[0]), abs(face.centre[1])) == pytest.approx(0.05)
+
+
+def chamber_back(face):
+    return abs(face.normal[2]) > 0.999 and abs(face.area - 0.01) < 1e-9 and face.centre[2] < -0.1
+
+
+def test_regeneration_after_a_small_cad_edit_keeps_unnamed_faces_by_fingerprint(plugin, tmp_path):
+    catalog, backend = plugin
+    step = strip_names(vented_box(tmp_path / "named.step"), tmp_path / "box.step")
+    group = stored_group("Chamber sides", step, chamber_sides)
+    assert len(group["faces"]) == 4
+    project, first = generate(backend, make_project(catalog, step, face_groups=[group]), tmp_path / "runs")
+    doc = project.generator_documents[0].id
+    (volume,) = [m.id for m in first.geometry.meshes if m.purpose == "fem_volume"]
+    project.physical_system = with_source(project.physical_system, f"{doc}/mesh/{volume}", "Chamber sides")
+
+    # 1 mm deeper: the sides move 0.5 mm and grow 0.6 %.
+    strip_names(vented_box(tmp_path / "named.step", depth=181), step)
+    regenerated, response = generate(backend, project, tmp_path / "runs")
+
+    sides = next(b for b in regenerated.physical_system.boundaries if b.group.name == "Chamber sides")
+    assert sides.kind == "moving"
+    chamber = meshio.read(next(m.mesh_path for m in response.geometry.meshes if m.id == volume))
+    tagged = chamber.cell_data_dict["gmsh:physical"]["triangle"] == chamber.field_data["Chamber sides"][0]
+    assert np.isclose(chamber.points[chamber.cells_dict["triangle"][tagged]][..., 2].min(), -0.201)
+
+
+def test_regeneration_after_a_large_cad_edit_keeps_faces_by_step_name(plugin, tmp_path):
+    catalog, backend = plugin
+    step = vented_box(tmp_path / "box.step")
+    group = stored_group("Diaphragm", step, lambda f: f.step_name == "Driver")
+    project, _ = generate(backend, make_project(catalog, step, face_groups=[group]), tmp_path / "runs")
+    doc = project.generator_documents[0].id
+    project.physical_system = with_source(project.physical_system, f"{doc}/mesh/chamber", "Diaphragm")
+
+    vented_box(step, depth=230)  # the named back moves 50 mm
+    regenerated, _ = generate(backend, project, tmp_path / "runs")
+
+    diaphragm = next(b for b in regenerated.physical_system.boundaries if b.group.name == "Diaphragm")
+    assert diaphragm.kind == "moving"
+    assert [c.boundary_ids for c in regenerated.physical_system.components] == [(diaphragm.id,)]
+
+
+@pytest.mark.parametrize("with_walls", [False, True])
+def test_deleting_a_face_group_removes_its_boundary_and_detaches_its_component(plugin, box_step, tmp_path, with_walls):
+    catalog, backend = plugin
+    group = stored_group("Diaphragm", box_step, lambda f: f.step_name == "Driver")
+    project, _ = generate(backend, make_project(catalog, box_step, face_groups=[group]), tmp_path / "runs")
+    doc = project.generator_documents[0].id
+    system = with_source(project.physical_system, f"{doc}/mesh/chamber", "Diaphragm")
+    walls = f"{doc}/chamber/walls"
+    if with_walls:
+        system = replace(
+            system,
+            boundaries=tuple(replace(b, kind="moving") if b.id == walls else b for b in system.boundaries),
+            components=tuple(replace(c, boundary_ids=(*c.boundary_ids, walls)) for c in system.components),
+        )
+    project.physical_system = system
+    project.component_channel_by_id = {"source": "main"}
+    document = project.generator_documents[0]
+    project.generator_documents = (replace(document, source=document.source | {"face_groups": []}),)
+
+    regenerated, _ = generate(backend, project, tmp_path / "runs")
+
+    system = regenerated.physical_system
+    assert "Diaphragm" not in {b.group.name for b in system.boundaries}
+    assert next(b for b in system.boundaries if b.group.name == "Driver").kind == "rigid"  # back to its STEP name
+    if with_walls:
+        assert [c.boundary_ids for c in system.components] == [(walls,)]
+        assert [p.component_id for p in system.excitation_ports] == ["source"]
+    else:
+        assert (system.components, system.excitation_ports) == ((), ())
+        assert regenerated.component_channel_by_id == {}
+    assert len(PhysicalSystemCompiler().compile(system).interfaces) == 1
+
+
+def chamber_front(face):
+    """The chamber's front around the port, which stays at z=-20 mm whatever the depth."""
+    return abs(face.normal[2]) > 0.999 and face.centre[2] == pytest.approx(-0.02) and face.area < 0.01
+
+
+def test_groups_whose_stored_faces_are_gone_need_review_and_reject_generation(plugin, tmp_path):
+    catalog, backend = plugin
+    step = strip_names(vented_box(tmp_path / "named.step"), tmp_path / "box.step")
+    groups = [
+        stored_group("Back", step, chamber_back),
+        stored_group("Both", step, lambda f: chamber_front(f) or chamber_back(f)),
+    ]
+    assert [len(g["faces"]) for g in groups] == [1, 2]
+
+    # 50 mm deeper: the back moves 25 mm; the partly matched group is not trimmed silently.
+    strip_names(vented_box(tmp_path / "named.step", depth=230), step)
+    with pytest.raises(ValueError, match=r"Face groups need review .*: 'Back', 'Both'\. Re-pick or delete"):
+        generate(backend, make_project(catalog, step, face_groups=groups), tmp_path / "runs")
+
+    assert not list(tmp_path.rglob("*.msh"))
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,9 @@ AXES = {
     "-Z": (0, 0, -1),
 }
 _GMSH_LOCK = threading.RLock()
+# Fingerprint tolerances for small CAD edits: centre within 1 % of the bounding box
+# diagonal, area within 5 %, normals within about 2.6 degrees.
+CENTRE_TOLERANCE, AREA_TOLERANCE, NORMAL_COSINE = 1e-2, 5e-2, 0.999
 
 
 @dataclass(frozen=True)
@@ -277,18 +280,24 @@ class _Model:
         member = {}
         reserved = {WALLS, *self.interface_of.values()}
         geometry = self.geometry
+        found = {}
         for name, refs in face_groups.items():
             if not name or name in reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
-            found = (
+            found[name] = [
                 match_face_ref(ref, geometry.faces, geometry.bbox_m, forward=forward, up=up)
                 if isinstance(ref, CadFaceRef)
                 else ref
                 for ref in refs
+            ]
+        # A group missing any stored face would silently lose it to walls: the user reviews it.
+        review = [name for name, faces in found.items() if None in faces]
+        if review:
+            raise ValueError(
+                "Face groups need review (stored faces not found in the STEP file): "
+                f"{', '.join(repr(n) for n in review)}. Re-pick or delete them."
             )
-            faces = [f for f in found if f is not None]
-            if refs and not faces:
-                raise ValueError(f"Face group '{name}' matches no face of the STEP file.")
+        for name, faces in found.items():
             for face in faces:
                 if face not in self.face_bodies:
                     raise ValueError(f"Face group '{name}' refers to unknown face {face}.")
@@ -325,14 +334,14 @@ def match_face_ref(
         return named[0].id
     matrix = _axis_matrix(forward, up)
     centre, normal = matrix @ np.asarray(ref.centre, dtype=float), matrix @ np.asarray(ref.normal, dtype=float)
-    tol = 1e-4 * math.dist(*bbox_m)
+    tol = CENTRE_TOLERANCE * math.dist(*bbox_m)
     matches = [
         f
         for f in named or faces
         if f.surface_type == ref.surface_type
         and math.dist(f.centre, centre) <= tol
-        and abs(f.area - ref.area) <= 1e-3 * ref.area
-        and abs(np.dot(f.normal, normal)) >= 0.999
+        and abs(f.area - ref.area) <= AREA_TOLERANCE * ref.area
+        and abs(np.dot(f.normal, normal)) >= NORMAL_COSINE
     ]
     return min(matches, key=lambda f: math.dist(f.centre, centre)).id if matches else None
 

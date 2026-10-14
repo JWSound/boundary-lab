@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -247,6 +248,8 @@ class CadImportEditor:
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render)
         self.host.services.subscribe(self.event)
+        self._stamp = None  # (mtime, size) of the STEP file when last read
+        QGuiApplication.instance().applicationStateChanged.connect(self._application_state_changed)
 
     # -- source -------------------------------------------------------------------------------
 
@@ -301,6 +304,7 @@ class CadImportEditor:
         self._cancel_preview = cancel = threading.Event()
         self._show_preview(None)
         path, forward, up, closed_shells = key
+        self._stamp = _file_stamp(path)
         if not path:
             self.loading = False
             return
@@ -354,6 +358,30 @@ class CadImportEditor:
         }
         if answers:
             self.edited({"closed_shells": stored | answers})
+
+    def _application_state_changed(self, state):
+        """Back in the application with a changed STEP file: offer to re-mesh, never regenerate unasked."""
+        if state != Qt.ApplicationState.ApplicationActive or self._disposed or self.loading or self._key is None:
+            return
+        path = self._key[0]
+        stamp = _file_stamp(path)
+        if stamp is None or self._stamp is None or stamp == self._stamp:
+            return
+        self._stamp = stamp  # asked once per change
+        if not self.ask_remesh(path):
+            return
+        self._load(self._key)
+        try:
+            self.host.generate(expected_revision=self.revision)
+        except (ValueError, RuntimeError) as exc:
+            self.status.setText(str(exc))
+
+    def ask_remesh(self, path):
+        """Ask whether to re-mesh after the STEP file ``path`` changed on disk."""
+        answer = QMessageBox.question(
+            self.widget, "STEP file changed", f"{Path(path).name} changed on disk. Re-mesh it now?"
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def ask_closed_shell(self, name):
         """Ask whether closed shell ``name`` is an air volume or an exterior surface."""
@@ -541,6 +569,12 @@ class CadImportEditor:
                 groups.setdefault(face.step_name, set()).add(face.id)
         return groups
 
+    def groups_needing_review(self):
+        """Stored face groups with faces the loaded STEP file no longer has; Generate rejects them."""
+        if self._faces is None:
+            return []
+        return [g["name"] for g in self.source.get("face_groups", []) if self._members(g)[1]]
+
     def group_selection(self, name):
         """Put the selected faces into face group ``name``, out of any other group."""
         name = name.strip()
@@ -562,7 +596,10 @@ class CadImportEditor:
         groups = []
         for group in stored:
             ids, unmatched = self._members(group)
-            ids = (ids | selected) if group["name"] == name else (ids - selected)
+            if group["name"] == name:
+                ids, unmatched = ids | selected, []  # re-picking a group that needs review repairs it
+            else:
+                ids -= selected
             if ids or unmatched:
                 groups.append({"name": group["name"], "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
         self._edit_groups(groups)
@@ -618,12 +655,16 @@ class CadImportEditor:
         stored = {g["name"] for g in self.source.get("face_groups", [])}
         sizes = self.source.get("face_group_sizes_m", {})
         groups = self.face_groups()
+        review = set(self.groups_needing_review())
         self.groups_table.setRowCount(len(groups))
         for row, (name, faces) in enumerate(groups.items()):
-            cells = [QTableWidgetItem(name), QTableWidgetItem(str(len(faces))), QTableWidgetItem(_mm(sizes.get(name)))]
+            count = f"{len(faces)} (needs review)" if name in review else str(len(faces))
+            cells = [QTableWidgetItem(name), QTableWidgetItem(count), QTableWidgetItem(_mm(sizes.get(name)))]
             for cell in cells[:2]:
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
             cells[0].setToolTip("Picked face group" if name in stored else "Named in the STEP file")
+            if name in review:
+                cells[1].setToolTip("Some faces of this group are not in the STEP file: re-pick or delete the group.")
             cells[2].setToolTip("Element size override in mm; empty uses the body or target size.")
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
@@ -683,9 +724,18 @@ class CadImportEditor:
 
     def dispose(self):
         self._disposed = True
+        QGuiApplication.instance().applicationStateChanged.disconnect(self._application_state_changed)
         self._cancel_preview.set()
         self._render_timer.stop()
         self.viewport.close()
+
+
+def _file_stamp(path):
+    try:
+        stat = Path(path).stat()
+    except (OSError, ValueError):
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def _mm(size_m):
