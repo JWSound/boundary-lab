@@ -155,8 +155,10 @@ regeneration and design renaming. Display names are `<design_name>__<local_id>`.
 Every resource must have exactly one source and a `bem_surface` or `fem_volume`
 purpose. An assembly cannot also populate the legacy primary mesh, radiator or
 symmetry-variant fields. Mesh coordinates share the design's scale and XYZ
-translation; the Mesh Config dialog links those controls and enabled state across
-all resources in the assembly.
+translation. The Mesh Config dialog links the enabled state across all resources
+in the assembly and locks their scale and translation at the design's values: a
+generated geometry is placed by its design, so a provider that needs a placement
+applies it to the meshes it writes.
 
 On first generation, include complete physical assignments for every mesh:
 bounded regions need volume groups; moving boundaries need a component and its

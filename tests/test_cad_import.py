@@ -248,6 +248,69 @@ def test_axis_mapping_turns_cad_forward_and_up_into_plus_z_and_plus_y(tmp_path):
     assert np.allclose(np.abs(mouth.normal), (0, 0, 1))
 
 
+def test_placement_rotates_about_x_y_z_then_translates_and_keeps_the_interface_conformal(tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    driver = next(f for f in inspect_step(step).faces if f.step_name == "Driver")
+    # Rotate X 90 takes the driver at (0, 0, -0.2) to (0, 0.2, 0); Z 90 then to (-0.2, 0, 0).
+    settings = replace(SETTINGS, rotation_deg=(90.0, 0.0, 90.0), translation_m=(0.01, 0.02, 0.03))
+
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    moved = next(f for f in result.geometry.faces if f.step_name == "Driver")
+    assert np.allclose(driver.centre, (0, 0, -0.2), atol=1e-9)
+    assert np.allclose(moved.centre, (-0.19, 0.02, 0.03), atol=1e-9)
+    assert np.allclose(np.abs(moved.normal), (1, 0, 0), atol=1e-9)
+    fem, bem = read(result, "chamber"), read(result, "exterior")
+    mouth = bem.cells_dict["triangle"][
+        bem.cell_data_dict["gmsh:physical"]["triangle"] == bem.field_data["Port opening"][0]
+    ]
+    assert np.allclose(bem.points[mouth].reshape(-1, 3)[:, 0], 0.01, atol=1e-9)  # the mouth plane z=0 is now x=0.01
+    validate_conforming_interfaces(fem, bem, fem_interface_name="Port opening", bem_interface_name="Port opening")
+    assert signed_volume(bem) == pytest.approx(0.12 * 0.12 * 0.21, rel=1e-3)
+
+
+def test_face_group_stored_before_a_placement_survives_it(tmp_path):
+    step = vented_box(tmp_path / "box.step")
+    back = next(f for f in inspect_step(step).faces if f.bodies == ("Cabinet",) and f.centre[2] < -0.2)
+    placement = dict(rotation_deg=(0.0, 30.0, 0.0), translation_m=(0.0, 0.0, 0.05))
+    settings = replace(SETTINGS, face_groups={"Back": (face_ref(back),)}, **placement)
+
+    result = mesh_step(step, settings, tmp_path / "out")
+
+    (placed,) = [f for f in result.geometry.faces if f.id in face_ids(result, "exterior", "Back")]
+    assert not np.allclose(placed.centre, back.centre, atol=1e-3)
+    ref = face_ref(placed, **placement)  # stored in CAD axes: as before the placement
+    assert np.allclose(ref.centre, back.centre, atol=1e-9) and np.allclose(ref.normal, back.normal, atol=1e-9)
+
+
+def face_ids(result, mesh_id, group):
+    mesh = read(result, mesh_id)
+    physical, geometrical = (mesh.cell_data_dict[k]["triangle"] for k in ("gmsh:physical", "gmsh:geometrical"))
+    return set(geometrical[physical == mesh.field_data[group][0]].tolist())
+
+
+def test_symmetry_is_detected_after_a_translation_puts_the_open_edges_on_x_0(tmp_path):
+    step = vented_box(tmp_path / "box.step", symmetry="x", shift_mm=(30, 0, 0))
+    assert inspect_step(step).symmetry == "off"
+
+    result = mesh_step(step, replace(SETTINGS, symmetry="x", translation_m=(-0.03, 0.0, 0.0)), tmp_path / "out")
+
+    assert result.geometry.symmetry == "x" and result.geometry.warnings == ()
+    assert result.geometry.bbox_m[0][0] == pytest.approx(0, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"rotation_deg": (0.0, float("nan"), 0.0)}, "Rotation must be three finite numbers"),
+        ({"translation_m": (0.0, 0.0)}, "Translation must be three finite numbers"),
+    ],
+)
+def test_placement_must_be_three_finite_numbers(changes, message):
+    with pytest.raises(ValueError, match=message):
+        replace(SETTINGS, **changes)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -455,6 +518,20 @@ def test_cli_writes_the_same_meshes_as_the_pipeline(vented, tmp_path, capsys):
     assert "Suggested symmetry: Off" in output
 
 
+def test_cli_places_the_geometry_with_rotate_and_translate(tmp_path, capsys):
+    step = vented_box(tmp_path / "box.step", symmetry="x", shift_mm=(30, 0, 0))
+    args = [str(step), "--fmax", "1000", "--output", str(tmp_path / "out")]
+
+    cad_cli.main([*args, "--rotate", "180,0,0", "--translate=-30,0,0"], prog="blab cad-import")
+
+    output = capsys.readouterr().out
+    assert "Bounding box: 60.0 x 120.0 x 210.0 mm" in output
+    assert "Suggested symmetry: X" in output  # the open edges at x=30 mm moved onto X=0
+    with pytest.raises(SystemExit):
+        cad_cli.main([*args, "--rotate", "1,2"])
+    assert "--rotate takes X,Y,Z" in capsys.readouterr().err
+
+
 def test_cli_reports_rejections_as_usage_errors(tmp_path, capsys):
     with pytest.raises(SystemExit):
         cad_cli.main([str(tmp_path / "missing.step"), "--fmax", "1000", "--output", str(tmp_path)])
@@ -506,7 +583,8 @@ def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_p
     read = open_step(step, forward=forward, up=up)
 
     assert placed.axes == read.axes == axes
-    assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-9)
+    # Placed: the faces' extent; read: OpenCASCADE's box, padded by its 1e-7 m tolerance.
+    assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-6)
     assert np.allclose(placed.points.min(axis=0), read.points.min(axis=0), atol=1e-9)
     assert placed.geometry.symmetry == read.geometry.symmetry
     assert unsigned(placed.geometry.warnings) == unsigned(read.geometry.warnings)
@@ -516,6 +594,25 @@ def test_placing_a_preview_reports_what_reading_it_with_the_placement_does(tmp_p
         (b.name, len(b.face_ids)) for b in read.geometry.bodies
     ]
     assert placed.geometry.regions == read.geometry.regions
+
+
+def test_placing_a_preview_with_rotation_and_translation_reports_what_reading_it_does(tmp_path):
+    step = vented_box(tmp_path / "box.step", open_back=True)
+    placement = dict(forward="-Z", up="+X", rotation_deg=(10.0, -20.0, 30.0), translation_m=(0.05, -0.02, 0.1))
+
+    placed = place_preview(open_step(step, rotation_deg=(0.0, 0.0, 45.0)), **placement)
+    read = open_step(step, **placement)
+
+    assert (placed.axes, placed.rotation_deg, placed.translation_m) == (
+        read.axes,
+        read.rotation_deg,
+        read.translation_m,
+    )
+    assert np.allclose(placed.points.min(axis=0), read.points.min(axis=0), atol=1e-9)
+    assert np.allclose(placed.geometry.bbox_m, read.geometry.bbox_m, atol=1e-6)  # not a turned box around it
+    assert placed.geometry.symmetry == read.geometry.symmetry == "off"
+    assert unsigned(placed.geometry.warnings) == unsigned(read.geometry.warnings)
+    assert fingerprints(placed.geometry) == fingerprints(read.geometry)
 
 
 def fingerprints(geometry):

@@ -17,7 +17,14 @@ def main(job_path):
     output = Path(job["output"])
     if job["mode"] == "preview":
         # Only the quick scan while a closed shell has no choice: the answers decide the full read.
-        preview = open_step(job["step_path"], forward=job["forward"], up=job["up"], closed_shells=job["closed_shells"])
+        preview = open_step(
+            job["step_path"],
+            forward=job["forward"],
+            up=job["up"],
+            rotation_deg=job["rotation_deg"],
+            translation_m=job["translation_m"],
+            closed_shells=job["closed_shells"],
+        )
         (output / "preview.json").write_text(json.dumps(preview_to_json(preview)), encoding="utf-8")
         return
     result = mesh_step(job["step_path"], CadImportSettings(**job["settings"]), output)

@@ -26,6 +26,18 @@ def _build_arg_parser(prog: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument("--forward", choices=tuple(AXES), default="+Z", help="CAD axis mapped to +Z (default: +Z)")
     parser.add_argument("--up", choices=tuple(AXES), default="+Y", help="CAD axis mapped to +Y (default: +Y)")
     parser.add_argument(
+        "--rotate",
+        default="0,0,0",
+        metavar="X,Y,Z",
+        help="Then rotate by these degrees about the X, Y and Z axes, in that order (write --rotate=-90,0,0)",
+    )
+    parser.add_argument(
+        "--translate",
+        default="0,0,0",
+        metavar="X,Y,Z",
+        help="Then translate by these millimetres (write --translate=-30,0,0)",
+    )
+    parser.add_argument(
         "--closed-shell",
         action="append",
         default=[],
@@ -45,6 +57,16 @@ def _closed_shells(parser, values) -> dict[str, str]:
     return roles
 
 
+def _triple(parser, option, value) -> tuple[float, float, float]:
+    try:
+        values = tuple(float(v) for v in value.split(","))
+    except ValueError:
+        values = ()
+    if len(values) != 3:
+        parser.error(f"{option} takes X,Y,Z, not '{value}'.")
+    return values
+
+
 def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
     parser = _build_arg_parser(prog)
     args = parser.parse_args(argv)
@@ -56,6 +78,8 @@ def main(argv: Sequence[str] | None = None, prog: str | None = None) -> None:
             forward=args.forward,
             up=args.up,
             closed_shells=_closed_shells(parser, args.closed_shell),
+            rotation_deg=_triple(parser, "--rotate", args.rotate),
+            translation_m=tuple(v / 1000 for v in _triple(parser, "--translate", args.translate)),
         )
         result = mesh_step(args.step, settings, args.output)
     except (ValueError, OSError) as exc:

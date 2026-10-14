@@ -29,6 +29,11 @@ def face_groups(source):
     return result
 
 
+def translation_m(source):
+    """The source's translation (millimetres) in metres; values that are no numbers are left for the check."""
+    return tuple(v / 1000 if isinstance(v, int | float) else v for v in source["translation_mm"])
+
+
 def settings(source, configuration):
     """Pipeline settings for ``source`` with c, fmax and symmetry from the project configuration."""
     try:
@@ -45,6 +50,8 @@ def settings(source, configuration):
             growth_rate=float(source["growth_rate"]),
             symmetry=configuration.get("symmetry_config", {}).get("mode", "off"),
             closed_shells=dict(source.get("closed_shells", {})),
+            rotation_deg=tuple(source["rotation_deg"]),
+            translation_m=translation_m(source),
         )
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Invalid CAD import source: {exc}") from exc

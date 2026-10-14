@@ -1,4 +1,7 @@
-"""3D view with face picking, a body/face visibility tree, face groups, axes and sizing; the host's Generate meshes."""
+"""3D view with face picking, a body/face visibility tree, face groups, placement and sizing.
+
+The host's Generate meshes.
+"""
 
 import json
 import math
@@ -14,6 +17,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -60,6 +64,8 @@ SIZING = (
 )
 FACE_COLOUR, SELECTED_COLOUR, OUTLINE_COLOUR = "#c8ccd2", "#e8a33d", "#2b2f36"
 SEE_THROUGH = 0.15  # opacity of the faces around a highlighted closed shell
+AXIS_COLOURS = ("#d62728", "#2ca02c", "#1f77b4")  # X, Y, Z
+PLANE_OPACITY = (0.15, 0.15, 0.06)  # X=0 and Y=0, the symmetry planes, stand out
 GROUP_COLOURS = (
     "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
     "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
@@ -114,9 +120,12 @@ class Viewport(QWidget):
         self._press = None  # button and position of the last press
         self.plotter.installEventFilter(self)
 
-    def show_faces(self, preview, visible, selected=frozenset(), colours=None, *, highlight=None, reset_camera=False):
+    def show_faces(
+        self, preview, visible, selected=frozenset(), colours=None, *, highlight=None, guides=None, reset_camera=False
+    ):
         """Draw the ``visible`` faces smooth with their outlines, in their ``colours`` (face id -> colour, default
-        plain), ``selected`` on top; with ``highlight`` (face ids) all other faces are see-through."""
+        plain), ``selected`` on top; with ``highlight`` (face ids) all other faces are see-through. ``guides``
+        (a bounding box, m) draws the axes and origin planes around it."""
         import pyvista as pv
 
         self.plotter.clear()
@@ -158,9 +167,35 @@ class Viewport(QWidget):
                         pickable=False,
                         reset_camera=False,
                     )
+            if guides is not None:
+                self._show_guides(guides)
             if reset_camera:
                 self.plotter.reset_camera()
         self.plotter.render()
+
+    def _show_guides(self, bbox_m):
+        """An axis triad at the origin and see-through X=0, Y=0 and Z=0 planes over the model and the origin;
+        X=0 and Y=0, the symmetry planes, stand out."""
+        import pyvista as pv
+
+        low, high = np.minimum(bbox_m[0], 0), np.maximum(bbox_m[1], 0)
+        size = float(np.linalg.norm(high - low)) or 1.0
+        low, high = low - 0.1 * size, high + 0.1 * size
+        for axis, name in enumerate("XYZ"):
+            tip = np.zeros(3)
+            tip[axis] = 0.3 * size
+            common = dict(color=AXIS_COLOURS[axis], pickable=False, reset_camera=False)
+            self.plotter.add_mesh(pv.Line((0, 0, 0), tip), line_width=3, name=f"axis {name}", **common)
+            i, j = (axis + 1) % 3, (axis + 2) % 3
+            corners = np.zeros((4, 3))
+            corners[:, i] = low[i], high[i], high[i], low[i]
+            corners[:, j] = low[j], low[j], high[j], high[j]
+            self.plotter.add_mesh(
+                pv.PolyData(corners, [4, 0, 1, 2, 3]),
+                opacity=PLANE_OPACITY[axis],
+                name=f"plane {name}=0",
+                **common,
+            )
 
     def frame(self, preview, face_ids):
         """Fit the view to ``face_ids``; returns the camera to give back to :meth:`restore_camera`."""
@@ -227,7 +262,7 @@ class CadImportEditor:
         self._read = None  # the CadPreview last read; placement changes only move it
         self._preview = None  # what the viewport shows: the placed preview's geometry and triangles
         self._key = None
-        self._placement = None  # forward, up of the shown preview
+        self._placement = None  # of the shown preview, as keyword arguments of the pipeline functions
         self._hidden = set()
         self._highlight = None  # face ids of the closed shell being asked about
         self._face_items = {}
@@ -286,9 +321,14 @@ class CadImportEditor:
         self.clear_button = QPushButton("Clear")
         self.clear_button.setToolTip("Show everything and clear the selection.")
         self.clear_button.clicked.connect(self.clear)
+        self.guides_check = QCheckBox("Show axes and planes")
+        self.guides_check.setToolTip("The Boundary Lab axes and the X=0, Y=0 (symmetry) and Z=0 planes.")
+        self.guides_check.setChecked(True)
+        self.guides_check.toggled.connect(lambda _: self._render())
         buttons.addWidget(self.show_all_button)
         buttons.addWidget(self.clear_button)
         buttons.addStretch()
+        buttons.addWidget(self.guides_check)
         tree_layout.addLayout(buttons)
         splitter.addWidget(tree_panel)
         layout.addWidget(splitter, 1)
@@ -340,6 +380,30 @@ class CadImportEditor:
             combo.setToolTip(f"The CAD axis that becomes Boundary Lab {label[-3:-1]}.")
             combo.currentIndexChanged.connect(lambda _, k=key, c=combo: self.edited({k: c.currentData()}))
             form.addRow(label, combo)
+        self.placement_box = QGroupBox("Placement")
+        self.placement_box.setToolTip(
+            "After Forward/Up: rotate about the Boundary Lab X, Y and Z axes, in that order, then translate."
+        )
+        placement_form = QFormLayout(self.placement_box)
+        self.rotation_spins, self.translation_spins = [], []
+        for label, key, spins, limit, suffix in (
+            ("Rotate", "rotation_deg", self.rotation_spins, 360.0, "°"),
+            ("Translate", "translation_mm", self.translation_spins, 100000.0, " mm"),
+        ):
+            row = QHBoxLayout()
+            for axis in "XYZ":
+                spin = QDoubleSpinBox()
+                spin.setRange(-limit, limit)
+                spin.setDecimals(3)
+                spin.setSuffix(suffix)
+                spin.setKeyboardTracking(False)
+                spin.setAccessibleName(f"{label} {axis}")
+                spin.valueChanged.connect(lambda _, k=key, s=spins: self.edited({k: [x.value() for x in s]}))
+                row.addWidget(QLabel(axis))
+                row.addWidget(spin, 1)
+                spins.append(spin)
+            placement_form.addRow(label, row)
+        form.addRow(self.placement_box)
         self.spins = {}
         for key, label, low, high, decimals, suffix in SIZING:
             spin = QDoubleSpinBox()
@@ -381,6 +445,11 @@ class CadImportEditor:
             blocked = combo.blockSignals(True)
             combo.setCurrentIndex(combo.findData(source.get(key, "+Z" if key == "forward" else "+Y")))
             combo.blockSignals(blocked)
+        for key, spins in (("rotation_deg", self.rotation_spins), ("translation_mm", self.translation_spins)):
+            for spin, value in zip(spins, source.get(key, (0.0, 0.0, 0.0)), strict=True):
+                blocked = spin.blockSignals(True)
+                spin.setValue(float(value))
+                spin.blockSignals(blocked)
         self._refresh_context()
         key = (str(source.get("step_path") or ""), json.dumps(source.get("closed_shells", {}), sort_keys=True))
         if key != self._key:
@@ -419,7 +488,7 @@ class CadImportEditor:
         self._placement = self._placement_of(self.source)
         self._show_preview(None)
         path, closed_shells = key
-        forward, up = self._placement
+        placement = self._placement
         # Taken before reading: an edit while the file loads changes it, so the next focus asks.
         self._stamp = _file_stamp(path) if path else None
         if not path:
@@ -439,8 +508,7 @@ class CadImportEditor:
                 job = {
                     "mode": "preview",
                     "step_path": path,
-                    "forward": forward,
-                    "up": up,
+                    **placement,
                     "closed_shells": json.loads(closed_shells),
                 }
                 run_worker(job, output, cancelled=cancel.is_set)
@@ -466,7 +534,7 @@ class CadImportEditor:
         if isinstance(preview, CadScan):
             # Closed shells without a choice: ask now, then the answers read the file fully, once.
             try:
-                preview = place_preview(preview, forward=self._placement[0], up=self._placement[1])
+                preview = place_preview(preview, **self._placement)
             except ValueError:
                 pass  # shown as read; the full read reports the placement
             view = _view(preview)
@@ -483,7 +551,12 @@ class CadImportEditor:
 
     @staticmethod
     def _placement_of(source):
-        return source.get("forward", "+Z"), source.get("up", "+Y")
+        return dict(
+            forward=source.get("forward", "+Z"),
+            up=source.get("up", "+Y"),
+            rotation_deg=tuple(source.get("rotation_deg", (0.0, 0.0, 0.0))),
+            translation_m=tuple(v / 1000 for v in source.get("translation_mm", (0.0, 0.0, 0.0))),
+        )
 
     def _place(self):
         """Show the read preview with the source's placement, moved without reading the STEP file again."""
@@ -493,7 +566,7 @@ class CadImportEditor:
                 self._load(self._key)  # nothing read yet, e.g. the last read's placement was invalid
             return
         try:
-            placed = place_preview(self._read, forward=self._placement[0], up=self._placement[1])
+            placed = place_preview(self._read, **self._placement)
         except ValueError as exc:
             self._show_preview(None)
             self.info.setText(str(exc))
@@ -735,6 +808,7 @@ class CadImportEditor:
             self.visible_faces(),
             self.selected_faces(),
             face_colours,
+            guides=self.geometry["bbox_m"] if self.geometry is not None and self.guides_check.isChecked() else None,
             reset_camera=reset_camera,
         )
 
@@ -753,19 +827,14 @@ class CadImportEditor:
 
     # -- face groups --------------------------------------------------------------------------
 
-    def _axes(self):
-        """The Forward/Up axes the shown faces are placed with."""
-        forward, up = self._placement
-        return {"forward": forward, "up": up}
-
     def _ref(self, face_id):
-        return asdict(face_ref(self._faces[face_id], **self._axes()))
+        return asdict(face_ref(self._faces[face_id], **self._placement))
 
     def _members(self, group):
         """Face ids of a stored group in the loaded geometry, and its refs that match nothing."""
         ids, unmatched = set(), []
         for ref in group["faces"]:
-            found = match_face_ref(CadFaceRef(**ref), self._faces.values(), self.geometry["bbox_m"], **self._axes())
+            found = match_face_ref(CadFaceRef(**ref), self._faces.values(), self.geometry["bbox_m"], **self._placement)
             if found is None:
                 unmatched.append(ref)
             else:
@@ -995,6 +1064,7 @@ class CadImportEditor:
             self.browse_button,
             self.forward_combo,
             self.up_combo,
+            self.placement_box,
             self.groups_box,
             *self.spins.values(),
             self.closed_shell_box,

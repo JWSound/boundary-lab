@@ -143,6 +143,7 @@ def vented_box(
     open_back: bool = False,
     cad_axes: tuple[str, str] = ("+Z", "+Y"),
     depth: float = 180,
+    shift_mm: tuple[float, float, float] = (0, 0, 0),
 ) -> Path:
     """Chamber (100x100x``depth`` mm) joined by a port (r=10 mm) to a hole in a cabinet surface.
 
@@ -151,7 +152,7 @@ def vented_box(
     leaves the cabinet front without the hole, covering the port mouth;
     ``open_back`` leaves out the cabinet's back face (z=-210 mm).
     ``cad_axes`` (forward, up) names the CAD axes that the model's +Z and +Y are
-    written along.
+    written along; ``shift_mm`` moves the model before that.
     """
 
     def build():
@@ -165,6 +166,8 @@ def vented_box(
             occ.remove(back, recursive=True)
             cabinet = [f for f in cabinet if f not in back]
         entities = chamber + port + cabinet
+        if any(shift_mm):
+            occ.translate(entities, *shift_mm)
         rotation = CAD_ROTATIONS[cad_axes]
         if rotation:
             occ.rotate(entities, 0, 0, 0, *rotation)

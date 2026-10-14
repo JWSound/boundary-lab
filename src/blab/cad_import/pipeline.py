@@ -9,7 +9,6 @@ face, is an interface: the same face group name appears in both meshes.
 
 from __future__ import annotations
 
-import itertools
 import math
 import re
 import threading
@@ -33,6 +32,7 @@ AXES = {
     "+Z": (0, 0, 1),
     "-Z": (0, 0, -1),
 }
+ZERO = (0.0, 0.0, 0.0)  # no rotation, no translation
 _GMSH_LOCK = threading.RLock()
 # Fingerprint tolerances for small CAD edits (see docs/specs/cad-import.md, "Re-import matching").
 _CENTRE_TOLERANCE = 1e-2  # fraction of the bounding-box diagonal
@@ -59,6 +59,9 @@ class CadFaceRef:
 class CadImportSettings:
     """Meshing inputs. Sizes in metres; ``forward``/``up`` name the CAD axes mapped to +Z/+Y.
 
+    The placement then rotates by ``rotation_deg`` about the fixed X, Y and Z axes (in that
+    order, about the origin) and translates by ``translation_m``.
+
     ``face_groups`` maps a group name to its faces: ``CadFaceRef`` (or mappings of its
     fields), or face ids (``CadFace.id``). Faces with a STEP name in no face group form a
     group of that name. ``symmetry`` is the project symmetry to check the geometry
@@ -78,6 +81,8 @@ class CadImportSettings:
     growth_rate: float = 1.3
     symmetry: str | None = None
     closed_shells: Mapping[str, str] = field(default_factory=dict)
+    rotation_deg: tuple[float, float, float] = ZERO
+    translation_m: tuple[float, float, float] = ZERO
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -91,7 +96,9 @@ class CadImportSettings:
                 raise ValueError(f"{label} must be a positive number.")
         if not (math.isfinite(self.growth_rate) and self.growth_rate > 1):
             raise ValueError("Growth rate must be greater than 1.")
-        _axis_matrix(self.forward, self.up)
+        object.__setattr__(self, "rotation_deg", tuple(self.rotation_deg))
+        object.__setattr__(self, "translation_m", tuple(self.translation_m))
+        _placement(**self.placement)
         groups = {
             name: tuple(CadFaceRef(**face) if isinstance(face, Mapping) else face for face in faces)
             for name, faces in self.face_groups.items()
@@ -104,6 +111,11 @@ class CadImportSettings:
     def target_size_m(self) -> float:
         """Sound speed / maximum frequency / elements per wavelength."""
         return self.sound_speed_m_per_s / self.fmax_hz / self.elements_per_wavelength
+
+    @property
+    def placement(self) -> dict:
+        """The placement as keyword arguments of :func:`face_ref`, :func:`match_face_ref` and the readers."""
+        return dict(forward=self.forward, up=self.up, rotation_deg=self.rotation_deg, translation_m=self.translation_m)
 
 
 @dataclass(frozen=True)
@@ -180,21 +192,35 @@ class CadImportResult:
 
 
 def inspect_step(
-    step_path: str | Path, *, forward: str = "+Z", up: str = "+Y", closed_shells: Mapping[str, str] | None = None
+    step_path: str | Path,
+    *,
+    forward: str = "+Z",
+    up: str = "+Y",
+    rotation_deg: Sequence[float] = ZERO,
+    translation_m: Sequence[float] = ZERO,
+    closed_shells: Mapping[str, str] | None = None,
 ) -> CadGeometry:
-    """Read, orient, classify and fragment a STEP file without meshing it."""
+    """Read, place, classify and fragment a STEP file without meshing it."""
+    placement = _placement(forward, up, rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
-        return _analyse(gmsh, Path(step_path), _axis_matrix(forward, up), closed_shells or {}).geometry
+        return _analyse(gmsh, Path(step_path), placement, closed_shells or {}).geometry
 
 
-def face_ref(face: CadFace, *, forward: str = "+Z", up: str = "+Y") -> CadFaceRef:
-    """How a face group stores ``face`` of a geometry read with axes ``forward``/``up``."""
-    back = _axis_matrix(forward, up).T
+def face_ref(
+    face: CadFace,
+    *,
+    forward: str = "+Z",
+    up: str = "+Y",
+    rotation_deg: Sequence[float] = ZERO,
+    translation_m: Sequence[float] = ZERO,
+) -> CadFaceRef:
+    """How a face group stores ``face`` of a geometry read with that placement: in CAD axes."""
+    matrix, offset = _placement(forward, up, rotation_deg, translation_m)
     return CadFaceRef(
         face.step_name,
-        tuple(float(v) for v in back @ np.asarray(face.centre, dtype=float)),
+        tuple(float(v) for v in matrix.T @ (np.asarray(face.centre, dtype=float) - offset)),
         float(face.area),
-        tuple(float(v) for v in back @ np.asarray(face.normal, dtype=float)),
+        tuple(float(v) for v in matrix.T @ np.asarray(face.normal, dtype=float)),
         face.surface_type,
     )
 
@@ -205,16 +231,19 @@ class CadPreview:
 
     ``open_edges`` and ``overlap_edges`` (nine sampled points each) and ``cover_warnings`` let
     :func:`place_preview` redo the placement-dependent symmetry suggestion and warnings.
+    ``axes`` (forward, up), ``rotation_deg`` and ``translation_m`` are the placement it shows.
     """
 
     geometry: CadGeometry
     points: np.ndarray
     triangles: np.ndarray
     face_ids: np.ndarray
-    axes: tuple[str, str]  # forward, up: the placement it shows
+    axes: tuple[str, str]
     open_edges: np.ndarray
     overlap_edges: np.ndarray
     cover_warnings: tuple[str, ...]
+    rotation_deg: tuple[float, float, float] = ZERO
+    translation_m: tuple[float, float, float] = ZERO
 
 
 @dataclass(frozen=True)
@@ -227,17 +256,26 @@ class CadScan:
     triangles: np.ndarray
     face_ids: np.ndarray
     axes: tuple[str, str]
+    rotation_deg: tuple[float, float, float] = ZERO
+    translation_m: tuple[float, float, float] = ZERO
 
 
 def open_step(
-    step_path: str | Path, *, forward: str = "+Z", up: str = "+Y", closed_shells: Mapping[str, str] | None = None
+    step_path: str | Path,
+    *,
+    forward: str = "+Z",
+    up: str = "+Y",
+    rotation_deg: Sequence[float] = ZERO,
+    translation_m: Sequence[float] = ZERO,
+    closed_shells: Mapping[str, str] | None = None,
 ) -> CadScan | CadPreview:
-    """Read a STEP file for display with the placement ``forward``/``up``.
+    """Read a STEP file for display with that placement.
 
     While a closed shell has no choice in ``closed_shells``, only the quick scan; else the full preview.
     """
     closed_shells = closed_shells or {}
-    matrix = _axis_matrix(forward, up)
+    placement = _placement(forward, up, rotation_deg, translation_m)
+    shown = _shown(forward, up, rotation_deg, translation_m)
     with _gmsh_session() as gmsh:
         step = _read(gmsh, Path(step_path))
         if set(step.shell_names) - set(closed_shells):
@@ -249,40 +287,52 @@ def open_step(
             points, triangles, face_ids = _tessellate(
                 gmsh, [t for _, t in gmsh.model.getEntities(2)], (bbox[:3], bbox[3:])
             )
-            return CadScan(shells, points @ matrix.T, triangles, face_ids, (forward, up))
-        model = _analyse(gmsh, Path(step_path), matrix, closed_shells, step)
+            return CadScan(shells, _place(placement, points), triangles, face_ids, **shown)
+        model = _analyse(gmsh, Path(step_path), placement, closed_shells, step)
         geometry = model.geometry
         return CadPreview(
             geometry,
             *_tessellate(gmsh, [face.id for face in geometry.faces], geometry.bbox_m),
-            (forward, up),
-            model.open_edges,
-            model.overlap_edges,
-            model.cover_warnings,
+            open_edges=model.open_edges,
+            overlap_edges=model.overlap_edges,
+            cover_warnings=model.cover_warnings,
+            **shown,
         )
 
 
-def place_preview(preview: CadScan | CadPreview, *, forward: str = "+Z", up: str = "+Y") -> CadScan | CadPreview:
-    """``preview`` moved to the placement ``forward``/``up`` without reading the STEP file again.
+def place_preview(
+    preview: CadScan | CadPreview,
+    *,
+    forward: str = "+Z",
+    up: str = "+Y",
+    rotation_deg: Sequence[float] = ZERO,
+    translation_m: Sequence[float] = ZERO,
+) -> CadScan | CadPreview:
+    """``preview`` moved to that placement without reading the STEP file again.
 
     The result reports what reading the file with that placement does, face ids aside; only which
     faces open into air bodies is kept, though it can change where faces lie on X=0 or Y=0.
     """
-    matrix = _axis_matrix(forward, up) @ _axis_matrix(*preview.axes).T
-    points = preview.points @ matrix.T
+    new_matrix, new_offset = _placement(forward, up, rotation_deg, translation_m)
+    old_matrix, old_offset = _placement(*preview.axes, preview.rotation_deg, preview.translation_m)
+    matrix = new_matrix @ old_matrix.T
+    move = (matrix, new_offset - matrix @ old_offset)
+    points = _place(move, preview.points)
+    shown = _shown(forward, up, rotation_deg, translation_m)
     if isinstance(preview, CadScan):
-        return replace(preview, points=points, axes=(forward, up))
+        return replace(preview, points=points, **shown)
     geometry = preview.geometry
-    corners = np.array(list(itertools.product(*zip(*geometry.bbox_m, strict=True)))) @ matrix.T
-    open_edges, overlap_edges = preview.open_edges @ matrix.T, preview.overlap_edges @ matrix.T
+    open_edges, overlap_edges = _place(move, preview.open_edges), _place(move, preview.overlap_edges)
     symmetry, warnings = _edge_findings(open_edges, overlap_edges, _plane_tolerance(*geometry.bbox_m))
     faces = tuple(
-        replace(face, centre=_moved(matrix, face.centre), normal=_moved(matrix, face.normal)) for face in geometry.faces
+        replace(face, centre=_moved(matrix, face.centre, move[1]), normal=_moved(matrix, face.normal))
+        for face in geometry.faces
     )
     geometry = replace(
         geometry,
         faces=faces,
-        bbox_m=(tuple(corners.min(axis=0).tolist()), tuple(corners.max(axis=0).tolist())),
+        # From the faces' points: a turned box around them would grow at angles off the axes.
+        bbox_m=(tuple(points.min(axis=0).tolist()), tuple(points.max(axis=0).tolist())),
         symmetry=symmetry,
         warnings=preview.cover_warnings + warnings,
     )
@@ -290,9 +340,9 @@ def place_preview(preview: CadScan | CadPreview, *, forward: str = "+Z", up: str
         preview,
         geometry=geometry,
         points=points,
-        axes=(forward, up),
         open_edges=open_edges,
         overlap_edges=overlap_edges,
+        **shown,
     )
 
 
@@ -309,6 +359,8 @@ def preview_from_json(data: Mapping) -> CadScan | CadPreview:
         triangles=np.asarray(data["triangles"], dtype=np.int64).reshape(-1, 3),
         face_ids=np.asarray(data["face_ids"], dtype=np.int64),
         axes=tuple(data["axes"]),
+        rotation_deg=tuple(data["rotation_deg"]),
+        translation_m=tuple(data["translation_m"]),
     )
     if data["kind"] == "scan":
         return CadScan(_shells_from_json(data["closed_shells"]), **arrays)
@@ -370,22 +422,33 @@ def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray
     )
 
 
-def _moved(matrix, vector) -> tuple[float, float, float]:
-    return tuple(float(v) for v in matrix @ np.asarray(vector, dtype=float))
+def _shown(forward, up, rotation_deg, translation_m) -> dict:
+    """The placement fields of a preview showing that placement."""
+    return dict(axes=(forward, up), rotation_deg=tuple(rotation_deg), translation_m=tuple(translation_m))
+
+
+def _moved(matrix, vector, offset=ZERO) -> tuple[float, float, float]:
+    return tuple(float(v) for v in matrix @ np.asarray(vector, dtype=float) + offset)
+
+
+def _place(placement, points) -> np.ndarray:
+    """``points`` (any shape ending in 3) moved by ``(matrix, offset)``."""
+    matrix, offset = placement
+    return points @ matrix.T + offset
 
 
 def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: str | Path) -> CadImportResult:
     """Mesh a STEP file into ``output_dir`` as ``<mesh id>.msh`` files (metres)."""
     output_dir = Path(output_dir)
     with _gmsh_session() as gmsh:
-        model = _analyse(gmsh, Path(step_path), _axis_matrix(settings.forward, settings.up), settings.closed_shells)
+        model = _analyse(gmsh, Path(step_path), _placement(**settings.placement), settings.closed_shells)
         geometry = model.geometry
         if settings.symmetry is not None and settings.symmetry != geometry.symmetry:
             raise ValueError(
                 f"Project symmetry {SYMMETRY_LABELS[settings.symmetry]} does not match the geometry, "
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
-        groups = model.surface_groups(settings.face_groups, forward=settings.forward, up=settings.up)
+        groups = model.surface_groups(settings.face_groups, **settings.placement)
         _apply_sizes(gmsh, model, settings, groups)
         gmsh.model.mesh.generate(3)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -416,9 +479,9 @@ class _Model:
     cover_warnings: tuple[str, ...]  # the warnings the placement does not change
 
     def surface_groups(
-        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], *, forward: str, up: str
+        self, face_groups: Mapping[str, tuple[int | CadFaceRef, ...]], **placement
     ) -> dict[str, dict[str, list[int]]]:
-        """Mesh id -> {surface group name -> faces}, sorted by name; ``forward``/``up`` as read."""
+        """Mesh id -> {surface group name -> faces}, sorted by name; ``placement`` as read."""
         member = {}
         reserved = {WALLS, *self.interface_of.values()}
         geometry = self.geometry
@@ -427,7 +490,7 @@ class _Model:
             if not name or name in reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
             found[name] = [
-                match_face_ref(ref, geometry.faces, geometry.bbox_m, forward=forward, up=up)
+                match_face_ref(ref, geometry.faces, geometry.bbox_m, **placement)
                 if isinstance(ref, CadFaceRef)
                 else ref
                 for ref in refs
@@ -464,19 +527,26 @@ class _Model:
 
 
 def match_face_ref(
-    ref: CadFaceRef, faces: Sequence[CadFace], bbox_m, *, forward: str = "+Z", up: str = "+Y"
+    ref: CadFaceRef,
+    faces: Sequence[CadFace],
+    bbox_m,
+    *,
+    forward: str = "+Z",
+    up: str = "+Y",
+    rotation_deg: Sequence[float] = ZERO,
+    translation_m: Sequence[float] = ZERO,
 ) -> int | None:
-    """Id of the face among ``faces`` (read with ``forward``/``up``, bounded by ``bbox_m``) that ``ref`` stands for.
+    """Id of the face among ``faces`` (read with that placement, bounded by ``bbox_m``) that ``ref`` stands for.
 
     The only face carrying its STEP name; else, among the faces with that name (or all faces
-    when none has it), the one face whose fingerprint matches after axis mapping. Several
+    when none has it), the one face whose fingerprint matches after the placement. Several
     matching faces are ambiguous and match none.
     """
     named = [f for f in faces if ref.step_name and f.step_name == ref.step_name]
     if len(named) == 1:
         return named[0].id
-    matrix = _axis_matrix(forward, up)
-    centre, normal = matrix @ np.asarray(ref.centre, dtype=float), matrix @ np.asarray(ref.normal, dtype=float)
+    matrix, offset = _placement(forward, up, rotation_deg, translation_m)
+    centre, normal = _moved(matrix, ref.centre, offset), _moved(matrix, ref.normal)
     tol = _CENTRE_TOLERANCE * math.dist(*bbox_m)
     matches = [
         f
@@ -531,9 +601,13 @@ def _read(gmsh, path: Path) -> _Step:
 
 
 def _analyse(
-    gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str], step: _Step | None = None
+    gmsh,
+    path: Path,
+    placement: tuple[np.ndarray, np.ndarray],
+    closed_shells: Mapping[str, str],
+    step: _Step | None = None,
 ) -> _Model:
-    """Classify and fragment ``path`` (``step``: already read) with the axis mapping ``matrix``."""
+    """Classify and fragment ``path`` (``step``: already read) placed by ``(matrix, offset)``."""
     occ = gmsh.model.occ
     for name, role in closed_shells.items():
         if role not in ("air", "exterior"):
@@ -552,7 +626,8 @@ def _analyse(
             sheets = [f for f in sheets if f not in faces]
     sheet_names = [_label(gmsh, 2, t) for t in sheets]
     inputs = [(3, t) for t in solids] + [(2, t) for t in sheets]
-    # A rigid rotation keeps exact surface types (a general affine transform makes BSplines).
+    # Rigid motions keep exact surface types (a general affine transform makes BSplines).
+    matrix, offset = placement
     angle = math.acos(np.clip((np.trace(matrix) - 1) / 2, -1, 1))
     if angle > 1e-9:
         if math.pi - angle > 1e-9:
@@ -560,6 +635,8 @@ def _analyse(
         else:
             axis = (matrix + np.eye(3))[:, int(np.argmax(np.diag(matrix)))]
         occ.rotate(inputs, 0, 0, 0, *axis, angle)
+    if offset.any():
+        occ.translate(inputs, *offset)
     _, children = occ.fragment(inputs, [])
     occ.synchronize()
 
@@ -653,7 +730,7 @@ def _analyse(
             interfaces.append(CadInterface(name, mesh_of_body[body], tuple(faces)))
             interface_of.update(dict.fromkeys(faces, name))
 
-    step_names = _match_step_names(gmsh, path, matrix, sorted(edges), tol)
+    step_names = _match_step_names(gmsh, path, placement, sorted(edges), tol)
     face_bodies = {}
     faces = []
     for f in sorted(set(outer_air) | set(shell)):
@@ -831,13 +908,29 @@ def _axis_matrix(forward, up) -> np.ndarray:
     return np.array([np.cross(u, f), u, f])
 
 
+def _placement(forward="+Z", up="+Y", rotation_deg=ZERO, translation_m=ZERO) -> tuple[np.ndarray, np.ndarray]:
+    """``(matrix, offset)`` placing CAD point p at ``matrix @ p + offset``: the axis mapping, the
+    rotations about the fixed X, Y and Z axes (in that order, about the origin), the translation."""
+    matrix = _axis_matrix(forward, up)
+    for label, values in (("Rotation", rotation_deg), ("Translation", translation_m)):
+        if not (len(values) == 3 and all(isinstance(v, int | float) and math.isfinite(v) for v in values)):
+            raise ValueError(f"{label} must be three finite numbers.")
+    for axis, angle in enumerate(math.radians(v) for v in rotation_deg):
+        i, j = (axis + 1) % 3, (axis + 2) % 3
+        turn = np.eye(3)
+        turn[i, i] = turn[j, j] = math.cos(angle)
+        turn[j, i], turn[i, j] = math.sin(angle), -math.sin(angle)
+        matrix = turn @ matrix
+    return matrix, np.array(translation_m, dtype=float)
+
+
 # --- STEP face names ------------------------------------------------------------------------------
 
 _SI_PREFIX = {"$": 1.0, ".MILLI.": 1e-3, ".CENTI.": 1e-2, ".DECI.": 0.1, ".KILO.": 1e3, ".MICRO.": 1e-6}
 _CONVERSION_UNITS = {"INCH": 0.0254, "FOOT": 0.3048}
 
 
-def _match_step_names(gmsh, path, matrix, faces, tol) -> dict[int, str]:
+def _match_step_names(gmsh, path, placement, faces, tol) -> dict[int, str]:
     """Attach ADVANCED_FACE names to the faces whose vertices they share.
 
     Gmsh does not import face names, so they are read from the STEP text. Faces
@@ -852,7 +945,7 @@ def _match_step_names(gmsh, path, matrix, faces, tol) -> dict[int, str]:
         vertices[f] = np.array([gmsh.model.getValue(0, p, []) for _, p in set(points)]).reshape(-1, 3)
     result = {}
     for name, points in named:
-        points = points @ matrix.T
+        points = _place(placement, points)
         for f, own in vertices.items():
             if len(own) == len(points) and all(np.min(np.linalg.norm(own - p, axis=1)) <= tol for p in points):
                 result[f] = name

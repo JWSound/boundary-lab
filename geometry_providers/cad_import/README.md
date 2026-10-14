@@ -26,9 +26,14 @@ in **Edit > Generator Plugins...** and add a design.
    the choice later under **Closed shells**; another STEP file is asked afresh.
    The CLI takes `--closed-shell "Closed shell 1=air"` (unset shells are exterior).
 2. Pick **Forward** and **Up**: the CAD axes that become Boundary Lab +Z and +Y.
-   The view, size and suggested symmetry follow at once, without reading the
-   file again; which faces open into air bodies is kept from the last read,
-   and Generate uses the new axes.
+   Under **Placement**, rotate by any angle about the Boundary Lab X, Y and Z
+   axes (in that order, about the origin), then translate in mm. The view, size
+   and suggested symmetry follow at once, without reading the file again;
+   which faces open into air bodies is kept from the last read, and Generate
+   uses the new placement. **Show axes and planes** draws the axes at the
+   origin and the X=0, Y=0 (symmetry) and Z=0 planes. The Meshes dialog keeps
+   the generated meshes' scale and position locked: place them here.
+   The CLI takes `--rotate X,Y,Z` (degrees) and `--translate X,Y,Z` (mm).
 3. Use the tree checkboxes to hide bodies or single faces; **Show all** undoes
    all hiding, **Clear** also clears the selection.
 4. Click faces in the view (Ctrl/Shift+click adds or removes) or select them
@@ -36,7 +41,7 @@ in **Edit > Generator Plugins...** and add a design.
    (an existing name adds the faces; a face is in one group only). Faces named
    in the STEP file form groups of their name unless picked into another
    group. Groups store STEP names and fingerprints in CAD axes, so they
-   survive changing Forward/Up. **Delete group** removes a picked group.
+   survive changing the placement. **Delete group** removes a picked group.
 5. Set elements per wavelength (default 5), curvature and growth. The target
    element size is sound speed ÷ the project's maximum frequency ÷ elements per
    wavelength; the sound speed is that of the project's exterior air region

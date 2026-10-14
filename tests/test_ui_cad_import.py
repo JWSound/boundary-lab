@@ -50,7 +50,7 @@ def _cad_qt_interactor_class():
 
         @property
         def colours(self):
-            return [kwargs["color"] for mesh, kwargs in self.meshes if not mesh.n_lines]
+            return [kwargs["color"] for mesh, kwargs in self.meshes if not mesh.n_lines and "name" not in kwargs]
 
         def clear(self):
             self.calls.append("clear")
@@ -276,13 +276,13 @@ def test_closed_shell_is_highlighted_and_framed_while_asked(cad_editor, qapp, mo
     assert min(opacities) < 1 and max(opacities) == 1  # the rest see-through
     assert framed
     assert editor.highlighted_faces() == set()
-    assert all(kwargs.get("opacity", 1.0) == 1 for _, kwargs in plotter.meshes)
+    assert all(kwargs.get("opacity", 1.0) == 1 for _, kwargs in plotter.meshes if "name" not in kwargs)  # no guides
     assert plotter.camera_position == "before"
 
 
 def test_preview_is_smooth_shaded_with_face_outlines_and_no_triangle_edges(cad_editor):
     editor, _ = cad_editor
-    meshes = editor.viewport.plotter.meshes
+    meshes = [(mesh, kwargs) for mesh, kwargs in editor.viewport.plotter.meshes if "name" not in kwargs]  # no guides
     faces = [kwargs for mesh, kwargs in meshes if not mesh.n_lines]
     outlines = [kwargs for mesh, kwargs in meshes if mesh.n_lines]
 
@@ -401,6 +401,60 @@ def test_axis_change_moves_the_display_without_reading_the_step_file_and_groups_
     editor.pick_face(cabinet_faces(editor, lambda f: True)[0])
     editor.group_selection("Side")
     assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["Back", "Side"]
+
+
+def test_placement_fields_edit_the_source_and_move_the_display_without_reading(cad_editor, monkeypatch):
+    editor, host = cad_editor
+    editor.pick_face(chamber_back(editor))
+    editor.group_selection("Back")
+    reads = record_reads(editor, monkeypatch)
+    before = face_points(editor)
+
+    editor.rotation_spins[1].setValue(90)  # about Y: (x, y, z) -> (z, y, -x)
+    editor.translation_spins[0].setValue(25)
+
+    source = host.snapshot().source
+    assert (source["rotation_deg"], source["translation_mm"]) == ([0.0, 90.0, 0.0], [25.0, 0.0, 0.0])
+    assert reads == [] and not editor.loading
+    after = face_points(editor)
+    assert np.allclose(after, before[:, [2, 1, 0]] * [1, 1, -1] + [0.025, 0, 0], atol=1e-9)
+    assert "210.0 x 120.0 x 120.0 mm" in editor.info.text()
+    assert editor.groups_needing_review() == [] and group_rows(editor)["Back"] == 1
+    editor.translation_spins[0].setValue(0)
+    editor.rotation_spins[1].setValue(0)
+    assert np.allclose(face_points(editor), before, atol=1e-9)
+
+
+def face_points(editor):
+    """The points of the first face mesh drawn."""
+    return next(mesh for mesh, kwargs in editor.viewport.plotter.meshes if "name" not in kwargs).points.copy()
+
+
+def guides(editor):
+    """``{name: mesh}`` of the axes and origin planes drawn."""
+    return {kwargs["name"]: mesh for mesh, kwargs in editor.viewport.plotter.meshes if "name" in kwargs}
+
+
+def test_axes_and_origin_planes_are_drawn_sized_to_the_model_and_one_toggle_hides_them(cad_editor):
+    editor, _ = cad_editor
+
+    shown = guides(editor)
+    assert set(shown) == {"axis X", "axis Y", "axis Z", "plane X=0", "plane Y=0", "plane Z=0"}
+    kwargs = {k: kw for _, kw in editor.viewport.plotter.meshes for k in [kw.get("name")] if k}
+    assert all(kw["pickable"] is False for kw in kwargs.values())
+    assert kwargs["plane X=0"]["opacity"] > kwargs["plane Z=0"]["opacity"]  # symmetry planes stand out
+    assert kwargs["plane Y=0"]["opacity"] == kwargs["plane X=0"]["opacity"]
+    plane = shown["plane X=0"].points
+    assert np.allclose(plane[:, 0], 0)
+    # The model spans y -60..60 mm and z -210..0 mm; the plane covers it with some margin.
+    assert plane[:, 1].min() < -0.06 and plane[:, 1].max() > 0.06
+    assert plane[:, 2].min() < -0.21 and plane[:, 2].max() > 0
+    assert plane[:, 2].min() > -0.3
+
+    editor.guides_check.setChecked(False)
+    assert guides(editor) == {} and face_points(editor) is not None
+    editor.guides_check.setChecked(True)
+    assert len(guides(editor)) == 6
 
 
 def record_reads(editor, monkeypatch):

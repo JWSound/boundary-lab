@@ -146,6 +146,19 @@ def test_reduced_model_is_accepted_under_matching_symmetry(plugin, tmp_path, sym
     assert len(compiled.interfaces) == 1
 
 
+def test_placement_from_the_source_puts_a_shifted_half_model_on_the_symmetry_plane(plugin, tmp_path):
+    catalog, backend = plugin
+    step = vented_box(tmp_path / "box.step", symmetry="x", shift_mm=(30, 0, 0))
+    project = make_project(catalog, step, symmetry="x", rotation_deg=[0, 0, 0], translation_mm=[-30, 0, 0])
+
+    project, _ = generate(backend, project, tmp_path)
+
+    compiled = PhysicalSystemCompiler().compile(project.physical_system, symmetry_mode="x")
+    assert len(compiled.interfaces) == 1
+    with pytest.raises(ValueError, match="suggests symmetry Off"):
+        generate(backend, make_project(catalog, step, symmetry="x"), tmp_path / "unplaced")
+
+
 def test_symmetry_mismatch_is_rejected_with_the_suggestion(plugin, tmp_path):
     catalog, backend = plugin
     step = vented_box(tmp_path / "box.step", symmetry="x")
@@ -444,6 +457,8 @@ def test_cancel_before_start_and_during_meshing(plugin, box_step, tmp_path):
         ({"step_path": "missing.step"}, "not found"),
         ({"elements_per_wavelength": 0}, "Elements per wavelength"),
         ({"forward": "+Y"}, "perpendicular"),
+        ({"rotation_deg": [0, "x", 0]}, "Rotation must be three finite numbers"),
+        ({"translation_mm": [0, 0]}, "Translation must be three finite numbers"),
     ],
 )
 def test_invalid_source_is_rejected_before_meshing(plugin, box_step, tmp_path, change, match):
