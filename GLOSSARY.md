@@ -47,6 +47,10 @@ _Avoid_: Surface solid, watertight body
 A named set of geometry faces that becomes one physical surface group in a mesh. A face group **needs review** when the current STEP file no longer has all of its stored faces; generation is rejected until it is re-picked or deleted.
 _Avoid_: Tag, patch, selection
 
+**Placement**:
+The rotation and translation that put imported CAD geometry into Boundary Lab coordinates; Forward/Up is its 90° axis-mapping part.
+_Avoid_: Transform, offset, pose
+
 **Target element size**:
 The default mesh edge length, sound speed ÷ maximum frequency ÷ elements per wavelength.
 _Avoid_: Mesh resolution, density

@@ -17,7 +17,7 @@ The user works in a closable CAD Import dock:
 - a 3D view on top, with face picking;
 - a tree of bodies and faces with visibility controls;
 - face-group naming;
-- orientation pickers that map the CAD axes onto Boundary Lab's +Z forward and +Y up;
+- a **placement**: orientation pickers that map the CAD axes onto Boundary Lab's +Z forward and +Y up, plus a free rotation and translation, shown against the Boundary Lab axes and origin planes;
 - sizing settings; the host's Generate (F7) meshes and its cancel stops meshing.
 
 The resulting meshes appear in Meshes and the regions, boundaries and interfaces appear in System. The user only marks diaphragm face groups as moving and attaches components.
@@ -40,13 +40,18 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 ### Closed shells
 
 61. As a designer, I want to be asked whether each closed shell of surfaces is an air volume or an exterior surface, and to change my answer later, so that SolidWorks exports (which write solids as closed shells) and closed waveguide outsides both import correctly.
+62. As a designer, I want the closed shell being asked about highlighted and framed in the 3D view while the question is open, so that I know which shell "Closed shell 2" is in an export without names.
 
 ### Orientation
 
 9. As a designer, I want to choose which CAD axis points forward (mapped to Boundary Lab +Z), so that my model's front faces the acoustic reference axis.
 10. As a designer, I want to choose which CAD axis points up (mapped to Boundary Lab +Y), so that horizontal and vertical polars mean what I expect.
 11. As a designer, I want the 3D view, symmetry detection and interface detection to work on the reoriented geometry, so that what I see is what gets meshed.
-12. As a designer, I want the CAD origin kept as the Boundary Lab origin, so that I control the acoustic reference point in CAD.
+12. As a designer, I want the CAD origin kept as the Boundary Lab origin unless I translate the geometry, so that I can control the acoustic reference point in CAD.
+63. As a designer, I want to rotate the geometry by any angle about the Boundary Lab X, Y and Z axes and translate it in millimetres before meshing, so that geometry not modelled at the acoustic reference position or axis can still be placed correctly.
+64. As a designer, I want the Boundary Lab axes and the X=0, Y=0 and Z=0 planes shown in the 3D view, with the symmetry planes X=0 and Y=0 emphasised and a toggle to hide them, so that I can see where the geometry sits relative to the origin and the symmetry planes.
+65. As a designer, I want placement changes to move the displayed geometry immediately without re-reading the STEP file, so that adjusting the placement is quick.
+66. As a designer, I want scale and position of generated meshes fixed in Meshes, so that the geometry is placed in exactly one place, its design.
 
 ### Bodies, meshes and interfaces
 
@@ -114,6 +119,8 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 56. As a designer, I want the CAD Import design (STEP path, orientation, face groups, sizing) saved in the project, so that reopening restores my setup.
 57. As a designer, I want generated meshes restored when reopening a project without re-meshing, so that opening is fast.
 58. As a designer, I want the generated meshes listed in Meshes, locked to their design, so that I can see what was produced.
+67. As a designer, I want opening a STEP file to read the geometry fully only once, even when I am asked about closed shells, so that opening is fast.
+68. As a designer, I want the 3D view to show smooth CAD faces with their outlines rather than a triangle mesh, so that the preview is not mistaken for the generated mesh.
 59. As a power user, I want a CLI command that meshes a STEP file with a given maximum frequency and elements per wavelength, so that I can script or batch mesh generation.
 60. As a power user, I want the CLI and the dock to produce identical meshes for the same inputs, so that scripted and interactive work agree.
 
@@ -126,15 +133,15 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
   - This is part of the provider API and must be documented in the provider API guide.
 - **Design source**, versioned through the provider's own schema version, holds:
   - the STEP file path;
-  - the axis mapping (Forward and Up, each one of ±X/±Y/±Z);
+  - the placement: the axis mapping (Forward and Up, each one of ±X/±Y/±Z), a rotation in degrees about the Boundary Lab X, Y and Z axes, and a translation in millimetres;
   - elements per wavelength;
   - size overrides per body and per face group;
   - curvature and growth settings;
-  - the face groups: each a name, its member faces' STEP names if present, and geometric fingerprints (taken in CAD axes, before the axis mapping, so changing Forward or Up keeps the groups);
+  - the face groups: each a name, its member faces' STEP names if present, and geometric fingerprints (taken in CAD axes, before the placement, so changing the placement keeps the groups);
   - the closed shell choices: closed shell name → `air` or `exterior`.
 - **Meshing pipeline** (headless, in the provider's worker process):
   1. Read the STEP file with Gmsh's OpenCASCADE kernel, in metres.
-  2. Apply the axis mapping.
+  2. Apply the placement, as rigid motions so exact surface types are kept: the axis mapping, then the rotation about the fixed Boundary Lab axes in the order X, Y, Z about the origin, then the translation.
   3. Classify solids as air bodies and surface bodies as exterior surface bodies. Before that, free faces that close up among themselves through shared edges (each edge used by exactly two of them, as imported, before fragmenting) form a closed shell. Closed shells are named from the STEP if possible, else "Closed shell N" in import order. A closed shell chosen as air becomes a solid (an air body named after the shell); one without a choice, or chosen as exterior, stays exterior surface. A choice for a name the file does not contain is rejected.
   4. Fragment all bodies into shared topology.
   5. Detect interfaces and symmetry-plane open edges.
@@ -150,8 +157,10 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
   - Roles, weights, components, excitations and channels belong to the user and survive regeneration through the host rule that omitted fields are preserved.
 - **Re-import matching:** faces are matched by a unique STEP name, then by fingerprint within a tolerance (among the faces sharing the STEP name, if several do): same surface type, centre within 1 % of the bounding-box diagonal, area within 5 %, normal pointing the same way within about 2.6° (a flipped normal does not match). A stored face whose fingerprint matches more than one face is ambiguous and counts as not found. If any face group is missing any of its stored faces (none or only some found, so nothing is reassigned silently), generation is rejected before the response is sent with one message naming every such group; the previous meshes stay in place. The editor runs the same matching on the loaded file and lists those groups as needing review. Grouping a selection under the name of a group that needs review drops its missing faces, which repairs it. Deleting a group, like any face group that disappears, sends on the next generation the explicit removal of its boundary, of interfaces using it, and its detachment from its component in the same patch; a component left without boundaries is removed with its excitations. A component that also holds boundaries of another design is left as is, so the host rejects the generation until the user detaches the boundary in System. Bounded regions whose mesh is gone are removed too.
 - **Watching the STEP file:** when the application regains focus, a changed STEP file (modification time or size) triggers a re-mesh prompt, once per change, rather than an automatic regeneration. The file is stamped before it is read, so an edit while it loads still prompts; a design without a STEP file never prompts. Yes reloads the preview and starts the host's Generate.
-- **Symmetry suggestion:** open edges lying entirely on X=0 or Y=0 after reorientation suggest the matching project symmetry. A mismatch with the project setting rejects generation with a message.
-- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). A click in the view selects a face, Ctrl or Shift+click adds or removes one; the selection is shared with the tree and highlighted in the view. The tree has a size override column for bodies. Below that sit the face-group list (name field, Group selection, which creates the group or adds to an existing one, Delete group, and a size override column; groups named in the STEP file are listed too, and selecting a row selects its faces), the orientation pickers, and the sizing settings with the computed target element size. Meshing uses the host's Generate (F7) and geometry-generation cancel. When a loaded STEP file has closed shells without a stored choice, the editor asks for each one (Air volume / Exterior surface; Escape means exterior) and stores the answers; a Closed shells list keeps each choice editable afterwards. Choosing another STEP file clears the stored choices. The editor follows host revisions and busy state like the vented-enclosure editor.
+- **Symmetry suggestion:** open edges lying entirely on X=0 or Y=0 after the placement suggest the matching project symmetry. A mismatch with the project setting rejects generation with a message.
+- **Editor:** a 3D viewport with face picking above a body and face tree, with visibility checkboxes, Show all, and Clear (which shows everything and clears the selection, never deleting groups). A click in the view selects a face, Ctrl or Shift+click adds or removes one; the selection is shared with the tree and highlighted in the view. The tree has a size override column for bodies. Below that sit the face-group list (name field, Group selection, which creates the group or adds to an existing one, Delete group, and a size override column; groups named in the STEP file are listed too, and selecting a row selects its faces), the orientation pickers with a Placement box under them (Rotate X/Y/Z in degrees, Translate X/Y/Z in millimetres, number fields only), and the sizing settings with the computed target element size. Meshing uses the host's Generate (F7) and geometry-generation cancel. When a loaded STEP file has closed shells without a stored choice, the editor asks for each one (Air volume / Exterior surface; Escape means exterior) and stores the answers; while it asks, the shell's faces are highlighted, the rest drawn see-through, and the view framed on the shell, restored after the answer. A Closed shells list keeps each choice editable afterwards.
+- **Preview:** a display tessellation of the CAD faces, drawn smooth-shaded with the face outlines (edges between faces), never the triangle edges; it is not the generated mesh. The view shows an axis triad at the Boundary Lab origin and see-through X=0, Y=0 and Z=0 planes sized to the model, X=0 and Y=0 emphasised as symmetry planes, all hidden by one toggle. Opening a file first runs a quick scan without fragmenting that finds and displays the closed shells for the questions, then one full preview with the answers. Placement changes, including Forward and Up, are rigid motions and only transform the displayed preview; closed shell choices and a changed or new file re-read the STEP file. The placement is applied to the geometry in the meshing run only.
+- **Meshes:** scale and translation of generated assembly rows (any provider) are locked at the design's values; a generated geometry is placed only by its design. Choosing another STEP file clears the stored choices. The editor follows host revisions and busy state like the vented-enclosure editor.
 - **CLI:** a thin command over the same headless pipeline taking a STEP path, the maximum frequency, elements per wavelength and an output folder, and writing the assembly meshes. A repeatable `--closed-shell NAME=air|exterior` sets closed shell choices.
 - **Licence:** Fusion2Msh (CC BY-NC 4.0) informed the design only. Its code must not be copied into Boundary Lab, which is GPL-3.
 
@@ -173,8 +182,7 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 ## Out of Scope
 
 - Small-feature or edge-proximity refinement (deferred to v2).
-- Free-angle rotation (only 90° axis mappings).
-- Moving the origin inside CAD Import (the CAD origin is used; Meshes translation remains available).
+- Dragging the geometry in the 3D view to place it (placement is set by number fields).
 - Host cutting of full assemblies under symmetry; only assemblies that are already reduced are accepted.
 - Interfaces between two FEM regions; touching air bodies are merged instead.
 - Treating solids as cabinet material and deriving the air by subtraction.
@@ -183,10 +191,13 @@ Re-importing an edited STEP file keeps every assignment whose faces can still be
 
 ## Further Notes
 
-- **Delivery:** five slices on one feature branch, opened as separate PRs once the whole feature is built:
+- **Delivery:** eight slices on one feature branch, opened as separate PRs once the whole feature is built:
   0. Host symmetry change.
   1. Headless core and CLI.
   2. Provider package, 3D editor and visibility tree.
   3. Face picking, face groups, orientation pickers and System entries.
   4. Re-import matching and watching the STEP file.
+  5. Preview look and closed shell highlight.
+  6. Opening speed.
+  7. Placement, axes and origin planes, locked Meshes placement.
 - **Vocabulary** follows the root glossary: air body, exterior surface body, face group, target element size, CAD import. A "source" is a moving boundary owned by a component.
