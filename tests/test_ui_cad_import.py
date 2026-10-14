@@ -105,8 +105,10 @@ def test_loaded_step_lists_bodies_and_faces_with_size_and_symmetry(cad_editor):
 
 
 def test_tree_gives_spare_width_to_names_and_fits_the_size_column(cad_editor):
-    header = cad_editor[0].tree.header()
+    editor, _ = cad_editor
+    header = editor.tree.header()
 
+    assert not header.stretchLastSection()
     assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
     assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
 
