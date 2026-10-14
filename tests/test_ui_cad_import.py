@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from pathlib import Path
 from time import monotonic, sleep
 from types import SimpleNamespace
 
@@ -49,7 +50,8 @@ def _cad_qt_interactor_class():
             self.colours = []
 
         def add_mesh(self, *args, **kwargs):
-            self.calls.append("add_mesh")
+            # pyvista resets the camera unless told not to while it counts the camera as unset, which here is always.
+            self.calls.append("add_mesh" if kwargs.get("reset_camera") is False else "add_mesh_resetting_camera")
             self.colours.append(kwargs["color"])
             return _StubActor()
 
@@ -690,6 +692,48 @@ def test_interface_faces_get_no_menu_and_a_right_click_opens_the_face_menu(
     mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30))
     wait(qapp, lambda: asked)
     assert asked == [interface_face]
+
+
+def test_picking_and_grouping_keep_the_camera(cad_editor, faces_under_mouse, qapp):
+    editor, _ = cad_editor
+    faces, _ = faces_under_mouse
+    face = cabinet_faces(editor, lambda f: True)[0]
+    faces.append(face)
+    plotter = editor.viewport.plotter
+    plotter.calls.clear()
+
+    mouse(plotter, Qt.MouseButton.LeftButton, (20, 30))
+    qapp.processEvents()
+    menu_entries(editor.face_menu(face))["Add to/Driver"].trigger()
+    qapp.processEvents()
+
+    assert "add_mesh" in plotter.calls
+    assert not {"reset_camera", "add_mesh_resetting_camera"} & set(plotter.calls)
+
+
+def test_open_step_starts_in_the_folder_last_used(blank_cad_editor, monkeypatch, qapp, tmp_path):
+    from blab.ui import file_dialogs
+
+    editor, host = blank_cad_editor
+    (tmp_path / "models").mkdir()
+    step = vented_box(tmp_path / "models" / "box.step")
+    starts = []
+
+    def get_open_file_name(parent, title, start, file_filter):
+        starts.append(start)
+        return str(step), file_filter
+
+    monkeypatch.setattr(file_dialogs.QFileDialog, "getOpenFileName", get_open_file_name)
+    editor.browse_button.click()
+    wait(qapp, lambda: not editor.loading)
+    assert host.snapshot().source["step_path"] == str(step)
+
+    main_window = editor.widget.window()
+    main_window.add_generator_document()  # another CAD design starts where the last file was
+    other, _ = main_window._provider_editors[main_window.active_generator_document().id]
+    other.browse_button.click()
+
+    assert Path(starts[1]) == step.parent
 
 
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():

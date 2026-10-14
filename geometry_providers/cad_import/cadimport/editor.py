@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -36,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from blab.cad_import import AXES, WALLS, CadFace, CadFaceRef, face_ref, match_face_ref
+from blab.ui.file_dialogs import FileDialogService
 
 from .backend import run_worker
 from .parameters import DEFAULT_SOUND_SPEED_M_PER_S
@@ -100,7 +100,10 @@ class Viewport(QWidget):
                 if mask.any():
                     triangles = preview["triangles"][mask]
                     cells = np.hstack([np.full((len(triangles), 1), 3), triangles]).ravel()
-                    actor = self.plotter.add_mesh(pv.PolyData(preview["points"], cells), color=colour, show_edges=True)
+                    # pyvista would reset (zoom out) the camera on each redraw: it never counts it as set.
+                    actor = self.plotter.add_mesh(
+                        pv.PolyData(preview["points"], cells), color=colour, show_edges=True, reset_camera=False
+                    )
                     self._cell_faces[_actor_key(actor)] = preview["face_ids"][mask]
             if reset_camera:
                 self.plotter.reset_camera()
@@ -332,10 +335,9 @@ class CadImportEditor:
             self.edited({"step_path": path, "closed_shells": {}})
 
     def _browse(self):
-        start = str(Path(self.source.get("step_path") or Path.home()).parent)
-        path, _ = QFileDialog.getOpenFileName(self.widget, "Open STEP file", start, "STEP files (*.step *.stp)")
-        if path:
-            self.set_step_path(path)
+        path = FileDialogService().open_file(self.widget, "Open STEP file", "STEP files (*.step *.stp)")
+        if path is not None:
+            self.set_step_path(str(path))
 
     # -- preview ------------------------------------------------------------------------------
 
