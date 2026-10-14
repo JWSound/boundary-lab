@@ -5,12 +5,13 @@ import math
 import shutil
 import tempfile
 import threading
+import zlib
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -19,8 +20,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -45,6 +48,10 @@ SIZING = (
     ("growth_rate", "Growth rate", 1.05, 3.0, 2, "×"),
 )
 FACE_COLOUR, SELECTED_COLOUR = "#c8ccd2", "#e8a33d"
+GROUP_COLOURS = (
+    "#4e79a7", "#59a14f", "#e15759", "#76b7b2", "#b07aa1",
+    "#9c755f", "#edc948", "#ff9da7", "#2f6f4f", "#8c6bb1",
+)  # fmt: skip
 
 
 class _Relay(QObject):
@@ -56,9 +63,13 @@ def _actor_key(actor):
 
 
 class Viewport(QWidget):
-    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face."""
+    """Visible faces of the preview tessellation in a VTK plotter; a click picks a face, a right-click asks a menu.
 
-    def __init__(self, parent=None, *, picked=lambda face_id, add: None):
+    Clicks come from the plotter widget's Qt mouse events: the camera interaction holds VTK's mouse focus
+    between press and release, so VTK observers never see the release.
+    """
+
+    def __init__(self, parent=None, *, picked=lambda face_id, add: None, menu=lambda face_id, global_pos: None):
         super().__init__(parent)
         from pyvistaqt import QtInteractor
 
@@ -68,23 +79,24 @@ class Viewport(QWidget):
         layout.addWidget(self.plotter)
         self.setMinimumHeight(220)
         self.picked = picked
+        self.menu = menu
         self._cell_faces = {}  # actor -> face id per cell
-        self._press = None
-        interactor = self.plotter.iren.interactor
-        interactor.AddObserver("LeftButtonPressEvent", self._on_press, 10.0)
-        interactor.AddObserver("LeftButtonReleaseEvent", self._on_release, 10.0)
+        self._press = None  # button and position of the last press
+        self.plotter.installEventFilter(self)
 
-    def show_faces(self, preview, visible, selected=frozenset(), *, reset_camera=False):
+    def show_faces(self, preview, visible, selected=frozenset(), colours=None, *, reset_camera=False):
+        """Draw the ``visible`` faces in their ``colours`` (face id -> colour, default plain), ``selected`` on top."""
         import pyvista as pv
 
         self.plotter.clear()
         self._cell_faces = {}
         if preview is not None:
-            for faces, colour in (
-                (set(visible) - set(selected), FACE_COLOUR),
-                (set(visible) & set(selected), SELECTED_COLOUR),
-            ):
-                mask = np.isin(preview["face_ids"], list(faces))
+            by_colour = {}
+            for face in visible:
+                colour = SELECTED_COLOUR if face in selected else (colours or {}).get(face, FACE_COLOUR)
+                by_colour.setdefault(colour, []).append(face)
+            for colour, faces in by_colour.items():
+                mask = np.isin(preview["face_ids"], faces)
                 if mask.any():
                     triangles = preview["triangles"][mask]
                     cells = np.hstack([np.full((len(triangles), 1), 3), triangles]).ravel()
@@ -94,23 +106,43 @@ class Viewport(QWidget):
                 self.plotter.reset_camera()
         self.plotter.render()
 
-    def _on_press(self, interactor, _event):
-        self._press = interactor.GetEventPosition()
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            self._press = event.button(), event.position()
+        elif kind == QEvent.Type.MouseButtonRelease and self._press is not None:
+            button, press = self._press
+            self._press = None
+            moved = event.position() - press
+            if button == event.button() and abs(moved.x()) + abs(moved.y()) <= 3:  # else a drag moves the camera
+                self._clicked(event)
+        return False  # the camera interaction sees every event
 
-    def _on_release(self, interactor, _event):
-        x, y = interactor.GetEventPosition()
-        if self._press is None or abs(x - self._press[0]) + abs(y - self._press[1]) > 3:
-            return  # a drag rotates the view
+    def _clicked(self, event):
+        ratio = self.plotter.devicePixelRatioF()
+        position = event.position()
+        x = round(position.x() * ratio)
+        y = round(self.plotter.height() * ratio) - round(position.y() * ratio) - 1
+        face = self.face_at(x, y)
+        if event.button() == Qt.MouseButton.LeftButton:
+            add = event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            self.picked(face, bool(add))
+        elif event.button() == Qt.MouseButton.RightButton and face is not None:
+            # After the release: the camera interaction gets it before the menu blocks.
+            global_pos = event.globalPosition().toPoint()
+            QTimer.singleShot(0, lambda: self.menu(face, global_pos))
+
+    def face_at(self, x, y):
+        """The face under VTK display position ``x``, ``y`` (pixels, y up), or ``None``."""
         from vtkmodules.vtkRenderingCore import vtkCellPicker
 
         picker = vtkCellPicker()
         picker.SetTolerance(0.0005)
-        face = None
         if picker.Pick(x, y, 0, self.plotter.renderer):
             faces = self._cell_faces.get(_actor_key(picker.GetActor()))
             if faces is not None and 0 <= picker.GetCellId() < len(faces):
-                face = int(faces[picker.GetCellId()])
-        self.picked(face, bool(interactor.GetControlKey() or interactor.GetShiftKey()))
+                return int(faces[picker.GetCellId()])
+        return None
 
     def close(self):
         self.plotter.close()
@@ -153,11 +185,14 @@ class CadImportEditor:
         layout.addWidget(self.info)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
-        self.viewport = Viewport(picked=self._viewport_picked)
+        self.viewport = Viewport(picked=self._viewport_picked, menu=self._show_face_menu)
         splitter.addWidget(self.viewport)
         tree_panel = QWidget()
         tree_layout = QVBoxLayout(tree_panel)
         tree_layout.setContentsMargins(0, 0, 0, 0)
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        tree_layout.addWidget(self.hint)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
         self.tree.setHeaderLabels(["Body / face", "Size (mm)"])
@@ -167,7 +202,7 @@ class CadImportEditor:
         self.tree.setAccessibleName("Bodies and faces")
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemDoubleClicked.connect(self._tree_double_clicked)
-        self.tree.itemSelectionChanged.connect(lambda: self._render_timer.start(0))
+        self.tree.itemSelectionChanged.connect(self._selection_changed)
         tree_layout.addWidget(self.tree)
         buttons = QHBoxLayout()
         self.show_all_button = QPushButton("Show all")
@@ -189,13 +224,18 @@ class CadImportEditor:
         self.group_name = QLineEdit()
         self.group_name.setPlaceholderText("Face group name")
         self.group_name.setAccessibleName("Face group name")
-        self.group_button = QPushButton("Group selection")
+        self.group_name.textChanged.connect(self._group_name_changed)
+        self.group_button = QPushButton("New group")
         self.group_button.setToolTip("Put the selected faces into the named face group (new or existing).")
         self.group_button.clicked.connect(lambda: self.group_selection(self.group_name.text()))
+        self.remove_button = QPushButton("Remove from group")
+        self.remove_button.setToolTip("Move the selected faces back to walls.")
+        self.remove_button.clicked.connect(lambda: self.remove_from_group(self.selected_faces()))
         self.delete_group_button = QPushButton("Delete group")
         self.delete_group_button.clicked.connect(self._delete_selected_group)
         name_row.addWidget(self.group_name, 1)
         name_row.addWidget(self.group_button)
+        name_row.addWidget(self.remove_button)
         name_row.addWidget(self.delete_group_button)
         groups_layout.addLayout(name_row)
         self.groups_table = QTableWidget(0, 3)
@@ -247,6 +287,7 @@ class CadImportEditor:
         self._render_timer = QTimer(self.widget)
         self._render_timer.setSingleShot(True)
         self._render_timer.timeout.connect(self._render)
+        self._selection_changed()
         self.host.services.subscribe(self.event)
         self._stamp = None  # (mtime, size) of the STEP file when last read
         QGuiApplication.instance().applicationStateChanged.connect(self._application_state_changed)
@@ -464,7 +505,7 @@ class CadImportEditor:
         self._syncing = False
         self._show_overrides()
         self._show_closed_shells()
-        self.viewport.show_faces(preview, self.visible_faces(), reset_camera=True)
+        self._render(reset_camera=True)
 
     # -- visibility and selection -------------------------------------------------------------
 
@@ -491,6 +532,47 @@ class CadImportEditor:
 
     def _viewport_picked(self, face_id, add):
         self.pick_face(face_id, add=add)
+
+    def _selection_changed(self):
+        count = len(self.selected_faces())
+        self.hint.setText(
+            "Click a face to select it, Ctrl or Shift+click to add or remove one, right-click to group it. "
+            f"{count} face{'' if count == 1 else 's'} selected."
+        )
+        self._render_timer.start(0)
+
+    def _show_face_menu(self, face_id, global_pos):
+        menu = self.face_menu(face_id)
+        if menu.actions():
+            menu.exec(global_pos)
+        menu.deleteLater()
+
+    def face_menu(self, face_id):
+        """The right-click menu of ``face_id``: it acts on the selection if the face is in it, else on the face."""
+        menu = QMenu(self.widget)
+        if self._faces is None or face_id in self._interface_of():
+            return menu
+        selected = self.selected_faces()
+        faces = selected if face_id in selected else {face_id}
+        add = menu.addMenu("Add to")
+        for name, _, kind in self.rows():
+            if kind != "interface":
+                add.addAction(name, lambda n=name: self.add_to_group(n, faces))
+        add.addAction("New group…", lambda: self._add_to_new_group(faces))
+        stored = {f for group in self.source.get("face_groups", []) for f in self._members(group)[0]}
+        if face_id in stored:
+            menu.addAction(f'Remove from "{self.group_of(face_id)[0]}"', lambda: self.remove_from_group(faces))
+        return menu
+
+    def _add_to_new_group(self, face_ids):
+        name = self.ask_group_name()
+        if name is not None:
+            self.add_to_group(name, face_ids)
+
+    def ask_group_name(self):
+        """Ask the name of a new face group; ``None`` when cancelled."""
+        name, ok = QInputDialog.getText(self.widget, "New face group", "Face group name:")
+        return name if ok else None
 
     def _item_changed(self, item, column):
         if self._syncing:
@@ -528,8 +610,25 @@ class CadImportEditor:
         self.show_all()
         self.tree.clearSelection()
 
-    def _render(self):
-        self.viewport.show_faces(self._preview, self.visible_faces(), self.selected_faces())
+    def _render(self, *, reset_camera=False):
+        colours = self.group_colours()
+        face_colours = {face: colours[name] for name, faces, _ in self.rows() for face in faces}
+        self.viewport.show_faces(
+            self._preview, self.visible_faces(), self.selected_faces(), face_colours, reset_camera=reset_camera
+        )
+
+    def group_colours(self):
+        """``{row name: colour}``: walls the plain face colour, the others each their own, stable by name."""
+        colours, free = {WALLS: FACE_COLOUR}, list(GROUP_COLOURS)
+        for name in sorted(name for name, _, kind in self.rows() if kind != "walls"):
+            start = zlib.crc32(name.encode()) % len(GROUP_COLOURS)
+            colour = next((c for c in GROUP_COLOURS[start:] + GROUP_COLOURS[:start] if c in free), None)
+            if colour is None:  # more groups than colours: share
+                colour = GROUP_COLOURS[start]
+            else:
+                free.remove(colour)
+            colours[name] = colour
+        return colours
 
     # -- face groups --------------------------------------------------------------------------
 
@@ -576,41 +675,89 @@ class CadImportEditor:
             return []
         return [g["name"] for g in self.source.get("face_groups", []) if self._members(g)[1]]
 
+    def rows(self):
+        """``[(name, face ids, kind)]`` as listed: walls, the face groups, then the interface groups."""
+        if self._faces is None:
+            return []
+        groups = self.face_groups()
+        interfaces = {i["name"]: set(i["face_ids"]) for i in self.geometry["interfaces"]}
+        walls = set(self._faces) - set().union(*groups.values(), *interfaces.values())
+        return (
+            [(WALLS, walls, "walls")]
+            + [(name, faces, "group") for name, faces in groups.items()]
+            + [(name, faces, "interface") for name, faces in interfaces.items()]
+        )
+
     def group_selection(self, name):
-        """Put the selected faces into face group ``name``, out of any other group."""
-        name = name.strip()
-        selected = self.selected_faces()
-        if not name or not selected or self._faces is None:
+        """Put the selected faces into face group ``name``."""
+        self.add_to_group(name, self.selected_faces())
+
+    def add_to_group(self, name, face_ids):
+        """Put ``face_ids`` into face group ``name`` (new or existing), out of any other; walls removes them."""
+        name, face_ids = name.strip(), set(face_ids)
+        if not name or not face_ids or self._faces is None:
             self.status.setText("Select faces and enter a face group name first.")
             return
+        if name == WALLS:
+            self.remove_from_group(face_ids)
+            return
         interface_of = self._interface_of()
-        if name in {WALLS, *interface_of.values()}:
+        if name in interface_of.values():
             self.status.setText(f"Face group name '{name}' is reserved.")
             return
-        if selected & interface_of.keys():
-            face = min(selected & interface_of.keys())
+        if face_ids & interface_of.keys():
+            face = min(face_ids & interface_of.keys())
             self.status.setText(f"Face group '{name}' contains face {face} of interface '{interface_of[face]}'.")
             return
         stored = list(self.source.get("face_groups", []))
         if name not in [g["name"] for g in stored]:
             stored.append({"name": name, "faces": []})
+        # Re-picking a group that needs review repairs it: its missing faces are dropped.
+        self._edit_groups(self._regrouped(stored, face_ids, name))
+
+    def remove_from_group(self, face_ids):
+        """Move ``face_ids`` out of their face groups, back to walls."""
+        face_ids = set(face_ids)
+        if not face_ids or self._faces is None:
+            self.status.setText("Select faces first.")
+            return
+        self._edit_groups(self._regrouped(self.source.get("face_groups", []), face_ids))
+        named = sorted(f for f in face_ids if self.group_of(f)[1] == "group")
+        if named:
+            self.status.setText(f"Faces {', '.join(map(str, named))} stay in the face groups their STEP names form.")
+
+    def _regrouped(self, stored, face_ids, name=None):
+        """``stored`` groups with ``face_ids`` moved into group ``name`` (``None``: into none)."""
         groups = []
         for group in stored:
             ids, unmatched = self._members(group)
             if group["name"] == name:
-                ids, unmatched = ids | selected, []  # re-picking a group that needs review repairs it
+                ids, unmatched = ids | face_ids, []
             else:
-                ids -= selected
+                ids -= face_ids
             if ids or unmatched:
                 groups.append({"name": group["name"], "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
-        self._edit_groups(groups)
+        return groups
+
+    def group_of(self, face_id):
+        """``(name, kind)`` of the row holding ``face_id``."""
+        return next((name, kind) for name, faces, kind in self.rows() if face_id in faces)
+
+    def set_current_group(self, name):
+        """Make ``name`` the group the selection is added to."""
+        self.group_name.setText(name)
+
+    def _group_name_changed(self, text):
+        names = {name for name, _, kind in self.rows() if kind != "interface"}
+        text = text.strip()
+        self.group_button.setText(f'Add to "{text}"' if text in names else "New group")
 
     def delete_face_group(self, name):
         self._edit_groups([g for g in self.source.get("face_groups", []) if g["name"] != name])
 
     def _edit_groups(self, groups):
         """Store ``groups``; size overrides of face groups no longer listed are dropped."""
-        listed = self.face_groups(groups).keys() | {g["name"] for g in groups}
+        listed = self.face_groups(groups).keys() | {g["name"] for g in groups} | {WALLS, *self._interface_of().values()}
         sizes = {k: v for k, v in self.source.get("face_group_sizes_m", {}).items() if k in listed}
         self.edited({"face_groups": groups, "face_group_sizes_m": sizes})
 
@@ -645,31 +792,42 @@ class CadImportEditor:
             self._size_typed(lambda size: self.set_face_group_size(name, size), item.text())
 
     def _group_selected(self):
+        """A clicked row selects its faces; a single row other than an interface becomes the current group."""
         if self._syncing:
             return
-        groups = self.face_groups()
-        rows = {item.row() for item in self.groups_table.selectedItems()}
-        self.select_faces(set().union(*(groups[self.groups_table.item(r, 0).text()] for r in rows)))
+        rows = self.rows()
+        selected = sorted({item.row() for item in self.groups_table.selectedItems()})
+        self.select_faces(set().union(*(rows[r][1] for r in selected)))
+        if len(selected) == 1 and rows[selected[0]][2] != "interface":
+            self.set_current_group(rows[selected[0]][0])
 
     def _show_groups(self):
         self._syncing = True
         stored = {g["name"] for g in self.source.get("face_groups", [])}
         sizes = self.source.get("face_group_sizes_m", {})
-        groups = self.face_groups()
+        rows = self.rows()
         review = set(self.groups_needing_review())
-        self.groups_table.setRowCount(len(groups))
-        for row, (name, faces) in enumerate(groups.items()):
+        colours = self.group_colours()
+        tips = {
+            "walls": "Faces in no other face group",
+            "interface": "Interface face group: sizable, not editable",
+        }
+        self.groups_table.setRowCount(len(rows))
+        for row, (name, faces, kind) in enumerate(rows):
             count = f"{len(faces)} (needs review)" if name in review else str(len(faces))
             cells = [QTableWidgetItem(name), QTableWidgetItem(count), QTableWidgetItem(_mm(sizes.get(name)))]
             for cell in cells[:2]:
                 cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            cells[0].setToolTip("Picked face group" if name in stored else "Named in the STEP file")
+            cells[0].setToolTip(tips.get(kind) or ("Picked face group" if name in stored else "Named in the STEP file"))
+            cells[0].setData(Qt.ItemDataRole.DecorationRole, QColor(colours[name]))
             if name in review:
                 cells[1].setToolTip("Some faces of this group are not in the STEP file: re-pick or delete the group.")
             cells[2].setToolTip("Element size override in mm; empty uses the body or target size.")
             for column, cell in enumerate(cells):
                 self.groups_table.setItem(row, column, cell)
         self._syncing = False
+        self._group_name_changed(self.group_name.text())
+        self._render_timer.start(0)  # group colours
 
     def _show_overrides(self):
         """Body sizes in the tree, face groups and their sizes in the table."""

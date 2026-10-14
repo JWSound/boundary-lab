@@ -36,21 +36,21 @@ class _StubActor:
         return hex(id(self))
 
 
-class _StubInteractor:
-    def AddObserver(self, event, callback, priority):
-        pass
-
-
 def _cad_qt_interactor_class():
-    """The plotter stub plus what the face picking uses: the VTK interactor and actors from ``add_mesh``."""
+    """The plotter stub plus what the face picking uses: actors from ``add_mesh``, whose colours it records."""
 
     class CadQtInteractor(_stub_qt_interactor_class()):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.iren = SimpleNamespace(interactor=_StubInteractor())
+            self.colours = []  # of the meshes since the last clear
+
+        def clear(self):
+            self.calls.append("clear")
+            self.colours = []
 
         def add_mesh(self, *args, **kwargs):
             self.calls.append("add_mesh")
+            self.colours.append(kwargs["color"])
             return _StubActor()
 
     return CadQtInteractor
@@ -257,8 +257,10 @@ def test_picked_faces_become_a_face_group_that_generates_a_rigid_boundary(
     assert sorted(abs(face["centre"][0]) for face in group["faces"]) == pytest.approx([0.06, 0.06])
     assert {face["surface_type"] for face in group["faces"]} == {"Plane"}
     assert [editor.groups_table.item(r, 0).text() for r in range(editor.groups_table.rowCount())] == [
+        "walls",
         "Sides",
         "Driver",  # from the STEP file
+        "Port opening",  # the interface
     ]
     monkeypatch.setattr(geometry_workflow, "GENERATED_GEOMETRY_ROOT", tmp_path / "runs")
     errors = []
@@ -289,9 +291,15 @@ def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
     assert host.snapshot().source["face_group_sizes_m"] == {}
 
 
-def group_rows(editor):
+def all_rows(editor):
     table = editor.groups_table
     return {table.item(r, 0).text(): int(table.item(r, 1).text()) for r in range(table.rowCount())}
+
+
+def group_rows(editor):
+    """The face group rows, without walls and the interface groups."""
+    interfaces = {i["name"] for i in editor.geometry["interfaces"]}
+    return {name: count for name, count in all_rows(editor).items() if name not in {"walls", *interfaces}}
 
 
 def test_picking_one_of_several_faces_sharing_a_step_name_groups_only_that_face(cad_editor, qapp, tmp_path):
@@ -326,7 +334,6 @@ def test_grouping_waits_for_the_reload_after_an_axis_change(cad_editor, qapp):
 @pytest.mark.parametrize(
     ("name", "pick", "message"),
     [
-        ("walls", "cabinet", "Face group name 'walls' is reserved"),
         ("Port opening", "cabinet", "Face group name 'Port opening' is reserved"),
         ("Mouth", "interface", "Face group 'Mouth' contains face .* of interface 'Port opening'"),
     ],
@@ -502,6 +509,187 @@ def test_step_file_edited_while_it_loads_offers_to_re_mesh(cad_editor, monkeypat
     regain_focus(qapp)
 
     assert asked == [host.snapshot().source["step_path"]]
+
+
+def mouse(widget, button, press, release=None, modifier=Qt.KeyboardModifier.NoModifier):
+    """Press at ``press`` and release at ``release`` (default: same point) through the widget's real events."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    QTest.mousePress(widget, button, modifier, QPoint(*press))
+    if release is not None:
+        QTest.mouseMove(widget, QPoint(*release))
+    QTest.mouseRelease(widget, button, modifier, QPoint(*(release or press)))
+
+
+@pytest.fixture
+def faces_under_mouse(cad_editor, monkeypatch):
+    """The VTK pick (offscreen it hits nothing) answers ``faces[0]`` and records the display positions."""
+    editor, _ = cad_editor
+    faces, positions = [], []
+    monkeypatch.setattr(editor.viewport, "face_at", lambda x, y: positions.append((x, y)) or faces[0])
+    return faces, positions
+
+
+def test_a_click_in_the_view_picks_the_face_and_a_drag_does_not(cad_editor, faces_under_mouse, qapp):
+    editor, _ = cad_editor
+    faces, positions = faces_under_mouse
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    plotter = editor.viewport.plotter
+    plotter.resize(200, 100)
+    ratio = plotter.devicePixelRatioF()
+
+    faces.append(first)
+    mouse(plotter, Qt.MouseButton.LeftButton, (20, 30))
+    assert editor.selected_faces() == {first}
+    assert positions == [(round(20 * ratio), round(100 * ratio) - round(30 * ratio) - 1)]  # VTK display: y up
+
+    faces[0] = second
+    mouse(plotter, Qt.MouseButton.LeftButton, (20, 30), (60, 50))  # a drag rotates the view
+    assert editor.selected_faces() == {first}
+    mouse(plotter, Qt.MouseButton.LeftButton, (5, 5), modifier=Qt.KeyboardModifier.ControlModifier)
+    assert editor.selected_faces() == {first, second}
+    mouse(plotter, Qt.MouseButton.LeftButton, (5, 5), modifier=Qt.KeyboardModifier.ShiftModifier)
+    assert editor.selected_faces() == {first}
+    mouse(plotter, Qt.MouseButton.LeftButton, (5, 5), (5, 40))  # also lets go of the modifier for later tests
+    assert editor.selected_faces() == {first}
+    assert "1 face selected" in editor.hint.text()
+
+
+def row_of(editor, name):
+    table = editor.groups_table
+    return next(r for r in range(table.rowCount()) if table.item(r, 0).text() == name)
+
+
+def test_walls_row_comes_first_and_interface_rows_last(cad_editor):
+    editor, _ = cad_editor
+    (interface,) = editor.geometry["interfaces"]
+    driver = [f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver"]
+    walls = {f["id"] for f in editor.geometry["faces"]} - set(driver) - set(interface["face_ids"])
+
+    assert list(all_rows(editor).items()) == [
+        ("walls", len(walls)),
+        ("Driver", 1),
+        ("Port opening", len(interface["face_ids"])),
+    ]
+    editor.groups_table.selectRow(row_of(editor, "walls"))
+    assert editor.selected_faces() == walls
+    assert editor.group_name.text() == "walls"
+    assert editor.group_button.text() == 'Add to "walls"'
+
+    row = row_of(editor, "Port opening")
+    editor.groups_table.selectRow(row)
+    assert editor.selected_faces() == set(interface["face_ids"])
+    assert editor.group_name.text() == "walls"  # an interface group is never the current group
+    assert not editor.groups_table.item(row, 0).flags() & Qt.ItemFlag.ItemIsEditable
+    editor.groups_table.item(row, 2).setText("4")
+    editor.groups_table.item(row_of(editor, "walls"), 2).setText("30")
+    assert editor.source["face_group_sizes_m"] == {"Port opening": 0.004, "walls": 0.03}
+
+
+def test_single_faces_are_added_to_the_current_group_and_removed_back_to_walls(cad_editor):
+    editor, host = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.pick_face(first)
+    editor.group_name.setText("Sides")
+    assert editor.group_button.text() == "New group"
+    editor.group_button.click()
+    editor.groups_table.selectRow(row_of(editor, "Sides"))
+    assert editor.group_name.text() == "Sides" and editor.group_button.text() == 'Add to "Sides"'
+
+    editor.pick_face(second)
+    editor.group_button.click()
+    assert group_rows(editor)["Sides"] == 2
+    editor.pick_face(first)
+    editor.remove_button.click()
+    assert [len(g["faces"]) for g in host.snapshot().source["face_groups"]] == [1]
+
+    editor.pick_face(second)
+    editor.set_current_group("walls")
+    editor.group_button.click()  # adding to walls removes from the group
+    assert host.snapshot().source["face_groups"] == []
+    assert "Sides" not in group_rows(editor)
+
+
+def test_each_face_group_is_drawn_in_its_own_colour_with_a_swatch(cad_editor, qapp):
+    editor, _ = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+    editor.add_to_group("A", {first})
+    editor.add_to_group("B", {second})
+    editor.tree.clearSelection()
+    qapp.processEvents()
+
+    table = editor.groups_table
+    swatches = {
+        table.item(r, 0).text(): table.item(r, 0).data(Qt.ItemDataRole.DecorationRole).name()
+        for r in range(table.rowCount())
+    }
+    assert list(swatches) == ["walls", "A", "B", "Driver", "Port opening"]
+    assert len(set(swatches.values())) == len(swatches)
+    assert swatches["walls"] == "#c8ccd2"  # the plain face colour
+    assert sorted(editor.viewport.plotter.colours) == sorted(swatches.values())
+
+    editor.pick_face(first)
+    qapp.processEvents()
+    assert "#e8a33d" in editor.viewport.plotter.colours  # the selection on top
+    assert swatches["A"] not in editor.viewport.plotter.colours
+
+
+def menu_entries(menu):
+    """``{text: action}`` of ``menu``, submenu entries as ``"Add to/<text>"``."""
+    entries = {}
+    for action in menu.actions():
+        if action.menu() is not None:
+            entries |= {f"{action.text()}/{a.text()}": a for a in action.menu().actions()}
+        else:
+            entries[action.text()] = action
+    return entries
+
+
+def test_right_click_menu_adds_a_face_to_a_group_and_removes_it(cad_editor, monkeypatch):
+    editor, host = cad_editor
+    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
+
+    entries = menu_entries(editor.face_menu(first))
+    assert list(entries) == ["Add to/walls", "Add to/Driver", "Add to/New group…"]  # no interface group
+    entries["Add to/Driver"].trigger()
+    assert [(g["name"], len(g["faces"])) for g in host.snapshot().source["face_groups"]] == [("Driver", 1)]
+
+    monkeypatch.setattr(editor, "ask_group_name", lambda: None)  # cancelled
+    status = editor.status.text()
+    menu_entries(editor.face_menu(second))["Add to/New group…"].trigger()
+    assert editor.status.text() == status
+    monkeypatch.setattr(editor, "ask_group_name", lambda: "Sides")
+    editor.pick_face(second)
+    menu_entries(editor.face_menu(second))["Add to/New group…"].trigger()
+    assert group_rows(editor) == {"Driver": 2, "Sides": 1}
+
+    entries = menu_entries(editor.face_menu(first))  # first is not selected: the menu acts on it alone
+    assert 'Remove from "Driver"' in entries
+    entries['Remove from "Driver"'].trigger()
+    assert group_rows(editor) == {"Driver": 1, "Sides": 1}
+
+    editor.pick_face(first)
+    editor.pick_face(second, add=True)
+    menu_entries(editor.face_menu(second))["Add to/Driver"].trigger()  # second is selected: acts on the selection
+    assert group_rows(editor) == {"Driver": 3}
+
+
+def test_interface_faces_get_no_menu_and_a_right_click_opens_the_face_menu(
+    cad_editor, faces_under_mouse, monkeypatch, qapp
+):
+    editor, _ = cad_editor
+    interface_face = editor.geometry["interfaces"][0]["face_ids"][0]
+    assert editor.face_menu(interface_face).actions() == []
+
+    faces, _ = faces_under_mouse
+    faces.append(interface_face)
+    asked = []
+    monkeypatch.setattr(editor, "face_menu", lambda face: asked.append(face) or SimpleNamespace(actions=lambda: []))
+    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30), (60, 30))  # a drag pans the view
+    mouse(editor.viewport.plotter, Qt.MouseButton.RightButton, (20, 30))
+    wait(qapp, lambda: asked)
+    assert asked == [interface_face]
 
 
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():
