@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -347,6 +348,23 @@ def test_groups_whose_stored_faces_are_gone_need_review_and_reject_generation(pl
         generate(backend, make_project(catalog, step, face_groups=groups), tmp_path / "runs")
 
     assert not list(tmp_path.rglob("*.msh"))
+
+
+def test_rejected_regeneration_keeps_the_previous_meshes_and_system(plugin, tmp_path):
+    catalog, backend = plugin
+    step = strip_names(vented_box(tmp_path / "named.step"), tmp_path / "box.step")
+    project, _ = generate(
+        backend, make_project(catalog, step, face_groups=[stored_group("Back", step, chamber_back)]), tmp_path / "runs"
+    )
+    before = deepcopy(project)
+    meshes = [m.mesh_path for m in project.generator_documents[0].artifact.meshes]
+
+    strip_names(vented_box(tmp_path / "named.step", depth=230), step)
+    with pytest.raises(ValueError, match="Face groups need review .*: 'Back'"):
+        generate(backend, project, tmp_path / "runs")
+
+    assert project == before
+    assert all(Path(path).is_file() for path in meshes)
 
 
 @pytest.mark.parametrize(

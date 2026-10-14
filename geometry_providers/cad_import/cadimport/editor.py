@@ -304,7 +304,8 @@ class CadImportEditor:
         self._cancel_preview = cancel = threading.Event()
         self._show_preview(None)
         path, forward, up, closed_shells = key
-        self._stamp = _file_stamp(path)
+        # Taken before reading: an edit while the file loads changes it, so the next focus asks.
+        self._stamp = _file_stamp(path) if path else None
         if not path:
             self.loading = False
             return

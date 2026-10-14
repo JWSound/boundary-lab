@@ -9,7 +9,16 @@ import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import CadClosedShell, CadFaceRef, CadImportSettings, face_ref, inspect_step, mesh_step
+from blab.cad_import import (
+    CadClosedShell,
+    CadFace,
+    CadFaceRef,
+    CadImportSettings,
+    face_ref,
+    inspect_step,
+    match_face_ref,
+    mesh_step,
+)
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
 from cad_fixtures import named_sides, strip_names, two_chambers, vented_box, waveguide
@@ -151,6 +160,31 @@ def test_face_group_whose_faces_no_longer_match_is_rejected(vented, tmp_path):
 
     with pytest.raises(ValueError, match="Face groups need review .*: 'Lid'"):
         mesh_step(vented_box(tmp_path / "box.step"), replace(SETTINGS, face_groups={"Lid": (lost,)}), tmp_path / "out")
+
+
+BBOX = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))  # 1 m diagonal
+
+
+def plane(face_id, centre, normal=(0.0, 0.0, 1.0)):
+    return CadFace(face_id, ("Body",), None, centre, 0.01, normal, "Plane")
+
+
+def test_fingerprint_matches_a_slightly_moved_face():
+    ref = CadFaceRef(None, (0.5, 0.0, 0.0), 0.01, (0.0, 0.0, 1.0), "Plane")
+
+    assert match_face_ref(ref, [plane(1, (0.505, 0.0, 0.0)), plane(2, (0.2, 0.0, 0.0))], BBOX) == 1
+
+
+def test_fingerprint_matching_several_identical_nearby_faces_is_ambiguous():
+    ref = CadFaceRef(None, (0.5, 0.0, 0.0), 0.01, (0.0, 0.0, 1.0), "Plane")
+
+    assert match_face_ref(ref, [plane(1, (0.5, 0.0, 0.0)), plane(2, (0.506, 0.0, 0.0))], BBOX) is None
+
+
+def test_fingerprint_does_not_match_a_face_with_a_flipped_normal():
+    ref = CadFaceRef(None, (0.5, 0.0, 0.0), 0.01, (0.0, 0.0, 1.0), "Plane")
+
+    assert match_face_ref(ref, [plane(1, (0.5, 0.0, 0.0), normal=(0.0, 0.0, -1.0))], BBOX) is None
 
 
 def test_body_override_coarsens_one_air_body_only(vented, tmp_path):

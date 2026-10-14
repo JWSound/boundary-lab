@@ -33,9 +33,10 @@ AXES = {
     "-Z": (0, 0, -1),
 }
 _GMSH_LOCK = threading.RLock()
-# Fingerprint tolerances for small CAD edits: centre within 1 % of the bounding box
-# diagonal, area within 5 %, normals within about 2.6 degrees.
-CENTRE_TOLERANCE, AREA_TOLERANCE, NORMAL_COSINE = 1e-2, 5e-2, 0.999
+# Fingerprint tolerances for small CAD edits (see docs/specs/cad-import.md, "Re-import matching").
+_CENTRE_TOLERANCE = 1e-2  # fraction of the bounding-box diagonal
+_AREA_TOLERANCE = 5e-2  # fraction of the stored area
+_NORMAL_COSINE = 0.999  # minimum cosine between stored and found normals
 
 
 @dataclass(frozen=True)
@@ -327,23 +328,24 @@ def match_face_ref(
     """Id of the face among ``faces`` (read with ``forward``/``up``, bounded by ``bbox_m``) that ``ref`` stands for.
 
     The only face carrying its STEP name; else, among the faces with that name (or all faces
-    when none has it), the closest whose fingerprint matches after axis mapping.
+    when none has it), the one face whose fingerprint matches after axis mapping. Several
+    matching faces are ambiguous and match none.
     """
     named = [f for f in faces if ref.step_name and f.step_name == ref.step_name]
     if len(named) == 1:
         return named[0].id
     matrix = _axis_matrix(forward, up)
     centre, normal = matrix @ np.asarray(ref.centre, dtype=float), matrix @ np.asarray(ref.normal, dtype=float)
-    tol = CENTRE_TOLERANCE * math.dist(*bbox_m)
+    tol = _CENTRE_TOLERANCE * math.dist(*bbox_m)
     matches = [
         f
         for f in named or faces
         if f.surface_type == ref.surface_type
         and math.dist(f.centre, centre) <= tol
-        and abs(f.area - ref.area) <= AREA_TOLERANCE * ref.area
-        and abs(np.dot(f.normal, normal)) >= NORMAL_COSINE
+        and abs(f.area - ref.area) <= _AREA_TOLERANCE * ref.area
+        and np.dot(f.normal, normal) >= _NORMAL_COSINE
     ]
-    return min(matches, key=lambda f: math.dist(f.centre, centre)).id if matches else None
+    return matches[0].id if len(matches) == 1 else None
 
 
 def _analyse(gmsh, path: Path, matrix: np.ndarray, closed_shells: Mapping[str, str]) -> _Model:

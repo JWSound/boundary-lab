@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from time import monotonic, sleep
 from types import SimpleNamespace
 
@@ -55,8 +57,8 @@ def _cad_qt_interactor_class():
 
 
 @pytest.fixture
-def cad_editor(main_window, monkeypatch, qapp, tmp_path):
-    """A CAD Import design in the dock, with the vented box loaded and previewed."""
+def blank_cad_editor(main_window, monkeypatch):
+    """A new CAD Import design in the dock, without a STEP file."""
     import pyvistaqt
 
     monkeypatch.setattr(pyvistaqt, "QtInteractor", _cad_qt_interactor_class())
@@ -65,7 +67,13 @@ def cad_editor(main_window, monkeypatch, qapp, tmp_path):
     monkeypatch.setattr(catalog_module, "_catalog", catalog)
     main_window.preferences.default_geometry_provider = PROVIDER
     main_window.add_generator_document()
-    editor, host = main_window._provider_editors[main_window.active_generator_document().id]
+    return main_window._provider_editors[main_window.active_generator_document().id]
+
+
+@pytest.fixture
+def cad_editor(blank_cad_editor, qapp, tmp_path):
+    """A CAD Import design in the dock, with the vented box loaded and previewed."""
+    editor, host = blank_cad_editor
     editor.set_step_path(str(vented_box(tmp_path / "box.step")))
     wait(qapp, lambda: not editor.loading)
     return editor, host
@@ -459,6 +467,41 @@ def test_changed_step_file_offers_to_re_mesh_when_the_application_regains_focus(
 
     assert asked == [host.snapshot().source["step_path"]]  # asked once per change
     assert generated == ([host.snapshot().revision] if answer else [])
+
+
+def regain_focus(qapp):
+    qapp.applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
+
+
+def test_design_without_a_step_file_never_offers_to_re_mesh(blank_cad_editor, monkeypatch, qapp, tmp_path):
+    editor, _ = blank_cad_editor
+    asked = []
+    monkeypatch.setattr(editor, "ask_remesh", lambda path: asked.append(path))
+
+    monkeypatch.chdir(tmp_path)  # an empty path must not stand for the working directory
+    regain_focus(qapp)
+
+    assert asked == []
+
+
+def test_step_file_edited_while_it_loads_offers_to_re_mesh(cad_editor, monkeypatch, qapp, tmp_path):
+    editor, host = cad_editor
+    asked = []
+    monkeypatch.setattr(editor, "ask_remesh", lambda path: asked.append(path))
+    editor_module = sys.modules[type(editor).__module__]
+    run_worker = editor_module.run_worker
+
+    def edited_during_load(job, *args, **kwargs):
+        stat = os.stat(job["step_path"])
+        os.utime(job["step_path"], ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+        return run_worker(job, *args, **kwargs)
+
+    monkeypatch.setattr(editor_module, "run_worker", edited_during_load)
+    editor.set_step_path(str(vented_box(tmp_path / "other.step")))
+    wait(qapp, lambda: not editor.loading)
+    regain_focus(qapp)
+
+    assert asked == [host.snapshot().source["step_path"]]
 
 
 def test_bundled_cad_import_is_enabled_once_also_for_existing_installs():

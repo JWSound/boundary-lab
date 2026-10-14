@@ -51,8 +51,9 @@ left with none, are removed with their excitations.
 
 **Re-import.** After the STEP file changes, a stored face is found again by its
 STEP name when only one face carries it, else by its fingerprint: same surface
-type, centre within 1 % of the model's diagonal, area within 5 %, normal within
-about 2.6°. A group missing any of its faces is marked **needs review** in the
+type and nearly the same centre, area and normal (tolerances in
+`docs/specs/cad-import.md`, "Re-import matching"). A fingerprint matching
+several faces matches none. A group missing any of its faces is marked **needs review** in the
 face-group list and Generate is rejected, keeping the previous meshes. Pick
 the faces again and **Group selection** under the group's name (this drops its
 missing faces), or delete the group. When Boundary Lab regains focus and the

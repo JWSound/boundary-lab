@@ -117,21 +117,23 @@ def _remove_stale(patch, system, doc, meshes):
     Their interfaces go, and so do bounded regions whose mesh is gone. Components keep their
     other boundaries; a component left without any is removed with its excitation ports.
     """
-    prefix = generated_mesh_id(doc, "")
-    current = {generated_mesh_id(doc, m["id"]) for m in meshes}
-    groups = {(generated_mesh_id(doc, m["id"]), g) for m in meshes for g in m["surface_groups"]}
+    # Every mesh this design generates has an ID starting with this prefix.
+    design_mesh_prefix = generated_mesh_id(doc, "")
+    current_mesh_ids = {generated_mesh_id(doc, m["id"]) for m in meshes}
+    current_groups = {(generated_mesh_id(doc, m["id"]), g) for m in meshes for g in m["surface_groups"]}
+    design_boundaries = [
+        b for b in system.get("boundaries", []) if b["group"]["mesh_id"].startswith(design_mesh_prefix)
+    ]
+    design_boundary_ids = {b["id"] for b in design_boundaries}
     stale = {
-        b["id"]
-        for b in system.get("boundaries", [])
-        if b["group"]["mesh_id"].startswith(prefix) and (b["group"]["mesh_id"], b["group"].get("name")) not in groups
+        b["id"] for b in design_boundaries if (b["group"]["mesh_id"], b["group"].get("name")) not in current_groups
     }
     if not stale:
         return patch
-    ours = {b["id"] for b in system.get("boundaries", []) if b["group"]["mesh_id"].startswith(prefix)}
     components, removed_components = [], []
     for component in system.get("components", []):
         kept = [b for b in component["boundary_ids"] if b not in stale]
-        if len(kept) == len(component["boundary_ids"]) or not set(component["boundary_ids"]) <= ours:
+        if len(kept) == len(component["boundary_ids"]) or not set(component["boundary_ids"]) <= design_boundary_ids:
             continue  # untouched, or shared with other designs: the host rejects the dangling reference
         if kept:
             components.append({"id": component["id"], "boundary_ids": kept})
@@ -146,7 +148,7 @@ def _remove_stale(patch, system, doc, meshes):
         for r in system.get("regions", [])
         if r["kind"] == "bounded_air"
         and r["mesh_ids"]
-        and all(m.startswith(prefix) and m not in current for m in r["mesh_ids"])
+        and all(m.startswith(design_mesh_prefix) and m not in current_mesh_ids for m in r["mesh_ids"])
     )
     patch["component_assignments"] = {"upsert": components, "remove": removed_components}
     patch["excitation_ports"] = {
