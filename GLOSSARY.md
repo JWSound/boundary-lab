@@ -64,5 +64,5 @@ The choice of elements per wavelength at the maximum frequency, as a named level
 _Avoid_: Mesh density, mesh quality, resolution
 
 **Size override**:
-A mesh fineness or edge length set on a body, a face group or single faces that replaces the target element size there; the most specific one wins (face, then face group, then body).
+A mesh fineness or edge length set on a face, or on the volume (interior) of an air body, that replaces the target element size there. Only faces and volumes carry one: setting a size on a body or face group sets it on each of its faces (and a body's volume), and a body or face group shows their shared size or "Mixed". A face or volume without one follows the mesh fineness ("Global").
 _Avoid_: Local refinement, size field
