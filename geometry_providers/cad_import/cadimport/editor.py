@@ -46,12 +46,11 @@ from blab.cad_import import (
     face_ref,
     match_face_ref,
     place_preview,
-    preview_from_json,
 )
 from blab.generators.configuration import DEFAULT_SOUND_SPEED_M_PER_S
 from blab.ui.file_dialogs import FileDialogService
 
-from .backend import run_worker
+from .jobs import preview_in_worker
 from .parameters import size_overrides
 
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
@@ -577,14 +576,9 @@ class CadImportEditor:
         def work():
             output = Path(tempfile.mkdtemp(prefix="blab_cad_preview_"))
             try:
-                job = {
-                    "mode": "preview",
-                    "step_path": path,
-                    **placement,
-                    "closed_shells": json.loads(closed_shells),
-                }
-                run_worker(job, output, cancelled=cancel.is_set)
-                preview = preview_from_json(json.loads((output / "preview.json").read_text(encoding="utf-8")))
+                preview = preview_in_worker(
+                    path, output, **placement, closed_shells=json.loads(closed_shells), cancelled=cancel.is_set
+                )
             except Exception as exc:
                 if not cancel.is_set():
                     relay.loaded.emit(key, None, str(exc))

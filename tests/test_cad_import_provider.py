@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import sys
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import meshio
 import numpy as np
 import pytest
 
-from blab.cad_import import face_ref, inspect_step
+from blab.cad_import import CadGeometry, CadImportResult, CadInterface, CadMesh, face_ref, inspect_step
+from blab.cad_import.pipeline import ZERO
 from blab.config import ChannelConfig
 from blab.generators import GenerationRequest
 from blab.generators.application import stage_generation
@@ -534,6 +537,66 @@ def test_invalid_source_is_rejected_before_meshing(plugin, box_step, tmp_path, c
     with pytest.raises(ValueError, match=match):
         session.generate()
     assert not list(tmp_path.iterdir())
+
+
+def meshed(groups=("Driver", "Interface 1 Port", "walls")):
+    """A hand-built meshing result: the vented box's chamber with ``groups``, and the exterior."""
+    geometry = CadGeometry((), (), (), (CadInterface("Interface 1 Port", "chamber", (1,)),), (ZERO, ZERO), "off", ())
+    meshes = (
+        CadMesh("chamber", "fem_volume", Path("chamber.msh"), ("Chamber", "Port"), groups),
+        CadMesh("exterior", "bem_surface", Path("exterior.msh"), (), ("Interface 1 Port", "walls")),
+    )
+    return CadImportResult(geometry, meshes, 0.02)
+
+
+def patch_of(plugin, result, system=None):
+    """The configuration patch of ``result`` for design ``doc`` in a project with ``system``."""
+    _, backend = plugin
+    request = SimpleNamespace(document_id="doc", mesh_name="Box", configuration={"physical_system": system})
+    return sys.modules[type(backend).__module__].configuration_patch(request, result)
+
+
+def test_first_generation_sends_regions_rigid_boundaries_and_the_interface(plugin):
+    patch = patch_of(plugin, meshed())
+
+    assert [(r["id"], r["kind"], r.get("name")) for r in patch["regions"]["upsert"]] == [
+        ("doc/chamber", "bounded_air", "Box Chamber, Port"),
+        ("doc/exterior", "unbounded_air", "Exterior air"),
+    ]
+    assert {b["id"]: b["kind"] for b in patch["surface_assignments"]["upsert"]} == {
+        "doc/chamber/Driver": "rigid",
+        "doc/chamber/Interface 1 Port": "interface",
+        "doc/chamber/walls": "rigid",
+        "doc/exterior/Interface 1 Port": "interface",
+        "doc/exterior/walls": "rigid",
+    }
+    (interface,) = patch["interfaces"]["upsert"]
+    assert (interface["bounded_boundary_id"], interface["unbounded_boundary_id"]) == (
+        "doc/chamber/Interface 1 Port",
+        "doc/exterior/Interface 1 Port",
+    )
+    assert "remove" not in patch["surface_assignments"]
+
+
+def test_regeneration_resends_no_boundary_and_removes_a_gone_group_with_its_component(plugin):
+    first = patch_of(plugin, meshed())
+    boundaries = [
+        b | {"kind": "moving"} if b["id"] == "doc/chamber/Driver" else b for b in first["surface_assignments"]["upsert"]
+    ]
+    system = {
+        "regions": first["regions"]["upsert"],
+        "boundaries": boundaries,
+        "interfaces": first["interfaces"]["upsert"],
+        "components": [{"id": "cone", "boundary_ids": ["doc/chamber/Driver"]}],
+        "excitation_ports": [{"id": "port", "component_id": "cone"}],
+    }
+
+    patch = patch_of(plugin, meshed(groups=("Interface 1 Port", "walls")), system)
+
+    assert patch["surface_assignments"] == {"upsert": [], "remove": ["doc/chamber/Driver"]}
+    assert patch["component_assignments"] == {"upsert": [], "remove": ["cone"]}
+    assert patch["excitation_ports"] == {"remove": ["port"]}
+    assert (patch["interfaces"]["remove"], patch["regions"]["remove"]) == ([], [])
 
 
 def with_source(system, mesh_id, group):

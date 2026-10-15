@@ -442,14 +442,14 @@ def test_labelled_axes_and_symmetry_planes_reach_past_the_model_and_one_toggle_h
 def record_reads(editor, monkeypatch):
     """The STEP file each read of ``editor`` reads, in order."""
     editor_module = sys.modules[type(editor).__module__]
-    run_worker = editor_module.run_worker
+    read = editor_module.preview_in_worker
     reads = []
 
-    def recorded(job, output, *args, **kwargs):
-        reads.append(Path(job["step_path"]).name)
-        run_worker(job, output, *args, **kwargs)
+    def recorded(step_path, *args, **kwargs):
+        reads.append(Path(step_path).name)
+        return read(step_path, *args, **kwargs)
 
-    monkeypatch.setattr(editor_module, "run_worker", recorded)
+    monkeypatch.setattr(editor_module, "preview_in_worker", recorded)
     return reads
 
 
@@ -470,10 +470,10 @@ def test_the_previous_preview_stays_while_reading_and_with_the_error_when_readin
     bodies = list(body_items(editor))
     editor_module = sys.modules[type(editor).__module__]
 
-    def failing(job, output, *args, **kwargs):
+    def failing(*args, **kwargs):
         raise ValueError("Could not read STEP file broken.step")
 
-    monkeypatch.setattr(editor_module, "run_worker", failing)
+    monkeypatch.setattr(editor_module, "preview_in_worker", failing)
     broken = tmp_path / "broken.step"
     broken.write_text("not STEP", encoding="utf-8")
     editor.set_step_path(str(broken))
@@ -852,14 +852,14 @@ def test_step_file_edited_while_it_loads_offers_to_re_mesh(cad_editor, monkeypat
     asked = []
     monkeypatch.setattr(editor, "ask_remesh", lambda path: asked.append(path))
     editor_module = sys.modules[type(editor).__module__]
-    run_worker = editor_module.run_worker
+    read = editor_module.preview_in_worker
 
-    def edited_during_load(job, *args, **kwargs):
-        stat = os.stat(job["step_path"])
-        os.utime(job["step_path"], ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
-        return run_worker(job, *args, **kwargs)
+    def edited_during_load(step_path, *args, **kwargs):
+        stat = os.stat(step_path)
+        os.utime(step_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10**9))
+        return read(step_path, *args, **kwargs)
 
-    monkeypatch.setattr(editor_module, "run_worker", edited_during_load)
+    monkeypatch.setattr(editor_module, "preview_in_worker", edited_during_load)
     editor.set_step_path(str(vented_box(tmp_path / "other.step")))
     wait(qapp, lambda: not editor.loading)
     regain_focus(qapp)

@@ -26,6 +26,8 @@ from blab.cad_import import (
     place_preview,
     preview_from_json,
     preview_to_json,
+    result_from_json,
+    result_to_json,
 )
 from blab.cad_import import cli as cad_cli
 from blab.interface_conform import validate_conforming_interfaces
@@ -778,3 +780,7 @@ def test_previews_survive_their_json_form(surface_model):
     # What finding the openings needs survives too: placing the copy finds the same.
     moved = dict(rotation_deg=(0.0, 0.0, 90.0))
     assert place_preview(copy, **moved).geometry == place_preview(preview, **moved).geometry
+
+
+def test_meshing_results_survive_their_json_form(vented):
+    assert result_from_json(json.loads(json.dumps(result_to_json(vented)))) == vented

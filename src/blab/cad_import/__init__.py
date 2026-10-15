@@ -27,6 +27,8 @@ from .pipeline import (
     place_preview,
     preview_from_json,
     preview_to_json,
+    result_from_json,
+    result_to_json,
 )
 
 __all__ = [
@@ -53,4 +55,6 @@ __all__ = [
     "place_preview",
     "preview_from_json",
     "preview_to_json",
+    "result_from_json",
+    "result_to_json",
 ]

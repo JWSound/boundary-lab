@@ -367,10 +367,49 @@ def preview_to_json(preview: CadPreview) -> dict:
     return data
 
 
+def result_to_json(result: CadImportResult) -> dict:
+    """``result`` as JSON data; :func:`result_from_json` reads it back."""
+    data = asdict(result)
+    for mesh in data["meshes"]:
+        mesh["path"] = str(mesh["path"])
+    return data
+
+
+def result_from_json(data: Mapping) -> CadImportResult:
+    """The meshing result :func:`result_to_json` wrote as ``data``."""
+    meshes = tuple(
+        CadMesh(m["id"], m["purpose"], Path(m["path"]), tuple(m["volume_groups"]), tuple(m["surface_groups"]))
+        for m in data["meshes"]
+    )
+    return CadImportResult(_geometry_from_json(data["geometry"]), meshes, data["target_size_m"])
+
+
 def preview_from_json(data: Mapping) -> CadPreview:
     """The preview :func:`preview_to_json` wrote as ``data``."""
-    g = data["geometry"]
-    geometry = CadGeometry(
+    geometry = _geometry_from_json(data["geometry"])
+    o = data["openings"]
+    openings = _Openings(
+        {f: tuple(e) for f, e in o["face_edges"]},
+        tuple(o["edges"]),
+        np.asarray(o["edge_points"], dtype=float).reshape(-1, 9, 3),
+        dict(o["air_body"]),
+        tuple(o["exterior"]),
+        tuple(o["direct"]),
+        tuple(o["cover_warnings"]),
+    )
+    return CadPreview(
+        geometry,
+        np.asarray(data["points"], dtype=float).reshape(-1, 3),
+        np.asarray(data["triangles"], dtype=np.int64).reshape(-1, 3),
+        np.asarray(data["face_ids"], dtype=np.int64),
+        openings,
+        tuple(data["rotation_deg"]),
+        tuple(data["translation_m"]),
+    )
+
+
+def _geometry_from_json(g: Mapping) -> CadGeometry:
+    return CadGeometry(
         tuple(CadBody(b["name"], b["kind"], tuple(b["face_ids"])) for b in g["bodies"]),
         tuple(
             CadFace(
@@ -390,25 +429,6 @@ def preview_from_json(data: Mapping) -> CadPreview:
         g["symmetry"],
         tuple(g["warnings"]),
         tuple(CadClosedShell(s["name"], s["role"], tuple(s["face_ids"])) for s in g["closed_shells"]),
-    )
-    o = data["openings"]
-    openings = _Openings(
-        {f: tuple(e) for f, e in o["face_edges"]},
-        tuple(o["edges"]),
-        np.asarray(o["edge_points"], dtype=float).reshape(-1, 9, 3),
-        dict(o["air_body"]),
-        tuple(o["exterior"]),
-        tuple(o["direct"]),
-        tuple(o["cover_warnings"]),
-    )
-    return CadPreview(
-        geometry,
-        np.asarray(data["points"], dtype=float).reshape(-1, 3),
-        np.asarray(data["triangles"], dtype=np.int64).reshape(-1, 3),
-        np.asarray(data["face_ids"], dtype=np.int64),
-        openings,
-        tuple(data["rotation_deg"]),
-        tuple(data["translation_m"]),
     )
 
 
