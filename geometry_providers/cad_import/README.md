@@ -38,8 +38,7 @@ in **Edit > Generator Plugins...** and add a design.
    all hiding, **Clear** also clears the selection.
 4. Click faces in the view (Ctrl/Shift+click adds or removes) or select them
    in the tree; clicking a body row selects all its faces. The selection is
-   orange, the face under the mouse pale orange (dark orange when selected).
-   Enter a name and **New group** / **Add to "…"** to make a **face group**
+   orange. Enter a name and **New group** / **Add to "…"** to make a **face group**
    (an existing name adds the faces; a face is in one group only). Right-click
    a face for the same actions on the selection; a face outside the selection
    becomes the selection first. The list shows walls, then the interface
@@ -58,8 +57,10 @@ in **Edit > Generator Plugins...** and add a design.
    custom size in mm: per body or face in the tree's **Mesh size** column
    (double-click), per face group in the list, or on the selected faces from
    the 3D right-click menu (**Mesh size ▸**). The most specific wins: face,
-   face group, the finest of the face's bodies, then the mesh fineness; an
-   empty cell's tooltip says where its size comes from. A face override whose
+   face group, the finest of the face's bodies, then the mesh fineness. A face
+   row shows the size the face gets (**Global** when it is the mesh fineness;
+   the tooltip says where an inherited size comes from), a body row the size
+   its faces share or **Mixed** when they differ. A face override whose
    face is gone after a re-import is dropped with a note. Designs saved before
    these levels keep their elements per wavelength (shown as Custom) and their
    mm overrides.

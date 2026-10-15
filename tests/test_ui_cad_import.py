@@ -546,7 +546,8 @@ def test_mesh_size_dropdowns_set_levels_and_custom_sizes_on_bodies_and_face_grou
     assert source["face_group_sizes"] == {"Driver": {"elements_per_wavelength": 4}}
     assert source["body_sizes"] == {"Chamber": {"size_m": 0.025}}
     assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "Medium"
-    assert body_items(editor)["Chamber"].text(1) == "25 mm"
+    assert body_items(editor)["Chamber"].text(1) == "Mixed"  # 25 mm, but Driver Medium
+    assert chamber_wall(editor).text(1) == "25 mm"
 
     monkeypatch.setattr(editor, "ask_size_mm", lambda: None)  # cancelled
     choose_size(*size_cell(editor, "Chamber"), "Custom…", qapp)
@@ -570,22 +571,40 @@ def item_face(item):
     return item.data(0, Qt.ItemDataRole.UserRole)
 
 
-def test_face_rows_show_their_own_size_or_where_the_inherited_one_comes_from(cad_editor, main_window, qapp):
+def chamber_wall(editor):
+    """The tree row of a chamber face other than Driver."""
+    return next(item for item in children_items(body_items(editor)["Chamber"]) if item.text(0) != "Driver")
+
+
+def test_rows_show_the_size_their_faces_get_global_when_inherited_and_mixed_bodies(cad_editor, main_window, qapp):
     editor, _ = cad_editor
     main_window.freq_max_spin.setValue(3430)
     wait(qapp, lambda: "3430" in editor.target_label.text())
     driver = next(f["id"] for f in editor.geometry["faces"] if f["step_name"] == "Driver")
     side, other = cabinet_faces(editor, lambda f: True)[:2]
+    assert {name: item.text(1) for name, item in body_items(editor).items()} == dict.fromkeys(
+        ["Chamber", "Port", "Cabinet"], "Global"
+    )
 
     editor.set_face_group_size("Driver", {"elements_per_wavelength": 4})
     editor.set_body_size("Cabinet", {"size_m": 0.03})
     editor.set_face_size({side}, {"elements_per_wavelength": 2})
 
     assert face_item(editor, side).text(1) == "Coarse"
-    assert face_item(editor, driver).text(1) == ""
+    assert face_item(editor, driver).text(1) == "Medium"  # from its face group
     assert face_item(editor, driver).toolTip(1) == "Inherits face group 'Driver': Medium (25 mm)"
+    assert face_item(editor, other).text(1) == "30 mm"
     assert face_item(editor, other).toolTip(1) == "Inherits body 'Cabinet': 30 mm"
-    assert body_items(editor)["Chamber"].toolTip(1) == "Inherits the mesh fineness: Fine (16.7 mm)"
+    assert chamber_wall(editor).text(1) == "Global"
+    assert chamber_wall(editor).toolTip(1) == "Inherits the mesh fineness: Fine (16.7 mm)"
+    assert {name: item.text(1) for name, item in body_items(editor).items()} == {
+        "Chamber": "Mixed",  # Driver Medium, the rest Global
+        "Port": "Global",
+        "Cabinet": "Mixed",  # one face Coarse, the rest 30 mm
+    }
+
+    editor.set_face_size({side}, None)
+    assert body_items(editor)["Cabinet"].text(1) == "30 mm"
 
 
 def test_mesh_size_from_the_face_menu_sets_a_face_override_on_the_selection(cad_editor, monkeypatch):
@@ -638,7 +657,7 @@ def test_existing_designs_keep_their_mm_overrides_and_elements_per_wavelength(ca
     editor.apply_source(snapshot.source, snapshot.revision)
 
     assert editor.fineness.currentText() == "Custom" and not editor.spins["elements_per_wavelength"].isHidden()
-    assert body_items(editor)["Chamber"].text(1) == "40 mm"
+    assert chamber_wall(editor).text(1) == "40 mm"
     assert editor.groups_table.item(row_of(editor, "Driver"), 2).text() == "8 mm"
 
     editor.set_body_size("Port", FINE)
@@ -885,28 +904,18 @@ def test_each_face_group_is_drawn_in_its_own_colour_with_a_swatch(cad_editor, qa
     assert swatches["A"] not in editor.viewport.plotter.colours
 
 
-def test_the_face_under_the_mouse_is_pale_orange_or_dark_orange_when_selected(cad_editor, faces_under_mouse, qapp):
+def test_moving_the_mouse_over_faces_redraws_nothing(cad_editor, faces_under_mouse, qapp):
     editor, _ = cad_editor
-    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
     faces, _ = faces_under_mouse
+    faces.append(cabinet_faces(editor, lambda f: True)[0])
     plotter = editor.viewport.plotter
-    editor.pick_face(first)
+    qapp.processEvents()
+    plotter.calls.clear()
 
-    faces.append(second)
     hover(plotter, (20, 30))
     qapp.processEvents()
-    assert editor.hovered_face() == second
-    assert {"#e8a33d", "#f6cf98"} <= set(plotter.colours)  # selected orange, hovered pale orange
 
-    faces[0] = first
-    hover(plotter, (25, 30))
-    qapp.processEvents()
-    assert "#b8620f" in plotter.colours and "#f6cf98" not in plotter.colours  # hovered and selected: dark orange
-
-    faces[0] = None
-    hover(plotter, (30, 30))
-    qapp.processEvents()
-    assert editor.hovered_face() is None and "#b8620f" not in plotter.colours
+    assert plotter.calls == []  # no hover colour: only the selection is orange
 
 
 def hover(widget, position):
