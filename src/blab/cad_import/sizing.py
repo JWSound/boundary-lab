@@ -44,6 +44,19 @@ def size_override(size: CadSizeOverride | Mapping) -> CadSizeOverride:
     return size if isinstance(size, CadSizeOverride) else CadSizeOverride(**size)
 
 
+def read_face_sizes(stored: Sequence[Mapping]) -> list[tuple[CadFaceRef, CadSizeOverride]]:
+    """``(face, override)`` of each design source ``face_sizes`` entry ``{"face": CadFaceRef fields, **override}``."""
+    result = []
+    for entry in stored:
+        try:
+            result.append((CadFaceRef(**entry["face"]), size_override({k: v for k, v in entry.items() if k != "face"})))
+        except ValueError as exc:
+            raise ValueError(f"Invalid face size: {exc}") from exc
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise ValueError("Invalid face size: a face and its size override expected.") from exc
+    return result
+
+
 @dataclass(frozen=True)
 class CadSizing:
     """Edge lengths from the sound speed and the maximum frequency (``None`` while unknown) at a mesh fineness."""
@@ -123,15 +136,12 @@ class CadSizes:
     ) -> None:
         self.geometry = geometry
         self._placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
+        read = read_face_sizes(face_sizes)
         self.found = [
-            (entry, match_face_ref(CadFaceRef(**entry["face"]), geometry.faces, geometry.bbox_m, **self._placement))
-            for entry in face_sizes
+            (entry, match_face_ref(ref, geometry.faces, geometry.bbox_m, **self._placement))
+            for entry, (ref, _) in zip(face_sizes, read, strict=True)
         ]
-        self.faces = {
-            face: size_override({k: v for k, v in entry.items() if k != "face"})
-            for entry, face in self.found
-            if face is not None
-        }
+        self.faces = {face: size for (_, face), (_, size) in zip(self.found, read, strict=True) if face is not None}
         self.volumes = {name: size_override(size) for name, size in volume_sizes.items()}
 
     def shared(self, faces=(), volumes=()) -> CadSizeOverride | str | None:

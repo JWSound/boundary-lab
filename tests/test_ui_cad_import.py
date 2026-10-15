@@ -710,6 +710,23 @@ def test_designs_with_no_body_or_face_group_sizes_are_left_as_they_are(
     assert "sizes are now set" not in editor.status.text()
 
 
+def test_an_invalid_stored_face_size_is_shown_as_generate_rejects_it_and_sizes_are_not_written(cad_editor, tmp_path):
+    from test_cad_import_provider import bad_face_size
+
+    editor, host = cad_editor
+    entry, message = bad_face_size(editor.source["step_path"])
+    snapshot = host.update_source(
+        host.snapshot().source | {"face_sizes": [entry]}, expected_revision=host.snapshot().revision
+    )
+
+    editor.apply_source(snapshot.source, snapshot.revision)
+    assert editor.status.text() == message
+
+    editor.set_face_size([editor.geometry["faces"][0]["id"]], FINE)
+    assert editor.status.text() == message
+    assert host.snapshot().source["face_sizes"] == snapshot.source["face_sizes"]
+
+
 def test_existing_designs_get_the_face_and_volume_sizes_that_applied_before(cad_editor, main_window, qapp, tmp_path):
     from test_cad_import_provider import generate, make_project, median_edge, tet_count
 

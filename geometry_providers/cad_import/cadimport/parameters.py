@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from blab.cad_import import CadImportSettings
-from blab.cad_import.sizing import legacy_sizes
+from blab.cad_import.sizing import legacy_sizes, read_face_sizes
 from blab.generators.configuration import exterior_sound_speed
 
 
@@ -36,9 +36,7 @@ def settings(source, configuration):
             elements_per_wavelength=float(source["elements_per_wavelength"]),
             body_sizes=body_sizes,
             face_group_sizes=face_group_sizes,
-            face_sizes=tuple(
-                (entry["face"], {k: v for k, v in entry.items() if k != "face"}) for entry in source.get("face_sizes", [])
-            ),
+            face_sizes=tuple(read_face_sizes(source.get("face_sizes", []))),
             volume_sizes=dict(source.get("volume_sizes", {})),
             curvature_elements_per_circle=float(source["curvature_elements_per_circle"]),
             growth_rate=float(source["growth_rate"]),

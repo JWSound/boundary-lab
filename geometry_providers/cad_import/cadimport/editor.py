@@ -301,6 +301,7 @@ class CadImportEditor:
         self._faces = None  # face id -> CadFace of the loaded preview, for matching stored face groups
         self._geometry = None  # the CadGeometry shown
         self._groups = self._sizes = None  # its CadFaceGroups and CadSizes under the source
+        self._size_error = ""  # why the source's sizes cannot be read
         self._syncing = False
         self._fmax_hz = None
         self._sound_speed = DEFAULT_SOUND_SPEED_M_PER_S  # the project's, once its context arrives
@@ -977,9 +978,18 @@ class CadImportEditor:
             interface_names=self.source.get("interface_names", {}),
             **self._placement,
         )
-        self._sizes = CadSizes(
-            self._geometry, self.source.get("face_sizes", []), self.source.get("volume_sizes", {}), **self._placement
-        )
+        try:
+            self._sizes = CadSizes(
+                self._geometry,
+                self.source.get("face_sizes", []),
+                self.source.get("volume_sizes", {}),
+                **self._placement,
+            )
+            self._size_error = ""
+        except ValueError as exc:  # as Generate rejects it; shown Global, never written over
+            self._sizes = CadSizes(self._geometry, [], {}, **self._placement)
+            self._size_error = str(exc)
+            self.status.setText(self._size_error)
 
     def _interface_of(self):
         return self._groups.interface_of
@@ -1063,6 +1073,9 @@ class CadImportEditor:
         """Write ``size`` (an override or its stored fields; ``None``: Global) to ``face_ids`` and ``volumes``."""
         if self._sizes is None:
             return
+        if self._size_error:
+            self.status.setText(self._size_error)
+            return
         try:
             size = None if size is None else size_override(size)
         except ValueError as exc:
@@ -1073,6 +1086,8 @@ class CadImportEditor:
     def _drop_lost_sizes(self):
         """Drop the face sizes whose faces the loaded STEP file no longer has, and volume sizes of bodies that are no
         air bodies, saying so."""
+        if self._size_error:
+            return
         changes, note = self._sizes.dropped()
         if changes:
             self.edited(changes)
@@ -1081,7 +1096,7 @@ class CadImportEditor:
     def _migrate_sizes(self):
         """Convert an older design's body and face group sizes once its geometry and the maximum frequency, which
         compares levels with edge lengths, are known."""
-        if self._groups is None or self._fmax_hz is None:
+        if self._groups is None or self._fmax_hz is None or self._size_error:
             return
         source = migrated(self.source, self._groups, self._sizes, self._sizing())
         if source is not None:

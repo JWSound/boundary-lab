@@ -163,6 +163,23 @@ def test_placement_from_the_source_puts_a_shifted_half_model_on_the_symmetry_pla
         generate(backend, make_project(catalog, step, symmetry="x"), tmp_path / "unplaced")
 
 
+def bad_face_size(step):
+    """A stored face size with a negative edge length, and the message rejecting it."""
+    entry = {"face": asdict(face_ref(inspect_step(step).faces[0])), "size_m": -1}
+    return entry, "Invalid face size: Size override edge length must be a positive number."
+
+
+def test_an_invalid_stored_face_size_is_rejected_by_generate(plugin, box_step, tmp_path):
+    catalog, backend = plugin
+    entry, message = bad_face_size(box_step)
+    project = make_project(catalog, box_step, face_sizes=[entry])
+
+    with pytest.raises(ValueError) as error:
+        generate(backend, project, tmp_path / "runs")
+
+    assert str(error.value) == message
+
+
 def test_symmetry_mismatch_is_rejected_with_the_suggestion(plugin, tmp_path):
     catalog, backend = plugin
     step = vented_box(tmp_path / "box.step", symmetry="x")

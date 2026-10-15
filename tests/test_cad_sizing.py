@@ -7,7 +7,7 @@ from dataclasses import asdict, replace
 import pytest
 
 from blab.cad_import import MIXED, CadFaceGroups, CadSizeOverride, CadSizes, CadSizing, face_ref, inspect_step
-from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated
+from blab.cad_import.sizing import LEGACY_SIZES, legacy_sizes, migrated, read_face_sizes
 from cad_fixtures import vented_box
 
 COARSE, FINE = CadSizeOverride(elements_per_wavelength=2), CadSizeOverride(elements_per_wavelength=6)
@@ -95,6 +95,34 @@ def test_a_size_written_to_faces_and_a_volume_is_read_back_and_global_clears_it(
         "face_sizes": written["face_sizes"][1:],
         "volume_sizes": {},
     }
+
+
+@pytest.mark.parametrize(
+    "entry", [{"size_m": 0.01}, {"face": {"step_name": None}, "size_m": 0.01}, {"face": "Driver", "size_m": 0.01}, "x"]
+)
+def test_stored_face_sizes_without_a_face_are_rejected(entry):
+    with pytest.raises(ValueError, match="Invalid face size: a face and its size override expected"):
+        read_face_sizes([entry])
+
+
+@pytest.mark.parametrize(
+    ("size", "message"),
+    [
+        ({"bogus": 1}, "a face and its size override expected"),
+        ({"size_m": -1}, "Size override edge length must be a positive"),
+    ],
+)
+def test_stored_face_sizes_with_a_bad_override_are_rejected(box, size, message):
+    entry = {"face": asdict(face_ref(box.faces[0]))} | size
+    for read in (lambda: read_face_sizes([entry]), lambda: CadSizes(box, [entry], {})):
+        with pytest.raises(ValueError, match=f"Invalid face size: {message}"):
+            read()
+
+
+def test_stored_face_sizes_read_as_faces_and_overrides(box):
+    ref = face_ref(box.faces[0])
+
+    assert read_face_sizes([{"face": asdict(ref), "size_m": 0.008}]) == [(ref, MM_8)]
 
 
 def test_writing_one_face_keeps_the_others_and_replaces_its_own(box):
