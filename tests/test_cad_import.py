@@ -439,11 +439,11 @@ def test_placement_must_be_three_finite_numbers(changes, message):
         (lambda g: {"face_groups": {"walls": ()}}, "Face group name 'walls' is reserved"),
         (
             lambda g: {"interface_names": {"Interface 1 Port": "walls"}},
-            "Interface 'Interface 1 Port' cannot be named 'walls'",
+            "Face group name 'walls' is taken",
         ),
         (
             lambda g: {"interface_names": {"Interface 1 Port": "Mouth"}, "face_groups": {"Mouth": (9999,)}},
-            "Face group name 'Mouth' is reserved",
+            "Face group name 'Mouth' is taken",
         ),
     ],
 )
@@ -453,6 +453,20 @@ def test_invalid_face_groups_and_overrides_are_rejected(vented, tmp_path, change
     with pytest.raises(ValueError, match=message):
         mesh_step(step, replace(SETTINGS, **changes(vented.geometry)), tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("name", ["walls", "Driver", "Lid"])
+def test_generation_and_the_editor_reject_the_same_interface_names_alike(vented, tmp_path, name):
+    (interface,) = vented.geometry.interfaces
+    lid = next(f.id for f in vented.geometry.faces if f.bodies == ("Cabinet",))
+    with pytest.raises(ValueError) as editor:
+        CadFaceGroups(vented.geometry, {"Lid": [lid]}).renamed_interface(interface.name, name)
+    settings = replace(SETTINGS, face_groups={"Lid": (lid,)}, interface_names={interface.name: name})
+
+    with pytest.raises(ValueError) as generation:
+        mesh_step(vented_box(tmp_path / "box.step"), settings, tmp_path / "out")
+
+    assert str(generation.value) == str(editor.value) == f"Face group name '{name}' is taken."
 
 
 def test_interface_faces_stay_in_their_renamed_interface_face_group(vented, tmp_path):

@@ -110,7 +110,7 @@ def test_reserved_step_names_form_no_group(tmp_path):
     ("face_groups", "message"),
     [
         ({"walls": []}, "Face group name 'walls' is reserved"),
-        ({"Interface 1 Port": []}, "Face group name 'Interface 1 Port' is reserved"),
+        ({"Interface 1 Port": []}, "Face group name 'Interface 1 Port' is taken"),
         ({"": []}, "Face group name '' is reserved"),
         ({"Lid": [9999]}, "Face group 'Lid' refers to unknown face 9999"),
         ({"A": ["left"], "B": ["left"]}, r"Face \d+ is in face groups 'A' and 'B'"),

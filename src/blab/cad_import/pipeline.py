@@ -23,7 +23,7 @@ import numpy as np
 
 from blab.defaults import DEFAULT_SOUND_SPEED_M_PER_S
 
-from .design import WALLS, CadFaceGroups
+from .design import CadFaceGroups
 from .face_refs import ZERO, CadFace, CadFaceRef, match_face_ref
 from .face_refs import moved as _moved
 from .face_refs import placement as _placement
@@ -407,15 +407,17 @@ def mesh_step(step_path: str | Path, settings: CadImportSettings, output_dir: st
     output_dir = Path(output_dir)
     with _gmsh_session() as gmsh:
         model = _analyse(gmsh, Path(step_path), _placement(**settings.placement), settings.closed_shells)
-        model.rename_interfaces(settings.interface_names)
+        face_groups = CadFaceGroups(
+            model.geometry, settings.face_groups, interface_names=settings.interface_names, **settings.placement
+        )
+        face_groups.check()
+        model.rename_interfaces(face_groups.interface_names)
         geometry = model.geometry
         if settings.symmetry is not None and settings.symmetry != geometry.symmetry:
             raise ValueError(
                 f"Project symmetry {SYMMETRY_LABELS[settings.symmetry]} does not match the geometry, "
                 f"which suggests symmetry {SYMMETRY_LABELS[geometry.symmetry]}."
             )
-        face_groups = CadFaceGroups(geometry, settings.face_groups, **settings.placement)
-        face_groups.check()
         groups = face_groups.surface_groups(model.mesh_faces)
         _apply_sizes(gmsh, model, settings, groups)
         gmsh.model.mesh.generate(3)
@@ -445,12 +447,8 @@ class _Model:
     openings: _Openings
 
     def rename_interfaces(self, names: Mapping[str, str]) -> None:
-        """Rename the interfaces by detected name; names of interfaces not detected are ignored."""
-        renamed = {i.name: names.get(i.name, i.name).strip() for i in self.geometry.interfaces}
-        counts = Counter(renamed.values())
-        for old, new in renamed.items():
-            if not new or new == WALLS or counts[new] > 1:
-                raise ValueError(f"Interface '{old}' cannot be named '{new}'.")
+        """Rename the interfaces by detected name, as :class:`CadFaceGroups` checked them."""
+        renamed = {i.name: names[i.name] for i in self.geometry.interfaces}
         self.geometry = replace(
             self.geometry, interfaces=tuple(replace(i, name=renamed[i.name]) for i in self.geometry.interfaces)
         )

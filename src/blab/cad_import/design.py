@@ -5,6 +5,7 @@ Qt-free. The meshing pipeline and the editor resolve face groups through it alik
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import TYPE_CHECKING, NamedTuple
@@ -55,13 +56,18 @@ class CadFaceGroups:
     ) -> None:
         self.geometry = geometry
         self._names = names = dict(interface_names or {})
-        self.interface_names = {i.name: names.get(i.name, i.name) for i in geometry.interfaces}
+        self.interface_names = {i.name: names.get(i.name, i.name).strip() for i in geometry.interfaces}
         self.interface_of = {f: self.interface_names[i.name] for i in geometry.interfaces for f in i.face_ids}
         self._placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
         self.found = {}  # stored group -> [(stored face, face id or None)]
         for name, refs in face_groups.items():
             self.found[name] = [(ref, _resolve(ref, geometry, self._placement)) for ref in refs]
         self._ids = {f.id for f in geometry.faces}
+        # Names no interface can take besides walls: stored groups, and STEP names of faces outside interfaces.
+        self._taken = {
+            *self.found,
+            *(f.step_name for f in geometry.faces if f.step_name and f.id not in self.interface_of),
+        }
         self._reserved = reserved = {WALLS, *self.interface_names.values()}
         groups: dict[str, set[int]] = {}
         member: dict[int, str] = {}
@@ -102,8 +108,9 @@ class CadFaceGroups:
         return self._row_of[face]
 
     def check(self) -> None:
-        """Reject what generation cannot mesh: reserved or empty names, stored faces not found, unknown face ids and
-        faces in two stored groups."""
+        """Reject what generation cannot mesh: interface names that are not free, reserved or empty face group names,
+        stored faces not found, unknown face ids and faces in two stored groups."""
+        self._check_interface_names(self.interface_names)
         for name in self.found:
             if not name or name in self._reserved:
                 raise ValueError(f"Face group name '{name}' is reserved.")
@@ -166,12 +173,20 @@ class CadFaceGroups:
         new_name = new_name.strip() or detected
         if new_name == name:
             return FaceGroupEdit({}, "")
-        if new_name in {*(row.name for row in self.rows), *self.found}:
-            raise ValueError(f"Face group name '{new_name}' is taken.")
+        self._check_interface_names(self.interface_names | {detected: new_name})
         names = {d: s for d, s in self._names.items() if d != detected}  # kept for interfaces not detected now
         if new_name != detected:
             names[detected] = new_name
         return FaceGroupEdit({"interface_names": names}, "")
+
+    def _check_interface_names(self, names: Mapping[str, str]) -> None:
+        """Reject interface ``names`` (detected -> shown) that are empty, walls, two interfaces' or a face group's."""
+        counts = Counter(names.values())
+        for detected, name in names.items():
+            if not name:
+                raise ValueError(f"Interface '{detected}' needs a name.")
+            if name == WALLS or counts[name] > 1 or name in self._taken:
+                raise ValueError(f"Face group name '{name}' is taken.")
 
     def interface_note(self, faces) -> str:
         """Why ``faces``, interface faces, stayed where they are; empty without any."""
