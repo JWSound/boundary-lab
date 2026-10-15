@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import gmsh
 import meshio
@@ -626,6 +629,20 @@ def test_with_only_closed_shells_the_largest_is_guessed_exterior_and_the_others_
         ("Closed shell 2", "exterior"),  # the 200 mm baffle box
     ]
     assert {b.name: b.kind for b in geometry.bodies} == {"Closed shell 1": "air", "Closed shell 2": "exterior"}
+
+
+MESH_IMPORT = Path(__file__).parent / "fixtures" / "cad_import" / "blab Mesh import.STEP"
+
+
+@pytest.mark.skipif(not MESH_IMPORT.is_file(), reason="local-only fixture")
+def test_surface_model_with_near_coincident_edges_reads_without_degenerate_faces():
+    # Fragmented in metres, OpenCASCADE's fixed tolerance collapsed faces of this model to zero area, and finding
+    # the normal of one never returned. A subprocess, so that hang fails the test instead of stalling the run.
+    code = "import sys; from blab.cad_import import inspect_step; print(min(f.area for f in inspect_step(sys.argv[1]).faces))"
+    run = subprocess.run([sys.executable, "-c", code, str(MESH_IMPORT)], capture_output=True, text=True, timeout=120)
+
+    assert run.returncode == 0, run.stderr
+    assert float(run.stdout) > 1e-9  # m², a 0.03 mm square
 
 
 def test_closed_shell_chosen_as_air_becomes_a_bounded_region_with_an_interface(surface_model, tmp_path):

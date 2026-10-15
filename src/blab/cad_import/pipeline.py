@@ -32,6 +32,9 @@ from .sizing import CadSizeOverride, CadSizing, size_override
 EXTERIOR_MESH_ID = "exterior"
 SYMMETRY_LABELS = {"off": "Off", "x": "X", "xy": "XY"}
 _GMSH_LOCK = threading.RLock()
+# Metres per Gmsh model unit. The model is in millimetres: OpenCASCADE's fixed tolerance (1e-7 model units) is
+# coarser than CAD accuracy in metres, and fragmenting there collapsed faces of some models to zero area.
+_MM = 1e-3
 
 
 @dataclass(frozen=True)
@@ -370,7 +373,7 @@ def _geometry_from_json(g: Mapping) -> CadGeometry:
 
 def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Coarse display triangles of ``faces``: points, triangles, face id per triangle."""
-    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*bbox_m) / 30)
+    gmsh.option.setNumber("Mesh.MeshSizeMax", math.dist(*bbox_m) / 30 / _MM)
     gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 12)
     gmsh.model.mesh.generate(2)
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
@@ -385,7 +388,7 @@ def _tessellate(gmsh, faces, bbox_m) -> tuple[np.ndarray, np.ndarray, np.ndarray
                 triangles.append(block)
                 face_ids.append(np.full(len(block), face))
     return (
-        np.asarray(coords).reshape(-1, 3),
+        np.asarray(coords).reshape(-1, 3) * _MM,
         np.concatenate(triangles) if triangles else np.zeros((0, 3), dtype=np.int64),
         np.concatenate(face_ids) if face_ids else np.zeros(0, dtype=np.int64),
     )
@@ -470,7 +473,7 @@ def _read(gmsh, path: Path) -> _Step:
     occ = gmsh.model.occ
     if not path.is_file():
         raise ValueError(f"STEP file not found: {path}")
-    gmsh.option.setString("Geometry.OCCTargetUnit", "M")
+    gmsh.option.setString("Geometry.OCCTargetUnit", "MM")
     gmsh.option.setNumber("Geometry.OCCImportLabels", 1)
     try:
         occ.importShapes(str(path), highestDimOnly=False)
@@ -529,7 +532,7 @@ def _analyse(gmsh, path: Path, placement: tuple[np.ndarray, np.ndarray], closed_
             axis = (matrix + np.eye(3))[:, int(np.argmax(np.diag(matrix)))]
         occ.rotate(inputs, 0, 0, 0, *axis, angle)
     if offset.any():
-        occ.translate(inputs, *offset)
+        occ.translate(inputs, *offset / _MM)
     _, children = occ.fragment(inputs, [])
     occ.synchronize()
 
@@ -549,7 +552,7 @@ def _analyse(gmsh, path: Path, placement: tuple[np.ndarray, np.ndarray], closed_
     face_volumes = {f: [v for v in gmsh.model.getAdjacencies(2, f)[0] if v in body_of_volume] for f in edges}
     outer_air = sorted(f for f, vols in face_volumes.items() if len(vols) == 1)
 
-    bbox = gmsh.model.getBoundingBox(-1, -1)
+    bbox = [v * _MM for v in gmsh.model.getBoundingBox(-1, -1)]
     tol = _plane_tolerance(bbox[:3], bbox[3:])
 
     # An exterior face lying on an air face opens into it, unless it is part of a larger exterior face.
@@ -717,7 +720,7 @@ def _sample_edges(gmsh, edges) -> np.ndarray:
     for edge in edges:
         low, high = gmsh.model.getParametrizationBounds(1, edge)
         samples.append(gmsh.model.getValue(1, edge, np.linspace(low[0], high[0], 9).tolist()))
-    return np.reshape(samples, (-1, 9, 3))
+    return np.reshape(samples, (-1, 9, 3)) * _MM
 
 
 def _plane_tolerance(low, high) -> float:
@@ -791,13 +794,13 @@ def _components(faces, edges) -> list[list[int]]:
 
 
 def _face(gmsh, face, bodies, step_name) -> CadFace:
-    centre = tuple(gmsh.model.occ.getCenterOfMass(2, face))
+    centre = tuple(v * _MM for v in gmsh.model.occ.getCenterOfMass(2, face))
     return CadFace(
         face,
         bodies,
         step_name,
         centre,
-        gmsh.model.occ.getMass(2, face),
+        gmsh.model.occ.getMass(2, face) * _MM**2,
         _normal(gmsh, face),
         gmsh.model.getType(2, face),
     )
@@ -852,7 +855,7 @@ def _match_step_names(gmsh, path, placement, faces, tol) -> dict[int, str]:
     vertices = {}
     for f in faces:
         points = gmsh.model.getBoundary([(2, f)], combined=False, oriented=False, recursive=True)
-        vertices[f] = np.array([gmsh.model.getValue(0, p, []) for _, p in set(points)]).reshape(-1, 3)
+        vertices[f] = np.array([gmsh.model.getValue(0, p, []) for _, p in set(points)]).reshape(-1, 3) * _MM
     result = {}
     for name, points in named:
         points = _place(placement, points)
@@ -908,7 +911,7 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
     """Target size everywhere, overrides per body / face group / face (the most specific wins) and air-body
     interiors, graded by the growth rate."""
     sizing = settings.sizing
-    target = sizing.target_size_m
+    target = sizing.target_size_m / _MM  # sizes below are in Gmsh model units
     geometry = model.geometry
     unknown = sorted(set(settings.body_sizes) - {b.name for b in geometry.bodies})
     if unknown:
@@ -934,12 +937,15 @@ def _apply_sizes(gmsh, model: _Model, settings: CadImportSettings, groups) -> No
                 [settings.body_sizes.get(b) for b in bodies],
             )
         )
+        / _MM
         for f, bodies in model.face_bodies.items()
     }
     unknown = sorted(set(settings.volume_sizes) - set(model.volumes))
     if unknown:
         raise ValueError(f"Volume size for '{unknown[0]}', which is no air body.")
-    volume_size = {b: sizing.edge_m(settings.volume_sizes.get(b) or settings.body_sizes.get(b)) for b in model.volumes}
+    volume_size = {
+        b: sizing.edge_m(settings.volume_sizes.get(b) or settings.body_sizes.get(b)) / _MM for b in model.volumes
+    }
     sizes = [*face_size.values(), *volume_size.values()] or [target]
     smallest, largest = min(sizes), max(sizes)
     option = gmsh.option.setNumber
@@ -1011,7 +1017,11 @@ def _write_volume(gmsh, path, surface_groups, volume_groups) -> None:
     gmsh.option.setNumber("Mesh.MshFileVersion", 4.1)
     gmsh.option.setNumber("Mesh.Binary", 0)
     gmsh.option.setNumber("Mesh.SaveAll", 0)
-    gmsh.write(str(path))
+    gmsh.option.setNumber("Mesh.ScalingFactor", _MM)
+    try:
+        gmsh.write(str(path))
+    finally:
+        gmsh.option.setNumber("Mesh.ScalingFactor", 1)  # process-wide: other Gmsh writers stay unscaled
 
 
 def _write_surface(gmsh, path, surface_groups) -> None:
@@ -1019,7 +1029,7 @@ def _write_surface(gmsh, path, surface_groups) -> None:
     node_tags, coords, _ = gmsh.model.mesh.getNodes()
     index = np.zeros(int(node_tags.max()) + 1, dtype=np.int64)
     index[node_tags.astype(np.int64)] = np.arange(len(node_tags))
-    points = np.asarray(coords).reshape(-1, 3)
+    points = np.asarray(coords).reshape(-1, 3) * _MM
     triangles, physical, geometrical, names = [], [], [], {}
     for tag, (name, faces) in enumerate(surface_groups.items(), start=1):
         names[name] = np.array([tag, 2])
