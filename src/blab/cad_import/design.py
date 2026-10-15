@@ -6,9 +6,10 @@ Qt-free. The meshing pipeline and the editor resolve face groups through it alik
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from typing import NamedTuple
 
-from .pipeline import WALLS, ZERO, CadFaceRef, CadGeometry, match_face_ref
+from .pipeline import WALLS, ZERO, CadFaceRef, CadGeometry, face_ref, match_face_ref
 
 
 class FaceGroupRow(NamedTuple):
@@ -17,6 +18,13 @@ class FaceGroupRow(NamedTuple):
     name: str
     faces: frozenset[int]
     kind: str
+
+
+class FaceGroupEdit(NamedTuple):
+    """An edit of the face groups: the design source fields it changes (none: nothing to store) and a note."""
+
+    changes: dict
+    note: str
 
 
 class CadFaceGroups:
@@ -41,15 +49,15 @@ class CadFaceGroups:
         translation_m: Sequence[float] = ZERO,
     ) -> None:
         self.geometry = geometry
-        names = interface_names or {}
+        self._names = names = dict(interface_names or {})
         self.interface_names = {i.name: names.get(i.name, i.name) for i in geometry.interfaces}
         self.interface_of = {f: self.interface_names[i.name] for i in geometry.interfaces for f in i.face_ids}
-        placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
+        self._placement = dict(rotation_deg=rotation_deg, translation_m=translation_m)
         self.found = {}  # stored group -> [(stored face, face id or None)]
         for name, refs in face_groups.items():
-            self.found[name] = [(ref, _resolve(ref, geometry, placement)) for ref in refs]
+            self.found[name] = [(ref, _resolve(ref, geometry, self._placement)) for ref in refs]
         self._ids = {f.id for f in geometry.faces}
-        reserved = {WALLS, *self.interface_names.values()}
+        self._reserved = reserved = {WALLS, *self.interface_names.values()}
         groups: dict[str, set[int]] = {}
         member: dict[int, str] = {}
         for name, found in self.found.items():
@@ -114,6 +122,85 @@ class CadFaceGroups:
                 if member.setdefault(face, name) != name:
                     raise ValueError(f"Face {face} is in face groups '{member[face]}' and '{name}'.")
 
+    # -- edits: each returns the changed design source fields and a note, or raises ValueError ----------------
+
+    def moved_to(self, name: str, faces) -> FaceGroupEdit:
+        """Put ``faces`` into stored group ``name`` (new or existing), out of any other; ``walls`` takes them out of
+        every group. Re-picking a group that needs review drops its missing faces. Interface faces are skipped."""
+        name, faces = name.strip(), set(faces)
+        if not name or not faces:
+            raise ValueError("Select faces and enter a face group name first.")
+        if name == WALLS:
+            return self.moved_to_walls(faces)
+        if name in self.interface_names.values():
+            raise ValueError(f"Face group name '{name}' is reserved.")
+        skipped = faces & self.interface_of.keys()
+        faces -= skipped
+        return FaceGroupEdit(self._regrouped(faces, name) if faces else {}, self.interface_note(skipped))
+
+    def moved_to_walls(self, faces) -> FaceGroupEdit:
+        """Take ``faces`` out of the stored groups. Faces with a STEP name stay in the group it forms."""
+        faces = set(faces)
+        if not faces:
+            raise ValueError("Select faces first.")
+        skipped = faces & self.interface_of.keys()
+        named = sorted(
+            f.id
+            for f in self.geometry.faces
+            if f.id in faces - skipped and f.step_name and f.step_name not in self._reserved
+        )
+        notes = [f"Faces {', '.join(map(str, named))} stay in the face groups their STEP names form."] if named else []
+        notes.append(self.interface_note(skipped))
+        return FaceGroupEdit(self._regrouped(faces), " ".join(n for n in notes if n))
+
+    def deleted(self, name: str) -> FaceGroupEdit:
+        """Delete stored group ``name``; its faces go back to walls (or their STEP-named group)."""
+        if name not in self.found:
+            raise ValueError(f"'{name}' is no picked face group.")
+        return FaceGroupEdit({"face_groups": [g for g in self.stored() if g["name"] != name]}, "")
+
+    def renamed_interface(self, name: str, new_name: str) -> FaceGroupEdit:
+        """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
+        detected = next(d for d, shown in self.interface_names.items() if shown == name)
+        new_name = new_name.strip() or detected
+        if new_name == name:
+            return FaceGroupEdit({}, "")
+        if new_name in {*(row.name for row in self.rows), *self.found}:
+            raise ValueError(f"Face group name '{new_name}' is taken.")
+        names = {d: s for d, s in self._names.items() if d != detected}  # kept for interfaces not detected now
+        if new_name != detected:
+            names[detected] = new_name
+        return FaceGroupEdit({"interface_names": names}, "")
+
+    def interface_note(self, faces) -> str:
+        """Why ``faces``, interface faces, stayed where they are; empty without any."""
+        if not faces:
+            return ""
+        return "; ".join(f"Face {f} stays in interface '{self.interface_of[f]}'" for f in sorted(faces)) + "."
+
+    def stored(self) -> list[dict]:
+        """The stored groups as the design source keeps them: ``[{"name", "faces": [CadFaceRef fields]}]``."""
+        return [{"name": name, "faces": [_stored(ref) for ref, _ in found]} for name, found in self.found.items()]
+
+    def _regrouped(self, faces: set[int], name: str | None = None) -> dict:
+        """The stored groups with ``faces`` moved into group ``name`` (``None``: into none), refs taken afresh."""
+        groups = []
+        for group in [*self.found, *([name] if name is not None and name not in self.found else [])]:
+            found = self.found.get(group, [])
+            ids = {face for _, face in found if face is not None}
+            unmatched = [_stored(ref) for ref, face in found if face is None]
+            if group == name:
+                ids, unmatched = ids | faces, []
+            else:
+                ids -= faces
+            if ids or unmatched:
+                groups.append({"name": group, "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
+        return {"face_groups": groups}
+
+    def _ref(self, face_id: int) -> dict:
+        face = next(f for f in self.geometry.faces if f.id == face_id)
+        return asdict(face_ref(face, **self._placement))
+
     def surface_groups(self, mesh_faces: Mapping[str, Sequence[int]]) -> dict[str, dict[str, list[int]]]:
         """Mesh id -> {surface group name -> faces}, sorted by name, of meshes bounded by ``mesh_faces``."""
         result = {}
@@ -123,6 +210,10 @@ class CadFaceGroups:
                 groups.setdefault(self._row_of[face].name, []).append(face)
             result[mesh_id] = dict(sorted(groups.items()))
         return result
+
+
+def _stored(ref):
+    return asdict(ref) if isinstance(ref, CadFaceRef) else ref
 
 
 def _resolve(ref, geometry: CadGeometry, placement) -> int | None:

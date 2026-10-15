@@ -146,3 +146,114 @@ def test_surface_groups_split_each_mesh_by_row_sorted_by_name(box):
         "exterior": ["Interface 1 Port", "Sides"],
         "chamber": ["Driver"],
     }
+
+
+# -- edits ---------------------------------------------------------------------------------------------------------
+
+
+def stored(source):
+    """``face_groups`` of a design source as the module takes them."""
+    return {g["name"]: g["faces"] for g in source.get("face_groups", [])}
+
+
+def edited(groups, edit, source=None):
+    """The design after ``edit``: its source and its face groups."""
+    source = (source or {"face_groups": groups.stored(), "interface_names": {}}) | edit.changes
+    return source, CadFaceGroups(groups.geometry, stored(source), interface_names=source["interface_names"])
+
+
+def group_faces(groups):
+    return {row.name: set(row.faces) for row in groups.rows if row.kind == "group"}
+
+
+def test_moving_faces_into_a_new_then_an_existing_group_takes_them_out_of_any_other(box):
+    left, right = x_sides(box)
+    groups = CadFaceGroups(box, {})
+
+    source, groups = edited(groups, groups.moved_to(" A ", {left.id, right.id}))
+    assert group_faces(groups) == {"A": {left.id, right.id}, "Driver": {next(iter(groups.row("Driver").faces))}}
+    source, groups = edited(groups, groups.moved_to("B", {right.id}), source)
+
+    assert [(g["name"], len(g["faces"])) for g in source["face_groups"]] == [("A", 1), ("B", 1)]
+    assert source["face_groups"][1]["faces"] == [asdict(face_ref(right))]  # stored in CAD axes
+    assert groups.row("B").faces == {right.id}
+    source, groups = edited(groups, groups.moved_to("B", {left.id}), source)
+    assert [g["name"] for g in source["face_groups"]] == ["B"]  # A emptied, so gone
+
+
+def test_moving_to_walls_takes_faces_out_but_step_named_and_interface_faces_stay(box):
+    left, _ = x_sides(box)
+    driver = next(f.id for f in box.faces if f.step_name == "Driver")
+    mouth = box.interfaces[0].face_ids[0]
+    groups = CadFaceGroups(box, {"Cone": [driver], "Side": [left.id]})
+
+    edit = groups.moved_to_walls({driver, left.id, mouth})
+
+    assert edit.changes == {"face_groups": []}
+    assert edit.note == (
+        f"Faces {driver} stay in the face groups their STEP names form. "
+        f"Face {mouth} stays in interface 'Interface 1 Port'."
+    )
+    assert [g["name"] for g in groups.moved_to("walls", {left.id}).changes["face_groups"]] == ["Cone"]
+
+
+@pytest.mark.parametrize(
+    ("name", "faces", "message"),
+    [
+        ("", "left", "Select faces and enter a face group name first"),
+        ("A", "", "Select faces and enter a face group name first"),
+        ("Interface 1 Port", "left", "Face group name 'Interface 1 Port' is reserved"),
+    ],
+)
+def test_moves_that_cannot_be_stored_are_rejected(box, name, faces, message):
+    left, _ = x_sides(box)
+    with pytest.raises(ValueError, match=message):
+        CadFaceGroups(box, {}).moved_to(name, {left.id} if faces else set())
+
+
+def test_interface_faces_are_skipped_with_a_note(box):
+    mouth = box.interfaces[0].face_ids[0]
+    left, _ = x_sides(box)
+    groups = CadFaceGroups(box, {})
+
+    only = groups.moved_to("Mouth", {mouth})
+    mixed = groups.moved_to("Mouth", {mouth, left.id})
+
+    assert only == ({}, f"Face {mouth} stays in interface 'Interface 1 Port'.")
+    assert [len(g["faces"]) for g in mixed.changes["face_groups"]] == [1]
+
+
+def test_unmatched_faces_are_kept_unless_the_group_is_re_picked(box):
+    left, right = x_sides(box)
+    lost = asdict(CadFaceRef(None, (1.0, 1.0, 1.0), 0.5, (0.0, 0.0, 1.0), "Plane"))
+    groups = CadFaceGroups(box, {"Lid": [lost, asdict(face_ref(left))]})
+
+    kept = groups.moved_to("Other", {left.id}).changes["face_groups"]
+    repaired = groups.moved_to("Lid", {right.id}).changes["face_groups"]
+
+    assert kept[0] == {"name": "Lid", "faces": [lost]}  # still needs review
+    assert repaired == [{"name": "Lid", "faces": [asdict(face_ref(left)), asdict(face_ref(right))]}]
+
+
+def test_deleting_a_picked_group_keeps_the_others(box):
+    left, right = x_sides(box)
+    groups = CadFaceGroups(box, {"A": [left.id], "B": [right.id]})
+
+    assert groups.deleted("A").changes == {"face_groups": [{"name": "B", "faces": [right.id]}]}
+    with pytest.raises(ValueError, match="'Driver' is no picked face group"):
+        groups.deleted("Driver")
+
+
+def test_an_interface_is_renamed_unless_the_name_is_taken_and_an_empty_name_gives_back_the_detected_one(box):
+    groups = CadFaceGroups(box, {"A": []}, interface_names={"Interface 9 Gone": "Old"})
+
+    source = {"face_groups": groups.stored(), "interface_names": {"Interface 9 Gone": "Old"}}
+    source, renamed = edited(groups, groups.renamed_interface("Interface 1 Port", " Mouth "), source)
+
+    assert source["interface_names"] == {"Interface 9 Gone": "Old", "Interface 1 Port": "Mouth"}
+    assert renamed.row("Mouth").kind == "interface"
+    for taken in ("walls", "Driver", "A"):
+        with pytest.raises(ValueError, match=f"Face group name '{taken}' is taken"):
+            renamed.renamed_interface("Mouth", taken)
+    assert renamed.renamed_interface("Mouth", "").changes == {"interface_names": {"Interface 9 Gone": "Old"}}
+    assert renamed.renamed_interface("Mouth", "Mouth").changes == {}

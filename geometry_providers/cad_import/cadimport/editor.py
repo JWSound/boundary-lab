@@ -724,9 +724,8 @@ class CadImportEditor:
         self._render(reset_camera=reset_camera)
         if self.geometry is not None:
             self._drop_lost_sizes()
-            held = self._groups.held_by_interfaces
-            if held:
-                self.status.setText(_in_interfaces(held, self._groups.interface_of))
+            if note := self._groups.interface_note(self._groups.held_by_interfaces):
+                self.status.setText(note)
 
     def _add_kind_combo(self, item, name, role):
         """The Kind dropdown of closed shell ``name``'s body row; a change re-reads the file."""
@@ -880,18 +879,7 @@ class CadImportEditor:
 
     def rename_interface(self, name, new_name):
         """Rename interface face group ``name``; an empty ``new_name`` gives back the detected name."""
-        shown = self._groups.interface_names
-        detected = next(d for d, s in shown.items() if s == name)
-        new_name = new_name.strip() or detected
-        if new_name == name:
-            return
-        if new_name in {*(row.name for row in self.rows()), *self._groups.found}:
-            self.status.setText(f"Face group name '{new_name}' is taken.")
-            return
-        names = {d: s for d, s in self.source.get("interface_names", {}).items() if d != detected}
-        if new_name != detected:
-            names[detected] = new_name
-        self.edited({"interface_names": names})
+        self._edit_groups("renamed_interface", name, new_name)
 
     def _add_to_new_group(self, face_ids):
         name = self.ask_group_name()
@@ -1020,56 +1008,11 @@ class CadImportEditor:
     def add_to_group(self, name, face_ids):
         """Put ``face_ids`` into face group ``name`` (new or existing), out of any other; walls removes them.
         Interface faces stay in their interface's face group."""
-        name, face_ids = name.strip(), set(face_ids)
-        if not name or not face_ids or self._faces is None:
-            self.status.setText("Select faces and enter a face group name first.")
-            return
-        if name == WALLS:
-            self.remove_from_group(face_ids)
-            return
-        interface_of = self._interface_of()
-        if name in interface_of.values():
-            self.status.setText(f"Face group name '{name}' is reserved.")
-            return
-        skipped = face_ids & interface_of.keys()
-        face_ids -= skipped
-        if face_ids:
-            stored = list(self.source.get("face_groups", []))
-            if name not in [g["name"] for g in stored]:
-                stored.append({"name": name, "faces": []})
-            # Re-picking a group that needs review repairs it: its missing faces are dropped.
-            self._edit_groups(self._regrouped(stored, face_ids, name))
-        if skipped:
-            self.status.setText(_in_interfaces(skipped, interface_of))
+        self._edit_groups("moved_to", name, face_ids)
 
     def remove_from_group(self, face_ids):
         """Move ``face_ids`` out of their face groups, back to walls."""
-        face_ids = set(face_ids)
-        if not face_ids or self._faces is None:
-            self.status.setText("Select faces first.")
-            return
-        self._edit_groups(self._regrouped(self.source.get("face_groups", []), face_ids))
-        named = sorted(f for f in face_ids if self.group_of(f)[1] == "group")
-        if named:
-            self.status.setText(f"Faces {', '.join(map(str, named))} stay in the face groups their STEP names form.")
-        interface_of = self._interface_of()
-        if face_ids & interface_of.keys():
-            self.status.setText(_in_interfaces(face_ids & interface_of.keys(), interface_of))
-
-    def _regrouped(self, stored, face_ids, name=None):
-        """``stored`` groups with ``face_ids`` moved into group ``name`` (``None``: into none)."""
-        groups = []
-        for group in stored:
-            found = self._groups.found.get(group["name"], [])
-            ids = {face for _, face in found if face is not None}
-            unmatched = [ref for ref, face in found if face is None]
-            if group["name"] == name:
-                ids, unmatched = ids | face_ids, []
-            else:
-                ids -= face_ids
-            if ids or unmatched:
-                groups.append({"name": group["name"], "faces": unmatched + [self._ref(f) for f in sorted(ids)]})
-        return groups
+        self._edit_groups("moved_to_walls", face_ids)
 
     def group_of(self, face_id):
         """``(name, kind)`` of the row holding ``face_id``."""
@@ -1086,16 +1029,28 @@ class CadImportEditor:
         self.group_button.setText(f'Add to "{text}"' if text in names else "New group")
 
     def delete_face_group(self, name):
-        self._edit_groups([g for g in self.source.get("face_groups", []) if g["name"] != name])
+        self._edit_groups("deleted", name)
 
-    def _edit_groups(self, groups):
-        """Store ``groups``; sizes stay on the faces."""
-        self.edited({"face_groups": groups})
+    def _edit_groups(self, operation, *args):
+        """Store what the face-group ``operation`` (a :class:`CadFaceGroups` edit) changes, with its note, or show
+        why it cannot; sizes stay on the faces."""
+        if self._groups is None:
+            self.status.setText("Select faces first.")
+            return
+        try:
+            edit = getattr(self._groups, operation)(*args)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        if edit.changes:
+            self.edited(edit.changes)
+        if edit.note:
+            self.status.setText(edit.note)
 
     def _delete_selected_group(self):
-        rows = {item.row() for item in self.groups_table.selectedItems()}
-        for row in sorted(rows):
-            self.delete_face_group(self.groups_table.item(row, 0).text())
+        rows = sorted({item.row() for item in self.groups_table.selectedItems()})
+        for name in [self.groups_table.item(row, 0).text() for row in rows]:  # before a deletion redraws the list
+            self.delete_face_group(name)
 
     # -- mesh sizes ---------------------------------------------------------------------------
     # Only faces and air-body volumes carry a size: {"elements_per_wavelength": N} (a level) or {"size_m": x};
@@ -1396,10 +1351,6 @@ def _file_stamp(path):
     except (OSError, ValueError):
         return None
     return stat.st_mtime_ns, stat.st_size
-
-
-def _in_interfaces(face_ids, interface_of):
-    return "; ".join(f"Face {f} stays in interface '{interface_of[f]}'" for f in sorted(face_ids)) + "."
 
 
 def _with_size(sizes, name, size):

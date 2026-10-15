@@ -354,22 +354,6 @@ def test_picked_faces_become_a_face_group_that_generates_a_rigid_boundary(
     assert sides_boundary.kind == "rigid"
 
 
-def test_picking_into_a_group_moves_faces_and_groups_can_be_deleted(cad_editor):
-    editor, host = cad_editor
-    first, second = cabinet_faces(editor, lambda f: abs(abs(f["normal"][0]) - 1) < 1e-9)
-    editor.pick_face(first)
-    editor.group_selection("A")
-    editor.pick_face(second)
-    editor.group_selection("A")  # an existing name adds the selection
-    editor.pick_face(first)
-    editor.group_selection("B")
-
-    groups = {g["name"]: len(g["faces"]) for g in host.snapshot().source["face_groups"]}
-    assert groups == {"A": 1, "B": 1}
-    editor.delete_face_group("B")
-    assert [g["name"] for g in host.snapshot().source["face_groups"]] == ["A"]
-
-
 def all_rows(editor):
     table = editor.groups_table
     return {table.item(r, 0).text(): int(table.item(r, 1).text()) for r in range(table.rowCount())}
@@ -529,7 +513,8 @@ def test_deleting_a_group_keeps_the_sizes_of_its_faces(cad_editor):
     editor.add_to_group("Sides", {face})
     editor.set_face_group_size("Sides", FINE)
 
-    editor.delete_face_group("Sides")
+    editor.groups_table.selectRow(row_of(editor, "Sides"))
+    editor.delete_group_button.click()
 
     assert host.snapshot().source["face_groups"] == []
     assert [e["elements_per_wavelength"] for e in host.snapshot().source["face_sizes"]] == [6]
@@ -1155,10 +1140,6 @@ def test_an_interface_is_renamed_from_its_face_menu_and_keeps_its_size(cad_edito
     rename("Driver")
     assert "'Driver' is taken" in editor.status.text()
     assert host.snapshot().source["interface_names"] == {"Interface 1 Port": "Port mouth"}
-
-    rename("")  # back to the detected name
-    assert host.snapshot().source["interface_names"] == {}
-    assert "Interface 1 Port" in all_rows(editor)
 
 
 def test_faces_grouped_before_they_became_interface_faces_stay_in_the_interface_while_it_is_detected(
